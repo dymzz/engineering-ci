@@ -2,6 +2,12 @@ name: Engineering CI
 
 on:
   workflow_dispatch:
+    inputs:
+      failure_probe:
+        description: "Verify CI rejects a Ruff error"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
