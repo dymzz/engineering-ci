@@ -11,3 +11,13 @@ permissions:
 jobs:
   python-ci:
     uses: ./.github/workflows/reusable-python-ci.yml
+
+  sync-tool-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test consumer sync utility
+        run: python3 -m unittest discover -s tests -p 'test_sync_consumer.py' -v
