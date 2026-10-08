@@ -2,6 +2,12 @@ name: Reusable Python CI
 
 on:
   workflow_call:
+    inputs:
+      verify_failure_propagation:
+        description: 'Run smoke-only Ruff negative and recovery checks'
+        type: boolean
+        required: false
+        default: false
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -105,6 +111,51 @@ jobs:
           dagger version
           dagger check -l
           dagger check
+
+      - name: Verify Ruff rejection and recovery (smoke only)
+        if: ${{ inputs.verify_failure_propagation }}
+        shell: bash
+        env:
+          _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
+        run: |
+          set -euo pipefail
+
+          probe="tests/ruff_negative_probe.py"
+          log="$RUNNER_TEMP/dagger-ruff-negative.log"
+
+          if [[ ! -d tests || -e "$probe" ]]; then
+            echo "::error::Smoke test directory missing or probe already exists"
+            exit 1
+          fi
+
+          cleanup() {
+            rm -f -- "$probe"
+          }
+          trap cleanup EXIT
+
+          # Do not commit intentionally invalid code to Git.
+          printf 'import os\n' > "$probe"
+
+          status=0
+          dagger check lint > "$log" 2>&1 || status=$?
+
+          if [[ "$status" -eq 0 ]]; then
+            echo "::error::Ruff negative probe was incorrectly accepted"
+            exit 1
+          fi
+          if ! grep -q 'F401' "$log" || ! grep -q 'ruff_negative_probe.py' "$log"; then
+            echo "::error::Dagger failed, but not because of the expected Ruff F401 probe"
+            tail -n 35 "$log"
+            exit 1
+          fi
+
+          echo "PASS: Dagger rejected the injected Ruff F401"
+          cleanup
+          trap - EXIT
+
+          # The same checkout must be healthy again after removing the probe.
+          dagger check
+          echo "PASS: All checks recovered after probe cleanup"
 
       - name: Engine logs on failure
         if: failure()
