@@ -48,6 +48,19 @@ jobs:
 
           echo "Private Dagger module Git authentication verified"
 
+          # Test both credential lookup path formats.
+          # Never print credential fill output.
+
+          for path in "dymzz/engineering-ci" "/dymzz/engineering-ci"; do
+            if printf 'protocol=https\nhost=github.com\npath=%s\n\n' "$path" |
+                GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= \
+                git credential fill >/dev/null 2>&1; then
+              echo "Credential lookup PASS: $path"
+            else
+              echo "Credential lookup FAIL: $path"
+            fi
+          done
+
       - name: Start Dagger Engine
         shell: bash
         run: |
