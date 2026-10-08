@@ -23,6 +23,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Inject Ruff failure
+        if: ${{ inputs.failure_probe }}
+        run: |
+          printf 'import os\n' > \
+            tests/fixtures/python-app/tests/ruff_negative_probe.py
+
       - name: Start Dagger Engine
         run: |
           docker pull ghcr.io/dagger/engine:v0.21.10
