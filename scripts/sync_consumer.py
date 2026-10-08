@@ -124,13 +124,19 @@ def update_references(
     return changed_workflow, changed_dagger, summary
 
 
+def git_root(repo: Path) -> Path:
+    """Normalize Git's slash-separated path for Windows and Unix hosts."""
+    return Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
+
+
 def perform(args: argparse.Namespace, source: Path) -> None:
+    source = source.resolve()
     consumer = (source / args.consumer).resolve()
     if not consumer.is_dir():
         raise SyncError(f"Consumer directory does not exist: {consumer}")
-    if git(source, "rev-parse", "--show-toplevel") != str(source):
+    if git_root(source) != source:
         raise SyncError("Script is not in the root of the source Git repository")
-    if git(consumer, "rev-parse", "--show-toplevel") != str(consumer):
+    if git_root(consumer) != consumer:
         raise SyncError("Consumer must be its own Git repository root")
     if source == consumer:
         raise SyncError("Source and consumer must be different repositories")
