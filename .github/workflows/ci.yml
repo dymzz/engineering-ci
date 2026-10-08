@@ -1,0 +1,55 @@
+name: Engineering CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start Dagger Engine
+        run: |
+          docker pull ghcr.io/dagger/engine:v0.21.10
+          docker volume create dagger-engine-data
+          docker run -d \
+            --name dagger-engine \
+            --privileged \
+            -v dagger-engine-data:/var/lib/dagger \
+            ghcr.io/dagger/engine:v0.21.10
+          docker ps --filter name=dagger-engine
+
+      - name: Install Dagger CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/dagger-bin"
+
+          curl -fsSL \
+            https://dl.dagger.io/dagger/install.sh \
+            -o "$RUNNER_TEMP/install-dagger.sh"
+
+          DAGGER_VERSION=0.21.10 \
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" \
+          sh "$RUNNER_TEMP/install-dagger.sh"
+
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
+
+      - name: Run Dagger Checks
+        env:
+          _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
+        run: |
+          set -euo pipefail
+          dagger version
+          dagger check
+
+      - name: Engine logs on failure
+        if: failure()
+        run: docker logs --tail 100 dagger-engine || true
