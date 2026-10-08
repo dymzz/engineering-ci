@@ -68,6 +68,15 @@ class VersionSyncTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(sync.SyncError):
                 sync.update_references(WORKFLOW, MANIFEST, UPSTREAM, value)
 
+    def test_git_root_normalizes_path_and_resolves(self):
+        original = sync.git
+        root = Path(__file__).resolve().parent.parent
+        try:
+            sync.git = lambda repo, *args: root.as_posix()
+            self.assertEqual(sync.git_root(root), root)
+        finally:
+            sync.git = original
+
     def test_missing_remote_branch_rejected(self):
         original = sync.git
         try:
