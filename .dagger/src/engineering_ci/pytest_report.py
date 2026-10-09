@@ -1,0 +1,146 @@
+"""Deterministic pytest/JUnit summary; does not attempt root-cause inference.
+
+The report function is deliberately dependency-free so it can be tested
+without a Dagger engine. It treats pytest exit codes and XML as separate
+signals: missing/malformed XML is never reported as a successful test run.
+"""
+
+from __future__ import annotations
+
+from xml.etree import ElementTree as ET
+
+EXIT_REASONS = {
+    0: "success",
+    1: "tests_failed",
+    2: "interrupted",
+    3: "internal_error",
+    4: "usage_error",
+    5: "no_tests_collected",
+    6: "warnings_limit",
+}
+
+
+def _bounded(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "\n[truncated]"
+
+
+def _diagnosis(kind: str, message: str, details: str) -> str:
+    """Labels directly supported by pytest's structured outcome."""
+    if kind == "error":
+        if "collection failure" in message.lower():
+            return "collection_error"
+        if "setup" in message.lower() or "teardown" in message.lower():
+            return "setup_teardown_error"
+        return "test_error"
+    if "AssertionError" in message + details:
+        return "assertion_failure"
+    return "test_failure"
+
+
+def summarize_pytest(
+    xml_text: str, exit_code: int, console_output: str, *, max_failures: int = 10
+) -> dict:
+    """Summarize one run from JUnit XML and pytest exit status.
+
+    The diagnostic categories describe observable outcomes, not proven causes.
+    """
+    if not 1 <= max_failures <= 50:
+        raise ValueError("max_failures must be between 1 and 50")
+
+    result = {
+        "schema_version": 1,
+        "exit_code": exit_code,
+        "reason": EXIT_REASONS.get(exit_code, "unexpected_exit"),
+        "status": "error",
+        "report_available": False,
+        "counts": None,
+        "failures": [],
+        "omitted_failures": 0,
+    }
+
+    if not xml_text.strip():
+        result["diagnostic"] = "pytest did not produce a JUnit XML report"
+    else:
+        try:
+            root = ET.fromstring(xml_text)
+            if root.tag == "testsuite":
+                suites = [root]
+            elif root.tag == "testsuites":
+                suites = root.findall("testsuite")
+            else:
+                raise ValueError("Unexpected JUnit XML root element")
+            if not suites:
+                raise ValueError("JUnit XML contains no test suites")
+
+            cases = list(root.iter("testcase"))
+            counts = {}
+            for key in ("tests", "failures", "errors", "skipped"):
+                counts[key] = sum(int(suite.get(key, "0")) for suite in suites)
+            counts["passed"] = max(
+                0, counts["tests"] - counts["failures"] - counts["errors"] - counts["skipped"]
+            )
+            failures = []
+            for case in cases:
+                issue = case.find("error")
+                kind = "error"
+                if issue is None:
+                    issue = case.find("failure")
+                    kind = "failure"
+                if issue is None:
+                    continue
+                message = issue.get("message", "")
+                detail = issue.text or ""
+                node = "::".join(
+                    part for part in (case.get("classname", ""), case.get("name", ""))
+                    if part
+                )
+                failures.append({
+                    "test": _bounded(node, 300),
+                    "kind": kind,
+                    "category": _diagnosis(kind, message, detail),
+                    "message": _bounded(message, 400),
+                    "trace_excerpt": _bounded(detail, 1600),
+                })
+            result["report_available"] = True
+            result["counts"] = counts
+            result["failures"] = failures[:max_failures]
+            result["omitted_failures"] = max(0, len(failures) - max_failures)
+            if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
+                result["status"] = "passed"
+            elif exit_code == 1:
+                result["status"] = "failed"
+            else:
+                result["status"] = "error"
+        except (ET.ParseError, ValueError) as exc:
+            result["diagnostic"] = f"Invalid JUnit XML: {exc}"
+
+    if result["status"] != "passed":
+        result["console_tail"] = _bounded(console_output[-2000:], 2000)
+    return result
+
+
+def failure_summary(report: dict) -> str:
+    """Compact explanation embedded in an ordinary failing Dagger check."""
+    counts = report["counts"]
+    if counts is None:
+        headline = report.get("diagnostic", "JUnit report unavailable")
+    else:
+        headline = (
+            f'{counts["tests"]} tests; {counts["passed"]} passed, '
+            f'{counts["failures"]} failed, {counts["errors"]} errors, '
+            f'{counts["skipped"]} skipped'
+        )
+    lines = [
+        f'pytest exit {report["exit_code"]} ({report["reason"]}): {headline}'
+    ]
+    for item in report["failures"]:
+        lines.append(f'- {item["test"]} [{item["category"]}]: {item["message"]}')
+        if item["trace_excerpt"]:
+            lines.append(item["trace_excerpt"])
+    if report["omitted_failures"]:
+        lines.append(f'{report["omitted_failures"]} additional failures omitted')
+    if not report["failures"] and report.get("console_tail"):
+        lines.append(report["console_tail"])
+    return "\n".join(lines)
