@@ -178,11 +178,18 @@ class EngineeringCi:
         ],
     ) -> str:
         """Verify the Python test fixture."""
-        return await self.python_test(
+        output = await self.python_test(
             source=source,
             python_version="3.14",
             test_path="tests",
         )
+        report = json.loads(await self.python_test_report(
+            source=source, python_version="3.14", test_path="tests",
+        ))
+        if (not report["report_available"] or report["status"] != "passed"
+                or report["exit_code"] != 0 or report["counts"]["tests"] == 0):
+            raise ValueError(f"Unexpected passing test report: {report}")
+        return output
 
     @function
     @check
@@ -233,7 +240,7 @@ class EngineeringCi:
         report = json.loads(await self.python_test_report(
             source=failing, python_version="3.14", test_path="tests",
         ))
-        if (report["status"] != "failed"
+        if (not report["report_available"] or report["status"] != "failed"
                 or report["exit_code"] != 1
                 or report["counts"]["failures"] != 1
                 or not any(
@@ -241,5 +248,15 @@ class EngineeringCi:
                     for item in report["failures"]
                 )):
             raise ValueError(f"Unexpected negative test report: {report}")
-        return "PASS: pytest assertion failure was reported with exit code 1"
+        try:
+            await self.python_test(source=failing, python_version="3.14", test_path="tests")
+        except RuntimeError as exc:
+            summary = str(exc)
+            if not all(evidence in summary for evidence in (
+                "pytest exit 1", "test_intentional_failure", "assert 1 == 2",
+            )):
+                raise ValueError(f"Unexpected pytest failure summary: {summary}") from exc
+        else:
+            raise ValueError("python_test incorrectly accepted the failing pytest fixture")
+        return "PASS: JSON reported assertion failure with exit 1; python_test rejected it"
 

@@ -7,6 +7,7 @@ signals: missing/malformed XML is never reported as a successful test run.
 
 from __future__ import annotations
 
+import re
 from xml.etree import ElementTree as ET
 
 EXIT_REASONS = {
@@ -26,7 +27,7 @@ def _bounded(value: str, limit: int) -> str:
     return value[:limit] + "\n[truncated]"
 
 
-def _diagnosis(kind: str, message: str, details: str) -> str:
+def _diagnosis(kind: str, message: str, details: str, exception_type: str = "") -> str:
     """Labels directly supported by pytest's structured outcome."""
     if kind == "error":
         if "collection failure" in message.lower():
@@ -34,7 +35,15 @@ def _diagnosis(kind: str, message: str, details: str) -> str:
         if "setup" in message.lower() or "teardown" in message.lower():
             return "setup_teardown_error"
         return "test_error"
-    if "AssertionError" in message + details:
+    # Pytest assertion rewriting omits the exception name: the JUnit message
+    # starts with `assert ...`, and the traceback ends with `E   assert ...`.
+    # Source lines in a traceback can also contain assert; they are not proof.
+    explicit_assertion = exception_type.rsplit(".", 1)[-1] == "AssertionError"
+    assertion_message = re.match(r"^(?:AssertionError\b|assert\s+\S)", message)
+    assertion_trace = re.search(
+        r"^(?:\s*(?:E\s+)?AssertionError\b|E\s+assert\s+\S)", details, re.MULTILINE
+    )
+    if explicit_assertion or assertion_message or assertion_trace:
         return "assertion_failure"
     return "test_failure"
 
@@ -99,7 +108,7 @@ def summarize_pytest(
                 failures.append({
                     "test": _bounded(node, 300),
                     "kind": kind,
-                    "category": _diagnosis(kind, message, detail),
+                    "category": _diagnosis(kind, message, detail, issue.get("type", "")),
                     "message": _bounded(message, 400),
                     "trace_excerpt": _bounded(detail, 1600),
                 })
