@@ -1,24 +1,74 @@
 name: Release engineering-ci
 
+# Only the successful CI run for a real push to main may publish a tag.
 on:
-  push:
+  workflow_run:
+    workflows: ["Engineering CI"]
+    types: [completed]
     branches: [main]
-    paths: [pyproject.toml]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release-tag:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: engineering-ci-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout release commit and tags
+      - name: Checkout the exact CI-tested commit
         uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          persist-credentials: true
+
+      - name: Decide whether this commit needs a release
+        id: candidate
+        shell: bash
+        env:
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CI_SHA"
+
+          main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ "$main_sha" != "$CI_SHA" ]]; then
+            echo "main advanced; skipping superseded CI commit $CI_SHA"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version=$(python3 scripts/release_version.py show)
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tagged_commit=$(git rev-list -n 1 "$tag")
+            if ! git merge-base --is-ancestor "$tagged_commit" "$CI_SHA"; then
+              echo "::error::Existing $tag is not an ancestor of main; refusing to rewrite"
+              exit 1
+            fi
+            echo "$tag already released; no version change"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Check release metadata
+        if: steps.candidate.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -26,31 +76,34 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_release_version.py' -v
 
       - name: Install uv
+        if: steps.candidate.outputs.publish == 'true'
         uses: astral-sh/setup-uv@v7
 
       - name: Verify lockfiles
+        if: steps.candidate.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
           uv lock --project . --check
 
-      - name: Create immutable version tag
+      - name: Publish immutable version tag
+        if: steps.candidate.outputs.publish == 'true'
         shell: bash
+        env:
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.candidate.outputs.tag }}
         run: |
           set -euo pipefail
-          version=$(python3 scripts/release_version.py show)
-          tag="v${version}"
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            tagged_commit=$(git rev-list -n 1 "$tag")
-            if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
-              echo "::error::Tag $tag already exists at $tagged_commit"
-              exit 1
-            fi
-            echo "Existing release tag $tag already points to this commit"
+          test "$(git rev-parse HEAD)" = "$CI_SHA"
+
+          main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ "$main_sha" != "$CI_SHA" ]]; then
+            echo "::notice::main advanced during validation; release skipped"
             exit 0
           fi
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag -a "$tag" "$GITHUB_SHA" -m "engineering-ci $tag"
-          git push origin "refs/tags/$tag"
-          echo "Published $tag from $GITHUB_SHA"
+          git tag -a "$TAG" "$CI_SHA" -m "engineering-ci $TAG"
+          git push origin "refs/tags/$TAG"
+          echo "Published $TAG from validated CI commit $CI_SHA"
