@@ -39,4 +39,3 @@ jobs:
           python3 scripts/release_version.py check
           python3 -m unittest discover -s tests -p 'test_release_version.py' -v
           uv lock --project . --check
-          uv lock --project .dagger --check
