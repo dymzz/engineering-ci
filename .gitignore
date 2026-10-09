@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.test-deps/
+.test-tools/
 .ruff_cache/
 .mypy_cache/
 .pyright/

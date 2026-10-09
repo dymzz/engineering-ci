@@ -7,7 +7,17 @@ authors = [
     { name = "Aurora", email = "dyjane@protonmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "transitions==0.9.3",
+    "filelock==3.20.3",
+]
+
+[dependency-groups]
+dev = ["pytest==8.4.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [project.scripts]
 engineering-ci = "engineering_ci:main"
