@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
       - name: Test consumer sync utility
         run: python3 -m unittest discover -s tests -p 'test_sync_consumer.py' -v
+      - name: Test pytest report parser
+        run: python3 -m unittest discover -s tests -p 'test_pytest_report.py' -v
 
   version-metadata:
     runs-on: ubuntu-24.04
