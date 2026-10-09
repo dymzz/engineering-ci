@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -61,14 +60,32 @@ def checked_version() -> str:
 
 def set_version(raw: str) -> None:
     version = normalize(raw)
+    # The Dagger SDK is generated only by `dagger develop`; running
+    # `uv lock` against .dagger independently fails without its local sdk/.
+    # Update only the first-party version metadata in all four files.
     for project in PROJECTS:
-        # uv owns the lockfile: never rewrite uv.lock manually in this tool.
-        subprocess.run(
-            ["uv", "version", "--project", str(project), version, "--no-sync"],
-            check=True,
-            cwd=ROOT,
+        project_file = project / "pyproject.toml"
+        lock_file = project / "uv.lock"
+        project_text = project_file.read_text(encoding="utf-8")
+        new_project, count = re.subn(
+            r'(?m)^(version\\s*=\\s*")[^"]+(")$',
+            lambda m: m.group(1) + version + m.group(2),
+            project_text,
+            count=1,
         )
-        subprocess.run(["uv", "lock", "--project", str(project)], check=True, cwd=ROOT)
+        if count != 1:
+            raise ValueError(f"Could not locate project version in {project_file}")
+        lock_text = lock_file.read_text(encoding="utf-8")
+        new_lock, count = re.subn(
+            r'(?m)^(name = "engineering-ci"\\nversion = ")[^"]+(")$',
+            lambda m: m.group(1) + version + m.group(2),
+            lock_text,
+            count=1,
+        )
+        if count != 1:
+            raise ValueError(f"Could not locate lock version in {lock_file}")
+        project_file.write_text(new_project, encoding="utf-8", newline="\\n")
+        lock_file.write_text(new_lock, encoding="utf-8", newline="\\n")
     actual = checked_version()
     if actual != version:
         raise ValueError(f"Expected {version}, got {actual}")
