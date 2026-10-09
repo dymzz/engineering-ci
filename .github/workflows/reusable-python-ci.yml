@@ -171,7 +171,9 @@ jobs:
           python3 "$RUNNER_TEMP/pytest-report/ci.py" gate "$RUNNER_TEMP/pytest-report"
 
       - name: Publish pytest Job Summary
+        id: pytest_summary
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -182,9 +184,17 @@ jobs:
           python3 "$RUNNER_TEMP/pytest-report/ci.py" summary \
             "$RUNNER_TEMP/pytest-report" "$GITHUB_STEP_SUMMARY"
 
+      - name: Explain pytest report delivery warning
+        if: ${{ always() && !cancelled() && steps.pytest_summary.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "::warning::Pytest report delivery was unavailable; original execution gate remains authoritative"
+          printf '\nReport delivery warning: evidence or presentation is incomplete. Original pytest execution status is unchanged.\n' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload pytest evidence
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
         uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
         with:
           name: ${{ inputs.pytest_artifact_name }}
           path: |

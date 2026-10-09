@@ -124,7 +124,7 @@ def summarize_pytest(
             else:
                 result["status"] = "error"
         except (ET.ParseError, ValueError) as exc:
-            result["diagnostic"] = f"Invalid JUnit XML: {exc}"
+            result["diagnostic"] = "Invalid JUnit XML: " + _bounded(str(exc), 400)
 
     if result["status"] != "passed":
         result["console_tail"] = _bounded(console_output[-2000:], 2000)

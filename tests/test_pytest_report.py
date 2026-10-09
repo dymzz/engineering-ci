@@ -57,6 +57,14 @@ class PytestReportTests(unittest.TestCase):
         self.assertEqual(data["reason"], "interrupted")
         self.assertEqual(data["failures"][0]["category"], "collection_error")
 
+    def test_invalid_xml_diagnostic_is_bounded(self):
+        xml = '<testsuite tests="' + 'invalid' * 200 + '"/>'
+        data = report.summarize_pytest(xml, 1, "")
+        self.assertFalse(data["report_available"])
+        self.assertEqual(data["exit_code"], 1)
+        self.assertIn("Invalid JUnit XML", data["diagnostic"])
+        self.assertLessEqual(len(data["diagnostic"]), 425)
+
     def test_missing_and_invalid_xml(self):
         for xml in ("", "<html/>", "<testsuite"):
             with self.subTest(xml=xml):
