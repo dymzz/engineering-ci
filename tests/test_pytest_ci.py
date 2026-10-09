@@ -45,7 +45,7 @@ class PytestDeliveryTests(unittest.TestCase):
             summary = directory / "job-summary"
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 ci.publish_summary(directory, summary)
-            self.assertIn("Test execution: **PASSED**; report status: **ERROR**", summary.read_text())
+            self.assertIn("Test execution: **PASSED**; report status: **ERROR**", summary.read_text(encoding="utf-8"))
             self.assertEqual(ci.execution_exit_code(directory), 0)
 
     def test_missing_or_invalid_execution_is_never_success(self):
@@ -101,7 +101,7 @@ class PytestDeliveryTests(unittest.TestCase):
                 self.bundle(directory, data, code)
                 ci.publish_summary(directory, directory / "job-summary")
                 self.assertEqual(ci.main(["gate", tmp]), expected)
-                self.assertIn("Original pytest exit code", (directory / "job-summary").read_text())
+                self.assertIn("Original pytest exit code", (directory / "job-summary").read_text(encoding="utf-8"))
                 if expected:
                     self.assertEqual(data["failures"][0]["category"], "assertion_failure")
 
