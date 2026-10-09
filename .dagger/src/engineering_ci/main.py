@@ -88,6 +88,24 @@ class EngineeringCi:
         )
 
     @function
+    async def python_format_check(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        format_path: str = "src",
+    ) -> str:
+        """Check Ruff formatting without modifying consumer source files."""
+
+        return await (
+            self._uv_container(source, python_version)
+            .with_exec([
+                "uv", "run", "--no-sync",
+                "ruff", "format", "--check", format_path,
+            ])
+            .stdout()
+        )
+
+    @function
     async def python_test(
         self,
         source: dagger.Directory,
@@ -135,4 +153,20 @@ class EngineeringCi:
             source=source,
             python_version="3.14",
             lint_path="tests",
+        )
+
+    @function
+    @check
+    async def fixture_format(
+        self,
+        source: Annotated[
+            dagger.Directory,
+            DefaultPath("/tests/fixtures/python-app"),
+        ],
+    ) -> str:
+        """Verify that shared Ruff format checks pass on the Python fixture."""
+        return await self.python_format_check(
+            source=source,
+            python_version="3.14",
+            format_path="tests",
         )

@@ -3,6 +3,8 @@ name: Engineering CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,3 +23,19 @@ jobs:
           persist-credentials: false
       - name: Test consumer sync utility
         run: python3 -m unittest discover -s tests -p 'test_sync_consumer.py' -v
+
+  version-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Validate release metadata and lock files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_version.py check
+          python3 -m unittest discover -s tests -p 'test_release_version.py' -v
+          uv lock --project . --check

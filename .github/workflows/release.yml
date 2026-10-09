@@ -1,0 +1,56 @@
+name: Release engineering-ci
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+
+permissions:
+  contents: write
+
+jobs:
+  release-tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout release commit and tags
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_version.py check
+          python3 -m unittest discover -s tests -p 'test_release_version.py' -v
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv lock --project . --check
+
+      - name: Create immutable version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 scripts/release_version.py show)
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tagged_commit=$(git rev-list -n 1 "$tag")
+            if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $tag already exists at $tagged_commit"
+              exit 1
+            fi
+            echo "Existing release tag $tag already points to this commit"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" "$GITHUB_SHA" -m "engineering-ci $tag"
+          git push origin "refs/tags/$tag"
+          echo "Published $tag from $GITHUB_SHA"
