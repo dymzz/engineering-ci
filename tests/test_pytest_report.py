@@ -136,6 +136,19 @@ class RealPytestOutputTests(unittest.TestCase):
         self.assertEqual(data["exit_code"], 1)
         self.assertEqual(data["failures"][0]["category"], "test_failure")
 
+    def test_real_setup_and_teardown_errors(self):
+        for phase, fixture in (
+            ("setup", "    raise ValueError('setup failed')\n"),
+            ("teardown", "    yield 1\n    raise ValueError('teardown failed')\n"),
+        ):
+            with self.subTest(phase=phase):
+                source = "import pytest\n@pytest.fixture\ndef resource():\n" + fixture
+                source += "def test_fixture(resource):\n    assert resource == 1\n"
+                data = report.summarize_pytest(*self.run_pytest(source))
+                self.assertEqual(data["exit_code"], 1)
+                self.assertEqual(data["counts"]["errors"], 1)
+                self.assertEqual(data["failures"][0]["category"], "setup_teardown_error")
+
     def test_real_collection_error(self):
         data = report.summarize_pytest(*self.run_pytest("raise RuntimeError('collection failed')\n"))
         self.assertEqual(data["exit_code"], 2)
