@@ -186,6 +186,7 @@ jobs:
 
       - name: Explain pytest report delivery warning
         if: ${{ always() && !cancelled() && steps.pytest_summary.outcome == 'failure' }}
+        continue-on-error: true
         shell: bash
         run: |
           echo "::warning::Pytest report delivery was unavailable; original execution gate remains authoritative"
