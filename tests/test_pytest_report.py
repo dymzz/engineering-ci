@@ -57,6 +57,14 @@ class PytestReportTests(unittest.TestCase):
         self.assertEqual(data["reason"], "interrupted")
         self.assertEqual(data["failures"][0]["category"], "collection_error")
 
+    def test_invalid_xml_diagnostic_is_bounded(self):
+        xml = '<testsuite tests="' + 'invalid' * 200 + '"/>'
+        data = report.summarize_pytest(xml, 1, "")
+        self.assertFalse(data["report_available"])
+        self.assertEqual(data["exit_code"], 1)
+        self.assertIn("Invalid JUnit XML", data["diagnostic"])
+        self.assertLessEqual(len(data["diagnostic"]), 425)
+
     def test_missing_and_invalid_xml(self):
         for xml in ("", "<html/>", "<testsuite"):
             with self.subTest(xml=xml):
@@ -135,6 +143,19 @@ class RealPytestOutputTests(unittest.TestCase):
         data = report.summarize_pytest(*self.run_pytest(source))
         self.assertEqual(data["exit_code"], 1)
         self.assertEqual(data["failures"][0]["category"], "test_failure")
+
+    def test_real_setup_and_teardown_errors(self):
+        for phase, fixture in (
+            ("setup", "    raise ValueError('setup failed')\n"),
+            ("teardown", "    yield 1\n    raise ValueError('teardown failed')\n"),
+        ):
+            with self.subTest(phase=phase):
+                source = "import pytest\n@pytest.fixture\ndef resource():\n" + fixture
+                source += "def test_fixture(resource):\n    assert resource == 1\n"
+                data = report.summarize_pytest(*self.run_pytest(source))
+                self.assertEqual(data["exit_code"], 1)
+                self.assertEqual(data["counts"]["errors"], 1)
+                self.assertEqual(data["failures"][0]["category"], "setup_teardown_error")
 
     def test_real_collection_error(self):
         data = report.summarize_pytest(*self.run_pytest("raise RuntimeError('collection failed')\n"))

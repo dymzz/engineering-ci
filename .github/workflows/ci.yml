@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      pytest_probe_scenario:
+        description: 'Run a real pytest report delivery probe (failures are intentional)'
+        type: choice
+        default: pass
+        options:
+          - pass
+          - assertion
+          - missing-xml
+          - invalid-xml
+          - missing-xml-pass
 
 permissions:
   contents: read
@@ -13,6 +24,18 @@ permissions:
 jobs:
   python-ci:
     uses: ./.github/workflows/reusable-python-ci.yml
+    with:
+      pytest_report_function: fixture-pytest-artifacts
+      pytest_check: engineering-ci:fixture-test
+
+  pytest-report-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/reusable-python-ci.yml
+    with:
+      pytest_report_function: fixture-pytest-artifacts
+      pytest_check: engineering-ci:fixture-test
+      pytest_report_scenario: ${{ inputs.pytest_probe_scenario }}
+      pytest_artifact_name: pytest-report-probe
 
   sync-tool-tests:
     runs-on: ubuntu-24.04
@@ -25,7 +48,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_sync_consumer.py' -v
       - uses: astral-sh/setup-uv@v7
       - name: Test pytest report parser
-        run: uv run --locked --group dev python -m unittest discover -s tests -p 'test_pytest_report.py' -v
+        run: uv run --locked --group dev python -m unittest discover -s tests -p 'test_pytest*.py' -v
 
   version-metadata:
     runs-on: ubuntu-24.04

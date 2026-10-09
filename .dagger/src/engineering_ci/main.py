@@ -1,10 +1,21 @@
 import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
 import dagger
 from dagger import DefaultPath, check, dag, function, object_type
 
-from .pytest_report import failure_summary, summarize_pytest
+from .pytest_report import failure_summary, markdown_summary, summarize_pytest
+
+
+@dataclass(frozen=True)
+class _PytestExecution:
+    exit_code: int
+    report: dict
+    output: str
+    xml: str
+    container: dagger.Container
 
 
 @object_type
@@ -114,9 +125,11 @@ class EngineeringCi:
         python_version: str,
         test_path: str,
         max_failures: int = 10,
-    ) -> tuple[dict, str]:
+    ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
+        if not 1 <= max_failures <= 50:
+            raise ValueError("max_failures must be between 1 and 50")
         container = self._uv_container(source, python_version).with_exec(
             [
                 "uv", "run", "--no-sync", "pytest", "-q",
@@ -128,14 +141,46 @@ class EngineeringCi:
         output = await container.stdout()
         stderr = await container.stderr()
         # JUnit XML is optional when pytest exits before initializing plugins.
-        xml = await container.with_exec([
-            "sh", "-c",
-            'if test -f "$1"; then cat "$1"; fi',
-            "sh", report_path,
-        ]).stdout()
+        reader = container.with_new_file(
+            "/tmp/engineering-ci-pytest-ci.py",
+            Path(__file__).with_name("pytest_ci.py").read_text(encoding="utf-8"),
+        )
+        evidence = json.loads(await reader.with_exec([
+            "python", "/tmp/engineering-ci-pytest-ci.py", "read-xml", report_path,
+        ]).stdout())
+        xml = evidence["xml"]
         report = summarize_pytest(xml, exit_code, output + "\n" + stderr,
                                   max_failures=max_failures)
-        return report, output
+        if evidence["diagnostic"]:
+            report["diagnostic"] = evidence["diagnostic"]
+        return _PytestExecution(exit_code, report, output, xml, container)
+
+    def _require_pytest_success(self, execution: _PytestExecution) -> str:
+        if execution.exit_code != 0:
+            raise RuntimeError(failure_summary(execution.report))
+        return execution.output
+
+    def _pytest_bundle(self, execution: _PytestExecution) -> dagger.Directory:
+        directory = (dag.directory()
+            .with_new_file("exit-code.txt", str(execution.exit_code) + "\n")
+            .with_new_file("report.json", json.dumps(execution.report, ensure_ascii=False, sort_keys=True))
+            .with_new_file("summary.md", markdown_summary(execution.report))
+            .with_new_file("ci.py", Path(__file__).with_name("pytest_ci.py").read_text(encoding="utf-8")))
+        if execution.xml:
+            directory = directory.with_new_file("junit.xml", execution.xml)
+        return directory
+
+    @function
+    async def python_test_artifacts(
+        self, source: dagger.Directory, python_version: str,
+        test_path: str = "tests", max_failures: int = 10,
+    ) -> dagger.Directory:
+        """Run pytest once; export original status, JSON, XML and summary even on failure.
+
+        CI must gate on exit-code.txt. Do not also call python_test on this source.
+        """
+        execution = await self._run_pytest(source, python_version, test_path, max_failures)
+        return self._pytest_bundle(execution)
 
     @function
     async def python_test(
@@ -145,10 +190,8 @@ class EngineeringCi:
         test_path: str = "tests",
     ) -> str:
         """Run pytest; fail CI with a bounded JUnit-based failure summary."""
-        report, output = await self._run_pytest(source, python_version, test_path)
-        if report["status"] != "passed":
-            raise RuntimeError(failure_summary(report))
-        return output
+        execution = await self._run_pytest(source, python_version, test_path)
+        return self._require_pytest_success(execution)
 
     @function
     async def python_test_report(
@@ -163,10 +206,10 @@ class EngineeringCi:
         This informational function does NOT gate CI. Use python_test for
         failure propagation; report.status and exit_code are explicit.
         """
-        report, _ = await self._run_pytest(
+        execution = await self._run_pytest(
             source, python_version, test_path, max_failures=max_failures
         )
-        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+        return json.dumps(execution.report, ensure_ascii=False, sort_keys=True)
 
     @function
     @check
@@ -178,18 +221,16 @@ class EngineeringCi:
         ],
     ) -> str:
         """Verify the Python test fixture."""
-        output = await self.python_test(
+        execution = await self._run_pytest(
             source=source,
             python_version="3.14",
             test_path="tests",
         )
-        report = json.loads(await self.python_test_report(
-            source=source, python_version="3.14", test_path="tests",
-        ))
+        report = execution.report
         if (not report["report_available"] or report["status"] != "passed"
                 or report["exit_code"] != 0 or report["counts"]["tests"] == 0):
             raise ValueError(f"Unexpected passing test report: {report}")
-        return output
+        return self._require_pytest_success(execution)
 
     @function
     @check
@@ -237,9 +278,10 @@ class EngineeringCi:
             "tests/test_report_negative.py",
             "def test_intentional_failure():\n    assert 1 == 2\n",
         )
-        report = json.loads(await self.python_test_report(
+        execution = await self._run_pytest(
             source=failing, python_version="3.14", test_path="tests",
-        ))
+        )
+        report = execution.report
         if (not report["report_available"] or report["status"] != "failed"
                 or report["exit_code"] != 1
                 or report["counts"]["failures"] != 1
@@ -249,7 +291,7 @@ class EngineeringCi:
                 )):
             raise ValueError(f"Unexpected negative test report: {report}")
         try:
-            await self.python_test(source=failing, python_version="3.14", test_path="tests")
+            self._require_pytest_success(execution)
         except RuntimeError as exc:
             summary = str(exc)
             if not all(evidence in summary for evidence in (
@@ -259,4 +301,31 @@ class EngineeringCi:
         else:
             raise ValueError("python_test incorrectly accepted the failing pytest fixture")
         return "PASS: JSON reported assertion failure with exit 1; python_test rejected it"
+
+    @function
+    async def fixture_pytest_artifacts(
+        self, source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/python-app")],
+        scenario: str = "pass",
+    ) -> dagger.Directory:
+        """Small real CI probes; intentional failures are injected, never committed."""
+        if scenario not in ("pass", "assertion", "missing-xml", "invalid-xml", "missing-xml-pass"):
+            raise ValueError("Unknown pytest report fixture scenario")
+        probe = "from pathlib import Path\n\ndef pytest_sessionstart(session):\n"
+        probe += "    p = Path('/tmp/engineering-ci-pytest-invocations')\n"
+        probe += "    p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1')\n"
+        if scenario != "pass" and scenario != "missing-xml-pass":
+            source = source.with_new_file("tests/test_report_negative.py",
+                "def test_intentional_failure():\n    assert 1 == 2\n")
+        if scenario.startswith("missing-xml") or scenario == "invalid-xml":
+            probe += "\nimport atexit\n"
+            if scenario == "invalid-xml":
+                probe += "atexit.register(lambda: Path('/tmp/engineering-ci-pytest.xml').write_text('<testsuite'))\n"
+            else:
+                probe += "atexit.register(lambda: Path('/tmp/engineering-ci-pytest.xml').unlink(missing_ok=True))\n"
+        source = source.with_new_file("conftest.py", probe)
+        execution = await self._run_pytest(source, "3.14", "tests")
+        invocations = await execution.container.file("/tmp/engineering-ci-pytest-invocations").contents()
+        if invocations != "1":
+            raise RuntimeError(f"Pytest executed {invocations} times instead of once")
+        return self._pytest_bundle(execution).with_new_file("fixture-invocations.txt", invocations)
 

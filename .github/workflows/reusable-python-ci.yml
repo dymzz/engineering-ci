@@ -8,6 +8,26 @@ on:
         type: boolean
         required: false
         default: false
+      pytest_report_function:
+        description: 'Opt-in Dagger function returning a python-test-artifacts Directory'
+        type: string
+        required: false
+        default: ''
+      pytest_check:
+        description: 'Exact module-qualified pytest check replaced by the single report execution'
+        type: string
+        required: false
+        default: ''
+      pytest_report_scenario:
+        description: 'Optional scenario argument, for engineering-ci report delivery probes only'
+        type: string
+        required: false
+        default: ''
+      pytest_artifact_name:
+        description: 'Unique report artifact name when multiple reporting jobs share a run'
+        type: string
+        required: false
+        default: pytest-report
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -105,12 +125,87 @@ jobs:
         shell: bash
         env:
           _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
+          PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
+          PYTEST_CHECK: ${{ inputs.pytest_check }}
+          PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
         run: |
           set -euo pipefail
 
           dagger version
-          dagger check -l
-          dagger check
+          if [[ -z "$PYTEST_REPORT_FUNCTION" ]]; then
+            if [[ -n "$PYTEST_CHECK" || -n "$PYTEST_REPORT_SCENARIO" ]]; then
+              echo "::error::pytest report settings require pytest_report_function"
+              exit 1
+            fi
+            dagger check -l
+            dagger check
+          else
+            if [[ ! "$PYTEST_REPORT_FUNCTION" =~ ^[a-z][a-z0-9-]*$ || -z "$PYTEST_CHECK" ]]; then
+              echo "::error::Opt-in reporting requires a function and exact pytest_check name"
+              exit 1
+            fi
+            report_args=(call "$PYTEST_REPORT_FUNCTION")
+            if [[ -n "$PYTEST_REPORT_SCENARIO" ]]; then
+              report_args+=(--scenario "$PYTEST_REPORT_SCENARIO")
+            fi
+            dagger "${report_args[@]}" export --path "$RUNNER_TEMP/pytest-report"
+            dagger check -l > "$RUNNER_TEMP/dagger-checks.txt"
+            cat "$RUNNER_TEMP/dagger-checks.txt"
+            python3 "$RUNNER_TEMP/pytest-report/ci.py" plan \
+              "$RUNNER_TEMP/dagger-checks.txt" "$PYTEST_CHECK" "$RUNNER_TEMP/remaining-checks.txt"
+            mapfile -t remaining < "$RUNNER_TEMP/remaining-checks.txt"
+            if [[ "${#remaining[@]}" -gt 0 ]]; then
+              dagger check "${remaining[@]}"
+            fi
+          fi
+
+      - name: Gate on original pytest execution
+        if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$RUNNER_TEMP/pytest-report/ci.py" ]]; then
+            echo "::error::Pytest execution evidence unavailable; bundle export did not complete"
+            exit 1
+          fi
+          python3 "$RUNNER_TEMP/pytest-report/ci.py" gate "$RUNNER_TEMP/pytest-report"
+
+      - name: Publish pytest Job Summary
+        id: pytest_summary
+        if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$RUNNER_TEMP/pytest-report/ci.py" ]]; then
+            printf '## Pytest Results — UNAVAILABLE\n\nExecution evidence unavailable; bundle export failed. See execution logs.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 "$RUNNER_TEMP/pytest-report/ci.py" summary \
+            "$RUNNER_TEMP/pytest-report" "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain pytest report delivery warning
+        if: ${{ always() && !cancelled() && steps.pytest_summary.outcome == 'failure' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "::warning::Pytest report delivery was unavailable; original execution gate remains authoritative"
+          printf '\nReport delivery warning: evidence or presentation is incomplete. Original pytest execution status is unchanged.\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload pytest evidence
+        if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
+        uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: ${{ inputs.pytest_artifact_name }}
+          path: |
+            ${{ runner.temp }}/pytest-report/report.json
+            ${{ runner.temp }}/pytest-report/exit-code.txt
+            ${{ runner.temp }}/pytest-report/summary.md
+            ${{ runner.temp }}/pytest-report/junit.xml
+            ${{ runner.temp }}/pytest-report/fixture-invocations.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Verify Ruff rejection and recovery (smoke only)
         if: ${{ inputs.verify_failure_propagation }}

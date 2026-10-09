@@ -8,6 +8,7 @@ signals: missing/malformed XML is never reported as a successful test run.
 from __future__ import annotations
 
 import re
+import html
 from xml.etree import ElementTree as ET
 
 EXIT_REASONS = {
@@ -123,7 +124,7 @@ def summarize_pytest(
             else:
                 result["status"] = "error"
         except (ET.ParseError, ValueError) as exc:
-            result["diagnostic"] = f"Invalid JUnit XML: {exc}"
+            result["diagnostic"] = "Invalid JUnit XML: " + _bounded(str(exc), 400)
 
     if result["status"] != "passed":
         result["console_tail"] = _bounded(console_output[-2000:], 2000)
@@ -152,4 +153,41 @@ def failure_summary(report: dict) -> str:
         lines.append(f'{report["omitted_failures"]} additional failures omitted')
     if not report["failures"] and report.get("console_tail"):
         lines.append(report["console_tail"])
+    return "\n".join(lines)
+
+
+def markdown_summary(report: dict) -> str:
+    """Bounded presentation of the recorded outcome; never decides execution."""
+    def cell(value, limit=400):
+        text = " ".join(str(value).split())[:limit]
+        return (html.escape(text, quote=True).replace("\\", "&#92;")
+                .replace("|", "&#124;").replace("`", "&#96;"))
+
+    execution_status = "PASSED" if report["exit_code"] == 0 else "FAILED" if report["exit_code"] == 1 else "ERROR"
+    lines = [f'## Pytest Results — {cell(report["status"].upper())}', "",
+             f'Test execution: **{execution_status}**; report status: **{cell(report["status"].upper())}**',
+             f'Original pytest exit code: **{report["exit_code"]}** ({cell(report["reason"])})',
+             f'JUnit report available: **{str(report["report_available"]).lower()}**', ""]
+    counts = report["counts"]
+    if counts is not None:
+        lines += ["| Metric | Count |", "| --- | ---: |"]
+        for label, key in (("Total", "tests"), ("Passed", "passed"), ("Failed", "failures"),
+                           ("Errors", "errors"), ("Skipped", "skipped")):
+            lines.append(f"| {label} | {counts[key]} |")
+    if report.get("diagnostic"):
+        lines += ["", "Report diagnostic: " + cell(report["diagnostic"])]
+    failures = report["failures"]
+    if failures:
+        lines += ["", "### Failures", "", "| Test | Category | Message |", "| --- | --- | --- |"]
+        shown = 0
+        for item in failures:
+            row = f'| {cell(item["test"], 300)} | {cell(item["category"], 100)} | {cell(item["message"])} |'
+            if len(("\n".join(lines) + row).encode("utf-8")) > 23000:
+                break
+            lines.append(row)
+            shown += 1
+        omitted = report["omitted_failures"] + len(failures) - shown
+        if omitted:
+            lines += ["", f"{omitted} additional failures omitted from this summary."]
+    lines += ["", "Detailed evidence: download this job's pytest report artifact (`report.json`, optional `junit.xml`).", ""]
     return "\n".join(lines)
