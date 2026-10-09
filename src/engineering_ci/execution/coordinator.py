@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Callable, Protocol
 
 from .fsm import ExecutionFSM
-from .models import (CollectionIdentity, DispatchIdentity, DispatchRejected, DispatchUnknown,
+from .models import (CollectionIdentity, DispatchErrorInfo, DispatchErrorReason,
+                     DispatchIdentity, DispatchRejected, DispatchUnknown,
                      ExecutionError, ExecutionResult, TaskRecord)
 from .store import StateStore
 
@@ -59,9 +60,10 @@ class ExecutionCoordinator:
                 raise ExecutionError('No saved Run ID; use --resume RUN_ID')
             if self._record:
                 if self.record.phase == 'DISPATCHING':
-                    self.event('uncertain', last_error='Dispatch interrupted before durable response')
+                    self.event('uncertain', last_error=DispatchErrorInfo(
+                        DispatchErrorReason.INTERRUPTED).to_state_error())
                 if self.record.phase == 'UNKNOWN':
-                    raise DispatchUnknown('Dispatch outcome UNKNOWN; use --resume RUN_ID after checking GitHub')
+                    raise DispatchUnknown(details=DispatchErrorInfo.from_state_error(self.record.last_error))
                 if self.record.phase == 'REJECTED' and resume is None:
                     self._record = None
                 elif self.record.phase == 'REJECTED':
@@ -86,13 +88,20 @@ class ExecutionCoordinator:
                 try:
                     run_id = self.client.dispatch(self.identity, self.inputs)
                 except DispatchRejected as exc:
-                    self.event('reject', http_status=exc.status, last_error=str(exc))
+                    self.event('reject', http_status=exc.status, last_error=exc.details.to_state_error())
                     raise
-                except (DispatchUnknown, OSError, RuntimeError) as exc:
-                    self.event('uncertain', last_error='Dispatch response unavailable')
-                    raise DispatchUnknown('Dispatch outcome UNKNOWN; use --resume RUN_ID') from exc
+                except DispatchUnknown as exc:
+                    self.event('uncertain', last_error=exc.details.to_state_error())
+                    raise
+                except (OSError, RuntimeError) as exc:
+                    reason = (DispatchErrorReason.COMMAND_FAILED if isinstance(exc, OSError)
+                              else DispatchErrorReason.UNEXPECTED_FAILURE)
+                    details = DispatchErrorInfo(reason)
+                    self.event('uncertain', last_error=details.to_state_error())
+                    raise DispatchUnknown(details=details) from exc
                 except KeyboardInterrupt:
-                    self.event('uncertain', last_error='Dispatch interrupted')
+                    self.event('uncertain', last_error=DispatchErrorInfo(
+                        DispatchErrorReason.INTERRUPTED).to_state_error())
                     raise
                 print(f'Run ID: {run_id}', flush=True)
                 self.event('attach_run', run_id=run_id)

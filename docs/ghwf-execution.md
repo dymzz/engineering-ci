@@ -18,7 +18,8 @@ src/engineering_ci/execution/
   store.py                      StateStore：JSON 原子替换及 filelock
   github.py                     GitHubActionsClient：gh、官方 API、临时地址
   transport.py                  TransportAdapter、资源身份及下载进度契约
-  download.py                   DownloadAdapter：aria2c 原生传输
+  download.py                   DownloadAdapter：可选 aria2 / native HTTP 后端
+  config.py                     CLI / 环境变量 / 本地 TOML 配置
   archive.py                    ZIP 校验、受限暂存解压
   collector.py                  ArtifactCollector：日志及 Artifact 完成条件
   repository.py                 原有 Git origin 识别及仓库缓存规则
@@ -34,9 +35,10 @@ Coordinator 注入 Client、Collector 和 StateStore；Client 注入 `ProcessRun
 官方 API opener；DownloadAdapter 注入原生进程 runner 和 HTTP probe。
 这些是普通 Python 接口，测试替身不需要依赖注入框架。
 
-TransportAdapter 调用成熟传输工具，返回 `TransportResult` / `DownloadProgress`，
+TransportAdapter 调用成熟传输工具或标准库 HTTP，返回 `TransportResult` / `DownloadProgress`，
 通过类型化异常报告故障。`DownloadInterrupted.progress` 提供总大小、是否尝试续传等信息；
-中断时的精确已完成字节数为 `None`，进度交给原生 `.aria2` 文件，不用稀疏文件大小冒充进度。
+aria2 中断时的精确已完成字节数为 `None`，进度交给原生 `.aria2` 文件，不用稀疏文件大小冒充进度。
+native 报告实际流式写入的字节数，但未完成文件下次从头下载；已校验文件不重复下载。
 Git、Git LFS、Docker / Dagger 将来可按此边界扩展；本轮没有空壳适配器。
 
 ## FSM 转换与不变量
@@ -182,7 +184,7 @@ Artifact 清单分页读取，校验可用的 `sha256:` Digest；没有 Digest �
 | filelock | 3.20.3，进程间互斥 |
 | pytest | 8.4.2，dev 依赖 |
 | six | 1.17.0，transitions 的锁定传递依赖 |
-| aria2c | 本轮使用官方 Windows 1.37.0 便携版验证 |
+| aria2c | 可选后端；使用官方 Windows 1.37.0 便携版验证 |
 | gh / Git | 外部原生命令；gh 需认证及 Actions 权限 |
 
 未引入 platformdirs，避免改变已验证的缓存目录。Python 版本与依赖详见
@@ -204,7 +206,9 @@ python -m pip install transitions==0.9.3 filelock==3.20.3 pytest==8.4.2
 ```
 
 GitHub CLI 从[官方安装入口](https://cli.github.com/)安装，然后 `gh auth login`。
-aria2 Windows 便携包为
+默认 `auto` 检测 aria2c；未安装时使用 Python 标准库 HTTP 下载。
+后端选择、恢复限制及 Windows/Linux 环境变量示例见[下载配置](ghwf-downloads.md)。
+可选 aria2 Windows 便携包为
 [官方 1.37.0 ZIP](https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip)，
 解压后把目录加入 PATH，或用 `--aria2c D:\tools\aria2\aria2c.exe`。
 

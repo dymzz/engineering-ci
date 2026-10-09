@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .test-deps/
 .test-tools/
+/config/ghwf.local.toml
 .ruff_cache/
 .mypy_cache/
 .pyright/

@@ -1,0 +1,15 @@
+# Copy to ghwf.local.toml for optional machine settings (not committed).
+# Priority: CLI > environment variables > ghwf.local.toml > defaults.
+[download]
+backend = "auto"
+aria2c_path = ""
+connections = 4
+timeout = 30
+connect_timeout = 15
+recovery = "restart"
+
+# Relative executable paths resolve from engineering-ci, independent of cwd.
+# Windows example (only when using aria2):
+# backend = "aria2"
+# aria2c_path = "D:/workspace/engineering-ci/.test-tools/aria2/aria2-1.37.0-win-64bit-build1/aria2c.exe"
+# Linux example: aria2c_path = "/usr/bin/aria2c"

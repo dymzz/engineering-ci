@@ -202,6 +202,8 @@ def test_digest_failure_pauses_collection(workflow, monkeypatch):
     monkeypatch.setattr(shutil, 'which', lambda exe: exe)
     target = Path(collection.out) / '123/.ghwf-cache/artifact-7.zip'
     body = zip_bytes({'result.txt': 'tampered'})
+    # Preserve a wrong digest, but make the declared size match this response.
+    client.info = replace(client.info, size=len(body))
     def runner(args, **kw):
         target.write_bytes(body)
         return CommandResult(0)
@@ -220,7 +222,8 @@ def test_github_process_and_redirect_are_injectable():
         calls.append((args, kw.get('stdin')))
         if args[1:3] == ['auth', 'token']:
             return CommandResult(0, 'SECRET_TOKEN')
-        return CommandResult(0, json.dumps({'workflow_run_id': 123}))
+        return CommandResult(0, 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n'
+                             + json.dumps({'workflow_run_id': 123}))
     class Opener:
         def open(self, request, timeout):
             assert request.headers['Authorization'] == 'Bearer SECRET_TOKEN'

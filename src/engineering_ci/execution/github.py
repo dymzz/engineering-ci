@@ -11,11 +11,52 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.error import HTTPError, URLError
 
-from .models import (DispatchIdentity, DispatchRejected, DispatchUnknown,
-                     ExecutionError, RecoverableError)
+from .models import (DispatchErrorInfo, DispatchErrorReason, DispatchIdentity,
+                     DispatchRejected, DispatchUnknown, ExecutionError, RecoverableError)
 from .transport import ResourceIdentity
 
 REJECTED_STATUSES = {400, 401, 403, 404, 405, 409, 410, 415, 422}
+
+
+def _dispatch_http_response(raw: str) -> tuple[int | None, str | None]:
+    """Parse gh --include output; only informational headers may precede the final response."""
+    remaining = raw.replace('\r\n', '\n').lstrip('\n')
+    while True:
+        match = re.match(r'HTTP/\d+(?:\.\d+)?[ \t]+([1-5]\d\d)(?:[ \t][^\n]*)?(?:\n|$)', remaining)
+        if not match:
+            return None, None
+        status = int(match.group(1))
+        _, separator, body = remaining.partition('\n\n')
+        if not separator:
+            return status, None
+        if 100 <= status < 200:
+            remaining = body
+            continue
+        return status, body
+
+
+def _dispatch_transport_reason(detail: str) -> DispatchErrorReason:
+    """Recognize transport categories without retaining any original message."""
+    if re.search(r'timeout|timed? out|deadline exceeded', detail, re.I):
+        return DispatchErrorReason.NETWORK_TIMEOUT
+    if re.search(r'connection|\bEOF\b|network|broken pipe|TLS|SSL', detail, re.I):
+        return DispatchErrorReason.NETWORK_INTERRUPTED
+    return DispatchErrorReason.COMMAND_FAILED
+
+
+def _dispatch_rejection_reason(body: str | None) -> DispatchErrorReason:
+    """Preserve known GitHub rejection causes, excluding refs and arbitrary text."""
+    try:
+        data = json.loads(body)
+        message = data.get('message', '') if isinstance(data, dict) else ''
+        if isinstance(message, str):
+            if re.search(r'no ref found|ref .* not found', message, re.I):
+                return DispatchErrorReason.INVALID_REF
+            if re.search(r"(?:does not have|does not support).*workflow_dispatch", message, re.I):
+                return DispatchErrorReason.WORKFLOW_NOT_DISPATCHABLE
+    except (ValueError, TypeError):
+        pass
+    return DispatchErrorReason.HTTP_REJECTED
 
 
 @dataclass(frozen=True)
@@ -114,20 +155,56 @@ class GitHubActionsClient:
         body = {'ref': identity.ref, 'return_run_details': True}
         if inputs:
             body['inputs'] = inputs
+        args = ['gh', 'api', '--include', '--method', 'POST',
+                f'repos/{identity.repo}/actions/workflows/{quote(identity.workflow, safe="")}/dispatches',
+                '--input', '-']
         try:
-            raw = self.command('api', '--method', 'POST',
-                               f'repos/{identity.repo}/actions/workflows/{quote(identity.workflow, safe="")}/dispatches',
-                               '--input', '-', stdin=json.dumps(body))
-            value = json.loads(raw).get('workflow_run_id')
-            if type(value) is not int or value <= 0:
-                raise ValueError('Missing Run ID')
-            return value
-        except GhCommandError as exc:
-            if exc.http_status in REJECTED_STATUSES:
-                raise DispatchRejected(exc.http_status) from exc
-            raise DispatchUnknown('Dispatch outcome UNKNOWN; inspect GitHub and use --resume RUN_ID') from exc
-        except (RecoverableError, ValueError, AttributeError) as exc:
-            raise DispatchUnknown('Dispatch outcome UNKNOWN; inspect GitHub and use --resume RUN_ID') from exc
+            result = self.runner(args, stdin=json.dumps(body), timeout=180)
+        except (subprocess.TimeoutExpired, TimeoutError) as exc:
+            raise DispatchUnknown(details=DispatchErrorInfo(DispatchErrorReason.NETWORK_TIMEOUT)) from exc
+        except (OSError, RecoverableError) as exc:
+            reason = (DispatchErrorReason.NETWORK_INTERRUPTED if isinstance(exc, ConnectionError)
+                      else _dispatch_transport_reason(str(exc)))
+            raise DispatchUnknown(details=DispatchErrorInfo(reason)) from exc
+        status, raw_body = _dispatch_http_response(result.stdout)
+        if status is None and result.returncode:
+            # Native gh error status is a fallback; never infer status from JSON/body text.
+            match = re.search(r'\(HTTP\s+([1-5]\d\d)\)|(?:^|\n)HTTP\s+([1-5]\d\d)\b',
+                              result.stderr, re.I)
+            status = int(match.group(1) or match.group(2)) if match else None
+        def unknown(reason: DispatchErrorReason) -> DispatchUnknown:
+            if status == 200 and result.returncode:
+                transport = _dispatch_transport_reason(result.stderr)
+                if transport in (DispatchErrorReason.NETWORK_TIMEOUT, DispatchErrorReason.NETWORK_INTERRUPTED):
+                    reason = transport
+            return DispatchUnknown(details=DispatchErrorInfo(reason, status, result.returncode))
+        if status in REJECTED_STATUSES:
+            raise DispatchRejected(status, details=DispatchErrorInfo(
+                _dispatch_rejection_reason(raw_body), status, result.returncode))
+        if status == 204:
+            raise unknown(DispatchErrorReason.ACCEPTED_WITHOUT_RUN_ID)
+        if status is not None and status != 200:
+            raise unknown(DispatchErrorReason.HTTP_ERROR)
+        if status is None:
+            reason = (_dispatch_transport_reason(result.stderr) if result.returncode
+                      else DispatchErrorReason.MISSING_HTTP_STATUS)
+            raise unknown(reason)
+        if raw_body is None:
+            raise unknown(DispatchErrorReason.MALFORMED_HTTP_RESPONSE)
+        if not raw_body.strip():
+            raise unknown(DispatchErrorReason.EMPTY_RESPONSE)
+        try:
+            response = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise unknown(DispatchErrorReason.INVALID_JSON) from exc
+        if not isinstance(response, dict):
+            raise unknown(DispatchErrorReason.UNEXPECTED_RESPONSE_TYPE)
+        if 'workflow_run_id' not in response:
+            raise unknown(DispatchErrorReason.MISSING_RUN_ID)
+        value = response['workflow_run_id']
+        if type(value) is not int or value <= 0:
+            raise unknown(DispatchErrorReason.INVALID_RUN_ID)
+        return value
 
     def get_run(self, identity: DispatchIdentity, run_id: int) -> dict:
         """Verify repository and workflow before associating a supplied Run ID."""

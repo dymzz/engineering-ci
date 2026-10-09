@@ -13,7 +13,8 @@ from .coordinator import ExecutionCoordinator
 from .github import GitHubActionsClient
 from .repository import REPO_PATTERN, default_cache_dir, resolve_repo
 from .archive import ArchiveLimits
-from .download import DownloadAdapter, DownloadConfig
+from .download import DownloadAdapter
+from .config import load_download_config
 from .models import CollectionIdentity, DispatchIdentity, ExecutionError
 from .store import StateStore
 
@@ -47,13 +48,15 @@ def parser() -> argparse.ArgumentParser:
     group.add_argument('--resume', nargs='?', const='last', metavar='RUN_ID')
     group.add_argument('--new-run', action='store_true')
     p.add_argument('--show-state', action='store_true')
-    p.add_argument('--connections', type=int, default=4, help='aria2 connections per file (1..16)')
-    p.add_argument('--download-timeout', type=int, default=30, help='aria2 inactivity timeout in seconds')
-    p.add_argument('--connect-timeout', type=int, default=15)
-    p.add_argument('--download-process-timeout', type=int, default=1800)
-    p.add_argument('--download-recovery', choices=['restart', 'pause'], default='restart',
+    p.add_argument('--download-backend', choices=['auto', 'aria2', 'native'],
+                   help='Download backend (default: auto; aria2 if available, otherwise native HTTP)')
+    p.add_argument('--connections', type=int, help='aria2 connections per file (default: 4, range: 1..16)')
+    p.add_argument('--download-timeout', type=int, help='Download read/inactivity timeout in seconds (default: 30)')
+    p.add_argument('--connect-timeout', type=int, help='Connection timeout in seconds (default: 15)')
+    p.add_argument('--download-process-timeout', type=int, help='Download time limit in seconds (default: 1800)')
+    p.add_argument('--download-recovery', choices=['restart', 'pause'],
                    help='Restart owned partial data if Range/native progress is unavailable, or pause')
-    p.add_argument('--aria2c', default='aria2c', help='Executable name or path')
+    p.add_argument('--aria2c', help='aria2 executable name or path (default: aria2c; overrides configuration)')
     p.add_argument('--max-extract-bytes', type=int, default=8 * 1024**3)
     p.add_argument('--max-extract-files', type=int, default=100000)
     return p
@@ -71,8 +74,7 @@ def main(argv=None) -> int:
     if args.no_artifacts and args.artifact:
         p.error('--no-artifacts and --artifact cannot be combined')
     try:
-        config = DownloadConfig(args.connections, args.download_timeout, args.connect_timeout,
-                                args.download_process_timeout, args.download_recovery, args.aria2c)
+        config = load_download_config(args)
         if min(args.max_extract_bytes, args.max_extract_files) <= 0:
             raise ValueError('Extraction limits must be positive')
     except ValueError as exc:

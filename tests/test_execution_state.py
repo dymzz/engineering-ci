@@ -1,6 +1,7 @@
 """P0-1: legal state changes, durable intent and recovery without network."""
 import json
 import multiprocessing
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from engineering_ci.execution.coordinator import ExecutionCoordinator
 from engineering_ci.execution.fsm import ExecutionFSM, InvalidTransition
 from engineering_ci.execution.github import CommandResult, GitHubActionsClient
-from engineering_ci.execution.models import (CollectionIdentity, DispatchIdentity,
+from engineering_ci.execution.models import (CollectionIdentity, DispatchErrorInfo, DispatchErrorReason, DispatchIdentity,
     DispatchRejected, DispatchUnknown, ExecutionError, RecoverableError, TaskRecord)
 from engineering_ci.execution.store import StateStore, atomic_json
 
@@ -230,6 +231,180 @@ def test_dispatch_cli_error_classification():
         with pytest.raises(expected):
             GitHubActionsClient(runner).dispatch(identity, {})
         assert len(calls) == 1
+
+
+def _http_dispatch_response(status, body='', *, returncode=0, version='2.0', separator='\r\n'):
+    headers = (f'HTTP/{version} {status} response', 'Content-Type: application/json',
+               'X-Diagnostic: HEADER_SECRET')
+    raw = separator.join(headers) + separator * 2 + body
+    return CommandResult(returncode, raw)
+
+
+@pytest.mark.parametrize('version,separator', [('1.1', '\r\n'), ('2.0', '\r\n'), ('2', '\n')])
+def test_dispatch_http_200_valid_run_id(version, separator):
+    calls = []
+    def runner(args, **kw):
+        calls.append((args, kw['stdin']))
+        return _http_dispatch_response(200, '{"workflow_run_id": 123}',
+                                       version=version, separator=separator)
+    identity = DispatchIdentity.create('owner/repo', 'ci.yml', 'main', {'token': 'INPUT_SECRET'})
+    assert GitHubActionsClient(runner).dispatch(identity, {'token': 'INPUT_SECRET'}) == 123
+    assert len(calls) == 1 and '--include' in calls[0][0] and 'POST' in calls[0][0]
+    assert 'INPUT_SECRET' not in ' '.join(calls[0][0])
+    assert json.loads(calls[0][1])['return_run_details'] is True
+
+
+@pytest.mark.parametrize('response,reason,status', [
+    (_http_dispatch_response(204), DispatchErrorReason.ACCEPTED_WITHOUT_RUN_ID, 204),
+    (_http_dispatch_response(200), DispatchErrorReason.EMPTY_RESPONSE, 200),
+    (_http_dispatch_response(200, '{"token": "BODY_SECRET",'), DispatchErrorReason.INVALID_JSON, 200),
+    (_http_dispatch_response(200, '[]'), DispatchErrorReason.UNEXPECTED_RESPONSE_TYPE, 200),
+    (_http_dispatch_response(200, 'null'), DispatchErrorReason.UNEXPECTED_RESPONSE_TYPE, 200),
+    (_http_dispatch_response(200, '"BODY_SECRET"'), DispatchErrorReason.UNEXPECTED_RESPONSE_TYPE, 200),
+    (_http_dispatch_response(200, '{"token":"BODY_SECRET"}'), DispatchErrorReason.MISSING_RUN_ID, 200),
+    (_http_dispatch_response(200, '{"workflow_run_id":true}'), DispatchErrorReason.INVALID_RUN_ID, 200),
+    (_http_dispatch_response(200, '{"workflow_run_id":0}'), DispatchErrorReason.INVALID_RUN_ID, 200),
+    (_http_dispatch_response(200, '{"workflow_run_id":-1}'), DispatchErrorReason.INVALID_RUN_ID, 200),
+    (_http_dispatch_response(200, '{"workflow_run_id":"123"}'), DispatchErrorReason.INVALID_RUN_ID, 200),
+    (_http_dispatch_response(200, '{"workflow_run_id":null}'), DispatchErrorReason.INVALID_RUN_ID, 200),
+    (_http_dispatch_response(503, '{"message":"BODY_SECRET"}', returncode=1), DispatchErrorReason.HTTP_ERROR, 503),
+    (CommandResult(0, '{"workflow_run_id":123,"note":"HTTP 422 BODY_SECRET"}'),
+     DispatchErrorReason.MISSING_HTTP_STATUS, None),
+    (CommandResult(0, 'HTTP/2.0 200 OK\r\nX-Diagnostic: HEADER_SECRET\r\n'),
+     DispatchErrorReason.MALFORMED_HTTP_RESPONSE, 200),
+    (CommandResult(1, stderr='gh: TLS handshake timeout STDERR_SECRET'),
+     DispatchErrorReason.NETWORK_TIMEOUT, None),
+    (CommandResult(1, stderr='gh: unexpected EOF STDERR_SECRET'),
+     DispatchErrorReason.NETWORK_INTERRUPTED, None),
+    (CommandResult(1, 'HTTP/2.0 200 OK\r\n\r\n{"workflow_run_id":', 'unexpected EOF STDERR_SECRET'),
+     DispatchErrorReason.NETWORK_INTERRUPTED, 200),
+])
+def test_dispatch_unknown_retains_safe_diagnostic_and_never_reposts(setup, response, reason, status):
+    store, _, collector, create = setup
+    posts = []
+    def runner(args, **kw):
+        if 'POST' in args:
+            posts.append(args)
+            return response
+        return CommandResult(0, '{"state":"active"}')
+    client = GitHubActionsClient(runner)
+    first_details = None
+    for attempt in range(2):
+        coordinator = create()
+        coordinator.client = client
+        with pytest.raises(DispatchUnknown) as caught:
+            coordinator.execute()
+        details = caught.value.details
+        assert caught.value.http_status == status and caught.value.reason == reason
+        if attempt == 0:
+            first_details = details
+        else:
+            assert details == first_details
+        state = store.load()
+        assert state.phase == 'UNKNOWN' and state.run_id is None
+        diagnostic = json.loads(state.last_error)
+        assert diagnostic['reason'] == reason.value and diagnostic['http_status'] == status
+        assert diagnostic['process_exit_code'] == response.returncode
+        assert DispatchErrorInfo.from_state_error(state.last_error) == details
+        for secret in ('BODY_SECRET', 'HEADER_SECRET', 'STDERR_SECRET'):
+            assert secret not in store.path.read_text() and secret not in str(caught.value)
+    assert len(posts) == 1 and collector.calls == 0
+
+
+@pytest.mark.parametrize('exception,reason', [
+    (subprocess.TimeoutExpired(['gh', 'api'], 180, output='OUTPUT_SECRET', stderr='STDERR_SECRET'),
+     DispatchErrorReason.NETWORK_TIMEOUT),
+    (ConnectionResetError('connection reset TOKEN_SECRET'), DispatchErrorReason.NETWORK_INTERRUPTED),
+    (OSError('TLS handshake timeout TOKEN_SECRET'), DispatchErrorReason.NETWORK_TIMEOUT),
+    (FileNotFoundError('PATH_SECRET'), DispatchErrorReason.COMMAND_FAILED),
+])
+def test_dispatch_process_interruption_is_unknown(setup, exception, reason):
+    store, _, _, create = setup
+    posts = []
+    def runner(args, **kw):
+        if 'POST' in args:
+            posts.append(args)
+            raise exception
+        return CommandResult(0, '{"state":"active"}')
+    client = GitHubActionsClient(runner)
+    for _ in range(2):
+        coordinator = create()
+        coordinator.client = client
+        with pytest.raises(DispatchUnknown) as caught:
+            coordinator.execute()
+        assert caught.value.reason == reason
+        assert caught.value.http_status is None
+        assert json.loads(store.load().last_error)['reason'] == reason.value
+        assert 'SECRET' not in store.path.read_text() and 'SECRET' not in str(caught.value)
+    assert len(posts) == 1
+
+
+@pytest.mark.parametrize('message,reason', [
+    ('Validation Failed TOKEN_SECRET', DispatchErrorReason.HTTP_REJECTED),
+    ('No ref found for: REF_SECRET', DispatchErrorReason.INVALID_REF),
+    ("Workflow does not have 'workflow_dispatch' trigger TOKEN_SECRET",
+     DispatchErrorReason.WORKFLOW_NOT_DISPATCHABLE),
+])
+def test_dispatch_422_retains_safe_rejection_and_can_retry(setup, message, reason):
+    store, _, _, create = setup
+    posts = []
+    responses = iter([
+        _http_dispatch_response(422, json.dumps({'message': message, 'errors': ['BODY_SECRET']}), returncode=1),
+        _http_dispatch_response(200, '{"workflow_run_id":123}'),
+    ])
+    def runner(args, **kw):
+        if 'POST' in args:
+            posts.append(args)
+            return next(responses)
+        if '/actions/runs/' in args[-1]:
+            return CommandResult(0, '{"id":123,"status":"completed","conclusion":"success"}')
+        return CommandResult(0, '{"state":"active"}')
+    client = GitHubActionsClient(runner)
+    coordinator = create()
+    coordinator.client = client
+    with pytest.raises(DispatchRejected) as caught:
+        coordinator.execute()
+    assert caught.value.status == caught.value.http_status == 422
+    assert caught.value.reason == reason
+    assert store.load().phase == 'REJECTED' and store.load().http_status == 422
+    diagnostic = json.loads(store.load().last_error)
+    assert diagnostic['reason'] == reason.value and diagnostic['http_status'] == 422
+    assert 'SECRET' not in store.path.read_text() and 'SECRET' not in str(caught.value)
+    retry = create()
+    retry.client = client
+    assert retry.execute().exit_code == 0 and len(posts) == 2
+
+
+def test_dispatch_200_body_cannot_spoof_rejection():
+    response = _http_dispatch_response(200, '{"message":"HTTP 422 BODY_SECRET"}')
+    client = GitHubActionsClient(lambda *a, **kw: response)
+    with pytest.raises(DispatchUnknown) as caught:
+        client.dispatch(DispatchIdentity.create('owner/repo', 'ci.yml', 'main', {}), {})
+    assert caught.value.http_status == 200
+    assert caught.value.reason == DispatchErrorReason.MISSING_RUN_ID
+
+
+def test_dispatch_info_ignores_untrusted_stored_message():
+    diagnostic = json.dumps({'reason': 'invalid_json', 'http_status': 200,
+                             'process_exit_code': 0, 'safe_message': 'TOKEN_SECRET'})
+    details = DispatchErrorInfo.from_state_error(diagnostic)
+    assert details.reason == DispatchErrorReason.INVALID_JSON
+    assert 'TOKEN_SECRET' not in details.to_state_error()
+    assert 'TOKEN_SECRET' not in str(DispatchUnknown('TOKEN_SECRET', details=details))
+
+
+def test_dispatch_informational_headers_do_not_hide_final_status():
+    response = _http_dispatch_response(200, '{"workflow_run_id":123}')
+    response = CommandResult(0, 'HTTP/1.1 100 Continue\r\n\r\n' + response.stdout)
+    client = GitHubActionsClient(lambda *a, **kw: response)
+    assert client.dispatch(DispatchIdentity.create('owner/repo', 'ci.yml', 'main', {}), {}) == 123
+
+
+def test_dispatch_known_run_id_survives_cli_error_after_response():
+    response = _http_dispatch_response(200, '{"workflow_run_id":123}', returncode=1)
+    response = CommandResult(1, response.stdout, 'unexpected EOF STDERR_SECRET')
+    client = GitHubActionsClient(lambda *a, **kw: response)
+    assert client.dispatch(DispatchIdentity.create('owner/repo', 'ci.yml', 'main', {}), {}) == 123
 
 
 def test_failed_run_id_persistence_prints_recovery_id(setup, monkeypatch, capsys):
