@@ -23,6 +23,9 @@ jobs:
           persist-credentials: false
       - name: Test consumer sync utility
         run: python3 -m unittest discover -s tests -p 'test_sync_consumer.py' -v
+      - uses: astral-sh/setup-uv@v7
+      - name: Test pytest report parser
+        run: uv run --locked --group dev python -m unittest discover -s tests -p 'test_pytest_report.py' -v
 
   version-metadata:
     runs-on: ubuntu-24.04
