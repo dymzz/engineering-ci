@@ -21,19 +21,21 @@ class ReleaseVersionTests(unittest.TestCase):
                 mod.normalize(value)
 
     def test_repository_versions_consistent(self):
-        self.assertEqual(mod.checked_version(), "0.4.7")
+        self.assertEqual(mod.checked_version(), "0.4.8")
 
     def test_mismatch_detected(self):
-        with patch.object(
-            mod,
-            "versions",
-            return_value={
-                "./pyproject.toml": "0.4.2",
-                "./uv.lock": "0.4.1",
-            },
+        with (
+            patch.object(
+                mod,
+                "versions",
+                return_value={
+                    "./pyproject.toml": "0.4.2",
+                    "./uv.lock": "0.4.1",
+                },
+            ),
+            self.assertRaises(ValueError),
         ):
-            with self.assertRaises(ValueError):
-                mod.checked_version()
+            mod.checked_version()
 
 
 if __name__ == "__main__":

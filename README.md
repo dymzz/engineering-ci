@@ -1,5 +1,7 @@
 # Pytest reporting
 
+个人开发采用本地优先检查与手动完整发布验收：[命令与发布流程](docs/release.md)。
+
 See [single-execution pytest reports](docs/pytest-reporting.md) for the opt-in
 reusable workflow, JSON contract, Job Summary and native artifact delivery.
 

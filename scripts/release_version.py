@@ -44,7 +44,9 @@ def versions() -> dict[str, str]:
                     if pkg["name"] == "engineering-ci"
                 ]
                 if len(matches) != 1:
-                    raise ValueError(f"Expected one engineering-ci package in {label}/{name}")
+                    raise ValueError(
+                        f"Expected one engineering-ci package in {label}/{name}"
+                    )
                 version = matches[0]
             found[f"{label}/{name}"] = version
     return found
@@ -111,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"PASS: all four project version fields match v{version}")
         return 0
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as exc:
+    except (ValueError, KeyError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

@@ -52,9 +52,10 @@ jobs:
 
 The independent security job does not start a Dagger Engine. It checks out the
 helper matching `dependency_security_source_ref` (default `v0.4.6`).
-Candidate validation must set this input to the candidate SHA. Core CI uses
-its tested SHA and report mode on a controlled public fixture. It does not
-change consumers' default policy.
+Candidate validation must set this input to the candidate SHA. Since v0.4.8,
+ordinary core PR CI does not scan; manual release uses its tested SHA and
+enforce mode on the real root project lock. The previous fixture measurements
+below are historical, not release security evidence. Consumer defaults stay off.
 
 The job uses uv 0.12.23 and official OSV-Scanner 2.6.0. Linux amd64 and Windows
 amd64 assets have fixed SHA256 digests. Every use, including a cache hit or
