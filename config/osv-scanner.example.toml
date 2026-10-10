@@ -1,0 +1,8 @@
+# No exception is enabled in this example.
+# Copy to a reviewed file and explicitly pass --exceptions to use an exception.
+# Every entry requires an exact advisory ID, a reason and a finite UTC expiry.
+#
+# [[IgnoredVulns]]
+# id = "GHSA-aaaa-bbbb-cccc" # Replace this synthetic example ID.
+# reason = "Document the mitigation, owner and removal plan."
+# ignoreUntil = 2026-12-31T00:00:00Z

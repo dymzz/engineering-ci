@@ -1,0 +1,13 @@
+[project]
+name = "dependency-security-fixture"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["idna==3.11"]
+
+[tool.uv.sources]
+idna = { index = "public-pypi" }
+
+[[tool.uv.index]]
+name = "public-pypi"
+url = "https://pypi.org/simple"
+explicit = true

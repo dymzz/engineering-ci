@@ -28,6 +28,36 @@ on:
         type: string
         required: false
         default: pytest-report
+      dependency_security_mode:
+        description: 'Explicit dependency security mode: off, report, enforce'
+        type: string
+        required: false
+        default: 'off'
+      dependency_security_project:
+        description: 'Repository-relative uv project to check and scan'
+        type: string
+        required: false
+        default: '.'
+      dependency_security_exceptions:
+        description: 'Repository-relative native OSV exceptions TOML (finite ID exceptions only)'
+        type: string
+        required: false
+        default: ''
+      dependency_security_public_indexes:
+        description: 'Explicit trusted public PyPI mirror URLs, one per line; no private sources'
+        type: string
+        required: false
+        default: ''
+      dependency_security_source_ref:
+        description: 'Pinned engineering-ci helper ref; candidate SHA for pre-release validation'
+        type: string
+        required: false
+        default: 'v0.4.6'
+      dependency_security_artifact_name:
+        description: 'Unique dependency security evidence artifact name'
+        type: string
+        required: false
+        default: dependency-security
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -286,3 +316,78 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/engineering-ci-git-credentials"
+
+  dependency-security:
+    if: ${{ inputs.dependency_security_mode != 'off' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout dependency scan target
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Checkout matching security helper
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: dymzz/engineering-ci
+          ref: ${{ inputs.dependency_security_source_ref }}
+          path: .engineering-ci-security
+          token: ${{ secrets.ENGINEERING_CI_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Cache verified scanner binary
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/engineering-ci-security-bin
+          key: osv-scanner-v2.6.0-linux-amd64-ca69b3d3cd08f889
+      - name: Check lock integrity and scan known vulnerabilities
+        shell: bash
+        env:
+          SECURITY_MODE: ${{ inputs.dependency_security_mode }}
+          SECURITY_PROJECT: ${{ inputs.dependency_security_project }}
+          SECURITY_PUBLIC_INDEXES: ${{ inputs.dependency_security_public_indexes }}
+          SECURITY_EXCEPTIONS: ${{ inputs.dependency_security_exceptions }}
+        run: |
+          set -euo pipefail
+          mv -- .engineering-ci-security "$RUNNER_TEMP/engineering-ci-security"
+          args=(--project "$GITHUB_WORKSPACE/$SECURITY_PROJECT"
+                --mode "$SECURITY_MODE"
+                --out "$RUNNER_TEMP/dependency-security"
+                --cache "$RUNNER_TEMP/engineering-ci-security-bin"
+                --workspace-root "$GITHUB_WORKSPACE")
+          if [[ -n "$SECURITY_EXCEPTIONS" ]]; then
+            args+=(--exceptions "$GITHUB_WORKSPACE/$SECURITY_EXCEPTIONS")
+          fi
+          while IFS= read -r index; do
+            if [[ -n "$index" ]]; then
+              args+=(--public-index "$index")
+            fi
+          done <<< "$SECURITY_PUBLIC_INDEXES"
+          python3 "$RUNNER_TEMP/engineering-ci-security/scripts/dependency_security.py" "${args[@]}"
+      - name: Publish Dependency Security Summary
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/dependency-security/summary.md" ]]; then
+            cat "$RUNNER_TEMP/dependency-security/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## Dependency Security Summary\n\nEvidence unavailable. See failed setup or execution step; no security pass is established.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Upload dependency security evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: ${{ inputs.dependency_security_artifact_name }}
+          path: |
+            ${{ runner.temp }}/dependency-security/report.json
+            ${{ runner.temp }}/dependency-security/scanner.json
+            ${{ runner.temp }}/dependency-security/diagnostics.json
+            ${{ runner.temp }}/dependency-security/summary.md
+          if-no-files-found: warn
+          retention-days: 7
