@@ -1,8 +1,8 @@
 [project]
 name = "engineering-ci"
-version = "0.4.4"
+version = "0.4.5"
 requires-python = ">=3.14"
-dependencies = ["dagger-io"]
+dependencies = ["dagger-io", "packaging>=24.2"]
 
 [build-system]
 requires = ["uv_build>=0.8.4,<0.9.0"]

@@ -47,6 +47,25 @@ def execution_exit_code(directory: Path) -> int:
 
 
 def publish_summary(directory: Path, destination: Path) -> None:
+    if (directory / "matrix-policy.json").exists():
+        from pytest_matrix import matrix_summary, read_json, verify_bundle
+
+        verified = verify_bundle(directory)
+        presentation = read_json(directory / "matrix.json", MAX_JSON_BYTES)
+        # Presentation cannot hide a failing version or change its original exit.
+        fields = ("requested_python", "actual_python", "status", "failure_category", "pytest_exit_code")
+        if (presentation.get("kind") != verified["kind"] or
+                presentation.get("schema_version") != 1 or
+                presentation.get("overall_status") != verified["overall_status"] or
+                [[r.get(f) for f in fields] for r in presentation["versions"]] !=
+                [[r.get(f) for f in fields] for r in verified["versions"]]):
+            raise ValueError("Matrix presentation differs from original execution facts")
+        summary = matrix_summary(verified)
+        if len(summary.encode("utf-8")) > MAX_SUMMARY_BYTES:
+            raise ValueError("Matrix summary exceeds delivery limit")
+        with destination.open("a", encoding="utf-8") as stream:
+            stream.write(summary + "\n")
+        return
     report_path, summary_path = directory / "report.json", directory / "summary.md"
     if report_path.stat().st_size > MAX_JSON_BYTES or summary_path.stat().st_size > MAX_SUMMARY_BYTES:
         raise ValueError("Pytest report exceeds delivery limits")
@@ -65,6 +84,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     read = sub.add_parser("read-xml")
     read.add_argument("path", type=Path)
+    runtime = sub.add_parser("read-runtime")
+    runtime.add_argument("path", type=Path)
     coverage = sub.add_parser("read-coverage")
     coverage.add_argument("xml", type=Path)
     coverage.add_argument("json", type=Path)
@@ -81,6 +102,16 @@ def main(argv=None) -> int:
     try:
         if args.command == "read-xml":
             print(json.dumps(read_xml(args.path), ensure_ascii=False))
+        elif args.command == "read-runtime":
+            try:
+                with args.path.open("rb") as stream:
+                    content = stream.read(8193)
+                evidence = json.loads(content) if len(content) <= 8192 else {}
+                if not isinstance(evidence, dict):
+                    evidence = {}
+            except (OSError, ValueError, UnicodeError):
+                evidence = {}
+            print(json.dumps(evidence))
         elif args.command == "read-coverage":
             from pytest_quality import read_coverage
             print(json.dumps(read_coverage(args.xml, args.json), ensure_ascii=False))
@@ -90,6 +121,17 @@ def main(argv=None) -> int:
         elif args.command == "summary":
             publish_summary(args.directory, args.destination)
         elif args.command == "gate":
+            if (args.directory / "matrix-policy.json").exists():
+                from pytest_matrix import verify_bundle
+
+                result = verify_bundle(args.directory)
+                if result["overall_status"] != "passed":
+                    for row in result["versions"]:
+                        if row["status"] != "passed":
+                            print(f"Python {row['requested_python']}: {row['failure_category']}; "
+                                  f"pytest exit {row['pytest_exit_code']}", file=sys.stderr)
+                    return 1
+                return 0
             code = execution_exit_code(args.directory)
             print(f"Original pytest exit code: {code}")
             policy_path = args.directory / "quality-policy.json"

@@ -37,19 +37,32 @@ on:
           - coverage-source-missing
           - invalid-path
           - invalid-threshold
+      matrix_probe_scenario:
+        description: 'Explicit Python compatibility matrix probe (negative cases intentionally fail)'
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - pass
+          - version-fail
+          - unsupported
+          - coverage-low
+          - dependency-error
+          - performance
 
 permissions:
   contents: read
 
 jobs:
   python-ci:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.matrix_probe_scenario == 'off' }}
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       pytest_report_function: fixture-pytest-artifacts
       pytest_check: engineering-ci:fixture-test
 
   pytest-report-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario == 'off' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario == 'off' && inputs.matrix_probe_scenario == 'off' }}
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       pytest_report_function: fixture-pytest-artifacts
@@ -58,13 +71,21 @@ jobs:
       pytest_artifact_name: pytest-report-probe
 
   quality-gate-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario != 'off' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario != 'off' && inputs.matrix_probe_scenario == 'off' }}
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       pytest_report_function: fixture-quality-artifacts
       pytest_check: engineering-ci:fixture-quality-gates
       pytest_report_scenario: ${{ inputs.quality_probe_scenario }}
       pytest_artifact_name: pytest-quality-probe
+  matrix-gate-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.matrix_probe_scenario != 'off' }}
+    uses: ./.github/workflows/reusable-python-ci.yml
+    with:
+      pytest_report_function: fixture-matrix-artifacts
+      pytest_check: engineering-ci:fixture-python-matrix
+      pytest_report_scenario: ${{ inputs.matrix_probe_scenario }}
+      pytest_artifact_name: pytest-matrix-probe
 
   sync-tool-tests:
     runs-on: ubuntu-24.04

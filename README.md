@@ -5,3 +5,5 @@ reusable workflow, JSON contract, Job Summary and native artifact delivery.
 
 See [explicit test strategies and quality gates](docs/test-quality-gates.md)
 for markers, opt-in coverage, exact thresholds and consumer examples.
+
+Python 多版本兼容性验证（显式启用）：[接口、报告契约与性能验证](docs/python-compatibility-matrix.md)。

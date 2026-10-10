@@ -208,6 +208,27 @@ jobs:
             ${{ runner.temp }}/pytest-report/quality-policy.json
             ${{ runner.temp }}/pytest-report/coverage.xml
             ${{ runner.temp }}/pytest-report/coverage.json
+            ${{ runner.temp }}/pytest-report/matrix.json
+            ${{ runner.temp }}/pytest-report/matrix-policy.json
+            ${{ runner.temp }}/pytest-report/matrix-benchmark.json
+            ${{ runner.temp }}/pytest-report/versions/*/execution.json
+            ${{ runner.temp }}/pytest-report/versions/*/runtime.json
+            ${{ runner.temp }}/pytest-report/versions/*/exit-code.txt
+            ${{ runner.temp }}/pytest-report/versions/*/report.json
+            ${{ runner.temp }}/pytest-report/versions/*/summary.md
+            ${{ runner.temp }}/pytest-report/versions/*/junit.xml
+            ${{ runner.temp }}/pytest-report/versions/*/quality-policy.json
+            ${{ runner.temp }}/pytest-report/versions/*/coverage.xml
+            ${{ runner.temp }}/pytest-report/versions/*/coverage.json
+            ${{ runner.temp }}/pytest-report/versions/*/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/versions/*/fixture-timing.json
+            ${{ runner.temp }}/pytest-report/benchmarks/*/exit-code.txt
+            ${{ runner.temp }}/pytest-report/benchmarks/*/report.json
+            ${{ runner.temp }}/pytest-report/benchmarks/*/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/benchmarks/*/versions/*/runtime.json
+            ${{ runner.temp }}/pytest-report/benchmarks/*/versions/*/execution.json
+            ${{ runner.temp }}/pytest-report/benchmarks/*/versions/*/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/benchmarks/*/versions/*/fixture-timing.json
           if-no-files-found: warn
           retention-days: 7
 
