@@ -149,6 +149,61 @@ def test_missing_tool_is_not_executed_and_saves_results(checkout, monkeypatch):
     )
 
 
+def test_real_missing_executable_is_not_recorded_as_executed(checkout, monkeypatch):
+    missing = checkout / "missing-check-tool"
+    monkeypatch.setattr(checks, "command", lambda *args, **kwargs: [str(missing)])
+    out = checkout / "result.json"
+    report, code = checks.execute(["version"], root=checkout, output=out, environ={})
+    entry = report["checks"][0]
+    assert code == 127 and report["exit_code"] == 127
+    assert entry["status"] == "missing_tool"
+    assert entry["executed"] is False and entry["exit_code"] is None
+    assert entry["passed_for_current_input"] is False
+    assert json.loads(out.read_text()) == report
+
+
+def test_launch_permission_error_is_not_recorded_as_executed(checkout):
+    def denied(*args, **kwargs):
+        raise PermissionError("Cannot launch the check")
+
+    out = checkout / "result.json"
+    report, code = checks.execute(
+        ["version"], root=checkout, run=denied, output=out, environ={}
+    )
+    entry = report["checks"][0]
+    assert code == 3 and entry["status"] == "environment_error"
+    assert entry["executed"] is False and entry["exit_code"] is None
+    assert entry["passed_for_current_input"] is False
+    assert json.loads(out.read_text()) == report
+
+
+@pytest.mark.parametrize("raw_code, expected", [(1, 1), (7, 7), (-15, 143)])
+def test_postflight_error_preserves_completed_check_exit(
+    checkout, monkeypatch, raw_code, expected
+):
+    attempts = 0
+
+    def changed_environment(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts > 1:
+            raise checks.PreconditionError("missing_tool", "Tool disappeared")
+        return {"python": {"version": "3.14.3"}}
+
+    monkeypatch.setattr(checks, "preflight", changed_environment)
+    out = checkout / "result.json"
+    report, code = checks.execute(
+        ["version"], root=checkout, run=fake_process(raw_code), output=out, environ={}
+    )
+    entry = report["checks"][0]
+    assert code == expected and report["exit_code"] == expected
+    assert entry["executed"] is True and entry["exit_code"] == raw_code
+    assert entry["status"] == "failed" and report["overall_status"] == "failed"
+    assert entry["passed_for_current_input"] is False
+    assert entry["reason"] == "Tool disappeared"
+    assert json.loads(out.read_text()) == report
+
+
 def test_real_preflight_distinguishes_tool_and_environment(monkeypatch, tmp_path):
     with pytest.raises(checks.PreconditionError) as error:
         checks.preflight("ruff-lint", tmp_path, None, lambda _: None, {})

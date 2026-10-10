@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Exact repository version, e.g. v0.4.10'
+        description: 'Exact repository version, e.g. v0.4.11'
         type: string
         required: true
       publish:

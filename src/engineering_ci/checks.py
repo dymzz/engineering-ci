@@ -435,6 +435,10 @@ def report_path(path, root):
     return path
 
 
+def _process_exit_code(code):
+    return code if code >= 0 else 128 - code
+
+
 def execute(
     selectors,
     *,
@@ -490,6 +494,7 @@ def execute(
 
     for entry in report["checks"]:
         name = entry["name"]
+        launching = False
         try:
             # Observe inputs before preparation as well as before the real check.
             initial, initial_observations = snapshot(root, name)
@@ -506,11 +511,11 @@ def execute(
             )
             print(f"[{name}] {' '.join(before['command'])}", flush=True)
             entry["executed"] = True
+            launching = True
             result = run(before["command"], cwd=root, env=environ, check=False)
+            launching = False
             entry["exit_code"] = result.returncode
-            code = (
-                result.returncode if result.returncode >= 0 else 128 - result.returncode
-            )
+            code = _process_exit_code(result.returncode)
             entry["status"] = "passed" if code == 0 else "failed"
             after_tools = preflight(name, root, run, which, environ)
             after, after_observations = identity(
@@ -564,6 +569,10 @@ def execute(
                 if isinstance(error, PreconditionError)
                 else "environment_error"
             )
+            if launching and isinstance(error, OSError):
+                entry["executed"] = False
+                if isinstance(error, FileNotFoundError):
+                    status = "missing_tool"
             reason = (
                 error.reason
                 if isinstance(error, PreconditionError)
@@ -574,7 +583,11 @@ def execute(
                 reason=reason,
                 passed_for_current_input=False,
             )
-            codes.append(entry["exit_code"] or (127 if status == "missing_tool" else 3))
+            codes.append(
+                _process_exit_code(entry["exit_code"])
+                if entry["exit_code"]
+                else (127 if status == "missing_tool" else 3)
+            )
         print(
             f"[{name}] {entry['status']} (tool exit: {entry['exit_code']})", flush=True
         )

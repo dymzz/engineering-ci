@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import manual_release as release
 
 HEAD, OTHER = "a" * 40, "b" * 40
-TAG = "v0.4.10"
+TAG = "v0.4.11"
 
 
 class FakeGitHub(ManifestGitHub):

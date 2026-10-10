@@ -14,7 +14,7 @@ import manual_release as release
 import release_manifest as evidence
 
 HEAD = "a" * 40
-TAG = "v0.4.10"
+TAG = "v0.4.11"
 REPOSITORY = "example/ci"
 IDS = {name: 45 + index for index, name in enumerate(sorted(evidence.ARTIFACT_NAMES))}
 
@@ -129,7 +129,7 @@ def test_identity_schema_deterministic_and_no_sensitive_output():
     assert value == make_manifest()
     assert evidence.encode(value) == evidence.encode(make_manifest())
     assert value["release"] == {
-        "version": "0.4.10",
+        "version": "0.4.11",
         "tag": TAG,
         "commit_sha": HEAD,
         "release_url": None,

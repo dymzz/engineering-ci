@@ -72,13 +72,13 @@ enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不�
 
 ## 版本与人工发布
 
-1. 隔离分支执行 `python scripts/release_version.py set v0.4.10`，
+1. 隔离分支执行 `python scripts/release_version.py set v0.4.11`，
    对齐两份 pyproject.toml 与两份 uv.lock。
 2. 一个功能 PR，轻量检查通过后人工审查、合并。不要手工推 Tag。
 3. 合并后从 main 手动验证，默认不发布：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.10 -f publish=false -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.11 -f publish=false -f pytest_scenario=pass
 gh run list --repo dymzz/engineering-ci --workflow release.yml --limit 5
 gh run view RUN_ID --repo dymzz/engineering-ci
 ```
@@ -86,7 +86,7 @@ gh run view RUN_ID --repo dymzz/engineering-ci
 4. 核对完整验收、Artifact 与 SHA。人工决定正式发布时：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.10 -f publish=true -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.11 -f publish=true -f pytest_scenario=pass
 ```
 
 正式发布再次完整验收，不借用另一轮验证结果。无需额外团队审批层。
