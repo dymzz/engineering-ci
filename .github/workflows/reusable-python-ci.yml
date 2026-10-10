@@ -163,10 +163,15 @@ jobs:
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
           PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
+          RECORD_RELEASE_EVIDENCE: ${{ inputs.verify_module_lock }}
         run: |
           set -euo pipefail
 
-          dagger version
+          if [[ "${RECORD_RELEASE_EVIDENCE:-false}" == 'true' ]]; then
+            dagger version | tee "$RUNNER_TEMP/dagger-version.txt"
+          else
+            dagger version
+          fi
           timed() {
             python3 - "$@" <<'TIMED_COMMAND'
           import json
@@ -202,6 +207,10 @@ jobs:
             python3 "$RUNNER_TEMP/pytest-report/ci.py" plan \
               "$RUNNER_TEMP/dagger-checks.txt" "$PYTEST_CHECK" "$RUNNER_TEMP/remaining-checks.txt"
             mapfile -t remaining < "$RUNNER_TEMP/remaining-checks.txt"
+            if [[ "${RECORD_RELEASE_EVIDENCE:-false}" == 'true' ]]; then
+              cp "$RUNNER_TEMP/dagger-version.txt" "$RUNNER_TEMP/dagger-checks.txt" \
+                "$RUNNER_TEMP/remaining-checks.txt" "$RUNNER_TEMP/pytest-report/"
+            fi
             if [[ "${#remaining[@]}" -gt 0 ]]; then
               timed remaining-checks dagger check "${remaining[@]}"
             fi
@@ -252,6 +261,9 @@ jobs:
             ${{ runner.temp }}/pytest-report/summary.md
             ${{ runner.temp }}/pytest-report/junit.xml
             ${{ runner.temp }}/pytest-report/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/dagger-version.txt
+            ${{ runner.temp }}/pytest-report/dagger-checks.txt
+            ${{ runner.temp }}/pytest-report/remaining-checks.txt
             ${{ runner.temp }}/pytest-report/fixture-timing.json
             ${{ runner.temp }}/pytest-report/quality-policy.json
             ${{ runner.temp }}/pytest-report/coverage.xml

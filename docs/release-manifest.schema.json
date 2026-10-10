@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dymzz/engineering-ci/blob/main/docs/release-manifest.schema.json",
+  "title": "Engineering CI release evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "release",
+    "workflow",
+    "mode",
+    "checks",
+    "tools",
+    "artifacts",
+    "result"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "tag",
+        "commit_sha",
+        "release_url"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "release_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "run_url",
+        "event",
+        "path"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "path": {
+          "const": ".github/workflows/release.yml"
+        }
+      }
+    },
+    "mode": {
+      "enum": [
+        "validation",
+        "publication"
+      ]
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate",
+        "ruff_lint",
+        "ruff_format",
+        "core_tests",
+        "version_integrity",
+        "dependency_security",
+        "dagger",
+        "tests",
+        "module_lock",
+        "evidence",
+        "coverage",
+        "python_matrix",
+        "core_coverage_threshold",
+        "consumer_failure_probe"
+      ],
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/check"
+        },
+        "ruff_lint": {
+          "$ref": "#/$defs/check"
+        },
+        "ruff_format": {
+          "$ref": "#/$defs/check"
+        },
+        "core_tests": {
+          "$ref": "#/$defs/check"
+        },
+        "version_integrity": {
+          "$ref": "#/$defs/check"
+        },
+        "dependency_security": {
+          "$ref": "#/$defs/check"
+        },
+        "dagger": {
+          "$ref": "#/$defs/check"
+        },
+        "tests": {
+          "$ref": "#/$defs/check"
+        },
+        "module_lock": {
+          "$ref": "#/$defs/check"
+        },
+        "evidence": {
+          "$ref": "#/$defs/check"
+        },
+        "coverage": {
+          "$ref": "#/$defs/dagger_check"
+        },
+        "python_matrix": {
+          "$ref": "#/$defs/dagger_check"
+        },
+        "core_coverage_threshold": {
+          "$ref": "#/$defs/optional"
+        },
+        "consumer_failure_probe": {
+          "$ref": "#/$defs/optional"
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version",
+          "scope"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "python",
+              "uv",
+              "pytest",
+              "pytest-cov",
+              "ruff",
+              "dagger",
+              "osv-scanner"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:[a-z0-9.+-]*)$"
+          },
+          "scope": {
+            "enum": [
+              "core",
+              "ruff",
+              "dagger_cli",
+              "root_lock"
+            ]
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "id",
+          "digest",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "pytest-report",
+              "dependency-security",
+              "core-tests",
+              "release-tools-ruff"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      }
+    },
+    "result": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "job",
+        "job_id",
+        "step",
+        "job_conclusion",
+        "step_conclusion"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "unavailable"
+          ]
+        },
+        "job": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "step": {
+          "type": "string"
+        },
+        "job_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "step_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        }
+      }
+    },
+    "dagger_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "job",
+        "job_id",
+        "step",
+        "job_conclusion",
+        "step_conclusion",
+        "dagger_check"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "unavailable"
+          ]
+        },
+        "job": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "step": {
+          "type": "string"
+        },
+        "job_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "step_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "dagger_check": {
+          "enum": [
+            "engineering-ci:fixture-quality-gates",
+            "engineering-ci:fixture-python-matrix"
+          ]
+        }
+      }
+    },
+    "optional": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "required": {
+          "const": false
+        },
+        "status": {
+          "const": "not_enabled"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

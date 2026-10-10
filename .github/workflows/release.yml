@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Exact repository version, e.g. v0.4.8'
+        description: 'Exact repository version, e.g. v0.4.9'
         type: string
         required: true
       publish:
@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: engineering-ci-manual-release
@@ -86,8 +87,18 @@ jobs:
         with:
           name: core-tests
           path: .release-evidence/core
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-tools-ruff
+          path: .release-evidence/ruff
       - name: Require usable evidence and original execution gates
-        run: python3 scripts/manual_release.py evidence --directory .release-evidence
+        run: python3 scripts/release_manifest.py facts --directory .release-evidence --output release-facts/facts.json
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-facts
+          path: release-facts/facts.json
+          if-no-files-found: error
+          retention-days: 7
 
   verified:
     needs: [candidate, core-tests, complete-ci, evidence]
@@ -99,6 +110,11 @@ jobs:
         with:
           ref: ${{ needs.candidate.outputs.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v5
+        continue-on-error: true
+        with:
+          name: release-facts
+          path: release-facts
       - name: Require every validation job and exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +122,15 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 scripts/manual_release.py verify
+        run: python3 scripts/manual_release.py verify --directory release-facts --manifest release-manifest.json
+      - name: Preserve validation Manifest
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
 
   publish:
     needs: [candidate, verified]
@@ -115,16 +139,29 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.candidate.outputs.sha }}
           persist-credentials: false
-      - name: Recheck main and publish immutable tag and GitHub Release
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-manifest
+          path: release-evidence
+      - name: Recheck main and publish immutable tag and evidenced GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 scripts/manual_release.py publish
+        run: python3 scripts/manual_release.py publish --manifest release-evidence/release-manifest.json
+      - name: Preserve publication evidence after an API failure
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-publication-evidence
+          path: release-evidence/release-manifest.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,476 @@
+"""Record existing manual-release evidence; never execute tests or infer verdicts."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.metadata
+import json
+import platform
+import re
+import subprocess
+from pathlib import Path
+
+REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+TOOL_VERSION = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9.+-]*)$")
+STATES = {
+    "success": "passed",
+    "failure": "failed",
+    "skipped": "skipped",
+    "cancelled": "cancelled",
+    "timed_out": "timed_out",
+    "neutral": "unavailable",
+    "action_required": "unavailable",
+    "stale": "unavailable",
+    "startup_failure": "failed",
+}
+# These are the actual v0.4.8 release jobs/steps, not a new execution plan.
+CHECKS = {
+    "candidate": ("candidate", "Validate manual release request"),
+    "ruff_lint": ("core-tests / python-ci / checks", "Ruff Lint"),
+    "ruff_format": ("core-tests / python-ci / checks", "Ruff Format Check"),
+    "core_tests": (
+        "core-tests / sync-tool-tests",
+        "Run all core unit and process tests",
+    ),
+    "version_integrity": (
+        "core-tests / version-metadata",
+        "Validate release metadata and root lock consistency",
+    ),
+    "dependency_security": (
+        "complete-ci / dependency-security",
+        "Check lock integrity and scan known vulnerabilities",
+    ),
+    "dagger": ("complete-ci / checks", "Run Dagger Checks"),
+    "tests": (
+        "complete-ci / checks",
+        "Gate on pytest execution and explicit quality policy",
+    ),
+    "module_lock": ("complete-ci / checks", "Verify generated module lock consistency"),
+    "evidence": ("evidence", "Require usable evidence and original execution gates"),
+}
+DAGGER_POLICY_CHECKS = {
+    "coverage": "engineering-ci:fixture-quality-gates",
+    "python_matrix": "engineering-ci:fixture-python-matrix",
+}
+TOOLS = {"python", "uv", "pytest", "pytest-cov", "ruff", "dagger", "osv-scanner"}
+SCOPES = {"core", "ruff", "dagger_cli", "root_lock"}
+REQUIRED_TOOLS = {
+    ("core", "python"),
+    ("core", "uv"),
+    ("core", "pytest"),
+    ("core", "pytest-cov"),
+    ("ruff", "uv"),
+    ("ruff", "ruff"),
+    ("dagger_cli", "dagger"),
+    ("root_lock", "osv-scanner"),
+}
+ARTIFACT_NAMES = {
+    "pytest-report",
+    "dependency-security",
+    "core-tests",
+    "release-tools-ruff",
+}
+
+
+def encode(value):
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+
+
+def write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(encode(value), encoding="utf-8")
+
+
+def tools(scope):
+    records = []
+    if scope == "core":
+        records.append(
+            {"name": "python", "version": platform.python_version(), "scope": scope}
+        )
+        for name in ("pytest", "pytest-cov"):
+            records.append(
+                {
+                    "name": name,
+                    "version": importlib.metadata.version(name),
+                    "scope": scope,
+                }
+            )
+    for name in ("uv",) if scope == "core" else ("uv", "ruff"):
+        command = (
+            ["uv", "--version"]
+            if name == "uv"
+            else ["uvx", "ruff==0.16.10", "--version"]
+        )
+        output = subprocess.check_output(
+            command, text=True, encoding="utf-8", timeout=60
+        )
+        match = re.fullmatch(rf"{name} (\S+)(?: .*)?\s*", output.strip())
+        if not match:
+            raise ValueError("Tool version unavailable")
+        records.append({"name": name, "version": match[1], "scope": scope})
+    return clean_tools(records)
+
+
+def clean_tools(records):
+    result = []
+    for item in records:
+        if (
+            set(item) != {"name", "version", "scope"}
+            or item["name"] not in TOOLS
+            or item["scope"] not in SCOPES
+            or not TOOL_VERSION.fullmatch(item["version"])
+        ):
+            raise ValueError("Invalid tool version evidence")
+        result.append(dict(item))
+    if len({(item["scope"], item["name"]) for item in result}) != len(result):
+        raise ValueError("Duplicate tool version evidence")
+    return sorted(result, key=lambda item: (item["scope"], item["name"]))
+
+
+def facts(directory):
+    from manual_release import read_json, require_evidence
+
+    require_evidence(directory)
+    records = read_json(directory / "core/tool-versions.json")
+    records += read_json(directory / "ruff/tool-versions.json")
+    dagger = (
+        (directory / "pytest/dagger-version.txt").read_text(encoding="utf-8").strip()
+    )
+    match = re.fullmatch(r"dagger v([0-9]+\.[0-9]+\.[0-9]+)(?: .*)?", dagger)
+    if not match:
+        raise ValueError("Dagger CLI version unavailable")
+    records.append({"name": "dagger", "version": match[1], "scope": "dagger_cli"})
+    security = read_json(directory / "security/report.json")
+    records.append(
+        {
+            "name": "osv-scanner",
+            "version": security["scanner"]["version"],
+            "scope": "root_lock",
+        }
+    )
+    checks = (
+        (directory / "pytest/remaining-checks.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    if not set(DAGGER_POLICY_CHECKS.values()).issubset(checks):
+        raise ValueError("Existing Dagger policy execution evidence missing")
+    records = clean_tools(records)
+    if {(item["scope"], item["name"]) for item in records} != REQUIRED_TOOLS:
+        raise ValueError("Required tool version evidence missing")
+    return {"tools": records, "dagger_checks": sorted(set(checks))}
+
+
+def pages(api, path, key):
+    result = []
+    for page in range(1, 21):
+        response = api(f"{path}?per_page=100&page={page}")
+        entries = response[key]
+        result.extend(entries)
+        if len(entries) < 100:
+            return result
+    raise ValueError("GitHub metadata pagination exceeds limit")
+
+
+def run_context(api, repository, head, run_id, attempt):
+    if not REPOSITORY.fullmatch(repository) or not SHA.fullmatch(head):
+        raise ValueError("Invalid release identity")
+    if (
+        type(run_id) is not int
+        or run_id <= 0
+        or type(attempt) is not int
+        or attempt <= 0
+    ):
+        raise ValueError("Invalid workflow identity")
+    run = api(f"actions/runs/{run_id}/attempts/{attempt}")
+    expected_url = f"https://github.com/{repository}/actions/runs/{run_id}"
+    if (
+        run["id"] != run_id
+        or run["run_attempt"] != attempt
+        or run["head_sha"] != head
+        or run["event"] != "workflow_dispatch"
+        or run["repository"]["full_name"] != repository
+        or run["html_url"] != expected_url
+        or run["path"].split("@")[0] != ".github/workflows/release.yml"
+    ):
+        raise ValueError("Workflow does not match verified release identity")
+    return {
+        "run_id": run_id,
+        "run_attempt": attempt,
+        "run_url": expected_url,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/release.yml",
+    }
+
+
+def check_record(jobs, name, step):
+    matches = [job for job in jobs if job["name"] == name]
+    result = {
+        "required": True,
+        "status": "unavailable",
+        "job": name,
+        "job_id": None,
+        "step": step,
+        "job_conclusion": None,
+        "step_conclusion": None,
+    }
+    if len(matches) != 1:
+        return result
+    job = matches[0]
+    result["job_id"] = job["id"]
+    result["job_conclusion"] = job.get("conclusion")
+    steps = [item for item in job.get("steps", []) if item["name"] == step]
+    if len(steps) != 1:
+        return result
+    result["step_conclusion"] = steps[0].get("conclusion")
+    if job.get("status") != "completed" or steps[0].get("status") != "completed":
+        return result
+    # A successful report step cannot mask a failed original execution job.
+    conclusions = [job.get("conclusion"), steps[0].get("conclusion")]
+    result["status"] = next(
+        (
+            STATES.get(value, "unavailable")
+            for value in conclusions
+            if value != "success"
+        ),
+        "passed",
+    )
+    return result
+
+
+def manifest(api, repository, tag, head, run_id, attempt, mode, evidence):
+    if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
+        raise ValueError("Invalid release version")
+    workflow = run_context(api, repository, head, run_id, attempt)
+    jobs = pages(api, f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
+    checks = {key: check_record(jobs, *source) for key, source in CHECKS.items()}
+    for key, check in DAGGER_POLICY_CHECKS.items():
+        record = dict(checks["dagger"])
+        record["dagger_check"] = check
+        if record["status"] == "passed" and (
+            evidence is None or check not in evidence["dagger_checks"]
+        ):
+            record["status"] = "unavailable"
+        checks[key] = record
+    checks["core_coverage_threshold"] = {
+        "required": False,
+        "status": "not_enabled",
+        "reason": "Core coverage is exported; no core coverage threshold is configured.",
+    }
+    checks["consumer_failure_probe"] = {
+        "required": False,
+        "status": "not_enabled",
+        "reason": "The smoke-only Ruff rejection probe is disabled in core releases.",
+    }
+    records = clean_tools(evidence["tools"]) if evidence is not None else []
+    if (
+        checks["evidence"]["status"] == "passed"
+        and {(item["scope"], item["name"]) for item in records} != REQUIRED_TOOLS
+    ):
+        checks["evidence"]["status"] = "unavailable"
+    artifacts = []
+    for item in pages(api, f"actions/runs/{run_id}/artifacts", "artifacts"):
+        if item["name"] not in ARTIFACT_NAMES or item.get("expired"):
+            continue
+        if item.get("workflow_run", {}).get("head_sha") != head:
+            raise ValueError("Artifact commit mismatch")
+        artifacts.append(
+            {
+                "name": item["name"],
+                "id": item["id"],
+                "digest": item.get("digest"),
+                "url": f"https://api.github.com/repos/{repository}/actions/artifacts/{item['id']}",
+            }
+        )
+    if (
+        checks["evidence"]["status"] == "passed"
+        and {item["name"] for item in artifacts} != ARTIFACT_NAMES
+    ):
+        checks["evidence"]["status"] = "unavailable"
+    result = {
+        "schema_version": 1,
+        "repository": repository,
+        "release": {
+            "version": tag[1:],
+            "tag": tag,
+            "commit_sha": head,
+            "release_url": None,
+        },
+        "workflow": workflow,
+        "mode": mode,
+        "checks": checks,
+        "tools": records,
+        "artifacts": sorted(artifacts, key=lambda item: (item["name"], item["id"])),
+        "result": "passed"
+        if all(
+            item["status"] == "passed" for item in checks.values() if item["required"]
+        )
+        else "failed",
+    }
+    validate(result, repository, tag, head)
+    return result
+
+
+def validate(value, repository, tag, head, *, published=False):
+    """Validate the fixed publication contract; do not trust arbitrary artifact JSON."""
+    expected = {
+        "schema_version",
+        "repository",
+        "release",
+        "workflow",
+        "mode",
+        "checks",
+        "tools",
+        "artifacts",
+        "result",
+    }
+    if (
+        set(value) != expected
+        or value["schema_version"] != 1
+        or value["repository"] != repository
+    ):
+        raise ValueError("Manifest schema or repository mismatch")
+    identity = value["release"]
+    if (
+        set(identity) != {"version", "tag", "commit_sha", "release_url"}
+        or not SHA.fullmatch(head)
+        or not tag.startswith("v")
+        or not VERSION.fullmatch(tag[1:])
+        or identity["version"] != tag[1:]
+        or identity["tag"] != tag
+        or identity["commit_sha"] != head
+    ):
+        raise ValueError("Manifest version or SHA mismatch")
+    workflow = value["workflow"]
+    if (
+        set(workflow) != {"run_id", "run_attempt", "run_url", "event", "path"}
+        or type(workflow["run_id"]) is not int
+        or workflow["run_id"] <= 0
+        or type(workflow["run_attempt"]) is not int
+        or workflow["run_attempt"] <= 0
+        or workflow["run_url"]
+        != f"https://github.com/{repository}/actions/runs/{workflow['run_id']}"
+        or workflow["event"] != "workflow_dispatch"
+        or workflow["path"] != ".github/workflows/release.yml"
+        or value["mode"] not in {"validation", "publication"}
+    ):
+        raise ValueError("Manifest workflow identity mismatch")
+    url = identity["release_url"]
+    if url is not None and not re.fullmatch(
+        rf"https://github\.com/{re.escape(repository)}/releases/(?:tag/{re.escape(tag)}|[0-9]+)",
+        url,
+    ):
+        raise ValueError("Invalid actual Release URL")
+    required = set(CHECKS) | set(DAGGER_POLICY_CHECKS)
+    optional = {"core_coverage_threshold", "consumer_failure_probe"}
+    if set(value["checks"]) != required | optional:
+        raise ValueError("Missing or unexpected manifest checks")
+    for key, record in value["checks"].items():
+        if key in optional:
+            if record != {
+                "required": False,
+                "status": "not_enabled",
+                "reason": (
+                    "Core coverage is exported; no core coverage threshold is configured."
+                    if key == "core_coverage_threshold"
+                    else "The smoke-only Ruff rejection probe is disabled in core releases."
+                ),
+            }:
+                raise ValueError("Invalid optional check")
+            continue
+        source = "dagger" if key in DAGGER_POLICY_CHECKS else key
+        fields = {
+            "required",
+            "status",
+            "job",
+            "job_id",
+            "step",
+            "job_conclusion",
+            "step_conclusion",
+        }
+        if key in DAGGER_POLICY_CHECKS:
+            fields.add("dagger_check")
+            if record.get("dagger_check") != DAGGER_POLICY_CHECKS[key]:
+                raise ValueError("Invalid Dagger check")
+        if (
+            set(record) != fields
+            or record["required"] is not True
+            or (record["job"], record["step"]) != CHECKS[source]
+            or record["status"] not in set(STATES.values())
+            or record["job_conclusion"] not in {None, *STATES}
+            or record["step_conclusion"] not in {None, *STATES}
+            or (
+                record["job_id"] is not None
+                and (type(record["job_id"]) is not int or record["job_id"] <= 0)
+            )
+        ):
+            raise ValueError("Invalid required check")
+        if record["status"] == "passed" and (
+            record["job_conclusion"] != "success"
+            or record["step_conclusion"] != "success"
+            or record["job_id"] is None
+        ):
+            raise ValueError("Passed check lacks original successful execution")
+    if clean_tools(value["tools"]) != value["tools"]:
+        raise ValueError("Invalid or unsorted tool evidence")
+    if (
+        value["result"] == "passed"
+        and {(item["scope"], item["name"]) for item in value["tools"]} != REQUIRED_TOOLS
+    ):
+        raise ValueError("Passed manifest lacks required tool evidence")
+    for item in value["artifacts"]:
+        if (
+            set(item) != {"name", "id", "digest", "url"}
+            or item["name"] not in ARTIFACT_NAMES
+            or type(item["id"]) is not int
+            or item["id"] <= 0
+            or item["url"]
+            != f"https://api.github.com/repos/{repository}/actions/artifacts/{item['id']}"
+            or (
+                item["digest"] is not None
+                and not re.fullmatch(r"sha256:[0-9a-f]{64}", item["digest"])
+            )
+        ):
+            raise ValueError("Invalid artifact metadata")
+    passed = all(value["checks"][key]["status"] == "passed" for key in required)
+    if passed and {item["name"] for item in value["artifacts"]} != ARTIFACT_NAMES:
+        raise ValueError("Passed manifest lacks required artifact references")
+    if value["result"] != ("passed" if passed else "failed"):
+        raise ValueError("Manifest aggregate does not match checks")
+    if published and (
+        not passed
+        or value["mode"] != "publication"
+        or url is None
+        or not value["tools"]
+    ):
+        raise ValueError("Publication requires complete passed evidence")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("tools", "facts"))
+    parser.add_argument("--scope", choices=("core", "ruff"))
+    parser.add_argument("--directory", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "tools":
+            if args.scope is None:
+                raise ValueError("Tool scope required")
+            value = tools(args.scope)
+        else:
+            if args.directory is None:
+                raise ValueError("Evidence directory required")
+            value = facts(args.directory)
+        write(args.output, value)
+        return 0
+    except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+        parser.exit(
+            1, "Release evidence unavailable; inspect original job diagnostics.\n"
+        )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

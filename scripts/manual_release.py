@@ -29,6 +29,7 @@ class GitHub:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ValueError("Invalid repository")
         self.prefix = f"repos/{repository}/"
+        self.repository = repository
 
     def __call__(self, path, method="GET", data=None):
         args = ["gh", "api", "--method", method, self.prefix + path]
@@ -49,6 +50,35 @@ class GitHub:
             raise ApiError(int(match[1]) if match else None)
         if len(result.stdout) > 1024 * 1024:
             raise ValueError("GitHub metadata exceeds limit")
+        return json.loads(result.stdout)
+
+    def upload(self, tag, path):
+        result = subprocess.run(
+            ["gh", "release", "upload", tag, str(path), "--repo", self.repository],
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode:
+            raise ApiError()
+
+    def download(self, asset_id):
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                self.prefix + f"releases/assets/{asset_id}",
+                "-H",
+                "Accept: application/octet-stream",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        if result.returncode:
+            raise ApiError()
+        if len(result.stdout) > 1024 * 1024:
+            raise ValueError("Manifest asset exceeds limit")
         return json.loads(result.stdout)
 
 
@@ -101,12 +131,29 @@ def candidate(api, tag, head, publish):
     existing = tag_commit(api, tag)
     if existing is not None and existing != head:
         raise ValueError("Tag conflict; refusing to overwrite")
-    release = optional(api, f"releases/tags/{tag}")
+    release = find_release(api, tag)
     if release is not None and (
-        existing != head or release.get("draft") or release.get("prerelease")
+        existing != head or release.get("tag_name") != tag or release.get("prerelease")
     ):
         raise ValueError("Existing Release does not match the validated final tag")
     return release
+
+
+def find_release(api, tag):
+    release = optional(api, f"releases/tags/{tag}")
+    if release is not None:
+        return release
+    # The by-tag endpoint may omit drafts; authenticated list includes them.
+    for page in range(1, 21):
+        items = api(f"releases?per_page=100&page={page}")
+        matches = [item for item in items if item["tag_name"] == tag]
+        if len(matches) > 1:
+            raise ValueError("Conflicting Releases for tag")
+        if matches:
+            return matches[0]
+        if len(items) < 100:
+            return None
+    raise ValueError("Release pagination exceeds limit")
 
 
 def require_jobs(needs, head, publishing=False):
@@ -123,9 +170,63 @@ def require_jobs(needs, head, publishing=False):
         raise ValueError("Verified candidate SHA mismatch")
 
 
-def publish_release(api, tag, head):
+def published_evidence(api, value, repository, tag, head):
+    from release_manifest import CHECKS, check_record, pages, run_context, validate
+
+    validate(value, repository, tag, head)
+    if (
+        value["mode"] != "publication"
+        or value["result"] != "passed"
+        or not value["tools"]
+    ):
+        raise ValueError("Publication requires complete passed evidence")
+    workflow = value["workflow"]
+    run_context(api, repository, head, workflow["run_id"], workflow["run_attempt"])
+    jobs = pages(
+        api,
+        f"actions/runs/{workflow['run_id']}/attempts/{workflow['run_attempt']}/jobs",
+        "jobs",
+    )
+    for key, source in CHECKS.items():
+        if check_record(jobs, *source) != value["checks"][key]:
+            raise ValueError("Manifest does not match original Actions results")
+
+
+def release_asset(api, release):
+    assets = []
+    for page in range(1, 21):
+        items = api(f"releases/{release['id']}/assets?per_page=100&page={page}")
+        assets.extend(item for item in items if item["name"] == "release-manifest.json")
+        if len(items) < 100:
+            break
+    else:
+        raise ValueError("Release asset pagination exceeds limit")
+    if len(assets) > 1:
+        raise ValueError("Conflicting Manifest assets")
+    if assets:
+        asset = assets[0]
+        if (
+            asset.get("state") != "uploaded"
+            or not 0 < asset.get("size", 0) <= 1024 * 1024
+        ):
+            raise ValueError("Manifest upload incomplete")
+        return api.download(asset["id"])
+    return None
+
+
+def publish_release(api, tag, head, manifest, path):
+    from release_manifest import write
+
+    repository = manifest["repository"]
+    # Validate identity and original Actions results before any publication write.
+    published_evidence(api, manifest, repository, tag, head)
+    proposed = json.loads(json.dumps(manifest))
     release = candidate(api, tag, head, True)
-    if release is not None:
+    if release is not None and not release["draft"]:
+        saved = release_asset(api, release)
+        if saved is None or saved["release"]["release_url"] != release["html_url"]:
+            raise ValueError("Existing final Release lacks matching Manifest")
+        published_evidence(api, saved, repository, tag, head)
         return release["html_url"], "already-published"
     if tag_commit(api, tag) is None:
         # Create-only API: never PATCH, force-push, or rewrite an existing tag.
@@ -136,7 +237,6 @@ def publish_release(api, tag, head):
                 raise
     if tag_commit(api, tag) != head:
         raise ValueError("Published tag SHA mismatch")
-    # Recheck after tag creation. A tag-only partial publication is recoverable.
     release = candidate(api, tag, head, True)
     if release is None:
         release = api(
@@ -146,12 +246,37 @@ def publish_release(api, tag, head):
                 "tag_name": tag,
                 "target_commitish": head,
                 "generate_release_notes": True,
-                "draft": False,
+                "draft": True,
                 "prerelease": False,
             },
         )
+    proposed["release"]["release_url"] = release["html_url"]
+    published_evidence(api, proposed, repository, tag, head)
+    saved = release_asset(api, release)
+    if saved is None:
+        if path.name != "release-manifest.json":
+            raise ValueError("Expected release-manifest.json asset filename")
+        write(path, proposed)
+        api.upload(tag, path)
+        saved = release_asset(api, release)
+        if saved != proposed:
+            raise ValueError("Uploaded Manifest does not match verified content")
+    else:
+        # Preserve a prior valid attempt's evidence instead of overwriting its asset.
+        if saved["release"]["release_url"] != release["html_url"]:
+            raise ValueError("Draft Manifest Release URL mismatch")
+        published_evidence(api, saved, repository, tag, head)
+    candidate(api, tag, head, True)
     if tag_commit(api, tag) != head:
         raise ValueError("Final tag SHA mismatch")
+    release = api(f"releases/{release['id']}", "PATCH", {"draft": False})
+    if (
+        tag_commit(api, tag) != head
+        or release["draft"]
+        or release["tag_name"] != tag
+        or release["html_url"] != saved["release"]["release_url"]
+    ):
+        raise ValueError("Final Release identity mismatch")
     return release["html_url"], "published"
 
 
@@ -212,6 +337,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "evidence", "verify", "publish"))
     parser.add_argument("--directory", type=Path)
+    parser.add_argument("--manifest", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "evidence":
@@ -234,6 +360,46 @@ def main(argv=None):
             ) as stream:
                 stream.write(f"sha={head}\n")
         else:
+            if args.manifest is None:
+                raise ValueError("Manifest path required")
+            if args.command == "verify":
+                from release_manifest import manifest, write
+
+                evidence = (
+                    read_json(args.directory / "facts.json")
+                    if args.directory and (args.directory / "facts.json").is_file()
+                    else None
+                )
+                value = manifest(
+                    api,
+                    os.environ["GITHUB_REPOSITORY"],
+                    tag,
+                    head,
+                    int(os.environ["GITHUB_RUN_ID"]),
+                    int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                    "publication" if publish else "validation",
+                    evidence,
+                )
+                write(args.manifest, value)
+                summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+                if summary_path:
+                    with Path(summary_path).open("a", encoding="utf-8") as stream:
+                        stream.write(
+                            f"### Release evidence: {value['result']}\n\n"
+                            f"Version: {tag}\n\nVerified SHA: {head}\n\n"
+                            f"Workflow: {value['workflow']['run_url']}\n\n"
+                            "Manifest: Actions artifact `release-manifest` "
+                            "(formal publication also attaches the file to Release).\n\n"
+                            "| Existing check | Actual state |\n|---|---|\n"
+                        )
+                        stream.writelines(
+                            f"| {name} | {record['status']} |\n"
+                            for name, record in value["checks"].items()
+                        )
+                if value["result"] != "passed":
+                    raise ValueError(
+                        "Manifest records incomplete or failed verification"
+                    )
             require_jobs(
                 json.loads(os.environ["RELEASE_NEEDS"]),
                 head,
@@ -248,7 +414,21 @@ def main(argv=None):
         if args.command == "publish":
             if not publish:
                 raise ValueError("Dry runs cannot publish")
-            result["release_url"], result["status"] = publish_release(api, tag, head)
+            value = read_json(args.manifest)
+            if (
+                value["workflow"]["run_id"] != int(os.environ["GITHUB_RUN_ID"])
+                or value["workflow"]["run_attempt"]
+                != int(os.environ["GITHUB_RUN_ATTEMPT"])
+                or value["repository"] != os.environ["GITHUB_REPOSITORY"]
+            ):
+                raise ValueError("Publication Manifest belongs to another workflow")
+            result["release_url"], result["status"] = publish_release(
+                api,
+                tag,
+                head,
+                value,
+                args.manifest,
+            )
         print(json.dumps(result))
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:

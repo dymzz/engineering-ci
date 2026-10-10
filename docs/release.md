@@ -21,8 +21,8 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 仓库根目录执行，需 uv；根项目要求 Python 3.14。PowerShell / Bash 均可使用：
 
 ```sh
-uvx ruff==0.16.10 check --isolated --target-version py311 tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py tests/test_release_version.py tests/test_manual_release.py
-uvx ruff==0.16.10 format --isolated --target-version py311 --check tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py tests/test_release_version.py tests/test_manual_release.py
+uvx ruff==0.16.10 check --isolated --target-version py311 tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py
+uvx ruff==0.16.10 format --isolated --target-version py311 --check tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py
 uv run --locked --group dev pytest -q
 uv run --locked --group dev pytest --cov=src/engineering_ci --cov=.dagger/src/engineering_ci --cov-report=term-missing --cov-report=xml
 uv run --locked python scripts/release_version.py check
@@ -63,13 +63,13 @@ enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不�
 
 ## 版本与人工发布
 
-1. 隔离分支执行 `python scripts/release_version.py set v0.4.8`，
+1. 隔离分支执行 `python scripts/release_version.py set v0.4.9`，
    对齐两份 pyproject.toml 与两份 uv.lock。
 2. 一个功能 PR，轻量检查通过后人工审查、合并。不要手工推 Tag。
 3. 合并后从 main 手动验证，默认不发布：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.8 -f publish=false -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.9 -f publish=false -f pytest_scenario=pass
 gh run list --repo dymzz/engineering-ci --workflow release.yml --limit 5
 gh run view RUN_ID --repo dymzz/engineering-ci
 ```
@@ -77,7 +77,7 @@ gh run view RUN_ID --repo dymzz/engineering-ci
 4. 核对完整验收、Artifact 与 SHA。人工决定正式发布时：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.8 -f publish=true -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.9 -f publish=true -f pytest_scenario=pass
 ```
 
 正式发布再次完整验收，不借用另一轮验证结果。无需额外团队审批层。
@@ -108,8 +108,48 @@ main 前进、版本不一致、Tag 指向其他 SHA、报告缺失或检查失�
 发布 workflow 串行执行；Tag 仅使用 create-only API，禁止覆盖。
 
 同 SHA 的 Tag 已创建、Release 未创建时，重新人工运行可安全恢复；
-已有同 SHA 的正式 Release 时返回原 URL，不重复创建。
+上传或 API 失败会留下可恢复的 Tag / Draft，不会提前转为正式版本。
+已有同 SHA 的正式 Release 必须有一致的 Manifest，才返回原 URL，不重复创建。
+已有正式版本缺少或冲突的证据时明确失败，不补写、覆盖历史版本。
 祖先提交上的同版本 Tag 不能代替当前提交验证。注解 Tag 比较最终 commit SHA。
+
+## v0.4.9 发布证据
+
+每次手动验证将 Actions 原始 job / step 结果写入
+`release-manifest.json`，保存为 `release-manifest` Artifact（30 天）；
+Job Summary 同时显示版本、SHA、验证 Run 链接与各检查状态。
+机器可读结构见 [JSON Schema](release-manifest.schema.json)。
+同一组输入产生相同核心 JSON；不复制日志、环境变量、Token 或临时下载 URL。
+
+身份来自实际 checkout、四处版本元数据、GitHub Run API 与当前 attempt 的
+Jobs API。Manifest 的 `result=passed` 表示必需验证结果与证据齐全，
+不是进行中的整个 Workflow 已结束，也不是已经发布成功。
+`mode=validation` 时 `release.release_url=null`：没有虚构 Release URL。
+失败验证可保存 `result=failed` 的 Manifest；API 不可用时保留失败 job 日志，
+不能伪造缺失状态。检查失败、skipped、cancelled、timed_out、unavailable
+都阻断发布。可选未启用项目记为 `not_enabled`。
+
+Ruff、核心 pytest、版本锁一致性、安全 enforce、Dagger 与原始 pytest Gate
+关联既有 job / step；Coverage / Python Matrix 关联实际执行清单中的
+`fixture-quality-gates` / `fixture-python-matrix`，不再执行一次。
+它们是既有模块能力 fixture，不能当作根项目多版本兼容或根 Coverage 阈值。
+根 Coverage 无阈值和 Smoke 专用负向 Probe 都明确未启用。
+
+工具记录读取实际环境：根 Python / uv / pytest / pytest-cov、Ruff runner
+的 uv / Ruff、既有 `dagger version`、已核验的 OSV Scanner 版本。
+scope 区分执行环境；不把根工具版本当作 Dagger 容器内部的版本。
+Artifact 条目仅保留原生 ID、可用 digest 和 API 元数据链接。
+Artifact API 不提供 attempt，条目属于同一 Run / SHA；检查结果按 attempt 获取。
+验证 Artifact 有保留期；正式 Release 的 Manifest Asset 提供持续追溯入口。
+
+正式发布沿用完整验证与 create-only Tag，然后用 GitHub 原生自动 Release Notes
+创建 Draft。填入实际 Release URL，上传 Manifest，再下载并核验原始检查、
+版本 / SHA 和上传内容，最后才将 Draft 转为正式 Release。
+任一步失败均不自动清理 Tag、覆盖 Asset 或伪造成功；修复后重新人工运行。
+同 SHA 的 Draft 已有有效 Manifest 时保留原始验证 Run 的证据并核验后恢复；
+重复正式发布同样验证原记录，不修改已有版本。
+只有 publish job 有写权限；证据收集不新增 pytest / Dagger 调用。
+完整检查与 Artifact 上传仍可能因外部服务失败而拒绝发布。
 
 GitHub 无法原子绑定 main 比较与 Release 创建。验证完成、创建 Tag 前、
 创建 Release 前都会核对 main；最后 API 调用仍有极短竞争窗口。

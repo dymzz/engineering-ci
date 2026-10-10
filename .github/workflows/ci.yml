@@ -33,13 +33,23 @@ jobs:
           uvx ruff==0.16.10 check --isolated --target-version py311
           tests/fixtures/python-app scripts/release_version.py
           scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py
+          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
       - name: Ruff Format Check
         run: >-
           uvx ruff==0.16.10 format --isolated --target-version py311 --check
           tests/fixtures/python-app scripts/release_version.py
           scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py
+          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
+      - name: Record release Ruff tool versions
+        if: ${{ inputs.coverage }}
+        run: python3 scripts/release_manifest.py tools --scope ruff --output release-tools/tool-versions.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ inputs.coverage }}
+        with:
+          name: release-tools-ruff
+          path: release-tools/tool-versions.json
+          if-no-files-found: error
+          retention-days: 7
 
   sync-tool-tests:
     runs-on: ubuntu-24.04
@@ -67,6 +77,9 @@ jobs:
               --cov-report=xml:core-coverage.xml --cov-report=json:core-coverage.json)
           fi
           uv run --locked --group dev pytest "${args[@]}"
+      - name: Record core release tool versions
+        if: ${{ always() && !cancelled() && inputs.coverage }}
+        run: uv run --no-sync --group dev python scripts/release_manifest.py tools --scope core --output tool-versions.json
       - name: Upload core release evidence
         if: ${{ always() && inputs.coverage }}
         uses: actions/upload-artifact@v7.0.2
@@ -76,6 +89,7 @@ jobs:
             core-junit.xml
             core-coverage.xml
             core-coverage.json
+            tool-versions.json
           if-no-files-found: error
           retention-days: 7
 
