@@ -207,20 +207,6 @@ jobs:
             fi
           fi
 
-      - uses: astral-sh/setup-uv@v7
-        if: inputs.verify_module_lock
-        with:
-          version: '0.12.23'
-          enable-cache: false
-      - name: Verify generated module lock consistency
-        if: inputs.verify_module_lock
-        shell: bash
-        env:
-          _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
-        run: |
-          set -euo pipefail
-          dagger develop
-          uv lock --project .dagger --check
       - name: Gate on pytest execution and explicit quality policy
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
         shell: bash
@@ -294,6 +280,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - uses: astral-sh/setup-uv@v7
+        if: inputs.verify_module_lock
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Verify generated module lock consistency
+        if: inputs.verify_module_lock
+        shell: bash
+        env:
+          _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
+        run: |
+          set -euo pipefail
+          dagger develop
+          uv lock --project .dagger --check
       - name: Verify Ruff rejection and recovery (smoke only)
         if: ${{ inputs.verify_failure_propagation }}
         shell: bash
