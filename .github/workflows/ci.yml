@@ -17,6 +17,26 @@ on:
           - missing-xml
           - invalid-xml
           - missing-xml-pass
+      quality_probe_scenario:
+        description: 'Opt-in real pytest coverage quality probe (failures intentional)'
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - baseline
+          - coverage-pass
+          - coverage-low
+          - coverage-test-fail
+          - coverage-both-fail
+          - markers
+          - markers-empty
+          - invalid-markers
+          - coverage-missing-dependency
+          - coverage-report-missing
+          - coverage-report-invalid
+          - coverage-source-missing
+          - invalid-path
+          - invalid-threshold
 
 permissions:
   contents: read
@@ -29,13 +49,22 @@ jobs:
       pytest_check: engineering-ci:fixture-test
 
   pytest-report-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario == 'off' }}
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       pytest_report_function: fixture-pytest-artifacts
       pytest_check: engineering-ci:fixture-test
       pytest_report_scenario: ${{ inputs.pytest_probe_scenario }}
       pytest_artifact_name: pytest-report-probe
+
+  quality-gate-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario != 'off' }}
+    uses: ./.github/workflows/reusable-python-ci.yml
+    with:
+      pytest_report_function: fixture-quality-artifacts
+      pytest_check: engineering-ci:fixture-quality-gates
+      pytest_report_scenario: ${{ inputs.quality_probe_scenario }}
+      pytest_artifact_name: pytest-quality-probe
 
   sync-tool-tests:
     runs-on: ubuntu-24.04

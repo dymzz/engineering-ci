@@ -168,6 +168,20 @@ def markdown_summary(report: dict) -> str:
              f'Test execution: **{execution_status}**; report status: **{cell(report["status"].upper())}**',
              f'Original pytest exit code: **{report["exit_code"]}** ({cell(report["reason"])})',
              f'JUnit report available: **{str(report["report_available"]).lower()}**', ""]
+    quality = report.get("quality")
+    if quality:
+        selection, coverage = quality["selection"], quality["coverage"]
+        lines += ["| Test policy / quality | Result |", "| --- | --- |",
+                  f'| Test path | {cell(selection["test_path"], 300)} |',
+                  f'| Selected markers | {cell(selection["markers"] or "all in configured path", 300)} |',
+                  f'| Coverage source | {cell(coverage["source"] or "disabled", 300)} |']
+        percent = f'{coverage["line_percent"]:.2f}%' if coverage["available"] else "unavailable" if coverage["enabled"] else "disabled"
+        lines += [f'| Line coverage | {percent} |',
+                  f'| Required coverage | {cell(coverage["required_percent"] or "not configured")} |',
+                  f'| Coverage gate | {cell(coverage["status"].upper())} |',
+                  f'| Overall test quality gate | **{cell(quality["gate"]["status"].upper())}** |', ""]
+        if coverage.get("diagnostic"):
+            lines += ["Coverage diagnostic: " + cell(coverage["diagnostic"]), ""]
     counts = report["counts"]
     if counts is not None:
         lines += ["| Metric | Count |", "| --- | ---: |"]

@@ -159,7 +159,7 @@ jobs:
             fi
           fi
 
-      - name: Gate on original pytest execution
+      - name: Gate on pytest execution and explicit quality policy
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
         shell: bash
         run: |
@@ -204,6 +204,10 @@ jobs:
             ${{ runner.temp }}/pytest-report/summary.md
             ${{ runner.temp }}/pytest-report/junit.xml
             ${{ runner.temp }}/pytest-report/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/fixture-timing.json
+            ${{ runner.temp }}/pytest-report/quality-policy.json
+            ${{ runner.temp }}/pytest-report/coverage.xml
+            ${{ runner.temp }}/pytest-report/coverage.json
           if-no-files-found: warn
           retention-days: 7
 
