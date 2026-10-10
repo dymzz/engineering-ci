@@ -60,6 +60,9 @@ jobs:
     with:
       pytest_report_function: fixture-pytest-artifacts
       pytest_check: engineering-ci:fixture-test
+      dependency_security_mode: report
+      dependency_security_project: tests/fixtures/dependency-security
+      dependency_security_source_ref: ${{ github.sha }}
 
   pytest-report-probe:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.quality_probe_scenario == 'off' && inputs.matrix_probe_scenario == 'off' }}
@@ -99,6 +102,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Test pytest report parser
         run: uv run --locked --group dev python -m unittest discover -s tests -p 'test_pytest*.py' -v
+
+      - name: Test dependency security contract
+        run: uv run --locked --group dev pytest tests/test_dependency_security.py -q
 
   version-metadata:
     runs-on: ubuntu-24.04
