@@ -1,7 +1,12 @@
 """Unified CLI delegates to existing business functions without dispatching in menus."""
 
+import json
+import os
+import shlex
+import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -429,3 +434,72 @@ def test_download_uses_coordinator_without_validation_or_dispatch(
     assert download.main(args) == 0
     assert download.main(args) == 0
     assert runs == [45, 45, 45]
+
+
+@pytest.mark.parametrize("modern", [True, False])
+def test_security_workflow_accepts_published_helper_and_preserves_failure(
+    tmp_path, modern
+):
+    """Execute the real routing block against helper stubs, including native Git Bash."""
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        bash = Path(git).parents[1] / "bin/bash.exe" if git else None
+        if bash is None or not bash.is_file():
+            pytest.skip("Git Bash unavailable for security helper routing")
+    else:
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("Bash unavailable for security helper routing")
+    helper = tmp_path / "engineering-ci-security"
+    legacy = helper / "scripts/dependency_security.py"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "import json, os, sys\nprint(json.dumps({'entry':'legacy','args':sys.argv[1:]}))\n"
+        "raise SystemExit(int(os.environ['HELPER_EXIT']))\n"
+    )
+    if modern:
+        package = helper / "src/engineering_ci"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "workflow_actions.py").write_text(
+            "import json, os, sys\nprint(json.dumps({'entry':'module','args':sys.argv[1:]}))\n"
+            "raise SystemExit(int(os.environ['HELPER_EXIT']))\n"
+        )
+    workflow = (ROOT / ".github/workflows/reusable-python-ci.yml").read_text(
+        encoding="utf-8"
+    )
+    start = workflow.index(
+        '          if [[ -f "$RUNNER_TEMP/engineering-ci-security/src/engineering_ci/workflow_actions.py"'
+    )
+    end = workflow.index("          fi", start) + len("          fi")
+    block = textwrap.dedent(workflow[start:end])
+    block = block.replace(
+        "python3 ", shlex.quote(Path(sys.executable).as_posix()) + " "
+    )
+    for exit_code in (0, 7):
+        result = subprocess.run(
+            [
+                str(bash),
+                "-c",
+                'set -euo pipefail\nargs=(--project "project with spaces" --mode enforce)\n'
+                + block,
+            ],
+            env={
+                **os.environ,
+                "RUNNER_TEMP": tmp_path.as_posix(),
+                "HELPER_EXIT": str(exit_code),
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == exit_code, result.stderr
+        output = json.loads(result.stdout)
+        assert output["entry"] == ("module" if modern else "legacy")
+        assert output["args"] == (["security"] if modern else []) + [
+            "--project",
+            "project with spaces",
+            "--mode",
+            "enforce",
+        ]

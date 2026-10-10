@@ -57,5 +57,9 @@ Actions 设置 PYTHONPATH 为实际 checkout 的 src。内部 release prepare/ve
 读取 Actions 上下文、真实 SHA、Run Attempt 和必需证据，不用于本地请求发布。
 这些操作不会触发另一轮 pytest 或 Dagger。
 
+Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者保持兼容。
+匹配的新 helper 使用 workflow_actions security；旧 helper 继续调用其已发布的脚本。
+入口只按文件是否存在选择；执行失败直接传播，不切换到另一入口重试。
+
 普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
 有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见入口索引。

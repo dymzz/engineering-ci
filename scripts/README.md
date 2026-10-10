@@ -97,6 +97,8 @@ function ghdispatch {
 | ghwf_e2e.py | `uv run --locked python -m engineering_ci.tools.workflow_e2e ...` |
 
 内部发布操作依赖 Actions 上下文，不是本地发起发布的命令。
+Security Workflow 兼容已发布旧 helper 的脚本；默认 ref 和消费者参数不变，
+不在当前 scripts 目录恢复第三个入口，也不会在执行失败后换入口重试。
 consumer 默认只读；修改、提交、推送仍需显式参数。
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/local-verification.md)。

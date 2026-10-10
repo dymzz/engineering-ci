@@ -420,7 +420,13 @@ jobs:
               args+=(--public-index "$index")
             fi
           done <<< "$SECURITY_PUBLIC_INDEXES"
-          PYTHONPATH="$RUNNER_TEMP/engineering-ci-security/src" python3 -m engineering_ci.workflow_actions security "${args[@]}"
+          # Published helpers before v0.4.11 still expose the original script.
+          # Select by entry availability; never retry another entry after a failure.
+          if [[ -f "$RUNNER_TEMP/engineering-ci-security/src/engineering_ci/workflow_actions.py" ]]; then
+            PYTHONPATH="$RUNNER_TEMP/engineering-ci-security/src" python3 -m engineering_ci.workflow_actions security "${args[@]}"
+          else
+            python3 "$RUNNER_TEMP/engineering-ci-security/scripts/dependency_security.py" "${args[@]}"
+          fi
       - name: Publish Dependency Security Summary
         if: ${{ always() && !cancelled() }}
         continue-on-error: true
