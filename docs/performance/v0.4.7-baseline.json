@@ -1,0 +1,1725 @@
+{
+  "samples": [
+    {
+      "schema_version": 1,
+      "run_id": 38033929141,
+      "workflow": "Engineering CI",
+      "event": "push",
+      "sha": "60a2882da66fcdd7e99f838ef172a36b3d0782f8",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/38033929141",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "queued_before_first_job_seconds": 3.0,
+      "checks_execution_window_seconds": 162.0,
+      "submission_to_checks_complete_seconds": 165.0,
+      "critical_finishing_job": "python-ci / checks",
+      "parallel_runner_seconds": 202.0,
+      "first_failed_step_completion_seconds": null,
+      "jobs": [
+        {
+          "id": 114160344182,
+          "name": "version-metadata",
+          "conclusion": "success",
+          "started_at": "2026-10-10T07:17:41Z",
+          "completed_at": "2026-10-10T07:17:50Z",
+          "execution_seconds": 9.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Validate release metadata and lock files",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114160344309,
+          "name": "sync-tool-tests",
+          "conclusion": "success",
+          "started_at": "2026-10-10T07:17:41Z",
+          "completed_at": "2026-10-10T07:17:57Z",
+          "execution_seconds": 16.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Test consumer sync utility",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test pytest report parser",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Test dependency security contract",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114160344436,
+          "name": "python-ci / dependency-security",
+          "conclusion": "success",
+          "started_at": "2026-10-10T07:17:42Z",
+          "completed_at": "2026-10-10T07:17:57Z",
+          "execution_seconds": 15.0,
+          "queue_or_scheduling_seconds": 4.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Check lock integrity and scan known vulnerabilities",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Publish Dependency Security Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload dependency security evidence",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114160344459,
+          "name": "python-ci / checks",
+          "conclusion": "success",
+          "started_at": "2026-10-10T07:17:41Z",
+          "completed_at": "2026-10-10T07:20:23Z",
+          "execution_seconds": 162.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Configure private Dagger module authentication",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Start Dagger Engine",
+              "conclusion": "success",
+              "seconds": 15.0
+            },
+            {
+              "name": "Install Dagger CLI",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run Dagger Checks",
+              "conclusion": "success",
+              "seconds": 136.0
+            },
+            {
+              "name": "Gate on pytest execution and explicit quality policy",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish pytest Job Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Explain pytest report delivery warning",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload pytest evidence",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Verify Ruff rejection and recovery (smoke only)",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Engine logs on failure",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cleanup temporary Git credentials",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        }
+      ],
+      "dagger": {
+        "commands": [],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 51.2
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 51.2
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 3.2
+          },
+          {
+            "session": 3,
+            "phase": "load module: engineering-ci",
+            "seconds": 3.0
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 15.5
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 15.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 18.6
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 50.3
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 63.0
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 2.55
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.35
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 2.75
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 2.76
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.15
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.12
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.812
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 2.32
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.813
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.823
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.817
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.868
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.812
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.783
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.793
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.038
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.049
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.101
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.167
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.23
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.026
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.033
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          }
+        ],
+        "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
+      },
+      "limitations": [
+        "Queue values include scheduling/dependency waits; absent job created_at is unknown.",
+        "Completion uses final job timestamp, not mutable workflow updated_at.",
+        "Parallel runner seconds describe resource use, not CI latency.",
+        "Different test selections/versions/settings are not before/after samples.",
+        "First failed step completion is an API observation; live diagnosis may arrive earlier."
+      ],
+      "sample_label": "v046-main",
+      "conditions": {
+        "runner": "ubuntu-24.04 GitHub hosted",
+        "dagger_engine": "0.21.10 new job-local engine/volume",
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
+      }
+    },
+    {
+      "schema_version": 1,
+      "run_id": 38032201841,
+      "workflow": "Engineering CI",
+      "event": "pull_request",
+      "sha": "185b8a552676691cf61c34de859e98e4b503d307",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/38032201841",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "queued_before_first_job_seconds": 3.0,
+      "checks_execution_window_seconds": 152.0,
+      "submission_to_checks_complete_seconds": 155.0,
+      "critical_finishing_job": "python-ci / checks",
+      "parallel_runner_seconds": 192.0,
+      "first_failed_step_completion_seconds": null,
+      "jobs": [
+        {
+          "id": 114155311529,
+          "name": "sync-tool-tests",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:48:20Z",
+          "completed_at": "2026-10-10T06:48:36Z",
+          "execution_seconds": 16.0,
+          "queue_or_scheduling_seconds": 2.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test consumer sync utility",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test pytest report parser",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Test dependency security contract",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114155311572,
+          "name": "version-metadata",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:48:20Z",
+          "completed_at": "2026-10-10T06:48:29Z",
+          "execution_seconds": 9.0,
+          "queue_or_scheduling_seconds": 2.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Validate release metadata and lock files",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114155311719,
+          "name": "python-ci / dependency-security",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:48:21Z",
+          "completed_at": "2026-10-10T06:48:36Z",
+          "execution_seconds": 15.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Check lock integrity and scan known vulnerabilities",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Publish Dependency Security Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload dependency security evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114155311805,
+          "name": "python-ci / checks",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:48:20Z",
+          "completed_at": "2026-10-10T06:50:52Z",
+          "execution_seconds": 152.0,
+          "queue_or_scheduling_seconds": 2.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Configure private Dagger module authentication",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Start Dagger Engine",
+              "conclusion": "success",
+              "seconds": 11.0
+            },
+            {
+              "name": "Install Dagger CLI",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Dagger Checks",
+              "conclusion": "success",
+              "seconds": 133.0
+            },
+            {
+              "name": "Gate on pytest execution and explicit quality policy",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish pytest Job Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Explain pytest report delivery warning",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload pytest evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Verify Ruff rejection and recovery (smoke only)",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Engine logs on failure",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cleanup temporary Git credentials",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        }
+      ],
+      "dagger": {
+        "commands": [],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 50.8
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 50.8
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 3.5
+          },
+          {
+            "session": 3,
+            "phase": "load module: engineering-ci",
+            "seconds": 3.1
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 13.7
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 14.0
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 17.2
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 52.2
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 61.0
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 1.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.544
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.16
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.09
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.53
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.606
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.833
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.546
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.408
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.423
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.974
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.415
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.393
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.394
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.379
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.401
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.325
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.096
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.177
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.077
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.021
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.036
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.019
+          }
+        ],
+        "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
+      },
+      "limitations": [
+        "Queue values include scheduling/dependency waits; absent job created_at is unknown.",
+        "Completion uses final job timestamp, not mutable workflow updated_at.",
+        "Parallel runner seconds describe resource use, not CI latency.",
+        "Different test selections/versions/settings are not before/after samples.",
+        "First failed step completion is an API observation; live diagnosis may arrive earlier."
+      ],
+      "sample_label": "v046-pr-cold-security",
+      "conditions": {
+        "runner": "ubuntu-24.04 GitHub hosted",
+        "dagger_engine": "0.21.10 new job-local engine/volume",
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
+      }
+    },
+    {
+      "schema_version": 1,
+      "run_id": 38032667287,
+      "workflow": "Engineering CI",
+      "event": "pull_request",
+      "sha": "d1d5394cc237341d57570fca8ea9a23b0b869cdc",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/38032667287",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "queued_before_first_job_seconds": 4.0,
+      "checks_execution_window_seconds": 162.0,
+      "submission_to_checks_complete_seconds": 166.0,
+      "critical_finishing_job": "python-ci / checks",
+      "parallel_runner_seconds": 201.0,
+      "first_failed_step_completion_seconds": null,
+      "jobs": [
+        {
+          "id": 114156683623,
+          "name": "version-metadata",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:56:25Z",
+          "completed_at": "2026-10-10T06:56:36Z",
+          "execution_seconds": 11.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Validate release metadata and lock files",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114156683759,
+          "name": "python-ci / dependency-security",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:56:25Z",
+          "completed_at": "2026-10-10T06:56:37Z",
+          "execution_seconds": 12.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Check lock integrity and scan known vulnerabilities",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish Dependency Security Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload dependency security evidence",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114156683831,
+          "name": "sync-tool-tests",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:56:25Z",
+          "completed_at": "2026-10-10T06:56:41Z",
+          "execution_seconds": 16.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test consumer sync utility",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test pytest report parser",
+              "conclusion": "success",
+              "seconds": 10.0
+            },
+            {
+              "name": "Test dependency security contract",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114156683850,
+          "name": "python-ci / checks",
+          "conclusion": "success",
+          "started_at": "2026-10-10T06:56:25Z",
+          "completed_at": "2026-10-10T06:59:07Z",
+          "execution_seconds": 162.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Configure private Dagger module authentication",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Start Dagger Engine",
+              "conclusion": "success",
+              "seconds": 16.0
+            },
+            {
+              "name": "Install Dagger CLI",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run Dagger Checks",
+              "conclusion": "success",
+              "seconds": 135.0
+            },
+            {
+              "name": "Gate on pytest execution and explicit quality policy",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish pytest Job Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Explain pytest report delivery warning",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload pytest evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Verify Ruff rejection and recovery (smoke only)",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Engine logs on failure",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cleanup temporary Git credentials",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        }
+      ],
+      "dagger": {
+        "commands": [],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 50.1
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 50.1
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 3.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 14.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 14.5
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 17.9
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 51.3
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 63.0
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 1.92
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.756
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.742
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.99
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.95
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.702
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.689
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.7
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.682
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 2.11
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.847
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.834
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.671
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.685
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.718
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.656
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.66
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.015
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.027
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.043
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.06
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.1
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.028
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.047
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.022
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.033
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.026
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.025
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.018
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.018
+          }
+        ],
+        "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
+      },
+      "limitations": [
+        "Queue values include scheduling/dependency waits; absent job created_at is unknown.",
+        "Completion uses final job timestamp, not mutable workflow updated_at.",
+        "Parallel runner seconds describe resource use, not CI latency.",
+        "Different test selections/versions/settings are not before/after samples.",
+        "First failed step completion is an API observation; live diagnosis may arrive earlier."
+      ],
+      "sample_label": "v046-pr-warm-security",
+      "conditions": {
+        "runner": "ubuntu-24.04 GitHub hosted",
+        "dagger_engine": "0.21.10 new job-local engine/volume",
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
+      }
+    },
+    {
+      "schema_version": 1,
+      "run_id": 38027538357,
+      "workflow": "Consumer Python CI",
+      "event": "push",
+      "sha": "2203e37813f9fd46b36ce4e9cac326c81f8d2194",
+      "url": "https://github.com/dymzz/engineering-ci-smoke/actions/runs/38027538357",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "queued_before_first_job_seconds": 3.0,
+      "checks_execution_window_seconds": 123.0,
+      "submission_to_checks_complete_seconds": 126.0,
+      "critical_finishing_job": "python-ci / checks",
+      "parallel_runner_seconds": 123.0,
+      "first_failed_step_completion_seconds": null,
+      "jobs": [
+        {
+          "id": 114141472306,
+          "name": "python-ci / checks",
+          "conclusion": "success",
+          "started_at": "2026-10-10T05:27:03Z",
+          "completed_at": "2026-10-10T05:29:06Z",
+          "execution_seconds": 123.0,
+          "queue_or_scheduling_seconds": 2.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Configure private Dagger module authentication",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Start Dagger Engine",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Install Dagger CLI",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run Dagger Checks",
+              "conclusion": "success",
+              "seconds": 106.0
+            },
+            {
+              "name": "Gate on pytest execution and explicit quality policy",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish pytest Job Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Explain pytest report delivery warning",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload pytest evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Verify Ruff rejection and recovery (smoke only)",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Engine logs on failure",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cleanup temporary Git credentials",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        }
+      ],
+      "dagger": {
+        "commands": [],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 59.8
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 59.8
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 11.3
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 8,
+            "seconds": 0.69
+          },
+          {
+            "session": 3,
+            "packages": 8,
+            "seconds": 0.913
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 8,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 8,
+            "seconds": 0.017
+          }
+        ],
+        "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
+      },
+      "limitations": [
+        "Queue values include scheduling/dependency waits; absent job created_at is unknown.",
+        "Completion uses final job timestamp, not mutable workflow updated_at.",
+        "Parallel runner seconds describe resource use, not CI latency.",
+        "Different test selections/versions/settings are not before/after samples.",
+        "First failed step completion is an API observation; live diagnosis may arrive earlier."
+      ],
+      "sample_label": "smoke-v045-main",
+      "conditions": {
+        "runner": "ubuntu-24.04 GitHub hosted",
+        "dagger_engine": "0.21.10 new job-local engine/volume",
+        "selection": "Smoke full / Python3.12 coverage smoke_sample",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
+      }
+    }
+  ]
+}
