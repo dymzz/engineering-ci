@@ -18,6 +18,8 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 
 ## 本地命令
 
+全部脚本入口及其运行目录、兼容关系见 [scripts 使用说明](../scripts/README.md)。
+
 仓库根目录执行，需 uv；根项目要求 Python 3.14。PowerShell / Bash 均可使用：
 
 ```sh

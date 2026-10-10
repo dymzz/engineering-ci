@@ -1,5 +1,8 @@
 # 统一 CLI 与 Workflow 输出
 
+直接运行 Python 脚本时，入口索引、依赖和目录规则见
+[scripts 使用说明](../scripts/README.md)。
+
 在 engineering-ci 源码仓库中使用安装后的命令：
 
 ```sh
