@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      verify_module_lock:
+        description: 'Core release only: generate SDK and verify .dagger lock consistency'
+        type: boolean
+        required: false
+        default: false
       pytest_report_function:
         description: 'Opt-in Dagger function returning a python-test-artifacts Directory'
         type: string
@@ -275,6 +280,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - uses: astral-sh/setup-uv@v7
+        if: inputs.verify_module_lock
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Verify generated module lock consistency
+        if: inputs.verify_module_lock
+        shell: bash
+        env:
+          _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine
+        run: |
+          set -euo pipefail
+          dagger develop
+          uv lock --project .dagger --check
       - name: Verify Ruff rejection and recovery (smoke only)
         if: ${{ inputs.verify_failure_propagation }}
         shell: bash
