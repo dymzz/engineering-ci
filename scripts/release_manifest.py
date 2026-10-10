@@ -66,12 +66,62 @@ REQUIRED_TOOLS = {
     ("dagger_cli", "dagger"),
     ("root_lock", "osv-scanner"),
 }
-ARTIFACT_NAMES = {
-    "pytest-report",
-    "dependency-security",
-    "core-tests",
-    "release-tools-ruff",
+ARTIFACT_OUTPUTS = {
+    "pytest-report": ("complete-ci", "pytest_artifact_id"),
+    "dependency-security": ("complete-ci", "security_artifact_id"),
+    "core-tests": ("core-tests", "core_artifact_id"),
+    "release-tools-ruff": ("core-tests", "ruff_artifact_id"),
 }
+ARTIFACT_NAMES = set(ARTIFACT_OUTPUTS)
+
+
+def artifact_ids(needs):
+    result = {}
+    for name, (job, output) in ARTIFACT_OUTPUTS.items():
+        value = needs.get(job, {}).get("outputs", {}).get(output, "")
+        if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
+            result[name] = int(value)
+    return result
+
+
+def workflow_jobs(api, run_id, attempt, head):
+    jobs = pages(api, f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
+    if any(
+        job.get("run_id") != run_id
+        or job.get("run_attempt") != attempt
+        or job.get("head_sha") != head
+        for job in jobs
+    ):
+        raise ValueError("Job does not match Run, attempt and commit")
+    return jobs
+
+
+def artifact_metadata(
+    api, repository, name, asset_id, head, run_id, *, allow_expired=False
+):
+    if name not in ARTIFACT_NAMES or type(asset_id) is not int or asset_id <= 0:
+        raise ValueError("Invalid native Artifact ID")
+    item = api(f"actions/artifacts/{asset_id}")
+    expected_url = (
+        f"https://api.github.com/repos/{repository}/actions/artifacts/{asset_id}"
+    )
+    if (
+        item["id"] != asset_id
+        or item["name"] != name
+        or item.get("workflow_run", {}).get("head_sha") != head
+        or item.get("workflow_run", {}).get("id") != run_id
+        or item.get("url") != expected_url
+        or type(item.get("expired")) is not bool
+    ):
+        raise ValueError("Artifact identity or commit mismatch")
+    if item.get("expired") and not allow_expired:
+        return None
+    return {
+        "name": name,
+        "id": asset_id,
+        "digest": item.get("digest"),
+        "url": item["url"],
+    }
 
 
 def encode(value):
@@ -114,12 +164,17 @@ def tools(scope):
 
 
 def clean_tools(records):
+    if not isinstance(records, list):
+        raise TypeError("Invalid tool version evidence")
     result = []
     for item in records:
         if (
-            set(item) != {"name", "version", "scope"}
+            not isinstance(item, dict)
+            or set(item) != {"name", "version", "scope"}
             or item["name"] not in TOOLS
             or item["scope"] not in SCOPES
+            or (item["scope"], item["name"]) not in REQUIRED_TOOLS
+            or not isinstance(item["version"], str)
             or not TOOL_VERSION.fullmatch(item["version"])
         ):
             raise ValueError("Invalid tool version evidence")
@@ -241,13 +296,13 @@ def check_record(jobs, name, step):
     return result
 
 
-def manifest(api, repository, tag, head, run_id, attempt, mode, evidence):
+def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids=None):
     if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
         raise ValueError("Invalid release version")
     workflow = run_context(
         api, repository, head, run_id, attempt, publication=mode == "publication"
     )
-    jobs = pages(api, f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
+    jobs = workflow_jobs(api, run_id, attempt, head)
     checks = {key: check_record(jobs, *source) for key, source in CHECKS.items()}
     for key, check in DAGGER_POLICY_CHECKS.items():
         record = dict(checks["dagger"])
@@ -274,19 +329,10 @@ def manifest(api, repository, tag, head, run_id, attempt, mode, evidence):
     ):
         checks["evidence"]["status"] = "unavailable"
     artifacts = []
-    for item in pages(api, f"actions/runs/{run_id}/artifacts", "artifacts"):
-        if item["name"] not in ARTIFACT_NAMES or item.get("expired"):
-            continue
-        if item.get("workflow_run", {}).get("head_sha") != head:
-            raise ValueError("Artifact commit mismatch")
-        artifacts.append(
-            {
-                "name": item["name"],
-                "id": item["id"],
-                "digest": item.get("digest"),
-                "url": f"https://api.github.com/repos/{repository}/actions/artifacts/{item['id']}",
-            }
-        )
+    for name, asset_id in (ids or {}).items():
+        record = artifact_metadata(api, repository, name, asset_id, head, run_id)
+        if record is not None:
+            artifacts.append(record)
     if (
         checks["evidence"]["status"] == "passed"
         and {item["name"] for item in artifacts} != ARTIFACT_NAMES
@@ -318,6 +364,8 @@ def manifest(api, repository, tag, head, run_id, attempt, mode, evidence):
 
 def validate(value, repository, tag, head, *, published=False):
     """Validate the fixed publication contract; do not trust arbitrary artifact JSON."""
+    if not REPOSITORY.fullmatch(repository):
+        raise ValueError("Invalid Manifest repository")
     expected = {
         "schema_version",
         "repository",
@@ -363,7 +411,7 @@ def validate(value, repository, tag, head, *, published=False):
         raise ValueError("Manifest workflow identity mismatch")
     url = identity["release_url"]
     if url is not None and not re.fullmatch(
-        rf"https://api\.github\.com/repos/{re.escape(repository)}/releases/[0-9]+",
+        rf"https://api\.github\.com/repos/{re.escape(repository)}/releases/[1-9][0-9]*",
         url,
     ):
         raise ValueError("Invalid actual Release URL")
@@ -373,7 +421,7 @@ def validate(value, repository, tag, head, *, published=False):
         raise ValueError("Missing or unexpected manifest checks")
     for key, record in value["checks"].items():
         if key in optional:
-            if record != {
+            if record.get("required") is not False or record != {
                 "required": False,
                 "status": "not_enabled",
                 "reason": (
@@ -438,6 +486,10 @@ def validate(value, repository, tag, head, *, published=False):
             )
         ):
             raise ValueError("Invalid artifact metadata")
+    if len({item["name"] for item in value["artifacts"]}) != len(
+        value["artifacts"]
+    ) or len({item["id"] for item in value["artifacts"]}) != len(value["artifacts"]):
+        raise ValueError("Duplicate artifact references")
     passed = all(value["checks"][key]["status"] == "passed" for key in required)
     if passed and {item["name"] for item in value["artifacts"]} != ARTIFACT_NAMES:
         raise ValueError("Passed manifest lacks required artifact references")
@@ -470,7 +522,14 @@ def main(argv=None):
             value = facts(args.directory)
         write(args.output, value)
         return 0
-    except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError):
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ):
         parser.exit(
             1, "Release evidence unavailable; inspect original job diagnostics.\n"
         )

@@ -21,8 +21,8 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 仓库根目录执行，需 uv；根项目要求 Python 3.14。PowerShell / Bash 均可使用：
 
 ```sh
-uvx ruff==0.16.10 check --isolated --target-version py311 tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py
-uvx ruff==0.16.10 format --isolated --target-version py311 --check tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py
+uvx ruff==0.16.10 check --isolated --target-version py311 tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py tests/test_release_transport.py
+uvx ruff==0.16.10 format --isolated --target-version py311 --check tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py tests/test_release_transport.py
 uv run --locked --group dev pytest -q
 uv run --locked --group dev pytest --cov=src/engineering_ci --cov=.dagger/src/engineering_ci --cov-report=term-missing --cov-report=xml
 uv run --locked python scripts/release_version.py check
@@ -141,17 +141,33 @@ Ruff、核心 pytest、版本锁一致性、安全 enforce、Dagger 与原始 py
 的 uv / Ruff、既有 `dagger version`、已核验的 OSV Scanner 版本。
 scope 区分执行环境；不把根工具版本当作 Dagger 容器内部的版本。
 Artifact 条目仅保留原生 ID、可用 digest 和 API 元数据链接。
-Artifact API 不提供 attempt，条目属于同一 Run / SHA；检查结果按 attempt 获取。
-验证 Artifact 有保留期；正式 Release 的 Manifest Asset 提供持续追溯入口。
+Artifact API 不提供 attempt，因此证据下载使用本次生产步骤的原生
+`artifact-id`，经 job / reusable workflow outputs 传递；不按同名文件猜测，
+不枚举整个 Run 后选最新条目。API 另行核对 Artifact ID、名称、Run 与 SHA，
+Jobs API 核对当前 attempt 和 SHA。facts、Manifest 也用精确 ID 下载。
+只重跑部分 job 时，缺少当前 attempt 的检查或输出会拒绝；请完整重跑
+或重新手动验证。验证 Artifact 有保留期；正式 Release 的 Manifest Asset
+提供持续追溯入口。重复发布还需要原始 Actions 元数据；历史记录删除导致
+无法核验时明确拒绝，不修改已发布版本。
+
+Schema 约束字段、固定检查来源、状态、工具 scope/name 和必需证据数量；
+Python 校验进一步核对版本与 Tag、仓库与 URL、SHA 及原始 API 结果等
+跨字段和远端事实。通过 Schema 不等于已有可信的发布验证。
 
 正式发布沿用完整验证与 create-only Tag，然后用 GitHub 原生自动 Release Notes
 创建 Draft。填入实际 Release URL，上传 Manifest，再下载并核验原始检查、
 版本 / SHA 和上传内容，最后才将 Draft 转为正式 Release。
-任一步失败均不自动清理 Tag、覆盖 Asset 或伪造成功；修复后重新人工运行。
+任一步失败均不覆盖 Tag 或已上传 Asset，也不伪造成功；修复后重新人工运行。
+GitHub 上游失败可能留下 size=0、state=starter 的空 Asset；恢复仅在再次
+核对同一 SHA / Tag / Draft，并读回确认仍是该空 Asset 后删除并重新上传。
+正式 Release 或已上传文件不执行此清理。读回失败、权限不足、上传错误均
+阻断转正式；HTTP 错误只保留安全状态码，不输出原始响应。
 同 SHA 的 Draft 已有有效 Manifest 时保留原始验证 Run 的证据并核验后恢复；
 重复正式发布同样验证原记录，不修改已有版本。
 只有 publish job 有写权限；证据收集不新增 pytest / Dagger 调用。
 完整检查与 Artifact 上传仍可能因外部服务失败而拒绝发布。
+
+验证层次与剩余风险见 [v0.4.9 审查记录](release-review-v0.4.9.md)。
 
 GitHub 无法原子绑定 main 比较与 Release 创建。验证完成、创建 Tag 前、
 创建 Release 前都会核对 main；最后 API 调用仍有极短竞争窗口。

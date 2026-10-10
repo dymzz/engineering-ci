@@ -66,12 +66,19 @@ on:
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
+    outputs:
+      pytest_artifact_id:
+        value: ${{ jobs.checks.outputs.artifact_id }}
+      security_artifact_id:
+        value: ${{ jobs.dependency-security.outputs.artifact_id }}
 
 permissions:
   contents: read
 
 jobs:
   checks:
+    outputs:
+      artifact_id: ${{ steps.pytest_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
@@ -250,6 +257,7 @@ jobs:
           printf '\nReport delivery warning: evidence or presentation is incomplete. Original pytest execution status is unchanged.\n' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload pytest evidence
+        id: pytest_artifact
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
         uses: actions/upload-artifact@v7.0.2
         continue-on-error: true
@@ -362,6 +370,8 @@ jobs:
           rm -f "$RUNNER_TEMP/engineering-ci-git-credentials"
 
   dependency-security:
+    outputs:
+      artifact_id: ${{ steps.security_artifact.outputs.artifact-id }}
     if: ${{ inputs.dependency_security_mode != 'off' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -423,6 +433,7 @@ jobs:
             exit 1
           fi
       - name: Upload dependency security evidence
+        id: security_artifact
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         continue-on-error: true

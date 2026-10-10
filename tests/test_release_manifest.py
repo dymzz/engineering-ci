@@ -16,6 +16,7 @@ import release_manifest as evidence
 HEAD = "a" * 40
 TAG = "v0.4.9"
 REPOSITORY = "example/ci"
+IDS = {name: 45 + index for index, name in enumerate(sorted(evidence.ARTIFACT_NAMES))}
 
 
 class ManifestGitHub:
@@ -36,6 +37,9 @@ class ManifestGitHub:
             if name not in groups:
                 groups[name] = {
                     "id": len(groups) + 1,
+                    "run_id": 123,
+                    "run_attempt": 1,
+                    "head_sha": HEAD,
                     "name": name,
                     "status": "completed",
                     "conclusion": "success",
@@ -47,13 +51,15 @@ class ManifestGitHub:
         self.jobs = list(groups.values())
         self.artifacts = [
             {
-                "id": 45,
-                "name": "pytest-report",
+                "id": asset_id,
+                "name": name,
+                "url": f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{asset_id}",
                 "expired": False,
                 "digest": "sha256:" + "c" * 64,
-                "workflow_run": {"head_sha": HEAD},
+                "workflow_run": {"head_sha": HEAD, "id": 123},
                 "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD",
             }
+            for name, asset_id in IDS.items()
         ]
 
     def __call__(self, path, method="GET", data=None):
@@ -61,20 +67,12 @@ class ManifestGitHub:
             return self.run
         if path.startswith("actions/runs/123/attempts/1/jobs?"):
             return {"jobs": self.jobs}
-        if path.startswith("actions/runs/123/artifacts?"):
-            return (
-                {
-                    "artifacts": self.artifacts
-                    + [
-                        {**self.artifacts[0], "id": 50 + index, "name": name}
-                        for index, name in enumerate(
-                            sorted(evidence.ARTIFACT_NAMES - {"pytest-report"})
-                        )
-                    ]
-                }
-                if self.artifacts
-                else {"artifacts": []}
-            )
+        if path.startswith("actions/artifacts/"):
+            asset_id = int(path.rsplit("/", 1)[1])
+            for item in self.artifacts:
+                if item["id"] == asset_id:
+                    return item
+            raise release.ApiError(404)
         raise AssertionError((path, method, data))
 
 
@@ -99,7 +97,7 @@ def facts():
     }
 
 
-def make_manifest(api=None, mode="publication", source=None):
+def make_manifest(api=None, mode="publication", source=None, ids=None):
     return evidence.manifest(
         api or ManifestGitHub(),
         REPOSITORY,
@@ -109,6 +107,7 @@ def make_manifest(api=None, mode="publication", source=None):
         1,
         mode,
         facts() if source is None else source,
+        ids=IDS if ids is None else ids,
     )
 
 
@@ -205,7 +204,7 @@ def test_policy_checks_require_existing_execution_evidence():
 def test_missing_artifacts_or_tools_cannot_claim_passed():
     api = ManifestGitHub()
     api.artifacts = []
-    value = make_manifest(api)
+    value = make_manifest(api, ids={})
     assert value["result"] == "failed"
     assert value["checks"]["evidence"]["status"] == "unavailable"
     value = make_manifest()
@@ -291,7 +290,7 @@ def test_invalid_or_sensitive_manifest_is_rejected(mutation):
 def test_artifact_identity_and_api_errors_are_not_success():
     api = ManifestGitHub()
     api.artifacts[0]["workflow_run"]["head_sha"] = "b" * 40
-    with pytest.raises(ValueError, match="Artifact commit"):
+    with pytest.raises(ValueError, match="Artifact identity"):
         make_manifest(api)
 
     def unavailable(*_):
@@ -310,6 +309,110 @@ def test_pagination_preserves_current_attempt():
 
     assert len(evidence.pages(api, "actions/runs/123/attempts/2/jobs", "jobs")) == 101
     assert calls[-1].endswith("page=2")
+
+
+def test_schema_registry_enums_and_required_contract_do_not_drift():
+    schema = json.loads(
+        (ROOT / "docs/release-manifest.schema.json").read_text(encoding="utf-8")
+    )
+    fields = schema["properties"]
+    assert set(fields["checks"]["required"]) == set(evidence.CHECKS) | set(
+        evidence.DAGGER_POLICY_CHECKS
+    ) | {
+        "core_coverage_threshold",
+        "consumer_failure_probe",
+    }
+    assert set(schema["$defs"]["check"]["properties"]["status"]["enum"]) == set(
+        evidence.STATES.values()
+    )
+    tool = fields["tools"]["items"]["properties"]
+    assert set(tool["name"]["enum"]) == evidence.TOOLS
+    assert set(tool["scope"]["enum"]) == evidence.SCOPES
+    assert tool["version"]["pattern"] == evidence.TOOL_VERSION.pattern
+    pairs = {
+        (
+            entry["contains"]["properties"]["scope"]["const"],
+            entry["contains"]["properties"]["name"]["const"],
+        )
+        for entry in fields["tools"]["allOf"]
+    }
+    assert pairs == evidence.REQUIRED_TOOLS
+    assert (
+        set(fields["artifacts"]["items"]["properties"]["name"]["enum"])
+        == evidence.ARTIFACT_NAMES
+    )
+    assert fields["tools"]["maxItems"] == len(evidence.REQUIRED_TOOLS)
+    assert fields["artifacts"]["maxItems"] == len(evidence.ARTIFACT_NAMES)
+    checks = fields["checks"]["properties"]
+    for key, (job, step) in evidence.CHECKS.items():
+        assert checks[key]["properties"]["job"]["const"] == job
+        assert checks[key]["properties"]["step"]["const"] == step
+    for key, name in evidence.DAGGER_POLICY_CHECKS.items():
+        assert checks[key]["properties"]["dagger_check"]["const"] == name
+    for key in ("core_coverage_threshold", "consumer_failure_probe"):
+        assert (
+            checks[key]["properties"]["reason"]["const"]
+            == make_manifest()["checks"][key]["reason"]
+        )
+
+
+def test_native_artifact_ids_are_exact_and_missing_values_are_not_inferred():
+    needs = {}
+    for name, (job, output) in evidence.ARTIFACT_OUTPUTS.items():
+        needs.setdefault(job, {"outputs": {}})["outputs"][output] = str(IDS[name])
+    assert evidence.artifact_ids(needs) == IDS
+    for invalid in ("", "0", "045", "1\n2", True, 45):
+        wrong = copy.deepcopy(needs)
+        wrong["complete-ci"]["outputs"]["pytest_artifact_id"] = invalid
+        assert "pytest-report" not in evidence.artifact_ids(wrong)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("run_id", 999),
+        ("run_attempt", 2),
+        ("head_sha", "b" * 40),
+    ],
+)
+def test_job_identity_from_wrong_attempt_or_commit_is_rejected(field, value):
+    api = ManifestGitHub()
+    api.jobs[0][field] = value
+    with pytest.raises(ValueError, match="Run, attempt and commit"):
+        make_manifest(api)
+
+
+def test_old_artifacts_of_same_run_and_sha_are_not_enumerated_or_selected():
+    api = ManifestGitHub()
+    old = {
+        **api.artifacts[0],
+        "id": 999,
+        "url": f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/999",
+    }
+    api.artifacts.append(old)
+    value = make_manifest(api)
+    assert {item["id"] for item in value["artifacts"]} == set(IDS.values())
+    assert 999 not in {item["id"] for item in value["artifacts"]}
+    api.artifacts[0]["workflow_run"]["id"] = 999
+    with pytest.raises(ValueError, match="Artifact identity"):
+        make_manifest(api)
+
+
+def test_expired_artifacts_block_new_evidence_but_metadata_can_validate_history():
+    api = ManifestGitHub()
+    api.artifacts[0]["expired"] = True
+    assert make_manifest(api)["result"] == "failed"
+    item = api.artifacts[0]
+    record = evidence.artifact_metadata(
+        api,
+        REPOSITORY,
+        item["name"],
+        item["id"],
+        HEAD,
+        123,
+        allow_expired=True,
+    )
+    assert record["id"] == item["id"]
 
 
 def test_no_extra_test_execution_or_consumer_defaults():

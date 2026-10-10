@@ -24,6 +24,16 @@ class ApiError(RuntimeError):
         super().__init__(f"GitHub request failed (HTTP {status or 'unavailable'})")
 
 
+def require_api_success(result):
+    if result.returncode:
+        stderr = result.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        match = re.search(r"HTTP (\d{3})", stderr)
+        # Never print or persist raw HTTP responses or command stderr.
+        raise ApiError(int(match[1]) if match else None)
+
+
 class GitHub:
     def __init__(self, repository):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -44,13 +54,15 @@ class GitHub:
             check=False,
             timeout=60,
         )
-        if result.returncode:
-            match = re.search(r"HTTP (\d{3})", result.stderr)
-            # Never print or persist raw HTTP responses or command stderr.
-            raise ApiError(int(match[1]) if match else None)
+        require_api_success(result)
         if len(result.stdout) > 1024 * 1024:
             raise ValueError("GitHub metadata exceeds limit")
-        return json.loads(result.stdout)
+        if method == "DELETE" and not result.stdout.strip():
+            return None
+        value = json.loads(result.stdout)
+        if not isinstance(value, (dict, list)):
+            raise TypeError("GitHub metadata is not an object or array")
+        return value
 
     def upload(self, tag, path):
         result = subprocess.run(
@@ -59,8 +71,7 @@ class GitHub:
             check=False,
             timeout=120,
         )
-        if result.returncode:
-            raise ApiError()
+        require_api_success(result)
 
     def download(self, asset_id):
         result = subprocess.run(
@@ -75,8 +86,7 @@ class GitHub:
             check=False,
             timeout=60,
         )
-        if result.returncode:
-            raise ApiError()
+        require_api_success(result)
         if len(result.stdout) > 1024 * 1024:
             raise ValueError("Manifest asset exceeds limit")
         return json.loads(result.stdout)
@@ -171,7 +181,14 @@ def require_jobs(needs, head, publishing=False):
 
 
 def published_evidence(api, value, repository, tag, head):
-    from release_manifest import CHECKS, check_record, pages, run_context, validate
+    from release_manifest import (
+        CHECKS,
+        artifact_metadata,
+        check_record,
+        run_context,
+        validate,
+        workflow_jobs,
+    )
 
     validate(value, repository, tag, head)
     if (
@@ -189,17 +206,25 @@ def published_evidence(api, value, repository, tag, head):
         workflow["run_attempt"],
         publication=True,
     )
-    jobs = pages(
-        api,
-        f"actions/runs/{workflow['run_id']}/attempts/{workflow['run_attempt']}/jobs",
-        "jobs",
-    )
+    jobs = workflow_jobs(api, workflow["run_id"], workflow["run_attempt"], head)
     for key, source in CHECKS.items():
         if check_record(jobs, *source) != value["checks"][key]:
             raise ValueError("Manifest does not match original Actions results")
+    for record in value["artifacts"]:
+        current = artifact_metadata(
+            api,
+            repository,
+            record["name"],
+            record["id"],
+            head,
+            workflow["run_id"],
+            allow_expired=True,
+        )
+        if record["digest"] is not None and record["digest"] != current["digest"]:
+            raise ValueError("Manifest Artifact digest mismatch")
 
 
-def release_asset(api, release):
+def release_asset(api, release, recovery_head=None):
     assets = []
     for page in range(1, 21):
         items = api(f"releases/{release['id']}/assets?per_page=100&page={page}")
@@ -212,6 +237,31 @@ def release_asset(api, release):
         raise ValueError("Conflicting Manifest assets")
     if assets:
         asset = assets[0]
+        if type(asset.get("id")) is not int or asset["id"] <= 0:
+            raise ValueError("Invalid Manifest asset identity")
+        if (
+            recovery_head is not None
+            and release.get("draft") is True
+            and asset.get("state") == "starter"
+            and asset.get("size") == 0
+        ):
+            live = candidate(api, release["tag_name"], recovery_head, True)
+            if (
+                live is None
+                or live["id"] != release["id"]
+                or live.get("draft") is not True
+            ):
+                raise ValueError("Cannot repair an asset outside the validated Draft")
+            current = api(f"releases/assets/{asset['id']}")
+            if (
+                current.get("id") != asset["id"]
+                or current.get("name") != "release-manifest.json"
+                or current.get("state") != "starter"
+                or current.get("size") != 0
+            ):
+                raise ValueError("Empty Manifest asset changed before repair")
+            api(f"releases/assets/{asset['id']}", "DELETE")
+            return None
         if (
             asset.get("state") != "uploaded"
             or not 0 < asset.get("size", 0) <= 1024 * 1024
@@ -269,7 +319,7 @@ def publish_release(api, tag, head, manifest, path):
         )
     proposed["release"]["release_url"] = release_url(release, repository)
     published_evidence(api, proposed, repository, tag, head)
-    saved = release_asset(api, release)
+    saved = release_asset(api, release, recovery_head=head)
     if saved is None:
         if path.name != "release-manifest.json":
             raise ValueError("Expected release-manifest.json asset filename")
@@ -283,7 +333,9 @@ def publish_release(api, tag, head, manifest, path):
         if saved["release"]["release_url"] != release_url(release, repository):
             raise ValueError("Draft Manifest Release URL mismatch")
         published_evidence(api, saved, repository, tag, head)
-    candidate(api, tag, head, True)
+    live = candidate(api, tag, head, True)
+    if live is None or live["id"] != release["id"] or live.get("draft") is not True:
+        raise ValueError("Draft changed before final publication")
     if tag_commit(api, tag) != head:
         raise ValueError("Final tag SHA mismatch")
     release = api(f"releases/{release['id']}", "PATCH", {"draft": False})
@@ -380,7 +432,7 @@ def main(argv=None):
             if args.manifest is None:
                 raise ValueError("Manifest path required")
             if args.command == "verify":
-                from release_manifest import manifest, write
+                from release_manifest import artifact_ids, manifest, write
 
                 evidence = (
                     read_json(args.directory / "facts.json")
@@ -396,6 +448,7 @@ def main(argv=None):
                     int(os.environ["GITHUB_RUN_ATTEMPT"]),
                     "publication" if publish else "validation",
                     evidence,
+                    ids=artifact_ids(json.loads(os.environ["RELEASE_NEEDS"])),
                 )
                 write(args.manifest, value)
                 summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -459,6 +512,7 @@ def main(argv=None):
         return 0
     except (
         ValueError,
+        TypeError,
         KeyError,
         OSError,
         RuntimeError,
