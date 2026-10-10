@@ -215,6 +215,7 @@ version = "0.4.4"
 source = { editable = "." }
 dependencies = [
     { name = "dagger-io" },
+    { name = "packaging" },
 ]
 
 [package.dev-dependencies]
@@ -224,7 +225,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dagger-io", editable = "sdk" }]
+requires-dist = [
+    { name = "dagger-io", editable = "sdk" },
+    { name = "packaging", specifier = ">=24.2" },
+]
 
 [package.metadata.requires-dev]
 dev = [

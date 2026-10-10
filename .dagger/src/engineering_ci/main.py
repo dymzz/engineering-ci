@@ -1,4 +1,7 @@
+import asyncio
 import json
+import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -6,8 +9,21 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, check, dag, function, object_type
 
+from .pytest_matrix import (
+    SUPPORTED_PYTHONS,
+    aggregate,
+    matrix_policy,
+    matrix_summary,
+    supports_python,
+    version_result,
+)
+from .pytest_quality import (
+    evaluate_quality,
+    pytest_arguments,
+    quality_summary,
+    test_policy,
+)
 from .pytest_report import failure_summary, markdown_summary, summarize_pytest
-from .pytest_quality import evaluate_quality, pytest_arguments, quality_summary, test_policy
 
 
 @dataclass(frozen=True)
@@ -19,6 +35,14 @@ class _PytestExecution:
     container: dagger.Container
     policy: dict | None = None
     coverage: dict | None = None
+    runtime: dict | None = None
+
+
+@dataclass(frozen=True)
+class _MatrixExecution:
+    plan: dict
+    report: dict
+    rows: list
 
 
 @object_type
@@ -44,10 +68,11 @@ class EngineeringCi:
         self,
         source: dagger.Directory,
         python_version: str,
+        sync_dependencies: bool = True,
     ) -> dagger.Container:
         """Create an isolated uv environment for a Python project."""
 
-        supported = {"3.10", "3.11", "3.12", "3.13", "3.14"}
+        supported = set(SUPPORTED_PYTHONS)
 
         if python_version not in supported:
             raise ValueError(
@@ -60,7 +85,7 @@ class EngineeringCi:
             f"python{python_version}-trixie-slim"
         )
 
-        return (
+        container = (
             dag.container()
             .from_(image)
             .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
@@ -79,12 +104,9 @@ class EngineeringCi:
                 ],
             )
             .with_workdir("/workspace")
-            .with_exec([
-                "uv", "sync",
-                "--locked",
-                "--python", python_version,
-            ])
         )
+        return (container.with_exec(["uv", "sync", "--locked", "--python", python_version])
+                if sync_dependencies else container)
 
     @function
     async def python_lint(
@@ -131,14 +153,23 @@ class EngineeringCi:
         markers: str = "",
         coverage_source: str = "",
         min_coverage: str = "",
+        _prepared_container: dagger.Container | None = None,
+        _matrix_runtime: bool = False,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
         if not 1 <= max_failures <= 50:
             raise ValueError("max_failures must be between 1 and 50")
         policy = test_policy(test_path, markers, coverage_source, min_coverage)
-        container = self._uv_container(source, python_version).with_exec(
-            pytest_arguments(policy, report_path),
+        prepared = _prepared_container if _prepared_container is not None else self._uv_container(source, python_version)
+        arguments = pytest_arguments(policy, report_path)
+        if _matrix_runtime:
+            prepared = prepared.with_new_file("/tmp/engineering-ci-matrix-runtime.py",
+                Path(__file__).with_name("pytest_matrix_runtime.py").read_text(encoding="utf-8"))
+            arguments = ["uv", "run", "--no-sync", "python", "/tmp/engineering-ci-matrix-runtime.py",
+                         python_version, *arguments[4:]]
+        container = prepared.with_exec(
+            arguments,
             expect=dagger.ReturnType.ANY,
         )
         exit_code = await container.exit_code()
@@ -167,8 +198,14 @@ class EngineeringCi:
             ]).stdout())
         if markers or coverage_source:
             report["quality"] = evaluate_quality(policy, exit_code, coverage)
+        runtime = None
+        if _matrix_runtime:
+            runtime = json.loads(await reader.with_exec([
+                "python", "/tmp/engineering-ci-pytest-ci.py", "read-runtime",
+                "/tmp/engineering-ci-pytest-runtime.json",
+            ]).stdout())
         return _PytestExecution(exit_code, report, output, xml, container,
-                                policy if markers or coverage_source else None, coverage)
+                                policy if markers or coverage_source else None, coverage, runtime)
 
     def _require_pytest_success(self, execution: _PytestExecution) -> str:
         if execution.exit_code != 0:
@@ -251,6 +288,128 @@ class EngineeringCi:
         )
         return json.dumps(execution.report, ensure_ascii=False, sort_keys=True)
 
+    async def _run_pytest_matrix(self, source, python_versions, test_path="tests", max_failures=10,
+                                 markers="", coverage_source="", min_coverage="", max_concurrency=1):
+        policy = test_policy(test_path, markers, coverage_source, min_coverage)
+        plan = matrix_policy(python_versions, max_concurrency, max_failures, policy)
+        try:
+            project_text = await source.file("pyproject.toml").contents()
+            if len(project_text) > 1024 * 1024:
+                raise ValueError("pyproject.toml exceeds size limit")
+            requirement = tomllib.loads(project_text).get("project", {}).get("requires-python", "")
+            supports_python(requirement, "3.14.0")  # validate specifier before any container work
+        except Exception as exc:  # noqa: BLE001 - configuration errors remain explicit failing matrix rows
+            rows = [(v, {"phase": "configuration", "failure_category": "configuration_error",
+                         "diagnostic": f"Cannot read project.requires-python ({type(exc).__name__})"}, {}, None)
+                    for v in plan["requested_versions"]]
+            return _MatrixExecution(plan, aggregate(plan, [version_result(*r[:3]) for r in rows]), rows)
+
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def run_version(version):
+            async with semaphore:
+                started = time.perf_counter()
+                facts = {"schema_version": 1, "phase": "environment", "process_exit_code": None,
+                         "failure_category": None, "requires_python": requirement}
+                runtime, execution = {}, None
+                try:
+                    base = self._uv_container(source, version, sync_dependencies=False).with_new_file(
+                        "/tmp/engineering-ci-matrix-runtime.py",
+                        Path(__file__).with_name("pytest_matrix_runtime.py").read_text(encoding="utf-8"))
+                    runtime = json.loads(await base.with_exec([
+                        "python", "/tmp/engineering-ci-matrix-runtime.py", "--probe"]).stdout())
+                    if runtime["actual_python"].split(".")[:2] != version.split("."):
+                        facts.update(failure_category="interpreter_mismatch", diagnostic="Base interpreter differs from requested version")
+                    elif not supports_python(requirement, runtime["actual_python"]):
+                        facts.update(phase="compatibility", failure_category="python_unsupported",
+                                     diagnostic=f"Python {runtime['actual_python']} does not satisfy requires-python {requirement}")
+                    else:
+                        facts["validated_python"] = runtime["actual_python"]
+                        facts["phase"] = "dependencies"
+                        synced = base.with_exec(["uv", "sync", "--locked", "--python", version],
+                                                expect=dagger.ReturnType.ANY)
+                        code = await synced.exit_code()
+                        if code:
+                            facts.update(process_exit_code=code, failure_category="dependency_installation",
+                                         diagnostic=f"uv sync --locked failed (exit {code}); pytest was not started")
+                        else:
+                            facts["phase"] = "pytest"
+                            execution = await self._run_pytest(source, version, test_path, max_failures,
+                                markers, coverage_source, min_coverage, _prepared_container=synced, _matrix_runtime=True)
+                            runtime = execution.runtime or {}
+                            facts["process_exit_code"] = execution.exit_code
+                except Exception as exc:  # noqa: BLE001 - preserve failed rows and continue other required versions
+                    phase = facts["phase"]
+                    facts.update(failure_category={"environment": "environment_initialization",
+                        "dependencies": "dependency_installation"}.get(phase, "report_unavailable"),
+                        diagnostic=f"{phase} failed ({type(exc).__name__}); no automatic retry")
+                    if phase == "pytest":
+                        facts["phase"] = "collection"
+                facts["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+                return version, facts, runtime, execution
+
+        # A failed version is a result, not a reason to cancel remaining versions.
+        rows = await asyncio.gather(*(run_version(v) for v in plan["requested_versions"]))
+        report = aggregate(plan, [version_result(v, f, r, e.report if e else None) for v, f, r, e in rows])
+        return _MatrixExecution(plan, report, rows)
+
+    def _require_matrix_success(self, execution):
+        if execution.report["overall_status"] != "passed":
+            details = []
+            for row in execution.report["versions"]:
+                if row["status"] != "passed":
+                    detail = (f"Python {row['requested_python']}: {row['failure_category']}; "
+                              f"pytest exit {row['pytest_exit_code']}; {row.get('diagnostic') or ''}")
+                    if row.get("pytest"):
+                        detail += "\n" + failure_summary(row["pytest"])
+                    details.append(detail)
+            raise RuntimeError("Python compatibility matrix failed\n" + "\n".join(details))
+        return matrix_summary(execution.report)
+
+    def _matrix_bundle(self, execution):
+        directory = (dag.directory()
+            .with_new_file("matrix-policy.json", json.dumps(execution.plan, sort_keys=True))
+            .with_new_file("matrix.json", json.dumps(execution.report, sort_keys=True))
+            .with_new_file("summary.md", matrix_summary(execution.report)))
+        for filename in ("pytest_ci.py", "pytest_matrix.py", "pytest_report.py", "pytest_quality.py"):
+            directory = directory.with_new_file("ci.py" if filename == "pytest_ci.py" else filename,
+                Path(__file__).with_name(filename).read_text(encoding="utf-8"))
+        for version, facts, runtime, pytest in execution.rows:
+            folder = dag.directory()
+            if pytest is not None and runtime.get("pytest_started"):
+                folder = self._pytest_bundle(pytest)
+            folder = (folder.with_new_file("execution.json", json.dumps(facts, sort_keys=True))
+                .with_new_file("runtime.json", json.dumps(runtime, sort_keys=True)))
+            directory = directory.with_directory(f"versions/{version}", folder)
+        return directory
+
+    @function
+    async def python_test_matrix(self, source: dagger.Directory, python_versions: list[str],
+        test_path: str = "tests", max_failures: int = 10, markers: str = "",
+        coverage_source: str = "", min_coverage: str = "", max_concurrency: int = 1) -> str:
+        """Strict check: all requested interpreters, pytest executions and enabled gates must pass."""
+        execution = await self._run_pytest_matrix(source, python_versions, test_path, max_failures,
+            markers, coverage_source, min_coverage, max_concurrency)
+        return self._require_matrix_success(execution)
+
+    @function
+    async def python_test_matrix_report(self, source: dagger.Directory, python_versions: list[str],
+        test_path: str = "tests", max_failures: int = 10, markers: str = "",
+        coverage_source: str = "", min_coverage: str = "", max_concurrency: int = 1) -> str:
+        """Informational matrix JSON; failed versions remain present. Does not gate CI."""
+        execution = await self._run_pytest_matrix(source, python_versions, test_path, max_failures,
+            markers, coverage_source, min_coverage, max_concurrency)
+        return json.dumps(execution.report, sort_keys=True)
+
+    @function
+    async def python_test_matrix_artifacts(self, source: dagger.Directory, python_versions: list[str],
+        test_path: str = "tests", max_failures: int = 10, markers: str = "",
+        coverage_source: str = "", min_coverage: str = "", max_concurrency: int = 1) -> dagger.Directory:
+        """Execute once per interpreter; export matrix and facts. Gate with the exported ci.py."""
+        execution = await self._run_pytest_matrix(source, python_versions, test_path, max_failures,
+            markers, coverage_source, min_coverage, max_concurrency)
+        return self._matrix_bundle(execution)
+
     @function
     @check
     async def fixture_test(
@@ -271,6 +430,124 @@ class EngineeringCi:
                 or report["exit_code"] != 0 or report["counts"]["tests"] == 0):
             raise ValueError(f"Unexpected passing test report: {report}")
         return self._require_pytest_success(execution)
+
+    async def _matrix_fixture(self, source, scenario, concurrency=1):
+        versions = ["3.12", "3.13", "3.14"]
+        coverage_source, threshold = "", ""
+        if scenario == "version-fail":
+            source = source.with_new_file("tests/test_version_negative.py",
+                "import sys\ndef test_version_specific_failure():\n    assert sys.version_info[:2] != (3, 14)\n")
+        elif scenario == "unsupported":
+            versions = ["3.11", *versions]
+        elif scenario == "coverage-low":
+            source = source.with_new_file("matrix_sample.py",
+                await source.file("matrix_sample.py").contents() + "\n\ndef extra():\n    return 42\n")
+            source = source.with_new_file("tests/test_extra.py",
+                "import sys\nfrom matrix_sample import extra\ndef test_extra():\n"
+                "    if sys.version_info[:2] != (3, 14):\n        assert extra() == 42\n")
+            coverage_source, threshold = "matrix_sample", "100"
+        elif scenario == "dependency-error":
+            source = source.with_new_file("uv.lock", "version = 1\nrequires-python = '>=3.12'\npackage = []\n")
+        elif scenario != "pass":
+            raise ValueError("Unknown matrix fixture scenario")
+        return await self._run_pytest_matrix(source, versions, coverage_source=coverage_source,
+            min_coverage=threshold, max_concurrency=concurrency)
+
+    async def _matrix_fixture_bundle(self, execution):
+        bundle = self._matrix_bundle(execution)
+        for version, _, _, pytest in execution.rows:
+            if pytest is not None and pytest.runtime.get("pytest_started"):
+                counter = await pytest.container.file("/tmp/engineering-ci-pytest-invocations").contents()
+                if counter != "1":
+                    raise RuntimeError(f"Python {version}: pytest ran {counter} times")
+                bundle = (bundle.with_new_file(f"versions/{version}/fixture-invocations.txt", counter)
+                    .with_new_file(f"versions/{version}/fixture-timing.json",
+                        await pytest.container.file("/tmp/engineering-ci-fixture-timing.json").contents()))
+        return bundle
+
+    @function
+    async def fixture_matrix_artifacts(self,
+        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/matrix-app")],
+        scenario: str = "pass") -> dagger.Directory:
+        """Real matrix probe; export original evidence even when a version fails."""
+        if scenario == "performance":
+            return await self.fixture_matrix_performance(source)
+        execution = await self._matrix_fixture(source, scenario)
+        return await self._matrix_fixture_bundle(execution)
+
+    @function
+    @check
+    async def fixture_python_matrix(self,
+        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/matrix-app")]) -> str:
+        """Verify real interpreters, per-version failures, coverage and original-fact gate."""
+        verified = []
+        for scenario in ("pass", "version-fail", "unsupported", "coverage-low", "dependency-error"):
+            execution = await self._matrix_fixture(source, scenario)
+            rows = {r["requested_python"]: r for r in execution.report["versions"]}
+            for version in ("3.12", "3.13", "3.14"):
+                row = rows[version]
+                expected = ("dependency_installation" if scenario == "dependency-error" else
+                    "pytest_failure" if scenario == "version-fail" and version == "3.14" else
+                    "coverage_failure" if scenario == "coverage-low" and version == "3.14" else None)
+                if row["failure_category"] != expected:
+                    raise RuntimeError(f"{scenario}: unexpected Python {version} result: {row}")
+                if expected != "dependency_installation" and (
+                    not row["actual_python"].startswith(version + ".") or not row["runtime"]["pytest_started"]
+                ):
+                    raise RuntimeError(f"Missing real pytest runtime: {row}")
+                if expected == "coverage_failure" and row["pytest_exit_code"] != 0:
+                    raise RuntimeError("Coverage failure changed original pytest exit code")
+            if scenario == "unsupported" and rows["3.11"]["failure_category"] != "python_unsupported":
+                raise RuntimeError("Project constraint was ignored")
+            try:
+                self._require_matrix_success(execution)
+            except RuntimeError:
+                if scenario == "pass":
+                    raise
+            else:
+                if scenario != "pass":
+                    raise RuntimeError("Failed matrix incorrectly passed strict check")
+            bundle = await self._matrix_fixture_bundle(execution)
+            delivery = (dag.container().from_("python:3.14-slim")
+                .with_directory("/reports", bundle).with_workdir("/reports"))
+            code = await delivery.with_exec(["python", "ci.py", "gate", "/reports"],
+                expect=dagger.ReturnType.ANY).exit_code()
+            if (code == 0) != (scenario == "pass"):
+                raise RuntimeError(f"Original-fact gate disagrees for {scenario}")
+            await delivery.with_exec(["python", "ci.py", "summary", "/reports", "/tmp/summary.md"]).sync()
+            verified.append(scenario)
+        return "PASS: real matrix and delivery gate: " + ", ".join(verified)
+
+    @function
+    async def fixture_matrix_performance(self,
+        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/matrix-app")]) -> dagger.Directory:
+        """Measure one Engine: single, three sequential and bounded concurrent executions."""
+        measurements = []
+        bundle = dag.directory()
+        for mode, versions, concurrency in (("single", ["3.14"], 1),
+                                            ("sequential", ["3.12", "3.13", "3.14"], 1),
+                                            ("concurrent", ["3.12", "3.13", "3.14"], 2)):
+            # Different fixture input avoids reusing a prior completed pytest step;
+            # image layers and downloaded packages may still be warm.
+            candidate = source.with_new_file("benchmark-mode.txt", mode)
+            started = time.perf_counter()
+            if mode == "single":
+                pytest = await self._run_pytest(candidate, "3.14", "tests")
+                self._require_pytest_success(pytest)
+                counter = await pytest.container.file("/tmp/engineering-ci-pytest-invocations").contents()
+                if counter != "1":
+                    raise RuntimeError("Single benchmark repeated pytest")
+                result = self._pytest_bundle(pytest).with_new_file("fixture-invocations.txt", counter)
+            else:
+                execution = await self._run_pytest_matrix(candidate, versions, max_concurrency=concurrency)
+                self._require_matrix_success(execution)
+                result = await self._matrix_fixture_bundle(execution)
+            measurements.append({"mode": mode, "wall_seconds": round(time.perf_counter() - started, 3),
+                                 "pytest_invocations": len(versions), "max_concurrency": concurrency})
+            bundle = bundle.with_directory(mode, result)
+        return result.with_directory("benchmarks", bundle).with_new_file("matrix-benchmark.json", json.dumps({"measurements": measurements,
+            "engine": "one shared Dagger Engine; no per-version startup",
+            "cache": "Distinct fixture input per mode; image/package caches may be warm; one sample, no statistical guarantee"}, sort_keys=True))
 
     @function
     @check
