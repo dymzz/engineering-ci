@@ -66,12 +66,19 @@ on:
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
+    outputs:
+      pytest_artifact_id:
+        value: ${{ jobs.checks.outputs.artifact_id }}
+      security_artifact_id:
+        value: ${{ jobs.dependency-security.outputs.artifact_id }}
 
 permissions:
   contents: read
 
 jobs:
   checks:
+    outputs:
+      artifact_id: ${{ steps.pytest_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
@@ -163,10 +170,15 @@ jobs:
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
           PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
+          RECORD_RELEASE_EVIDENCE: ${{ inputs.verify_module_lock }}
         run: |
           set -euo pipefail
 
-          dagger version
+          if [[ "${RECORD_RELEASE_EVIDENCE:-false}" == 'true' ]]; then
+            dagger version | tee "$RUNNER_TEMP/dagger-version.txt"
+          else
+            dagger version
+          fi
           timed() {
             python3 - "$@" <<'TIMED_COMMAND'
           import json
@@ -202,6 +214,10 @@ jobs:
             python3 "$RUNNER_TEMP/pytest-report/ci.py" plan \
               "$RUNNER_TEMP/dagger-checks.txt" "$PYTEST_CHECK" "$RUNNER_TEMP/remaining-checks.txt"
             mapfile -t remaining < "$RUNNER_TEMP/remaining-checks.txt"
+            if [[ "${RECORD_RELEASE_EVIDENCE:-false}" == 'true' ]]; then
+              cp "$RUNNER_TEMP/dagger-version.txt" "$RUNNER_TEMP/dagger-checks.txt" \
+                "$RUNNER_TEMP/remaining-checks.txt" "$RUNNER_TEMP/pytest-report/"
+            fi
             if [[ "${#remaining[@]}" -gt 0 ]]; then
               timed remaining-checks dagger check "${remaining[@]}"
             fi
@@ -241,6 +257,7 @@ jobs:
           printf '\nReport delivery warning: evidence or presentation is incomplete. Original pytest execution status is unchanged.\n' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload pytest evidence
+        id: pytest_artifact
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}
         uses: actions/upload-artifact@v7.0.2
         continue-on-error: true
@@ -252,6 +269,9 @@ jobs:
             ${{ runner.temp }}/pytest-report/summary.md
             ${{ runner.temp }}/pytest-report/junit.xml
             ${{ runner.temp }}/pytest-report/fixture-invocations.txt
+            ${{ runner.temp }}/pytest-report/dagger-version.txt
+            ${{ runner.temp }}/pytest-report/dagger-checks.txt
+            ${{ runner.temp }}/pytest-report/remaining-checks.txt
             ${{ runner.temp }}/pytest-report/fixture-timing.json
             ${{ runner.temp }}/pytest-report/quality-policy.json
             ${{ runner.temp }}/pytest-report/coverage.xml
@@ -350,6 +370,8 @@ jobs:
           rm -f "$RUNNER_TEMP/engineering-ci-git-credentials"
 
   dependency-security:
+    outputs:
+      artifact_id: ${{ steps.security_artifact.outputs.artifact-id }}
     if: ${{ inputs.dependency_security_mode != 'off' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -411,6 +433,7 @@ jobs:
             exit 1
           fi
       - name: Upload dependency security evidence
+        id: security_artifact
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         continue-on-error: true

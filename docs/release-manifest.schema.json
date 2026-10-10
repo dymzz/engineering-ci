@@ -1,0 +1,1179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dymzz/engineering-ci/blob/main/docs/release-manifest.schema.json",
+  "title": "Engineering CI release evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "release",
+    "workflow",
+    "mode",
+    "checks",
+    "tools",
+    "artifacts",
+    "result"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "tag",
+        "commit_sha",
+        "release_url"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "release_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri",
+          "pattern": "^https://api\\.github\\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/[1-9][0-9]*$"
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "run_url",
+        "event",
+        "path"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$"
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "path": {
+          "const": ".github/workflows/release.yml"
+        }
+      }
+    },
+    "mode": {
+      "enum": [
+        "validation",
+        "publication"
+      ]
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate",
+        "ruff_lint",
+        "ruff_format",
+        "core_tests",
+        "version_integrity",
+        "dependency_security",
+        "dagger",
+        "tests",
+        "module_lock",
+        "evidence",
+        "coverage",
+        "python_matrix",
+        "core_coverage_threshold",
+        "consumer_failure_probe"
+      ],
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "candidate"
+            },
+            "step": {
+              "const": "Validate manual release request"
+            }
+          }
+        },
+        "ruff_lint": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / python-ci / checks"
+            },
+            "step": {
+              "const": "Ruff Lint"
+            }
+          }
+        },
+        "ruff_format": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / python-ci / checks"
+            },
+            "step": {
+              "const": "Ruff Format Check"
+            }
+          }
+        },
+        "core_tests": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / sync-tool-tests"
+            },
+            "step": {
+              "const": "Run all core unit and process tests"
+            }
+          }
+        },
+        "version_integrity": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / version-metadata"
+            },
+            "step": {
+              "const": "Validate release metadata and root lock consistency"
+            }
+          }
+        },
+        "dependency_security": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / dependency-security"
+            },
+            "step": {
+              "const": "Check lock integrity and scan known vulnerabilities"
+            }
+          }
+        },
+        "dagger": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Run Dagger Checks"
+            }
+          }
+        },
+        "tests": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Gate on pytest execution and explicit quality policy"
+            }
+          }
+        },
+        "module_lock": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Verify generated module lock consistency"
+            }
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "evidence"
+            },
+            "step": {
+              "const": "Require usable evidence and original execution gates"
+            }
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/dagger_check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Run Dagger Checks"
+            },
+            "dagger_check": {
+              "const": "engineering-ci:fixture-quality-gates"
+            }
+          }
+        },
+        "python_matrix": {
+          "$ref": "#/$defs/dagger_check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Run Dagger Checks"
+            },
+            "dagger_check": {
+              "const": "engineering-ci:fixture-python-matrix"
+            }
+          }
+        },
+        "core_coverage_threshold": {
+          "$ref": "#/$defs/optional",
+          "properties": {
+            "reason": {
+              "const": "Core coverage is exported; no core coverage threshold is configured."
+            }
+          }
+        },
+        "consumer_failure_probe": {
+          "$ref": "#/$defs/optional",
+          "properties": {
+            "reason": {
+              "const": "The smoke-only Ruff rejection probe is disabled in core releases."
+            }
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version",
+          "scope"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "python",
+              "uv",
+              "pytest",
+              "pytest-cov",
+              "ruff",
+              "dagger",
+              "osv-scanner"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:[a-z0-9.+-]*)$"
+          },
+          "scope": {
+            "enum": [
+              "core",
+              "ruff",
+              "dagger_cli",
+              "root_lock"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "core"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "name": {
+                  "enum": [
+                    "python",
+                    "uv",
+                    "pytest",
+                    "pytest-cov"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "ruff"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "name": {
+                  "enum": [
+                    "uv",
+                    "ruff"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "dagger_cli"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "name": {
+                  "enum": [
+                    "dagger"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "root_lock"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "name": {
+                  "enum": [
+                    "osv-scanner"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "maxItems": 8,
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "core"
+              },
+              "name": {
+                "const": "python"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "core"
+              },
+              "name": {
+                "const": "uv"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "core"
+              },
+              "name": {
+                "const": "pytest"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "core"
+              },
+              "name": {
+                "const": "pytest-cov"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "ruff"
+              },
+              "name": {
+                "const": "uv"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "ruff"
+              },
+              "name": {
+                "const": "ruff"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "dagger_cli"
+              },
+              "name": {
+                "const": "dagger"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "scope": {
+                "const": "root_lock"
+              },
+              "name": {
+                "const": "osv-scanner"
+              }
+            },
+            "required": [
+              "scope",
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        }
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "id",
+          "digest",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "pytest-report",
+              "dependency-security",
+              "core-tests",
+              "release-tools-ruff"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "maxItems": 4,
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "pytest-report"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "dependency-security"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "core-tests"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "release-tools-ruff"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        }
+      ]
+    },
+    "result": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "job",
+        "job_id",
+        "step",
+        "job_conclusion",
+        "step_conclusion"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "unavailable"
+          ]
+        },
+        "job": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "step": {
+          "type": "string"
+        },
+        "job_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "step_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "job_id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "job_conclusion": {
+                "const": "success"
+              },
+              "step_conclusion": {
+                "const": "success"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "dagger_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "job",
+        "job_id",
+        "step",
+        "job_conclusion",
+        "step_conclusion",
+        "dagger_check"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "unavailable"
+          ]
+        },
+        "job": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "step": {
+          "type": "string"
+        },
+        "job_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "step_conclusion": {
+          "enum": [
+            null,
+            "success",
+            "failure",
+            "skipped",
+            "cancelled",
+            "timed_out",
+            "neutral",
+            "action_required",
+            "stale",
+            "startup_failure"
+          ]
+        },
+        "dagger_check": {
+          "enum": [
+            "engineering-ci:fixture-quality-gates",
+            "engineering-ci:fixture-python-matrix"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "job_id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "job_conclusion": {
+                "const": "success"
+              },
+              "step_conclusion": {
+                "const": "success"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "optional": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "required": {
+          "const": false
+        },
+        "status": {
+          "const": "not_enabled"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "checks": {
+            "properties": {
+              "candidate": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "ruff_lint": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "ruff_format": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "core_tests": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "version_integrity": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "dependency_security": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "dagger": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "tests": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "module_lock": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "evidence": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "coverage": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "python_matrix": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          },
+          "tools": {
+            "minItems": 8
+          },
+          "artifacts": {
+            "minItems": 4
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "checks": {
+            "not": {
+              "properties": {
+                "candidate": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "ruff_lint": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "ruff_format": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "core_tests": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "version_integrity": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "dependency_security": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "dagger": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "tests": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "module_lock": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "evidence": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "coverage": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "python_matrix": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

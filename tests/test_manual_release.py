@@ -1,7 +1,7 @@
 """Manual release safety uses facts and create-only API calls; no live publication."""
 
+import copy
 import hashlib
-import importlib.util
 import json
 import os
 import subprocess
@@ -11,22 +11,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from test_release_manifest import IDS, ManifestGitHub, make_manifest, publish
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-spec = importlib.util.spec_from_file_location(
-    "manual_release", ROOT / "scripts/manual_release.py"
-)
-release = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(release)
+import manual_release as release
+
 HEAD, OTHER = "a" * 40, "b" * 40
-TAG = "v0.4.8"
+TAG = "v0.4.9"
 
 
-class FakeGitHub:
+class FakeGitHub(ManifestGitHub):
     def __init__(self, *, main=HEAD, tag=None, published=None, fail_release=False):
+        super().__init__()
         self.main, self.tag, self.published = main, tag, published
         self.fail_release = fail_release
         self.calls = []
+        self.saved = None
+        self.fail_upload = False
+        self.starter = False
 
     def __call__(self, path, method="GET", data=None):
         self.calls.append((path, method, data))
@@ -40,6 +43,37 @@ class FakeGitHub:
             if self.published is None:
                 raise release.ApiError(404)
             return self.published
+        if path.startswith("releases?"):
+            return [] if self.published is None else [self.published]
+        if path.startswith("releases/10/assets?"):
+            if self.starter:
+                return [
+                    {
+                        "id": 20,
+                        "name": "release-manifest.json",
+                        "state": "starter",
+                        "size": 0,
+                    }
+                ]
+            return (
+                []
+                if self.saved is None
+                else [
+                    {
+                        "id": 20,
+                        "name": "release-manifest.json",
+                        "state": "uploaded",
+                        "size": 100,
+                    }
+                ]
+            )
+        if path == "releases/assets/20" and method == "GET":
+            return {
+                "id": 20,
+                "name": "release-manifest.json",
+                "state": "starter" if self.starter else "uploaded",
+                "size": 0 if self.starter else 100,
+            }
         if path == "git/refs" and method == "POST":
             self.tag = data["sha"]
             return {}
@@ -47,12 +81,30 @@ class FakeGitHub:
             if self.fail_release:
                 raise release.ApiError(503)
             self.published = {
+                "id": 10,
+                "url": "https://api.github.com/repos/example/ci/releases/10",
+                "tag_name": TAG,
                 "html_url": "https://github.com/example/ci/releases/tag/" + TAG,
-                "draft": False,
+                "draft": data["draft"],
                 "prerelease": False,
             }
             return self.published
-        raise AssertionError(path)
+        if path == "releases/10" and method == "PATCH":
+            self.published.update(data)
+            return self.published
+        if path == "releases/assets/20" and method == "DELETE":
+            self.starter = False
+            return None
+        return super().__call__(path, method, data)
+
+    def upload(self, tag, path):
+        self.calls.append(("upload", "POST", tag))
+        if self.fail_upload:
+            raise release.ApiError(503)
+        self.saved = json.loads(path.read_text(encoding="utf-8"))
+
+    def download(self, asset_id):
+        return copy.deepcopy(self.saved)
 
     @property
     def writes(self):
@@ -135,7 +187,7 @@ class ManualReleaseTests(unittest.TestCase):
     def test_main_advance_and_conflicting_tag_never_write(self):
         for api in (FakeGitHub(main=OTHER), FakeGitHub(tag=OTHER)):
             with self.assertRaises(ValueError):
-                release.publish_release(api, TAG, HEAD)
+                publish(api)
             self.assertFalse(api.writes)
 
     def test_dry_candidate_is_read_only(self):
@@ -145,31 +197,37 @@ class ManualReleaseTests(unittest.TestCase):
 
     def test_success_creates_one_immutable_tag_and_release(self):
         api = FakeGitHub()
-        url, state = release.publish_release(api, TAG, HEAD)
+        url, state = publish(api)
         self.assertTrue(url.endswith(TAG))
         self.assertEqual(state, "published")
-        self.assertEqual([c[0] for c in api.writes], ["git/refs", "releases"])
+        self.assertEqual(
+            [c[0] for c in api.writes],
+            ["git/refs", "releases", "upload", "releases/10"],
+        )
         self.assertEqual(api.tag, HEAD)
         self.assertTrue(api.writes[1][2]["generate_release_notes"])
+        self.assertTrue(api.writes[1][2]["draft"])
+        self.assertFalse(api.published["draft"])
+        self.assertEqual(api.saved["release"]["commit_sha"], HEAD)
 
     def test_duplicate_request_never_republishes(self):
         api = FakeGitHub()
-        release.publish_release(api, TAG, HEAD)
+        publish(api)
         api.calls.clear()
-        self.assertEqual(
-            release.publish_release(api, TAG, HEAD)[1], "already-published"
-        )
+        self.assertEqual(publish(api)[1], "already-published")
         self.assertFalse(api.writes)
 
     def test_tag_only_failure_recovers_without_rewriting(self):
         api = FakeGitHub(fail_release=True)
         with self.assertRaises(release.ApiError):
-            release.publish_release(api, TAG, HEAD)
+            publish(api)
         self.assertEqual(api.tag, HEAD)
         api.calls.clear()
         api.fail_release = False
-        release.publish_release(api, TAG, HEAD)
-        self.assertEqual([c[0] for c in api.writes], ["releases"])
+        publish(api)
+        self.assertEqual(
+            [c[0] for c in api.writes], ["releases", "upload", "releases/10"]
+        )
 
     def test_main_advance_after_tag_does_not_create_release(self):
         api = FakeGitHub()
@@ -182,9 +240,267 @@ class ManualReleaseTests(unittest.TestCase):
             return result
 
         with self.assertRaises(ValueError):
-            release.publish_release(move, TAG, HEAD)
+            publish(move)
         self.assertEqual([c[0] for c in api.writes], ["git/refs"])
         self.assertIsNone(api.published)
+
+    def test_upload_failure_preserves_draft_and_recovers_without_clobber(self):
+        api = FakeGitHub()
+        api.fail_upload = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        self.assertTrue(api.published["draft"])
+        self.assertEqual(api.tag, HEAD)
+        self.assertNotIn("releases/10", [c[0] for c in api.writes])
+        api.fail_upload = False
+        api.calls.clear()
+        publish(api)
+        self.assertEqual([c[0] for c in api.writes], ["upload", "releases/10"])
+
+    def test_empty_starter_asset_is_repaired_only_on_validated_draft(self):
+        api = FakeGitHub()
+        api.fail_upload = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        api.starter = True
+        api.fail_upload = False
+        api.calls.clear()
+        publish(api)
+        self.assertEqual(
+            [c[0] for c in api.writes], ["releases/assets/20", "upload", "releases/10"]
+        )
+        self.assertFalse(api.starter)
+        self.assertFalse(api.published["draft"])
+
+    def test_starter_asset_of_final_release_is_never_deleted(self):
+        api = FakeGitHub()
+        publish(api)
+        api.starter = True
+        api.calls.clear()
+        with self.assertRaises(ValueError, msg="incomplete final asset"):
+            publish(api)
+        self.assertFalse(api.writes)
+
+    def test_starter_asset_that_completed_upload_is_not_deleted(self):
+        class CompletedUpload(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                if path == "releases/assets/20" and method == "GET":
+                    self.starter = False
+                return super().__call__(path, method, data)
+
+        api = CompletedUpload()
+        api.fail_upload = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        api.starter = True
+        api.fail_upload = False
+        api.calls.clear()
+        with self.assertRaisesRegex(ValueError, "changed before repair"):
+            publish(api)
+        self.assertFalse(api.writes)
+
+    def test_concurrent_promotion_is_not_patched_as_a_draft(self):
+        class PromotedDraft(FakeGitHub):
+            def download(self, asset_id):
+                saved = super().download(asset_id)
+                self.published["draft"] = False
+                return saved
+
+        api = PromotedDraft()
+        with self.assertRaisesRegex(ValueError, "Draft changed"):
+            publish(api)
+        self.assertNotIn("releases/10", [call[0] for call in api.writes])
+
+    def test_lost_upload_response_recovers_without_uploading_again(self):
+        class LostUpload(FakeGitHub):
+            def upload(self, tag, path):
+                super().upload(tag, path)
+                if self.lose_response:
+                    raise release.ApiError()
+
+        api = LostUpload()
+        api.lose_response = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        self.assertTrue(api.published["draft"])
+        api.lose_response = False
+        api.calls.clear()
+        publish(api)
+        self.assertEqual([c[0] for c in api.writes], ["releases/10"])
+
+    def test_lost_promotion_response_is_not_reported_success_then_is_idempotent(self):
+        class LostPromotion(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                result = super().__call__(path, method, data)
+                if path == "releases/10" and method == "PATCH":
+                    raise release.ApiError()
+                return result
+
+        api = LostPromotion()
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        self.assertFalse(api.published["draft"])
+        api.calls.clear()
+        self.assertEqual(publish(api)[1], "already-published")
+        self.assertFalse(api.writes)
+
+    def test_existing_manifest_artifact_digest_conflict_refuses_promotion(self):
+        api = FakeGitHub()
+        api.fail_upload = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        value = make_manifest(api)
+        value["release"]["release_url"] = api.published["url"]
+        value["artifacts"][0]["digest"] = "sha256:" + "e" * 64
+        api.saved = value
+        api.fail_upload = False
+        api.calls.clear()
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            publish(api)
+        self.assertFalse(api.writes)
+
+    def test_upload_readback_failure_does_not_promote(self):
+        api = FakeGitHub()
+        original = api.download
+
+        def corrupt(asset_id):
+            value = original(asset_id)
+            value["release"]["commit_sha"] = OTHER
+            return value
+
+        api.download = corrupt
+        with self.assertRaises(ValueError):
+            publish(api)
+        self.assertTrue(api.published["draft"])
+        self.assertNotIn("releases/10", [c[0] for c in api.writes])
+
+    def test_manifest_resource_url_survives_draft_browser_url_change(self):
+        class ChangedURL(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                result = super().__call__(path, method, data)
+                if path == "releases/10" and method == "PATCH":
+                    result["html_url"] = (
+                        "https://github.com/example/ci/releases/tag/" + TAG
+                    )
+                elif path == "releases" and method == "POST":
+                    result["html_url"] = (
+                        "https://github.com/example/ci/releases/tag/untagged-draft"
+                    )
+                return result
+
+        api = ChangedURL()
+        self.assertEqual(publish(api)[1], "published")
+        self.assertEqual(api.saved["release"]["release_url"], api.published["url"])
+        self.assertEqual(publish(api)[1], "already-published")
+
+    def test_existing_final_release_without_evidence_is_not_rewritten(self):
+        api = FakeGitHub()
+        publish(api)
+        api.saved = None
+        api.calls.clear()
+        with self.assertRaisesRegex(ValueError, "lacks matching Manifest"):
+            publish(api)
+        self.assertFalse(api.writes)
+
+    def test_invalid_manifest_or_failed_check_prevents_any_write(self):
+        api = FakeGitHub()
+        value = make_manifest(api)
+        value["release"]["commit_sha"] = OTHER
+        with self.assertRaises(ValueError):
+            publish(api, value)
+        self.assertFalse(api.writes)
+        value = make_manifest(api)
+        api.jobs[0]["conclusion"] = "failure"
+        with self.assertRaises(ValueError):
+            publish(api, value)
+        self.assertFalse(api.writes)
+
+    def test_matching_draft_found_by_list_after_by_tag_404(self):
+        api = FakeGitHub()
+        api.fail_upload = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        api.fail_upload = False
+        original = api.__call__
+
+        def hide_draft(path, method="GET", data=None):
+            if path.startswith("releases/tags/"):
+                raise release.ApiError(404)
+            return original(path, method, data)
+
+        self.assertTrue(release.candidate(hide_draft, TAG, HEAD, True)["draft"])
+
+    def test_promotion_api_failure_reuses_uploaded_manifest(self):
+        api = FakeGitHub()
+        original = api.__call__
+
+        class PromotionFailure(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                if path == "releases/10" and method == "PATCH":
+                    raise release.ApiError(503)
+                return original(path, method, data)
+
+            def upload(self, tag, path):
+                api.upload(tag, path)
+
+            def download(self, asset_id):
+                return api.download(asset_id)
+
+        with self.assertRaises(release.ApiError):
+            publish(PromotionFailure())
+        self.assertTrue(api.published["draft"])
+        saved = copy.deepcopy(api.saved)
+        api.calls.clear()
+        publish(api)
+        self.assertEqual([c[0] for c in api.writes], ["releases/10"])
+        self.assertEqual(api.saved, saved)
+
+    def test_new_attempt_recovers_with_original_verified_manifest(self):
+        class Recovery(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                if path == "actions/runs/123/attempts/2":
+                    return {**self.run, "run_attempt": 2}
+                if path.startswith("actions/runs/123/attempts/2/jobs?"):
+                    return {
+                        "jobs": [
+                            {**job, "id": job["id"] + 100, "run_attempt": 2}
+                            for job in self.jobs
+                        ]
+                    }
+                if path == "releases/10" and method == "PATCH" and self.fail_promote:
+                    raise release.ApiError(503)
+                return super().__call__(path, method, data)
+
+        api = Recovery()
+        api.fail_promote = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        saved = copy.deepcopy(api.saved)
+        api.fail_promote = False
+        api.calls.clear()
+        from release_manifest import manifest
+
+        fresh = manifest(
+            api,
+            "example/ci",
+            TAG,
+            HEAD,
+            123,
+            2,
+            "publication",
+            {
+                "tools": saved["tools"],
+                "dagger_checks": [
+                    "engineering-ci:fixture-quality-gates",
+                    "engineering-ci:fixture-python-matrix",
+                ],
+            },
+            ids=IDS,
+        )
+        publish(api, fresh)
+        self.assertEqual([c[0] for c in api.writes], ["releases/10"])
+        self.assertEqual(api.saved, saved)
+        self.assertEqual(api.saved["workflow"]["run_attempt"], 1)
 
     def test_annotated_tag_is_peeled(self):
         def api(path):

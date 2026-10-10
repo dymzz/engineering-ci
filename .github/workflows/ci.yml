@@ -11,6 +11,11 @@ on:
         description: 'Export core test coverage during manual release validation'
         type: boolean
         default: false
+    outputs:
+      core_artifact_id:
+        value: ${{ jobs.sync-tool-tests.outputs.artifact_id }}
+      ruff_artifact_id:
+        value: ${{ jobs.python-ci.outputs.artifact_id }}
 
 permissions:
   contents: read
@@ -19,6 +24,8 @@ jobs:
   python-ci:
     # Keep the former reusable Dagger status name for PR review.
     name: python-ci / checks
+    outputs:
+      artifact_id: ${{ steps.ruff_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -33,15 +40,30 @@ jobs:
           uvx ruff==0.16.10 check --isolated --target-version py311
           tests/fixtures/python-app scripts/release_version.py
           scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py
+          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
+          tests/test_release_transport.py
       - name: Ruff Format Check
         run: >-
           uvx ruff==0.16.10 format --isolated --target-version py311 --check
           tests/fixtures/python-app scripts/release_version.py
           scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py
+          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
+          tests/test_release_transport.py
+      - name: Record release Ruff tool versions
+        if: ${{ inputs.coverage }}
+        run: python3 scripts/release_manifest.py tools --scope ruff --output release-tools/tool-versions.json
+      - uses: actions/upload-artifact@v7.0.2
+        id: ruff_artifact
+        if: ${{ inputs.coverage }}
+        with:
+          name: release-tools-ruff
+          path: release-tools/tool-versions.json
+          if-no-files-found: error
+          retention-days: 7
 
   sync-tool-tests:
+    outputs:
+      artifact_id: ${{ steps.core_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -67,7 +89,11 @@ jobs:
               --cov-report=xml:core-coverage.xml --cov-report=json:core-coverage.json)
           fi
           uv run --locked --group dev pytest "${args[@]}"
+      - name: Record core release tool versions
+        if: ${{ always() && !cancelled() && inputs.coverage }}
+        run: uv run --no-sync --group dev python scripts/release_manifest.py tools --scope core --output tool-versions.json
       - name: Upload core release evidence
+        id: core_artifact
         if: ${{ always() && inputs.coverage }}
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -76,6 +102,7 @@ jobs:
             core-junit.xml
             core-coverage.xml
             core-coverage.json
+            tool-versions.json
           if-no-files-found: error
           retention-days: 7
 

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Exact repository version, e.g. v0.4.8'
+        description: 'Exact repository version, e.g. v0.4.9'
         type: string
         required: true
       publish:
@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: engineering-ci-manual-release
@@ -65,6 +66,8 @@ jobs:
       verify_module_lock: true
 
   evidence:
+    outputs:
+      facts_artifact_id: ${{ steps.facts_artifact.outputs.artifact-id }}
     needs: [candidate, core-tests, complete-ci]
     if: ${{ always() && !cancelled() && needs.candidate.result == 'success' }}
     runs-on: ubuntu-24.04
@@ -74,22 +77,50 @@ jobs:
         with:
           ref: ${{ needs.candidate.outputs.sha }}
           persist-credentials: false
+      - name: Require exact native Artifact IDs
+        env:
+          PYTEST_ID: ${{ needs.complete-ci.outputs.pytest_artifact_id }}
+          SECURITY_ID: ${{ needs.complete-ci.outputs.security_artifact_id }}
+          CORE_ID: ${{ needs.core-tests.outputs.core_artifact_id }}
+          RUFF_ID: ${{ needs.core-tests.outputs.ruff_artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact_id in "$PYTEST_ID" "$SECURITY_ID" "$CORE_ID" "$RUFF_ID"; do
+            if [[ ! "$artifact_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Required native Artifact ID unavailable"
+              exit 1
+            fi
+          done
       - uses: actions/download-artifact@v5
         with:
-          name: pytest-report
+          artifact-ids: ${{ needs.complete-ci.outputs.pytest_artifact_id }}
           path: .release-evidence/pytest
       - uses: actions/download-artifact@v5
         with:
-          name: dependency-security
+          artifact-ids: ${{ needs.complete-ci.outputs.security_artifact_id }}
           path: .release-evidence/security
       - uses: actions/download-artifact@v5
         with:
-          name: core-tests
+          artifact-ids: ${{ needs.core-tests.outputs.core_artifact_id }}
           path: .release-evidence/core
+      - uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ needs.core-tests.outputs.ruff_artifact_id }}
+          path: .release-evidence/ruff
       - name: Require usable evidence and original execution gates
-        run: python3 scripts/manual_release.py evidence --directory .release-evidence
+        run: python3 scripts/release_manifest.py facts --directory .release-evidence --output release-facts/facts.json
+      - uses: actions/upload-artifact@v7.0.2
+        id: facts_artifact
+        with:
+          name: release-facts
+          path: release-facts/facts.json
+          if-no-files-found: error
+          retention-days: 7
 
   verified:
+    outputs:
+      manifest_artifact_id: ${{ steps.manifest_artifact.outputs.artifact-id }}
     needs: [candidate, core-tests, complete-ci, evidence]
     if: ${{ always() && !cancelled() && needs.candidate.result == 'success' }}
     runs-on: ubuntu-24.04
@@ -99,6 +130,12 @@ jobs:
         with:
           ref: ${{ needs.candidate.outputs.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v5
+        if: ${{ needs.evidence.outputs.facts_artifact_id != '' }}
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.facts_artifact_id }}
+          path: release-facts
       - name: Require every validation job and exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +143,16 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 scripts/manual_release.py verify
+        run: python3 scripts/manual_release.py verify --directory release-facts --manifest release-manifest.json
+      - name: Preserve validation Manifest
+        id: manifest_artifact
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
 
   publish:
     needs: [candidate, verified]
@@ -115,16 +161,31 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.candidate.outputs.sha }}
           persist-credentials: false
-      - name: Recheck main and publish immutable tag and GitHub Release
+      - uses: actions/download-artifact@v5
+        name: Download exact verified Manifest
+        if: ${{ needs.verified.outputs.manifest_artifact_id != '' }}
+        with:
+          artifact-ids: ${{ needs.verified.outputs.manifest_artifact_id }}
+          path: release-evidence
+      - name: Recheck main and publish immutable tag and evidenced GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 scripts/manual_release.py publish
+        run: python3 scripts/manual_release.py publish --manifest release-evidence/release-manifest.json
+      - name: Preserve publication evidence after an API failure
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-publication-evidence
+          path: release-evidence/release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
