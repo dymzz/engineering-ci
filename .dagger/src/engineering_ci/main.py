@@ -90,6 +90,14 @@ class EngineeringCi:
             .from_(image)
             .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
+            .with_mounted_cache(
+                "/root/.cache/engineering-ci-uv",
+                dag.cache_volume(f"engineering-ci-uv-v1-python{python_version}"),
+            )
+            .with_new_file(
+                "/tmp/engineering-ci-uv-sync.py",
+                Path(__file__).with_name("uv_sync.py").read_text(encoding="utf-8"),
+            )
             .with_directory(
                 "/workspace",
                 source,
@@ -105,7 +113,7 @@ class EngineeringCi:
             )
             .with_workdir("/workspace")
         )
-        return (container.with_exec(["uv", "sync", "--locked", "--python", python_version])
+        return (container.with_exec(["python", "/tmp/engineering-ci-uv-sync.py", python_version])
                 if sync_dependencies else container)
 
     @function
@@ -326,7 +334,7 @@ class EngineeringCi:
                     else:
                         facts["validated_python"] = runtime["actual_python"]
                         facts["phase"] = "dependencies"
-                        synced = base.with_exec(["uv", "sync", "--locked", "--python", version],
+                        synced = base.with_exec(["python", "/tmp/engineering-ci-uv-sync.py", version],
                                                 expect=dagger.ReturnType.ANY)
                         code = await synced.exit_code()
                         if code:

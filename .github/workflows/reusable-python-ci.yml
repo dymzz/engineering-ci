@@ -162,9 +162,6 @@ jobs:
           set -euo pipefail
 
           dagger version
-          # One native session keeps workspace/schema and graph state available
-          # to reporting, check discovery and every remaining required check.
-          dagger --progress plain run --load-workspace-modules -- bash -euo pipefail <<'DAGGER_EXECUTION'
           timed() {
             python3 - "$@" <<'TIMED_COMMAND'
           import json
@@ -204,7 +201,6 @@ jobs:
               timed remaining-checks dagger check "${remaining[@]}"
             fi
           fi
-          DAGGER_EXECUTION
 
       - name: Gate on pytest execution and explicit quality policy
         if: ${{ always() && !cancelled() && inputs.pytest_report_function != '' }}

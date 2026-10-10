@@ -133,16 +133,8 @@ from pathlib import Path
 args=sys.argv[1:]
 if args[:2]==["--progress","plain"]: args=args[2:]
 with open(os.environ["PERF_EVENTS"],"a",encoding="utf-8") as stream:
-    stream.write(json.dumps({"args":args,"in_session":"DAGGER_SESSION_PORT" in os.environ})+"\n")
+    stream.write(json.dumps({"args":args})+"\n")
 if args[0]=="version": raise SystemExit(0)
-if args[0]=="run":
-    assert args[1:4]==["--load-workspace-modules","--","bash"]
-    env=os.environ.copy()
-    env["DAGGER_SESSION_PORT"]="12345"
-    env["DAGGER_SESSION_TOKEN"]="synthetic-session-token"
-    result=subprocess.run([env["PERF_BASH"],*args[4:]],input=sys.stdin.read(),text=True,env=env)
-    raise SystemExit(result.returncode)
-assert "DAGGER_SESSION_PORT" in os.environ
 if args[0]=="call":
     out=Path(args[args.index("--path")+1])
     out.mkdir(parents=True,exist_ok=True)
@@ -254,7 +246,7 @@ class WorkflowExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result, entries = self.execute(tmp)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(sum(e["args"][0] == "run" for e in entries), 1)
+            self.assertFalse(any(e["args"][0] == "run" for e in entries))
             self.assertEqual(sum(e["args"][0] == "call" for e in entries), 1)
             actual = next(
                 e["args"]
@@ -262,15 +254,8 @@ class WorkflowExecutionTests(unittest.TestCase):
                 if e["args"][0] == "check" and "-l" not in e["args"]
             )
             self.assertEqual(set(actual[1:]), {"sample:format", "sample:lint"})
-            self.assertTrue(
-                all(
-                    e["in_session"]
-                    for e in entries
-                    if e["args"][0] in {"check", "call"}
-                )
-            )
 
-    def test_native_check_failure_survives_outer_session(self):
+    def test_native_check_failure_survives_timing_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:
             result, _ = self.execute(tmp, check_exit=17)
             self.assertEqual(result.returncode, 17)

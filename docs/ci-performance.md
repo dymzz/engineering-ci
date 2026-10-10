@@ -1,4 +1,4 @@
-# CI 性能测量与执行复用
+# CI 性能测量与原生包缓存
 
 性能记录用于比较耗时，不决定测试或安全门禁是否通过。pytest 原始退出码、显式质量策略和安全扫描结果继续决定 CI 状态。
 
@@ -24,21 +24,25 @@
 
 Runner 排队/调度约 3–4s，独立于检查执行窗口。Job 并行资源耗时之和不等于完整 CI 延迟。
 
-## 原生 session 复用
+## 原生 uv 包缓存
 
-共享工作流将报告导出、检查发现和剩余检查放在一个 `dagger run` 中。使用固定 Dagger 0.21.10 的 `--load-workspace-modules`，在父 session 加载 workspace，再让子 CLI 通过原生 session 环境连接它。这个 flag 在该版本属于隐藏选项；升级 Dagger 时必须重新验证嵌套 CLI 的检查发现、报告导出和退出码。
+`_uv_container()` 将 uv 原生包缓存挂到 Dagger CacheVolume。缓存 volume 按 Python 次版本隔离，目录按 `uv.lock` 的 SHA-256 隔离。只复用下载的包和 uv 自身缓存，不共享 `/workspace/.venv`。
 
-原生实现可核验：[run.go](https://github.com/dagger/dagger/blob/v0.21.10/cmd/dagger/run.go) 注入 session 并传出子进程退出码；[engine/client/client.go](https://github.com/dagger/dagger/blob/v0.21.10/engine/client/client.go) 连接已存在的 session。
+薄包装直接 `exec` 原生命令 `uv sync --locked --refresh --python VERSION`，退出码和信号原样传出。`--refresh` 让 uv 核验缓存及动态本地包元数据，避免源码变化而导入时间戳相同时复用陈旧构建元数据；有效下载内容的复用由 uv 自身处理。`UV_LINK_MODE=copy` 避免跨挂载 hard link，虚拟环境与缓存保持独立。
 
-报告模式仍只导出一次测试结果；精确检查名验证、剩余检查计划、独立 pytest gate、Summary 和 Artifact 交付规则继续生效。默认模式仍执行全部检查。计时包装返回原始命令退出码，计时字段不参与门禁判定。
+原生行为可核验：[uv cache 文档](https://docs.astral.sh/uv/concepts/cache/)。uv 管理并发读写、缓存格式版本、刷新及失效条目的重新下载；没有自行实现包缓存协议。
 
 复用边界：
 
 - 每个 hosted Job 仍创建自己的 Engine/volume；旧实现已经在同一 Job 使用同一个 Engine。
-- 新实现延长同一 session 内图与模块状态的存活，不导入跨 Job Engine 缓存。
-- `_uv_container()` 和 `uv sync --locked` 保持原样。不同源码、锁文件、Python 版本的原生图身份分别计算，不跨 Python 版本共享虚拟环境。
-- 没有新增缓存存储、依赖下载器或凭据缓存。session token 只由 Dagger 传给子进程，不写入性能报告。
+- 同一 Engine 内不同 CLI session 可以复用对应 CacheVolume 中的包；不导入跨 Job Engine 缓存。新 volume 和新锁指纹均自然冷启动。
+- `--locked`、消费者锁文件和 Python Matrix 并发上限保持不变。不同源码仍计算不同 Dagger 执行图，重新同步独立虚拟环境并执行要求的测试。
+- 包缓存只挂载 uv 的缓存目录，不挂载认证配置、项目 `.git` 或虚拟环境；没有新增远程缓存、依赖下载器或凭据缓存。
 - 既有安全工具缓存独立于 Dagger；缓存缺失时仍下载并校验工具，安全扫描不会因 Matrix 增加执行次数。
+
+报告模式仍只导出一次测试结果；精确检查名验证、剩余检查计划、独立 pytest gate、Summary 和 Artifact 交付规则继续生效。默认模式仍执行全部检查。计时包装返回原始命令退出码，计时字段不参与门禁判定。
+
+不能在 Dagger 0.21.10 中通过嵌套 CLI 复用 `dagger run`：候选 [验证 Run](https://github.com/dymzz/engineering-ci/actions/runs/38036880903) 确认嵌套连接发生 HTTP/2 协议错误。该包装已撤回，工作流保持原有三阶段 CLI 执行链，未加入代理或修改 Dagger。
 
 ## 复现测量
 
