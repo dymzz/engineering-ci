@@ -21,7 +21,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 mod.normalize(value)
 
     def test_repository_versions_consistent(self):
-        self.assertEqual(mod.checked_version(), "0.4.4")
+        self.assertEqual(mod.checked_version(), "0.4.5")
 
     def test_mismatch_detected(self):
         with patch.object(
