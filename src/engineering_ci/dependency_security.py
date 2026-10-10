@@ -155,7 +155,7 @@ def exceptions_policy(path, now):
         )
         if active:
             config.append(
-                f"[[IgnoredVulns]]\nid = {json.dumps(identifier)}\nreason = {json.dumps(reason)}\nignoreUntil = {expiry.isoformat()}\n"
+                f"[[IgnoredVulns]]\nid = {json.dumps(identifier)}\nreason = {json.dumps(reason, ensure_ascii=False)}\nignoreUntil = {expiry.isoformat()}\n"
             )
     return validated, "\n".join(config) or "IgnoredVulns = []\n"
 

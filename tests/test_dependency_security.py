@@ -4,6 +4,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import subprocess
+import tomllib
 from unittest.mock import patch
 
 import pytest
@@ -82,7 +83,7 @@ class FakeRunner:
             )
         self.config = Path(
             next(x.split("=", 1)[1] for x in args if x.startswith("--config="))
-        ).read_text()
+        ).read_text(encoding="utf-8")
         self.lock = Path(
             next(x.split("=", 1)[1] for x in args if x.startswith("--lockfile="))
         ).read_text()
@@ -241,7 +242,8 @@ def exception_file(
 ):
     path = project / "exceptions.toml"
     path.write_text(
-        f'[[IgnoredVulns]]\nid="GHSA-aaaa-bbbb-cccc"\nreason="{reason}"\nignoreUntil={expiry}\n'
+        f'[[IgnoredVulns]]\nid="GHSA-aaaa-bbbb-cccc"\nreason="{reason}"\nignoreUntil={expiry}\n',
+        encoding="utf-8",
     )
     return path
 
@@ -253,6 +255,13 @@ def test_finite_exception_is_forwarded_to_native_scanner(project):
         "GHSA-aaaa-bbbb-cccc" in fake.config
         and "2027-01-01T00:00:00+00:00" in fake.config
     )
+
+
+def test_native_exception_supports_unicode_reason(project):
+    reason = "临时兼容措施 🔒"
+    report, _, fake = run(project, exceptions=exception_file(project, reason=reason))
+    assert report["status"] == "passed"
+    assert tomllib.loads(fake.config)["IgnoredVulns"][0]["reason"] == reason
 
 
 def test_expired_exception_is_not_forwarded_and_vulnerability_blocks(project):
