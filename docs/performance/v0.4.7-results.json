@@ -1106,6 +1106,559 @@
         "duration_seconds": null,
         "summary_present": true
       }
+    },
+    {
+      "schema_version": 1,
+      "run_id": 38038786415,
+      "workflow": "Engineering CI",
+      "event": "pull_request",
+      "sha": "5bcad72ae8c2a37675292e0c75e29ed09387772e",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/38038786415",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "queued_before_first_job_seconds": 3.0,
+      "checks_execution_window_seconds": 146.0,
+      "submission_to_checks_complete_seconds": 149.0,
+      "critical_finishing_job": "python-ci / checks",
+      "parallel_runner_seconds": 187.0,
+      "first_failed_step_completion_seconds": null,
+      "jobs": [
+        {
+          "id": 114174704884,
+          "name": "sync-tool-tests",
+          "conclusion": "success",
+          "started_at": "2026-10-10T08:42:03Z",
+          "completed_at": "2026-10-10T08:42:24Z",
+          "execution_seconds": 21.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Test consumer sync utility",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Test timing and execution contracts",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Test pytest report parser",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Test dependency security contract",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114174704976,
+          "name": "version-metadata",
+          "conclusion": "success",
+          "started_at": "2026-10-10T08:42:03Z",
+          "completed_at": "2026-10-10T08:42:13Z",
+          "execution_seconds": 10.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Validate release metadata and lock files",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114174705038,
+          "name": "python-ci / dependency-security",
+          "conclusion": "success",
+          "started_at": "2026-10-10T08:42:03Z",
+          "completed_at": "2026-10-10T08:42:13Z",
+          "execution_seconds": 10.0,
+          "queue_or_scheduling_seconds": 3.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Check lock integrity and scan known vulnerabilities",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Publish Dependency Security Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload dependency security evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Cache verified scanner binary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout matching security helper",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout dependency scan target",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "id": 114174705196,
+          "name": "python-ci / checks",
+          "conclusion": "success",
+          "started_at": "2026-10-10T08:42:03Z",
+          "completed_at": "2026-10-10T08:44:29Z",
+          "execution_seconds": 146.0,
+          "queue_or_scheduling_seconds": 2.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Configure private Dagger module authentication",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Start Dagger Engine",
+              "conclusion": "success",
+              "seconds": 24.0
+            },
+            {
+              "name": "Install Dagger CLI",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Dagger Checks",
+              "conclusion": "success",
+              "seconds": 112.0
+            },
+            {
+              "name": "Gate on pytest execution and explicit quality policy",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Publish pytest Job Summary",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Explain pytest report delivery warning",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Upload pytest evidence",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Verify Ruff rejection and recovery (smoke only)",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Engine logs on failure",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cleanup temporary Git credentials",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Checkout caller repository",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        }
+      ],
+      "dagger": {
+        "commands": [
+          {
+            "phase": "report-export",
+            "seconds": 53.346211765,
+            "exit_code": 0
+          },
+          {
+            "phase": "check-list",
+            "seconds": 3.313399894,
+            "exit_code": 0
+          },
+          {
+            "phase": "remaining-checks",
+            "seconds": 54.410743030000006,
+            "exit_code": 0
+          }
+        ],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 42.8
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 42.8
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 2.5
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 12.9
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 13.0
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 14.8
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 38.8
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 50.0
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 1.18
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.508
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.582
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.52
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.54
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.151
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.52
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.44
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.191
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.162
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.143
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.146
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.162
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.183
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.143
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.146
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.145
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.521
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.148
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.171
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.713
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.746
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.327
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.289
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.313
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.232
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.9
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 2.12
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.233
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.308
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.224
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.429
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.217
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.351
+          }
+        ],
+        "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
+      },
+      "limitations": [
+        "Queue values include scheduling/dependency waits; absent job created_at is unknown.",
+        "Completion uses final job timestamp, not mutable workflow updated_at.",
+        "Parallel runner seconds describe resource use, not CI latency.",
+        "Different test selections/versions/settings are not before/after samples.",
+        "First failed step completion is an API observation; live diagnosis may arrive earlier."
+      ],
+      "sample_label": "after-third",
+      "conditions": {
+        "runner": "ubuntu-24.04 GitHub hosted",
+        "dagger_engine": "0.21.10 new job-local engine/volume",
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
+      },
+      "pytest_artifact_validation": {
+        "run_id": 38038786415,
+        "artifact_digest_verified": true,
+        "artifact_digest": "sha256:a364309b3d737fed0c2fd7a25a684d6c087e62ab683c214e5931847a0d90d66a",
+        "pytest_invocations": 1,
+        "status": "passed",
+        "counts": {
+          "errors": 0,
+          "failures": 0,
+          "passed": 1,
+          "skipped": 0,
+          "tests": 1
+        },
+        "duration_seconds": null,
+        "summary_present": true
+      }
     }
   ],
   "comparison": {
@@ -1116,74 +1669,75 @@
     ],
     "candidate_samples": [
       38037454775,
-      38037824451
+      38037824451,
+      38038786415
     ],
     "median_deltas": {
       "checks_execution_window_seconds": {
         "before": 162.0,
-        "after": 138.5,
-        "seconds_saved": 23.5,
-        "relative_reduction_percent": 14.506
+        "after": 146.0,
+        "seconds_saved": 16.0,
+        "relative_reduction_percent": 9.877
       },
       "submission_to_checks_complete_seconds": {
         "before": 165.0,
-        "after": 141.5,
-        "seconds_saved": 23.5,
-        "relative_reduction_percent": 14.242
+        "after": 149.0,
+        "seconds_saved": 16.0,
+        "relative_reduction_percent": 9.697
       },
       "engine_pull_and_start_seconds": {
         "before": 15.0,
-        "after": 16.0,
-        "seconds_saved": -1.0,
-        "relative_reduction_percent": -6.667
+        "after": 22.0,
+        "seconds_saved": -7.0,
+        "relative_reduction_percent": -46.667
       },
       "cli_install_seconds": {
         "before": 2.0,
-        "after": 1.5,
-        "seconds_saved": 0.5,
-        "relative_reduction_percent": 25.0
+        "after": 1.0,
+        "seconds_saved": 1.0,
+        "relative_reduction_percent": 50.0
       },
       "dagger_step_seconds": {
         "before": 135.0,
-        "after": 115.0,
-        "seconds_saved": 20.0,
-        "relative_reduction_percent": 14.815
+        "after": 112.0,
+        "seconds_saved": 23.0,
+        "relative_reduction_percent": 17.037
       },
       "artifact_upload_seconds": {
         "before": 1.0,
-        "after": 0.5,
-        "seconds_saved": 0.5,
-        "relative_reduction_percent": 50.0
+        "after": 1.0,
+        "seconds_saved": 0.0,
+        "relative_reduction_percent": 0.0
       },
       "workspace_load_seconds": {
         "before": 50.8,
-        "after": 44.25,
-        "seconds_saved": 6.55,
-        "relative_reduction_percent": 12.894
+        "after": 42.8,
+        "seconds_saved": 8.0,
+        "relative_reduction_percent": 15.748
       },
       "matrix_check_seconds": {
         "before": 63.0,
-        "after": 52.8,
-        "seconds_saved": 10.2,
-        "relative_reduction_percent": 16.19
+        "after": 50.0,
+        "seconds_saved": 13.0,
+        "relative_reduction_percent": 20.635
       },
       "quality_fixture_seconds": {
         "before": 51.3,
-        "after": 43.4,
-        "seconds_saved": 7.9,
-        "relative_reduction_percent": 15.4
+        "after": 38.8,
+        "seconds_saved": 12.5,
+        "relative_reduction_percent": 24.366
       },
       "uv_7_package_preparation_seconds": {
         "before": 0.718,
-        "after": 0.1355,
-        "seconds_saved": 0.5825,
-        "relative_reduction_percent": 81.128
+        "after": 0.149,
+        "seconds_saved": 0.569,
+        "relative_reduction_percent": 79.248
       },
       "uv_7_package_installation_seconds": {
         "before": 0.031,
-        "after": 0.1685,
-        "seconds_saved": -0.1375,
-        "relative_reduction_percent": -443.548
+        "after": 0.193,
+        "seconds_saved": -0.162,
+        "relative_reduction_percent": -522.581
       }
     },
     "limits": [
