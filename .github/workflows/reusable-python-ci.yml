@@ -52,7 +52,7 @@ on:
         description: 'Pinned engineering-ci helper ref; candidate SHA for pre-release validation'
         type: string
         required: false
-        default: 'v0.4.6'
+        default: 'v0.4.7'
       dependency_security_artifact_name:
         description: 'Unique dependency security evidence artifact name'
         type: string
