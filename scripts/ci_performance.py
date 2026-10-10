@@ -36,14 +36,16 @@ def duration(value):
     parts = re.findall(r"(\d+(?:\.\d+)?)(ms|m|s)", value)
     if "".join(n + unit for n, unit in parts) != value:
         raise ValueError("Unrecognized native duration")
-    return sum(float(n) * {"ms": 0.001, "s": 1, "m": 60}[unit] for n, unit in parts)
+    return round(
+        sum(float(n) * {"ms": 0.001, "s": 1, "m": 60}[unit] for n, unit in parts), 6
+    )
 
 
 def dagger_timings(log):
     """Extract explicit markers and selected native spans, not test verdicts."""
     if len(log.encode("utf-8")) > 8 * 1024 * 1024:
         raise ValueError("Dagger log exceeds 8 MiB")
-    phases, spans, preparations, seen = [], [], [], set()
+    phases, spans, preparations, installations, seen = [], [], [], [], set()
     generation, connected = 0, False
     for raw in log.splitlines():
         line = ANSI.sub("", raw).lstrip("\ufeff")
@@ -71,7 +73,7 @@ def dagger_timings(log):
                 raise ValueError("Invalid command exit")
             phases.append(data)
         match = re.fullmatch(
-            r"(\d+)\s*:\s*(?:┆\s*)*(load workspace: \.|loading type definitions|fetch check information|load module: [a-z0-9-]+) DONE \[([0-9.ms]+)\](?:.*)",
+            r"(\d+)\s*:\s*(?:┆\s*)*(load workspace: \.|loading type definitions|fetch check information|load module: [a-z0-9-]+|EngineeringCi\.fixture(?:Lint|Format|FailureReport|PythonMatrix|QualityGates)) DONE \[([0-9.ms]+)\](?:.*)",
             line,
         )
         if match:
@@ -86,17 +88,17 @@ def dagger_timings(log):
                 )
                 seen.add(key)
         match = re.fullmatch(
-            r"(\d+)\s*:\s*(?:┆\s*)*\[[^]]+\] \| Prepared (\d+) packages in ([0-9.ms]+)",
+            r"(\d+)\s*:\s*(?:┆\s*)*\[[^]]+\] \| (Prepared|Installed) (\d+) packages in ([0-9.ms]+)",
             line,
         )
         if match:
             key = (generation, *match.groups())
             if key not in seen:
-                preparations.append(
+                (preparations if match[2] == "Prepared" else installations).append(
                     {
                         "session": generation,
-                        "packages": int(match[2]),
-                        "seconds": duration(match[3]),
+                        "packages": int(match[3]),
+                        "seconds": duration(match[4]),
                     }
                 )
                 seen.add(key)
@@ -104,6 +106,7 @@ def dagger_timings(log):
         "commands": phases,
         "native_spans": spans,
         "uv_preparations_observed": preparations,
+        "uv_installations_observed": installations,
         "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs.",
     }
 

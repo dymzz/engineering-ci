@@ -85,12 +85,14 @@ class PerformanceTests(unittest.TestCase):
                 "6 : ┆ loading type definitions DONE [50.1s]",
                 "16 : ┆ [4.5s] | Prepared 6 packages in 1.92s",
                 "16 : ┆ [4.5s] | Prepared 6 packages in 1.92s",
+                "16 : ┆ [4.6s] | Installed 6 packages in 3ms",
                 '6 : | CI_TIMING {"phase":"check-list","seconds":0.14,"exit_code":3}',
             ]
         )
         report = performance.dagger_timings(log)
         self.assertEqual(len(report["native_spans"]), 2)
         self.assertEqual(len(report["uv_preparations_observed"]), 1)
+        self.assertEqual(report["uv_installations_observed"][0]["seconds"], 0.003)
         self.assertEqual(report["commands"][0]["exit_code"], 3)
         self.assertAlmostEqual(performance.duration("1m5s"), 65)
 
@@ -154,7 +156,9 @@ if args[0]=="check":
         print("sample:format\nsample:lint\nsample:test")
     else:
         assert "sample:test" not in args[1:]
-        raise SystemExit(int(os.environ["PERF_CHECK_EXIT"]))
+        code=int(os.environ["PERF_CHECK_EXIT"])
+        if code<0: os.kill(os.getpid(),-code)
+        raise SystemExit(code)
 else: raise SystemExit(29)
 """
 
@@ -260,6 +264,13 @@ class WorkflowExecutionTests(unittest.TestCase):
             result, _ = self.execute(tmp, check_exit=17)
             self.assertEqual(result.returncode, 17)
             self.assertTrue((Path(tmp) / "pytest-report/report.json").is_file())
+
+    def test_native_signal_preserves_shell_status_and_raw_diagnosis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self.execute(tmp, check_exit=-15)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            timings = performance.dagger_timings(result.stderr)["commands"]
+            self.assertEqual(timings[-1]["exit_code"], -15)
 
     def test_default_mode_runs_all_checks_and_preserves_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

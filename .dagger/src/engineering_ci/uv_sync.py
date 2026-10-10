@@ -8,8 +8,8 @@ import sys
 
 
 def cache_environment(python_version, lockfile=Path("uv.lock"), *, environment=None):
-    if not re.fullmatch(r"3\.(10|11|12|13|14)", python_version):
-        raise ValueError("Unsupported cache Python version")
+    if not re.fullmatch(r"\d+\.\d+", python_version):
+        raise ValueError("Invalid cache Python version")
     try:
         digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()
     except FileNotFoundError:

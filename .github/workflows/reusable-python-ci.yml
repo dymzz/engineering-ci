@@ -172,7 +172,7 @@ jobs:
           started = time.perf_counter()
           result = subprocess.run(sys.argv[2:])
           print("CI_TIMING " + json.dumps({"phase": phase, "seconds": time.perf_counter() - started, "exit_code": result.returncode}), file=sys.stderr, flush=True)
-          raise SystemExit(result.returncode)
+          raise SystemExit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
           TIMED_COMMAND
           }
           if [[ -z "$PYTEST_REPORT_FUNCTION" ]]; then

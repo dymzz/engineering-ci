@@ -18,7 +18,7 @@
 基线定位：
 
 1. Dagger 首次 workspace/type definitions 加载约 50–51s（Smoke 59.8s）。这两个原生 span 重叠，不能相加。
-2. 核心 Matrix 检查约 65s，包含要求执行的不同 Python 版本及负向 fixture。保留这些执行。
+2. 核心 Matrix 检查约 63s（中位数），包含要求执行的不同 Python 版本及负向 fixture。保留这些执行。
 3. 同一 Job 的后续 CLI session 仍有初始化：核心 `check -l` 约 3.2–3.4s，Smoke 11.3s。原生 `uv` 输出也证明报告与剩余检查阶段发生了独立依赖准备，不能只按源码调用次数认定重复。
 4. Docker 拉取和启动共 11–16s；CLI 安装 1–2s。安全检查在独立 Job 并行运行约 12–15s，Artifact 上传约 1–2s。
 
@@ -66,8 +66,33 @@ JSON 区分：
 - `parallel_runner_seconds`：并行资源时间之和。
 - `first_failed_step_completion_seconds`：API 中第一个失败步骤完成时刻，实时诊断可能更早；成功样本为 `null`。
 - `dagger.commands`：报告导出、发现检查、执行检查的 `CI_TIMING` 耗时和原始命令退出码。
-- `dagger.native_spans` / `uv_preparations_observed`：选定的原生观测；嵌套或并行项不能求和当作完整耗时，丢弃的进度日志可能使观测不完整。
+- `dagger.native_spans` / `uv_preparations_observed` / `uv_installations_observed`：选定的原生观测；嵌套或并行项不能求和当作完整耗时，丢弃的进度日志可能使观测不完整。
 
 比较时记录 source SHA、检查选择、Python 版本、coverage/security 设置和缓存条件。区分新 Engine 冷启动、同 session 原生图命中、正常 PR；安全工具的 Actions 缓存命中不能代表 Dagger Engine 变暖。优先比较多次同工作负载运行的中位数，不设置默认时间硬门禁。
 
-初始优化收益需由候选 PR 的完整真实 CI 验证后补充。失败路径继续收集完整证据，不为提前出现红灯而取消其他必要检查。
+## 候选验证结果
+
+两次正常 PR 运行 [38037454775](https://github.com/dymzz/engineering-ci/actions/runs/38037454775)、[38037824451](https://github.com/dymzz/engineering-ci/actions/runs/38037824451) 均通过全部必需 CI。完整记录和已计算差值见 [JSON 对比](performance/v0.4.7-results.json)。两次运行都是新 Engine，测试项目、六个核心检查、Python 版本及 coverage/security 策略保持一致。
+
+| 指标 | 基线 3 次中位数 | 候选 2 次中位数 | 差值 |
+| --- | ---: | ---: | ---: |
+| 检查执行窗口 | 162s | 138.5s | 减少 23.5s，14.5% |
+| Run 创建至检查完成 | 165s | 141.5s | 减少 23.5s，14.2% |
+| Dagger 检查阶段 | 135s | 115s | 减少 20s，14.8% |
+| 原生 Matrix 检查 | 63s | 52.8s | 减少 10.2s |
+| Engine 拉取与启动 | 15s | 16s | 增加 1s |
+| uv 7 包准备观测 | 0.718s | 0.136s | 准备更快 |
+| uv 7 包安装观测 | 0.031s | 0.169s | copy 安装增加约 0.138s |
+
+小样本仍有明显波动：候选检查窗口为 128s、149s，workspace 加载为 36.9s、51.6s。模块加载、Docker/网络和磁盘波动不能全归因于包缓存。uv 观测是相同完整 fixture 工作负载中的事件分布，包含冷与暖条目，不能当作单一依赖准备阶段或相加解释总收益；暂无随机交错的同 Runner 对照。
+
+新增存储仅为 Job 内 Engine 的原生包 CacheVolume，随 hosted Runner 回收，没有额外 Actions cache 上传或跨 Job 存储。copy 安装带来文件复制成本；精确新增磁盘字节和网络字节未测量，不宣称没有成本。
+
+正确性证据：
+
+- 真实 Dagger lint/format、断言失败诊断、13 个质量 fixture，以及 Python 3.12/3.13/3.14 的成功、部分失败、unsupported、coverage-low、dependency-error 场景均保持执行并通过预期验证。锁文件不匹配仍被 uv 拒绝，pytest 不会在依赖同步失败后启动。
+- 两份 pytest Artifact 均通过 ZIP 结构与 GitHub SHA-256 校验；JSON/JUnit/退出码/Summary 齐全，原始退出码为 0，调用计数均为 1。
+- Linux 子进程测试验证默认全部检查、报告仅执行一次、发现失败时拒绝放行、检查错误码与终止信号传播、失败报告独立门禁。质量和报告解析、安全契约及版本检查均通过；独立安全 Job 实际扫描和报告上传成功。
+- 新 Engine 自然覆盖空缓存；不同锁内容与 Python 版本选择不同缓存目录。变更源码的真实负向 fixture 仍重新执行。无跨 Job 虚拟环境或测试结果缓存。
+
+失败路径继续收集完整证据，不为提前出现红灯而取消其他必要检查。Release Workflow 保持原样，仅人工合并后的成功 main CI 可以发布版本。Smoke 的候选/正式升级与正式发布后的 Renovate 验收尚待后续 PR；当前 Smoke 基线不代表候选消费者验证通过。

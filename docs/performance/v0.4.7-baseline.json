@@ -303,6 +303,31 @@
             "session": 3,
             "phase": "load module: engineering-ci",
             "seconds": 3.0
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 15.5
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 15.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 18.6
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 50.3
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 63.0
           }
         ],
         "uv_preparations_observed": [
@@ -359,17 +384,17 @@
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.8130000000000001
+            "seconds": 0.813
           },
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.8230000000000001
+            "seconds": 0.823
           },
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.8170000000000001
+            "seconds": 0.817
           },
           {
             "session": 3,
@@ -392,6 +417,93 @@
             "seconds": 0.793
           }
         ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.038
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.049
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.101
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.167
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.23
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.026
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.033
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.017
+          }
+        ],
         "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
       },
       "limitations": [
@@ -405,9 +517,8 @@
       "conditions": {
         "runner": "ubuntu-24.04 GitHub hosted",
         "dagger_engine": "0.21.10 new job-local engine/volume",
-        "module": "v0.4.6",
-        "selection": "all six core checks / single pytest report export replaces fixture-test",
-        "cache_scope": "native within-job graph cache; security scanner binary cache independent"
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
       }
     },
     {
@@ -693,8 +804,227 @@
       ],
       "dagger": {
         "commands": [],
-        "native_spans": [],
-        "uv_preparations_observed": [],
+        "native_spans": [
+          {
+            "session": 1,
+            "phase": "loading type definitions",
+            "seconds": 50.8
+          },
+          {
+            "session": 1,
+            "phase": "load workspace: .",
+            "seconds": 50.8
+          },
+          {
+            "session": 2,
+            "phase": "fetch check information",
+            "seconds": 3.5
+          },
+          {
+            "session": 3,
+            "phase": "load module: engineering-ci",
+            "seconds": 3.1
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 13.7
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 14.0
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 17.2
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 52.2
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 61.0
+          }
+        ],
+        "uv_preparations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 1.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.544
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.16
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 1.09
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 1.53
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.606
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.833
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.546
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.408
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.423
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.974
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.415
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.393
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.394
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.379
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.401
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.325
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.096
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.177
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.077
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.021
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.04
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.029
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.036
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.031
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.019
+          }
+        ],
         "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
       },
       "limitations": [
@@ -708,9 +1038,8 @@
       "conditions": {
         "runner": "ubuntu-24.04 GitHub hosted",
         "dagger_engine": "0.21.10 new job-local engine/volume",
-        "module": "v0.4.6",
-        "selection": "all six core checks / single pytest report export replaces fixture-test",
-        "cache_scope": "native within-job graph cache; security scanner binary cache independent"
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
       }
     },
     {
@@ -1011,6 +1340,31 @@
             "session": 2,
             "phase": "fetch check information",
             "seconds": 3.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureLint",
+            "seconds": 14.4
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFormat",
+            "seconds": 14.5
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureFailureReport",
+            "seconds": 17.9
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixtureQualityGates",
+            "seconds": 51.3
+          },
+          {
+            "session": 3,
+            "phase": "EngineeringCi.fixturePythonMatrix",
+            "seconds": 63.0
           }
         ],
         "uv_preparations_observed": [
@@ -1042,17 +1396,17 @@
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.7020000000000001
+            "seconds": 0.702
           },
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.6890000000000001
+            "seconds": 0.689
           },
           {
             "session": 3,
             "packages": 7,
-            "seconds": 0.7000000000000001
+            "seconds": 0.7
           },
           {
             "session": 3,
@@ -1100,6 +1454,93 @@
             "seconds": 0.66
           }
         ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 6,
+            "seconds": 0.015
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.027
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.043
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.06
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.1
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.02
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.028
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.035
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.047
+          },
+          {
+            "session": 3,
+            "packages": 6,
+            "seconds": 0.022
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.033
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.032
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.026
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.016
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.025
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.018
+          },
+          {
+            "session": 3,
+            "packages": 7,
+            "seconds": 0.018
+          }
+        ],
         "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
       },
       "limitations": [
@@ -1113,9 +1554,8 @@
       "conditions": {
         "runner": "ubuntu-24.04 GitHub hosted",
         "dagger_engine": "0.21.10 new job-local engine/volume",
-        "module": "v0.4.6",
-        "selection": "all six core checks / single pytest report export replaces fixture-test",
-        "cache_scope": "native within-job graph cache; security scanner binary cache independent"
+        "selection": "same six core checks; single pytest report export replaces fixture-test",
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
       }
     },
     {
@@ -1244,12 +1684,24 @@
           {
             "session": 1,
             "packages": 8,
-            "seconds": 0.6900000000000001
+            "seconds": 0.69
           },
           {
             "session": 3,
             "packages": 8,
             "seconds": 0.913
+          }
+        ],
+        "uv_installations_observed": [
+          {
+            "session": 1,
+            "packages": 8,
+            "seconds": 0.017
+          },
+          {
+            "session": 3,
+            "packages": 8,
+            "seconds": 0.017
           }
         ],
         "note": "Overlapping/nested spans are not summed into wall time. Observations may be incomplete in dropped progress logs."
@@ -1265,9 +1717,8 @@
       "conditions": {
         "runner": "ubuntu-24.04 GitHub hosted",
         "dagger_engine": "0.21.10 new job-local engine/volume",
-        "module": "v0.4.5",
         "selection": "Smoke full / Python3.12 coverage smoke_sample",
-        "cache_scope": "native within-job graph cache; security scanner binary cache independent"
+        "cache_scope": "Engine cold per job; within-engine graph cache; native uv volume only in candidate; security tool cache independent"
       }
     }
   ]
