@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run engineering-ci's existing PR checks; historical reports never skip execution."""
 
 from __future__ import annotations
@@ -201,13 +200,19 @@ def snapshot(root, name):
         after = path.stat()
 
         def metadata(info):
-            return (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+            return (
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+                info.st_ino,
+                info.st_mode,
+            )
 
         if metadata(before) != metadata(after):
             raise PreconditionError(
                 "stale", "Check inputs changed while fingerprinting"
             )
-        content.append((relative, hashlib.sha256(data).hexdigest()))
+        content.append((relative, after.st_mode, hashlib.sha256(data).hexdigest()))
         observations.append((relative, *metadata(after)))
     return {"sha256": digest(content), "file_count": len(content)}, digest(observations)
 

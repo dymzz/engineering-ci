@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Small guards for the manual release workflow; no test execution or scheduling."""
 
 from __future__ import annotations

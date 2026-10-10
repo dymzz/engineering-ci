@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Keep engineering-ci package metadata aligned with a release tag.
 
 Usage:

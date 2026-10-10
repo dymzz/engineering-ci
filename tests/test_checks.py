@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -205,6 +206,25 @@ def test_changed_and_untracked_inputs_expire_old_pass(checkout, file):
     assert code == 3 and current["checks"][0]["freshness"] == "stale"
     assert not current["checks"][0]["passed_for_current_input"]
     assert json.loads(out.read_text()) == report  # inspection never rewrites history
+
+
+def test_file_permissions_expire_old_pass(checkout):
+    source = checkout / "scripts/release_version.py"
+    source.write_text("print('version')\n")
+    out = checkout / "result.json"
+    _, code = checks.execute(
+        ["version"], root=checkout, run=fake_process(), output=out, environ={}
+    )
+    assert code == 0
+    assert checks.inspect(out, root=checkout, environ={})[1] == 0
+    original_mode = source.stat().st_mode
+    try:
+        source.chmod(original_mode & ~stat.S_IWRITE)
+        current, code = checks.inspect(out, root=checkout, environ={})
+        assert code == 3 and current["checks"][0]["freshness"] == "stale"
+        assert not current["checks"][0]["passed_for_current_input"]
+    finally:
+        source.chmod(original_mode)
 
 
 def test_tool_version_and_check_parameters_expire_old_pass(checkout, monkeypatch):
