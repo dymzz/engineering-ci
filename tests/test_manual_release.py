@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import manual_release as release
 
 HEAD, OTHER = "a" * 40, "b" * 40
-TAG = "v0.4.9"
+TAG = "v0.4.10"
 
 
 class FakeGitHub(ManifestGitHub):
@@ -585,7 +585,7 @@ class ManualReleaseTests(unittest.TestCase):
         self.assertNotIn("workflow_dispatch:", ci)
         self.assertNotIn("dagger call", ci)
         self.assertNotIn("docker pull", ci)
-        self.assertIn("uv run --locked --group dev pytest", ci)
+        self.assertIn("engineering_ci.cli checks tests", ci)
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertIn("default: false", workflow)
         self.assertIn("dependency_security_project: .\n", workflow)

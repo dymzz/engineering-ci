@@ -21,13 +21,22 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 仓库根目录执行，需 uv；根项目要求 Python 3.14。PowerShell / Bash 均可使用：
 
 ```sh
-uvx ruff==0.16.10 check --isolated --target-version py311 tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py tests/test_release_transport.py
-uvx ruff==0.16.10 format --isolated --target-version py311 --check tests/fixtures/python-app scripts/release_version.py scripts/manual_release.py scripts/release_manifest.py tests/test_release_version.py tests/test_manual_release.py tests/test_release_manifest.py tests/test_release_transport.py
-uv run --locked --group dev pytest -q
-uv run --locked --group dev pytest --cov=src/engineering_ci --cov=.dagger/src/engineering_ci --cov-report=term-missing --cov-report=xml
-uv run --locked python scripts/release_version.py check
-uv lock --check
+python scripts/checks.py pr --json .test-tools/checks/pr.json
+python scripts/checks.py ruff
+python scripts/checks.py tests --coverage
+python scripts/checks.py version lock
+python scripts/checks.py inspect .test-tools/checks/pr.json
 ```
+
+GitHub PR CI 调用 `python -m engineering_ci.cli checks ...`，与上述兼容入口
+使用同一套 Python 定义。工具版本由 `src/engineering_ci/toolchain.py` 提供；
+Ruff 范围、参数和检查名称在 `src/engineering_ci/checks.py` 中集中维护。
+直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
+
+原生 Windows 的 Bash 测试无法完整执行时，pytest 原始退出码和 skipped 数量
+保留在结果中，入口返回 3，不能将此记录作为完整 PR 通过。缺少 aria2c、Git、gh
+时明确报告工具缺失。完整 Linux 验证可在 WSL2 中使用相同入口。
+详细环境准备、JSON 状态与历史结果校验见 [本地验证](local-verification.md)。
 
 完整检查需 Docker 与 Dagger CLI 0.21.10（匹配 dagger.json）：
 
@@ -63,13 +72,13 @@ enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不�
 
 ## 版本与人工发布
 
-1. 隔离分支执行 `python scripts/release_version.py set v0.4.9`，
+1. 隔离分支执行 `python scripts/release_version.py set v0.4.10`，
    对齐两份 pyproject.toml 与两份 uv.lock。
 2. 一个功能 PR，轻量检查通过后人工审查、合并。不要手工推 Tag。
 3. 合并后从 main 手动验证，默认不发布：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.9 -f publish=false -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.10 -f publish=false -f pytest_scenario=pass
 gh run list --repo dymzz/engineering-ci --workflow release.yml --limit 5
 gh run view RUN_ID --repo dymzz/engineering-ci
 ```
@@ -77,7 +86,7 @@ gh run view RUN_ID --repo dymzz/engineering-ci
 4. 核对完整验收、Artifact 与 SHA。人工决定正式发布时：
 
 ```sh
-gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.9 -f publish=true -f pytest_scenario=pass
+gh workflow run release.yml --repo dymzz/engineering-ci --ref main -f version=v0.4.10 -f publish=true -f pytest_scenario=pass
 ```
 
 正式发布再次完整验收，不借用另一轮验证结果。无需额外团队审批层。
@@ -186,3 +195,14 @@ python-ci / dependency-security 移到手动发布；
 若是 Required Check，需移除旧 PR 要求，不能提供假的成功占位。
 当前私有仓库套餐的 branch protection / rulesets 返回 403，无法启用 Required Checks；
 须人工核对三个状态后合并，不能宣称服务器已阻断失败合并。
+
+
+## 统一模块与 CLI
+
+Actions 通过 `engineering_ci.cli` 调用 `release prepare/verify/publish` 与
+`manifest facts/tools`；GitHub Actions 继续定义并执行发布 DAG。
+Release 业务模块位于 `src/engineering_ci/release/`，原 scripts 只做兼容转发。
+发布 Manifest Schema 与发布准入语义保持不变。
+
+交互式 Workflow、Run 和 Artifact 名称选择，以及 Codex 非交互调用，见
+[统一 CLI](unified-cli.md)。ghwf 执行 FSM、缓存、Run ID 恢复和下载后端保持兼容。

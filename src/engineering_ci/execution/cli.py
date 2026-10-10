@@ -127,9 +127,9 @@ def main(argv=None) -> int:
     return result.exit_code
 
 
-def entrypoint() -> int:
+def entrypoint(argv=None) -> int:
     try:
-        return main()
+        return main(argv)
     except (ExecutionError, OSError, ValueError) as exc:
         print(f'Error: {exc}', file=sys.stderr)
         return 1

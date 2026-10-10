@@ -14,7 +14,7 @@ import manual_release as release
 import release_manifest as evidence
 
 HEAD = "a" * 40
-TAG = "v0.4.9"
+TAG = "v0.4.10"
 REPOSITORY = "example/ci"
 IDS = {name: 45 + index for index, name in enumerate(sorted(evidence.ARTIFACT_NAMES))}
 
@@ -129,7 +129,7 @@ def test_identity_schema_deterministic_and_no_sensitive_output():
     assert value == make_manifest()
     assert evidence.encode(value) == evidence.encode(make_manifest())
     assert value["release"] == {
-        "version": "0.4.9",
+        "version": "0.4.10",
         "tag": TAG,
         "commit_sha": HEAD,
         "release_url": None,
@@ -421,6 +421,6 @@ def test_no_extra_test_execution_or_consumer_defaults():
     assert workflow.count("uses: ./.github/workflows/reusable-python-ci.yml") == 1
     assert "dagger call" not in workflow and "pytest -q" not in workflow
     assert "publish=false" not in workflow  # YAML boolean default remains false.
-    assert "generate_release_notes" in (ROOT / "scripts/manual_release.py").read_text(
-        encoding="utf-8"
-    )
+    assert "generate_release_notes" in (
+        ROOT / "src/engineering_ci/release/publishing.py"
+    ).read_text(encoding="utf-8")
