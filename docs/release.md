@@ -125,6 +125,8 @@ Job Summary 同时显示版本、SHA、验证 Run 链接与各检查状态。
 Jobs API。Manifest 的 `result=passed` 表示必需验证结果与证据齐全，
 不是进行中的整个 Workflow 已结束，也不是已经发布成功。
 `mode=validation` 时 `release.release_url=null`：没有虚构 Release URL。
+正式证据中的 `release_url` 使用 GitHub 实际返回的 Release API 资源 URL，
+其 ID 在 Draft 转正式时保持稳定；Workflow Summary 提供正式页面链接。
 失败验证可保存 `result=failed` 的 Manifest；API 不可用时保留失败 job 日志，
 不能伪造缺失状态。检查失败、skipped、cancelled、timed_out、unavailable
 都阻断发布。可选未启用项目记为 `not_enabled`。

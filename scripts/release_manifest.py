@@ -174,7 +174,7 @@ def pages(api, path, key):
     raise ValueError("GitHub metadata pagination exceeds limit")
 
 
-def run_context(api, repository, head, run_id, attempt):
+def run_context(api, repository, head, run_id, attempt, *, publication=False):
     if not REPOSITORY.fullmatch(repository) or not SHA.fullmatch(head):
         raise ValueError("Invalid release identity")
     if (
@@ -194,6 +194,7 @@ def run_context(api, repository, head, run_id, attempt):
         or run["repository"]["full_name"] != repository
         or run["html_url"] != expected_url
         or run["path"].split("@")[0] != ".github/workflows/release.yml"
+        or (publication and run.get("head_branch") != "main")
     ):
         raise ValueError("Workflow does not match verified release identity")
     return {
@@ -243,7 +244,9 @@ def check_record(jobs, name, step):
 def manifest(api, repository, tag, head, run_id, attempt, mode, evidence):
     if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
         raise ValueError("Invalid release version")
-    workflow = run_context(api, repository, head, run_id, attempt)
+    workflow = run_context(
+        api, repository, head, run_id, attempt, publication=mode == "publication"
+    )
     jobs = pages(api, f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
     checks = {key: check_record(jobs, *source) for key, source in CHECKS.items()}
     for key, check in DAGGER_POLICY_CHECKS.items():
@@ -328,6 +331,7 @@ def validate(value, repository, tag, head, *, published=False):
     }
     if (
         set(value) != expected
+        or type(value["schema_version"]) is not int
         or value["schema_version"] != 1
         or value["repository"] != repository
     ):
@@ -359,7 +363,7 @@ def validate(value, repository, tag, head, *, published=False):
         raise ValueError("Manifest workflow identity mismatch")
     url = identity["release_url"]
     if url is not None and not re.fullmatch(
-        rf"https://github\.com/{re.escape(repository)}/releases/(?:tag/{re.escape(tag)}|[0-9]+)",
+        rf"https://api\.github\.com/repos/{re.escape(repository)}/releases/[0-9]+",
         url,
     ):
         raise ValueError("Invalid actual Release URL")

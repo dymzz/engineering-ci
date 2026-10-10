@@ -65,6 +65,7 @@ class FakeGitHub(ManifestGitHub):
                 raise release.ApiError(503)
             self.published = {
                 "id": 10,
+                "url": "https://api.github.com/repos/example/ci/releases/10",
                 "tag_name": TAG,
                 "html_url": "https://github.com/example/ci/releases/tag/" + TAG,
                 "draft": data["draft"],
@@ -251,6 +252,25 @@ class ManualReleaseTests(unittest.TestCase):
         self.assertTrue(api.published["draft"])
         self.assertNotIn("releases/10", [c[0] for c in api.writes])
 
+    def test_manifest_resource_url_survives_draft_browser_url_change(self):
+        class ChangedURL(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                result = super().__call__(path, method, data)
+                if path == "releases/10" and method == "PATCH":
+                    result["html_url"] = (
+                        "https://github.com/example/ci/releases/tag/" + TAG
+                    )
+                elif path == "releases" and method == "POST":
+                    result["html_url"] = (
+                        "https://github.com/example/ci/releases/tag/untagged-draft"
+                    )
+                return result
+
+        api = ChangedURL()
+        self.assertEqual(publish(api)[1], "published")
+        self.assertEqual(api.saved["release"]["release_url"], api.published["url"])
+        self.assertEqual(publish(api)[1], "already-published")
+
     def test_existing_final_release_without_evidence_is_not_rewritten(self):
         api = FakeGitHub()
         publish(api)
@@ -312,6 +332,49 @@ class ManualReleaseTests(unittest.TestCase):
         publish(api)
         self.assertEqual([c[0] for c in api.writes], ["releases/10"])
         self.assertEqual(api.saved, saved)
+
+    def test_new_attempt_recovers_with_original_verified_manifest(self):
+        class Recovery(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                if path == "actions/runs/123/attempts/2":
+                    return {**self.run, "run_attempt": 2}
+                if path.startswith("actions/runs/123/attempts/2/jobs?"):
+                    return {
+                        "jobs": [{**job, "id": job["id"] + 100} for job in self.jobs]
+                    }
+                if path == "releases/10" and method == "PATCH" and self.fail_promote:
+                    raise release.ApiError(503)
+                return super().__call__(path, method, data)
+
+        api = Recovery()
+        api.fail_promote = True
+        with self.assertRaises(release.ApiError):
+            publish(api)
+        saved = copy.deepcopy(api.saved)
+        api.fail_promote = False
+        api.calls.clear()
+        from release_manifest import manifest
+
+        fresh = manifest(
+            api,
+            "example/ci",
+            TAG,
+            HEAD,
+            123,
+            2,
+            "publication",
+            {
+                "tools": saved["tools"],
+                "dagger_checks": [
+                    "engineering-ci:fixture-quality-gates",
+                    "engineering-ci:fixture-python-matrix",
+                ],
+            },
+        )
+        publish(api, fresh)
+        self.assertEqual([c[0] for c in api.writes], ["releases/10"])
+        self.assertEqual(api.saved, saved)
+        self.assertEqual(api.saved["workflow"]["run_attempt"], 1)
 
     def test_annotated_tag_is_peeled(self):
         def api(path):

@@ -28,6 +28,7 @@ class ManifestGitHub:
             "repository": {"full_name": REPOSITORY},
             "html_url": f"https://github.com/{REPOSITORY}/actions/runs/123",
             "path": ".github/workflows/release.yml",
+            "head_branch": "main",
             "token": "ghp_DO_NOT_RECORD",
         }
         groups = {}
@@ -201,6 +202,30 @@ def test_policy_checks_require_existing_execution_evidence():
     assert value["checks"]["evidence"]["status"] == "unavailable"
 
 
+def test_missing_artifacts_or_tools_cannot_claim_passed():
+    api = ManifestGitHub()
+    api.artifacts = []
+    value = make_manifest(api)
+    assert value["result"] == "failed"
+    assert value["checks"]["evidence"]["status"] == "unavailable"
+    value = make_manifest()
+    value["artifacts"] = []
+    with pytest.raises(ValueError, match="artifact references"):
+        evidence.validate(value, REPOSITORY, TAG, HEAD)
+    value = make_manifest()
+    value["tools"] = []
+    with pytest.raises(ValueError, match="tool evidence"):
+        evidence.validate(value, REPOSITORY, TAG, HEAD)
+
+
+def test_publication_evidence_must_be_a_manual_main_run():
+    api = ManifestGitHub()
+    api.run["head_branch"] = "candidate"
+    with pytest.raises(ValueError, match="identity"):
+        make_manifest(api, mode="publication")
+    assert make_manifest(api, mode="validation")["result"] == "passed"
+
+
 def test_actual_tool_files_are_required_and_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(release, "require_evidence", lambda _: None)
     for name in ("core", "ruff", "pytest", "security"):
@@ -253,6 +278,7 @@ def test_workflow_identity_conflicts_are_rejected(field, value):
         lambda value: value["tools"][0].update(version="1.0.0 token=SECRET"),
         lambda value: value["checks"]["tests"].update(step_conclusion="failure"),
         lambda value: value["workflow"].update(run_id=True),
+        lambda value: value.update(schema_version=True),
     ],
 )
 def test_invalid_or_sensitive_manifest_is_rejected(mutation):

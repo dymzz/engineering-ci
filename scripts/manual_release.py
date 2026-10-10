@@ -181,7 +181,14 @@ def published_evidence(api, value, repository, tag, head):
     ):
         raise ValueError("Publication requires complete passed evidence")
     workflow = value["workflow"]
-    run_context(api, repository, head, workflow["run_id"], workflow["run_attempt"])
+    run_context(
+        api,
+        repository,
+        head,
+        workflow["run_id"],
+        workflow["run_attempt"],
+        publication=True,
+    )
     jobs = pages(
         api,
         f"actions/runs/{workflow['run_id']}/attempts/{workflow['run_attempt']}/jobs",
@@ -214,6 +221,14 @@ def release_asset(api, release):
     return None
 
 
+def release_url(release, repository):
+    # The resource URL is stable when a Draft's browser URL changes at publication.
+    actual = release["url"]
+    if actual != f"https://api.github.com/repos/{repository}/releases/{release['id']}":
+        raise ValueError("Release resource URL mismatch")
+    return actual
+
+
 def publish_release(api, tag, head, manifest, path):
     from release_manifest import write
 
@@ -224,7 +239,9 @@ def publish_release(api, tag, head, manifest, path):
     release = candidate(api, tag, head, True)
     if release is not None and not release["draft"]:
         saved = release_asset(api, release)
-        if saved is None or saved["release"]["release_url"] != release["html_url"]:
+        if saved is None or saved["release"]["release_url"] != release_url(
+            release, repository
+        ):
             raise ValueError("Existing final Release lacks matching Manifest")
         published_evidence(api, saved, repository, tag, head)
         return release["html_url"], "already-published"
@@ -250,7 +267,7 @@ def publish_release(api, tag, head, manifest, path):
                 "prerelease": False,
             },
         )
-    proposed["release"]["release_url"] = release["html_url"]
+    proposed["release"]["release_url"] = release_url(release, repository)
     published_evidence(api, proposed, repository, tag, head)
     saved = release_asset(api, release)
     if saved is None:
@@ -263,7 +280,7 @@ def publish_release(api, tag, head, manifest, path):
             raise ValueError("Uploaded Manifest does not match verified content")
     else:
         # Preserve a prior valid attempt's evidence instead of overwriting its asset.
-        if saved["release"]["release_url"] != release["html_url"]:
+        if saved["release"]["release_url"] != release_url(release, repository):
             raise ValueError("Draft Manifest Release URL mismatch")
         published_evidence(api, saved, repository, tag, head)
     candidate(api, tag, head, True)
@@ -274,7 +291,7 @@ def publish_release(api, tag, head, manifest, path):
         tag_commit(api, tag) != head
         or release["draft"]
         or release["tag_name"] != tag
-        or release["html_url"] != saved["release"]["release_url"]
+        or release_url(release, repository) != saved["release"]["release_url"]
     ):
         raise ValueError("Final Release identity mismatch")
     return release["html_url"], "published"
