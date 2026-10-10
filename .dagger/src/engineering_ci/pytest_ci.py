@@ -65,6 +65,9 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     read = sub.add_parser("read-xml")
     read.add_argument("path", type=Path)
+    coverage = sub.add_parser("read-coverage")
+    coverage.add_argument("xml", type=Path)
+    coverage.add_argument("json", type=Path)
     plan = sub.add_parser("plan")
     plan.add_argument("listing", type=Path)
     plan.add_argument("replaced")
@@ -78,6 +81,9 @@ def main(argv=None) -> int:
     try:
         if args.command == "read-xml":
             print(json.dumps(read_xml(args.path), ensure_ascii=False))
+        elif args.command == "read-coverage":
+            from pytest_quality import read_coverage
+            print(json.dumps(read_coverage(args.xml, args.json), ensure_ascii=False))
         elif args.command == "plan":
             names = remaining_checks(args.listing.read_text(encoding="utf-8"), args.replaced)
             args.output.write_text("".join(name + "\n" for name in names), encoding="utf-8")
@@ -86,9 +92,22 @@ def main(argv=None) -> int:
         elif args.command == "gate":
             code = execution_exit_code(args.directory)
             print(f"Original pytest exit code: {code}")
-            # Neither JSON status nor summary/artifact delivery can change this.
+            policy_path = args.directory / "quality-policy.json"
+            if policy_path.exists():
+                from pytest_quality import evaluate_quality, quality_summary, read_coverage
+                if policy_path.stat().st_size > 4096:
+                    raise ValueError("Quality policy exceeds delivery limits")
+                policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                if policy.get("schema_version") != 1:
+                    raise ValueError("Unsupported quality policy schema")
+                evidence = read_coverage(args.directory / "coverage.xml", args.directory / "coverage.json")
+                quality = evaluate_quality(policy, code, evidence)
+                print(quality_summary(quality))
+                # Recompute from raw coverage counts and explicit policy, never report.json.
+                return code if code else 0 if quality["gate"]["passed"] else 1
+            # Neither JSON presentation nor summary/artifact delivery can change this.
             return code
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"Pytest report delivery error: {exc}", file=sys.stderr)
         return 1
     return 0

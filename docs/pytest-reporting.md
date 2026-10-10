@@ -17,7 +17,10 @@ python_test_artifacts → pytest (once, ReturnType.ANY)
 nonzero. The export function succeeding means evidence was exported; it does
 not mean tests passed. The original exit code is obtained from Dagger before
 reading or formatting reports, and is stored separately in `exit-code.txt`.
-The CI gate reads only this file, never JSON status, Markdown or upload results.
+Without an enabled quality policy, the CI gate reads only this file, never
+JSON status, Markdown or upload results. Optional v0.4.4 coverage gates also
+validate raw coverage counts against the explicit policy; see
+[test strategies and quality gates](test-quality-gates.md).
 
 `python_test()` still raises on a nonzero original pytest exit code, with a
 bounded JUnit-based error summary. `python_test_report()` still returns JSON.
