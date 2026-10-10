@@ -1,9 +1,9 @@
 """Keep engineering-ci package metadata aligned with a release tag.
 
 Usage:
-  python scripts/release_version.py set v0.4.3
-  python scripts/release_version.py check
-  python scripts/release_version.py show
+  python -m engineering_ci.release.version set v0.4.11
+  python -m engineering_ci.release.version check
+  python -m engineering_ci.release.version show
 """
 
 from __future__ import annotations

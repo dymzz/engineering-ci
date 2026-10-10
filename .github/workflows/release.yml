@@ -46,7 +46,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
-        run: python3 -m engineering_ci.cli release prepare
+        run: python3 -m engineering_ci.workflow_actions release prepare
 
   core-tests:
     needs: candidate
@@ -112,7 +112,7 @@ jobs:
           artifact-ids: ${{ needs.core-tests.outputs.ruff_artifact_id }}
           path: .release-evidence/ruff
       - name: Require usable evidence and original execution gates
-        run: python3 -m engineering_ci.cli manifest facts --directory .release-evidence --output release-facts/facts.json
+        run: python3 -m engineering_ci.workflow_actions manifest facts --directory .release-evidence --output release-facts/facts.json
       - uses: actions/upload-artifact@v7.0.2
         id: facts_artifact
         with:
@@ -146,7 +146,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 -m engineering_ci.cli release verify --directory release-facts --manifest release-manifest.json
+        run: python3 -m engineering_ci.workflow_actions release verify --directory release-facts --manifest release-manifest.json
       - name: Preserve validation Manifest
         id: manifest_artifact
         if: ${{ always() && !cancelled() }}
@@ -183,7 +183,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 -m engineering_ci.cli release publish --manifest release-evidence/release-manifest.json
+        run: python3 -m engineering_ci.workflow_actions release publish --manifest release-evidence/release-manifest.json
       - name: Preserve publication evidence after an API failure
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2

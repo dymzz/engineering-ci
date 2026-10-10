@@ -1,59 +1,61 @@
-# 统一 CLI 与 Workflow 输出
+# CLI 与 Workflow 调用边界
 
-直接运行 Python 脚本时，入口索引、依赖和目录规则见
-[scripts 使用说明](../scripts/README.md)。
+用户入口与 Workflow 内部操作分开。scripts 只保留 release.py 和 download.py，
+旧路径迁移见[scripts 使用说明](../scripts/README.md)。
 
-在 engineering-ci 源码仓库中使用安装后的命令：
+```text
+scripts/release.py  → cli/release.py  → execution Coordinator → release.yml
+scripts/download.py → cli/download.py → execution Coordinator（已有 Run）
+engineering-ci checks/version → checks.py / release/version.py
+GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
+专项工具 → python -m engineering_ci.tools.<name>
+```
+
+发布的 job 依赖、Coverage、Matrix、Security 与证据收集仍由 YAML 定义。
+检查选择与命令集中在 checks.py；Release Manifest 注册表引用同一组 step 名称。
+不建立另一套 pipeline 或执行生命周期状态机。
+
+## 用户命令
 
 ```sh
-uv run --locked engineering-ci --help
-uv run --locked engineering-ci checks pr
+uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
+uv run --locked engineering-ci checks ruff
 uv run --locked engineering-ci version check
+uv run --locked engineering-ci release verify --version v0.4.11 --ref codex/local-verification-v0.4.10
+uv run --locked engineering-ci download --interactive --repo dymzz/engineering-ci
+uv run --locked engineering-ci download --repo dymzz/engineering-ci --run RUN_ID --save-log
 ```
 
-GitHub Actions 设置 PYTHONPATH 为当前 checkout 的 src，并直接使用
-`python -m engineering_ci.cli`。所有实际调用位于同一个 Python 调用层；
-scripts/manual_release.py、release_manifest.py、release_version.py 和 checks.py
-保留为兼容入口。Release 策略和原生证据验证位于 release/，本地检查位于 checks.py。
-工具版本集中维护；Release 检查注册表引用核心检查的实际 step 名称。
+也可用 python -m engineering_ci.cli，需已安装项目或设置 PYTHONPATH。
+Release verify 会创建真实验证 Run；publish 明确请求正式发布，只允许 main/pass。
+原始失败仍返回非零；完整发布安全检查位于现有 Workflow 的 release/ 业务模块。
 
-## 交互式选择
+## 交互与非交互下载
+
+交互依次选择 Workflow、最近 30 个 Run 与未过期 Artifact 名称。0 收集所有名称，q
+取消；不自动挑选默认值。已完成且无 Artifact 时收集日志，未完成时等待并收集最终输出。
+同名 Artifact 保持原名称过滤语义，不按最大 ID 猜测最新 attempt。
+
+Codex 使用 --run RUN_ID；ID 必须为实际正整数。真实 API 提供 Workflow ID 与 ref，
+--workflow / --ref 仅作约束。无法确认身份时拒绝调用 Coordinator。
+--resume RUN_ID 是别名；下载入口拒绝 --input、--new-run 和无 ID 的 --resume。
+原生进度恢复、auto/aria2/native、Digest、ZIP 校验与输出目录沿用原有实现。
+
+首次使用安装 gh 并完成认证。省略 repo 时按当前目录 origin 与缓存识别仓库。
+交互需要终端；两种模式都只查询/恢复已有 Run。
+
+## Workflow 内部调用
 
 ```sh
-uv run --locked engineering-ci workflow --interactive --repo dymzz/engineering-ci --out workflow-artifacts
+python3 -m engineering_ci.workflow_actions checks ruff-lint
+python3 -m engineering_ci.workflow_actions checks tests --coverage
+python3 -m engineering_ci.workflow_actions release prepare
+python3 -m engineering_ci.workflow_actions manifest facts --directory .release-evidence --output release-facts/facts.json
 ```
 
-依次选择 Workflow、最近 30 个 Run 之一和未过期 Artifact 名称；0 表示所有名称，q
-取消。菜单显示 GitHub 原生身份。已结束 Run 没有未过期 Artifact 时只收集日志；
-尚未结束的 Run 会等待结束后收集输出，不提前关闭 Artifact 收集。选定的 Run ID
-和实际分支传给原有 ghwf 恢复入口，保存日志并复用原有缓存、资源校验、安全解压、
-auto/aria2/native 后端。菜单只查询和恢复已有 Run，不触发 Dispatch。
-相同名称的 Artifact 按原有名称过滤语义收集，不按最大 ID 猜测最新 attempt。
+Actions 设置 PYTHONPATH 为实际 checkout 的 src。内部 release prepare/verify/publish
+读取 Actions 上下文、真实 SHA、Run Attempt 和必需证据，不用于本地请求发布。
+这些操作不会触发另一轮 pytest 或 Dagger。
 
-首次使用应安装 gh 并运行 gh auth login。省略 repo 时按既有 Git origin 与缓存规则
-识别当前消费者仓库。交互要求终端；非交互输入不会自动选择默认 Workflow 或 Run。
-
-## Codex / 非交互调用
-
-```sh
-uv run --locked engineering-ci workflow --repo dymzz/engineering-ci --workflow release.yml --resume RUN_ID --save-log --out workflow-artifacts
-uv run --locked engineering-ci workflow --repo dymzz/engineering-ci --workflow release.yml --ref main --show-state
-```
-
-RUN_ID 必须替换为实际 ID，分支不同于 main 时提供实际 --ref。所有既有 ghwf 参数
-继续可用，包括 --input、--artifact、--no-artifacts、--new-run、--aria2c 和下载配置。
-显式新 Dispatch 仍遵守既有单次 POST、UNKNOWN 与人工 Run ID 恢复约束。
-只读菜单、下载与正式发布是不同操作；正式发布继续由人手动启动 GitHub Workflow。
-
-更短的脚本名 scripts/ghwf.py 可替代 gh_workflow_artifacts.py；原路径继续可用：
-
-```powershell
-function ghwf {
-    python 'D:\workspace\engineering-ci\scripts\ghwf.py' @args
-}
-```
-
-此函数仍直接接受原有非交互参数，需 Python 环境已安装项目依赖。也可以使用
-`uv run --project D:/workspace/engineering-ci --locked engineering-ci workflow`，
-通过锁定的项目环境调用；--project 不改变消费者当前目录。交互选择使用上面的命令。
-本轮不引入新的远程调度、工作流 FSM、发布数据库或消费者业务改动。
+普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
+有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见入口索引。

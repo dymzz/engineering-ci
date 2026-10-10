@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Read-only GitHub CI timing collector; results never determine quality gates."""
 
 from __future__ import annotations
@@ -6,9 +5,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PHASES = {"report-export", "check-list", "remaining-checks", "all-checks"}
@@ -17,7 +16,7 @@ PHASES = {"report-export", "check-list", "remaining-checks", "all-checks"}
 def timestamp(value):
     if not isinstance(value, str):
         return None
-    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = dt.datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         raise ValueError("Timing timestamps must include a timezone")
     return parsed
@@ -50,10 +49,9 @@ def dagger_timings(log):
     for raw in log.splitlines():
         line = ANSI.sub("", raw).lstrip("\ufeff")
         line = re.sub(r"^\d{4}-\d\d-\d\dT\S+\s+", "", line)
-        if re.fullmatch(r"1\s*:\s*connect", line):
-            if not connected:
-                generation += 1
-                connected = True
+        if re.fullmatch(r"1\s*:\s*connect", line) and not connected:
+            generation += 1
+            connected = True
         if re.fullmatch(r"1\s*:\s*connect DONE \[[^]]+\]", line):
             connected = False
         marker = re.search(r"(?:^|\|\s+)CI_TIMING (\{.*\})$", line)

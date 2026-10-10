@@ -1,9 +1,13 @@
-"""Choose existing workflows/runs/artifact names, then reuse the ghwf coordinator."""
+"""Download an existing Run; this entry point cannot dispatch a Workflow."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+
+from ..execution.cli import entrypoint
+from ..execution.repository import REPO_PATTERN, resolve_repo
+from ._execution import add_runtime_arguments, runtime_arguments
 
 
 def api(repository, path):
@@ -48,7 +52,15 @@ def choose(values, title, label, ask=input, write=print, *, all_option=False):
 
 
 def interactive(
-    repository, out, *, backend=None, query=api, ask=input, write=print, invoke=None
+    repository,
+    out,
+    *,
+    backend=None,
+    runtime=(),
+    query=api,
+    ask=input,
+    write=print,
+    invoke=None,
 ):
     from ..execution.repository import REPO_PATTERN, resolve_repo
 
@@ -110,36 +122,90 @@ def interactive(
         args += ["--no-artifacts"]
     if backend:
         args += ["--download-backend", backend]
+    args += list(runtime)
     write(f"Resume existing Run {run['id']}; output: {out}")
     if invoke is None:
         from ..execution.cli import entrypoint as invoke
     return invoke(args)
 
 
-def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    try:
-        if not args or "--interactive" in args:
-            parser = argparse.ArgumentParser(
-                description="Select an existing Run and collect its outputs"
-            )
-            parser.add_argument("--interactive", action="store_true")
-            parser.add_argument("--repo")
-            parser.add_argument("--out", default="workflow-artifacts")
-            parser.add_argument(
-                "--download-backend", choices=("auto", "aria2", "native")
-            )
-            options = parser.parse_args(args)
-            if not sys.stdin.isatty():
-                parser.error(
-                    "Interactive mode requires a terminal; supply --workflow and --resume RUN_ID for an agent"
-                )
-            return interactive(
-                options.repo, options.out, backend=options.download_backend
-            )
-        from ..execution.cli import entrypoint
+def existing_run(repository, run_id, workflow=None, ref=None, *, query=None):
+    """Resolve identity from the actual Run, rejecting conflicting caller constraints."""
+    run = (query or api)(repository, f"actions/runs/{run_id}")
+    if (
+        not isinstance(run, dict)
+        or type(run.get("id")) is not int
+        or run["id"] != run_id
+        or type(run.get("workflow_id")) is not int
+        or run["workflow_id"] <= 0
+        or not isinstance(run.get("head_branch"), str)
+        or not run["head_branch"]
+    ):
+        raise ValueError("GitHub returned an invalid Run identity")
+    remote = run.get("repository")
+    remote_repo = remote.get("full_name") if isinstance(remote, dict) else None
+    if not isinstance(remote_repo, str) or remote_repo.lower() != repository.lower():
+        raise ValueError("Run does not belong to the requested repository")
+    if ref is not None and ref != run["head_branch"]:
+        raise ValueError("Run does not belong to the requested ref")
+    if workflow is not None:
+        remote_path = run.get("path")
+        path = remote_path.split("@", 1)[0] if isinstance(remote_path, str) else ""
+        if workflow != str(run["workflow_id"]) and workflow not in (
+            path,
+            path.rsplit("/", 1)[-1],
+        ):
+            raise ValueError("Run does not belong to the requested workflow")
+    return workflow or str(run["workflow_id"]), run["head_branch"]
 
-        return entrypoint(args)
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--run", "--resume", dest="run", metavar="RUN_ID")
+    group.add_argument("--interactive", action="store_true")
+    parser.add_argument("--repo", help="OWNER/REPO; infer from current Git origin")
+    parser.add_argument("--workflow", help="Optional constraint on the selected Run")
+    parser.add_argument("--ref", help="Optional constraint on the selected Run")
+    add_runtime_arguments(parser)
+    options = parser.parse_args(argv)
+    if options.run is None:
+        if not sys.stdin.isatty():
+            parser.error(
+                "Interactive mode requires a terminal; supply --run RUN_ID for an agent"
+            )
+        if options.workflow is not None or options.ref is not None:
+            parser.error("--workflow and --ref require --run RUN_ID")
+        if options.artifact is not None or options.no_artifacts:
+            parser.error(
+                "Select artifacts in the menu, or use --run with --artifact/--no-artifacts"
+            )
+    elif not options.run.isdecimal() or int(options.run) <= 0:
+        parser.error("--run/--resume requires a positive Run ID")
+    if options.repo and not REPO_PATTERN.fullmatch(options.repo):
+        parser.error("--repo must be OWNER/REPO")
+    try:
+        if options.run is None:
+            return interactive(
+                options.repo, options.out, runtime=runtime_arguments(options)
+            )
+        repository = options.repo or resolve_repo(refresh=options.refresh_repo)[0]
+        workflow, ref = existing_run(
+            repository, int(options.run), options.workflow, options.ref
+        )
+        return entrypoint(
+            [
+                "--repo",
+                repository,
+                "--workflow",
+                workflow,
+                "--ref",
+                ref,
+                "--resume",
+                options.run,
+                *runtime_arguments(options),
+            ]
+        )
     except KeyboardInterrupt:
         print(
             "Cancelled; inspect the existing ghwf state before resuming.",
@@ -147,5 +213,9 @@ def main(argv=None):
         )
         return 130
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
-        print(f"workflow: {error}", file=sys.stderr)
+        print(f"download: {error}", file=sys.stderr)
         return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

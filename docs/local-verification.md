@@ -4,19 +4,22 @@
 Actions 的 bootstrap Python 最低为 3.11。实际核心 pytest 固定使用 Python 3.14。
 
 ```sh
-python scripts/checks.py pr --json .test-tools/checks/pr.json
-python scripts/checks.py ruff
-python scripts/checks.py ruff-lint
-python scripts/checks.py ruff-format
-python scripts/checks.py tests
-python scripts/checks.py version lock
+uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
+uv run --locked engineering-ci checks ruff
+uv run --locked engineering-ci checks ruff-lint
+uv run --locked engineering-ci checks ruff-format
+uv run --locked engineering-ci checks tests
+uv run --locked engineering-ci checks version lock
 ```
 
-也可使用安装后的统一 CLI：
+不安装项目包时，也可从源码直接调用仅使用标准库的检查模块：
 
 ```sh
-uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
+PYTHONPATH=src python3 -m engineering_ci.checks pr --json .test-tools/checks/pr.json
 ```
+
+上面的 PYTHONPATH 写法用于 Bash；PowerShell 先设置 `$env:PYTHONPATH='src'`，
+再执行 `python -m engineering_ci.checks ...`。核心 pytest 的锁定环境仍由 uv 准备。
 
 `pr` 恰好包含 Ruff Lint、Ruff Format、核心 pytest、四处版本一致性与根 uv.lock
 一致性；单项和完整 profile 使用相同定义。重复选择不会重复执行同一检查。
@@ -41,7 +44,7 @@ Windows 可以在 PATH 中提供 aria2c，或显式指定文件路径：
 
 ```powershell
 $env:ARIA2C = 'D:\tools\aria2\aria2c.exe'
-python scripts/checks.py tests --json .test-tools/checks/windows.json
+uv run --locked engineering-ci checks tests --json .test-tools/checks/windows.json
 ```
 
 ARIA2C 必须指向 exe 文件，不能指向工具目录。原生 Windows 可以实际运行其支持的
@@ -57,7 +60,7 @@ Ruff 的 POSIX 执行权限规则在 Windows 上无法等效验证。CLI 脚本�
 sudo apt-get update && sudo apt-get install -y aria2 git
 # 安装 gh、uv 0.12.23；使用该 Linux 环境的工具，避免混用 Windows exe。
 cd /path/to/engineering-ci
-python3 scripts/checks.py pr --json .test-tools/checks/linux.json
+PYTHONPATH=src python3 -m engineering_ci.checks pr --json .test-tools/checks/linux.json
 ```
 
 设置 PYTEST_ADDOPTS、PYTEST_PLUGINS 或 PYTEST_DISABLE_PLUGIN_AUTOLOAD 会改变 pytest
@@ -79,7 +82,7 @@ exit 0，也不会产生有效通过记录。未提交和未跟踪的相关源�
 SHA 代替实际工作区。工具版本、检查参数、配置、相关源码改变会使旧结果失效。
 
 ```sh
-python scripts/checks.py inspect .test-tools/checks/pr.json
+uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json
 ```
 
 inspect 重新比较当前输入与工具身份，仅用于查询。freshness 为 current、stale、

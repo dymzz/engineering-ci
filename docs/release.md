@@ -23,14 +23,14 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 仓库根目录执行，需 uv；根项目要求 Python 3.14。PowerShell / Bash 均可使用：
 
 ```sh
-python scripts/checks.py pr --json .test-tools/checks/pr.json
-python scripts/checks.py ruff
-python scripts/checks.py tests --coverage
-python scripts/checks.py version lock
-python scripts/checks.py inspect .test-tools/checks/pr.json
+uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
+uv run --locked engineering-ci checks ruff
+uv run --locked engineering-ci checks tests --coverage
+uv run --locked engineering-ci checks version lock
+uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json
 ```
 
-GitHub PR CI 调用 `python -m engineering_ci.cli checks ...`，与上述兼容入口
+GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与上述用户命令
 使用同一套 Python 定义。工具版本由 `src/engineering_ci/toolchain.py` 提供；
 Ruff 范围、参数和检查名称在 `src/engineering_ci/checks.py` 中集中维护。
 直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
@@ -59,7 +59,7 @@ Python 3.12、3.13、3.14 及既有负向场景。它们验证模块能力，不
 真实项目安全检查独立于锁一致性：
 
 ```sh
-uv run --locked python scripts/dependency_security.py --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --out .test-tools/security --cache .test-tools/security-bin
+uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --out .test-tools/security --cache .test-tools/security-bin
 ```
 
 发布扫描真实根 uv.lock 的公共 PyPI 锁定依赖（含 dev / 传递依赖），
@@ -74,7 +74,7 @@ enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不�
 
 ## 版本与人工发布
 
-1. 隔离分支执行 `python scripts/release_version.py set v0.4.11`，
+1. 隔离分支执行 `uv run --locked engineering-ci version set v0.4.11`，
    对齐两份 pyproject.toml 与两份 uv.lock。
 2. 一个功能 PR，轻量检查通过后人工审查、合并。不要手工推 Tag。
 3. 合并后从 main 手动验证，默认不发布：
@@ -201,9 +201,15 @@ python-ci / dependency-security 移到手动发布；
 
 ## 统一模块与 CLI
 
-Actions 通过 `engineering_ci.cli` 调用 `release prepare/verify/publish` 与
+用户发起发布使用 `uv run --locked python scripts/release.py publish --version v0.4.11`；
+此命令请求现有 release.yml，只有 main/pass 可以请求正式发布。
+候选分支用 `release.py verify --version v0.4.11 --ref <候选分支>`，不会创建 Tag 或 Release。
+两条命令都会创建真实 Workflow Run；本轮开发不自动执行。
+已有 Run 的查询、恢复、日志及 Artifact 下载使用 `scripts/download.py --run RUN_ID --save-log`。
+
+Actions 通过 `engineering_ci.workflow_actions` 调用 `release prepare/verify/publish` 与
 `manifest facts/tools`；GitHub Actions 继续定义并执行发布 DAG。
-Release 业务模块位于 `src/engineering_ci/release/`，原 scripts 只做兼容转发。
+Release 业务模块位于 `src/engineering_ci/release/`，scripts 只保留用户 release.py 和 download.py；内部操作不放入 scripts。
 发布 Manifest Schema 与发布准入语义保持不变。
 
 交互式 Workflow、Run 和 Artifact 名称选择，以及 Codex 非交互调用，见

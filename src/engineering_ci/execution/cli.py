@@ -26,13 +26,9 @@ def legacy_state_file(repo, workflow, ref, inputs, out, artifact, save_log, no_a
     return default_cache_dir() / 'runs' / f'{hashlib.sha256(scope.encode()).hexdigest()[:24]}.json'
 
 
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description='Dispatch/resume a GitHub Actions run and collect its outputs.')
-    p.add_argument('--repo', help='OWNER/REPO; infer from current Git origin when omitted')
+def add_runtime_arguments(p: argparse.ArgumentParser) -> None:
+    """Shared waiting, collection and transport options; no dispatch arguments."""
     p.add_argument('--refresh-repo', action='store_true')
-    p.add_argument('--workflow', required=True)
-    p.add_argument('--ref', default='main')
-    p.add_argument('--input', action='append', default=[], metavar='KEY=VALUE')
     p.add_argument('--artifact', help='Artifact name; {run_id} is expanded after dispatch')
     p.add_argument('--out', default='workflow-artifacts')
     p.add_argument('--save-log', action='store_true')
@@ -44,9 +40,6 @@ def parser() -> argparse.ArgumentParser:
                    help='Compatibility option; use --resume after a failed attempt')
     p.add_argument('--retry-delay', type=float, default=2,
                    help='Compatibility option; no automatic short retry loop')
-    group = p.add_mutually_exclusive_group()
-    group.add_argument('--resume', nargs='?', const='last', metavar='RUN_ID')
-    group.add_argument('--new-run', action='store_true')
     p.add_argument('--show-state', action='store_true')
     p.add_argument('--download-backend', choices=['auto', 'aria2', 'native'],
                    help='Download backend (default: auto; aria2 if available, otherwise native HTTP)')
@@ -59,6 +52,18 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--aria2c', help='aria2 executable name or path (default: aria2c; overrides configuration)')
     p.add_argument('--max-extract-bytes', type=int, default=8 * 1024**3)
     p.add_argument('--max-extract-files', type=int, default=100000)
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description='Dispatch/resume a GitHub Actions run and collect its outputs.')
+    p.add_argument('--repo', help='OWNER/REPO; infer from current Git origin when omitted')
+    p.add_argument('--workflow', required=True)
+    p.add_argument('--ref', default='main')
+    p.add_argument('--input', action='append', default=[], metavar='KEY=VALUE')
+    add_runtime_arguments(p)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument('--resume', nargs='?', const='last', metavar='RUN_ID')
+    group.add_argument('--new-run', action='store_true')
     return p
 
 
@@ -137,3 +142,7 @@ def entrypoint(argv=None) -> int:
         print('Interrupted; inspect --show-state and resume the saved Run. '
               'UNKNOWN dispatch requires verifying GitHub and --resume RUN_ID.', file=sys.stderr)
         return 130
+
+
+if __name__ == '__main__':
+    raise SystemExit(entrypoint())

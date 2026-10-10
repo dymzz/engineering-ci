@@ -2,16 +2,14 @@
 
 import copy
 import json
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-import manual_release as release
-import release_manifest as evidence
+from engineering_ci.release import manifest as evidence
+from engineering_ci.release import publishing as release
 
 HEAD = "a" * 40
 TAG = "v0.4.11"

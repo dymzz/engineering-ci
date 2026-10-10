@@ -1,133 +1,102 @@
-# scripts 入口使用说明
+# 两个用户入口
 
-`scripts/` 保留命令行入口及现有专项工具。统一检查和 Release 的业务逻辑位于
-`src/engineering_ci/`；GitHub Actions 使用 `python -m engineering_ci.cli` 调用同一实现。
-脚本不是另一套检查定义或发布调度器。
+`scripts/` 只保留 `release.py` 和 `download.py`。脚本加载自身 checkout 的 `src/`，
+实现分别位于 `engineering_ci.cli.release` 和 `engineering_ci.cli.download`。
+GitHub Actions 调用 `engineering_ci.workflow_actions`，不调用这两个用户脚本。
 
-## 运行环境与目录
+| 入口 | 用途 | 是否创建 Run |
+| --- | --- | --- |
+| `release.py verify` | 请求已有 release.yml 完整验证候选版本 | 是；恢复已有 Run 时除外 |
+| `release.py publish` | 人工请求 main 的完整验证、Tag 和 Release 发布 | 是；发布由 Workflow 门禁决定 |
+| `download.py` | 选择、等待、恢复已有 Run，下载日志及 Artifact | 否 |
 
-以下相对路径示例从 **engineering-ci checkout 根目录**执行。统一入口的 bootstrap
-需要 Python 3.11+；项目锁定环境和核心 pytest 使用 Python 3.14。
-使用前确认当前 checkout 包含所调用入口；功能 PR 合并前，新入口位于对应功能分支。
-本地 PR 检查还需要指定版本的 uv，以及对应测试所需的 Git、gh、aria2c；
-Windows/WSL2 限制与工具版本见 [本地验证](../docs/local-verification.md)。
+## 环境与目录
 
-```sh
-python scripts/checks.py --help
-python scripts/checks.py pr --json .test-tools/checks/pr.json
+在 `D:\workspace\engineering-ci` 使用当前分支开发，不需要额外 worktree。
+安装项目锁定环境、GitHub CLI，并确认 `gh auth status` 和目标仓库权限：
+
+```powershell
+Set-Location D:\workspace\engineering-ci
+uv sync --locked --group dev
+uv run --locked python scripts/release.py --help
+uv run --locked python scripts/download.py --help
 ```
 
-使用项目依赖环境运行其他脚本时：
+Linux 使用相同的 uv 命令。aria2c 可选，auto 缺失时使用标准库 HTTP；
+具体配置见[下载配置](../docs/ghwf-downloads.md)。
+输出 --out 相对于调用者目录；机器配置相对于 engineering-ci checkout。
 
-```sh
-uv run --locked python scripts/ghwf.py --help
-uv run --locked engineering-ci --help
+## Release Workflow
+
+```powershell
+# 候选分支验证，不创建 Tag 或 Release；这条命令会请求真实 Workflow。
+uv run --locked python scripts/release.py verify --version v0.4.11 --ref codex/local-verification-v0.4.10
+# 已知 Run 恢复：先核对它属于相同版本、模式和分支。
+uv run --locked python scripts/release.py verify --version v0.4.11 --ref codex/local-verification-v0.4.10 --resume RUN_ID
+# 人工审查合并、版本核对完成后，才执行正式发布。
+uv run --locked python scripts/release.py publish --version v0.4.11
 ```
 
-入口通过自身文件位置定位 `src/`，不需要写死仓库路径或创建额外副本。
-`checks.py` 和 `release_version.py` 检查的是入口所属的 engineering-ci checkout，
-并不因为调用者当前目录位于消费者仓库，就改为检查消费者。
-发布辅助脚本应在对应验证 checkout 根目录执行。核心 JUnit/Coverage 位于
-checkout 根目录；跨目录调用 ghwf 的输出与仓库识别规则见下文。
+RUN_ID 替换为实际正整数。publish 只接受 main 和 pass 场景。
+verify --scenario assertion 可请求现有负向验证。版本必须显式提供，不猜测远端版本。
+既有 FSM 保留单次 POST 与 UNKNOWN 处理；UNKNOWN 要先人工核对远端 Run，再提供确认过的 ID，
+不能用 --new-run 盲目重发。--resume 无 ID 恢复同一请求的缓存；--new-run 明确放弃旧任务，
+可能产生重复 Run。两个命令返回实际 Workflow/收集失败状态。
+正式 Release 的最终证据以 Workflow 和 Release Asset 为准，详见[发布说明](../docs/release.md)。
 
-## 入口索引
+## 下载已有 Run
 
-| 脚本 | 用途与调用方式 | 详细说明 |
-|---|---|---|
-| `checks.py` | `pr`、`ruff`、`ruff-lint`、`ruff-format`、`tests`、`version`、`lock`；`inspect REPORT` 查询历史结果有效性 | [本地检查](../docs/local-verification.md) |
-| `release_version.py` | `check` / `show` 读取四处版本；`set vX.Y.Z` 修改两份 pyproject.toml 和两份 uv.lock | [版本与发布](../docs/release.md) |
-| `ghwf.py` | 触发或恢复一个 Workflow Run，收集日志和 Artifact；非交互参数与原入口一致 | [执行与恢复](../docs/ghwf-execution.md)、[下载配置](../docs/ghwf-downloads.md) |
-| `gh_workflow_artifacts.py` | `ghwf.py` 的旧名称兼容入口，现有 PowerShell 函数可继续使用 | [统一 CLI](../docs/unified-cli.md) |
-| `manual_release.py` | `prepare` / `evidence` / `verify` / `publish`：供 release.yml 调用的候选校验、证据核验及发布操作 | [发布流程与证据](../docs/release.md) |
-| `release_manifest.py` | `tools --scope core\|ruff --output FILE` 记录工具；`facts --directory DIR --output FILE` 整理已有证据，不重跑测试 | [发布流程与证据](../docs/release.md) |
-| `dependency_security.py` | `--project DIR --mode off\|report\|enforce --out DIR`；锁一致性与已知漏洞结果分别记录 | [依赖安全](../docs/dependency-security.md) |
-| `ci_performance.py` | `--repo OWNER/REPO --run RUN_ID --out FILE`；读取实际 Run 测量数据，可传 `--dagger-log FILE` | [性能测量](../docs/ci-performance.md) |
-| `sync_consumer.py` | `--consumer PATH` 默认只显示引用更新计划；`--apply` 更新引用并运行 Dagger，`--commit` / `--push` 显式提交和推送 | 下方消费者同步说明 |
-| `ghwf_e2e.py` | 真实网络验证入口：默认要求 `--resume RUN_ID`；只有显式 `--allow-dispatch` 才允许新 Dispatch | [执行测试](../docs/ghwf-execution.md) |
-
-表中的 FILE、DIR、RUN_ID、OWNER/REPO 和版本占位符必须替换为实际值。
-各入口的完整参数以 `python scripts/对应脚本.py --help` 为准；需要依赖时使用
-`uv run --locked python`。专项工具未全部并入统一 CLI，不要假定存在同名 CLI 子命令。
-
-## 日常检查与版本准备
-
-```sh
-python scripts/checks.py ruff
-python scripts/checks.py tests --coverage
-python scripts/checks.py version lock
-python scripts/checks.py inspect .test-tools/checks/pr.json
-python scripts/release_version.py check
-python scripts/release_version.py show
+```powershell
+uv run --locked python scripts/download.py --interactive --repo dymzz/engineering-ci
+uv run --locked python scripts/download.py --repo dymzz/engineering-ci --run RUN_ID --save-log --out workflow-artifacts
+uv run --locked python scripts/download.py --run RUN_ID --artifact release-manifest --download-backend native
 ```
 
-`--coverage` 在同一次 pytest 调用中生成既有 JUnit 和 Coverage；本地 JSON 不复制日志。
-`inspect` 只查询输入与工具身份，不重新执行 pytest，也不让下一次检查跳过执行。
-检查入口区分原始工具退出码与整体结果：失败返回非零，工具缺失返回 127，环境、
-过期或不完整检查返回 3，中断返回 130。Windows 的 skipped 不等于完整通过。
+非交互必须提供实际 ID；--resume RUN_ID 是 --run RUN_ID 的别名。
+Workflow 与 ref 从真实 Run 获取；--workflow、--ref 是额外身份约束，冲突时拒绝。
+--input、--new-run、无 ID 的 --resume 在下载入口不可用。
+失败 Run 仍返回失败，收集到日志不代表 CI 通过。目录、缓存、完整性校验和安全解压
+继续使用原实现，详见[执行与恢复](../docs/ghwf-execution.md)。
 
-准备本轮版本时可以执行 `python scripts/release_version.py set v0.4.11`。
-该命令只修改四处版本元数据，不创建 Tag 或 Release。正式发布按
-[手动发布流程](../docs/release.md) 由人启动 release.yml；不要把本地检查报告当作发布凭据。
-`manual_release.py publish` 具有真实发布副作用，依赖 Workflow 上下文，不能作为
-缺少实际 Run/Commit/证据时的本地发布快捷方式。
+## 旧 PowerShell 函数迁移
 
-## 从消费者目录调用 ghwf
-
-在 PowerShell 中定义函数时，可使用锁定的 engineering-ci 环境：
+旧 gh_workflow_artifacts.py、ghwf.py 已移除。将 PowerShell Profile 中的函数改为：
 
 ```powershell
 function ghwf {
-    uv run --project 'D:\workspace\engineering-ci' --locked python 'D:\workspace\engineering-ci\scripts\ghwf.py' @args
+    uv run --project 'D:\workspace\engineering-ci' --locked python 'D:\workspace\engineering-ci\scripts\download.py' @args
 }
-ghwf --repo dymzz/engineering-ci --workflow release.yml --ref main --show-state
+ghwf --run RUN_ID --save-log
 ```
 
-函数中的两个路径应指向包含新入口的实际 checkout。旧函数使用
-`python 'D:\workspace\engineering-ci\scripts\gh_workflow_artifacts.py' @args` 仍兼容，
-但该 Python 环境必须已安装项目依赖。
-`--project` 选择依赖环境，不改变调用者当前目录；ghwf 省略 `--repo` 时继续按
-当前目录 Git origin 和既有缓存规则识别仓库，`--out` 的相对路径也属于调用者目录。
+--project 选择工程依赖环境，不改变调用者目录；省略 --repo 仍根据当前 Git origin
+和原有缓存识别仓库。新 ghwf 只下载已有 Run。原先触发普通 Workflow 的用法可另取名：
 
-恢复已有 Run 时，使用实际 ID 和该任务的实际 ref：
-
-```sh
-uv run --locked python scripts/ghwf.py --repo dymzz/engineering-ci --workflow release.yml --ref main --resume RUN_ID --save-log --out workflow-artifacts
+```powershell
+function ghdispatch {
+    uv run --project 'D:\workspace\engineering-ci' --locked python -m engineering_ci.execution.cli @args
+}
 ```
 
-省略 `--resume` 的普通执行路径可能发起 Dispatch；`--show-state` 查询状态，
-`--resume RUN_ID` 恢复既有 Run，`--new-run` 显式创建新任务。UNKNOWN 状态下不得
-自动再次 Dispatch，应先确认远端 Run ID。下载的配置优先级仍为 CLI > 环境变量 >
-仓库自身 config/ghwf.local.toml > 默认值；Windows/Linux 环境示例见下载文档。
+底层模块保留原 Dispatch、inputs、缓存查询和 --resume 参数契约，有真实 POST 副作用。
+发布 engineering-ci 请使用 release.py。
 
-交互选择 Workflow、Run、Artifact 使用统一 CLI，而非短脚本的额外参数：
+## 检查与专项工具
 
-```sh
-uv run --locked engineering-ci workflow --interactive --repo dymzz/engineering-ci
-```
+这些操作按需独立调用，不作为 scripts 入口：
 
-## 消费者同步与专项验证
+| 原脚本 | 当前调用 |
+| --- | --- |
+| checks.py | `uv run --locked engineering-ci checks pr`，支持 ruff/tests/version/lock/inspect |
+| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.4.11 |
+| manual_release.py | Workflow 内部 `python -m engineering_ci.workflow_actions release ...` |
+| release_manifest.py | Workflow 内部 `python -m engineering_ci.workflow_actions manifest ...` |
+| dependency_security.py | `uv run --locked python -m engineering_ci.tools.security ...` |
+| ci_performance.py | `uv run --locked python -m engineering_ci.tools.performance ...` |
+| sync_consumer.py | `uv run --locked python -m engineering_ci.tools.consumer ...` |
+| ghwf_e2e.py | `uv run --locked python -m engineering_ci.tools.workflow_e2e ...` |
 
-`sync_consumer.py` 的 `--consumer` 相对 engineering-ci checkout 定位。默认只读显示
-更新计划，但需要联网查询 Git 远端；源仓库须处于指定分支（默认 main）、工作区干净，
-且 HEAD 与远端该分支一致。
-
-```sh
-python scripts/sync_consumer.py --consumer ../engineering-ci-smoke
-```
-
-`--apply` 会修改消费者 Workflow/Dagger 引用、执行 dagger develop 和 dagger check，
-需 Dagger 与 Docker；`--commit` 必须同时使用 `--apply`，`--push` 必须同时使用
-`--commit`。消费者有未提交修改时拒绝覆盖；推送还要求消费者处于指定分支并已同步
-远端。它按源分支实际提交同步，不等同于 Renovate 的正式版本更新流程。
-
-`ci_performance.py` 通过已认证的 gh 读取已有 Run，不触发测试；
-`ghwf_e2e.py` 则实际访问网络并下载输出。用已有 Run 验证时传 `--resume RUN_ID`，
-不要为了测试入口而追加 `--allow-dispatch`。依赖安全的 report/enforce 会执行扫描，
-网络或扫描错误不能解释为安全通过；完整参数与门禁契约沿用对应专题文档。
-
-## 维护约定
-
-新增、改名或改变脚本参数时，同步更新本索引、对应专题文档及 `--help`，
-明确运行目录、依赖、输出、退出状态和实际写入操作。统一调用层的兼容入口不复制
-业务实现；Workflow 引用统一模块，脚本名称兼容关系在这里维护。
-开发职责约定见 [rules.md](rules.md)。
+内部发布操作依赖 Actions 上下文，不是本地发起发布的命令。
+consumer 默认只读；修改、提交、推送仍需显式参数。
+E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
+本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/local-verification.md)。

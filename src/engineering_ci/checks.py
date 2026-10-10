@@ -26,11 +26,8 @@ CI_STEPS = {
 }
 RUFF_SCOPE = (
     "tests/fixtures/python-app",
-    "scripts/release_version.py",
-    "scripts/manual_release.py",
-    "scripts/release_manifest.py",
-    "scripts/checks.py",
-    "scripts/ghwf.py",
+    "scripts/release.py",
+    "scripts/download.py",
     "src/engineering_ci/__init__.py",
     "src/engineering_ci/checks.py",
     "src/engineering_ci/toolchain.py",
@@ -38,14 +35,18 @@ RUFF_SCOPE = (
     "src/engineering_ci/cli/__init__.py",
     "src/engineering_ci/cli/__main__.py",
     "src/engineering_ci/github_cli.py",
+    "src/engineering_ci/workflow_actions.py",
     "src/engineering_ci/cli",
     "src/engineering_ci/release",
+    "src/engineering_ci/tools",
     "tests/test_release_version.py",
     "tests/test_manual_release.py",
     "tests/test_release_manifest.py",
     "tests/test_release_transport.py",
     "tests/test_checks.py",
     "tests/test_unified_cli.py",
+    "tests/test_ci_performance.py",
+    "tests/test_sync_consumer.py",
 )
 PR_CHECKS = ("ruff-lint", "ruff-format", "pytest", "version", "lock")
 GROUPS = {"pr": PR_CHECKS, "ruff": PR_CHECKS[:2], "tests": ("pytest",)}
@@ -66,7 +67,6 @@ SCOPES = {
         "docs/release-manifest.schema.json",
     ),
     "version": (
-        "scripts/release_version.py",
         "src/engineering_ci/release/version.py",
         "src/engineering_ci/release/__init__.py",
         ".dagger/pyproject.toml",
@@ -75,14 +75,13 @@ SCOPES = {
     "lock": (".python-version", "uv.toml"),
 }
 COMMON_INPUTS = (
-    "scripts/checks.py",
-    "scripts/ghwf.py",
     "src/engineering_ci/__init__.py",
     "src/engineering_ci/checks.py",
     "src/engineering_ci/toolchain.py",
     "src/engineering_ci/_paths.py",
     "src/engineering_ci/cli/__init__.py",
     "src/engineering_ci/cli/__main__.py",
+    "src/engineering_ci/workflow_actions.py",
     ".github/workflows/ci.yml",
     "pyproject.toml",
     "uv.lock",

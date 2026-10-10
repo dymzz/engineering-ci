@@ -13,9 +13,9 @@ from engineering_ci import checks
 
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
-    (tmp_path / "scripts").mkdir()
-    (tmp_path / "scripts/checks.py").write_text("# input\n")
-    (tmp_path / "scripts/release_version.py").write_text("# version\n")
+    (tmp_path / "src/engineering_ci/release").mkdir(parents=True)
+    (tmp_path / "src/engineering_ci/checks.py").write_text("# input\n")
+    (tmp_path / "src/engineering_ci/release/version.py").write_text("# version\n")
     (tmp_path / "pyproject.toml").write_text("# configuration\n")
     (tmp_path / "uv.lock").write_text("# lock\n")
     (tmp_path / "tests").mkdir()
@@ -242,7 +242,7 @@ def test_invalid_aria2_directory_and_pytest_overrides_are_explicit(
         "tests/uncommitted.py",
         "pyproject.toml",
         "uv.lock",
-        "scripts/checks.py",
+        "src/engineering_ci/checks.py",
         ".github/workflows/release.yml",
         ".dagger/pyproject.toml",
         "docs/release-manifest.schema.json",
@@ -264,7 +264,7 @@ def test_changed_and_untracked_inputs_expire_old_pass(checkout, file):
 
 
 def test_file_permissions_expire_old_pass(checkout):
-    source = checkout / "scripts/release_version.py"
+    source = checkout / "src/engineering_ci/release/version.py"
     source.write_text("print('version')\n")
     out = checkout / "result.json"
     _, code = checks.execute(
@@ -430,7 +430,8 @@ def test_actions_bootstrap_uses_the_registry(capsys, tmp_path):
 def test_later_check_cannot_leave_an_earlier_pass_current(checkout):
     def mutate(args, kwargs):
         if "version" in args:
-            (checkout / "scripts/manual_release.py").write_text(
+            (checkout / "src/engineering_ci/cli").mkdir(exist_ok=True)
+            (checkout / "src/engineering_ci/cli/release.py").write_text(
                 "# new input after Ruff\n"
             )
 

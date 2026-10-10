@@ -420,7 +420,7 @@ jobs:
               args+=(--public-index "$index")
             fi
           done <<< "$SECURITY_PUBLIC_INDEXES"
-          python3 "$RUNNER_TEMP/engineering-ci-security/scripts/dependency_security.py" "${args[@]}"
+          PYTHONPATH="$RUNNER_TEMP/engineering-ci-security/src" python3 -m engineering_ci.workflow_actions security "${args[@]}"
       - name: Publish Dependency Security Summary
         if: ${{ always() && !cancelled() }}
         continue-on-error: true

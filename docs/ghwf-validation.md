@@ -1,5 +1,9 @@
 # ghwf 本轮验证记录
 
+此文保留初次实现的历史证据及旧脚本名。v0.4.11 的当前入口为 release.py、download.py；
+E2E 改为 `uv run --locked python -m engineering_ci.tools.workflow_e2e`。
+当前使用与旧函数迁移以 [scripts 说明](../scripts/README.md) 为准。
+
 验证日期：2026-10-09（用户时区 Asia/Shanghai）。
 
 ## 分阶段证据
@@ -60,7 +64,7 @@ Git 的 LF / CRLF 提示不影响检查结果。
 ## 待人工验收
 
 按 [ghwf-execution.md](ghwf-execution.md) 配置 gh、aria2 和 Python 环境后，先用已有 Run 执行
-`scripts/ghwf_e2e.py --resume RUN_ID`，确认认证、官方日志 attempt 地址、真实 Digest、代理 / TLS
+`uv run --locked python -m engineering_ci.tools.workflow_e2e --resume RUN_ID`，确认认证、官方日志 attempt 地址、真实 Digest、代理 / TLS
 和消费者 Artifact 目录。只有人工决定创建新 Run 时，再使用 `--allow-dispatch`。
 
 本轮未运行真实 E2E；GitHub API 线上行为、GHES、共享盘锁、断电和突然强杀尚不能由本地测试证明。

@@ -1,15 +1,17 @@
 # ghwf 执行与恢复组件
 
-`scripts/gh_workflow_artifacts.py` 保留为 PowerShell `ghwf` 的调用入口。
+`scripts/download.py` 是已有 Run 的下载入口；发布请求使用 `scripts/release.py`。普通 Workflow Dispatch 参数保留在 `engineering_ci.execution.cli`。旧 PowerShell 函数迁移见 [入口说明](../scripts/README.md)。
 实现放在 `src/engineering_ci/execution/`，用于一次性执行与恢复；没有后台服务、数据库或任务队列。
-冻结的 Dagger 核心、仓库 Workflow 和消费者 Workflow 均未修改。
+执行 FSM、下载实现和消费者契约保持不变；Workflow 内部入口迁移不改变原有门禁。
 
 ## 目录与接口
 
 ```text
 scripts/
-  gh_workflow_artifacts.py       原调用入口
-  ghwf_e2e.py                   人工选择的真实验收入口
+  release.py                   请求现有 Release Workflow
+  download.py                  只下载已有 Run
+src/engineering_ci/tools/
+  workflow_e2e.py              人工选择的真实验收模块
 src/engineering_ci/execution/
   cli.py                        参数、命令输出、缓存选择
   coordinator.py                ExecutionCoordinator：执行顺序及恢复策略
@@ -182,7 +184,7 @@ Artifact 清单分页读取，校验可用的 `sha256:` Digest；没有 Digest �
 | Python | 仓库 `requires-python >=3.14`；独立入口实现兼容 Python 3.10+ |
 | transitions | 0.9.3，FSM |
 | filelock | 3.20.3，进程间互斥 |
-| pytest | 8.4.2，dev 依赖 |
+| pytest | 9.0.3，dev 依赖 |
 | six | 1.17.0，transitions 的锁定传递依赖 |
 | aria2c | 可选后端；使用官方 Windows 1.37.0 便携版验证 |
 | gh / Git | 外部原生命令；gh 需认证及 Actions 权限 |
@@ -195,14 +197,17 @@ Set-Location D:\workspace\engineering-ci
 uv sync --locked --group dev
 $env:PATH = "D:\workspace\engineering-ci\.venv\Scripts;" + $env:PATH
 function ghwf {
-    python "D:\workspace\engineering-ci\scripts\gh_workflow_artifacts.py" @args
+    uv run --project "D:\workspace\engineering-ci" --locked python "D:\workspace\engineering-ci\scripts\download.py" @args
+}
+function ghdispatch {
+    uv run --project "D:\workspace\engineering-ci" --locked python -m engineering_ci.execution.cli @args
 }
 ```
 
 没有 uv 时，在选定的 Python 环境安装：
 
 ```powershell
-python -m pip install transitions==0.9.3 filelock==3.20.3 pytest==8.4.2
+python -m pip install transitions==0.9.3 filelock==3.20.3 pytest==9.0.3
 ```
 
 GitHub CLI 从[官方安装入口](https://cli.github.com/)安装，然后 `gh auth login`。
@@ -216,38 +221,38 @@ GitHub CLI 从[官方安装入口](https://cli.github.com/)安装，然后 `gh a
 
 ```powershell
 # 从当前 Git origin 自动识别 repo，首次执行可能产生真实 Run。
-ghwf --workflow build.yml --ref main --input target=release --save-log `
+ghdispatch --workflow build.yml --ref main --input target=release --save-log `
      --artifact 'build-{run_id}' --out D:\work\outputs
 
 # 检查状态，不访问 GitHub；显式 --repo 时不依赖 gh 安装。
-ghwf --repo owner/repo --workflow build.yml --show-state
+ghdispatch --repo owner/repo --workflow build.yml --show-state
 
 # 中断后用相同命令，或显式恢复。
-ghwf --repo owner/repo --workflow build.yml --resume --save-log
-ghwf --repo owner/repo --workflow build.yml --resume 123 --save-log --no-artifacts
+ghdispatch --repo owner/repo --workflow build.yml --resume --save-log
+ghdispatch --repo owner/repo --workflow build.yml --resume 123 --save-log --no-artifacts
 
 # 改收集选项仍复用已保存的 Run，不发送新 Dispatch。
-ghwf --repo owner/repo --workflow build.yml --out D:\other\outputs --save-log
+ghdispatch --repo owner/repo --workflow build.yml --out D:\other\outputs --save-log
 
 # 自定义传输和降级策略。
-ghwf --repo owner/repo --workflow build.yml --resume 123 --connections 2 `
+ghdispatch --repo owner/repo --workflow build.yml --resume 123 --connections 2 `
      --download-timeout 60 --connect-timeout 20 --download-recovery pause
 
 # 只有人工核验没有重复 Run，才使用该覆盖选项。
-ghwf --repo owner/repo --workflow build.yml --new-run
+ghdispatch --repo owner/repo --workflow build.yml --new-run
 ```
 
 ## 兼容性对照
 
 | 原行为 / 参数 | 本轮行为 |
 | --- | --- |
-| PowerShell 函数及脚本路径 | 保留；入口加载本地 src，不要求发布包 |
-| --repo / --workflow / --ref / --input | 保留；Inputs 仅参与哈希，不持久化原值 |
+| PowerShell 函数及脚本路径 | 旧脚本移除；ghwf 迁移到 download.py，Dispatch 用独立模块 |
+| 底层 --repo / --workflow / --ref / --input | execution.cli 保留；Inputs 仅参与哈希，不持久化原值 |
 | 自动识别 origin / --refresh-repo | 保留原解析及缓存失效规则 |
 | --artifact / `{run_id}` | 保留名称选择和替换；指定名称时平铺输出 |
 | --out / run.log | 保留 `<out>/<run_id>` 和 run.log；日志来源改为官方 ZIP |
 | --save-log / --no-artifacts | 保留；失败 Run 自动补充必需诊断日志 |
-| --resume / --resume RUN_ID | 保留；核对 Run 所属仓库 / Workflow 后恢复，不 Dispatch |
+| 底层 --resume / --resume RUN_ID | execution.cli 保留；download.py 要求显式 ID；核对 Run 所属仓库 / Workflow 后恢复，不 Dispatch |
 | --new-run | 保留明确覆盖语义；未完成状态会输出警告 |
 | --show-state | 保留并支持离线读取 / 必要迁移 |
 | --interval / --timeout | 保留等待间隔及等待上限 |
@@ -297,11 +302,11 @@ HTTP 集成测试使用 PATH 中的 aria2c；也可指定 `$env:ARIA2C = 'D:\too
 真实 E2E 只提供入口，本轮没有运行。先用已有 Run 验收：
 
 ```powershell
-python scripts/ghwf_e2e.py --repo owner/repo --workflow build.yml `
+uv run --locked python -m engineering_ci.tools.workflow_e2e --repo owner/repo --workflow build.yml `
        --resume 123 --save-log --artifact 'build-{run_id}'
 
 # 人工决定确实要创建 Run 后，才允许以下操作。
-python scripts/ghwf_e2e.py --allow-dispatch --repo owner/repo `
+uv run --locked python -m engineering_ci.tools.workflow_e2e --allow-dispatch --repo owner/repo `
        --workflow build.yml --ref main --new-run --save-log
 ```
 

@@ -37,17 +37,17 @@ jobs:
           persist-credentials: false
       - name: Read unified toolchain
         id: check_toolchain
-        run: python3 -m engineering_ci.cli checks toolchain --github-output "$GITHUB_OUTPUT"
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
       - name: Ruff Lint
-        run: python3 -m engineering_ci.cli checks ruff-lint
+        run: python3 -m engineering_ci.workflow_actions checks ruff-lint
       - name: Ruff Format Check
-        run: python3 -m engineering_ci.cli checks ruff-format
+        run: python3 -m engineering_ci.workflow_actions checks ruff-format
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
-        run: python3 -m engineering_ci.cli manifest tools --scope ruff --output release-tools/tool-versions.json
+        run: python3 -m engineering_ci.workflow_actions manifest tools --scope ruff --output release-tools/tool-versions.json
       - uses: actions/upload-artifact@v7.0.2
         id: ruff_artifact
         if: ${{ inputs.coverage }}
@@ -68,7 +68,7 @@ jobs:
           persist-credentials: false
       - name: Read unified toolchain
         id: check_toolchain
-        run: python3 -m engineering_ci.cli checks toolchain --github-output "$GITHUB_OUTPUT"
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
@@ -85,10 +85,10 @@ jobs:
           if [[ "$EXPORT_COVERAGE" == 'true' ]]; then
             args+=(--coverage)
           fi
-          python3 -m engineering_ci.cli checks tests "${args[@]}"
+          python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"
       - name: Record core release tool versions
         if: ${{ always() && !cancelled() && inputs.coverage }}
-        run: uv run --no-sync --group dev python -m engineering_ci.cli manifest tools --scope core --output tool-versions.json
+        run: uv run --no-sync --group dev python -m engineering_ci.workflow_actions manifest tools --scope core --output tool-versions.json
       - name: Upload core release evidence
         id: core_artifact
         if: ${{ always() && inputs.coverage }}
@@ -112,10 +112,10 @@ jobs:
           persist-credentials: false
       - name: Read unified toolchain
         id: check_toolchain
-        run: python3 -m engineering_ci.cli checks toolchain --github-output "$GITHUB_OUTPUT"
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
           python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Validate release metadata and root lock consistency
-        run: python3 -m engineering_ci.cli checks version lock
+        run: python3 -m engineering_ci.workflow_actions checks version lock

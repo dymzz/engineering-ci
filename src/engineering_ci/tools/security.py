@@ -1,13 +1,9 @@
-#!/usr/bin/env python3
 """Standalone stdlib entry point; scanning does not start a Dagger Engine."""
 
 import argparse
 from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
-from engineering_ci.dependency_security import scan, write_bundle
+from ..dependency_security import scan, write_bundle
 
 
 def main(argv=None):

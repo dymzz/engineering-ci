@@ -1,34 +1,39 @@
 """Unit tests for consumer SHA synchronization (no network, no Dagger required)."""
+
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts/sync_consumer.py"
-spec = importlib.util.spec_from_file_location("sync_consumer", SCRIPT)
-assert spec is not None and spec.loader is not None
-sync = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = sync
-spec.loader.exec_module(sync)
+from engineering_ci.tools import consumer as sync
 
 UPSTREAM = "dymzz/engineering-ci"
 OLD_SHA = "a" * 40
 NEW_SHA = "b" * 40
 WORKFLOW = (
     "jobs:\n  python:\n    uses: "
-    "dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@" + OLD_SHA
+    "dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@"
+    + OLD_SHA
     + "\n    secrets:\n      ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}\n"
 )
-MANIFEST = json.dumps({
-    "name": "smoke",
-    "dependencies": [
-        {"name": "engineering-ci", "source": "github.com/dymzz/engineering-ci@" + OLD_SHA, "pin": OLD_SHA},
-        {"name": "other", "source": "github.com/example/other@" + OLD_SHA, "pin": OLD_SHA},
-    ],
-})
+MANIFEST = json.dumps(
+    {
+        "name": "smoke",
+        "dependencies": [
+            {
+                "name": "engineering-ci",
+                "source": "github.com/dymzz/engineering-ci@" + OLD_SHA,
+                "pin": OLD_SHA,
+            },
+            {
+                "name": "other",
+                "source": "github.com/example/other@" + OLD_SHA,
+                "pin": OLD_SHA,
+            },
+        ],
+    }
+)
 
 
 class VersionSyncTests(unittest.TestCase):
@@ -37,7 +42,9 @@ class VersionSyncTests(unittest.TestCase):
         self.assertIn("reusable-python-ci.yml@" + NEW_SHA, wf)
         self.assertIn("${{ secrets.ENGINEERING_CI_READ_TOKEN }}", wf)
         deps = json.loads(man)["dependencies"]
-        self.assertEqual(deps[0]["source"], "github.com/dymzz/engineering-ci@" + NEW_SHA)
+        self.assertEqual(
+            deps[0]["source"], "github.com/dymzz/engineering-ci@" + NEW_SHA
+        )
         self.assertEqual(deps[0]["pin"], NEW_SHA)
         self.assertEqual(deps[1]["pin"], OLD_SHA)
         self.assertEqual(len(notes), 2)
@@ -48,15 +55,16 @@ class VersionSyncTests(unittest.TestCase):
         self.assertEqual(json.loads(man), json.loads(MANIFEST))
 
     def test_wrong_source_rejected(self):
-        bad = MANIFEST.replace("github.com/dymzz/engineering-ci@", "github.com/other/engineering-ci@")
+        bad = MANIFEST.replace(
+            "github.com/dymzz/engineering-ci@", "github.com/other/engineering-ci@"
+        )
         with self.assertRaises(sync.SyncError):
             sync.update_references(WORKFLOW, bad, UPSTREAM, NEW_SHA)
 
     def test_missing_and_ambiguous_workflow_rejected(self):
         for value in ["name: empty\n", WORKFLOW + WORKFLOW]:
-            with self.subTest(value=value):
-                with self.assertRaises(sync.SyncError):
-                    sync.update_references(value, MANIFEST, UPSTREAM, NEW_SHA)
+            with self.subTest(value=value), self.assertRaises(sync.SyncError):
+                sync.update_references(value, MANIFEST, UPSTREAM, NEW_SHA)
 
     def test_missing_dependency_rejected(self):
         bad = MANIFEST.replace('"name": "engineering-ci"', '"name": "missing"')
