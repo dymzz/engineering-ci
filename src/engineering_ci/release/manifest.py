@@ -10,7 +10,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..toolchain import ruff_command
+from ..pipeline import PIPELINE
+from ..toolchain import dagger_cli_version, ruff_command
 from .registry import (
     ARTIFACT_NAMES,
     ARTIFACT_OUTPUTS,
@@ -143,10 +144,9 @@ def facts(directory):
     dagger = (
         (directory / "pytest/dagger-version.txt").read_text(encoding="utf-8").strip()
     )
-    match = re.fullmatch(r"dagger v([0-9]+\.[0-9]+\.[0-9]+)(?: .*)?", dagger)
-    if not match:
-        raise ValueError("Dagger CLI version unavailable")
-    records.append({"name": "dagger", "version": match[1], "scope": "dagger_cli"})
+    records.append(
+        {"name": "dagger", "version": dagger_cli_version(dagger), "scope": "dagger_cli"}
+    )
     security = read_json(directory / "security/report.json")
     records.append(
         {
@@ -198,8 +198,12 @@ def run_context(api, repository, head, run_id, attempt, *, publication=False):
         or run["event"] != "workflow_dispatch"
         or run["repository"]["full_name"] != repository
         or run["html_url"] != expected_url
-        or run["path"].split("@")[0] != ".github/workflows/release.yml"
-        or (publication and run.get("head_branch") != "main")
+        or run["path"].split("@")[0]
+        != f".github/workflows/{PIPELINE['delivery']['release']['workflow']}"
+        or (
+            publication
+            and run.get("head_branch") != PIPELINE["delivery"]["release"]["branch"]
+        )
     ):
         raise ValueError("Workflow does not match verified release identity")
     return {
@@ -207,7 +211,7 @@ def run_context(api, repository, head, run_id, attempt, *, publication=False):
         "run_attempt": attempt,
         "run_url": expected_url,
         "event": "workflow_dispatch",
-        "path": ".github/workflows/release.yml",
+        "path": f".github/workflows/{PIPELINE['delivery']['release']['workflow']}",
     }
 
 
@@ -355,7 +359,8 @@ def validate(value, repository, tag, head, *, published=False):
         or workflow["run_url"]
         != f"https://github.com/{repository}/actions/runs/{workflow['run_id']}"
         or workflow["event"] != "workflow_dispatch"
-        or workflow["path"] != ".github/workflows/release.yml"
+        or workflow["path"]
+        != f".github/workflows/{PIPELINE['delivery']['release']['workflow']}"
         or value["mode"] not in {"validation", "publication"}
     ):
         raise ValueError("Manifest workflow identity mismatch")

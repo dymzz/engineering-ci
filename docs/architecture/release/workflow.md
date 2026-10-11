@@ -24,6 +24,10 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与上述用户命令
 使用同一套 Python 实现。工具版本、范围、参数及依赖由 `config/pipeline.toml` 集中定义；
 `toolchain.py` 保留调用接口，`checks.py` 执行工具并产生真实结果。
+既有版本 Step 还校验 Pipeline 与 YAML 的对应关系；Release 操作在 Git / GitHub
+请求前执行相同校验。绑定范围和配置升级规则统一见
+[GitHub Actions 一致性](../../configuration/pipeline.md#github-actions-一致性)。
+Job DAG、权限、条件继续由 YAML 声明，不由 TOML 动态调度。
 直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
 
 原生 Windows 的 Bash 测试无法完整执行时，pytest 原始退出码和 skipped 数量
@@ -34,7 +38,8 @@ GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与
 只有本项目四处一致的版本值变化时，保留同环境的 Ruff / pytest 结果，重新核验版本和锁文件。
 缺少当前版本证据、源码 / 依赖已变化或结果不完整时仍阻断准入；远程门禁继续绑定实际提交。
 
-完整检查需 Docker 与 Dagger CLI 0.21.10（匹配 dagger.json）。
+完整检查需 Docker 与 Dagger CLI 1.0.0-beta.16（匹配 dagger.json 和 Workflow Engine）。
+安装及 SDK 生成方式见 [Dagger 配置](../../configuration/dagger.md)。
 Release Workflow 的 `dagger check` 已包含 quality 和 matrix fixture。
 
 quality fixture 验证既有显式阈值与失败传播；matrix fixture 实际运行
@@ -184,6 +189,20 @@ pytest、CI Job、Artifact 的具体结果作为证据保存，不组合成 FSM 
 FSM 与 `release/pipeline.py` 的 DeliveryPipeline 持有同一个 ExecutionContext 对象。
 上下文包含仓库、版本、checkout、实际 Git / PR 事实和不可变阶段证据。
 业务操作产生证据，FSM 只按事件和准入条件改变阶段；后续步骤不能仅凭前一阶段名称认为完成。
+
+实际调用关系为：
+
+```text
+cli/release.py
+  ├─ delivery.prepare()
+  │    ├─ DeliveryPipeline：执行操作、产出及核验阶段证据
+  │    └─ ReleaseLifecycle：共享 ExecutionContext，按证据准入转换阶段
+  └─ 交付获准后调用既有 execution 入口
+       └─ ExecutionCoordinator → GitHub Actions
+```
+
+Pipeline 与交付 FSM 由 `delivery.prepare()` 协调，不能解释为 Pipeline 调用 FSM 再调用
+Coordinator 的串行调度链。配置的具体读取位置见[Pipeline 配置](../../configuration/pipeline.md#实际调用接入)。
 
 | 阶段输出 | 下一阶段必需输入与准入 |
 | --- | --- |

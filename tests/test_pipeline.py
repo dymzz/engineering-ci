@@ -62,6 +62,19 @@ def test_missing_configuration_does_not_silently_use_defaults(tmp_path):
         pipeline.load(tmp_path / "missing.toml")
 
 
+def test_dagger_cli_and_engine_pins_match_the_module():
+    version = json.loads((checks.ROOT / "dagger.json").read_text(encoding="utf-8"))[
+        "engineVersion"
+    ]
+    workflow = (checks.ROOT / ".github/workflows/reusable-python-ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert f"DAGGER_VERSION: '{version.removeprefix('v')}'" in workflow
+    assert workflow.count('"registry.dagger.io/engine:v$DAGGER_VERSION"') == 2
+    assert 'BIN_DIR="$RUNNER_TEMP/dagger-bin"' in workflow
+    assert "DAGGER_ENGINE: container://dagger-engine" in workflow
+
+
 def test_pipeline_input_changes_invalidate_old_check_identity(tmp_path):
     path = tmp_path / "config/pipeline.toml"
     path.parent.mkdir()
@@ -71,3 +84,173 @@ def test_pipeline_input_changes_invalidate_old_check_identity(tmp_path):
     changed, _ = checks.snapshot(tmp_path, "version")
     assert checks.digest(initial) != checks.digest(changed)
     assert "SECRET" not in json.dumps(changed)
+
+
+def test_dagger_lock_changes_invalidate_pytest_identity(tmp_path):
+    path = tmp_path / "dagger.lock"
+    path.write_text("original image pins\n", encoding="utf-8")
+    initial, _ = checks.snapshot(tmp_path, "pytest")
+    path.write_text("updated image pins\n", encoding="utf-8")
+    changed, _ = checks.snapshot(tmp_path, "pytest")
+    assert checks.digest(initial) != checks.digest(changed)
+
+
+def test_delivery_settings_are_loaded_without_changing_existing_operations():
+    from engineering_ci.cli import release
+
+    delivery = pipeline.PIPELINE["delivery"]
+    assert delivery == {
+        "checks_profile": "pr",
+        "release": {"workflow": "release.yml", "branch": "main", "trigger": "manual"},
+    }
+    assert delivery["release"] is release.RELEASE_CONFIG
+    assert pipeline.PIPELINE["profiles"][delivery["checks_profile"]] == list(
+        checks.PR_CHECKS
+    )
+
+
+def test_schema_one_without_delivery_keeps_legacy_behavior(tmp_path, monkeypatch):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data.pop("delivery")
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    loaded = pipeline.load(path)
+    assert loaded["schema_version"] == 1
+    assert loaded["delivery"] == pipeline.PIPELINE["delivery"]
+
+
+@pytest.mark.parametrize("backend", ["auto", "native", "dagger"])
+def test_execution_backend_is_explicit_and_not_an_arbitrary_command(
+    tmp_path, monkeypatch, backend
+):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["execution"] = {"backend": backend}
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    assert pipeline.load(path)["execution"] == {"backend": backend}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, {}, {"backend": "unknown"}, {"backend": "dagger", "command": "echo PASS"}],
+)
+def test_invalid_execution_is_rejected_before_operations(tmp_path, monkeypatch, value):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["execution"] = value
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    with pytest.raises(ValueError, match="Invalid pipeline configuration"):
+        pipeline.load(path)
+
+
+def test_legacy_schema_one_keeps_native_execution(tmp_path, monkeypatch):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data.pop("execution")
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    assert pipeline.load(path)["execution"] == {"backend": "native"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/engineering_ci/dagger_checks.py",
+        "src/engineering_ci/checks_container.py",
+        ".dagger/src/engineering_ci/main.py",
+        ".dagger/src/engineering_ci/pr_checks.py",
+        "dagger.json",
+    ],
+)
+def test_container_executor_inputs_cannot_be_removed(tmp_path, monkeypatch, path):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["inputs"]["common"].remove(path)
+    config = tmp_path / "pipeline.toml"
+    config.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    with pytest.raises(ValueError, match="executor definition inputs"):
+        pipeline.load(config)
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        None,
+        [],
+        {},
+        {"checks_profile": "pr"},
+        {"checks_profile": "missing", "release": {}},
+        {"checks_profile": "ruff", "release": {}},
+        {"checks_profile": ["pr"], "release": {}},
+        {"checks_profile": "__import__('os').system('SECRET')", "release": {}},
+        {"checks_profile": "pr", "release": "release.yml"},
+        {
+            "checks_profile": "pr",
+            "release": {"workflow": "release.yml", "branch": "main"},
+        },
+        {
+            "checks_profile": "pr",
+            "release": {"workflow": "other.yml", "branch": "main", "trigger": "manual"},
+        },
+        {
+            "checks_profile": "pr",
+            "release": {
+                "workflow": "../release.yml",
+                "branch": "main",
+                "trigger": "manual",
+            },
+        },
+        {
+            "checks_profile": "pr",
+            "release": {
+                "workflow": "release.yml",
+                "branch": "candidate",
+                "trigger": "manual",
+            },
+        },
+        {
+            "checks_profile": "pr",
+            "release": {"workflow": "release.yml", "branch": "main", "trigger": "push"},
+        },
+        {
+            "checks_profile": "pr",
+            "release": {"workflow": "release.yml", "branch": "main", "trigger": True},
+        },
+        {
+            "checks_profile": "pr",
+            "release": {
+                "workflow": "release.yml",
+                "branch": "main",
+                "trigger": "manual",
+                "skip_verification": True,
+            },
+        },
+        {
+            "checks_profile": "pr",
+            "release": {
+                "workflow": "release.yml",
+                "branch": "main",
+                "trigger": "manual",
+            },
+            "command": "echo SECRET",
+        },
+    ],
+)
+def test_invalid_delivery_is_rejected_before_any_process(
+    tmp_path, monkeypatch, delivery
+):
+    import subprocess
+
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["delivery"] = delivery
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: pytest.fail("No operation may run")
+    )
+    with pytest.raises(ValueError, match="Invalid pipeline configuration"):
+        pipeline.load(path)

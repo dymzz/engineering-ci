@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .. import checks
 from .._paths import ROOT
+from ..pipeline import PIPELINE
 from .context import ExecutionContext, ReviewEvidence
 from .pipeline import DeliveryPipeline, current_checks
 from .pipeline import EvidenceError as DeliveryError
@@ -121,7 +122,8 @@ class Checkout:
         )
         if (
             info["nameWithOwner"] != self.repository
-            or info["defaultBranchRef"]["name"] != "main"
+            or info["defaultBranchRef"]["name"]
+            != PIPELINE["delivery"]["release"]["branch"]
         ):
             raise DeliveryError(
                 "Repository or default branch differs from the Release Workflow"
@@ -151,14 +153,14 @@ class Checkout:
         files.discard("")
         prs = (
             []
-            if branch == "main"
+            if branch == PIPELINE["delivery"]["release"]["branch"]
             else self.gh(
                 "pr",
                 "list",
                 "--head",
                 branch,
                 "--base",
-                "main",
+                PIPELINE["delivery"]["release"]["branch"],
                 "--state",
                 "all",
                 "--limit",
@@ -268,7 +270,10 @@ class Checkout:
 
     def main_commit(self):
         value = self.command(
-            "gh", "api", f"repos/{self.repository}/commits/main", json_result=True
+            "gh",
+            "api",
+            f"repos/{self.repository}/commits/{PIPELINE['delivery']['release']['branch']}",
+            json_result=True,
         )
         head = value.get("sha")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
@@ -278,8 +283,9 @@ class Checkout:
 
 def pr_body(checkout, context, message, path):
     """Generate factual review context and preserve the human-written PR body."""
-    commits = checkout.command("git", "log", "--format=%h %s", "origin/main..HEAD")
-    changed = checkout.command("git", "diff", "--stat", "origin/main...HEAD")
+    base = "origin/" + PIPELINE["delivery"]["release"]["branch"]
+    commits = checkout.command("git", "log", "--format=%h %s", f"{base}..HEAD")
+    changed = checkout.command("git", "diff", "--stat", f"{base}...HEAD")
     section = (
         f"{START}\n## Delivery context\n\n"
         f"{message}\n\nVersion: `v{context['version']}`\n\n"
@@ -442,7 +448,9 @@ def prepare(
     lifecycle.advance("checks_passed")
     print(f"Completed: local PR checks; report: {pipeline.report}")
     # Refresh PR diff context; leave the user's checkout intact.
-    checkout.command("git", "fetch", "origin", "main")
+    checkout.command(
+        "git", "fetch", "origin", PIPELINE["delivery"]["release"]["branch"]
+    )
     if checkout.context(version) != facts:
         raise DeliveryError(
             "Checkout or PR changed during checking; inspect the current context"
@@ -476,7 +484,7 @@ def prepare(
             "pr",
             "create",
             "--base",
-            "main",
+            PIPELINE["delivery"]["release"]["branch"],
             "--head",
             facts["branch"],
             "--draft",

@@ -25,15 +25,32 @@ def read_xml(path: Path) -> dict:
         return {"xml": "", "diagnostic": f"Cannot read JUnit XML ({type(exc).__name__})"}
 
 
-def remaining_checks(listing: str, replaced: str) -> list[str]:
-    # Dagger 0.21.10 `check -l` prints Name/Description rows; module-qualified
-    # names are also the positional selectors accepted by `dagger check`.
-    names = []
+def discovered_checks(listing: str) -> dict[str, str]:
+    """Keep stable check identities and explicit native CLI selectors."""
+    checks = {}
     for line in listing.splitlines():
         token = line.split()[0] if line.split() else ""
-        if re.fullmatch(r"[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.:/-]+", token):
-            if token not in names:
-                names.append(token)
+        modern = re.fullmatch(
+            r"\s*--([a-zA-Z0-9_.-]+)\s+--check=([a-zA-Z0-9_.-]+)(?:\s+#.*)?\s*", line
+        )
+        if modern:
+            module, name = modern.groups()
+            identity = f"{module}:{name}"
+            selector = f"dag+check://?module={module}&check={name}"
+        elif re.fullmatch(r"[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.:/-]+", token):
+            identity = selector = token
+        elif token.startswith("--"):
+            raise ValueError("Invalid Dagger check listing")
+        else:
+            continue
+        if identity in checks and checks[identity] != selector:
+            raise ValueError("Conflicting Dagger check selectors")
+        checks[identity] = selector
+    return checks
+
+
+def remaining_checks(listing: str, replaced: str) -> list[str]:
+    names = discovered_checks(listing)
     if replaced not in names:
         raise ValueError(f"Configured pytest check is not in dagger check -l: {replaced}")
     return [name for name in names if name != replaced]
@@ -93,6 +110,7 @@ def main(argv=None) -> int:
     plan.add_argument("listing", type=Path)
     plan.add_argument("replaced")
     plan.add_argument("output", type=Path)
+    plan.add_argument("--selectors", type=Path)
     summary = sub.add_parser("summary")
     summary.add_argument("directory", type=Path)
     summary.add_argument("destination", type=Path)
@@ -116,8 +134,12 @@ def main(argv=None) -> int:
             from pytest_quality import read_coverage
             print(json.dumps(read_coverage(args.xml, args.json), ensure_ascii=False))
         elif args.command == "plan":
-            names = remaining_checks(args.listing.read_text(encoding="utf-8"), args.replaced)
+            listing = args.listing.read_text(encoding="utf-8")
+            names = remaining_checks(listing, args.replaced)
             args.output.write_text("".join(name + "\n" for name in names), encoding="utf-8")
+            if args.selectors:
+                selectors = discovered_checks(listing)
+                args.selectors.write_text("".join(selectors[name] + "\n" for name in names), encoding="utf-8")
         elif args.command == "summary":
             publish_summary(args.directory, args.destination)
         elif args.command == "gate":

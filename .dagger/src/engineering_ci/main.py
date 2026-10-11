@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Annotated
 
 import dagger
-from dagger import DefaultPath, check, dag, function, object_type
+from dagger import DefaultPath, Ignore, check, dag, function, object_type
+
+from . import pr_checks
 
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -47,6 +49,22 @@ class _MatrixExecution:
 
 @object_type
 class EngineeringCi:
+    @function
+    async def repository_check_environment(
+        self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+    ) -> str:
+        """Inspect actual Linux tools and inputs without executing repository checks."""
+        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+
+    @function
+    async def repository_check_artifacts(
+        self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+    ) -> dagger.Directory:
+        """Export one repository check execution, including failures and original exits."""
+        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+
     @function
     def container_echo(self, string_arg: str) -> dagger.Container:
         """Returns a container that echoes whatever string argument is provided"""
@@ -426,7 +444,7 @@ class EngineeringCi:
             dagger.Directory,
             DefaultPath("/tests/fixtures/python-app"),
         ],
-    ) -> str:
+    ) -> None:
         """Verify the Python test fixture."""
         execution = await self._run_pytest(
             source=source,
@@ -437,7 +455,7 @@ class EngineeringCi:
         if (not report["report_available"] or report["status"] != "passed"
                 or report["exit_code"] != 0 or report["counts"]["tests"] == 0):
             raise ValueError(f"Unexpected passing test report: {report}")
-        return self._require_pytest_success(execution)
+        print(self._require_pytest_success(execution))
 
     async def _matrix_fixture(self, source, scenario, concurrency=1):
         versions = ["3.12", "3.13", "3.14"]
@@ -486,7 +504,7 @@ class EngineeringCi:
     @function
     @check
     async def fixture_python_matrix(self,
-        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/matrix-app")]) -> str:
+        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/matrix-app")]) -> None:
         """Verify real interpreters, per-version failures, coverage and original-fact gate."""
         verified = []
         for scenario in ("pass", "version-fail", "unsupported", "coverage-low", "dependency-error"):
@@ -524,7 +542,7 @@ class EngineeringCi:
                 raise RuntimeError(f"Original-fact gate disagrees for {scenario}")
             await delivery.with_exec(["python", "ci.py", "summary", "/reports", "/tmp/summary.md"]).sync()
             verified.append(scenario)
-        return "PASS: real matrix and delivery gate: " + ", ".join(verified)
+        print("PASS: real matrix and delivery gate: " + ", ".join(verified))
 
     @function
     async def fixture_matrix_performance(self,
@@ -565,13 +583,13 @@ class EngineeringCi:
             dagger.Directory,
             DefaultPath("/tests/fixtures/python-app"),
         ],
-    ) -> str:
+    ) -> None:
         """Verify Ruff linting on the Python fixture."""
-        return await self.python_lint(
+        print(await self.python_lint(
             source=source,
             python_version="3.14",
             lint_path="tests",
-        )
+        ))
 
     @function
     @check
@@ -581,13 +599,13 @@ class EngineeringCi:
             dagger.Directory,
             DefaultPath("/tests/fixtures/python-app"),
         ],
-    ) -> str:
+    ) -> None:
         """Verify that shared Ruff format checks pass on the Python fixture."""
-        return await self.python_format_check(
+        print(await self.python_format_check(
             source=source,
             python_version="3.14",
             format_path="tests",
-        )
+        ))
 
     @function
     @check
@@ -597,7 +615,7 @@ class EngineeringCi:
             dagger.Directory,
             DefaultPath("/tests/fixtures/python-app"),
         ],
-    ) -> str:
+    ) -> None:
         """Verify failing pytest returns structured evidence without hiding failure."""
         failing = source.with_new_file(
             "tests/test_report_negative.py",
@@ -625,7 +643,7 @@ class EngineeringCi:
                 raise ValueError(f"Unexpected pytest failure summary: {summary}") from exc
         else:
             raise ValueError("python_test incorrectly accepted the failing pytest fixture")
-        return "PASS: JSON reported assertion failure with exit 1; python_test rejected it"
+        print("PASS: JSON reported assertion failure with exit 1; python_test rejected it")
 
     @function
     async def fixture_pytest_artifacts(
@@ -735,7 +753,7 @@ def pytest_sessionfinish(session, exitstatus):
     async def fixture_quality_gates(
         self, source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/coverage-app")],
         missing_dependency_source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/python-app")],
-    ) -> str:
+    ) -> None:
         """Verify real pytest and coverage failures independently, without duplicate suite runs."""
         results = []
         for scenario in ("baseline", "coverage-pass", "coverage-low", "coverage-test-fail",
@@ -770,5 +788,5 @@ def pytest_sessionfinish(session, exitstatus):
             pass
         else:
             raise RuntimeError("Invalid threshold was accepted")
-        return json.dumps(results, sort_keys=True)
+        print(json.dumps(results, sort_keys=True))
 

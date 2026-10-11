@@ -287,10 +287,14 @@ def test_actions_dispatcher_preserves_original_result(operation, module, monkeyp
 
     calls = []
     monkeypatch.setattr(
-        importlib.import_module(module), "main", lambda args: calls.append(args) or 7
+        importlib.import_module(module),
+        "main",
+        lambda args, **kwargs: calls.append((args, kwargs)) or 7,
     )
     assert workflow_actions.main([operation, "argument"]) == 7
-    assert calls == [["argument"]]
+    assert calls == [
+        (["argument"], {"executor": "native"} if operation == "checks" else {})
+    ]
 
 
 def run_metadata(**updates):
@@ -403,6 +407,43 @@ def test_release_requests_existing_pipeline_with_explicit_publication(
     ]
     assert not args.new_run and not args.save_log
     assert args.timeout == 90 and args.download_backend is None
+
+
+def test_configured_workflow_reaches_coordinator_and_saved_dispatch_identity(
+    tmp_path, monkeypatch
+):
+    from engineering_ci.execution import cli
+
+    posts = []
+    workflow = "reader-probe.yml"
+    # Inject a reader input to detect hard-coded routing; not a supported TOML target.
+    monkeypatch.setitem(release.RELEASE_CONFIG, "workflow", workflow)
+
+    class Client:
+        def validate(self, identity):
+            assert identity.workflow == workflow
+
+        def dispatch(self, identity, inputs):
+            posts.append(identity)
+            return 45
+
+        def get_run(self, identity, run_id):
+            assert identity.workflow == workflow and run_id == 45
+
+        def wait(self, identity, run_id, timeout, interval):
+            assert identity.workflow == workflow and run_id == 45
+            return {"conclusion": "success"}
+
+    monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
+    monkeypatch.setattr(cli, "GitHubActionsClient", Client)
+    args = ["validate", "--version", "1.2.3", "--ref", "feature"]
+    assert release.main(args) == 0
+    assert release.main([*args, "--resume", "45"]) == 0
+    assert len(posts) == 1
+    state = json.loads(next((tmp_path / "cache/runs").glob("*.json")).read_text())
+    assert state["dispatch"]["workflow"] == workflow
+    assert state["run_id"] == 45 and state["phase"] == "FINISHED"
 
 
 @pytest.mark.parametrize(

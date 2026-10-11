@@ -110,7 +110,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "show":
                 print(version)
             else:
+                from ..workflow_consistency import validate
+
+                validate()
                 print(f"PASS: all four project version fields match v{version}")
+                print("PASS: Pipeline and GitHub Workflow bindings are consistent")
         return 0
     except (ValueError, KeyError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

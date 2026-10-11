@@ -39,6 +39,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
+          python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Validate manual release request
         id: prepare
         env:
@@ -46,7 +53,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
-        run: python3 -m engineering_ci.workflow_actions release prepare
+        run: uv run --locked python -m engineering_ci.workflow_actions release prepare
 
   core-tests:
     needs: candidate
@@ -139,6 +146,13 @@ jobs:
         with:
           artifact-ids: ${{ needs.evidence.outputs.facts_artifact_id }}
           path: release-facts
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
+          python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Require every validation job and exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,7 +160,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 -m engineering_ci.workflow_actions release verify --directory release-facts --manifest release-manifest.json
+        run: uv run --locked python -m engineering_ci.workflow_actions release verify --directory release-facts --manifest release-manifest.json
       - name: Preserve validation Manifest
         id: manifest_artifact
         if: ${{ always() && !cancelled() }}
@@ -176,6 +190,13 @@ jobs:
         with:
           artifact-ids: ${{ needs.verified.outputs.manifest_artifact_id }}
           path: release-evidence
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
+          python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Recheck main and publish immutable tag and evidenced GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -183,7 +204,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python3 -m engineering_ci.workflow_actions release publish --manifest release-evidence/release-manifest.json
+        run: uv run --locked python -m engineering_ci.workflow_actions release publish --manifest release-evidence/release-manifest.json
       - name: Preserve publication evidence after an API failure
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2

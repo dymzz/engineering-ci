@@ -118,6 +118,7 @@ import json,os,shutil,subprocess,sys
 from pathlib import Path
 args=sys.argv[1:]
 if args[:2]==["--progress","plain"]: args=args[2:]
+if args[:2]==["api","call"]: args=args[1:]
 with open(os.environ["PERF_EVENTS"],"a",encoding="utf-8") as stream:
     stream.write(json.dumps({"args":args})+"\n")
 if args[0]=="version": raise SystemExit(0)
@@ -137,9 +138,9 @@ if args[0]=="call":
 if args[0]=="check":
     if "-l" in args:
         if os.environ["PERF_FAIL_LIST"]=="1": raise SystemExit(3)
-        print("sample:format\nsample:lint\nsample:test")
+        print("--sample --check=format # Format\n--sample --check=lint # Lint\n--sample --check=test # Tests")
     else:
-        assert "sample:test" not in args[1:]
+        assert "sample:test" not in args[1:] and "dag+check://?module=sample&check=test" not in args[1:]
         code=int(os.environ["PERF_CHECK_EXIT"])
         if code<0: os.kill(os.getpid(),-code)
         raise SystemExit(code)
@@ -242,7 +243,13 @@ class WorkflowExecutionTests(unittest.TestCase):
                 for e in entries
                 if e["args"][0] == "check" and "-l" not in e["args"]
             )
-            self.assertEqual(set(actual[1:]), {"sample:format", "sample:lint"})
+            self.assertEqual(
+                set(actual[1:]),
+                {
+                    "dag+check://?module=sample&check=format",
+                    "dag+check://?module=sample&check=lint",
+                },
+            )
 
     def test_native_check_failure_survives_timing_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from .. import checks
+from ..pipeline import PIPELINE
 from .context import (
     CheckEvidence,
     CommitEvidence,
@@ -23,7 +24,31 @@ class EvidenceError(ValueError):
 def current_checks(checkout, path):
     """Reuse each matching execution; refresh only missing or invalidated checks."""
     print(f"Local PR checks: checking per-check evidence in {path}")
-    _, code = checks.execute(["pr"], root=checkout.root, output=path, reuse=True)
+    output_options = {}
+    try:
+        saved = checks.read_report(path)
+        parameters = [entry["identity"]["parameters"] for entry in saved["checks"]]
+        # These are output options, not selectors or a weaker test policy.
+        if parameters and all(value == parameters[0] for value in parameters):
+            value = parameters[0]
+            if (
+                set(value) == {"coverage", "junit"}
+                and type(value["coverage"]) is bool
+                and isinstance(value["junit"], str)
+            ):
+                if value["coverage"]:
+                    output_options["coverage"] = True
+                if value["junit"] != "core-junit.xml":
+                    output_options["junit"] = value["junit"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    _, code = checks.run_checks(
+        [PIPELINE["delivery"]["checks_profile"]],
+        root=checkout.root,
+        output=path,
+        reuse=True,
+        **output_options,
+    )
     return code
 
 
@@ -62,9 +87,10 @@ class DeliveryPipeline:
                 "Check receipt changed while reading admission evidence"
             )
         saved = json.loads(raw)
+        names = PIPELINE["profiles"][PIPELINE["delivery"]["checks_profile"]]
         if (
-            [entry["name"] for entry in saved["checks"]] != list(checks.PR_CHECKS)
-            or [entry["name"] for entry in current["checks"]] != list(checks.PR_CHECKS)
+            [entry["name"] for entry in saved["checks"]] != names
+            or [entry["name"] for entry in current["checks"]] != names
             or not all(entry["passed_for_current_input"] for entry in current["checks"])
         ):
             raise EvidenceError("A partial profile cannot admit delivery")
@@ -127,7 +153,7 @@ class DeliveryPipeline:
         if facts["files"]:
             raise EvidenceError("Undelivered local changes cannot enter publication")
         pr = facts["pr"]
-        if facts["branch"] == "main":
+        if facts["branch"] == PIPELINE["delivery"]["release"]["branch"]:
             main = self.checkout.main_commit()
             if main != facts["head"]:
                 raise EvidenceError(

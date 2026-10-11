@@ -24,17 +24,46 @@ PYTHONPATH=src python3 -m engineering_ci.checks pr --json .test-tools/checks/pr.
 ```
 
 上面的 PYTHONPATH 写法用于 Bash；PowerShell 先设置 `$env:PYTHONPATH='src'`，
-再执行 `python -m engineering_ci.checks ...`。核心 pytest 的锁定环境仍由 uv 准备。
+再执行 `python -m engineering_ci.checks ...`。核心 pytest 及版本检查的锁定环境由 uv 准备。
 
 `pr` 恰好包含 Ruff Lint、Ruff Format、核心 pytest、四处版本一致性与根 uv.lock
 一致性；单项和完整 profile 使用相同定义。重复选择不会重复执行同一检查。
-不执行 Dagger、Matrix 或漏洞扫描，不新增质量阈值。
+版本检查同时核验 Pipeline 与 GitHub Workflow 的既有绑定，范围见
+[配置契约](../configuration/pipeline.md#github-actions-一致性)。检查不一致仍通过该真实 Step 失败，
+不新增或改名 PR Job。
+检查选择不包含 Matrix 或漏洞扫描。Dagger 可作为这些基础检查的 Linux 执行环境，
+不增加检查项目或质量阈值。
 
 `checks tests --coverage` 在同一次 pytest 调用中输出 core-junit.xml、
 core-coverage.xml 和 core-coverage.json，与 Release 的 workflow_call Coverage
 选项一致。不会为了生成本地 JSON 再运行 pytest。失败诊断沿用已有 JUnit 解析器。
 
 ## 环境
+
+`config/pipeline.toml` 的 `execution.backend=auto` 在 Windows 使用 Dagger Linux
+容器，在 Linux 保留原生执行，包括现有 GitHub PR Jobs。可以显式选择：
+
+```sh
+uv run --locked engineering-ci checks pr --executor dagger --json .test-tools/checks/pr.json --reuse
+uv run --locked engineering-ci checks tests --executor native --json .test-tools/checks/native.json
+```
+
+`release.py publish` 使用同一配置和检查执行器，继续将当前完整检查证据交给原有
+Pipeline / FSM。容器准备和身份查询不运行 pytest；报告导出使用一次检查执行。
+`checks inspect REPORT` 读取证据并核验当前身份，不执行检查。
+
+Dagger CLI 与 Engine 需要符合 `dagger.json` 的固定版本，并有可用的 Linux Docker
+Engine，安装见[Dagger 配置](../configuration/dagger.md)。缺少 Dagger 返回 127，
+环境不满足返回 3，显式容器执行失败不会回退到另一环境。
+
+容器使用锁定的 Python 镜像、Pipeline 固定的 uv/Ruff，以及 Git、gh、Bash 和 aria2。
+容器内继续调用现有检查执行器。宿主 Git / PR 操作仍在当前 checkout 进行。
+源码输入不包含 `.git`、`.test-tools`、虚拟环境、机器专用下载配置或认证文件；
+宿主认证环境变量不传给检查容器。Windows 的已跟踪执行位由 Git 模式传入并记录身份。
+
+`repository-check-environment` 和 `repository-check-artifacts` 是显式的 Dagger 函数，
+不会加入默认 `dagger check` 的 fixture 列表。正式发布已经分别执行核心 pytest 和
+fixture checks，默认列表增加仓库 pytest 会造成重复执行。
 
 统一版本：uv 0.12.23、Ruff 0.16.10、核心 Python 3.14；版本、参数、范围和依赖统一位于
 config/pipeline.toml，读取逻辑为 src/engineering_ci/pipeline.py。toolchain.py 保留兼容调用接口；
@@ -52,7 +81,7 @@ Windows 可以按需配置这个后端，不要求设置环境变量才能运行
 
 ```powershell
 $env:ARIA2C = 'D:\tools\aria2\aria2c.exe'
-uv run --locked engineering-ci checks tests --json .test-tools/checks/windows.json
+uv run --locked engineering-ci checks tests --executor native --json .test-tools/checks/windows.json
 ```
 
 指定 ARIA2C 时应指向 exe 文件；缺失时只将 aria2 专项标为未启用，native 和 auto 回退测试仍执行。
@@ -111,6 +140,18 @@ unavailable 或 not_run；只有实际执行成功、输入稳定且身份仍匹
 passed_for_current_input 才为 true。检查命令每次实际执行，不读取历史报告跳过检查。
 查询可能调用工具版本探测及 uv 的锁定环境准备，不重新运行 pytest。
 
+容器证据同时保存本机输入绑定、容器原始检查身份、CLI / 实际 Engine 版本、
+准备后的容器身份与工具版本。跨系统输入传递核对内容指纹，宿主执行前后的文件
+观察信息继续检测修改后恢复；机器专用下载配置不属于容器输入。
+原始检查 JSON、环境 JSON 和 JUnit/Coverage 保存在当前 checkout 的
+`.test-tools/checks/dagger/` 下，并记录每个文件的 SHA-256。
+stdout/stderr 保存在独立日志文件并原样输出到宿主终端；JSON 只引用文件和摘要。
+目录名称由整组导出文件的摘要确定，新执行不会覆盖旧执行的 JUnit 或日志。
+查询或复用会核验原始事实与文件摘要；缺失、损坏、执行环境变化不能准入。
+顶层 `identity.root` 绑定原 checkout，容器 `/workspace` 身份另存于 `container_identity`。
+Dagger 可缓存相同不可变输入的执行图；报告对应真实执行所得的结果，不表示每次命令
+都产生新的 pytest 进程。Pipeline 的逐项复用仍决定哪些检查需要提交执行。
+
 需要复用已有执行结果时显式使用：
 
 ```sh
@@ -122,6 +163,13 @@ uv run --locked engineering-ci checks pr --reuse --json .test-tools/checks/pr.js
 `executed=true` 表示曾实际执行，`reused=true`、`executed_this_invocation=false` 表示本次读取已有证据。
 修复导致输入变化时仅刷新受影响项；确需在相同输入下重试时，去掉 `--reuse` 或独立运行对应检查。
 publish 使用同一逐项复用方式。查询仅比较身份，复用仍做末尾一致性核验，执行期间输入变化不能放行。
+
+交付沿用已有报告的 Coverage 开关和 JUnit 输出位置，不因输出选项回到默认值而重跑
+pytest。只接受既有类型化输出参数；检查选择和参数定义仍来自完整 `pr` Profile，
+每项证据都必须通过当前输入与执行环境核验。
+容器文件导出成功与检查成功分别判定，Dagger 的导出 Trace 显示 PASSED 不代表 pytest
+通过。原始失败和信号退出保存在报告中，由宿主传播实际非零状态；Dagger 保留的信号码区间
+使用非零导出状态完成文件传递，不改写原始工具退出码。
 
 ## 版本准备与证据继承
 

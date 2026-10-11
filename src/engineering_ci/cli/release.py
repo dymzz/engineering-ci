@@ -14,6 +14,7 @@ if not __package__:
     __package__ = "engineering_ci.cli"
 
 from ..github_cli import GitHub
+from ..pipeline import PIPELINE
 from ..release import verification
 from ..release.version import checked_version, normalize
 from ._execution import (
@@ -22,6 +23,8 @@ from ._execution import (
     invoke_execution,
     runtime_arguments,
 )
+
+RELEASE_CONFIG = PIPELINE["delivery"]["release"]
 
 
 def continue_command(options, *, run_id=None, inspect_run=False):
@@ -68,7 +71,9 @@ def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
     from ..execution.models import DispatchIdentity
     from ..execution.store import StateStore
 
-    identity = DispatchIdentity.create(options.repo, "release.yml", ref, inputs)
+    identity = DispatchIdentity.create(
+        options.repo, RELEASE_CONFIG["workflow"], ref, inputs
+    )
     store = StateStore(cli.default_cache_dir() / "runs" / f"{identity.key}.json")
     state = store.load()
     if state is None:
@@ -114,14 +119,14 @@ def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
     elif state.phase in {"UNKNOWN", "DISPATCHING"}:
         print("Dispatch is uncertain: no automatic second POST is allowed.")
         print(
-            f"Confirm the Run at https://github.com/{options.repo}/actions/workflows/release.yml"
+            f"Confirm the Run at https://github.com/{options.repo}/actions/workflows/{RELEASE_CONFIG['workflow']}"
         )
         print("The Run ID cannot be filled in safely until GitHub confirms it.")
         if api:
             from urllib.parse import quote
 
             value = api(
-                "actions/workflows/release.yml/runs?event=workflow_dispatch&per_page=20&branch="
+                f"actions/workflows/{RELEASE_CONFIG['workflow']}/runs?event=workflow_dispatch&per_page=20&branch="
                 + quote(ref, safe="")
             )
             for run in value.get("workflow_runs", []):
@@ -243,11 +248,11 @@ def show_status(options):
     publication_found = False
     for mode, ref, scenario in dict.fromkeys(
         (
-            ("publish", "main", "pass"),
+            ("publish", RELEASE_CONFIG["branch"], "pass"),
             ("validate", context["branch"], "pass"),
-            ("validate", "main", "pass"),
+            ("validate", RELEASE_CONFIG["branch"], "pass"),
             ("validate", context["branch"], "assertion"),
-            ("validate", "main", "assertion"),
+            ("validate", RELEASE_CONFIG["branch"], "assertion"),
         )
     ):
         resume = Namespace(
@@ -285,7 +290,7 @@ def show_status(options):
     ):
         print("No usable saved publication Run for this version and reviewed commit.")
         if publication_head:
-            identity = resolve_target(api, "main", options.version)
+            identity = resolve_target(api, RELEASE_CONFIG["branch"], options.version)
             if identity["commit_sha"] != publication_head:
                 raise ValueError(
                     "Remote main changed during status lookup; inspect status again"
@@ -418,7 +423,7 @@ def main(argv=None):
         if name in {"validate", "verify"}:
             command.add_argument(
                 "--ref",
-                default="main" if name == "validate" else None,
+                default=RELEASE_CONFIG["branch"] if name == "validate" else None,
                 help="Validation branch; optional Run identity constraint for verify",
             )
         if name == "verify":
@@ -490,7 +495,9 @@ def main(argv=None):
                     if phase != "REVIEW_waiting":
                         continue_command(options)
                     return result
-        identity = resolve_target(api, getattr(options, "ref", "main"), options.version)
+        identity = resolve_target(
+            api, getattr(options, "ref", RELEASE_CONFIG["branch"]), options.version
+        )
         if options.command == "publish" and getattr(options, "lifecycle", None):
             options.lifecycle.admit_publication(identity)
         if (
@@ -517,7 +524,7 @@ def main(argv=None):
             "--repo",
             options.repo,
             "--workflow",
-            "release.yml",
+            RELEASE_CONFIG["workflow"],
             "--ref",
             identity["ref"],
             *runtime_arguments(options),
