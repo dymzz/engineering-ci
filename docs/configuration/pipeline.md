@@ -9,6 +9,7 @@
 | `toolchain` | uv、Ruff、核心 Python 版本；toolchain.py 向现有调用者提供兼容常量 |
 | `arguments` | 既有 Ruff target 与 pytest 参数；JUnit、Coverage 输出位置由调用决定 |
 | `profiles` | 完整 PR 和单项检查选择；重复选择同一项只执行一次 |
+| `execution.backend` | 本地基础检查执行环境：auto / native / dagger |
 | `inputs.common` / `scopes` | 内容、权限与缺失文件参与执行身份；范围必须位于仓库内 |
 | `inputs.release_metadata` / `checks.pytest.version_only_reuse` | 固定四处本项目版本字段；仅 pytest 可复用版本变化前的代码检查证据 |
 | `checks` | 检查范围、必需工具、Linux 工具和原有 CI job / step 名称 |
@@ -48,12 +49,24 @@ TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也�
 
 ## 实际调用接入
 
+```toml
+[execution]
+backend = "auto"
+```
+
+`auto` 在 Windows 使用 Dagger Linux 容器，在 Linux 使用原生工具；`native` 显式使用
+当前主机，`dagger` 显式使用容器。CLI 的 `checks --executor` 可覆盖这次执行。
+Actions 内部入口明确使用 YAML 已准备的 native Linux 环境；本地配置不改变远端 Job 的执行环境。
+缺少工具或容器执行失败不会自动改用另一环境。旧 schema 1 配置完全缺少此段时，
+保留旧版 native 行为；显式段必须只包含有效 `backend`，不接受命令模板。
+执行与证据绑定见[本地检查](../architecture/local-checks.md#环境)。
+
 `engineering_ci.pipeline.PIPELINE` 在进程启动时读取和校验配置，其他模块复用该对象。
 配置调整后由新一次命令读取，不提供进程内热重载。
 
 | 读取位置 | 配置如何参与执行 |
 | --- | --- |
-| `release/pipeline.py` 的 `current_checks()` | 将 `delivery.checks_profile` 传给 `checks.execute()`，保留按检查复用有效结果的行为 |
+| `release/pipeline.py` 的 `current_checks()` | 将 `delivery.checks_profile` 传给 `checks.run_checks()`，按 `execution.backend` 选择环境并逐项复用有效结果 |
 | `DeliveryPipeline.checked()` 与 `ReleaseLifecycle` | 按对应 `profiles` 的检查清单核验完整证据，不能以部分报告准入 |
 | `release/delivery.py` | 从 `delivery.release.branch` 获取 PR base、fetch 目标及发布分支身份 |
 | `cli/release.py` | 将 `delivery.release.workflow` 传入既有执行入口，绑定 Dispatch 身份与恢复状态；默认分支同样来自配置 |

@@ -201,7 +201,7 @@ def version_neutral_metadata(files, name):
     return normalized if len(versions) == 1 else {}
 
 
-def snapshot(root, name):
+def snapshot(root, name, *, portable=False, omit=()):
     """Content identifies inputs; file observations also catch change-and-restore."""
     paths = set()
     for scope in (*COMMON_INPUTS, *SCOPES[name]):
@@ -222,8 +222,14 @@ def snapshot(root, name):
                 if not file.endswith((".pyc", ".pyo"))
             )
     files, observations = [], []
-    for path in sorted(paths):
+    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):
         relative = path.relative_to(root).as_posix()
+        if relative in omit:
+            continue
+        if path.is_symlink():
+            raise PreconditionError(
+                "environment_error", "Symlink check inputs are unsupported"
+            )
         if not path.exists():
             files.append((relative, None, None))
             observations.append((relative, None))
@@ -251,16 +257,23 @@ def snapshot(root, name):
         {path: data for path, _, data in files if data is not None}, name
     )
     content = [
-        (path, mode, hashlib.sha256(normalized.get(path, data)).hexdigest())
+        (
+            path,
+            None if portable else mode,
+            hashlib.sha256(normalized.get(path, data)).hexdigest(),
+        )
         if data is not None
         else (path, None)
         for path, mode, data in files
     ]
-    return {
+    result = {
         "sha256": digest(content),
         "file_count": len(content),
         "version_neutral_metadata": sorted(normalized),
-    }, digest(observations)
+    }
+    if portable:
+        result["files"] = [list(item) for item in content]
+    return result, digest(observations)
 
 
 def environment_identity(environ):
@@ -508,6 +521,13 @@ def read_report(path):
     if path.stat().st_size > 1024 * 1024:
         raise ValueError("Local report exceeds 1 MiB")
     saved = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(saved, dict):
+        raise TypeError("Invalid local check report")
+    if "executor" in saved and (
+        not isinstance(saved["executor"], dict)
+        or saved["executor"].get("backend") not in ("native", "dagger")
+    ):
+        raise ValueError("Invalid report executor")
     if (
         type(saved.get("schema_version")) is not int
         or saved.get("schema_version") != 1
@@ -774,6 +794,10 @@ def execute(
 
 def inspect(path, *, root=ROOT, run=subprocess.run, which=shutil.which, environ=None):
     saved = read_report(path)
+    if saved.get("executor", {}).get("backend") == "dagger":
+        from .dagger_checks import inspect as inspect_dagger
+
+        return inspect_dagger(saved, root=root, run=run, which=which, environ=environ)
     result = {"schema_version": 1, "profile": saved["profile"], "checks": []}
     environ = execution_environment(root, environ)
     for entry in saved["checks"]:
@@ -852,7 +876,21 @@ def inspect(path, *, root=ROOT, run=subprocess.run, which=shutil.which, environ=
     return result, 0 if result["overall_status"] == "passed" else 3
 
 
-def main(argv=None):
+def run_checks(selectors, *, executor=None, **kwargs):
+    """Select the configured environment; native remains the container's executor."""
+    backend = PIPELINE["execution"]["backend"] if executor is None else executor
+    if backend == "auto":
+        backend = "dagger" if os.name == "nt" else "native"
+    if backend == "native":
+        return execute(selectors, **kwargs)
+    if backend == "dagger":
+        from .dagger_checks import execute as execute_dagger
+
+        return execute_dagger(selectors, **kwargs)
+    raise ValueError(f"Unsupported executor: {backend}")
+
+
+def main(argv=None, *, executor=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "checks",
@@ -865,6 +903,11 @@ def main(argv=None):
         help="Export the existing core Coverage XML and JSON",
     )
     parser.add_argument("--junit", default="core-junit.xml")
+    parser.add_argument(
+        "--executor",
+        choices=("auto", "native", "dagger"),
+        help="Override the configured check environment",
+    )
     parser.add_argument(
         "--json", type=Path, help="Atomically write local results, including failures"
     )
@@ -906,10 +949,13 @@ def main(argv=None):
                 atomic_json(args.json, result)
             return code
         selected(args.checks)
+        if executor and args.executor not in (None, executor):
+            raise ValueError(f"This entry point requires the {executor} executor")
         if args.reuse and not args.json:
             raise ValueError("--reuse requires --json with the saved report path")
-        _, code = execute(
+        _, code = run_checks(
             args.checks,
+            executor=executor or args.executor,
             coverage=args.coverage,
             junit=args.junit,
             output=args.json,

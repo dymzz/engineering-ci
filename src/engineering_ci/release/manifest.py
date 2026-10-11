@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from ..pipeline import PIPELINE
-from ..toolchain import ruff_command
+from ..toolchain import dagger_cli_version, ruff_command
 from .registry import (
     ARTIFACT_NAMES,
     ARTIFACT_OUTPUTS,
@@ -133,24 +133,6 @@ def clean_tools(records):
     if len({(item["scope"], item["name"]) for item in result}) != len(result):
         raise ValueError("Duplicate tool version evidence")
     return sorted(result, key=lambda item: (item["scope"], item["name"]))
-
-
-def dagger_cli_version(output):
-    """Read only the version from legacy or 1.0 CLI output."""
-    version = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?"
-    legacy = re.fullmatch(rf"dagger v({version})(?: [^\r\n]*)?", output.strip())
-    if legacy:
-        return legacy[1]
-    lines = [line.strip() for line in output.splitlines()]
-    fields = [line for line in lines if line.startswith("version:")]
-    match = (
-        re.fullmatch(rf"version:[ \t]+v({version})", fields[0])
-        if len(fields) == 1
-        else None
-    )
-    if not match:
-        raise ValueError("Dagger CLI version unavailable")
-    return match[1]
 
 
 def facts(directory):

@@ -287,10 +287,14 @@ def test_actions_dispatcher_preserves_original_result(operation, module, monkeyp
 
     calls = []
     monkeypatch.setattr(
-        importlib.import_module(module), "main", lambda args: calls.append(args) or 7
+        importlib.import_module(module),
+        "main",
+        lambda args, **kwargs: calls.append((args, kwargs)) or 7,
     )
     assert workflow_actions.main([operation, "argument"]) == 7
-    assert calls == [["argument"]]
+    assert calls == [
+        (["argument"], {"executor": "native"} if operation == "checks" else {})
+    ]
 
 
 def run_metadata(**updates):

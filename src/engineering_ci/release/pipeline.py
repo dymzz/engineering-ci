@@ -24,11 +24,30 @@ class EvidenceError(ValueError):
 def current_checks(checkout, path):
     """Reuse each matching execution; refresh only missing or invalidated checks."""
     print(f"Local PR checks: checking per-check evidence in {path}")
-    _, code = checks.execute(
+    output_options = {}
+    try:
+        saved = checks.read_report(path)
+        parameters = [entry["identity"]["parameters"] for entry in saved["checks"]]
+        # These are output options, not selectors or a weaker test policy.
+        if parameters and all(value == parameters[0] for value in parameters):
+            value = parameters[0]
+            if (
+                set(value) == {"coverage", "junit"}
+                and type(value["coverage"]) is bool
+                and isinstance(value["junit"], str)
+            ):
+                if value["coverage"]:
+                    output_options["coverage"] = True
+                if value["junit"] != "core-junit.xml":
+                    output_options["junit"] = value["junit"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    _, code = checks.run_checks(
         [PIPELINE["delivery"]["checks_profile"]],
         root=checkout.root,
         output=path,
         reuse=True,
+        **output_options,
     )
     return code
 

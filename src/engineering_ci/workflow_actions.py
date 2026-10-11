@@ -19,6 +19,9 @@ def main(argv=None):
     operation = parser.parse_args(args[:1]).operation
     if operation == "checks":
         from .checks import main as invoke
+
+        # YAML has already selected Linux and installed the native CI toolchain.
+        return invoke(args[1:], executor="native")
     elif operation == "release":
         from .release.publishing import main as invoke
     elif operation == "manifest":

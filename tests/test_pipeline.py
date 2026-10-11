@@ -120,6 +120,61 @@ def test_schema_one_without_delivery_keeps_legacy_behavior(tmp_path, monkeypatch
     assert loaded["delivery"] == pipeline.PIPELINE["delivery"]
 
 
+@pytest.mark.parametrize("backend", ["auto", "native", "dagger"])
+def test_execution_backend_is_explicit_and_not_an_arbitrary_command(
+    tmp_path, monkeypatch, backend
+):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["execution"] = {"backend": backend}
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    assert pipeline.load(path)["execution"] == {"backend": backend}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, {}, {"backend": "unknown"}, {"backend": "dagger", "command": "echo PASS"}],
+)
+def test_invalid_execution_is_rejected_before_operations(tmp_path, monkeypatch, value):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["execution"] = value
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    with pytest.raises(ValueError, match="Invalid pipeline configuration"):
+        pipeline.load(path)
+
+
+def test_legacy_schema_one_keeps_native_execution(tmp_path, monkeypatch):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data.pop("execution")
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    assert pipeline.load(path)["execution"] == {"backend": "native"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/engineering_ci/dagger_checks.py",
+        "src/engineering_ci/checks_container.py",
+        ".dagger/src/engineering_ci/main.py",
+        ".dagger/src/engineering_ci/pr_checks.py",
+        "dagger.json",
+    ],
+)
+def test_container_executor_inputs_cannot_be_removed(tmp_path, monkeypatch, path):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["inputs"]["common"].remove(path)
+    config = tmp_path / "pipeline.toml"
+    config.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    with pytest.raises(ValueError, match="executor definition inputs"):
+        pipeline.load(config)
+
+
 @pytest.mark.parametrize(
     "delivery",
     [

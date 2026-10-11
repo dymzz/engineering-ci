@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Annotated
 
 import dagger
-from dagger import DefaultPath, check, dag, function, object_type
+from dagger import DefaultPath, Ignore, check, dag, function, object_type
+
+from . import pr_checks
 
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -47,6 +49,22 @@ class _MatrixExecution:
 
 @object_type
 class EngineeringCi:
+    @function
+    async def repository_check_environment(
+        self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+    ) -> str:
+        """Inspect actual Linux tools and inputs without executing repository checks."""
+        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+
+    @function
+    async def repository_check_artifacts(
+        self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+    ) -> dagger.Directory:
+        """Export one repository check execution, including failures and original exits."""
+        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+
     @function
     def container_echo(self, string_arg: str) -> dagger.Container:
         """Returns a container that echoes whatever string argument is provided"""

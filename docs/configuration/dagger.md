@@ -10,10 +10,12 @@ Windows PowerShell 7：
 ```powershell
 Invoke-WebRequest https://dl.dagger.io/dagger/install.ps1 -OutFile "$env:TEMP/install-dagger.ps1"
 & "$env:TEMP/install-dagger.ps1" -DaggerVersion 1.0.0-beta.16 -AddToPath
+# 已安装 Winget 旧版时，让本终端优先使用刚安装的版本。
+$env:PATH = (Join-Path $env:USERPROFILE 'dagger') + ';' + $env:PATH
 # 避免已配置的旧 Engine 覆盖新版默认值。
 $env:DAGGER_ENGINE = "image://registry.dagger.io/engine:v1.0.0-beta.16"
 [Environment]::SetEnvironmentVariable("DAGGER_ENGINE", $env:DAGGER_ENGINE, "User")
-# 新开终端使用户 PATH 生效。
+# 新开终端后用 Get-Command dagger 检查目录优先级。
 dagger version
 ```
 
@@ -39,6 +41,28 @@ dagger version
 `dagger lock update`，并审查实际变更。
 
 ## 现有模块的兼容调用
+
+Windows 本地完整 PR 验证由统一入口调用 Dagger Linux 容器：
+
+```powershell
+uv run --locked engineering-ci checks pr --executor dagger --json .test-tools/checks/pr.json --reuse
+uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json
+```
+
+Pipeline 的 `execution.backend=auto` 已在 Windows 选择该路径，`release.py publish`
+同样使用此配置。容器安装真实 Git、gh、Bash 和 aria2；测试使用本地 GitHub HTTP
+替身，不需要宿主 token。安装及镜像首次准备需要网络，之后复用 Dagger / uv 缓存。
+容器接口 `repository-check-artifacts` 导出原始执行报告，即使检查失败也可取回；
+统一入口从报告传播实际非零状态。`repository-check-environment` 只探测环境和源码。
+这些接口不注册为默认 fixture checks，避免 Release 重复执行核心 pytest。
+检查入口未设置 `DAGGER_ENGINE` 时，按 `dagger.json` 固定版本选择 Engine 镜像；
+显式覆盖仍需通过实际版本核验。旧 `_EXPERIMENTAL_DAGGER_RUNNER_HOST` 不决定该默认值。
+Dagger 1.0 的目录导入省略 `dagger.lock`，接口将它作为显式 File 输入传入；
+容器与宿主仍对锁文件内容做绑定校验。
+当前 beta 在部分 Windows 无终端宿主中会阻塞于背景色自动探测；适配器只给 CLI
+子进程提供固定主题兜底，不改变全局环境或容器输入。版本探测超时返回环境错误，
+不将未执行的检查记为通过。
+证据有效性和出口定义见[本地检查](../architecture/local-checks.md)。
 
 1.0 仍支持 `dagger.json`。本轮保留 `.dagger/src` 和消费者已有模块引用；
 不运行会移动源码的 workspace 自动迁移。参见[官方迁移说明](https://docs.dagger.io/config/migrate-dagger-json/)。

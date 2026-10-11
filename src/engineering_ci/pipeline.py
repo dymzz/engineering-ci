@@ -107,6 +107,21 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
         if set(data["profiles"]["pr"]) != supported:
             raise ValueError("PR profile must retain the existing required checks")
         data["delivery"] = delivery_config(data)
+        execution = data.setdefault("execution", {"backend": "native"})
+        if (
+            not isinstance(execution, dict)
+            or set(execution) != {"backend"}
+            or execution["backend"] not in ("auto", "native", "dagger")
+        ):
+            raise ValueError("Execution backend must be auto, native or dagger")
+        if execution["backend"] != "native" and not {
+            "src/engineering_ci/dagger_checks.py",
+            "src/engineering_ci/checks_container.py",
+            ".dagger/src/engineering_ci/main.py",
+            ".dagger/src/engineering_ci/pr_checks.py",
+            "dagger.json",
+        } <= set(data["inputs"]["common"]):
+            raise ValueError("Container executor definition inputs cannot be excluded")
         # Schema 1 previously grouped lock with version without repeating its CI identity.
         if not {"ci_job", "ci_step"} & checks["lock"].keys():
             for key in ("ci_job", "ci_step"):

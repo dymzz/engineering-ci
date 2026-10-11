@@ -168,7 +168,7 @@ def passing_checks(monkeypatch):
         )
         return {}, 0
 
-    monkeypatch.setattr(checks, "execute", execute)
+    monkeypatch.setattr(checks, "run_checks", execute)
     monkeypatch.setattr(
         checks,
         "inspect",
@@ -285,7 +285,7 @@ def test_unrelated_changes_require_explicit_scope_before_commit(repository):
 def test_failed_checks_stop_before_staging_and_print_report(
     repository, monkeypatch, capsys
 ):
-    monkeypatch.setattr(checks, "execute", lambda *args, **kwargs: ({}, 7))
+    monkeypatch.setattr(checks, "run_checks", lambda *args, **kwargs: ({}, 7))
     assert invoke(repository, include_all=True, message="Unify delivery") == 7
     assert not any(call[:2] == ["git", "add"] for call in repository.calls)
     assert "Stopped at local checks (exit 7)" in capsys.readouterr().out
@@ -407,14 +407,14 @@ def test_merged_pr_missing_from_main_is_refused(repository):
 def test_changed_inputs_during_checks_cannot_be_committed(
     repository, passing_checks, monkeypatch
 ):
-    original = checks.execute
+    original = checks.run_checks
 
     def execute(*args, **kwargs):
         result = original(*args, **kwargs)
         (repository.root / "README.md").write_text("Concurrent edit\n")
         return result
 
-    monkeypatch.setattr(checks, "execute", execute)
+    monkeypatch.setattr(checks, "run_checks", execute)
     with pytest.raises(delivery.DeliveryError, match="changed during checking"):
         invoke(repository, include_all=True, message="Unify delivery")
     assert not any(call[:2] == ["git", "add"] for call in repository.calls)
@@ -552,13 +552,47 @@ def test_delivery_delegates_configured_profile_and_per_check_reuse(
         calls.append((selectors, kwargs))
         return {}, 3
 
-    monkeypatch.setattr(checks, "execute", execute)
+    monkeypatch.setattr(checks, "run_checks", execute)
     # Substitute the reader input only; the TOML loader still restricts public targets.
     monkeypatch.setitem(delivery.PIPELINE["delivery"], "checks_profile", profile)
     checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
     assert delivery.current_checks(checkout, path) == 3
     assert calls == [
         ([profile], {"root": repository.root, "output": path, "reuse": True})
+    ]
+
+
+def test_delivery_retains_existing_report_outputs_without_weakening_the_profile(
+    repository, monkeypatch
+):
+    path = repository.root / ".test-tools/checks/pr.json"
+    parameters = {"coverage": True, "junit": "diagnostics/junit.xml"}
+    checks.atomic_json(
+        path,
+        {
+            "schema_version": 1,
+            "profile": "pr",
+            "selectors": ["pr"],
+            "checks": [
+                {"name": name, "identity": {"parameters": parameters}}
+                for name in checks.PR_CHECKS
+            ],
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        checks,
+        "run_checks",
+        lambda selectors, **kwargs: calls.append((selectors, kwargs)) or ({}, 3),
+    )
+    assert (
+        delivery.current_checks(
+            delivery.Checkout(REPOSITORY, root=repository.root), path
+        )
+        == 3
+    )
+    assert calls == [
+        (["pr"], {"root": repository.root, "output": path, "reuse": True, **parameters})
     ]
 
 
