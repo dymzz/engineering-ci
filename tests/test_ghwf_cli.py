@@ -1,5 +1,4 @@
 """Legacy command parameters, origin resolution and v1 cache compatibility."""
-import importlib.util
 import json
 from pathlib import Path
 
@@ -11,11 +10,6 @@ from engineering_ci.execution.store import StateStore, atomic_json
 
 
 def test_entrypoint_and_all_old_parameters():
-    script = Path(__file__).resolve().parents[1] / 'scripts/gh_workflow_artifacts.py'
-    spec = importlib.util.spec_from_file_location('ghwf_entry', script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert module.main is cli.main
     args = cli.parser().parse_args(['--repo', 'o/r', '--workflow', 'ci.yml', '--ref', 'topic/a',
         '--input', 'key=value', '--artifact', 'build-{run_id}', '--out', 'outputs', '--save-log',
         '--resume', '123', '--show-state', '--refresh-repo', '--interval', '2', '--timeout', '30',

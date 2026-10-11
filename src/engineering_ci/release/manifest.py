@@ -10,69 +10,23 @@ import re
 import subprocess
 from pathlib import Path
 
+from ..toolchain import ruff_command
+from .registry import (
+    ARTIFACT_NAMES,
+    ARTIFACT_OUTPUTS,
+    CHECKS,
+    DAGGER_POLICY_CHECKS,
+    REQUIRED_TOOLS,
+    SCOPES,
+    STATES,
+    TOOLS,
+)
+
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TOOL_VERSION = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9.+-]*)$")
-STATES = {
-    "success": "passed",
-    "failure": "failed",
-    "skipped": "skipped",
-    "cancelled": "cancelled",
-    "timed_out": "timed_out",
-    "neutral": "unavailable",
-    "action_required": "unavailable",
-    "stale": "unavailable",
-    "startup_failure": "failed",
-}
 # These are the actual v0.4.8 release jobs/steps, not a new execution plan.
-CHECKS = {
-    "candidate": ("candidate", "Validate manual release request"),
-    "ruff_lint": ("core-tests / python-ci / checks", "Ruff Lint"),
-    "ruff_format": ("core-tests / python-ci / checks", "Ruff Format Check"),
-    "core_tests": (
-        "core-tests / sync-tool-tests",
-        "Run all core unit and process tests",
-    ),
-    "version_integrity": (
-        "core-tests / version-metadata",
-        "Validate release metadata and root lock consistency",
-    ),
-    "dependency_security": (
-        "complete-ci / dependency-security",
-        "Check lock integrity and scan known vulnerabilities",
-    ),
-    "dagger": ("complete-ci / checks", "Run Dagger Checks"),
-    "tests": (
-        "complete-ci / checks",
-        "Gate on pytest execution and explicit quality policy",
-    ),
-    "module_lock": ("complete-ci / checks", "Verify generated module lock consistency"),
-    "evidence": ("evidence", "Require usable evidence and original execution gates"),
-}
-DAGGER_POLICY_CHECKS = {
-    "coverage": "engineering-ci:fixture-quality-gates",
-    "python_matrix": "engineering-ci:fixture-python-matrix",
-}
-TOOLS = {"python", "uv", "pytest", "pytest-cov", "ruff", "dagger", "osv-scanner"}
-SCOPES = {"core", "ruff", "dagger_cli", "root_lock"}
-REQUIRED_TOOLS = {
-    ("core", "python"),
-    ("core", "uv"),
-    ("core", "pytest"),
-    ("core", "pytest-cov"),
-    ("ruff", "uv"),
-    ("ruff", "ruff"),
-    ("dagger_cli", "dagger"),
-    ("root_lock", "osv-scanner"),
-}
-ARTIFACT_OUTPUTS = {
-    "pytest-report": ("complete-ci", "pytest_artifact_id"),
-    "dependency-security": ("complete-ci", "security_artifact_id"),
-    "core-tests": ("core-tests", "core_artifact_id"),
-    "release-tools-ruff": ("core-tests", "ruff_artifact_id"),
-}
-ARTIFACT_NAMES = set(ARTIFACT_OUTPUTS)
 
 
 def artifact_ids(needs):
@@ -148,11 +102,7 @@ def tools(scope):
                 }
             )
     for name in ("uv",) if scope == "core" else ("uv", "ruff"):
-        command = (
-            ["uv", "--version"]
-            if name == "uv"
-            else ["uvx", "ruff==0.16.10", "--version"]
-        )
+        command = ["uv", "--version"] if name == "uv" else ruff_command("--version")
         output = subprocess.check_output(
             command, text=True, encoding="utf-8", timeout=60
         )
@@ -185,7 +135,7 @@ def clean_tools(records):
 
 
 def facts(directory):
-    from manual_release import read_json, require_evidence
+    from .publishing import read_json, require_evidence
 
     require_evidence(directory)
     records = read_json(directory / "core/tool-versions.json")

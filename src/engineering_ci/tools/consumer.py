@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """Synchronize a consumer's workflow and Dagger module to a published commit.
 
 Run from any directory:
-  python scripts/sync_consumer.py --consumer ../engineering-ci-smoke
-  python scripts/sync_consumer.py --consumer ../engineering-ci-smoke --apply --commit --push
+  python -m engineering_ci.tools.consumer --consumer ../engineering-ci-smoke
+  python -m engineering_ci.tools.consumer --consumer ../engineering-ci-smoke --apply --commit --push
 
 References come from Git directly, not from PowerShell variables.
 """
@@ -16,6 +15,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from .._paths import ROOT
 
 
 class SyncError(Exception):
@@ -39,7 +40,9 @@ def command(args: list[str], *, cwd: Path, capture: bool = True) -> str:
         raise SyncError(f"Command not installed: {args[0]}") from exc
     except subprocess.CalledProcessError as exc:
         msg = (exc.stderr or exc.stdout or "").strip()
-        raise SyncError(f"Command failed: {args[0]} {' '.join(args[1:])}\n{msg}") from exc
+        raise SyncError(
+            f"Command failed: {args[0]} {' '.join(args[1:])}\n{msg}"
+        ) from exc
     return result.stdout.strip() if capture else ""
 
 
@@ -63,7 +66,9 @@ def published_head(repo: Path, branch: str) -> str:
     if active != branch:
         raise SyncError(f"Source branch must be {branch!r}; currently {active!r}")
     if git(repo, "status", "--porcelain"):
-        raise SyncError("Source has uncommitted changes; commit and push before syncing")
+        raise SyncError(
+            "Source has uncommitted changes; commit and push before syncing"
+        )
     local_sha = git(repo, "rev-parse", "HEAD")
     remote_sha = remote_branch_sha(repo, branch)
     if local_sha != remote_sha:
@@ -87,7 +92,9 @@ def update_references(
     )
     matches = list(pattern.finditer(workflow_text))
     if len(matches) != 1:
-        raise SyncError(f"Expected exactly one shared workflow reference; found {len(matches)}")
+        raise SyncError(
+            f"Expected exactly one shared workflow reference; found {len(matches)}"
+        )
     old_workflow = matches[0].group("old")
     changed_workflow = pattern.sub(
         lambda m: m.group("indent") + workflow_prefix + sha + m.group("suffix"),
@@ -99,7 +106,9 @@ def update_references(
         manifest = json.loads(dagger_text)
     except json.JSONDecodeError as exc:
         raise SyncError(f"Invalid consumer dagger.json: {exc}") from exc
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("dependencies"), list):
+    if not isinstance(manifest, dict) or not isinstance(
+        manifest.get("dependencies"), list
+    ):
         raise SyncError("dagger.json must include a dependencies array")
     module_name = upstream.rsplit("/", 1)[-1]
     matching = [
@@ -111,8 +120,12 @@ def update_references(
         raise SyncError(f"Expected exactly one Dagger dependency called {module_name}")
     dep = matching[0]
     expected_prefix = f"github.com/{upstream}@"
-    if not isinstance(dep.get("source"), str) or not dep["source"].startswith(expected_prefix):
-        raise SyncError("Dagger dependency has a different source; refusing to rewrite it")
+    if not isinstance(dep.get("source"), str) or not dep["source"].startswith(
+        expected_prefix
+    ):
+        raise SyncError(
+            "Dagger dependency has a different source; refusing to rewrite it"
+        )
     old_module = dep["source"][len(expected_prefix) :]
     dep["source"] = expected_prefix + sha
     dep["pin"] = sha
@@ -145,7 +158,9 @@ def perform(args: argparse.Namespace, source: Path) -> None:
     workflow_file = consumer / ".github/workflows/ci.yml"
     dagger_file = consumer / "dagger.json"
     if not workflow_file.is_file() or not dagger_file.is_file():
-        raise SyncError("Consumer must contain .github/workflows/ci.yml and dagger.json")
+        raise SyncError(
+            "Consumer must contain .github/workflows/ci.yml and dagger.json"
+        )
     old_workflow = workflow_file.read_text(encoding="utf-8")
     old_dagger = dagger_file.read_text(encoding="utf-8")
     new_workflow, new_dagger, summary = update_references(
@@ -164,8 +179,12 @@ def perform(args: argparse.Namespace, source: Path) -> None:
     if git(consumer, "status", "--porcelain"):
         raise SyncError("Consumer has uncommitted changes; refusing to overwrite them")
     if args.push and git(consumer, "branch", "--show-current") != args.branch:
-        raise SyncError("--push requires the consumer to be on its configured main branch")
-    if args.push and git(consumer, "rev-parse", "HEAD") != remote_branch_sha(consumer, args.branch):
+        raise SyncError(
+            "--push requires the consumer to be on its configured main branch"
+        )
+    if args.push and git(consumer, "rev-parse", "HEAD") != remote_branch_sha(
+        consumer, args.branch
+    ):
         raise SyncError("Consumer local branch is not synchronized with origin/main")
 
     workflow_file.write_text(new_workflow, encoding="utf-8", newline="\n")
@@ -187,12 +206,29 @@ def perform(args: argparse.Namespace, source: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--consumer", type=Path, required=True, help="Consumer path relative to engineering-ci")
-    parser.add_argument("--upstream", default="dymzz/engineering-ci", help="Full GitHub OWNER/REPO")
-    parser.add_argument("--branch", default="main", help="Upstream and smoke consumer branch")
-    parser.add_argument("--apply", action="store_true", help="Update refs, regenerate SDK, and run Dagger checks")
-    parser.add_argument("--commit", action="store_true", help="Commit only after checks pass")
-    parser.add_argument("--push", action="store_true", help="Push verified commit (intended for smoke)")
+    parser.add_argument(
+        "--consumer",
+        type=Path,
+        required=True,
+        help="Consumer path relative to engineering-ci",
+    )
+    parser.add_argument(
+        "--upstream", default="dymzz/engineering-ci", help="Full GitHub OWNER/REPO"
+    )
+    parser.add_argument(
+        "--branch", default="main", help="Upstream and smoke consumer branch"
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Update refs, regenerate SDK, and run Dagger checks",
+    )
+    parser.add_argument(
+        "--commit", action="store_true", help="Commit only after checks pass"
+    )
+    parser.add_argument(
+        "--push", action="store_true", help="Push verified commit (intended for smoke)"
+    )
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.upstream):
         parser.error("--upstream must be OWNER/REPO")
@@ -201,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.commit and not args.apply:
         parser.error("--commit requires --apply")
     try:
-        perform(args, Path(__file__).resolve().parent.parent)
+        perform(args, ROOT)
     except SyncError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

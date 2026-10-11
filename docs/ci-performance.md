@@ -50,11 +50,11 @@ Runner 排队/调度约 3–4s，独立于检查执行窗口。Job 并行资源�
 
 ```bash
 # 只发起 GET 请求，不创建 Workflow Run
-python scripts/ci_performance.py --repo dymzz/engineering-ci --run RUN_ID --out performance.json
+uv run --locked python -m engineering_ci.tools.performance --repo dymzz/engineering-ci --run RUN_ID --out performance.json
 
 # 可选：附加指定 Dagger Job 的原始日志，以读取原生 span 和 CI_TIMING 标记
 gh api --method GET repos/dymzz/engineering-ci/actions/jobs/JOB_ID/logs > dagger.log
-python scripts/ci_performance.py --repo dymzz/engineering-ci --run RUN_ID --dagger-log dagger.log --out performance.json
+uv run --locked python -m engineering_ci.tools.performance --repo dymzz/engineering-ci --run RUN_ID --dagger-log dagger.log --out performance.json
 ```
 
 PowerShell 7 同样可运行上述命令。Windows PowerShell 5.1 保存文本日志时指定 UTF-8，避免默认 UTF-16 编码。原始日志留在本地，不提交到 Git。

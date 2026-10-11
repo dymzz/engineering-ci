@@ -68,7 +68,7 @@ Python 3.11+ and uv are required. The helper uses only the Python standard
 library; it does not install the project's locked dependencies.
 
 ```sh
-python scripts/dependency_security.py --project /path/to/consumer \
+uv run --locked python -m engineering_ci.tools.security --project /path/to/consumer \
   --mode report --out /tmp/dependency-security \
   --cache /tmp/engineering-ci-security-bin
 ```

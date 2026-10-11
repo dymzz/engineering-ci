@@ -1,2 +1,7 @@
+"""Reusable Engineering CI capabilities."""
+
+
 def main() -> None:
-    print("Hello from engineering-ci!")
+    from .cli import main as invoke
+
+    raise SystemExit(invoke())

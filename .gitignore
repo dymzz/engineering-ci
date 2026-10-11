@@ -42,3 +42,8 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Unified local/CI check evidence
+/core-junit.xml
+/core-coverage.xml
+/core-coverage.json

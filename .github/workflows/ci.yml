@@ -20,6 +20,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: ${{ github.workspace }}/src
+
 jobs:
   python-ci:
     # Keep the former reusable Dagger status name for PR review.
@@ -32,26 +35,19 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: '0.12.23'
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
       - name: Ruff Lint
-        run: >-
-          uvx ruff==0.16.10 check --isolated --target-version py311
-          tests/fixtures/python-app scripts/release_version.py
-          scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
-          tests/test_release_transport.py
+        run: python3 -m engineering_ci.workflow_actions checks ruff-lint
       - name: Ruff Format Check
-        run: >-
-          uvx ruff==0.16.10 format --isolated --target-version py311 --check
-          tests/fixtures/python-app scripts/release_version.py
-          scripts/manual_release.py tests/test_release_version.py
-          tests/test_manual_release.py scripts/release_manifest.py tests/test_release_manifest.py
-          tests/test_release_transport.py
+        run: python3 -m engineering_ci.workflow_actions checks ruff-format
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
-        run: python3 scripts/release_manifest.py tools --scope ruff --output release-tools/tool-versions.json
+        run: python3 -m engineering_ci.workflow_actions manifest tools --scope ruff --output release-tools/tool-versions.json
       - uses: actions/upload-artifact@v7.0.2
         id: ruff_artifact
         if: ${{ inputs.coverage }}
@@ -70,10 +66,13 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: '0.12.23'
-          python-version: '3.14'
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
+          python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Install existing HTTP integration test dependency
         run: sudo apt-get update -qq && sudo apt-get install -y -qq aria2
       - name: Run all core unit and process tests
@@ -82,16 +81,14 @@ jobs:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
-          args=(-q --junitxml=core-junit.xml)
+          args=()
           if [[ "$EXPORT_COVERAGE" == 'true' ]]; then
-            # No new threshold: existing Dagger quality policy remains authoritative.
-            args+=(--cov=src/engineering_ci --cov=.dagger/src/engineering_ci
-              --cov-report=xml:core-coverage.xml --cov-report=json:core-coverage.json)
+            args+=(--coverage)
           fi
-          uv run --locked --group dev pytest "${args[@]}"
+          python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"
       - name: Record core release tool versions
         if: ${{ always() && !cancelled() && inputs.coverage }}
-        run: uv run --no-sync --group dev python scripts/release_manifest.py tools --scope core --output tool-versions.json
+        run: uv run --no-sync --group dev python -m engineering_ci.workflow_actions manifest tools --scope core --output tool-versions.json
       - name: Upload core release evidence
         id: core_artifact
         if: ${{ always() && inputs.coverage }}
@@ -113,11 +110,12 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Read unified toolchain
+        id: check_toolchain
+        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: '0.12.23'
-          python-version: '3.14'
+          version: ${{ steps.check_toolchain.outputs.uv_version }}
+          python-version: ${{ steps.check_toolchain.outputs.python_version }}
       - name: Validate release metadata and root lock consistency
-        run: |
-          python3 scripts/release_version.py check
-          uv lock --project . --check
+        run: python3 -m engineering_ci.workflow_actions checks version lock

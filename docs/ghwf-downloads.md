@@ -64,14 +64,14 @@ native 无 Range 请求，不模拟分段下载，也不会报告已经字节续
 ## Windows PowerShell
 
 可参考或点入 `config/ghwf.windows.env.example.ps1`。
-环境变量只对当前 shell 及其子进程生效，无需更改 PowerShell 的 ghwf 函数。
+环境变量只对当前 shell 及其子进程生效。旧 ghwf 函数需按 [入口迁移说明](../scripts/README.md#旧-powershell-函数迁移) 更新为 download.py。
 
 ```powershell
 $env:GHWF_DOWNLOAD_BACKEND = "auto"
 $env:GHWF_DOWNLOAD_TIMEOUT = "60"
 # 按需启用 aria2；路径可包含空格。
 $env:GHWF_ARIA2C_PATH = "D:/tools/aria2/aria2c.exe"
-ghwf --workflow build.yml --resume --save-log --download-backend native
+ghwf --run RUN_ID --save-log --download-backend native
 ```
 
 移除覆盖值：`Remove-Item Env:GHWF_DOWNLOAD_BACKEND`。
@@ -85,8 +85,8 @@ export GHWF_DOWNLOAD_BACKEND="auto"
 export GHWF_DOWNLOAD_TIMEOUT="60"
 # 未安装 aria2 时可省略该变量，auto 自动使用 native。
 export GHWF_ARIA2C_PATH="/usr/bin/aria2c"
-python /path/to/engineering-ci/scripts/gh_workflow_artifacts.py \
-  --workflow build.yml --resume --save-log --download-backend native
+python /path/to/engineering-ci/scripts/download.py \
+  --run RUN_ID --save-log --download-backend native
 ```
 
 移除覆盖值：`unset GHWF_DOWNLOAD_BACKEND`。

@@ -1,15 +1,9 @@
 """Tests for the release version contract (no uv/network required)."""
 
-import importlib.util
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts/release_version.py"
-spec = importlib.util.spec_from_file_location("release_version", SCRIPT)
-assert spec and spec.loader
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+from engineering_ci.release import version as mod
 
 
 class ReleaseVersionTests(unittest.TestCase):
@@ -21,7 +15,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 mod.normalize(value)
 
     def test_repository_versions_consistent(self):
-        self.assertEqual(mod.checked_version(), "0.4.9")
+        self.assertEqual(mod.checked_version(), "0.4.11")
 
     def test_mismatch_detected(self):
         with (

@@ -1,21 +1,16 @@
 """Timing arithmetic and workflow failure propagation need no engine or network."""
 
-import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location(
-    "ci_performance", ROOT / "scripts/ci_performance.py"
-)
-performance = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(performance)
+from engineering_ci.tools import performance
 
 
 def job(identifier, start, end):
@@ -77,18 +72,7 @@ class PerformanceTests(unittest.TestCase):
             performance.summarize({}, [{"status": "in_progress"}])
 
     def test_nested_native_spans_are_not_summed_or_repainted(self):
-        log = "\n".join(
-            [
-                "1 : connect",
-                "1 : connect DONE [1.1s]",
-                "5 : load workspace: . DONE [50.1s]",
-                "6 : ┆ loading type definitions DONE [50.1s]",
-                "16 : ┆ [4.5s] | Prepared 6 packages in 1.92s",
-                "16 : ┆ [4.5s] | Prepared 6 packages in 1.92s",
-                "16 : ┆ [4.6s] | Installed 6 packages in 3ms",
-                '6 : | CI_TIMING {"phase":"check-list","seconds":0.14,"exit_code":3}',
-            ]
-        )
+        log = '1 : connect\n1 : connect DONE [1.1s]\n5 : load workspace: . DONE [50.1s]\n6 : ┆ loading type definitions DONE [50.1s]\n16 : ┆ [4.5s] | Prepared 6 packages in 1.92s\n16 : ┆ [4.5s] | Prepared 6 packages in 1.92s\n16 : ┆ [4.6s] | Installed 6 packages in 3ms\n6 : | CI_TIMING {"phase":"check-list","seconds":0.14,"exit_code":3}'
         report = performance.dagger_timings(log)
         self.assertEqual(len(report["native_spans"]), 2)
         self.assertEqual(len(report["uv_preparations_observed"]), 1)
@@ -236,6 +220,7 @@ class WorkflowExecutionTests(unittest.TestCase):
         )
         result = subprocess.run(
             [self.bash, str(launcher)],
+            check=False,
             env=env,
             text=True,
             capture_output=True,
@@ -291,6 +276,7 @@ class WorkflowExecutionTests(unittest.TestCase):
                     str(Path(tmp) / "pytest-report"),
                 ],
                 capture_output=True,
+                check=False,
             )
             self.assertEqual(gate.returncode, 1)
 

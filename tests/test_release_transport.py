@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,8 +13,7 @@ from unittest.mock import patch
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-import manual_release as release
+from engineering_ci.release import publishing as release
 
 
 @pytest.mark.parametrize("operation", ["upload", "download", "metadata"])

@@ -14,11 +14,10 @@ from unittest.mock import patch
 from test_release_manifest import IDS, ManifestGitHub, make_manifest, publish
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-import manual_release as release
+from engineering_ci.release import publishing as release
 
 HEAD, OTHER = "a" * 40, "b" * 40
-TAG = "v0.4.9"
+TAG = "v0.4.11"
 
 
 class FakeGitHub(ManifestGitHub):
@@ -478,7 +477,7 @@ class ManualReleaseTests(unittest.TestCase):
         saved = copy.deepcopy(api.saved)
         api.fail_promote = False
         api.calls.clear()
-        from release_manifest import manifest
+        from engineering_ci.release.manifest import manifest
 
         fresh = manifest(
             api,
@@ -585,7 +584,7 @@ class ManualReleaseTests(unittest.TestCase):
         self.assertNotIn("workflow_dispatch:", ci)
         self.assertNotIn("dagger call", ci)
         self.assertNotIn("docker pull", ci)
-        self.assertIn("uv run --locked --group dev pytest", ci)
+        self.assertIn("engineering_ci.workflow_actions checks tests", ci)
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertIn("default: false", workflow)
         self.assertIn("dependency_security_project: .\n", workflow)
