@@ -44,6 +44,21 @@ async def container(source, executable_paths):
     if not re.fullmatch(r"\d+\.\d+\.\d+", uv) or not re.fullmatch(r"3\.\d+", python):
         raise ValueError("Invalid container toolchain")
     image = dag.container().from_(f"python:{python}-slim")
+    # Validate through the shared standard-library entrypoint before installing tools.
+    # Evaluate this branch, then keep the tool layer independent of source changes.
+    plan = json.loads(
+        await image.with_directory("/workspace", source, exclude=SOURCE_EXCLUDES)
+        .with_workdir("/workspace")
+        .with_env_variable("PYTHONPATH", "/workspace/src")
+        .with_env_variable("PYTHONDONTWRITEBYTECODE", "1")
+        .with_exec(
+            ["python", "-m", "engineering_ci.checks_container", "plan"],
+            disable_dagger_in_dagger=True,
+        )
+        .stdout()
+    )
+    if plan["schema_version"] != 1 or plan["toolchain"] != {"uv": uv, "python": python}:
+        raise ValueError("Container preparation differs from the validated Pipeline")
     base = (
         image.with_exec(["apt-get", "update", "-qq"], disable_dagger_in_dagger=True)
         .with_exec(
@@ -53,11 +68,7 @@ async def container(source, executable_paths):
                 "-y",
                 "-qq",
                 "--no-install-recommends",
-                "git",
-                "gh",
-                "bash",
-                "aria2",
-                "ca-certificates",
+                *plan["packages"],
             ],
             disable_dagger_in_dagger=True,
         )

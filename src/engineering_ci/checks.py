@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ._paths import ROOT
+from .check_operations import command as operation_command
 from .pipeline import PIPELINE
 from .toolchain import PYTHON_VERSION, RUFF_VERSION, UV_VERSION, ruff_command
 
@@ -27,7 +28,7 @@ CI_STEPS = {
     for name, spec in PIPELINE["checks"].items()
     if "ci_step" in spec
 }
-RUFF_SCOPE = tuple(PIPELINE["scopes"]["ruff"])
+RUFF_SCOPE = tuple(PIPELINE["scopes"][PIPELINE["checks"]["ruff-lint"]["scope"]])
 PR_CI_JOBS = tuple(
     dict.fromkeys(
         spec["ci_job"] for spec in PIPELINE["checks"].values() if "ci_job" in spec
@@ -69,6 +70,12 @@ def aria2_executable(root=ROOT, *, which=shutil.which, environ=None):
 
 
 def selected(selectors):
+    if (
+        not isinstance(selectors, (list, tuple))
+        or not selectors
+        or any(not isinstance(value, str) or not value for value in selectors)
+    ):
+        raise ValueError("At least one explicit check or profile is required")
     result = []
     for selector in selectors:
         names = GROUPS.get(selector, (selector,))
@@ -81,62 +88,8 @@ def selected(selectors):
 
 
 def command(name, coverage=False, junit="core-junit.xml"):
-    if name == "ruff-lint":
-        return [
-            *ruff_command(),
-            "check",
-            "--isolated",
-            "--target-version",
-            PIPELINE["arguments"]["ruff_target"],
-            *RUFF_SCOPE,
-        ]
-    if name == "ruff-format":
-        return [
-            *ruff_command(),
-            "format",
-            "--isolated",
-            "--target-version",
-            PIPELINE["arguments"]["ruff_target"],
-            "--check",
-            *RUFF_SCOPE,
-        ]
-    if name == "pytest":
-        args = [
-            "uv",
-            "run",
-            "--locked",
-            "--group",
-            "dev",
-            "--python",
-            PYTHON_VERSION,
-            "pytest",
-            *PIPELINE["arguments"]["pytest"],
-            f"--junitxml={junit}",
-        ]
-        if coverage:
-            args += [
-                "--cov=src/engineering_ci",
-                "--cov=.dagger/src/engineering_ci",
-                "--cov-report=xml:core-coverage.xml",
-                "--cov-report=json:core-coverage.json",
-            ]
-        return args
-    if name == "version":
-        return [
-            "uv",
-            "run",
-            "--locked",
-            "--python",
-            PYTHON_VERSION,
-            "python",
-            "-m",
-            "engineering_ci.cli",
-            "version",
-            "check",
-        ]
-    if name == "lock":
-        return ["uv", "lock", "--project", ".", "--check", "--python", PYTHON_VERSION]
-    raise ValueError(f"Unsupported check: {name}")
+    """Use the same registered command in native and Dagger executions."""
+    return operation_command(name, PIPELINE, coverage=coverage, junit=junit)
 
 
 def digest(value):

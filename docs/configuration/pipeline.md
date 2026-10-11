@@ -21,6 +21,31 @@
 schema_version=1；缺失、非法配置或未知实现明确失败，不静默使用另一套默认定义。
 PR profile 保留既有五项检查。工具的实际版本和当前输入仍需执行时核验，配置不能作为通过证据。
 
+## 操作契约与编排边界
+
+`check_operations.py` 集中注册五项已实现的基础检查，提供 argv 构造、最小工具依赖和必要输入。
+TOML 的检查名称引用这些操作；不允许指定 Python 导入路径、可执行文件、任意 Handler 或 shell。
+本地 native、Dagger 容器和 Actions 入口共用这些命令构造函数，工具探测与实际 Ruff 调用
+也使用同一份 bootstrap 定义。Ruff 实际执行范围读取对应检查的 `scope`，与证据中的输入范围一致。
+
+未知顶层字段，以及 `arguments`、`inputs`、`checks` 中未实现的字段都在配置读取时拒绝。
+例如 `command`、`handler`、`needs`、`permissions`、`env` 不属于当前契约，不能通过添加字段
+改变执行行为。未被任何检查引用的 Scope 或可选 Backend 同样拒绝。路径不能逃出仓库，
+不能以工具选项开头或包含控制字符。已有 schema 1 的三个迁移规则保持有效：缺少整个
+`delivery`、缺少整个 `execution`、旧 `lock` 缺少 CI 映射；显式错误不会被这些迁移掩盖。
+
+Profile 不能与注册检查重名，不能把直接调用 `pytest` 改为其他操作；`tests` 必须指向 pytest，
+`pr` 必须包含全部五项检查。空 Profile、空调用及不足以覆盖实际执行的输入范围明确失败。
+工具依赖可声明已有支持的工具，但不能删除操作实际需要的最小依赖，例如 pytest 的 Git、gh 和 Linux Bash。
+aria2 仍是可选专项：配置引用它时容器提供该工具；若取消该专项，需同时移除 pytest 的
+`optional_backends = ["aria2"]` 引用和对应 `[optional_backends.aria2]` 表，其他检查保持执行。
+
+三种依赖分别处理：工具依赖由配置及注册操作核验；交付步骤顺序由既有层次化 FSM 管理；
+证据准入由共享 ExecutionContext 和 DeliveryPipeline 核验。任务先后完成不能代替输入、版本、
+SHA 和执行结果的一致性。失败、跳过、未执行及过期结果不会因报告生成或聚合而变为通过。
+GitHub Job 的 `needs`、权限、条件和 Artifact 上传生命周期仍由 YAML 管理。
+本轮不新增配置任务依赖图或远端调度器。
+
 ## 交付与发布目标
 
 ```toml
@@ -63,6 +88,23 @@ Actions 内部入口明确使用 YAML 已准备的 native Linux 环境；本地�
 
 `engineering_ci.pipeline.PIPELINE` 在进程启动时读取和校验配置，其他模块复用该对象。
 配置调整后由新一次命令读取，不提供进程内热重载。
+
+### Dagger 环境准备
+
+Dagger 读取同一份源码及 TOML，在 Python 基础镜像内调用标准库入口
+`python -m engineering_ci.checks_container plan`，复用完整配置校验并取得确定性的环境准备参数。
+此步骤不执行 lint、pytest 或工具探测，失败时不会继续安装工具或执行检查。基础镜像仍由
+Dagger 获取，镜像、Engine 和 CLI 的既有 pin 与核验保持不变。
+
+环境准备清单从完整 `pr` Profile 的工具和可选 Backend 引用产生；Dagger 的 argv 形式
+`with_exec` 执行固定安装操作，配置不能提供任意命令或包名。工具层独立于源码验证分支，
+继续使用 Dagger 执行缓存和 uv CacheVolume；该行为见 [Dagger Container API](https://docs.dagger.io/reference/api/container/)。
+独立检查与部分证据刷新使用相同的完整环境，避免只重跑 version / lock 时改变容器身份，
+进而错误废弃 pytest 的有效证据。环境准备清单只用于执行，不是检查通过记录。
+
+原 `repository-check-environment` / `repository-check-artifacts` 接口继续提供工具、来源、
+原始退出码、JSON、JUnit 和 Coverage 证据；取得多个表现形式不重复调用 pytest。
+这两个接口不注册为默认 `dagger check` 的额外检查，Release 的现有 fixture 检查清单不变。
 
 | 读取位置 | 配置如何参与执行 |
 | --- | --- |

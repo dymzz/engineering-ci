@@ -76,6 +76,16 @@ def test_selection_deduplicates_groups_and_rejects_unknown():
         checks.selected(["not-a-check"])
 
 
+@pytest.mark.parametrize("selectors", [[], (), "pytest", [""], [False], None])
+def test_empty_or_invalid_request_never_generates_a_passing_report(checkout, selectors):
+    with pytest.raises(ValueError, match="explicit check"):
+        checks.execute(
+            selectors,
+            root=checkout,
+            run=lambda *args, **kwargs: pytest.fail("No process"),
+        )
+
+
 def test_shared_parameters_and_coverage_do_not_change_check_scope():
     for name in checks.PR_CHECKS:
         assert checks.command(name) == checks.command(checks.selected([name])[0])

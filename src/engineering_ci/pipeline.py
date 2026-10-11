@@ -7,6 +7,17 @@ import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ._paths import ROOT
+from .check_operations import OPERATIONS
+
+
+def fields(value, required, optional=(), *, location):
+    """Reject unknown and missing fields without echoing configuration values."""
+    if (
+        not isinstance(value, dict)
+        or not set(required) <= value.keys()
+        or not value.keys() <= set(required) | set(optional)
+    ):
+        raise ValueError(f"Unsupported or missing fields in {location}")
 
 
 def delivery_config(data):
@@ -38,6 +49,26 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
     try:
         with path.open("rb") as stream:
             data = tomllib.load(stream)
+        fields(
+            data,
+            {
+                "schema_version",
+                "toolchain",
+                "arguments",
+                "profiles",
+                "inputs",
+                "scopes",
+                "checks",
+                "optional_backends",
+            },
+            {"delivery", "execution"},
+            location="pipeline",
+        )
+        fields(data["arguments"], {"ruff_target", "pytest"}, location="arguments")
+        fields(data["inputs"], {"common", "release_metadata"}, location="inputs")
+        for section in ("profiles", "scopes", "checks", "optional_backends"):
+            if not isinstance(data[section], dict):
+                raise TypeError(f"Expected a table in {section}")
         if type(data["schema_version"]) is not int or data["schema_version"] != 1:
             raise ValueError("Unsupported pipeline schema")
         if set(data["toolchain"]) != {"uv", "ruff", "python"} or not all(
@@ -76,6 +107,7 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             "config/pipeline.toml",
             "src/engineering_ci/pipeline.py",
             "src/engineering_ci/checks.py",
+            "src/engineering_ci/check_operations.py",
             "src/engineering_ci/toolchain.py",
             "src/engineering_ci/workflow_consistency.py",
             "src/engineering_ci/release/registry.py",
@@ -92,18 +124,24 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             or "\\" in path
             or PurePosixPath(path).is_absolute()
             or ".." in PurePosixPath(path).parts
+            or path.startswith("-")
+            or re.search(r"[\x00-\x1f\x7f]", path)
             for path in paths
         ):
             raise ValueError("Input scopes must stay inside the repository")
         checks = data["checks"]
-        supported = {"ruff-lint", "ruff-format", "pytest", "version", "lock"}
+        supported = set(OPERATIONS)
         if set(checks) != supported:
             raise ValueError("Unsupported or missing check implementation")
         if not data["profiles"]["pr"] or not all(
-            strings(names) and set(names) <= supported
+            names and strings(names) and set(names) <= supported
             for names in data["profiles"].values()
         ):
             raise ValueError("Invalid check profile")
+        if set(data["profiles"]) & supported:
+            raise ValueError("Profiles cannot shadow registered check names")
+        if data["profiles"].get("tests") != ["pytest"]:
+            raise ValueError("Tests profile must retain the existing pytest operation")
         if set(data["profiles"]["pr"]) != supported:
             raise ValueError("PR profile must retain the existing required checks")
         data["delivery"] = delivery_config(data)
@@ -134,6 +172,20 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             }:
                 raise ValueError("Unsupported optional backend contract")
         for name, spec in checks.items():
+            fields(
+                spec,
+                {
+                    "scope",
+                    "required_tools",
+                    "linux_tools",
+                    "optional_backends",
+                    "ci_job",
+                    "ci_step",
+                },
+                {"version_only_reuse"},
+                location=f"checks.{name}",
+            )
+            operation = OPERATIONS[name]
             if "version_only_reuse" in spec and (
                 name != "pytest" or spec["version_only_reuse"] is not True
             ):
@@ -158,22 +210,29 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
                 raise ValueError(f"Unsupported required tool: {name}")
             if not set(spec["optional_backends"]) <= set(data["optional_backends"]):
                 raise ValueError(f"Unknown optional backend: {name}")
-            if "uvx" in dependencies and "uv" not in dependencies:
-                raise ValueError("uvx requires the pinned uv bootstrap")
-            if (
-                "uv" not in dependencies
-                or name.startswith("ruff-")
-                and "uvx" not in dependencies
-            ):
+            if not set(spec["optional_backends"]) <= operation.optional_backends:
+                raise ValueError(f"Unused optional backend: {name}")
+            if not operation.required_tools <= set(
+                spec["required_tools"]
+            ) or not operation.linux_tools <= set(spec["linux_tools"]):
                 raise ValueError(
                     f"Missing tool required by the check implementation: {name}"
                 )
-        if "tests" not in data["scopes"][checks["pytest"]["scope"]]:
-            raise ValueError("Full pytest inputs must include tests")
-        if not set(data["inputs"]["release_metadata"]) <= set(
-            data["scopes"][checks["pytest"]["scope"]]
-        ):
-            raise ValueError("Version-only reuse requires all four metadata inputs")
+            scope = data["scopes"][spec["scope"]]
+            if not scope:
+                raise ValueError(f"Empty execution scope: {name}")
+            if not operation.required_inputs <= set(scope):
+                raise ValueError(f"Missing execution inputs: {name}")
+            if operation.requires_release_metadata and not set(
+                data["inputs"]["release_metadata"]
+            ) <= set(scope):
+                raise ValueError(f"Missing release metadata inputs: {name}")
+        if set(data["scopes"]) != {spec["scope"] for spec in checks.values()}:
+            raise ValueError("Unused input scope")
+        if set(data["optional_backends"]) != {
+            backend for spec in checks.values() for backend in spec["optional_backends"]
+        }:
+            raise ValueError("Unused optional backend definition")
         return data
     except (OSError, KeyError, TypeError, ValueError, AttributeError) as error:
         raise ValueError(f"Invalid pipeline configuration {path}: {error}") from error

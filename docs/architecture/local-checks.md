@@ -28,6 +28,8 @@ PYTHONPATH=src python3 -m engineering_ci.checks pr --json .test-tools/checks/pr.
 
 `pr` 恰好包含 Ruff Lint、Ruff Format、核心 pytest、四处版本一致性与根 uv.lock
 一致性；单项和完整 profile 使用相同定义。重复选择不会重复执行同一检查。
+空请求不能产生通过记录。检查名只引用已注册操作，配置字段与最小依赖在任何检查执行前核验；
+定义及编排边界见[操作契约](../configuration/pipeline.md#操作契约与编排边界)。
 版本检查同时核验 Pipeline 与 GitHub Workflow 的既有绑定，范围见
 [配置契约](../configuration/pipeline.md#github-actions-一致性)。检查不一致仍通过该真实 Step 失败，
 不新增或改名 PR Job。
@@ -56,7 +58,8 @@ Dagger CLI 与 Engine 需要符合 `dagger.json` 的固定版本，并有可用�
 Engine，安装见[Dagger 配置](../configuration/dagger.md)。缺少 Dagger 返回 127，
 环境不满足返回 3，显式容器执行失败不会回退到另一环境。
 
-容器使用锁定的 Python 镜像、Pipeline 固定的 uv/Ruff，以及 Git、gh、Bash 和 aria2。
+容器使用锁定的 Python 镜像、Pipeline 固定的 uv/Ruff，以及完整 Profile 声明的 Git、gh、Bash
+和可选 aria2；具体清单来自共享配置的[环境准备契约](../configuration/pipeline.md#dagger-环境准备)。
 容器内继续调用现有检查执行器。宿主 Git / PR 操作仍在当前 checkout 进行。
 源码输入不包含 `.git`、`.test-tools`、虚拟环境、机器专用下载配置或认证文件；
 宿主认证环境变量不传给检查容器。Windows 的已跟踪执行位由 Git 模式传入并记录身份。

@@ -2,6 +2,7 @@
 
 import re
 
+from .check_operations import ruff_command as registered_ruff_command
 from .pipeline import PIPELINE
 
 UV_VERSION = PIPELINE["toolchain"]["uv"]
@@ -11,7 +12,7 @@ PYTHON_VERSION = PIPELINE["toolchain"]["python"]
 
 def ruff_command(*arguments):
     # Tool bootstrap ignores machine-specific uv config; root lock checks retain theirs.
-    return ["uvx", "--no-config", f"ruff=={RUFF_VERSION}", *arguments]
+    return registered_ruff_command(PIPELINE, *arguments)
 
 
 def dagger_cli_version(output):

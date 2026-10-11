@@ -101,6 +101,8 @@ E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 自动使用 Dagger Linux 容器，Linux CI 保留原生执行。`--json` 保存失败或成功证据，
 `--reuse` 核验后逐项复用；`inspect REPORT` 查询时不重跑 pytest。
 发布交付使用同一配置，无需手工复制容器 JSON 或更换 checkout。
+检查和 Profile 必须显式选择；空请求拒绝，不记为通过。修改 TOML 后启动新命令即可生效，
+字段、已注册操作和 Dagger 环境准备的对应关系见[Pipeline 配置](../docs/configuration/pipeline.md#操作契约与编排边界)。
 `version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
 使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
 绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。
