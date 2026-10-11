@@ -225,17 +225,36 @@ def test_publication_evidence_must_be_a_manual_main_run():
     assert make_manifest(api, mode="validation")["result"] == "passed"
 
 
-def test_actual_tool_files_are_required_and_scoped(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "output,version",
+    [
+        ("dagger v0.21.10 linux/amd64\n", "0.21.10"),
+        (
+            (
+                "version:     v1.0.0-beta.16\ncommit:      2d95ef98\ndirty:       no\n"
+                "platform:    windows(10.0.22631)/amd64\n"
+                "runner-host: docker-container://dagger-engine\n"
+            ),
+            "1.0.0-beta.16",
+        ),
+    ],
+)
+def test_actual_tool_files_are_required_and_scoped(
+    tmp_path, monkeypatch, output, version
+):
     monkeypatch.setattr(release, "require_evidence", lambda _: None)
     for name in ("core", "ruff", "pytest", "security"):
         (tmp_path / name).mkdir()
     records = facts()["tools"]
+    for item in records:
+        if item["name"] == "dagger":
+            item["version"] = version
     for scope in ("core", "ruff"):
         evidence.write(
             tmp_path / scope / "tool-versions.json",
             [item for item in records if item["scope"] == scope],
         )
-    (tmp_path / "pytest/dagger-version.txt").write_text("dagger v0.21.10 linux/amd64\n")
+    (tmp_path / "pytest/dagger-version.txt").write_text(output)
     (tmp_path / "pytest/remaining-checks.txt").write_text(
         "\n".join(evidence.DAGGER_POLICY_CHECKS.values()) + "\n"
     )
@@ -244,6 +263,29 @@ def test_actual_tool_files_are_required_and_scoped(tmp_path, monkeypatch):
     (tmp_path / "pytest/dagger-version.txt").unlink()
     with pytest.raises(OSError):
         evidence.facts(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "version: v1.0.0-beta.16 token=SECRET",
+        "version: v1.0.0-beta.16\nversion: v0.21.10",
+        "version: main",
+        "commit: 2d95ef98",
+    ],
+)
+def test_dagger_cli_version_rejects_missing_or_ambiguous_output(output):
+    with pytest.raises(ValueError, match="Dagger CLI version unavailable"):
+        evidence.dagger_cli_version(output)
+
+
+def test_dagger_cli_version_does_not_record_runner_credentials():
+    assert (
+        evidence.dagger_cli_version(
+            "version: v1.0.0-beta.16\nrunner-host: tls://user:SECRET@example.invalid\n"
+        )
+        == "1.0.0-beta.16"
+    )
 
 
 @pytest.mark.parametrize(

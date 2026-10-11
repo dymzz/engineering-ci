@@ -62,6 +62,15 @@ def test_missing_configuration_does_not_silently_use_defaults(tmp_path):
         pipeline.load(tmp_path / "missing.toml")
 
 
+def test_dagger_cli_and_engine_pins_match_the_module():
+    version = json.loads((checks.ROOT / "dagger.json").read_text())["engineVersion"]
+    workflow = (checks.ROOT / ".github/workflows/reusable-python-ci.yml").read_text()
+    assert f"DAGGER_VERSION: '{version.removeprefix('v')}'" in workflow
+    assert workflow.count('"registry.dagger.io/engine:v$DAGGER_VERSION"') == 2
+    assert 'BIN_DIR="$RUNNER_TEMP/dagger-bin"' in workflow
+    assert "DAGGER_ENGINE: container://dagger-engine" in workflow
+
+
 def test_pipeline_input_changes_invalidate_old_check_identity(tmp_path):
     path = tmp_path / "config/pipeline.toml"
     path.parent.mkdir()

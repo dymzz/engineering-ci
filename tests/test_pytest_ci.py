@@ -74,6 +74,41 @@ class PytestDeliveryTests(unittest.TestCase):
             path.write_text("<testsuite/>")
             self.assertIsNone(ci.read_xml(path)["diagnostic"])
 
+    def test_real_dagger_one_check_listing_preserves_identity_and_selectors(self):
+        listing = (
+            "--engineering-ci --check=fixture-failure-report # Negative fixture\n"
+            "--engineering-ci --check=fixture-format # Ruff format\n"
+            "--engineering-ci --check=fixture-lint # Ruff lint\n"
+            "--engineering-ci --check=fixture-python-matrix # Python matrix\n"
+            "--engineering-ci --check=fixture-quality-gates # Coverage\n"
+            "--engineering-ci --check=fixture-test # Test fixture\n"
+        )
+        names = ci.remaining_checks(listing, "engineering-ci:fixture-test")
+        self.assertEqual(len(names), 5)
+        self.assertIn("engineering-ci:fixture-quality-gates", names)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "listing.txt").write_text(listing)
+            self.assertEqual(ci.main([
+                "plan", str(root / "listing.txt"), "engineering-ci:fixture-test",
+                str(root / "identities.txt"), "--selectors", str(root / "selectors.txt"),
+            ]), 0)
+            self.assertEqual((root / "identities.txt").read_text().splitlines(), names)
+            self.assertEqual((root / "selectors.txt").read_text().splitlines(), [
+                "dag+check://?module=engineering-ci&check=" + name.split(":")[1]
+                for name in names
+            ])
+
+    def test_dagger_one_invalid_or_ambiguous_listing_is_not_a_plan(self):
+        for listing in (
+            "--engineering-ci --check=fixture-test;echo SECRET",
+            "--engineering-ci --check=fixture-test --skip=fixture-lint",
+            "engineering-ci:fixture-test\n--engineering-ci --check=fixture-test",
+            "--engineering-ci --check=load # Could not load module",
+        ):
+            with self.subTest(listing=listing), self.assertRaises(ValueError):
+                ci.remaining_checks(listing, "engineering-ci:fixture-test")
+
     def test_summary_escaping_and_byte_limit(self):
         data = parser.summarize_pytest("", 1, "")
         data["counts"] = {"tests": 51, "passed": 0, "failures": 51, "errors": 0, "skipped": 0}

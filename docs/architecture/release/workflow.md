@@ -34,7 +34,8 @@ GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与
 只有本项目四处一致的版本值变化时，保留同环境的 Ruff / pytest 结果，重新核验版本和锁文件。
 缺少当前版本证据、源码 / 依赖已变化或结果不完整时仍阻断准入；远程门禁继续绑定实际提交。
 
-完整检查需 Docker 与 Dagger CLI 0.21.10（匹配 dagger.json）。
+完整检查需 Docker 与 Dagger CLI 1.0.0-beta.16（匹配 dagger.json 和 Workflow Engine）。
+安装及 SDK 生成方式见 [Dagger 配置](../../configuration/dagger.md)。
 Release Workflow 的 `dagger check` 已包含 quality 和 matrix fixture。
 
 quality fixture 验证既有显式阈值与失败传播；matrix fixture 实际运行

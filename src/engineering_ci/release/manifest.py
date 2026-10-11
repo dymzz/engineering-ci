@@ -134,6 +134,24 @@ def clean_tools(records):
     return sorted(result, key=lambda item: (item["scope"], item["name"]))
 
 
+def dagger_cli_version(output):
+    """Read only the version from legacy or 1.0 CLI output."""
+    version = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?"
+    legacy = re.fullmatch(rf"dagger v({version})(?: [^\r\n]*)?", output.strip())
+    if legacy:
+        return legacy[1]
+    lines = [line.strip() for line in output.splitlines()]
+    fields = [line for line in lines if line.startswith("version:")]
+    match = (
+        re.fullmatch(rf"version:[ \t]+v({version})", fields[0])
+        if len(fields) == 1
+        else None
+    )
+    if not match:
+        raise ValueError("Dagger CLI version unavailable")
+    return match[1]
+
+
 def facts(directory):
     from .publishing import read_json, require_evidence
 
@@ -143,10 +161,9 @@ def facts(directory):
     dagger = (
         (directory / "pytest/dagger-version.txt").read_text(encoding="utf-8").strip()
     )
-    match = re.fullmatch(r"dagger v([0-9]+\.[0-9]+\.[0-9]+)(?: .*)?", dagger)
-    if not match:
-        raise ValueError("Dagger CLI version unavailable")
-    records.append({"name": "dagger", "version": match[1], "scope": "dagger_cli"})
+    records.append(
+        {"name": "dagger", "version": dagger_cli_version(dagger), "scope": "dagger_cli"}
+    )
     security = read_json(directory / "security/report.json")
     records.append(
         {
