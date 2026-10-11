@@ -186,6 +186,20 @@ FSM 与 `release/pipeline.py` 的 DeliveryPipeline 持有同一个 ExecutionCont
 上下文包含仓库、版本、checkout、实际 Git / PR 事实和不可变阶段证据。
 业务操作产生证据，FSM 只按事件和准入条件改变阶段；后续步骤不能仅凭前一阶段名称认为完成。
 
+实际调用关系为：
+
+```text
+cli/release.py
+  ├─ delivery.prepare()
+  │    ├─ DeliveryPipeline：执行操作、产出及核验阶段证据
+  │    └─ ReleaseLifecycle：共享 ExecutionContext，按证据准入转换阶段
+  └─ 交付获准后调用既有 execution 入口
+       └─ ExecutionCoordinator → GitHub Actions
+```
+
+Pipeline 与交付 FSM 由 `delivery.prepare()` 协调，不能解释为 Pipeline 调用 FSM 再调用
+Coordinator 的串行调度链。配置的具体读取位置见[Pipeline 配置](../../configuration/pipeline.md#实际调用接入)。
+
 | 阶段输出 | 下一阶段必需输入与准入 |
 | --- | --- |
 | 本地检查 | 完整当前 PR profile、每项执行身份、报告 SHA256 与工作区指纹；准入提交 |

@@ -541,7 +541,10 @@ def test_printed_continuation_executes_with_literal_arguments(capsys):
     assert values[:3] == ["run", "--locked", "python"]
 
 
-def test_delivery_delegates_per_check_reuse(repository, monkeypatch):
+@pytest.mark.parametrize("profile", ["pr", "reader-probe"])
+def test_delivery_delegates_configured_profile_and_per_check_reuse(
+    repository, monkeypatch, profile
+):
     path = repository.root / ".test-tools/checks/pr.json"
     calls = []
 
@@ -550,9 +553,13 @@ def test_delivery_delegates_per_check_reuse(repository, monkeypatch):
         return {}, 3
 
     monkeypatch.setattr(checks, "execute", execute)
+    # Substitute the reader input only; the TOML loader still restricts public targets.
+    monkeypatch.setitem(delivery.PIPELINE["delivery"], "checks_profile", profile)
     checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
     assert delivery.current_checks(checkout, path) == 3
-    assert calls == [(["pr"], {"root": repository.root, "output": path, "reuse": True})]
+    assert calls == [
+        ([profile], {"root": repository.root, "output": path, "reuse": True})
+    ]
 
 
 def test_partial_report_does_not_replace_pr_profile(repository, passing_checks):

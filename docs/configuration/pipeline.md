@@ -46,12 +46,31 @@ TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也�
 版本、SHA、Run / Attempt、Manifest 与 Release Asset 的原有核验继续执行。
 若以后增加操作类型，应先映射到已注册的 Python Handler，不直接执行配置中的 shell。
 
+## 实际调用接入
+
+`engineering_ci.pipeline.PIPELINE` 在进程启动时读取和校验配置，其他模块复用该对象。
+配置调整后由新一次命令读取，不提供进程内热重载。
+
+| 读取位置 | 配置如何参与执行 |
+| --- | --- |
+| `release/pipeline.py` 的 `current_checks()` | 将 `delivery.checks_profile` 传给 `checks.execute()`，保留按检查复用有效结果的行为 |
+| `DeliveryPipeline.checked()` 与 `ReleaseLifecycle` | 按对应 `profiles` 的检查清单核验完整证据，不能以部分报告准入 |
+| `release/delivery.py` | 从 `delivery.release.branch` 获取 PR base、fetch 目标及发布分支身份 |
+| `cli/release.py` | 将 `delivery.release.workflow` 传入既有执行入口，绑定 Dispatch 身份与恢复状态；默认分支同样来自配置 |
+| `pipeline.py` 的配置校验 | 校验 `trigger=manual`；实际触发机制仍由已有 Workflow 与 GitHub API 决定 |
+
+当前测试核对调用参数来源及下述证据过期规则，使用可注入的检查执行器和 GitHub 替身，
+不触发真实发布。
+测试替换读取结果用于核对调用来源，不表示生产配置已允许其他 Profile 或 Workflow。
+上下文及实际协调关系见[交付阶段与证据准入](../architecture/release/workflow.md#交付阶段与证据准入)。
+
 核心 pytest 需要 uv、Git、gh，Linux 需要 Bash；aria2 是可选专项。
 aria2 不存在时 native 和 auto 测试仍执行，专项 JUnit 标识为未启用。
 必需测试跳过仍为 incomplete。可执行路径沿用[下载配置](downloads.md)，不在 Pipeline 中复制机器路径。
 
-配置文件和读取模块参与所有检查的输入指纹。更改版本、参数、范围或依赖后，
+配置文件和读取模块参与所有检查的输入指纹。更改版本、参数、范围、依赖或完整 Profile 顺序后，
 旧结果不能作为当前准入依据；检查过程中发生变更也不能产生有效通过记录。
+查询保留原始历史记录，下一次执行只允许复用仍匹配当前身份的结果。
 四处元数据只有一致的本项目版本值变化时，pytest 指纹保留其他全部内容，
 版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。
 运行、结果与环境限制见[本地检查](../architecture/local-checks.md)，阶段证据传递见

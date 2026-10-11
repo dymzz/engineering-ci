@@ -1,6 +1,7 @@
 """Check execution and freshness contracts; child pytest failures remain failures."""
 
 import json
+import re
 import shutil
 import stat
 import subprocess
@@ -8,7 +9,7 @@ import sys
 
 import pytest
 
-from engineering_ci import checks
+from engineering_ci import checks, pipeline
 
 
 def test_optional_backend_config_loads_without_execution_dependencies(tmp_path):
@@ -163,6 +164,60 @@ def test_matching_passes_are_reused_without_running_checks(checkout):
     assert all(
         item["reused"] and item["executed"] and not item["executed_this_invocation"]
         for item in report["checks"]
+    )
+
+
+def test_valid_pipeline_change_expires_and_refreshes_complete_receipt(
+    checkout, monkeypatch
+):
+    path = checkout / "config/pipeline.toml"
+    path.parent.mkdir()
+    original_config = (checks.ROOT / "config/pipeline.toml").read_text(encoding="utf-8")
+    path.write_text(original_config, encoding="utf-8")
+    out = checkout / "result.json"
+    saved, code = checks.execute(
+        ["pr"], root=checkout, run=fake_process(), output=out, environ={}
+    )
+    assert code == checks.inspect(out, root=checkout, environ={})[1] == 0
+
+    order = list(reversed(checks.PR_CHECKS))
+    changed_config = re.sub(
+        r"(?m)^pr = \[.*\]$", "pr = " + json.dumps(order), original_config
+    )
+    path.write_text(changed_config, encoding="utf-8")
+    loaded = pipeline.load(path)
+    assert loaded["profiles"]["pr"] == order
+    current, code = checks.inspect(out, root=checkout, environ={})
+    assert code == 3
+    assert all(entry["freshness"] == "stale" for entry in current["checks"])
+    assert not any(entry["passed_for_current_input"] for entry in current["checks"])
+    assert json.loads(out.read_text()) == saved
+
+    # Model the next invocation's definitions from the validated file.
+    monkeypatch.setattr(
+        checks,
+        "GROUPS",
+        {name: tuple(values) for name, values in loaded["profiles"].items()},
+    )
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return fake_process()(args, **kwargs)
+
+    refreshed, code = checks.execute(
+        [loaded["delivery"]["checks_profile"]],
+        root=checkout,
+        run=run,
+        output=out,
+        environ={},
+        reuse=True,
+    )
+    assert code == 0
+    assert calls == [checks.command(name) for name in order]
+    assert all(
+        entry["executed_this_invocation"] and not entry["reused"]
+        for entry in refreshed["checks"]
     )
 
 
