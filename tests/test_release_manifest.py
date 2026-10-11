@@ -139,7 +139,9 @@ def test_identity_schema_deterministic_and_no_sensitive_output():
     assert "DO_NOT_RECORD" not in evidence.encode(value)
     assert "archive_download_url" not in evidence.encode(value)
     schema = json.loads(
-        (ROOT / "docs/release-manifest.schema.json").read_text(encoding="utf-8")
+        (ROOT / "docs/architecture/release/manifest.schema.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert set(schema["required"]) == set(value)
     assert set(schema["properties"]["checks"]["required"]) == set(value["checks"])
@@ -311,7 +313,9 @@ def test_pagination_preserves_current_attempt():
 
 def test_schema_registry_enums_and_required_contract_do_not_drift():
     schema = json.loads(
-        (ROOT / "docs/release-manifest.schema.json").read_text(encoding="utf-8")
+        (ROOT / "docs/architecture/release/manifest.schema.json").read_text(
+            encoding="utf-8"
+        )
     )
     fields = schema["properties"]
     assert set(fields["checks"]["required"]) == set(evidence.CHECKS) | set(

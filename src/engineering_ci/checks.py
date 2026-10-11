@@ -13,84 +13,26 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ._paths import ROOT
+from .pipeline import PIPELINE
 from .toolchain import PYTHON_VERSION, RUFF_VERSION, UV_VERSION, ruff_command
 
 CI_STEPS = {
-    "ruff-lint": "Ruff Lint",
-    "ruff-format": "Ruff Format Check",
-    "pytest": "Run all core unit and process tests",
-    "version": "Validate release metadata and root lock consistency",
+    name: spec["ci_step"]
+    for name, spec in PIPELINE["checks"].items()
+    if "ci_step" in spec
 }
-RUFF_SCOPE = (
-    "tests/fixtures/python-app",
-    "scripts/release.py",
-    "scripts/download.py",
-    "src/engineering_ci/__init__.py",
-    "src/engineering_ci/checks.py",
-    "src/engineering_ci/toolchain.py",
-    "src/engineering_ci/_paths.py",
-    "src/engineering_ci/cli/__init__.py",
-    "src/engineering_ci/cli/__main__.py",
-    "src/engineering_ci/github_cli.py",
-    "src/engineering_ci/workflow_actions.py",
-    "src/engineering_ci/cli",
-    "src/engineering_ci/release",
-    "src/engineering_ci/tools",
-    "tests/test_release_version.py",
-    "tests/test_manual_release.py",
-    "tests/test_release_manifest.py",
-    "tests/test_release_transport.py",
-    "tests/test_checks.py",
-    "tests/test_unified_cli.py",
-    "tests/test_ci_performance.py",
-    "tests/test_sync_consumer.py",
-)
-PR_CHECKS = ("ruff-lint", "ruff-format", "pytest", "version", "lock")
-GROUPS = {"pr": PR_CHECKS, "ruff": PR_CHECKS[:2], "tests": ("pytest",)}
+RUFF_SCOPE = tuple(PIPELINE["scopes"]["ruff"])
+PR_CHECKS = tuple(PIPELINE["profiles"]["pr"])
+GROUPS = {name: tuple(values) for name, values in PIPELINE["profiles"].items()}
 SCOPES = {
-    "ruff-lint": RUFF_SCOPE,
-    "ruff-format": RUFF_SCOPE,
-    "pytest": (
-        "tests",
-        "src",
-        "scripts",
-        ".dagger/src",
-        ".python-version",
-        ".github/workflows",
-        ".dagger/pyproject.toml",
-        ".dagger/uv.lock",
-        "dagger.json",
-        ".dagger/dagger.json",
-        "docs/release-manifest.schema.json",
-    ),
-    "version": (
-        "src/engineering_ci/release/version.py",
-        "src/engineering_ci/release/__init__.py",
-        ".dagger/pyproject.toml",
-        ".dagger/uv.lock",
-    ),
-    "lock": (".python-version", "uv.toml"),
+    name: tuple(PIPELINE["scopes"][spec["scope"]])
+    for name, spec in PIPELINE["checks"].items()
 }
-COMMON_INPUTS = (
-    "src/engineering_ci/__init__.py",
-    "src/engineering_ci/checks.py",
-    "src/engineering_ci/toolchain.py",
-    "src/engineering_ci/_paths.py",
-    "src/engineering_ci/cli/__init__.py",
-    "src/engineering_ci/cli/__main__.py",
-    "src/engineering_ci/workflow_actions.py",
-    ".github/workflows/ci.yml",
-    "pyproject.toml",
-    "uv.lock",
-    "conftest.py",
-    "pytest.ini",
-    "setup.cfg",
-    "tox.ini",
-    "uv.toml",
-)
+COMMON_INPUTS = tuple(PIPELINE["inputs"]["common"])
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".venv", ".git"}
 VERSION = re.compile(r"\b\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9.+-]*)")
 
@@ -99,6 +41,19 @@ class PreconditionError(Exception):
     def __init__(self, status, reason):
         self.status, self.reason = status, reason
         super().__init__(reason)
+
+
+def aria2_executable(root=ROOT, *, which=shutil.which, environ=None):
+    """Resolve the optional integration-test backend using existing download settings."""
+    from .execution.config import load_download_config
+
+    environ = os.environ if environ is None else environ
+    configured = (
+        environ.get("ARIA2C")
+        or load_download_config(environ=environ, project_root=root).executable
+    )
+    path = which(configured)
+    return path if path and Path(path).is_file() else None
 
 
 def selected(selectors):
@@ -120,7 +75,7 @@ def command(name, coverage=False, junit="core-junit.xml"):
             "check",
             "--isolated",
             "--target-version",
-            "py311",
+            PIPELINE["arguments"]["ruff_target"],
             *RUFF_SCOPE,
         ]
     if name == "ruff-format":
@@ -129,7 +84,7 @@ def command(name, coverage=False, junit="core-junit.xml"):
             "format",
             "--isolated",
             "--target-version",
-            "py311",
+            PIPELINE["arguments"]["ruff_target"],
             "--check",
             *RUFF_SCOPE,
         ]
@@ -143,7 +98,7 @@ def command(name, coverage=False, junit="core-junit.xml"):
             "--python",
             PYTHON_VERSION,
             "pytest",
-            "-q",
+            *PIPELINE["arguments"]["pytest"],
             f"--junitxml={junit}",
         ]
         if coverage:
@@ -298,28 +253,6 @@ def preflight(name, root, run, which, environ):
             "version": platform.python_version(),
         }
     }
-    if name == "version":
-        return tools
-    uv = which("uv")
-    if not uv:
-        raise PreconditionError("missing_tool", "uv is required")
-    tools["uv"] = tool(uv, root, run, environ)
-    if tools["uv"]["version"] != UV_VERSION:
-        raise PreconditionError(
-            "environment_error", f"PR parity requires uv {UV_VERSION}"
-        )
-    if name.startswith("ruff-"):
-        uvx = which("uvx")
-        if not uvx:
-            raise PreconditionError("missing_tool", "uvx is required")
-        args = ruff_command("--version")
-        args[0] = uvx
-        text = probe(args, root, run, environ)
-        if not re.fullmatch(rf"ruff {re.escape(RUFF_VERSION)}\s*", text):
-            raise PreconditionError(
-                "environment_error", "Pinned Ruff version could not be verified"
-            )
-        tools["ruff"] = {"executable": uvx, "version": RUFF_VERSION}
     if name == "pytest":
         for key in (
             "PYTEST_ADDOPTS",
@@ -330,22 +263,38 @@ def preflight(name, root, run, which, environ):
                 raise PreconditionError(
                     "environment_error", f"Unset {key} for the PR pytest definition"
                 )
-        for dependency in ("aria2c", "git", "gh"):
-            path = environ.get("ARIA2C") if dependency == "aria2c" else None
-            path = path or which(dependency)
-            if not path or not Path(path).is_file():
-                raise PreconditionError(
-                    "missing_tool",
-                    f"{dependency} is required; ARIA2C must name an executable file",
-                )
-            tools[dependency] = tool(path, root, run, environ)
-        if os.name != "nt":
-            bash = which("bash")
-            if not bash:
-                raise PreconditionError(
-                    "missing_tool", "bash is required for Linux process tests"
-                )
-            tools["bash"] = tool(bash, root, run, environ)
+    spec = PIPELINE["checks"][name]
+    required = spec["required_tools"] + (spec["linux_tools"] if os.name != "nt" else [])
+    for dependency in required:
+        path = which(dependency)
+        if not path or (
+            dependency in {"git", "gh", "bash"} and not Path(path).is_file()
+        ):
+            raise PreconditionError("missing_tool", f"{dependency} is required")
+        tools[dependency] = tool(path, root, run, environ)
+    uv = tools.get("uv", {}).get("executable")
+    if uv and tools["uv"]["version"] != UV_VERSION:
+        raise PreconditionError(
+            "environment_error", f"PR parity requires uv {UV_VERSION}"
+        )
+    if name.startswith("ruff-"):
+        uvx = tools["uvx"]["executable"]
+        args = ruff_command("--version")
+        args[0] = uvx
+        text = probe(args, root, run, environ)
+        if not re.fullmatch(rf"ruff {re.escape(RUFF_VERSION)}\s*", text):
+            raise PreconditionError(
+                "environment_error", "Pinned Ruff version could not be verified"
+            )
+        tools["ruff"] = {"executable": uvx, "version": RUFF_VERSION}
+    if name == "pytest":
+        if "aria2" in spec["optional_backends"]:
+            optional = aria2_executable(root, which=which, environ=environ)
+            tools[PIPELINE["optional_backends"]["aria2"]["tool"]] = (
+                tool(optional, root, run, environ)
+                if optional
+                else {"status": "not_enabled"}
+            )
         args = [
             uv,
             "run",
@@ -403,6 +352,25 @@ def pytest_counts(root, junit, exit_code):
         raise ValueError("JUnit exceeds the existing report reader limit")
     return module.summarize_pytest(path.read_text(encoding="utf-8"), exit_code, "")[
         "counts"
+    ]
+
+
+def optional_pytest_skips(root, junit):
+    """Read explicit optional aria2 skips from JUnit; other skips remain incomplete."""
+    path = root / junit
+    if path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("JUnit exceeds the existing report reader limit")
+    tree = ET.parse(path)
+    return [
+        f"{case.get('classname', '')}::{case.get('name', '')}"
+        for case in tree.iter("testcase")
+        if case.find("skipped") is not None
+        and any(
+            prop.get("name") == PIPELINE["optional_backends"]["aria2"]["junit_property"]
+            and prop.get("value")
+            == PIPELINE["optional_backends"]["aria2"]["junit_value"]
+            for prop in case.findall("properties/property")
+        )
     ]
 
 
@@ -541,6 +509,7 @@ def execute(
                 if (
                     counts is None
                     or not counts["tests"]
+                    or not counts["passed"]
                     or counts["errors"]
                     or counts["failures"]
                 ):
@@ -550,11 +519,20 @@ def execute(
                     )
                 entry["counts"] = counts
                 if counts["skipped"]:
-                    entry.update(
-                        status="incomplete",
-                        reason="Tests were skipped; use the Linux CI environment (WSL2 on Windows) for complete parity",
-                    )
-                    code = 3
+                    optional = optional_pytest_skips(root, junit)
+                    if optional:
+                        entry["optional_tests"] = {
+                            "aria2": {"status": "not_enabled", "tests": optional}
+                        }
+                        print(
+                            f"[pytest] Optional aria2 integration: not enabled ({len(optional)} tests skipped)"
+                        )
+                    if counts["skipped"] != len(optional):
+                        entry.update(
+                            status="incomplete",
+                            reason="Required tests were skipped; inspect JUnit and the execution environment",
+                        )
+                        code = 3
             completed_observations[name] = after_observations
             entry["passed_for_current_input"] = entry["status"] == "passed" and stable
             codes.append(code)
@@ -590,6 +568,8 @@ def execute(
         print(
             f"[{name}] {entry['status']} (tool exit: {entry['exit_code']})", flush=True
         )
+        if entry.get("reason"):
+            print(f"[{name}] {entry['reason']}", flush=True)
         save()
     # A later check must not make an earlier success stale while the profile is running.
     for entry in report["checks"]:
@@ -651,6 +631,8 @@ def inspect(path, *, root=ROOT, run=subprocess.run, which=shutil.which, environ=
             "freshness": "not_run",
             "passed_for_current_input": False,
         }
+        if entry.get("reason"):
+            current["reason"] = entry["reason"]
         previous = entry.get("identity")
         if entry.get("executed") is True and previous:
             try:

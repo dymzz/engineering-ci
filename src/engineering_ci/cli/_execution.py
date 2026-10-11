@@ -4,10 +4,11 @@ import argparse
 import sys
 
 
-def add_wait_arguments(parser: argparse.ArgumentParser) -> None:
+def add_wait_arguments(parser: argparse.ArgumentParser, *, include_state=True) -> None:
     parser.add_argument("--interval", type=float, default=10)
     parser.add_argument("--timeout", type=int, default=2700)
-    parser.add_argument("--show-state", action="store_true")
+    if include_state:
+        parser.add_argument("--show-state", action="store_true")
 
 
 def add_runtime_arguments(p: argparse.ArgumentParser) -> None:
@@ -81,11 +82,22 @@ def dependency_error(error: ModuleNotFoundError) -> int:
     return 2
 
 
-def invoke_execution(args, *, collect_outputs=True):
+def invoke_execution(args, *, collect_outputs=True, restart_finished=False):
     try:
         from ..execution.cli import entrypoint
 
-        return entrypoint(args, collect_outputs=collect_outputs)
+        return entrypoint(
+            args, collect_outputs=collect_outputs, restart_finished=restart_finished
+        )
+    except ModuleNotFoundError as error:
+        return dependency_error(error)
+
+
+def execution_environment():
+    try:
+        from ..execution import cli
+
+        return 0 if cli else 2
     except ModuleNotFoundError as error:
         return dependency_error(error)
 

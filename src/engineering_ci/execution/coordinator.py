@@ -36,7 +36,7 @@ class ExecutionCoordinator:
         self.store.save(updated)
         self._record = updated
 
-    def execute(self, *, resume: str | None = None, new_run=False,
+    def execute(self, *, resume: str | None = None, new_run=False, restart_finished=False,
                 legacy_paths=()) -> ExecutionResult:
         with self.store.lock():
             self._record = self.store.load()
@@ -48,6 +48,9 @@ class ExecutionCoordinator:
                 if self._record and self.record.phase not in ('FINISHED', 'REJECTED'):
                     print(f'WARNING: --new-run abandons {self.record.phase}; check GitHub for duplicates')
                 self._record = None
+            if (restart_finished and resume is None and self._record
+                    and self.record.phase in ('FINISHED', 'REJECTED')):
+                self._record = None  # An explicit validate/publish request may follow a known completed attempt.
             explicit_id = int(resume) if resume not in (None, 'last') else None
             if explicit_id is not None:
                 self.client.get_run(self.identity, explicit_id)

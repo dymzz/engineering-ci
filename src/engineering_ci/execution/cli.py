@@ -51,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None, *, collect_outputs=True) -> int:
+def main(argv=None, *, collect_outputs=True, restart_finished=False) -> int:
     p = parser()
     args = p.parse_args(argv)
     if args.repo and not REPO_PATTERN.fullmatch(args.repo):
@@ -114,15 +114,16 @@ def main(argv=None, *, collect_outputs=True) -> int:
     coordinator = ExecutionCoordinator(store, client, collector,
                                        identity, collection, inputs, timeout=args.timeout,
                                        interval=args.interval)
-    result = coordinator.execute(resume=args.resume, new_run=args.new_run, legacy_paths=legacy_paths)
+    result = coordinator.execute(resume=args.resume, new_run=args.new_run, legacy_paths=legacy_paths,
+                                 restart_finished=restart_finished)
     print(f'Finished run {result.run_id} ({result.remote_conclusion}); state: {store.path}')
     print(f'Run URL: https://github.com/{repo}/actions/runs/{result.run_id}', flush=True)
     return result.exit_code
 
 
-def entrypoint(argv=None, *, collect_outputs=True) -> int:
+def entrypoint(argv=None, *, collect_outputs=True, restart_finished=False) -> int:
     try:
-        return main(argv, collect_outputs=collect_outputs)
+        return main(argv, collect_outputs=collect_outputs, restart_finished=restart_finished)
     except (ExecutionError, OSError, ValueError) as exc:
         print(f'Error: {exc}', file=sys.stderr)
         return 1

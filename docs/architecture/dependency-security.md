@@ -117,7 +117,7 @@ itself need network/interpreter metadata; its timing is measured separately.
 
 ## Native finite exceptions
 
-The commented [example](../config/osv-scanner.example.toml) enables nothing.
+The commented [example](../../config/osv-scanner.example.toml) enables nothing.
 Native `[[IgnoredVulns]]` entries require an exact CVE/GHSA/PYSEC ID, a nonempty
 reason and `ignoreUntil` as a UTC timestamp or date. Dates expire at 00:00 UTC.
 Only unexpired entries are forwarded; OSV performs native alias handling.

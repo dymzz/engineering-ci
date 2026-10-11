@@ -1,8 +1,10 @@
 """Tool versions used by the local checks and Actions bootstrap."""
 
-UV_VERSION = "0.12.23"
-RUFF_VERSION = "0.16.10"
-PYTHON_VERSION = "3.14"
+from .pipeline import PIPELINE
+
+UV_VERSION = PIPELINE["toolchain"]["uv"]
+RUFF_VERSION = PIPELINE["toolchain"]["ruff"]
+PYTHON_VERSION = PIPELINE["toolchain"]["python"]
 
 
 def ruff_command(*arguments):

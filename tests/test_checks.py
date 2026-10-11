@@ -133,7 +133,7 @@ def test_failure_does_not_skip_other_requested_checks(checkout):
     )
 
 
-def test_missing_tool_is_not_executed_and_saves_results(checkout, monkeypatch):
+def test_missing_tool_is_not_executed_and_saves_results(checkout, monkeypatch, capsys):
     def absent(*args):
         raise checks.PreconditionError("missing_tool", "uv is required")
 
@@ -147,6 +147,10 @@ def test_missing_tool_is_not_executed_and_saves_results(checkout, monkeypatch):
         and entry["exit_code"] is None
         for entry in report["checks"]
     )
+    assert "[ruff-lint] uv is required" in capsys.readouterr().out
+    result, status = checks.inspect(out, root=checkout, environ={})
+    assert status == 3
+    assert all(entry["reason"] == "uv is required" for entry in result["checks"])
 
 
 def test_real_missing_executable_is_not_recorded_as_executed(checkout, monkeypatch):
@@ -216,16 +220,28 @@ def test_real_preflight_distinguishes_tool_and_environment(monkeypatch, tmp_path
     assert error.value.status == "environment_error"
 
 
-def test_invalid_aria2_directory_and_pytest_overrides_are_explicit(
+def test_pytest_allows_absent_optional_aria2_and_rejects_selection_overrides(
     monkeypatch, tmp_path
 ):
     monkeypatch.setattr(
         checks, "tool", lambda *args: {"executable": "uv", "version": checks.UV_VERSION}
     )
-    with pytest.raises(checks.PreconditionError, match="aria2c"):
-        checks.preflight(
-            "pytest", tmp_path, None, lambda _: "uv", {"ARIA2C": str(tmp_path)}
-        )
+    monkeypatch.setattr(
+        checks,
+        "probe",
+        lambda *args: json.dumps(
+            {"python": "3.14.8", "pytest": "9.0.3", "pytest-cov": "7.0.0"}
+        ),
+    )
+    tools = checks.preflight(
+        "pytest",
+        tmp_path,
+        None,
+        lambda name: None if name in ("aria2c", str(tmp_path)) else sys.executable,
+        {"ARIA2C": str(tmp_path)},
+    )
+    assert tools["aria2c"] == {"status": "not_enabled"}
+    assert tools["python"]["version"] == "3.14.8"
     with pytest.raises(checks.PreconditionError, match="PYTEST_ADDOPTS"):
         checks.preflight(
             "pytest",
@@ -234,6 +250,22 @@ def test_invalid_aria2_directory_and_pytest_overrides_are_explicit(
             lambda _: "uv",
             {"PYTEST_ADDOPTS": "--ignore=tests"},
         )
+
+
+def test_optional_aria2_uses_existing_local_config(tmp_path):
+    executable = tmp_path / "tools/aria2c.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"fixture")
+    config = tmp_path / "config/ghwf.local.toml"
+    config.parent.mkdir()
+    config.write_text('[download]\nbackend="auto"\naria2c_path="tools/aria2c.exe"\n')
+    assert checks.aria2_executable(
+        tmp_path, environ={}, which=lambda path: path
+    ) == str(executable)
+    executable.unlink()
+    assert (
+        checks.aria2_executable(tmp_path, environ={}, which=lambda path: path) is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -245,7 +277,7 @@ def test_invalid_aria2_directory_and_pytest_overrides_are_explicit(
         "src/engineering_ci/checks.py",
         ".github/workflows/release.yml",
         ".dagger/pyproject.toml",
-        "docs/release-manifest.schema.json",
+        "docs/architecture/release/manifest.schema.json",
     ],
 )
 def test_changed_and_untracked_inputs_expire_old_pass(checkout, file):
@@ -340,6 +372,48 @@ def test_skipped_tests_do_not_claim_complete_parity(checkout, monkeypatch):
     )
     assert code == 3 and report["checks"][0]["status"] == "incomplete"
     assert report["checks"][0]["exit_code"] == 0
+
+
+@pytest.mark.parametrize("required_skip", [False, True])
+def test_real_pytest_only_explicit_optional_aria2_skips_do_not_block_core(
+    checkout, monkeypatch, required_skip
+):
+    sample = checkout / "tests/test_optional.py"
+    sample.write_text(
+        "import pytest\n"
+        "def test_core():\n    assert 1 == 1\n"
+        "def test_optional(request):\n"
+        "    request.node.user_properties.append(('engineering_ci.optional_backend', 'aria2'))\n"
+        "    pytest.skip('Optional aria2 unavailable')\n"
+        "def test_required():\n"
+        + (
+            "    pytest.skip('Required environment unavailable')\n"
+            if required_skip
+            else "    assert True\n"
+        )
+    )
+    monkeypatch.setattr(
+        checks,
+        "command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            str(sample),
+            "--junitxml=core-junit.xml",
+        ],
+    )
+    report, code = checks.execute(["tests"], root=checkout)
+    entry = report["checks"][0]
+    assert code == (3 if required_skip else 0)
+    assert entry["status"] == ("incomplete" if required_skip else "passed")
+    assert entry["exit_code"] == 0
+    assert entry["optional_tests"]["aria2"]["status"] == "not_enabled"
+    assert entry["optional_tests"]["aria2"]["tests"] == [
+        "tests.test_optional::test_optional"
+    ]
+    assert entry["passed_for_current_input"] is not required_skip
 
 
 def test_missing_junit_does_not_reuse_an_old_success(checkout):

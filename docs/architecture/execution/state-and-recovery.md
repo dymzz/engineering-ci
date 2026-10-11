@@ -1,6 +1,6 @@
 # ghwf 执行与恢复组件
 
-`scripts/download.py` 是已有 Run 的下载入口；发布请求使用 `scripts/release.py`。普通 Workflow Dispatch 参数保留在 `engineering_ci.execution.cli`。旧 PowerShell 函数迁移见 [入口说明](../scripts/README.md)。
+`scripts/download.py` 是已有 Run 的下载入口；发布请求使用 `scripts/release.py`。普通 Workflow Dispatch 参数保留在 `engineering_ci.execution.cli`，本文的 `--new-run` 仅属于该底层接口。当前命令及旧 PowerShell 函数迁移见 [使用说明](../../../guides/README.md)。
 实现放在 `src/engineering_ci/execution/`，用于一次性执行与恢复；没有后台服务、数据库或任务队列。
 执行 FSM、下载实现和消费者契约保持不变；Workflow 内部入口迁移不改变原有门禁。
 
@@ -25,7 +25,7 @@ src/engineering_ci/execution/
   archive.py                    ZIP 校验、受限暂存解压
   collector.py                  ArtifactCollector：日志及 Artifact 完成条件
   repository.py                 原有 Git origin 识别及仓库缓存规则
-docs/ghwf-state.schema.json      状态 Schema v2
+docs/architecture/execution/state.schema.json      状态 Schema v2
 tests/test_execution_state.py    P0-1
 tests/test_http_download.py      P0-2，本地 HTTP + 真实 aria2c
 tests/test_archive.py            P0-2
@@ -50,8 +50,8 @@ Git、Git LFS、Docker / Dagger 将来可按此边界扩展；本轮没有空壳
 
 | 当前状态 | 事件 → 目标 | 恢复行为 |
 | --- | --- | --- |
-| INIT | validate → VALIDATED；attach_run → RUNNING | 校验目标；显式恢复 ID 要先核对所属仓库 / Workflow |
-| VALIDATED | dispatch → DISPATCHING | 再次校验目标后保存意图，才允许 POST |
+| INIT | validate → VALIDATED；attach_run → RUNNING | 校验目标；显式恢复 ID 必须匹配所属仓库 / Workflow |
+| VALIDATED | dispatch → DISPATCHING | 校验当前目标并保存 Dispatch 意图，才允许 POST |
 | DISPATCHING | attach_run → RUNNING；reject → REJECTED；uncertain → UNKNOWN | 重启时进入 UNKNOWN，不自动再 POST |
 | UNKNOWN | attach_run → RUNNING | 人工核验后指定 `--resume RUN_ID` |
 | REJECTED | 无自动状态跳转 | 修正配置后新建 INIT 请求；不会当成 UNKNOWN |
@@ -92,7 +92,7 @@ Collection 身份含绝对输出目录、Artifact 选择、日志选项和是否
 JSON 在同目录临时文件中写完并 flush/fsync，再 `os.replace`，失败保留上一版状态。
 文件锁由操作系统管理，进程崩溃后释放。
 
-完整字段约束见 [ghwf-state.schema.json](ghwf-state.schema.json)。示例：
+完整字段约束见 [状态 Schema](state.schema.json)。示例：
 
 ```json
 {
@@ -212,7 +212,7 @@ python -m pip install transitions==0.9.3 filelock==3.20.3 pytest==9.0.3
 
 GitHub CLI 从[官方安装入口](https://cli.github.com/)安装，然后 `gh auth login`。
 默认 `auto` 检测 aria2c；未安装时使用 Python 标准库 HTTP 下载。
-后端选择、恢复限制及 Windows/Linux 环境变量示例见[下载配置](ghwf-downloads.md)。
+后端选择、恢复限制及 Windows/Linux 环境变量示例见[下载配置](../../configuration/downloads.md)。
 可选 aria2 Windows 便携包为
 [官方 1.37.0 ZIP](https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip)，
 解压后把目录加入 PATH，或用 `--aria2c D:\tools\aria2\aria2c.exe`。
@@ -278,7 +278,7 @@ uv run --locked pytest -q
 
 HTTP 集成测试使用 PATH 中的 aria2c；也可指定 `$env:ARIA2C = 'D:\tools\aria2\aria2c.exe'`。
 没有 aria2c 时两项真实 HTTP 测试会 skip；验收要求它们实际运行。
-本轮的阶段记录及最终锁定环境结果见 [ghwf-validation.md](ghwf-validation.md)。
+本轮的阶段记录及最终锁定环境结果见 [执行验证记录](../../verification/execution-validation.md)。
 
 | 要求的故障场景 | 测试位置 |
 | --- | --- |
@@ -299,7 +299,7 @@ HTTP 集成测试使用 PATH 中的 aria2c；也可指定 `$env:ARIA2C = 'D:\too
 | 15 v1 状态、原输出、旧参数 | CLI + state + integration |
 | 16 非法 FSM 事件 | state |
 
-真实 E2E 只提供入口，本轮没有运行。先用已有 Run 验收：
+初次实现时未运行真实 E2E。现有入口支持指定已有 Run：
 
 ```powershell
 uv run --locked python -m engineering_ci.tools.workflow_e2e --repo owner/repo --workflow build.yml `

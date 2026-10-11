@@ -64,7 +64,7 @@ native 无 Range 请求，不模拟分段下载，也不会报告已经字节续
 ## Windows PowerShell
 
 可参考或点入 `config/ghwf.windows.env.example.ps1`。
-环境变量只对当前 shell 及其子进程生效。旧 ghwf 函数需按 [入口迁移说明](../scripts/README.md#旧-powershell-函数迁移) 更新为 download.py。
+环境变量只对当前 shell 及其子进程生效。旧 ghwf 函数需按 [入口迁移说明](../../guides/common-tasks.md#旧-powershell-函数迁移) 更新为 download.py。
 
 ```powershell
 $env:GHWF_DOWNLOAD_BACKEND = "auto"

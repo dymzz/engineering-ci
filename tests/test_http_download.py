@@ -1,7 +1,6 @@
 """P0-2: real aria2 against local HTTP servers; no GitHub calls."""
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import threading
@@ -12,20 +11,20 @@ from pathlib import Path
 
 import pytest
 
+from engineering_ci import checks
 from engineering_ci.execution.download import (DownloadAdapter, DownloadConfig,
     DownloadAddressExpired, HTTPMetadata, RecoverableError, ResourceChanged)
 from engineering_ci.execution.github import CommandResult
 from engineering_ci.execution.transport import ResourceIdentity
 
 
-def aria2_executable():
-    if os.environ.get('ARIA2C'):
-        return os.environ['ARIA2C']
-    found = shutil.which('aria2c')
-    portable = list((Path(__file__).resolve().parents[1] / '.test-tools').rglob('aria2c.exe'))
-    if found or portable:
-        return found or str(portable[0])
-    pytest.skip('aria2c is required for the HTTP integration tests; set ARIA2C')
+def aria2_executable(request):
+    found = checks.aria2_executable(Path(__file__).resolve().parents[1])
+    if found:
+        return found
+    spec = checks.PIPELINE['optional_backends']['aria2']
+    request.node.user_properties.append((spec['junit_property'], spec['junit_value']))
+    pytest.skip('Optional aria2 backend integration is not enabled; native and auto fallback tests still run')
 
 
 @contextmanager
@@ -75,8 +74,8 @@ def http_server(*, ranged=True, slow=True):
 
 
 @pytest.mark.parametrize('ranged', [True, False])
-def test_native_progress_resume_and_range_fallback(tmp_path, ranged):
-    config = DownloadConfig(connections=2, executable=aria2_executable(), process_timeout=30)
+def test_native_progress_resume_and_range_fallback(tmp_path, ranged, request):
+    config = DownloadConfig(connections=2, executable=aria2_executable(request), process_timeout=30, backend='aria2')
     target = tmp_path / 'download.zip'
     adapter = DownloadAdapter(config)
     with http_server(ranged=ranged) as (url, payload, requests, interrupt):
