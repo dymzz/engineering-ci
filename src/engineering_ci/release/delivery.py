@@ -360,6 +360,17 @@ def handoff(checkout, context, *, require_head=True, execution=None):
             "Review the linked PR, mark its Draft ready when appropriate, and merge it in GitHub."
         )
         print(
+            f"Stopped at human review: PR #{pr['number']} is still open; repeating publish cannot merge it."
+        )
+        if pr.get("isDraft"):
+            print(
+                f"After review, mark ready: gh pr ready {pr['number']} --repo {checkout.repository}"
+            )
+        print(
+            f"Human merge after approval: gh pr merge {pr['number']} --repo {checkout.repository} "
+            f"--squash --match-head-commit {state['headRefOid']} --delete-branch"
+        )
+        print(
             f"After merge, continue: uv run --locked python scripts/release.py publish "
             f"--repo {checkout.repository} --version v{context['version']}"
         )

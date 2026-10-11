@@ -485,7 +485,10 @@ def main(argv=None):
             if not options.resume:
                 result = prepare_publication(options)
                 if result:
-                    continue_command(options)
+                    # The review handoff already names the next human action.
+                    phase = getattr(getattr(options, "lifecycle", None), "phase", None)
+                    if phase != "REVIEW_waiting":
+                        continue_command(options)
                     return result
         identity = resolve_target(api, getattr(options, "ref", "main"), options.version)
         if options.command == "publish" and getattr(options, "lifecycle", None):

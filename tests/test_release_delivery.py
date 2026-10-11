@@ -577,6 +577,44 @@ def test_waiting_for_review_never_dispatches_a_workflow(monkeypatch, capsys):
     assert cli.main(["publish", "--version", VERSION]) == 3
 
 
+@pytest.mark.parametrize("conclusion", ["SUCCESS", "FAILURE", "SKIPPED", "IN_PROGRESS"])
+def test_cli_review_stop_has_no_unconditional_publish_retry(
+    repository, passing_checks, monkeypatch, capsys, conclusion
+):
+    invoke(repository, include_all=True, message="Delivered")
+    capsys.readouterr()
+    original = repository.run
+
+    def run(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[:3] == ["gh", "pr", "view"]:
+            value = json.loads(result.stdout)
+            value["statusCheckRollup"] = [
+                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+            ]
+            result.stdout = json.dumps(value)
+        return result
+
+    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=run)
+    monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+    monkeypatch.setattr(cli.verification, "published", lambda *args: None)
+    monkeypatch.setattr(
+        cli, "entrypoint", lambda *args: pytest.fail("No dispatch before merge")
+    )
+    assert cli.main(["publish", "--version", VERSION, "--all", "-m", "Delivered"]) == 3
+    output = capsys.readouterr().out
+    assert checkout.lifecycle.phase == "REVIEW_waiting"
+    assert not any(line.startswith("Continue:") for line in output.splitlines())
+    assert ("Human merge after approval:" in output) is (conclusion == "SUCCESS")
+    if conclusion == "SUCCESS":
+        assert f"--match-head-commit {repository.git('rev-parse', 'HEAD')}" in output
+        assert "After merge, continue:" in output
+        assert "repeating publish cannot merge it" in output
+    assert passing_checks == [["pr"]]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in repository.calls)
+
+
 @pytest.mark.parametrize("flag", ["-m", "--message"])
 def test_publish_uses_native_git_option_names(monkeypatch, capsys, flag):
     monkeypatch.setattr(cli, "execution_environment", lambda: 0)

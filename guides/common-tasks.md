@@ -54,6 +54,9 @@ CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR�
 
 人工合并属于上述流程。入口不会自动合并，也不会绕过检查。
 已经推送、没有新改动且 PR 尚未合并时，重复 `publish` 只显示停点，不重复本地测试或 Push。
+此时下一步是人工审查 PR，不是再次运行 publish。必需 CI 通过且可合并时，输出带实际 PR 号的
+Ready / Merge 命令；Merge 用 --match-head-commit 绑定当前已检查的 PR SHA。
+只有人工完成合并后，才执行输出中 `After merge, continue` 的发布命令。
 
 人工合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
 
