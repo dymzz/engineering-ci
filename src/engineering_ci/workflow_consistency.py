@@ -1,4 +1,4 @@
-"""Validate fixed GitHub DAG bindings against the shared Pipeline definition."""
+"""Validate cross-layer contracts and release guards; YAML owns the Workflow DAG."""
 
 from __future__ import annotations
 
@@ -66,6 +66,48 @@ def _step(job, name):
     return found[0]
 
 
+def _step_id(job, identity):
+    found = [step for step in job.get("steps", []) if step.get("id") == identity]
+    _require(len(found) == 1, f"exactly one Step with id {identity}")
+    return found[0]
+
+
+def _read_only(job, defaults, location):
+    """Extra jobs may evolve, but cannot acquire publication write permissions."""
+    permissions = job.get("permissions", defaults)
+    _require(
+        permissions == "read-all"
+        or isinstance(permissions, dict)
+        and all(value in {"read", "none"} for value in permissions.values()),
+        location,
+    )
+
+
+def _artifact_output(job, output, name):
+    """Follow a declared output to its upload Step without fixing the Step's label."""
+    reference = job.get("outputs", {}).get(output, "")
+    match = re.fullmatch(
+        r"\$\{\{\s*steps\.([\w-]+)\.outputs\.artifact-id\s*\}\}", reference
+    )
+    _require(match is not None, f"{name} Artifact output")
+    step = _step_id(job, match[1])
+    _require(
+        step.get("uses", "").startswith("actions/upload-artifact@")
+        and step.get("with", {}).get("name") == name,
+        f"{name} Artifact producer",
+    )
+
+
+def _artifact_input(job, reference, location):
+    found = [
+        step
+        for step in job.get("steps", [])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+        and step.get("with", {}).get("artifact-ids") == reference
+    ]
+    _require(len(found) == 1, location)
+
+
 def _command(step, expected, location):
     _require(
         "if" not in step
@@ -77,8 +119,7 @@ def _command(step, expected, location):
 
 
 def _toolchain(job, *, python=False):
-    reader = _step(job, "Read unified toolchain")
-    _require(reader.get("id") == "check_toolchain", "toolchain output identity")
+    reader = _step_id(job, "check_toolchain")
     _command(
         reader,
         'python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"',
@@ -115,7 +156,7 @@ def _toolchain(job, *, python=False):
 
 def validate(*, root=ROOT, config=None, environment=None):
     """Fail before release operations when YAML cannot implement the configured policy."""
-    from .release.registry import CHECKS
+    from .release.registry import ARTIFACT_OUTPUTS, CHECKS, RELEASE_DEPENDENCIES
 
     config = PIPELINE if config is None else config
     release_config = config["delivery"]["release"]
@@ -135,20 +176,23 @@ def validate(*, root=ROOT, config=None, environment=None):
         for event in ("push", "pull_request"):
             _require(ci["on"][event] == {"branches": [branch]}, f"CI {event} branch")
         _require(
-            set(ci["jobs"]) == {"python-ci", "sync-tool-tests", "version-metadata"},
+            {"python-ci", "sync-tool-tests", "version-metadata"} <= ci["jobs"].keys(),
             "existing PR Job identities",
         )
         jobs = {}
         for job_id, job in ci["jobs"].items():
+            _read_only(job, ci["permissions"], f"CI Job {job_id} permissions")
             name = job.get("name", job_id)
+            _require(name not in jobs, f"unique CI Job {name}")
+            jobs[name] = job
+            if job_id not in {"python-ci", "sync-tool-tests", "version-metadata"}:
+                continue
             _require(
-                name not in jobs
-                and "if" not in job
+                "if" not in job
                 and "continue-on-error" not in job
                 and "strategy" not in job,
                 f"required CI Job {job_id}",
             )
-            jobs[name] = job
             _toolchain(job, python=job_id != "python-ci")
         groups = {}
         for name, spec in config["checks"].items():
@@ -156,15 +200,9 @@ def validate(*, root=ROOT, config=None, environment=None):
         for (job_name, step_name), names in groups.items():
             step = _step(jobs[job_name], step_name)
             if set(names) == {"pytest"}:
-                expected = '''set -euo pipefail
-args=()
-if [[ "$EXPORT_COVERAGE" == 'true' ]]; then
-  args+=(--coverage)
-fi
-python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"'''
+                expected = "python3 -m engineering_ci.workflow_actions checks tests --coverage-from-env"
                 _require(
-                    step.get("shell") == "bash"
-                    and step.get("env", {}).get("EXPORT_COVERAGE")
+                    step.get("env", {}).get("EXPORT_COVERAGE")
                     == "${{ inputs.coverage }}",
                     "core coverage invocation",
                 )
@@ -195,6 +233,11 @@ python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"'''
                 call["outputs"][output]["value"]
                 == f"${{{{ jobs.{job}.outputs.artifact_id }}}}",
                 f"CI {output}",
+            )
+            _artifact_output(
+                ci["jobs"][job],
+                "artifact_id",
+                "core-tests" if output == "core_artifact_id" else "release-tools-ruff",
             )
 
         _require(
@@ -231,24 +274,22 @@ python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"'''
             release["concurrency"]["cancel-in-progress"] is False,
             "serial Release operations",
         )
-        required_needs = {
-            "candidate": [],
-            "core-tests": ["candidate"],
-            "complete-ci": ["candidate"],
-            "evidence": ["candidate", "core-tests", "complete-ci"],
-            "verified": ["candidate", "core-tests", "complete-ci", "evidence"],
-            "publish": ["candidate", "verified"],
-        }
         _require(
-            set(release["jobs"]) == set(required_needs),
+            RELEASE_DEPENDENCIES.keys() <= release["jobs"].keys(),
             "existing Release Job identities",
         )
-        for job_id, needs in required_needs.items():
+        for job_id, job in release["jobs"].items():
+            if job_id != "publish":
+                _read_only(job, release["permissions"], f"{job_id} permissions")
+        for job_id, needs in RELEASE_DEPENDENCIES.items():
             job = release["jobs"][job_id]
             actual = job.get("needs", [])
             actual = [actual] if isinstance(actual, str) else actual
             _require(
-                len(actual) == len(needs) and set(actual) == set(needs),
+                isinstance(actual, list)
+                and all(isinstance(value, str) for value in actual)
+                and len(actual) == len(set(actual))
+                and needs <= set(actual),
                 f"{job_id} dependencies",
             )
             _require(
@@ -277,6 +318,21 @@ python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"'''
             _require(
                 release["jobs"][job_id]["uses"] == f"./.github/workflows/{workflow}",
                 f"{job_id} candidate-local Workflow",
+            )
+        for name, (producer, output) in ARTIFACT_OUTPUTS.items():
+            reference = f"${{{{ needs.{producer}.outputs.{output} }}}}"
+            _artifact_input(
+                release["jobs"]["evidence"], reference, f"{name} Artifact input"
+            )
+        for producer, output, name, consumer in (
+            ("evidence", "facts_artifact_id", "release-facts", "verified"),
+            ("verified", "manifest_artifact_id", "release-manifest", "publish"),
+        ):
+            _artifact_output(release["jobs"][producer], output, name)
+            _artifact_input(
+                release["jobs"][consumer],
+                f"${{{{ needs.{producer}.outputs.{output} }}}}",
+                f"{name} Artifact input",
             )
         _require(
             release["jobs"]["core-tests"]["with"] == {"coverage": True},

@@ -76,16 +76,9 @@ jobs:
       - name: Install existing HTTP integration test dependency
         run: sudo apt-get update -qq && sudo apt-get install -y -qq aria2
       - name: Run all core unit and process tests
-        shell: bash
         env:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [[ "$EXPORT_COVERAGE" == 'true' ]]; then
-            args+=(--coverage)
-          fi
-          python3 -m engineering_ci.workflow_actions checks tests "${args[@]}"
+        run: python3 -m engineering_ci.workflow_actions checks tests --coverage-from-env
       - name: Record core release tool versions
         if: ${{ always() && !cancelled() && inputs.coverage }}
         run: uv run --no-sync --group dev python -m engineering_ci.workflow_actions manifest tools --scope core --output tool-versions.json

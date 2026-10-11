@@ -138,16 +138,34 @@ Dagger 获取，镜像、Engine 和 CLI 的既有 pin 与核验保持不变。
 在原 checkout 运行 `uv sync --locked` 或既有 `uv run --locked` 即可安装此依赖，
 Windows 与 Linux 使用相同依赖，不修改 `.dagger` 依赖。
 
-校验涵盖 CI 触发分支、三个现有 Job、Step 与实际检查命令的对应关系、
-工具版本读取、Coverage 调用和原生 Artifact 输出绑定；
-同时核对手动 Release 输入、候选 SHA、六个现有 Job 的依赖 / 条件 / 权限、
-本提交内的复用 Workflow，以及既有单次 pytest、安全 enforce 和模块锁门禁。
-Manifest 使用原有注册表核对实际 Job / Step，不建立第二份检查注册表。
+校验跨层契约和发布不变量，不复制完整 Workflow 实现。强制核验人工触发与显式发布授权、
+验证只读权限、关键依赖和准入条件、TOML 共享参数、候选 SHA，以及 Artifact / Manifest 引用。
+普通日志、安装细节、Summary、非契约 Step 的名称及超时由 YAML 维护；Dagger 内部任务编排由
+Dagger 负责。关键检查与发布 Step 仍须调用约定入口、传入必要参数并传播失败，不能只凭名称认定执行。
+
+三个既有 PR Job 和六个关键 Release Job 必须存在，但不要求 Workflow 只能包含这些 Job。
+`release/registry.py` 的 `RELEASE_DEPENDENCIES` 声明发布门禁需要的最小直接输入，
+静态校验及发布入口共用它；它不是完整 DAG，不参与调度或拓扑排序。
+关键直接依赖不能删除，新增依赖可以保留；运行时传入的全部 `needs` 必须真实成功，
+新增依赖的 failure、skipped、cancelled 或缺失状态不会被忽略。只有发布 Job 可获得既有写权限，
+额外 Job 的权限必须只读或关闭；普通 Job 无需复制关键 Job 的工具准备、矩阵或执行条件。
+
+Coverage Step 使用 `checks tests --coverage-from-env`；Actions 内部入口将
+`EXPORT_COVERAGE` 的 `true`、`false` 或 PR/push 的空值转换为既有 `--coverage` 调用，
+只执行一次检查。非法值在执行前失败；未显式选择此参数时不会读取环境中的 Coverage 开关。
+不在校验器中维护对应的 Bash 实现。
+
+Artifact 输出必须指向唯一的上传 Step，关键消费者使用准确的原生 Artifact ID 引用。
+生产 Step 的显示名称和 ID 可以调整，只要输出引用同步有效；Artifact 的契约名称仍需一致。
+Manifest 使用已有注册表核对实际 Job / Step，不建立第二份检查注册表。
 Release 操作还核对实际 `GITHUB_WORKFLOW_REF`、`GITHUB_WORKFLOW_SHA` 与候选 SHA。
 
-GitHub 在运行前解析 Job DAG、权限和条件；Python 不会动态改变它们。
-配置或 YAML 单独修改而不满足上述既有契约时明确失败，不忽略不一致策略。
-这不是任意 YAML 策略解释器；改变既有 DAG 或调用方式时，需要同时维护绑定校验和故障测试。
+静态绑定通过只说明配置满足执行契约。实际 Run / Attempt、Commit SHA、Artifact 身份、
+原始检查状态和发布资格仍由现有 Manifest 及发布验证模块核验；静态结果不能替代运行证据。
+GitHub 在运行前解析完整 Job DAG、权限和条件；Python 不会动态改变它们。
+安全敏感的准入条件保留明确支持的表达式，不能仅从待校验 YAML 推导通过标准。
+此校验器不解释任意条件表达式或证明不同表达式等价；更改关键契约需维护相应故障测试，
+普通实现调整不要求同步复制到 Python。回归测试同时覆盖允许的普通调整和必须拒绝的门禁绕过。
 重复 YAML 键、错误结构或不安全标签拒绝；错误信息不打印原始 YAML 内容。
 
 `schema_version = 1` 保留。旧 `lock` 段完全没有 CI 映射时，从已有 `version` 映射迁移；

@@ -297,6 +297,65 @@ def test_actions_dispatcher_preserves_original_result(operation, module, monkeyp
     ]
 
 
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("true", ["tests", "--coverage"]),
+        ("false", ["tests"]),
+        ("", ["tests"]),
+        (None, ["tests"]),
+    ],
+)
+def test_actions_coverage_input_uses_one_check_execution_and_preserves_exit(
+    monkeypatch, value, expected
+):
+    from engineering_ci import checks
+
+    if value is None:
+        monkeypatch.delenv("EXPORT_COVERAGE", raising=False)
+    else:
+        monkeypatch.setenv("EXPORT_COVERAGE", value)
+    calls = []
+    monkeypatch.setattr(
+        checks, "main", lambda args, **kwargs: calls.append((args, kwargs)) or 7
+    )
+    assert workflow_actions.main(["checks", "tests", "--coverage-from-env"]) == 7
+    assert calls == [(expected, {"executor": "native"})]
+
+
+@pytest.mark.parametrize("value", ["yes", "True", "SECRET", "1"])
+def test_actions_invalid_coverage_input_fails_before_execution(
+    monkeypatch, capsys, value
+):
+    from engineering_ci import checks
+
+    monkeypatch.setenv("EXPORT_COVERAGE", value)
+    monkeypatch.setattr(
+        checks, "main", lambda *args, **kwargs: pytest.fail("No check execution")
+    )
+    with pytest.raises(SystemExit) as error:
+        workflow_actions.main(["checks", "tests", "--coverage-from-env"])
+    assert error.value.code == 2
+    assert "SECRET" not in capsys.readouterr().err
+
+
+def test_actions_coverage_source_is_explicit_and_not_ambient(monkeypatch):
+    from engineering_ci import checks
+
+    monkeypatch.setenv("EXPORT_COVERAGE", "true")
+    calls = []
+    monkeypatch.setattr(checks, "main", lambda args, **kwargs: calls.append(args) or 0)
+    assert workflow_actions.main(["checks", "tests"]) == 0
+    assert calls == [["tests"]]
+    for flags in (
+        ["--coverage", "--coverage-from-env"],
+        ["--coverage-from-env", "--coverage-from-env"],
+    ):
+        with pytest.raises(SystemExit):
+            workflow_actions.main(["checks", "tests", *flags])
+    assert calls == [["tests"]]
+
+
 def run_metadata(**updates):
     return dict(
         id=45,
