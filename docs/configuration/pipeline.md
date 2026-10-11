@@ -58,11 +58,47 @@ TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也�
 | `release/delivery.py` | 从 `delivery.release.branch` 获取 PR base、fetch 目标及发布分支身份 |
 | `cli/release.py` | 将 `delivery.release.workflow` 传入既有执行入口，绑定 Dispatch 身份与恢复状态；默认分支同样来自配置 |
 | `pipeline.py` 的配置校验 | 校验 `trigger=manual`；实际触发机制仍由已有 Workflow 与 GitHub API 决定 |
+| 既有 `version check` 及 Workflow 的发布操作 | 调用 `workflow_consistency.py`，核验 TOML 与实际 YAML 的绑定及发布门禁 |
 
 当前测试核对调用参数来源及下述证据过期规则，使用可注入的检查执行器和 GitHub 替身，
 不触发真实发布。
 测试替换读取结果用于核对调用来源，不表示生产配置已允许其他 Profile 或 Workflow。
 上下文及实际协调关系见[交付阶段与证据准入](../architecture/release/workflow.md#交付阶段与证据准入)。
+
+## GitHub Actions 一致性
+
+`ci_job` 是 GitHub 实际显示的 Job 名称，`ci_step` 是该 Job 内唯一的 Step 名称，
+不是用于搜索 YAML 文本的标签。`version` 与 `lock` 共同对应
+`version-metadata` 中的 `Validate release metadata and root lock consistency`，
+该 Step 仍执行两个真实检查；不增加 Job，也不代替其他 Job 的执行结果。
+`pytest` 是检查身份，`tests` 是已有 Profile 别名，CI 要求它完整指向 `["pytest"]`，
+防止改变别名后漏跑测试；完整 `pr` 的排列顺序仍可调整。
+
+`checks version` 的锁定子进程执行四处版本一致性及 Workflow 配置校验；
+完整 PR Profile 与 Release 复用该入口。
+发布 Workflow 的 `prepare`、`verify`、`publish` 在 Git / GitHub 操作前校验，
+使用 uv 锁定环境中的 [PyYAML 6.0.3](https://pypi.org/project/PyYAML/6.0.3/) 安全解析 YAML。
+版本检查需要配置指定的 uv；标准库工具版本读取步骤不需要安装 PyYAML。
+版本检查身份记录实际锁定 Python 与 PyYAML 版本，变化后的历史结果不能复用。
+在原 checkout 运行 `uv sync --locked` 或既有 `uv run --locked` 即可安装此依赖，
+Windows 与 Linux 使用相同依赖，不修改 `.dagger` 依赖。
+
+校验涵盖 CI 触发分支、三个现有 Job、Step 与实际检查命令的对应关系、
+工具版本读取、Coverage 调用和原生 Artifact 输出绑定；
+同时核对手动 Release 输入、候选 SHA、六个现有 Job 的依赖 / 条件 / 权限、
+本提交内的复用 Workflow，以及既有单次 pytest、安全 enforce 和模块锁门禁。
+Manifest 使用原有注册表核对实际 Job / Step，不建立第二份检查注册表。
+Release 操作还核对实际 `GITHUB_WORKFLOW_REF`、`GITHUB_WORKFLOW_SHA` 与候选 SHA。
+
+GitHub 在运行前解析 Job DAG、权限和条件；Python 不会动态改变它们。
+配置或 YAML 单独修改而不满足上述既有契约时明确失败，不忽略不一致策略。
+这不是任意 YAML 策略解释器；改变既有 DAG 或调用方式时，需要同时维护绑定校验和故障测试。
+重复 YAML 键、错误结构或不安全标签拒绝；错误信息不打印原始 YAML 内容。
+
+`schema_version = 1` 保留。旧 `lock` 段完全没有 CI 映射时，从已有 `version` 映射迁移；
+部分或错误映射不能通过 Workflow 校验。
+公共输入必须包含一致性实现、Manifest 注册表及三个 Workflow，缺少时要求补齐配置，
+不能用缺失的输入范围复用历史结果。
 
 核心 pytest 需要 uv、Git、gh，Linux 需要 Bash；aria2 是可选专项。
 aria2 不存在时 native 和 auto 测试仍执行，专项 JUnit 标识为未启用。
@@ -70,6 +106,9 @@ aria2 不存在时 native 和 auto 测试仍执行，专项 JUnit 标识为未�
 
 配置文件和读取模块参与所有检查的输入指纹。更改版本、参数、范围、依赖或完整 Profile 顺序后，
 旧结果不能作为当前准入依据；检查过程中发生变更也不能产生有效通过记录。
+Workflow、绑定校验或 Manifest 注册信息变化同样使所有基础检查的旧证据过期。
+PyYAML 的依赖 / 锁变化属于版本、锁文件和 pytest 输入；Ruff 按其实际工具及源码范围判断，
+不因单纯准备发布版本而重跑。
 查询保留原始历史记录，下一次执行只允许复用仍匹配当前身份的结果。
 四处元数据只有一致的本项目版本值变化时，pytest 指纹保留其他全部内容，
 版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。

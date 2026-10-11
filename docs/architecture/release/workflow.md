@@ -24,6 +24,10 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与上述用户命令
 使用同一套 Python 实现。工具版本、范围、参数及依赖由 `config/pipeline.toml` 集中定义；
 `toolchain.py` 保留调用接口，`checks.py` 执行工具并产生真实结果。
+既有版本 Step 还校验 Pipeline 与 YAML 的对应关系；Release 操作在 Git / GitHub
+请求前执行相同校验。绑定范围和配置升级规则统一见
+[GitHub Actions 一致性](../../configuration/pipeline.md#github-actions-一致性)。
+Job DAG、权限、条件继续由 YAML 声明，不由 TOML 动态调度。
 直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
 
 原生 Windows 的 Bash 测试无法完整执行时，pytest 原始退出码和 skipped 数量

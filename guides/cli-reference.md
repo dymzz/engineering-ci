@@ -97,3 +97,6 @@ Security Workflow 兼容已发布旧 helper 的脚本；默认 ref 和消费者�
 consumer 默认只读；修改、提交、推送仍需显式参数。
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/architecture/local-checks.md)。
+`version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
+使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
+绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。

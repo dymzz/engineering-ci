@@ -77,6 +77,11 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             "src/engineering_ci/pipeline.py",
             "src/engineering_ci/checks.py",
             "src/engineering_ci/toolchain.py",
+            "src/engineering_ci/workflow_consistency.py",
+            "src/engineering_ci/release/registry.py",
+            ".github/workflows/ci.yml",
+            ".github/workflows/release.yml",
+            ".github/workflows/reusable-python-ci.yml",
         } <= set(data["inputs"]["common"]):
             raise ValueError("Check definition inputs cannot be excluded")
         paths = data["inputs"]["common"] + [
@@ -102,6 +107,10 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
         if set(data["profiles"]["pr"]) != supported:
             raise ValueError("PR profile must retain the existing required checks")
         data["delivery"] = delivery_config(data)
+        # Schema 1 previously grouped lock with version without repeating its CI identity.
+        if not {"ci_job", "ci_step"} & checks["lock"].keys():
+            for key in ("ci_job", "ci_step"):
+                checks["lock"][key] = checks["version"][key]
         for backend, spec in data["optional_backends"].items():
             if backend != "aria2" or spec != {
                 "tool": "aria2c",
@@ -137,8 +146,7 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             if "uvx" in dependencies and "uv" not in dependencies:
                 raise ValueError("uvx requires the pinned uv bootstrap")
             if (
-                name != "version"
-                and "uv" not in dependencies
+                "uv" not in dependencies
                 or name.startswith("ruff-")
                 and "uvx" not in dependencies
             ):

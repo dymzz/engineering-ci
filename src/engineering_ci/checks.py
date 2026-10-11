@@ -122,7 +122,18 @@ def command(name, coverage=False, junit="core-junit.xml"):
             ]
         return args
     if name == "version":
-        return [sys.executable, "-m", "engineering_ci.cli", "version", "check"]
+        return [
+            "uv",
+            "run",
+            "--locked",
+            "--python",
+            PYTHON_VERSION,
+            "python",
+            "-m",
+            "engineering_ci.cli",
+            "version",
+            "check",
+        ]
     if name == "lock":
         return ["uv", "lock", "--project", ".", "--check", "--python", PYTHON_VERSION]
     raise ValueError(f"Unsupported check: {name}")
@@ -368,30 +379,35 @@ def preflight(name, root, run, which, environ):
                 "environment_error", "Pinned Ruff version could not be verified"
             )
         tools["ruff"] = {"executable": uvx, "version": RUFF_VERSION}
-    if name == "pytest":
-        if "aria2" in spec["optional_backends"]:
+    if name in {"pytest", "version"}:
+        if name == "pytest" and "aria2" in spec["optional_backends"]:
             optional = aria2_executable(root, which=which, environ=environ)
             tools[PIPELINE["optional_backends"]["aria2"]["tool"]] = (
                 tool(optional, root, run, environ)
                 if optional
                 else {"status": "not_enabled"}
             )
+        packages = ("pytest", "pytest-cov") if name == "pytest" else ("pyyaml",)
+        fields = (
+            "{'python':platform.python_version(),"
+            + ",".join(f"{package!r}:m.version({package!r})" for package in packages)
+            + "}"
+        )
         args = [
             uv,
             "run",
             "--locked",
-            "--group",
-            "dev",
+            *(["--group", "dev"] if name == "pytest" else []),
             "--python",
             PYTHON_VERSION,
             "python",
             "-c",
-            "import json,platform,importlib.metadata as m; print(json.dumps({'python':platform.python_version(),'pytest':m.version('pytest'),'pytest-cov':m.version('pytest-cov')}))",
+            f"import json,platform,importlib.metadata as m; print(json.dumps({fields}))",
         ]
         try:
             resolved = json.loads(probe(args, root, run, environ))
             if (
-                set(resolved) != {"python", "pytest", "pytest-cov"}
+                set(resolved) != {"python", *packages}
                 or not resolved["python"].startswith(PYTHON_VERSION + ".")
                 or not all(VERSION.fullmatch(v) for v in resolved.values())
             ):
@@ -399,7 +415,7 @@ def preflight(name, root, run, which, environ):
         except (ValueError, TypeError):
             raise PreconditionError(
                 "environment_error",
-                "Locked Python/pytest environment could not be verified",
+                f"Locked Python/{name} environment could not be verified",
             ) from None
         tools.update({key: {"version": value} for key, value in resolved.items()})
     return tools

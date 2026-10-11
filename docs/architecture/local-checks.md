@@ -24,10 +24,13 @@ PYTHONPATH=src python3 -m engineering_ci.checks pr --json .test-tools/checks/pr.
 ```
 
 上面的 PYTHONPATH 写法用于 Bash；PowerShell 先设置 `$env:PYTHONPATH='src'`，
-再执行 `python -m engineering_ci.checks ...`。核心 pytest 的锁定环境仍由 uv 准备。
+再执行 `python -m engineering_ci.checks ...`。核心 pytest 及版本检查的锁定环境由 uv 准备。
 
 `pr` 恰好包含 Ruff Lint、Ruff Format、核心 pytest、四处版本一致性与根 uv.lock
 一致性；单项和完整 profile 使用相同定义。重复选择不会重复执行同一检查。
+版本检查同时核验 Pipeline 与 GitHub Workflow 的既有绑定，范围见
+[配置契约](../configuration/pipeline.md#github-actions-一致性)。检查不一致仍通过该真实 Step 失败，
+不新增或改名 PR Job。
 不执行 Dagger、Matrix 或漏洞扫描，不新增质量阈值。
 
 `checks tests --coverage` 在同一次 pytest 调用中输出 core-junit.xml、

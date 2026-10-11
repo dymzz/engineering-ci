@@ -14,11 +14,13 @@ from pathlib import Path
 
 from ..github_cli import ApiError, GitHub
 from ..github_cli import require_api_success as _require_api_success
+from ..pipeline import PIPELINE
 from .version import ROOT, checked_version, normalize
 
 require_api_success = _require_api_success
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
+RELEASE_CONFIG = PIPELINE["delivery"]["release"]
 
 
 def optional(api, path):
@@ -54,7 +56,7 @@ def request(environment, head):
     if publish not in ("true", "false"):
         raise ValueError("Publication must be explicitly true or false")
     if publish == "true" and (
-        environment["GITHUB_REF"] != "refs/heads/main"
+        environment["GITHUB_REF"] != f"refs/heads/{RELEASE_CONFIG['branch']}"
         or environment["GITHUB_EVENT_NAME"] != "workflow_dispatch"
         or environment["RELEASE_SCENARIO"] != "pass"
     ):
@@ -65,7 +67,7 @@ def request(environment, head):
 def candidate(api, tag, head, publish):
     if not publish:
         return None
-    if api("git/ref/heads/main")["object"]["sha"] != head:
+    if api(f"git/ref/heads/{RELEASE_CONFIG['branch']}")["object"]["sha"] != head:
         raise ValueError("main advanced; refusing publication")
     existing = tag_commit(api, tag)
     if existing is not None and existing != head:
@@ -346,6 +348,9 @@ def main(argv=None):
                 "PASS: original exits, JUnit, coverage and security evidence available"
             )
             return 0
+        from ..workflow_consistency import validate
+
+        validate(environment=os.environ)
         head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True, encoding="ascii"
         ).strip()
