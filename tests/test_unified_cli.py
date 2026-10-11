@@ -110,14 +110,50 @@ def test_scripts_have_only_the_two_user_entrypoints():
 
 
 @pytest.mark.parametrize("entry", ["release.py", "download.py"])
-def test_user_entrypoints_offer_help(entry):
+@pytest.mark.parametrize("directory", ["scripts", "src/engineering_ci/cli"])
+@pytest.mark.parametrize("args", [[], ["--help"]])
+def test_user_entrypoints_offer_help_without_project_dependencies(
+    entry, directory, args
+):
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / entry), "--help"],
+        [sys.executable, "-S", str(ROOT / directory / entry), *args],
+        input="",
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
     assert result.returncode == 0 and "usage:" in result.stdout.lower()
+    assert not result.stderr
+
+
+@pytest.mark.parametrize(
+    "entry,args",
+    [
+        ("release.py", ["verify", "--version", "v0.4.11"]),
+        ("download.py", ["--repo", "owner/repo", "--run", "45"]),
+    ],
+)
+def test_plain_python_reports_missing_environment_without_traceback(entry, args):
+    result = subprocess.run(
+        [sys.executable, "-S", str(ROOT / "scripts" / entry), *args],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Missing project dependency" in result.stderr
+    assert "uv run --locked python" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_download_requires_explicit_mode_before_network(monkeypatch):
+    monkeypatch.setattr(download, "api", lambda *args: pytest.fail("No implicit menu"))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    with pytest.raises(SystemExit) as error:
+        download.main(["--repo", "owner/repo"])
+    assert error.value.code == 2
 
 
 def test_workflows_call_modules_and_preserve_release_step_names():
@@ -317,9 +353,7 @@ def test_release_requests_existing_pipeline_with_explicit_publication(
 ):
     calls = []
     monkeypatch.setattr(release, "entrypoint", lambda args: calls.append(args) or 1)
-    assert (
-        release.main([mode, "--version", "0.4.11", "--download-backend", "native"]) == 1
-    )
+    assert release.main([mode, "--version", "0.4.11", "--timeout", "90"]) == 1
     from engineering_ci.execution import cli
 
     args = cli.parser().parse_args(calls[0])
@@ -329,7 +363,8 @@ def test_release_requests_existing_pipeline_with_explicit_publication(
         f"publish={publish}",
         "pytest_scenario=pass",
     ]
-    assert not args.new_run and args.save_log
+    assert not args.new_run and not args.save_log
+    assert args.timeout == 90 and args.download_backend is None
 
 
 @pytest.mark.parametrize(
@@ -339,6 +374,10 @@ def test_release_requests_existing_pipeline_with_explicit_publication(
         ["publish", "--version", "v0.4.11", "--scenario", "assertion"],
         ["verify", "--version", "latest"],
         ["verify", "--version", "v0.4.11", "--repo", "invalid"],
+        ["verify", "--version", "v0.4.11", "--save-log"],
+        ["verify", "--version", "v0.4.11", "--artifact", "report"],
+        ["verify", "--version", "v0.4.11", "--download-backend", "native"],
+        ["verify", "--version", "v0.4.11", "--out", "output"],
     ],
 )
 def test_invalid_release_request_does_not_dispatch(args, monkeypatch):
@@ -373,10 +412,6 @@ def test_release_unknown_response_still_blocks_second_post(tmp_path, monkeypatch
         "v0.4.11",
         "--ref",
         "feature",
-        "--download-backend",
-        "native",
-        "--out",
-        str(tmp_path / "out"),
     ]
     assert release.main(args) == 1
     assert release.main(args) == 1
@@ -385,6 +420,88 @@ def test_release_unknown_response_still_blocks_second_post(tmp_path, monkeypatch
 
     state = json.loads(next((tmp_path / "cache/runs").glob("*.json")).read_text())
     assert state["phase"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "cancelled"])
+def test_release_waits_without_downloading_and_preserves_remote_failure(
+    tmp_path, monkeypatch, capsys, conclusion
+):
+    from engineering_ci.execution import cli
+
+    posts, waits = [], []
+
+    class Client:
+        def validate(self, identity):
+            assert identity.workflow == "release.yml"
+
+        def dispatch(self, identity, inputs):
+            posts.append(inputs)
+            return 45
+
+        def get_run(self, identity, run_id):
+            assert run_id == 45
+
+        def wait(self, identity, run_id, timeout, interval):
+            waits.append(run_id)
+            return {"conclusion": conclusion}
+
+    def no_download(*args, **kwargs):
+        pytest.fail(
+            "Release requests cannot initialize download configuration or collection"
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
+    monkeypatch.setattr(cli, "GitHubActionsClient", Client)
+    for name in ("load_download_config", "DownloadAdapter", "ArtifactCollector"):
+        monkeypatch.setattr(cli, name, no_download)
+    args = ["verify", "--version", "v0.4.11", "--ref", "feature"]
+    expected = 0 if conclusion == "success" else 1
+    assert release.main(args) == expected
+    assert release.main([*args, "--resume", "45"]) == expected
+    assert len(posts) == 1 and waits == [45]
+    state = json.loads(next((tmp_path / "cache/runs").glob("*.json")).read_text())
+    assert state["phase"] == "FINISHED" and state["remote_conclusion"] == conclusion
+    assert state["collection"]["no_artifacts"] and not state["collection"]["save_log"]
+    assert not state["files"]
+    assert not (tmp_path / "workflow-artifacts").exists()
+    assert (
+        "https://github.com/dymzz/engineering-ci/actions/runs/45"
+        in capsys.readouterr().out
+    )
+
+
+def test_release_wait_interruption_resumes_same_run_without_post(tmp_path, monkeypatch):
+    from engineering_ci.execution import cli
+    from engineering_ci.execution.models import RecoverableError
+
+    posts, waits = [], []
+
+    class Client:
+        def validate(self, identity):
+            pass
+
+        def dispatch(self, identity, inputs):
+            posts.append(inputs)
+            return 45
+
+        def wait(self, identity, run_id, timeout, interval):
+            waits.append(run_id)
+            if len(waits) == 1:
+                raise RecoverableError("Network interrupted")
+            return {"conclusion": "success"}
+
+    monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
+    monkeypatch.setattr(cli, "GitHubActionsClient", Client)
+    args = ["verify", "--version", "v0.4.11", "--ref", "feature"]
+    assert release.main(args) == 1
+    state_path = next((tmp_path / "cache/runs").glob("*.json"))
+    paused = json.loads(state_path.read_text())
+    assert paused["phase"] == "PAUSED" and paused["paused_from"] == "RUNNING"
+    assert release.main([*args, "--resume"]) == 0
+    assert len(posts) == 1 and waits == [45, 45]
 
 
 def test_download_uses_coordinator_without_validation_or_dispatch(

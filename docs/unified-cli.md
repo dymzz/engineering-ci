@@ -4,8 +4,8 @@
 旧路径迁移见[scripts 使用说明](../scripts/README.md)。
 
 ```text
-scripts/release.py  → cli/release.py  → execution Coordinator → release.yml
-scripts/download.py → cli/download.py → execution Coordinator（已有 Run）
+scripts/release.py  → cli/release.py  → execution Coordinator（请求/等待，无本地收集）→ release.yml
+scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
@@ -29,10 +29,14 @@ uv run --locked engineering-ci download --repo dymzz/engineering-ci --run RUN_ID
 也可用 python -m engineering_ci.cli，需已安装项目或设置 PYTHONPATH。
 Release verify 会创建真实验证 Run；publish 明确请求正式发布，只允许 main/pass。
 原始失败仍返回非零；完整发布安全检查位于现有 Workflow 的 release/ 业务模块。
+Release 入口不初始化下载后端、不读取下载配置、不下载日志或 Artifact，失败 Run 也如此。
+只有 download 接受 --out、--save-log、--artifact 和后端参数。两个脚本无参数均显示帮助并返回 0；
+不隐式进入菜单或创建 Run。实际操作输出 Run URL、结论与状态缓存位置，退出码含义见
+[入口说明](../scripts/README.md#无参数输出与退出码)。
 
 ## 交互与非交互下载
 
-交互依次选择 Workflow、最近 30 个 Run 与未过期 Artifact 名称。0 收集所有名称，q
+显式 --interactive 后依次选择 Workflow、最近 30 个 Run 与未过期 Artifact 名称。0 收集所有名称，q
 取消；不自动挑选默认值。已完成且无 Artifact 时收集日志，未完成时等待并收集最终输出。
 同名 Artifact 保持原名称过滤语义，不按最大 ID 猜测最新 attempt。
 

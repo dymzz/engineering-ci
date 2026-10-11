@@ -6,8 +6,8 @@ GitHub Actions 调用 `engineering_ci.workflow_actions`，不调用这两个用�
 
 | 入口 | 用途 | 是否创建 Run |
 | --- | --- | --- |
-| `release.py verify` | 请求已有 release.yml 完整验证候选版本 | 是；恢复已有 Run 时除外 |
-| `release.py publish` | 人工请求 main 的完整验证、Tag 和 Release 发布 | 是；发布由 Workflow 门禁决定 |
+| `release.py verify` | 请求、等待已有 release.yml 完整验证候选版本 | 是；恢复已有 Run 时除外 |
+| `release.py publish` | 人工请求、等待 main 的完整验证、Tag 和 Release 发布 | 是；发布由 Workflow 门禁决定 |
 | `download.py` | 选择、等待、恢复已有 Run，下载日志及 Artifact | 否 |
 
 ## 环境与目录
@@ -26,6 +26,49 @@ Linux 使用相同的 uv 命令。aria2c 可选，auto 缺失时使用标准库 
 具体配置见[下载配置](../docs/ghwf-downloads.md)。
 输出 --out 相对于调用者目录；机器配置相对于 engineering-ci checkout。
 
+## 无参数、输出与退出码
+
+```powershell
+uv run scripts/download.py
+uv run scripts/release.py
+```
+
+这两条无参数命令只打印帮助和示例，退出码为 0，不查询 GitHub、不创建 Run、不下载文件。
+下载的菜单选择必须显式提供 --interactive；发布必须显式提供 verify 或 publish 和 --version。
+--help 同样只显示帮助。
+
+命令输出是终端文本，脚本通过退出码报告结果，不返回 JSON 对象：
+
+| 操作 | 终端输出 | 本地文件 |
+| --- | --- | --- |
+| Release 请求 / 恢复 | Run ID、Run URL、Workflow 最终结论、状态文件位置 | 仅 FSM 状态缓存；不下载日志或 Artifact |
+| 下载已有 Run | Run 身份、下载后端、保存位置、最终结论和状态文件位置 | --out/RUN_ID 下的日志及所选 Artifact |
+
+Release 不接受 --save-log、--artifact、--out 或下载后端参数。发布后需要取回文件时，
+将输出的真实 Run ID 传给 download.py。下载开启 --save-log 时生成 run.log；
+选择单个 Artifact 时解压到 Run 目录，收集全部 Artifact 时按名称分别建立目录。
+FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项目中创建另一个 checkout。
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 帮助正常显示，或 Workflow 成功且当前操作完成 |
+| 1 | Workflow 失败 / 取消，或执行暂停、UNKNOWN、API / 下载错误 |
+| 2 | 参数错误或缺少必需运行环境 |
+| 130 | 用户中断 |
+
+PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
+
+直接运行 Python 也可以，但有实际操作时必须使用安装了项目依赖的解释器：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/download.py --help
+.\.venv\Scripts\python.exe scripts/release.py --help
+```
+
+Linux 对应 .venv/bin/python。系统 python 若没有 transitions / filelock，会明确提示使用
+uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python 安装依赖。
+源码模块也支持直接运行，但公开使用入口仍为 scripts 下的两个脚本或已安装的 engineering-ci 命令。
+
 ## Release Workflow
 
 ```powershell
@@ -41,7 +84,7 @@ RUN_ID 替换为实际正整数。publish 只接受 main 和 pass 场景。
 verify --scenario assertion 可请求现有负向验证。版本必须显式提供，不猜测远端版本。
 既有 FSM 保留单次 POST 与 UNKNOWN 处理；UNKNOWN 要先人工核对远端 Run，再提供确认过的 ID，
 不能用 --new-run 盲目重发。--resume 无 ID 恢复同一请求的缓存；--new-run 明确放弃旧任务，
-可能产生重复 Run。两个命令返回实际 Workflow/收集失败状态。
+可能产生重复 Run。两个命令返回实际 Workflow 的退出状态；不读取下载配置，不收集本地文件。
 正式 Release 的最终证据以 Workflow 和 Release Asset 为准，详见[发布说明](../docs/release.md)。
 
 ## 下载已有 Run
@@ -52,7 +95,7 @@ uv run --locked python scripts/download.py --repo dymzz/engineering-ci --run RUN
 uv run --locked python scripts/download.py --run RUN_ID --artifact release-manifest --download-backend native
 ```
 
-非交互必须提供实际 ID；--resume RUN_ID 是 --run RUN_ID 的别名。
+显式 --interactive 进入菜单；非交互必须提供实际 ID；--resume RUN_ID 是 --run RUN_ID 的别名。
 Workflow 与 ref 从真实 Run 获取；--workflow、--ref 是额外身份约束，冲突时拒绝。
 --input、--new-run、无 ID 的 --resume 在下载入口不可用。
 失败 Run 仍返回失败，收集到日志不代表 CI 通过。目录、缓存、完整性校验和安全解压

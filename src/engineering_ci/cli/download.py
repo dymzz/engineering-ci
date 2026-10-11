@@ -4,10 +4,29 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
-from ..execution.cli import entrypoint
-from ..execution.repository import REPO_PATTERN, resolve_repo
-from ._execution import add_runtime_arguments, runtime_arguments
+# Also support IDE/direct-file execution without losing the package context.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "engineering_ci.cli"
+
+from ._execution import (
+    add_runtime_arguments,
+    dependency_error,
+    invoke_execution,
+    runtime_arguments,
+)
+
+
+def entrypoint(args):
+    return invoke_execution(args)
+
+
+def resolve_repo(**kwargs):
+    from ..execution.repository import resolve_repo as resolve
+
+    return resolve(**kwargs)
 
 
 def api(repository, path):
@@ -160,7 +179,12 @@ def existing_run(repository, run_id, workflow=None, ref=None, *, query=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Examples: download.py --interactive --repo OWNER/REPO; "
+        "download.py --run RUN_ID --save-log --out workflow-artifacts.",
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--run", "--resume", dest="run", metavar="RUN_ID")
     group.add_argument("--interactive", action="store_true")
@@ -168,8 +192,13 @@ def main(argv=None):
     parser.add_argument("--workflow", help="Optional constraint on the selected Run")
     parser.add_argument("--ref", help="Optional constraint on the selected Run")
     add_runtime_arguments(parser)
+    if not argv:
+        parser.print_help()
+        return 0
     options = parser.parse_args(argv)
     if options.run is None:
+        if not options.interactive:
+            parser.error("Choose --interactive or --run RUN_ID")
         if not sys.stdin.isatty():
             parser.error(
                 "Interactive mode requires a terminal; supply --run RUN_ID for an agent"
@@ -182,6 +211,10 @@ def main(argv=None):
             )
     elif not options.run.isdecimal() or int(options.run) <= 0:
         parser.error("--run/--resume requires a positive Run ID")
+    try:
+        from ..execution.repository import REPO_PATTERN
+    except ModuleNotFoundError as error:
+        return dependency_error(error)
     if options.repo and not REPO_PATTERN.fullmatch(options.repo):
         parser.error("--repo must be OWNER/REPO")
     try:

@@ -3,15 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
-from ..execution.cli import entrypoint
-from ..execution.repository import REPO_PATTERN
+# Also support IDE/direct-file execution without losing the package context.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "engineering_ci.cli"
+
 from ..release.version import normalize
-from ._execution import add_runtime_arguments, runtime_arguments
+from ._execution import (
+    add_wait_arguments,
+    dependency_error,
+    invoke_execution,
+    runtime_arguments,
+)
+
+
+def entrypoint(args):
+    return invoke_execution(args, collect_outputs=False)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Examples: release.py verify --version v0.4.11 --ref BRANCH; "
+        "release.py publish --version v0.4.11. Downloads: download.py --run RUN_ID --save-log.",
+    )
     parser.add_argument("command", choices=("verify", "publish"))
     parser.add_argument("--version", required=True, help="Exact version, e.g. v0.4.11")
     parser.add_argument("--repo", default="dymzz/engineering-ci")
@@ -20,9 +39,15 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--resume", nargs="?", const="last", metavar="RUN_ID")
     group.add_argument("--new-run", action="store_true")
-    add_runtime_arguments(parser)
-    parser.set_defaults(out="release-artifacts", save_log=True)
+    add_wait_arguments(parser)
+    if not argv:
+        parser.print_help()
+        return 0
     options = parser.parse_args(argv)
+    try:
+        from ..execution.repository import REPO_PATTERN
+    except ModuleNotFoundError as error:
+        return dependency_error(error)
     try:
         version = normalize(options.version)
     except ValueError as error:

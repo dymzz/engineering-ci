@@ -205,6 +205,8 @@ python-ci / dependency-security 移到手动发布；
 此命令请求现有 release.yml，只有 main/pass 可以请求正式发布。
 候选分支用 `release.py verify --version v0.4.11 --ref <候选分支>`，不会创建 Tag 或 Release。
 两条命令都会创建真实 Workflow Run；本轮开发不自动执行。
+命令等待 Workflow 的原始结论，输出真实 Run URL 和状态缓存位置，不初始化下载后端或收集文件。
+无参数调用只显示帮助；需要显式提供 verify/publish 和版本。Workflow 失败时仍返回非零。
 已有 Run 的查询、恢复、日志及 Artifact 下载使用 `scripts/download.py --run RUN_ID --save-log`。
 
 Actions 通过 `engineering_ci.workflow_actions` 调用 `release prepare/verify/publish` 与

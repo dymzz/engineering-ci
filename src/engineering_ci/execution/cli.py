@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from ..cli._execution import add_runtime_arguments
 from .collector import ArtifactCollector
 from .coordinator import ExecutionCoordinator
 from .github import GitHubActionsClient
@@ -26,32 +27,15 @@ def legacy_state_file(repo, workflow, ref, inputs, out, artifact, save_log, no_a
     return default_cache_dir() / 'runs' / f'{hashlib.sha256(scope.encode()).hexdigest()[:24]}.json'
 
 
-def add_runtime_arguments(p: argparse.ArgumentParser) -> None:
-    """Shared waiting, collection and transport options; no dispatch arguments."""
-    p.add_argument('--refresh-repo', action='store_true')
-    p.add_argument('--artifact', help='Artifact name; {run_id} is expanded after dispatch')
-    p.add_argument('--out', default='workflow-artifacts')
-    p.add_argument('--save-log', action='store_true')
-    p.add_argument('--no-artifacts', action='store_true')
-    p.add_argument('--interval', type=float, default=10)
-    p.add_argument('--timeout', type=int, default=2700)
-    # Retained options; network failures now pause immediately rather than retrying reads.
-    p.add_argument('--retry-attempts', type=int, default=1,
-                   help='Compatibility option; use --resume after a failed attempt')
-    p.add_argument('--retry-delay', type=float, default=2,
-                   help='Compatibility option; no automatic short retry loop')
-    p.add_argument('--show-state', action='store_true')
-    p.add_argument('--download-backend', choices=['auto', 'aria2', 'native'],
-                   help='Download backend (default: auto; aria2 if available, otherwise native HTTP)')
-    p.add_argument('--connections', type=int, help='aria2 connections per file (default: 4, range: 1..16)')
-    p.add_argument('--download-timeout', type=int, help='Download read/inactivity timeout in seconds (default: 30)')
-    p.add_argument('--connect-timeout', type=int, help='Connection timeout in seconds (default: 15)')
-    p.add_argument('--download-process-timeout', type=int, help='Download time limit in seconds (default: 1800)')
-    p.add_argument('--download-recovery', choices=['restart', 'pause'],
-                   help='Restart owned partial data if Range/native progress is unavailable, or pause')
-    p.add_argument('--aria2c', help='aria2 executable name or path (default: aria2c; overrides configuration)')
-    p.add_argument('--max-extract-bytes', type=int, default=8 * 1024**3)
-    p.add_argument('--max-extract-files', type=int, default=100000)
+class _RunOnlyCollector:
+    """A request/wait operation has no required local files, even for a failed Run."""
+
+    def intact(self, record) -> bool:
+        return (record.collection.no_artifacts and not record.collection.save_log
+                and record.collection.artifact is None)
+
+    def collect(self, record, checkpoint) -> None:
+        raise ExecutionError('Workflow-only execution cannot collect local files')
 
 
 def parser() -> argparse.ArgumentParser:
@@ -67,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, collect_outputs=True) -> int:
     p = parser()
     args = p.parse_args(argv)
     if args.repo and not REPO_PATTERN.fullmatch(args.repo):
@@ -78,12 +62,13 @@ def main(argv=None) -> int:
         p.error('interval, timeout and retry attempts must be positive; delay cannot be negative')
     if args.no_artifacts and args.artifact:
         p.error('--no-artifacts and --artifact cannot be combined')
-    try:
-        config = load_download_config(args)
-        if min(args.max_extract_bytes, args.max_extract_files) <= 0:
-            raise ValueError('Extraction limits must be positive')
-    except ValueError as exc:
-        p.error(str(exc))
+    if collect_outputs:
+        try:
+            config = load_download_config(args)
+            if min(args.max_extract_bytes, args.max_extract_files) <= 0:
+                raise ValueError('Extraction limits must be positive')
+        except ValueError as exc:
+            p.error(str(exc))
     if args.resume not in (None, 'last') and (not args.resume.isdigit() or int(args.resume) <= 0):
         p.error('--resume requires a positive Run ID')
     inputs = {}
@@ -95,10 +80,11 @@ def main(argv=None) -> int:
     repo, source = (args.repo, '--repo') if args.repo else resolve_repo(refresh=args.refresh_repo)
     print(f'Repository: {repo} ({source}); workflow: {args.workflow}; ref: {args.ref}', flush=True)
     identity = DispatchIdentity.create(repo, args.workflow, args.ref, inputs)
-    collection = CollectionIdentity.create(Path(args.out), args.artifact, args.save_log, args.no_artifacts)
+    collection = (CollectionIdentity.create(Path(args.out), args.artifact, args.save_log, args.no_artifacts)
+                  if collect_outputs else CollectionIdentity.create(default_cache_dir(), no_artifacts=True))
     store = StateStore(default_cache_dir() / 'runs' / f'{identity.key}.json')
-    old_path = legacy_state_file(repo, args.workflow, args.ref, inputs, Path(args.out),
-                                 args.artifact, args.save_log, args.no_artifacts)
+    old_path = legacy_state_file(repo, args.workflow, args.ref, inputs, Path(collection.out),
+                                 collection.artifact, collection.save_log, collection.no_artifacts)
     # v1 did not persist inputs: only exact scopes are safe when inputs are supplied.
     legacy_paths = [old_path]
     # v1 omitted inputs and collection paths. A different scope cannot be inferred
@@ -122,19 +108,21 @@ def main(argv=None) -> int:
     if not shutil.which('gh'):
         p.error('GitHub CLI (gh) not found; install it and run gh auth login')
     client = GitHubActionsClient()
-    collector = ArtifactCollector(client, DownloadAdapter(config),
+    collector = (ArtifactCollector(client, DownloadAdapter(config),
                                    ArchiveLimits(args.max_extract_bytes, args.max_extract_files))
+                 if collect_outputs else _RunOnlyCollector())
     coordinator = ExecutionCoordinator(store, client, collector,
                                        identity, collection, inputs, timeout=args.timeout,
                                        interval=args.interval)
     result = coordinator.execute(resume=args.resume, new_run=args.new_run, legacy_paths=legacy_paths)
     print(f'Finished run {result.run_id} ({result.remote_conclusion}); state: {store.path}')
+    print(f'Run URL: https://github.com/{repo}/actions/runs/{result.run_id}', flush=True)
     return result.exit_code
 
 
-def entrypoint(argv=None) -> int:
+def entrypoint(argv=None, *, collect_outputs=True) -> int:
     try:
-        return main(argv)
+        return main(argv, collect_outputs=collect_outputs)
     except (ExecutionError, OSError, ValueError) as exc:
         print(f'Error: {exc}', file=sys.stderr)
         return 1
