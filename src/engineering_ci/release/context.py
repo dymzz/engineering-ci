@@ -28,6 +28,7 @@ class ReviewEvidence:
     number: int
     url: str
     head: str
+    ci_status: str = "unavailable"
 
 
 @dataclass(frozen=True)

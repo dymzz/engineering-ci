@@ -1,6 +1,7 @@
 """The release checks, tool scopes and native Artifact contract."""
 
 from ..checks import CI_STEPS
+from ..pipeline import PIPELINE
 
 STATES = {
     "success": "passed",
@@ -16,14 +17,20 @@ STATES = {
 
 CHECKS = {
     "candidate": ("candidate", "Validate manual release request"),
-    "ruff_lint": ("core-tests / python-ci / checks", CI_STEPS["ruff-lint"]),
-    "ruff_format": ("core-tests / python-ci / checks", CI_STEPS["ruff-format"]),
+    "ruff_lint": (
+        "core-tests / " + PIPELINE["checks"]["ruff-lint"]["ci_job"],
+        CI_STEPS["ruff-lint"],
+    ),
+    "ruff_format": (
+        "core-tests / " + PIPELINE["checks"]["ruff-format"]["ci_job"],
+        CI_STEPS["ruff-format"],
+    ),
     "core_tests": (
-        "core-tests / sync-tool-tests",
+        "core-tests / " + PIPELINE["checks"]["pytest"]["ci_job"],
         CI_STEPS["pytest"],
     ),
     "version_integrity": (
-        "core-tests / version-metadata",
+        "core-tests / " + PIPELINE["checks"]["version"]["ci_job"],
         CI_STEPS["version"],
     ),
     "dependency_security": (

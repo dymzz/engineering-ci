@@ -2,9 +2,35 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .download import DownloadConfig, DownloadConfigurationError
+from .models import ExecutionError
+
+
+class DownloadConfigurationError(ExecutionError):
+    pass
+
+
+@dataclass(frozen=True)
+class DownloadConfig:
+    connections: int = 4
+    timeout: int = 30
+    connect_timeout: int = 15
+    process_timeout: int = 1800
+    recovery: str = 'restart'
+    executable: str = 'aria2c'
+    backend: str = 'auto'
+
+    def __post_init__(self):
+        if not 1 <= self.connections <= 16 or min(self.timeout, self.connect_timeout, self.process_timeout) <= 0:
+            raise ValueError('Download connections must be 1..16 and timeouts must be positive')
+        if self.recovery not in ('restart', 'pause'):
+            raise ValueError('Download recovery must be restart or pause')
+        if self.backend not in ('auto', 'aria2', 'native'):
+            raise ValueError('Download backend must be auto, aria2 or native')
+        if not isinstance(self.executable, str) or not self.executable:
+            raise ValueError('aria2c executable must be a nonempty path or command')
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

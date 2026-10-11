@@ -327,6 +327,39 @@ def test_status_handoff_can_show_pr_before_local_commit_is_pushed(repository, ca
         delivery.handoff(checkout, context)
 
 
+@pytest.mark.parametrize("conclusion", ["SUCCESS", "FAILURE", "SKIPPED", "IN_PROGRESS"])
+def test_handoff_recommends_merge_only_for_current_successful_ci(
+    repository, passing_checks, capsys, conclusion
+):
+    invoke(repository, include_all=True, message="Delivered")
+    capsys.readouterr()
+    original = repository.run
+
+    def run(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[:3] == ["gh", "pr", "view"]:
+            value = json.loads(result.stdout)
+            value["statusCheckRollup"] = [
+                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+            ]
+            result.stdout = json.dumps(value)
+        return result
+
+    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=run)
+    assert delivery.prepare(REPOSITORY, VERSION, checkout=checkout) == 3
+    output = capsys.readouterr().out
+    assert ("mark its Draft ready" in output) is (conclusion == "SUCCESS")
+    assert checkout.execution_context.review.ci_status == (
+        "passed"
+        if conclusion == "SUCCESS"
+        else "pending"
+        if conclusion == "IN_PROGRESS"
+        else "failed"
+    )
+    if conclusion != "SUCCESS":
+        assert "Stopped at PR CI" in output
+
+
 def test_status_with_local_changes_names_delivery_as_primary_stop(repository, capsys):
     repository.existing_pr()
     checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)

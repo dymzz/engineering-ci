@@ -26,6 +26,11 @@ CI_STEPS = {
     if "ci_step" in spec
 }
 RUFF_SCOPE = tuple(PIPELINE["scopes"]["ruff"])
+PR_CI_JOBS = tuple(
+    dict.fromkeys(
+        spec["ci_job"] for spec in PIPELINE["checks"].values() if "ci_job" in spec
+    )
+)
 PR_CHECKS = tuple(PIPELINE["profiles"]["pr"])
 GROUPS = {name: tuple(values) for name, values in PIPELINE["profiles"].items()}
 SCOPES = {
@@ -45,13 +50,18 @@ class PreconditionError(Exception):
 
 def aria2_executable(root=ROOT, *, which=shutil.which, environ=None):
     """Resolve the optional integration-test backend using existing download settings."""
-    from .execution.config import load_download_config
+    from .execution.config import DownloadConfigurationError, load_download_config
 
     environ = os.environ if environ is None else environ
-    configured = (
-        environ.get("ARIA2C")
-        or load_download_config(environ=environ, project_root=root).executable
-    )
+    try:
+        configured = (
+            environ.get("ARIA2C")
+            or load_download_config(environ=environ, project_root=root).executable
+        )
+    except DownloadConfigurationError as error:
+        raise PreconditionError(
+            "environment_error", "Invalid optional download configuration"
+        ) from error
     path = which(configured)
     return path if path and Path(path).is_file() else None
 

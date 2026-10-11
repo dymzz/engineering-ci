@@ -30,6 +30,7 @@ required_tools = ["uv","uvx"]
 linux_tools = []
 optional_backends = []
 ci_step = "Ruff Lint"
+ci_job = "python-ci / checks"
 
 [checks.ruff-format]
 scope = "ruff"
@@ -37,6 +38,7 @@ required_tools = ["uv","uvx"]
 linux_tools = []
 optional_backends = []
 ci_step = "Ruff Format Check"
+ci_job = "python-ci / checks"
 
 [checks.pytest]
 scope = "pytest"
@@ -44,6 +46,7 @@ required_tools = ["uv","git","gh"]
 linux_tools = ["bash"]
 optional_backends = ["aria2"]
 ci_step = "Run all core unit and process tests"
+ci_job = "sync-tool-tests"
 
 [checks.version]
 scope = "version"
@@ -51,6 +54,7 @@ required_tools = []
 linux_tools = []
 optional_backends = []
 ci_step = "Validate release metadata and root lock consistency"
+ci_job = "version-metadata"
 
 [checks.lock]
 scope = "lock"

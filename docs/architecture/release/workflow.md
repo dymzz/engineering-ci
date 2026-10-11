@@ -195,6 +195,12 @@ FSM 与 `release/pipeline.py` 的 DeliveryPipeline 持有同一个 ExecutionCont
 BLOCKED.merged，不能被旧 Run 或原 PR 的绿色检查覆盖。错误输出包含当前阶段和接续命令。
 重启时从原生事实重新识别阶段，已确认的 OPEN PR 可以恢复 REVIEW.waiting，不伪造本地检查记录。
 Git/PR 修改失败保留已产生的真实提交；远端 UNKNOWN 仍禁止自动再次 POST。
+PR 交付完成与 CI 通过分别记录。handoff 读取当前 head 的真实检查状态：必需结果失败、跳过或
+尚未完成时停在 PR CI，不建议 Ready / 合并；只有配置中全部必需 Job 实际成功且可合并时，
+才给出人工合并提示。缺失状态不能当作通过。
+
+Workflow 的 bootstrap 检查只需要标准库。下载配置类型与执行依赖分开，读取可选工具配置不会
+提前导入 transitions / filelock；实际执行能力仍由锁定项目环境加载，不降低其依赖要求。
 
 ## 调用职责
 

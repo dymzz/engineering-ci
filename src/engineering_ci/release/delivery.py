@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .. import checks
 from .._paths import ROOT
-from .context import ExecutionContext
+from .context import ExecutionContext, ReviewEvidence
 from .pipeline import DeliveryPipeline, current_checks
 from .pipeline import EvidenceError as DeliveryError
 from .version import checked_version
@@ -302,7 +302,7 @@ def pr_body(checkout, context, message, path):
     return body.rstrip() + ("\n\n" if body else "") + section
 
 
-def handoff(checkout, context, *, require_head=True):
+def handoff(checkout, context, *, require_head=True, execution=None):
     """Show actual PR checks and the next human action without merging it."""
     pr = context["pr"]
     state = checkout.gh(
@@ -319,7 +319,7 @@ def handoff(checkout, context, *, require_head=True):
     if pending:
         print(f"Stopped at delivery: local changes still need delivery to {pr['url']}")
     else:
-        print(f"Awaiting human review and merge: {pr['url']}")
+        print(f"Awaiting human review: {pr['url']}; required CI is inspected below")
     print(f"PR commit: {state['headRefOid']}; merge state: {state['mergeStateStatus']}")
     if state["headRefOid"] != context["head"]:
         print(
@@ -334,7 +334,27 @@ def handoff(checkout, context, *, require_head=True):
             f"{item.get('conclusion') or item.get('state') or item.get('status')}; "
             f"{item.get('detailsUrl') or item.get('targetUrl') or ''}"
         )
-    if not pending:
+    conclusions = {
+        item.get("name") or item.get("context"): item.get("conclusion")
+        or item.get("state")
+        or item.get("status")
+        for item in entries
+    }
+    required = [conclusions.get(name) for name in checks.PR_CI_JOBS]
+    passed = all(value == "SUCCESS" for value in required)
+    failed = any(
+        value
+        in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "SKIPPED", "ACTION_REQUIRED"}
+        for value in required
+    )
+    if execution is not None and not pending:
+        execution.review = ReviewEvidence(
+            pr["number"],
+            pr["url"],
+            state["headRefOid"],
+            "passed" if passed else "failed" if failed else "pending",
+        )
+    if not pending and passed and state["mergeable"] == "MERGEABLE":
         print(
             "Review the linked PR, mark its Draft ready when appropriate, and merge it in GitHub."
         )
@@ -342,6 +362,18 @@ def handoff(checkout, context, *, require_head=True):
             f"After merge, continue: uv run --locked python scripts/release.py publish "
             f"--repo {checkout.repository} --version v{context['version']}"
         )
+    elif not pending:
+        if failed:
+            print(
+                "Stopped at PR CI: required checks failed or were skipped. Fix the candidate branch and push the update; no merge recommendation."
+            )
+        else:
+            print(
+                "Stopped at PR CI: required results or conflict resolution are pending; keep the Draft open."
+            )
+            print(
+                f"Only after required CI passes and human merge, continue: uv run --locked python scripts/release.py publish --repo {checkout.repository} --version v{context['version']}"
+            )
     print("This command did not request any merge, Tag, Release or new validation Run.")
     return WAITING_FOR_REVIEW
 
@@ -381,7 +413,7 @@ def prepare(
         )
         return 0
     if lifecycle.phase == "REVIEW_waiting":
-        return handoff(checkout, facts)
+        return handoff(checkout, facts, execution=context)
     if facts["files"] and (not include_all or not message):
         raise DeliveryError(
             "Review the listed files, then repeat publish with --all (git add --all) and "
@@ -443,4 +475,4 @@ def prepare(
         )
     pipeline.reviewed(checkout.context(version))
     lifecycle.advance("open_review")
-    return handoff(checkout, context.facts)
+    return handoff(checkout, context.facts, execution=context)

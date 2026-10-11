@@ -11,6 +11,32 @@ import pytest
 from engineering_ci import checks
 
 
+def test_optional_backend_config_loads_without_execution_dependencies(tmp_path):
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from engineering_ci.checks import aria2_executable; "
+        "from pathlib import Path; "
+        "assert aria2_executable(Path(sys.argv[2]), which=lambda value: None, environ={}) is None; "
+        "assert 'transitions' not in sys.modules and 'filelock' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", code, str(checks.ROOT / "src"), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_invalid_optional_config_has_a_structured_environment_error(tmp_path):
+    path = tmp_path / "config/ghwf.local.toml"
+    path.parent.mkdir()
+    path.write_text("[download]\nconnections = 0\n")
+    with pytest.raises(checks.PreconditionError) as error:
+        checks.aria2_executable(tmp_path, environ={})
+    assert error.value.status == "environment_error"
+
+
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
     (tmp_path / "src/engineering_ci/release").mkdir(parents=True)

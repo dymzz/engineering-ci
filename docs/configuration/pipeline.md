@@ -10,7 +10,7 @@
 | `arguments` | 既有 Ruff target 与 pytest 参数；JUnit、Coverage 输出位置由调用决定 |
 | `profiles` | 完整 PR 和单项检查选择；重复选择同一项只执行一次 |
 | `inputs.common` / `scopes` | 内容、权限与缺失文件参与执行身份；范围必须位于仓库内 |
-| `checks` | 检查范围、必需工具、Linux 工具和原有 CI step 名称 |
+| `checks` | 检查范围、必需工具、Linux 工具和原有 CI job / step 名称 |
 | `optional_backends` | 可选 aria2 集成测试工具及 JUnit 标识 |
 
 配置只声明现有检查，不执行任意 shell 模板，不定义远端 Job 调度。

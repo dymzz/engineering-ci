@@ -77,6 +77,10 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
                 raise ValueError("Unsupported optional backend contract")
         for name, spec in checks.items():
             if "ci_step" in spec and (
+                not isinstance(spec.get("ci_job"), str) or not spec["ci_job"]
+            ):
+                raise ValueError("CI check requires a job identity")
+            if "ci_step" in spec and (
                 not isinstance(spec["ci_step"], str) or not spec["ci_step"]
             ):
                 raise ValueError("Invalid CI step name")

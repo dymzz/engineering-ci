@@ -205,7 +205,7 @@ def show_status(options):
     if pr and pr["state"] == "OPEN":
         from ..release.delivery import handoff
 
-        handoff(checkout, context, require_head=False)
+        handoff(checkout, context, require_head=False, execution=execution)
         if context["files"] or context["head"] != context["pr"]["headRefOid"]:
             print("Stopped before committing the listed local changes.")
             if context["files"]:

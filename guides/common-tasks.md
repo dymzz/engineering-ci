@@ -45,6 +45,7 @@ uv run --locked python scripts/release.py publish --version v0.4.11 --all -m "�
 4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，停在 **待人工审查合并**，返回 3。
 
 在输出的 PR 页面审查改动和真实 CI；Draft 就绪后转为 Ready，由人决定合并。
+必需 CI 失败、跳过或尚未完成时，入口明确停在 PR CI，不给出当前可合并的提示。
 CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR。
 若输出仍是本地检查失败、未提交或未推送，原 PR 的绿色 CI 只对应它显示的 SHA；
 先完成当前改动的提交与推送，再审查更新后的 PR。
