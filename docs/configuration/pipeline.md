@@ -1,6 +1,6 @@
-# 检查 Pipeline 配置
+# 检查与交付 Pipeline 配置
 
-`config/pipeline.toml` 是提交到 Git 的独立检查定义。路径相对 engineering-ci 源码根目录，
+`config/pipeline.toml` 是提交到 Git 的独立检查及交付定义。路径相对 engineering-ci 源码根目录，
 本地入口、Workflow 内部入口和发布交付使用同一份配置，不受调用者当前目录影响。
 没有机器专用覆盖；更改检查策略需要显式修改这份文件并审查。
 
@@ -13,10 +13,38 @@
 | `inputs.release_metadata` / `checks.pytest.version_only_reuse` | 固定四处本项目版本字段；仅 pytest 可复用版本变化前的代码检查证据 |
 | `checks` | 检查范围、必需工具、Linux 工具和原有 CI job / step 名称 |
 | `optional_backends` | 可选 aria2 集成测试工具及 JUnit 标识 |
+| `delivery` | 本地交付使用的完整检查 Profile |
+| `delivery.release` | 既有 Release Workflow、发布分支及手动触发约束 |
 
-配置只声明现有检查，不执行任意 shell 模板，不定义远端 Job 调度。
+配置只声明现有检查和交付目标，不执行任意 Python 表达式或 shell 模板，不定义远端 Job 调度。
 schema_version=1；缺失、非法配置或未知实现明确失败，不静默使用另一套默认定义。
 PR profile 保留既有五项检查。工具的实际版本和当前输入仍需执行时核验，配置不能作为通过证据。
+
+## 交付与发布目标
+
+```toml
+[delivery]
+checks_profile = "pr"
+
+[delivery.release]
+workflow = "release.yml"
+branch = "main"
+trigger = "manual"
+```
+
+此轮将已有固定配置迁入 TOML，允许值仍限定为上面已有行为。
+`checks_profile` 必须引用完整 `pr` Profile，不能改为 `ruff` 或减少必需检查。
+`workflow`、`branch`、`trigger` 分别只支持 `release.yml`、`main`、`manual`。
+未知字段、缺少字段、错误类型或其他值均在检查、Git 和 GitHub 操作前拒绝。
+`trigger` 表示已有 Workflow 必须手动请求，不会注册定时器或修改 Workflow 的触发方式。
+
+保留 `schema_version = 1`：新增段可选，旧配置完全没有 `delivery` 时按原有固定值迁移。
+只要显式写了 `delivery`，其全部字段必须有效，不能用局部默认值掩盖拼写错误。
+现有检查段的格式和必需项保持不变。
+
+TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也不能跳过远端完整检查。
+版本、SHA、Run / Attempt、Manifest 与 Release Asset 的原有核验继续执行。
+若以后增加操作类型，应先映射到已注册的 Python Handler，不直接执行配置中的 shell。
 
 核心 pytest 需要 uv、Git、gh，Linux 需要 Bash；aria2 是可选专项。
 aria2 不存在时 native 和 auto 测试仍执行，专项 JUnit 标识为未启用。

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from .. import checks
+from ..pipeline import PIPELINE
 from .context import (
     CheckEvidence,
     CommitEvidence,
@@ -23,7 +24,12 @@ class EvidenceError(ValueError):
 def current_checks(checkout, path):
     """Reuse each matching execution; refresh only missing or invalidated checks."""
     print(f"Local PR checks: checking per-check evidence in {path}")
-    _, code = checks.execute(["pr"], root=checkout.root, output=path, reuse=True)
+    _, code = checks.execute(
+        [PIPELINE["delivery"]["checks_profile"]],
+        root=checkout.root,
+        output=path,
+        reuse=True,
+    )
     return code
 
 
@@ -62,9 +68,10 @@ class DeliveryPipeline:
                 "Check receipt changed while reading admission evidence"
             )
         saved = json.loads(raw)
+        names = PIPELINE["profiles"][PIPELINE["delivery"]["checks_profile"]]
         if (
-            [entry["name"] for entry in saved["checks"]] != list(checks.PR_CHECKS)
-            or [entry["name"] for entry in current["checks"]] != list(checks.PR_CHECKS)
+            [entry["name"] for entry in saved["checks"]] != names
+            or [entry["name"] for entry in current["checks"]] != names
             or not all(entry["passed_for_current_input"] for entry in current["checks"])
         ):
             raise EvidenceError("A partial profile cannot admit delivery")
@@ -127,7 +134,7 @@ class DeliveryPipeline:
         if facts["files"]:
             raise EvidenceError("Undelivered local changes cannot enter publication")
         pr = facts["pr"]
-        if facts["branch"] == "main":
+        if facts["branch"] == PIPELINE["delivery"]["release"]["branch"]:
             main = self.checkout.main_commit()
             if main != facts["head"]:
                 raise EvidenceError(

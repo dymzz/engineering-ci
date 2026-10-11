@@ -53,13 +53,18 @@ class ReleaseLifecycle:
                 "observe",
                 "INSPECTING",
                 "BLOCKED_main",
-                lambda: self.facts["branch"] == "main" and bool(self.facts["files"]),
+                lambda: (
+                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
+                    and bool(self.facts["files"])
+                ),
             ),
             (
                 "observe",
                 "INSPECTING",
                 "REVIEW_merged",
-                lambda: self.facts["branch"] == "main",
+                lambda: (
+                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
+                ),
             ),
             ("observe", "INSPECTING", "REVIEW_waiting", self._reviewed_push),
             ("observe", "INSPECTING", "DELIVERY_pending", lambda: True),
@@ -126,7 +131,8 @@ class ReleaseLifecycle:
         return bool(
             evidence
             and evidence.working_digest == self.facts["working_digest"]
-            and len(evidence.identities) == len(PIPELINE["profiles"]["pr"])
+            and len(evidence.identities)
+            == len(PIPELINE["profiles"][PIPELINE["delivery"]["checks_profile"]])
             and all(
                 re.fullmatch(r"[0-9a-f]{64}", value)
                 for value in (evidence.sha256, *evidence.identities)
@@ -192,7 +198,7 @@ class ReleaseLifecycle:
             and evidence.reviewed_head == self.facts["head"]
             and (
                 (
-                    self.facts["branch"] == "main"
+                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
                     and evidence.main_commit == self.facts["head"]
                 )
                 or (
@@ -210,7 +216,7 @@ class ReleaseLifecycle:
         if (
             identity["commit_sha"] != self.context.merge.main_commit
             or identity["version"] != self.facts["version"]
-            or identity["ref"] != "main"
+            or identity["ref"] != PIPELINE["delivery"]["release"]["branch"]
         ):
             raise InvalidTransition(
                 "Publication identity differs from the merge evidence"

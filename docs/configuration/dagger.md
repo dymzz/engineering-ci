@@ -10,6 +10,9 @@ Windows PowerShell 7：
 ```powershell
 Invoke-WebRequest https://dl.dagger.io/dagger/install.ps1 -OutFile "$env:TEMP/install-dagger.ps1"
 & "$env:TEMP/install-dagger.ps1" -DaggerVersion 1.0.0-beta.16 -AddToPath
+# 避免已配置的旧 Engine 覆盖新版默认值。
+$env:DAGGER_ENGINE = "image://registry.dagger.io/engine:v1.0.0-beta.16"
+[Environment]::SetEnvironmentVariable("DAGGER_ENGINE", $env:DAGGER_ENGINE, "User")
 # 新开终端使用户 PATH 生效。
 dagger version
 ```
@@ -20,12 +23,20 @@ Linux：
 curl -fsSL https://dl.dagger.io/dagger/install.sh -o /tmp/install-dagger.sh
 DAGGER_VERSION=1.0.0-beta.16 BIN_DIR="$HOME/.local/bin" sh /tmp/install-dagger.sh
 export PATH="$HOME/.local/bin:$PATH"
+export DAGGER_ENGINE=image://registry.dagger.io/engine:v1.0.0-beta.16
 dagger version
 ```
 
-需要可用的 Docker Engine。默认由 CLI 选择 Engine；使用已有测试容器时，
+需要可用的 Docker Engine。`DAGGER_ENGINE` 优先于旧的
+`_EXPERIMENTAL_DAGGER_RUNNER_HOST`；以上配置由 CLI 从指定镜像启动 Engine。
+使用已有测试容器时，
 显式设置 `DAGGER_ENGINE=container://容器名`，并确认容器镜像是相同版本。
 升级 CLI 不会升级另一个正在运行的旧 Engine。
+
+1.0 会生成 `dagger.lock` 固定实际使用的镜像与 Git 引用，应随源码提交。
+本仓库保留真实 fixture 执行生成的锁文件；检查输入范围包含该文件，
+其变化会使相关旧 pytest 记录失效。更新锁文件使用原生命令
+`dagger lock update`，并审查实际变更。
 
 ## 现有模块的兼容调用
 

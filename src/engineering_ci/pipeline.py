@@ -1,4 +1,4 @@
-"""Read the repository's shared check definitions; no scheduling or shell templates."""
+"""Read shared checks and delivery settings; no scheduling or shell templates."""
 
 from __future__ import annotations
 
@@ -7,6 +7,30 @@ import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ._paths import ROOT
+
+
+def delivery_config(data):
+    """Migrate schema 1 defaults without allowing a weaker release policy."""
+    legacy = {
+        "checks_profile": "pr",
+        "release": {"workflow": "release.yml", "branch": "main", "trigger": "manual"},
+    }
+    if "delivery" not in data:
+        return legacy
+    delivery = data["delivery"]
+    if not isinstance(delivery, dict) or set(delivery) != {"checks_profile", "release"}:
+        raise ValueError("Delivery requires checks_profile and release only")
+    profile = delivery["checks_profile"]
+    if not isinstance(profile, str) or profile not in data["profiles"]:
+        raise ValueError("Unknown delivery check profile")
+    if profile != "pr":
+        raise ValueError("Delivery must retain the existing complete PR profile")
+    release = delivery["release"]
+    if not isinstance(release, dict) or release != legacy["release"]:
+        raise ValueError(
+            "Release supports only the existing manual release.yml on main"
+        )
+    return {"checks_profile": profile, "release": dict(release)}
 
 
 def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
@@ -77,6 +101,7 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             raise ValueError("Invalid check profile")
         if set(data["profiles"]["pr"]) != supported:
             raise ValueError("PR profile must retain the existing required checks")
+        data["delivery"] = delivery_config(data)
         for backend, spec in data["optional_backends"].items():
             if backend != "aria2" or spec != {
                 "tool": "aria2c",
