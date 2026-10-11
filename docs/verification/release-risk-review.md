@@ -1,5 +1,8 @@
 # v0.4.9 关键风险审查
 
+本文是 v0.4.9 合并前的审查与验证记录，其中待验证事项描述当时状态。
+当前命令见[使用说明](../../guides/README.md)，发布机制见[发布说明](../architecture/release/workflow.md)。
+
 范围为 PR #10 的发布证据正确性；不增加质量检查，不改变消费者调用，
 不以代码行数决定重构。正式合并和发布仍由人发起。
 
@@ -14,7 +17,7 @@
 | 重复操作及响应丢失 | 原有同 SHA / Tag 的 Draft、有效原始 Manifest 可以恢复；正式 Release 只读核验，不重复创建。上传或转正式的响应丢失先报错，下次按真实状态恢复。 |
 | 发布前状态变化 | 再次核对 main、Tag、Release ID 和 Draft 状态；发生变化就拒绝 PATCH。 |
 
-真实重跑数据佐证：
+真实 Run Attempt 数据佐证：
 [Run 38004924269](https://github.com/dymzz/engineering-ci/actions/runs/38004924269)
 的两个 attempt 在同一 SHA 下留下同名 `pytest-report`，原生 ID 分别为
 11650981480、11651251232。Artifact API 没有 attempt 字段，不能用名称和 SHA
@@ -34,18 +37,17 @@ API 行为依据：
   原生 `gh api` 成功，内容 SHA-256 与实际 API digest 相同。这验证真实读取，
   不证明本仓库上传权限、私有 Draft 读回或转正式已经通过。
 - 候选提交的 `publish=false` Workflow 验证记录在 PR #10；正向与断言负向
-  分别记录，完整重跑核对 attempt 和不同 Artifact ID。报告中的
+  分别记录，并核对 attempt 和不同 Artifact ID。报告中的
   `fixture-invocations.txt=1` 验证证据收集没有重复执行 fixture pytest。
 
-正式 v0.4.9 未由 Agent 发起。人工合并后仍需手动正式流程验证
-`GITHUB_TOKEN` 的本仓库上传权限、Draft Asset 读回及转正式。
+该审查时正式 v0.4.9 尚未由 Agent 发起；本仓库 `GITHUB_TOKEN` 的上传权限、
+Draft Asset 读回及转正式当时缺少真实发布证据。
 
 ## 剩余限制
 
 - GitHub 没有原子绑定 main 比较、Asset 上传与 Release PATCH 的事务。
   多次核验缩小竞争窗口，不能排除最后一次请求中的外部并发修改。
-- 部分重跑缺少当前 attempt 的完整结果或原生输出会拒绝；使用完整重跑
-  或新的手动 Run，不借用另一 attempt 的成功检查。
+- 当前 attempt 缺少完整结果或原生输出会拒绝，不借用另一 attempt 的成功检查。
 - Actions 元数据存在保留期；删除后重复发布无法重新核验原始事实时拒绝。
   Release Manifest 自身持久保留，但不能伪造已删除的服务端证据。
 - 安全扫描范围为根 uv.lock；Dagger SDK 锁只做既有一致性检查。

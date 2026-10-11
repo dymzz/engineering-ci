@@ -1,18 +1,9 @@
-# Pytest reporting
+# Engineering CI
 
-个人开发采用本地优先检查与手动完整发布验收：[命令与发布流程](docs/release.md)。
+Engineering CI 提供可复用的 Python CI 能力，结合 Dagger、GitHub Actions 与本地执行工具。
 
-两个用户脚本 release.py、download.py 的用法、模块入口及旧函数迁移：[scripts 使用说明](scripts/README.md)。
-安装后的命令和 Workflow 菜单：[统一 CLI](docs/unified-cli.md)。
+## 文档入口
 
-See [single-execution pytest reports](docs/pytest-reporting.md) for the opt-in
-reusable workflow, JSON contract, Job Summary and native artifact delivery.
-
-See [explicit test strategies and quality gates](docs/test-quality-gates.md)
-for markers, opt-in coverage, exact thresholds and consumer examples.
-
-Python 多版本兼容性验证（显式启用）：[接口、报告契约与性能验证](docs/python-compatibility-matrix.md)。
-
-依赖锁一致性与已知漏洞门禁（默认关闭）：[使用说明](docs/dependency-security.md)。
-
-CI 性能基线与原生 uv 包缓存：[测量和使用说明](docs/ci-performance.md)。
+- [用户指南](guides/README.md) — 首次使用、常用操作、命令和输出参考。
+- [技术文档](docs/README.md) — 文档约定、架构、接口契约和验证记录。
+- [用户脚本](scripts/README.md) — Release 与 Download 两个入口的范围和维护说明。

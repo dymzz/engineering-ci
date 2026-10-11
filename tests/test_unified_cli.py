@@ -18,6 +18,43 @@ from engineering_ci.release import manifest, publishing
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def mock_release_request_metadata(monkeypatch):
+    """These routing/FSM tests never issue GitHub reads; evidence is tested separately."""
+
+    class API:
+        def __init__(self, repository):
+            pass
+
+        def __call__(self, path):
+            assert path.startswith("actions/runs/")
+            return {"head_sha": "a" * 40, "head_branch": "feature"}
+
+    monkeypatch.setattr(release, "GitHub", API)
+    monkeypatch.setattr(release, "prepare_publication", lambda options: 0)
+    monkeypatch.setattr(release, "execution_checkpoint", lambda *args: None)
+    monkeypatch.setattr(
+        release,
+        "resolve_target",
+        lambda api, ref, version: {
+            "version": version or "0.4.11",
+            "tag": "v" + (version or "0.4.11"),
+            "commit_sha": "a" * 40,
+            "ref": ref,
+        },
+    )
+    monkeypatch.setattr(release.verification, "published", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        release.verification,
+        "validation",
+        lambda *args, **kwargs: {
+            "run_id": 123,
+            "run_attempt": 1,
+            "manifest_artifact_id": 99,
+        },
+    )
+
+
 @pytest.mark.parametrize(
     "command,module",
     [
@@ -130,7 +167,7 @@ def test_user_entrypoints_offer_help_without_project_dependencies(
 @pytest.mark.parametrize(
     "entry,args",
     [
-        ("release.py", ["verify", "--version", "v0.4.11"]),
+        ("release.py", ["validate", "--version", "v0.4.11"]),
         ("download.py", ["--repo", "owner/repo", "--run", "45"]),
     ],
 )
@@ -347,13 +384,14 @@ def test_caller_constraints_cannot_change_run_identity(workflow, ref):
         )
 
 
-@pytest.mark.parametrize("mode,publish", [("verify", "false"), ("publish", "true")])
+@pytest.mark.parametrize("mode,publish", [("validate", "false"), ("publish", "true")])
 def test_release_requests_existing_pipeline_with_explicit_publication(
     mode, publish, monkeypatch
 ):
     calls = []
     monkeypatch.setattr(release, "entrypoint", lambda args: calls.append(args) or 1)
-    assert release.main([mode, "--version", "0.4.11", "--timeout", "90"]) == 1
+    options = [mode, "--version", "0.4.11", "--timeout", "90"]
+    assert release.main(options) == 1
     from engineering_ci.execution import cli
 
     args = cli.parser().parse_args(calls[0])
@@ -407,7 +445,7 @@ def test_release_unknown_response_still_blocks_second_post(tmp_path, monkeypatch
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
     monkeypatch.setattr(cli, "GitHubActionsClient", Client)
     args = [
-        "verify",
+        "validate",
         "--version",
         "v0.4.11",
         "--ref",
@@ -420,6 +458,35 @@ def test_release_unknown_response_still_blocks_second_post(tmp_path, monkeypatch
 
     state = json.loads(next((tmp_path / "cache/runs").glob("*.json")).read_text())
     assert state["phase"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_explicit_validate_can_follow_a_known_finished_attempt(
+    tmp_path, monkeypatch, conclusion
+):
+    from engineering_ci.execution import cli
+
+    posts = []
+
+    class Client:
+        def validate(self, identity):
+            pass
+
+        def dispatch(self, identity, inputs):
+            posts.append(dict(inputs))
+            return 40 + len(posts)
+
+        def wait(self, identity, run_id, timeout, interval):
+            return {"conclusion": conclusion}
+
+    monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
+    monkeypatch.setattr(cli, "GitHubActionsClient", Client)
+    args = ["validate", "--version", "0.4.11", "--ref", "feature"]
+    expected = 0 if conclusion == "success" else 1
+    assert release.main(args) == expected
+    assert release.main(args) == expected
+    assert len(posts) == 2
 
 
 @pytest.mark.parametrize("conclusion", ["success", "failure", "cancelled"])
@@ -456,7 +523,7 @@ def test_release_waits_without_downloading_and_preserves_remote_failure(
     monkeypatch.setattr(cli, "GitHubActionsClient", Client)
     for name in ("load_download_config", "DownloadAdapter", "ArtifactCollector"):
         monkeypatch.setattr(cli, name, no_download)
-    args = ["verify", "--version", "v0.4.11", "--ref", "feature"]
+    args = ["validate", "--version", "v0.4.11", "--ref", "feature"]
     expected = 0 if conclusion == "success" else 1
     assert release.main(args) == expected
     assert release.main([*args, "--resume", "45"]) == expected
@@ -486,6 +553,9 @@ def test_release_wait_interruption_resumes_same_run_without_post(tmp_path, monke
             posts.append(inputs)
             return 45
 
+        def get_run(self, identity, run_id):
+            assert run_id == 45
+
         def wait(self, identity, run_id, timeout, interval):
             waits.append(run_id)
             if len(waits) == 1:
@@ -495,12 +565,12 @@ def test_release_wait_interruption_resumes_same_run_without_post(tmp_path, monke
     monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
     monkeypatch.setattr(cli, "GitHubActionsClient", Client)
-    args = ["verify", "--version", "v0.4.11", "--ref", "feature"]
+    args = ["validate", "--version", "v0.4.11", "--ref", "feature"]
     assert release.main(args) == 1
     state_path = next((tmp_path / "cache/runs").glob("*.json"))
     paused = json.loads(state_path.read_text())
     assert paused["phase"] == "PAUSED" and paused["paused_from"] == "RUNNING"
-    assert release.main([*args, "--resume"]) == 0
+    assert release.main([*args, "--resume", "45"]) == 0
     assert len(posts) == 1 and waits == [45, 45]
 
 

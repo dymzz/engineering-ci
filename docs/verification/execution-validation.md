@@ -2,7 +2,7 @@
 
 此文保留初次实现的历史证据及旧脚本名。v0.4.11 的当前入口为 release.py、download.py；
 E2E 改为 `uv run --locked python -m engineering_ci.tools.workflow_e2e`。
-当前使用与旧函数迁移以 [scripts 说明](../scripts/README.md) 为准。
+当前使用与旧函数迁移以 [使用说明](../../guides/README.md) 为准。
 
 验证日期：2026-10-09（用户时区 Asia/Shanghai）。
 
@@ -17,7 +17,7 @@ E2E 改为 `uv run --locked python -m engineering_ci.tools.workflow_e2e`。
 | P0-3 首轮全量 | 全部现有及新增测试，含实际双进程互斥 | 60 passed，6 subtests passed |
 | 最终锁定环境 | 补全旧输出迁移、资源变化和 Windows 缓存目录保护后，全量回归 | **64 passed，13.95s；没有 skip** |
 
-后续阶段均在前一阶段测试通过后开始；中间失败已修正并重新验证，没有将失败结果当作交付。
+表中记录各阶段最终结果；失败结果未计为交付通过。
 早期环境的 pytest 单独报告 unittest subtests；最终使用 pytest 8.4.2，其输出不单列这些子场景。
 
 最终执行命令：
@@ -63,8 +63,9 @@ Git 的 LF / CRLF 提示不影响检查结果。
 
 ## 待人工验收
 
-按 [ghwf-execution.md](ghwf-execution.md) 配置 gh、aria2 和 Python 环境后，先用已有 Run 执行
-`uv run --locked python -m engineering_ci.tools.workflow_e2e --resume RUN_ID`，确认认证、官方日志 attempt 地址、真实 Digest、代理 / TLS
-和消费者 Artifact 目录。只有人工决定创建新 Run 时，再使用 `--allow-dispatch`。
+当时缺少真实认证、官方日志 attempt 地址、真实 Digest、代理 / TLS 和消费者 Artifact 目录的验收证据。
+环境要求见[状态与恢复](../architecture/execution/state-and-recovery.md)。E2E 入口支持指定已有 Run：
+`uv run --locked python -m engineering_ci.tools.workflow_e2e --resume RUN_ID`。
+创建新 Run 必须显式使用 `--allow-dispatch` 并获得人工授权。
 
 本轮未运行真实 E2E；GitHub API 线上行为、GHES、共享盘锁、断电和突然强杀尚不能由本地测试证明。

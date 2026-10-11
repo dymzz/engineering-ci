@@ -1,10 +1,13 @@
 # CI 性能测量与原生包缓存
 
+本文保留 v0.4.7 的测量、改造及验证记录，不定义当前 CI 触发或发布条件。
+当前操作见[使用说明](../../../guides/README.md)，发布门禁见[发布机制](../../architecture/release/workflow.md)。
+
 性能记录用于比较耗时，不决定测试或安全门禁是否通过。pytest 原始退出码、显式质量策略和安全扫描结果继续决定 CI 状态。
 
 ## v0.4.6 基线
 
-采样于 2026-10-10，使用 GitHub hosted Ubuntu 24.04、Dagger 0.21.10。完整时间戳、提交 SHA、步骤和原生 Dagger 观测记录见 [JSON 基线](performance/v0.4.7-baseline.json)。
+采样于 2026-10-10，使用 GitHub hosted Ubuntu 24.04、Dagger 0.21.10。完整时间戳、提交 SHA、步骤和原生 Dagger 观测记录见 [JSON 基线](baseline.json)。
 
 | 样本 | 检查执行窗口 | 提交到检查完成 | Engine 拉取与启动 | CLI 安装 | Dagger 检查阶段 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -72,7 +75,7 @@ JSON 区分：
 
 ## 候选验证结果
 
-三次正常 PR 运行 [38037454775](https://github.com/dymzz/engineering-ci/actions/runs/38037454775)、[38037824451](https://github.com/dymzz/engineering-ci/actions/runs/38037824451)、[38038786415](https://github.com/dymzz/engineering-ci/actions/runs/38038786415) 均通过全部必需 CI。完整记录和已计算差值见 [JSON 对比](performance/v0.4.7-results.json)。三次运行都是新 Engine，测试项目、六个核心检查、Python 版本及 coverage/security 策略保持一致。
+三次正常 PR 运行 [38037454775](https://github.com/dymzz/engineering-ci/actions/runs/38037454775)、[38037824451](https://github.com/dymzz/engineering-ci/actions/runs/38037824451)、[38038786415](https://github.com/dymzz/engineering-ci/actions/runs/38038786415) 均通过全部必需 CI。完整记录和已计算差值见 [JSON 对比](results.json)。三次运行都是新 Engine，测试项目、六个核心检查、Python 版本及 coverage/security 策略保持一致。
 
 | 指标 | 基线 3 次中位数 | 候选 3 次中位数 | 差值 |
 | --- | ---: | ---: | ---: |
@@ -96,4 +99,6 @@ JSON 区分：
 - 新 Engine 自然覆盖空缓存；不同锁内容与 Python 版本选择不同缓存目录。变更源码的真实负向 fixture 仍重新执行。无跨 Job 虚拟环境或测试结果缓存。
 - 补充 Windows 上 uv 0.12.23 的原生验证：本地包动态版本从 1.0.0 改为 2.0.0、保留文件时间戳时，暖缓存 `--locked --refresh` 与全新缓存均重建并安装 2.0.0 元数据。仅按非零退出码猜测动态版本是否被锁定是不正确的；这里检查的是冷、暖执行事实一致。
 
-失败路径继续收集完整证据，不为提前出现红灯而取消其他必要检查。Release Workflow 保持原样，仅人工合并后的成功 main CI 可以发布版本。Smoke 的候选/正式升级与正式发布后的 Renovate 验收尚待后续 PR；当前 Smoke 基线不代表候选消费者验证通过。
+当时的失败路径继续收集完整证据，不为提前出现红灯而取消其他必要检查。
+v0.4.7 当时要求人工合并后的成功 main CI 才能发布；这是历史触发方式，当前发布采用人工请求的完整 Release Run。
+当时 Smoke 的候选/正式升级与正式发布后的 Renovate 验收尚待后续 PR；该 Smoke 基线不代表候选消费者验证通过。

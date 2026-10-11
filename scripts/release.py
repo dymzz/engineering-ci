@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Request Release Workflow verification, or explicitly publish from main."""
+"""Deliver a development PR and, after human merge, validate and publish its version."""
 
 import sys
 from pathlib import Path

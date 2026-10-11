@@ -133,6 +133,12 @@ def needs():
 
 
 class ManualReleaseTests(unittest.TestCase):
+    def setUp(self):
+        # Request-policy fixtures have their own version, independent of this checkout.
+        metadata = patch.object(release, "checked_version", return_value=TAG[1:])
+        metadata.start()
+        self.addCleanup(metadata.stop)
+
     def test_requested_version_and_exact_checkout(self):
         self.assertEqual(release.request(environment(), HEAD), (TAG, True))
         for values, sha in [

@@ -1,0 +1,70 @@
+# Shared local / PR checks. GitHub Actions owns the remote release DAG.
+schema_version = 1
+
+[toolchain]
+uv = "0.12.23"
+ruff = "0.16.10"
+python = "3.14"
+
+[arguments]
+ruff_target = "py311"
+pytest = ["-q"]
+
+[profiles]
+pr = ["ruff-lint","ruff-format","pytest","version","lock"]
+ruff = ["ruff-lint","ruff-format"]
+tests = ["pytest"]
+
+[inputs]
+common = ["src/engineering_ci/__init__.py","src/engineering_ci/checks.py","src/engineering_ci/toolchain.py","src/engineering_ci/_paths.py","src/engineering_ci/cli/__init__.py","src/engineering_ci/cli/__main__.py","src/engineering_ci/workflow_actions.py",".github/workflows/ci.yml","config/pipeline.toml","src/engineering_ci/pipeline.py"]
+release_metadata = ["pyproject.toml","uv.lock",".dagger/pyproject.toml",".dagger/uv.lock"]
+
+[scopes]
+ruff = ["tests/fixtures/python-app","scripts/release.py","scripts/download.py","src/engineering_ci/__init__.py","src/engineering_ci/checks.py","src/engineering_ci/toolchain.py","src/engineering_ci/_paths.py","src/engineering_ci/cli/__init__.py","src/engineering_ci/cli/__main__.py","src/engineering_ci/github_cli.py","src/engineering_ci/workflow_actions.py","src/engineering_ci/cli","src/engineering_ci/release","src/engineering_ci/tools","tests/test_release_version.py","tests/test_manual_release.py","tests/test_release_manifest.py","tests/test_release_transport.py","tests/test_release_verification.py","tests/test_release_delivery.py","tests/test_checks.py","tests/test_unified_cli.py","tests/test_ci_performance.py","tests/test_sync_consumer.py","src/engineering_ci/pipeline.py","tests/test_pipeline.py","tests/test_release_lifecycle.py"]
+pytest = ["tests","src","scripts",".dagger/src",".python-version",".github/workflows","pyproject.toml","uv.lock","conftest.py","pytest.ini","setup.cfg","tox.ini","uv.toml",".dagger/pyproject.toml",".dagger/uv.lock","dagger.json",".dagger/dagger.json","docs/architecture/release/manifest.schema.json","config/ghwf.local.toml"]
+version = ["src/engineering_ci/release/version.py","src/engineering_ci/release/__init__.py","pyproject.toml","uv.lock",".dagger/pyproject.toml",".dagger/uv.lock"]
+lock = ["pyproject.toml","uv.lock",".python-version","uv.toml"]
+
+[checks.ruff-lint]
+scope = "ruff"
+required_tools = ["uv","uvx"]
+linux_tools = []
+optional_backends = []
+ci_step = "Ruff Lint"
+ci_job = "python-ci / checks"
+
+[checks.ruff-format]
+scope = "ruff"
+required_tools = ["uv","uvx"]
+linux_tools = []
+optional_backends = []
+ci_step = "Ruff Format Check"
+ci_job = "python-ci / checks"
+
+[checks.pytest]
+scope = "pytest"
+version_only_reuse = true
+required_tools = ["uv","git","gh"]
+linux_tools = ["bash"]
+optional_backends = ["aria2"]
+ci_step = "Run all core unit and process tests"
+ci_job = "sync-tool-tests"
+
+[checks.version]
+scope = "version"
+required_tools = []
+linux_tools = []
+optional_backends = []
+ci_step = "Validate release metadata and root lock consistency"
+ci_job = "version-metadata"
+
+[checks.lock]
+scope = "lock"
+required_tools = ["uv"]
+linux_tools = []
+optional_backends = []
+
+[optional_backends.aria2]
+tool = "aria2c"
+junit_property = "engineering_ci.optional_backend"
+junit_value = "aria2"

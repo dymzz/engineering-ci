@@ -77,3 +77,15 @@ class GitHub:
         if len(result.stdout) > 1024 * 1024:
             raise ValueError("Manifest asset exceeds limit")
         return json.loads(result.stdout)
+
+    def artifact_archive(self, artifact_id):
+        result = subprocess.run(
+            ["gh", "api", self.prefix + f"actions/artifacts/{artifact_id}/zip"],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        require_api_success(result)
+        if not 0 < len(result.stdout) <= 2 * 1024 * 1024:
+            raise ValueError("Validation Manifest archive exceeds limit or is empty")
+        return result.stdout
