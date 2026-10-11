@@ -15,7 +15,20 @@ class ReleaseVersionTests(unittest.TestCase):
                 mod.normalize(value)
 
     def test_repository_versions_consistent(self):
-        self.assertEqual(mod.checked_version(), "0.4.11")
+        found = mod.versions()
+        self.assertEqual(len(found), 4)
+        self.assertEqual(set(found.values()), {mod.checked_version()})
+        self.assertEqual(mod.normalize(mod.checked_version()), mod.checked_version())
+
+    def test_consistent_metadata_accepts_future_versions(self):
+        for version in ("0.4.11", "0.4.12", "1.2.3"):
+            with (
+                self.subTest(version=version),
+                patch.object(
+                    mod, "versions", return_value={"project": version, "lock": version}
+                ),
+            ):
+                self.assertEqual(mod.checked_version(), version)
 
     def test_mismatch_detected(self):
         with (

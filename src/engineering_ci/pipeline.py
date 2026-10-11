@@ -39,6 +39,15 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             strings(v) for v in data["scopes"].values()
         ):
             raise ValueError("Invalid input scopes")
+        if data["inputs"].get("release_metadata") != [
+            "pyproject.toml",
+            "uv.lock",
+            ".dagger/pyproject.toml",
+            ".dagger/uv.lock",
+        ]:
+            raise ValueError(
+                "Release metadata must identify the four first-party version fields"
+            )
         if not {
             "config/pipeline.toml",
             "src/engineering_ci/pipeline.py",
@@ -76,6 +85,12 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             }:
                 raise ValueError("Unsupported optional backend contract")
         for name, spec in checks.items():
+            if "version_only_reuse" in spec and (
+                name != "pytest" or spec["version_only_reuse"] is not True
+            ):
+                raise ValueError(
+                    "Version-only reuse applies only to the existing pytest implementation"
+                )
             if "ci_step" in spec and (
                 not isinstance(spec.get("ci_job"), str) or not spec["ci_job"]
             ):
@@ -107,6 +122,10 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
                 )
         if "tests" not in data["scopes"][checks["pytest"]["scope"]]:
             raise ValueError("Full pytest inputs must include tests")
+        if not set(data["inputs"]["release_metadata"]) <= set(
+            data["scopes"][checks["pytest"]["scope"]]
+        ):
+            raise ValueError("Version-only reuse requires all four metadata inputs")
         return data
     except (OSError, KeyError, TypeError, ValueError, AttributeError) as error:
         raise ValueError(f"Invalid pipeline configuration {path}: {error}") from error

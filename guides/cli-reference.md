@@ -58,6 +58,8 @@ publish 的 `--all` 对应 `git add --all`，包括列出的未跟踪文件；`-
 有未提交改动时必须同时提供这两个参数。新 PR 标题来自实际提交首行，PR 说明包含完整提交信息；
 已有 PR 保留人工标题和说明。正式 Release Notes 沿用 GitHub 对已合并 PR 的自动生成，无需另填发布信息。
 --checks-report 可指定完整 PR JSON，默认 .test-tools/checks/pr.json；复用前校验当前输入与工具身份。
+逐项复用匹配结果，不因其他检查失败而重跑已完成检查；相同输入的失败和 incomplete 保留原状态。
+只有四处一致的本项目版本值变化时，Ruff / pytest 证据可以延续，版本和锁文件结果需对应当前元数据。
 status --diff 显示已跟踪文件补丁；不执行检查、Commit、Push、合并、Dispatch 或下载。
 状态查询使用原有 execution 缓存恢复已确认 Run；UNKNOWN 候选不能自动认定为原请求。
 交付输出包含主阶段和内部操作，例如 DELIVERY.checking、REVIEW.waiting、BLOCKED.merged；
@@ -81,7 +83,7 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 | 原脚本 | 当前调用 |
 | --- | --- |
 | checks.py | `uv run --locked engineering-ci checks pr`，支持 ruff/tests/version/lock/inspect |
-| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.4.11 |
+| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.4.12 |
 | manual_release.py | Workflow 内部 `python -m engineering_ci.workflow_actions release ...` |
 | release_manifest.py | Workflow 内部 `python -m engineering_ci.workflow_actions manifest ...` |
 | dependency_security.py | `uv run --locked python -m engineering_ci.tools.security ...` |

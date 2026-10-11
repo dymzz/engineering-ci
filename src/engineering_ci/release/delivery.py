@@ -84,7 +84,8 @@ class Checkout:
             local_version = "inconsistent"
         if validate_version and local_version != version:
             raise DeliveryError(
-                "Requested version differs from the four local metadata fields"
+                f"Requested v{version} differs from the four local metadata fields (v{local_version}); "
+                "use the current version explicitly, or deliberately update the metadata"
             )
         if (
             Path(self.command("git", "rev-parse", "--show-toplevel")).resolve()
@@ -424,7 +425,7 @@ def prepare(
     if code:
         print(f"Stopped at local checks (exit {code}); report: {pipeline.report}")
         print(
-            "No commit or push was requested. Fix the reported check, then repeat this publish command."
+            "No commit or push was performed. Resolve the reported result; matching evidence is retained on the next publish."
         )
         return code
     lifecycle.advance("checks_passed")

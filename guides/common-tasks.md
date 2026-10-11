@@ -7,13 +7,13 @@
 在当前功能分支完成改动。目标版本已经准备好时无需再次修改；需要对齐四处元数据时使用：
 
 ```powershell
-uv run --locked engineering-ci version set v0.4.11
+uv run --locked engineering-ci version set v0.4.12
 ```
 
 查看当前交付上下文，不需要手工寻找分支、PR 或 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.4.11
+uv run --locked python scripts/release.py status --version v0.4.12
 ```
 
 `status` 只查询，显示 checkout、分支与提交、未提交文件、对应 PR 和实际 CI 状态、本地检查
@@ -25,7 +25,7 @@ uv run --locked python scripts/release.py status --version v0.4.11
 用同一个 `publish` 入口贯穿交付与发布，沿用 Git 的参数词汇：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.4.11 --all -m "统一本地与 PR 检查及发布入口"
+uv run --locked python scripts/release.py publish --version v0.4.12 --all -m "统一本地与 PR 检查及发布入口"
 ```
 
 `--all` 对应 `git add --all`，将当前 checkout 中列出的全部改动暂存，包括未跟踪文件；
@@ -40,7 +40,7 @@ uv run --locked python scripts/release.py publish --version v0.4.11 --all -m "�
 功能分支上的顺序是：
 
 1. 确认四处版本、Git origin、当前 gh 账号的仓库写权限和已有 PR。
-2. 复用与当前输入、参数和工具一致的完整 PR 结果；没有有效通过记录时执行现有 PR profile。
+2. 逐项核验当前输入、参数、工具和环境，复用匹配的执行结果，只刷新缺失或过期项；失败和 incomplete 不会自动重复执行。
 3. 提交、Push 当前分支，创建 Draft PR 或更新同一个开放 PR。保留人工说明并补充实际提交、改动文件和本地检查信息。
 4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，停在 **待人工审查合并**，返回 3。
 
@@ -58,7 +58,7 @@ CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR�
 人工合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.4.11
+uv run --locked python scripts/release.py publish --version v0.4.12
 ```
 
 入口确认该 PR 的实际合并提交已包含在远端 main，再请求一次正式 Release Run。
@@ -73,7 +73,7 @@ uv run --locked python scripts/release.py publish --version v0.4.11
 统一先使用：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.4.11
+uv run --locked python scripts/release.py status --version v0.4.12
 ```
 
 不需要猜选 checks、validate 或 verify，也不需要从历史终端输出寻找 ID。
@@ -98,6 +98,9 @@ Git/gh 权限、仓库选择或工作区位置阻碍操作时，在原 checkout 
 旧版本或其他提交的已确认 Run 标为历史记录，保留状态文件，但不作为当前发布的恢复点。
 已合并且改动全部交付时，`status` 核对远端 main、四处版本和合并关系后给出发布命令。
 有未交付改动时，以交付停点为准，不用旧 Run 的失败状态替代当前下一步。
+修改目标版本后使用当前版本接续。版本不匹配时显示本地真实版本，不再推荐同一条无效请求。
+只修改四处一致的本项目版本值时，沿用有效 Ruff / pytest 证据，重新核验版本和锁文件；
+源码或依赖变化仍使相关检查过期。具体规则见[证据继承](../docs/architecture/local-checks.md#版本准备与证据继承)。
 
 ## 按需独立调用
 
@@ -110,6 +113,7 @@ Git/gh 权限、仓库选择或工作区位置阻碍操作时，在原 checkout 
 | Pytest 与 Coverage | `uv run --locked engineering-ci checks tests --coverage` |
 | 版本和锁文件 | `uv run --locked engineering-ci checks version lock` |
 | 查询本地结果 | `uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json` |
+| 复用并补全当前检查 | `uv run --locked engineering-ci checks pr --reuse --json .test-tools/checks/pr.json` |
 
 本地与 PR CI 复用同一份定义。原生 Windows 无法执行的 Bash 测试记为 skipped，完整 profile
 返回 3（incomplete），不能视为完整 PR 通过。环境、JSON 和有效性规则见
@@ -118,7 +122,7 @@ Git/gh 权限、仓库选择或工作区位置阻碍操作时，在原 checkout 
 `validate` 只用于主动选择一次独立全量验证，不发布。候选分支和版本显式指定：
 
 ```powershell
-uv run --locked python scripts/release.py validate --version v0.4.11 --ref codex/local-verification-v0.4.10
+uv run --locked python scripts/release.py validate --version v0.4.12 --ref codex/release-delivery-fix-v0.4.11
 ```
 
 `verify --run` 保留为指定 Run 的只读证据核验；日常停点定位用 `status`。

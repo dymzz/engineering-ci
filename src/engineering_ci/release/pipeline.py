@@ -21,21 +21,9 @@ class EvidenceError(ValueError):
 
 
 def current_checks(checkout, path):
-    """Reuse only a complete PR report whose current inputs and tools still match."""
-    if path.is_file():
-        try:
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if [entry["name"] for entry in saved["checks"]] == list(checks.PR_CHECKS):
-                _, code = checks.inspect(path, root=checkout.root)
-                if code == 0:
-                    print(f"Local PR checks: passed for current input; reused {path}")
-                    return 0
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-    print(
-        "Local PR checks: no complete current pass; executing the existing PR profile"
-    )
-    _, code = checks.execute(["pr"], root=checkout.root, output=path)
+    """Reuse each matching execution; refresh only missing or invalidated checks."""
+    print(f"Local PR checks: checking per-check evidence in {path}")
+    _, code = checks.execute(["pr"], root=checkout.root, output=path, reuse=True)
     return code
 
 

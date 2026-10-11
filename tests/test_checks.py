@@ -149,6 +149,288 @@ def test_aggregate_saves_every_requested_check_and_no_environment_values(checkou
     assert "SECRET" not in out.read_text()
 
 
+def test_matching_passes_are_reused_without_running_checks(checkout):
+    out = checkout / "result.json"
+    checks.execute(["pr"], root=checkout, run=fake_process(), output=out, environ={})
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Matching check must not execute again")
+
+    report, code = checks.execute(
+        ["pr"], root=checkout, run=unexpected, output=out, environ={}, reuse=True
+    )
+    assert code == 0
+    assert all(
+        item["reused"] and item["executed"] and not item["executed_this_invocation"]
+        for item in report["checks"]
+    )
+
+
+def test_version_changes_only_refresh_dependent_checks(checkout):
+    out = checkout / "result.json"
+    checks.execute(["pr"], root=checkout, run=fake_process(), output=out, environ={})
+    (checkout / "pyproject.toml").write_text('version = "0.4.12"\n')
+    calls = []
+
+    def track(args, **kwargs):
+        calls.append(args)
+        return fake_process()(args, **kwargs)
+
+    report, code = checks.execute(
+        ["pr"], root=checkout, run=track, output=out, environ={}, reuse=True
+    )
+    assert code == 0
+    assert [entry["name"] for entry in report["checks"] if entry["reused"]] == [
+        "ruff-lint",
+        "ruff-format",
+    ]
+    assert calls == [checks.command(name) for name in ("pytest", "version", "lock")]
+
+
+def release_metadata(checkout, version):
+    for prefix in ("", ".dagger/"):
+        project = checkout / (prefix + "pyproject.toml")
+        project.parent.mkdir(parents=True, exist_ok=True)
+        project.write_text(
+            f'[project]\nname = "engineering-ci"\nversion = "{version}"\n'
+            'dependencies = ["example==1.0.0"]\n'
+        )
+        (checkout / (prefix + "uv.lock")).write_text(
+            f'[[package]]\nname = "engineering-ci"\nversion = "{version}"\n'
+            '[[package]]\nname = "example"\nversion = "1.0.0"\n'
+        )
+
+
+def test_completed_profile_survives_version_preparation_without_rerunning_pytest(
+    checkout,
+):
+    release_metadata(checkout, "0.4.11")
+    out = checkout / "result.json"
+    original, _ = checks.execute(
+        ["pr"], root=checkout, run=fake_process(), output=out, environ={}
+    )
+    release_metadata(checkout, "0.4.12")
+    calls = []
+
+    def track(args, **kwargs):
+        calls.append(args)
+        assert "pytest" not in args, "A version-only update must reuse pytest evidence"
+        return fake_process()(args, **kwargs)
+
+    report, code = checks.execute(
+        ["pr"], root=checkout, run=track, output=out, environ={}, reuse=True
+    )
+    assert code == 0
+    assert calls == [checks.command(name) for name in ("version", "lock")]
+    assert [entry["name"] for entry in report["checks"] if entry["reused"]] == [
+        "ruff-lint",
+        "ruff-format",
+        "pytest",
+    ]
+    previous = original["checks"][2]
+    assert report["checks"][2]["identity"] == previous["identity"]
+    assert previous["identity"]["inputs"]["version_neutral_metadata"] == sorted(
+        checks.PIPELINE["inputs"]["release_metadata"]
+    )
+
+
+def test_real_pytest_result_survives_only_project_version_change(checkout, monkeypatch):
+    release_metadata(checkout, "0.4.11")
+    sample = checkout / "tests/test_version_independent.py"
+    sample.write_text("def test_behavior():\n    assert 2 + 2 == 4\n")
+    monkeypatch.setattr(
+        checks,
+        "command",
+        lambda *a, **k: [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            str(sample),
+            "--junitxml=core-junit.xml",
+        ],
+    )
+    out = checkout / "result.json"
+    original, code = checks.execute(["tests"], root=checkout, output=out)
+    assert code == 0 and original["checks"][0]["counts"]["passed"] == 1
+    release_metadata(checkout, "0.4.12")
+    report, code = checks.execute(
+        ["tests"],
+        root=checkout,
+        output=out,
+        reuse=True,
+        run=lambda *a, **k: pytest.fail("Do not rerun already completed real pytest"),
+    )
+    assert code == 0 and report["checks"][0]["reused"]
+    assert report["checks"][0]["counts"] == original["checks"][0]["counts"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["source", "dependency", "lock_dependency", "partial_version", "configuration"],
+)
+def test_version_reuse_never_masks_other_changes(checkout, mutation):
+    release_metadata(checkout, "0.4.11")
+    before, _ = checks.snapshot(checkout, "pytest")
+    release_metadata(checkout, "0.4.12")
+    if mutation == "source":
+        (checkout / "tests/changed.py").write_text("# new input\n")
+    else:
+        path = checkout / (
+            "uv.lock" if mutation == "lock_dependency" else "pyproject.toml"
+        )
+        text = path.read_text()
+        if mutation == "dependency":
+            text = text.replace("example==1.0.0", "example==2.0.0")
+        elif mutation == "lock_dependency":
+            text = text.replace('version = "1.0.0"', 'version = "2.0.0"')
+        elif mutation == "partial_version":
+            text = text.replace("0.4.12", "0.4.13")
+        else:
+            text += '\n[tool.pytest.ini_options]\naddopts = "-x"\n'
+        path.write_text(text)
+    after, _ = checks.snapshot(checkout, "pytest")
+    assert before != after
+    if mutation == "partial_version":
+        assert after["version_neutral_metadata"] == []
+
+
+def test_partial_report_reuses_only_its_valid_selection(checkout):
+    out = checkout / "result.json"
+    checks.execute(["ruff"], root=checkout, run=fake_process(), output=out, environ={})
+    report, code = checks.execute(
+        ["pr"], root=checkout, run=fake_process(), output=out, environ={}, reuse=True
+    )
+    assert code == 0
+    assert [entry["name"] for entry in report["checks"] if entry["reused"]] == [
+        "ruff-lint",
+        "ruff-format",
+    ]
+    assert len(report["checks"]) == len(checks.PR_CHECKS)
+
+
+@pytest.mark.parametrize("original_code", [1, 7, -15])
+def test_matching_failure_is_preserved_without_automatic_retry(checkout, original_code):
+    out = checkout / "result.json"
+    _, expected = checks.execute(
+        ["version"],
+        root=checkout,
+        run=fake_process(original_code),
+        output=out,
+        environ={},
+    )
+    report, code = checks.execute(
+        ["version"],
+        root=checkout,
+        run=lambda *a, **k: pytest.fail("Unchanged failure must not be retried"),
+        output=out,
+        environ={},
+        reuse=True,
+    )
+    assert code == expected
+    assert report["checks"][0]["exit_code"] == original_code
+    assert report["checks"][0]["status"] == "failed"
+    assert report["checks"][0]["reused"]
+
+
+def test_matching_incomplete_execution_is_reused_and_does_not_admit_pass(
+    checkout, monkeypatch
+):
+    monkeypatch.setattr(
+        checks,
+        "pytest_counts",
+        lambda *args: {
+            "tests": 2,
+            "passed": 1,
+            "skipped": 1,
+            "failures": 0,
+            "errors": 0,
+        },
+    )
+    out = checkout / "result.json"
+    checks.execute(["tests"], root=checkout, run=fake_process(), output=out, environ={})
+    report, code = checks.execute(
+        ["pr"], root=checkout, run=fake_process(), output=out, environ={}, reuse=True
+    )
+    entry = next(item for item in report["checks"] if item["name"] == "pytest")
+    assert code == 3 and entry["reused"] and not entry["executed_this_invocation"]
+    assert entry["execution_status"] == "passed" and entry["exit_code"] == 0
+    assert (
+        entry["completeness"] == "incomplete" and not entry["passed_for_current_input"]
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["tool", "environment", "platform", "parameters", "pipeline"]
+)
+def test_changed_execution_identity_forces_refresh(checkout, monkeypatch, change):
+    out = checkout / "result.json"
+    checks.execute(
+        ["version"], root=checkout, run=fake_process(), output=out, environ={}
+    )
+    environ, coverage = {}, False
+    if change == "tool":
+        monkeypatch.setattr(
+            checks, "preflight", lambda *args: {"python": {"version": "3.14.4"}}
+        )
+    elif change == "environment":
+        environ = {"PYTHONHASHSEED": "1"}
+    elif change == "platform":
+        monkeypatch.setattr(checks.platform, "system", lambda: "OtherOS")
+    elif change == "parameters":
+        coverage = True
+    else:
+        path = checkout / "config/pipeline.toml"
+        path.parent.mkdir()
+        path.write_text("# new definition\n")
+    report, code = checks.execute(
+        ["version"],
+        root=checkout,
+        run=fake_process(),
+        output=out,
+        environ=environ,
+        coverage=coverage,
+        reuse=True,
+    )
+    assert code == 0
+    assert report["checks"][0]["executed_this_invocation"]
+    assert not report["checks"][0]["reused"]
+
+
+def test_later_check_cannot_mutate_a_reused_pass_and_admit_it(checkout):
+    out = checkout / "result.json"
+    checks.execute(["ruff"], root=checkout, run=fake_process(), output=out, environ={})
+
+    def mutate(*args):
+        (checkout / "src/engineering_ci/checks.py").write_text(
+            "# changed after reuse\n"
+        )
+
+    report, code = checks.execute(
+        ["pr"],
+        root=checkout,
+        run=fake_process(action=mutate),
+        output=out,
+        environ={},
+        reuse=True,
+    )
+    entry = report["checks"][0]
+    assert code == 3 and entry["reused"] and entry["status"] == "stale"
+    assert not entry["input_stable"] and not entry["passed_for_current_input"]
+
+
+def test_explicit_check_without_reuse_always_runs(checkout):
+    out = checkout / "result.json"
+    checks.execute(
+        ["version"], root=checkout, run=fake_process(), output=out, environ={}
+    )
+    report, code = checks.execute(
+        ["version"], root=checkout, run=fake_process(1), output=out, environ={}
+    )
+    assert code == 1 and report["checks"][0]["executed_this_invocation"]
+    assert not report["checks"][0]["reused"]
+
+
 def test_failure_does_not_skip_other_requested_checks(checkout):
     report, code = checks.execute(
         ["ruff", "version"], root=checkout, run=fake_process(4), environ={}

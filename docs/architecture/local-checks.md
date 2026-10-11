@@ -83,6 +83,11 @@ passed_for_current_input、实际工具版本、参数与相关输入指纹。�
 不复制终端日志、源码、环境变量值或认证凭据到 JSON。结果按临时文件 + 原子替换保存，
 失败时仍保存已有状态；未执行项使用 not_run 或明确的环境错误，exit_code=null。
 
+`execution_status` 表示工具实际执行结果；pytest 的 `completeness` 表示必需测试是否完整执行。
+Windows 上 exit 0 可以同时对应 execution_status=passed、completeness=incomplete：已执行的测试通过，
+未执行的 Linux Bash 测试仍是 skipped。Linux CI 与 Windows 本地记录分别绑定平台、工具、输入；
+不能互相改写状态，也不能用旧提交的 Linux CI 覆盖当前未提交改动。
+
 aria2 专项缺少可执行文件时，JUnit 的 testcase 属性
 `engineering_ci.optional_backend=aria2` 明确标识该项的可选范围。
 本地 JSON 将其列在 `optional_tests.aria2`，状态为 `not_enabled`，保留测试名称和原始 skipped 数量；
@@ -105,6 +110,35 @@ inspect 重新比较当前输入与工具身份，仅用于查询。freshness �
 unavailable 或 not_run；只有实际执行成功、输入稳定且身份仍匹配时，
 passed_for_current_input 才为 true。检查命令每次实际执行，不读取历史报告跳过检查。
 查询可能调用工具版本探测及 uv 的锁定环境准备，不重新运行 pytest。
+
+需要复用已有执行结果时显式使用：
+
+```sh
+uv run --locked engineering-ci checks pr --reuse --json .test-tools/checks/pr.json
+```
+
+此模式逐项核验，不要求整套历史结果都通过。只执行缺失或身份不匹配的检查；
+匹配的 passed、failed、incomplete 均复用原始状态与退出码，不自动重试失败或平台限制。
+`executed=true` 表示曾实际执行，`reused=true`、`executed_this_invocation=false` 表示本次读取已有证据。
+修复导致输入变化时仅刷新受影响项；确需在相同输入下重试时，去掉 `--reuse` 或独立运行对应检查。
+publish 使用同一逐项复用方式。查询仅比较身份，复用仍做末尾一致性核验，执行期间输入变化不能放行。
+
+## 版本准备与证据继承
+
+准备发布版本不是重新执行代码检查的理由。四处本项目版本字段一致且只有版本值变化时：
+
+| 证据 | 处理 |
+| --- | --- |
+| Ruff | 源码与检查定义未变，复用匹配结果 |
+| pytest | 四处本项目版本值按显式策略归一化，复用匹配结果和原始 JUnit 统计 |
+| Version Integrity | 对当前四处元数据重新执行，不继承旧版本通过记录 |
+| Lockfile Integrity | 对当前根元数据重新执行，确认更新仍满足锁文件 |
+| GitHub PR / Release | 保持实际提交 SHA、Run Attempt 与原生证据绑定，不继承另一提交的成功状态 |
+
+pytest 指纹只归一化 `engineering-ci` 自身的版本值，其余元数据字节、依赖版本、源代码、
+参数与环境仍参与身份。四处版本不一致、格式异常或无法确认目标字段时不归一化。
+该策略在 config/pipeline.toml 显式定义，不能用于排除测试或忽略依赖变化。
+新提交进入远程 CI 后，仍由实际 Workflow 决定其状态；本地复用不替代发布门禁。
 
 退出状态：实际工具失败保留原始非零退出码；信号退出转换为常规 shell 状态；
 工具缺失为 127；环境不满足、过期、报告不可用或不完整检查为 3；中断为 130。

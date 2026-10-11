@@ -42,6 +42,8 @@ def test_existing_checks_and_ci_share_the_configuration():
         lambda data: data["checks"]["pytest"].update(ci_step=False),
         lambda data: data["checks"]["pytest"].update(required_tools=[]),
         lambda data: data["inputs"].update(common=["README.md"]),
+        lambda data: data["inputs"].update(release_metadata=["pyproject.toml"]),
+        lambda data: data["checks"]["lock"].update(version_only_reuse=True),
         lambda data: data["scopes"].update(pytest=["src"]),
     ],
 )

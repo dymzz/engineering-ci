@@ -21,6 +21,11 @@ REPOSITORY = "dymzz/engineering-ci"
 VERSION = "0.4.11"
 
 
+@pytest.fixture(autouse=True)
+def fixture_version(monkeypatch):
+    monkeypatch.setattr(cli, "checked_version", lambda: VERSION)
+
+
 class Repository:
     def __init__(self, directory):
         self.root, self.remote = directory / "checkout", directory / "remote.git"
@@ -143,7 +148,14 @@ def repository(tmp_path, monkeypatch):
 def passing_checks(monkeypatch):
     calls = []
 
-    def execute(selectors, *, root, output):
+    def execute(selectors, *, root, output, reuse=False):
+        if (
+            reuse
+            and output.is_file()
+            and [entry["name"] for entry in json.loads(output.read_text())["checks"]]
+            == list(checks.PR_CHECKS)
+        ):
+            return {}, 0
         calls.append(selectors)
         checks.atomic_json(
             output,
@@ -529,18 +541,18 @@ def test_printed_continuation_executes_with_literal_arguments(capsys):
     assert values[:3] == ["run", "--locked", "python"]
 
 
-@pytest.mark.parametrize("current", [True, False])
-def test_report_reuse_requires_complete_current_pass(
-    repository, passing_checks, monkeypatch, current
-):
+def test_delivery_delegates_per_check_reuse(repository, monkeypatch):
     path = repository.root / ".test-tools/checks/pr.json"
-    checks.atomic_json(path, {"checks": [{"name": name} for name in checks.PR_CHECKS]})
-    monkeypatch.setattr(
-        checks, "inspect", lambda *args, **kwargs: ({}, 0 if current else 3)
-    )
+    calls = []
+
+    def execute(selectors, **kwargs):
+        calls.append((selectors, kwargs))
+        return {}, 3
+
+    monkeypatch.setattr(checks, "execute", execute)
     checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
-    assert delivery.current_checks(checkout, path) == 0
-    assert passing_checks == ([] if current else [["pr"]])
+    assert delivery.current_checks(checkout, path) == 3
+    assert calls == [(["pr"], {"root": repository.root, "output": path, "reuse": True})]
 
 
 def test_partial_report_does_not_replace_pr_profile(repository, passing_checks):
@@ -597,6 +609,29 @@ def test_stop_error_includes_repository_version_and_continuation(monkeypatch, ca
     assert "permission denied" in output.err
     assert "Continue:" in output.out and REPOSITORY in output.out
     assert "v0.4.11" in output.out and "status" in output.out
+
+
+def test_version_mismatch_never_recommends_the_same_invalid_request(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+    monkeypatch.setattr(cli.verification, "published", lambda *args: None)
+    monkeypatch.setattr(cli, "checked_version", lambda: "0.4.12")
+
+    def mismatch(options):
+        raise delivery.DeliveryError("Requested version differs from local metadata")
+
+    monkeypatch.setattr(cli, "prepare_publication", mismatch)
+    monkeypatch.setattr(cli, "entrypoint", lambda *args: pytest.fail("No dispatch"))
+    assert cli.main(["publish", "--version", VERSION]) == 1
+    output = capsys.readouterr().out
+    continuation = [
+        line for line in output.splitlines() if line.startswith("Continue:")
+    ]
+    assert len(continuation) == 1
+    assert "--version v0.4.12" in continuation[0]
+    assert "v0.4.11" not in continuation[0]
+    assert "local metadata version is intended" in output
 
 
 def test_failed_stage_keeps_shared_context_for_cli_handoff(
@@ -779,7 +814,8 @@ def test_status_shows_missing_tool_without_inventing_commit_message(
                     {
                         "name": "pytest",
                         "status": "missing_tool",
-                        "reason": "aria2c is required",
+                        "reason": "uv is required",
+                        "freshness": "not_run",
                     }
                 ]
             },
@@ -788,7 +824,8 @@ def test_status_shows_missing_tool_without_inventing_commit_message(
     )
     assert cli.show_status(Namespace(repo=REPOSITORY, version=VERSION, diff=False)) == 0
     output = capsys.readouterr().out
-    assert "Local check pytest: missing_tool; aria2c is required" in output
+    assert "Local check pytest [unknown]: missing_tool" in output
+    assert "uv is required" in output
     assert "your git commit -m message" in output
     commands = [line for line in output.splitlines() if line.startswith("Continue:")]
     assert commands and all(

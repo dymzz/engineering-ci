@@ -10,6 +10,7 @@
 | `arguments` | 既有 Ruff target 与 pytest 参数；JUnit、Coverage 输出位置由调用决定 |
 | `profiles` | 完整 PR 和单项检查选择；重复选择同一项只执行一次 |
 | `inputs.common` / `scopes` | 内容、权限与缺失文件参与执行身份；范围必须位于仓库内 |
+| `inputs.release_metadata` / `checks.pytest.version_only_reuse` | 固定四处本项目版本字段；仅 pytest 可复用版本变化前的代码检查证据 |
 | `checks` | 检查范围、必需工具、Linux 工具和原有 CI job / step 名称 |
 | `optional_backends` | 可选 aria2 集成测试工具及 JUnit 标识 |
 
@@ -23,5 +24,7 @@ aria2 不存在时 native 和 auto 测试仍执行，专项 JUnit 标识为未�
 
 配置文件和读取模块参与所有检查的输入指纹。更改版本、参数、范围或依赖后，
 旧结果不能作为当前准入依据；检查过程中发生变更也不能产生有效通过记录。
+四处元数据只有一致的本项目版本值变化时，pytest 指纹保留其他全部内容，
+版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。
 运行、结果与环境限制见[本地检查](../architecture/local-checks.md)，阶段证据传递见
 [发布机制](../architecture/release/workflow.md#交付阶段与证据准入)。

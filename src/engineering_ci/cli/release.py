@@ -15,7 +15,7 @@ if not __package__:
 
 from ..github_cli import GitHub
 from ..release import verification
-from ..release.version import normalize
+from ..release.version import checked_version, normalize
 from ._execution import (
     add_wait_arguments,
     execution_environment,
@@ -167,10 +167,19 @@ def show_status(options):
                 f"Local checks: {'passed for current input' if not code else 'not a current pass'}; {path}"
             )
             for entry in result["checks"]:
-                if entry.get("reason"):
+                platform = (entry.get("environment") or {}).get("platform", "unknown")
+                print(
+                    f"Local check {entry['name']} [{platform}]: {entry['status']}; "
+                    f"freshness: {entry['freshness']}; tool exit: {entry.get('exit_code')}"
+                )
+                if entry.get("counts"):
                     print(
-                        f"Local check {entry['name']}: {entry['status']}; {entry['reason']}"
+                        f"  Recorded JUnit counts: {json.dumps(entry['counts'], sort_keys=True)}"
                     )
+                if entry.get("reason"):
+                    print(f"  {entry['reason']}")
+                if entry.get("invalidation_reason"):
+                    print(f"  {entry['invalidation_reason']}")
         except (OSError, ValueError, KeyError, TypeError):
             print(
                 f"Local checks: saved report unavailable or invalid; {path}; not a pass"
@@ -570,7 +579,31 @@ def main(argv=None):
                     "Inspect context: uv run --locked python scripts/release.py status "
                     f"--repo {options.repo} --version v{options.version}"
                 )
-                continue_command(options)
+                try:
+                    actual = checked_version()
+                except (OSError, ValueError, KeyError, TypeError):
+                    actual = None
+                if actual == options.version:
+                    continue_command(options)
+                else:
+                    print(
+                        f"Local metadata: v{actual}; requested v{options.version}."
+                        if actual
+                        else "Local version metadata is unavailable or inconsistent."
+                    )
+                    if actual:
+                        from copy import copy
+
+                        current_options = copy(options)
+                        current_options.version = actual
+                        print(
+                            "If the local metadata version is intended, use this explicit request:"
+                        )
+                        continue_command(current_options)
+                    else:
+                        print(
+                            "Resolve the four version fields before requesting publication."
+                        )
         return 1
 
 

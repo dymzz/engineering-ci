@@ -30,6 +30,9 @@ GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与
 保留在结果中，入口返回 3，不能将此记录作为完整 PR 通过。缺少 Git、gh
 时明确报告工具缺失。完整 Linux 验证可在 WSL2 中使用相同入口。
 详细环境准备、JSON 状态与历史结果校验见 [本地验证](../local-checks.md)。
+交付 Pipeline 分别持有代码检查和当前版本证据。版本准备不会无差别丢弃代码检查：
+只有本项目四处一致的版本值变化时，保留同环境的 Ruff / pytest 结果，重新核验版本和锁文件。
+缺少当前版本证据、源码 / 依赖已变化或结果不完整时仍阻断准入；远程门禁继续绑定实际提交。
 
 完整检查需 Docker 与 Dagger CLI 0.21.10（匹配 dagger.json）。
 Release Workflow 的 `dagger check` 已包含 quality 和 matrix fixture。
