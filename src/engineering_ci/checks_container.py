@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from . import checks
+from .check_operations import container_plan
 
 OMITTED_INPUTS = ("config/ghwf.local.toml",)
 
@@ -34,10 +35,17 @@ def prepare(root, names, runtime):
 
 def main(argv=None, *, output=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "execute"))
-    parser.add_argument("--request", required=True)
-    parser.add_argument("--runtime", required=True)
+    parser.add_argument("operation", choices=("plan", "prepare", "execute"))
+    parser.add_argument("--request")
+    parser.add_argument("--runtime")
     args = parser.parse_args(argv)
+    if args.operation == "plan":
+        if args.request is not None or args.runtime is not None:
+            parser.error("plan reads the validated Pipeline only")
+        print(json.dumps(container_plan(checks.PIPELINE), sort_keys=True))
+        return 0
+    if args.request is None or args.runtime is None:
+        parser.error("prepare and execute require --request and --runtime")
     root = checks.ROOT
     out = Path(output) if output else Path("/evidence")
     out.mkdir(parents=True, exist_ok=True)

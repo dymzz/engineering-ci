@@ -6,6 +6,7 @@ import json
 import pytest
 
 from engineering_ci import checks, pipeline, toolchain
+from engineering_ci.check_operations import OPERATIONS, command, container_plan
 
 
 def test_existing_checks_and_ci_share_the_configuration():
@@ -25,6 +26,114 @@ def test_existing_checks_and_ci_share_the_configuration():
         )
     assert "aria2c" not in configured["checks"]["pytest"]["required_tools"]
     assert configured["checks"]["pytest"]["optional_backends"] == ["aria2"]
+    assert set(configured["checks"]) == set(OPERATIONS)
+
+
+@pytest.mark.parametrize(
+    "location", ["pipeline", "arguments", "inputs", "checks.pytest", "checks.ruff-lint"]
+)
+@pytest.mark.parametrize(
+    "field", ["command", "handler", "needs", "permissions", "env", "shell"]
+)
+def test_unknown_or_unimplemented_fields_are_rejected_before_tools(
+    tmp_path, monkeypatch, location, field
+):
+    import subprocess
+
+    data = copy.deepcopy(pipeline.PIPELINE)
+    table = data
+    if location != "pipeline":
+        for part in location.split("."):
+            table = table[part]
+    table[field] = "SECRET_configured_code"
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: pytest.fail("No tool may run")
+    )
+    with pytest.raises(ValueError, match="Unsupported or missing fields") as error:
+        pipeline.load(path)
+    assert "SECRET" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda data: data["profiles"].update(pytest=["ruff-lint"]),
+        lambda data: data["profiles"].update(tests=["version"]),
+        lambda data: data["profiles"].update(extra=[]),
+        lambda data: data["scopes"].update(unused=["README.md"]),
+        lambda data: data["scopes"].update(ruff=[]),
+        lambda data: data["scopes"]["pytest"].remove("src"),
+        lambda data: data["scopes"]["version"].remove("uv.lock"),
+        lambda data: data["scopes"]["lock"].remove("uv.toml"),
+        lambda data: data["checks"]["pytest"]["required_tools"].remove("gh"),
+        lambda data: data["checks"]["pytest"]["linux_tools"].remove("bash"),
+        lambda data: data["checks"]["ruff-lint"].update(optional_backends=["aria2"]),
+        lambda data: data["checks"]["pytest"].update(optional_backends=[]),
+    ],
+)
+def test_shadowed_operations_unused_definitions_and_missing_contracts_are_rejected(
+    tmp_path, monkeypatch, mutation
+):
+    data = copy.deepcopy(pipeline.PIPELINE)
+    mutation(data)
+    path = tmp_path / "pipeline.toml"
+    path.touch()
+    monkeypatch.setattr(pipeline.tomllib, "load", lambda _: data)
+    with pytest.raises(ValueError, match="Invalid pipeline configuration"):
+        pipeline.load(path)
+
+
+def test_configured_ruff_scope_and_tool_arguments_drive_the_registered_command():
+    data = copy.deepcopy(pipeline.PIPELINE)
+    data["scopes"]["lint-only"] = ["src/engineering_ci/pipeline.py"]
+    data["checks"]["ruff-lint"]["scope"] = "lint-only"
+    data["arguments"]["ruff_target"] = "py314"
+    data["toolchain"]["ruff"] = "0.16.9"
+    args = command("ruff-lint", data)
+    assert args[2] == "ruff==0.16.9"
+    assert args[6:] == ["py314", "src/engineering_ci/pipeline.py"]
+    assert (
+        command("ruff-format", data)[-len(data["scopes"]["ruff"]) :]
+        == data["scopes"]["ruff"]
+    )
+    data["arguments"]["pytest"] = ["-vv", "--tb=short"]
+    data["toolchain"]["python"] = "3.15"
+    args = command("pytest", data)
+    assert args[args.index("--python") + 1] == "3.15"
+    assert args[args.index("pytest") + 1 :] == [
+        "-vv",
+        "--tb=short",
+        "--junitxml=core-junit.xml",
+    ]
+    with pytest.raises(ValueError, match="Unsupported check"):
+        command("os.system", data)
+
+
+def test_container_plan_uses_full_profile_and_explicit_optional_tools():
+    config = copy.deepcopy(pipeline.PIPELINE)
+    first = container_plan(config)
+    assert first["packages"] == ["aria2", "bash", "ca-certificates", "gh", "git"]
+    assert first["toolchain"] == {
+        name: config["toolchain"][name] for name in ("python", "uv")
+    }
+    config["profiles"]["pr"].reverse()
+    assert container_plan(config) == first
+    config["checks"]["pytest"]["optional_backends"] = []
+    config["optional_backends"] = {}
+    assert "aria2" not in container_plan(config)["packages"]
+
+
+def test_registered_operations_are_inputs_for_every_check(tmp_path):
+    path = tmp_path / "src/engineering_ci/check_operations.py"
+    path.parent.mkdir(parents=True)
+    before = {name: checks.snapshot(tmp_path, name)[0] for name in checks.PR_CHECKS}
+    path.write_text("# changed registered command or dependency\n")
+    assert all(
+        checks.snapshot(tmp_path, name)[0] != before[name] for name in checks.PR_CHECKS
+    )
 
 
 @pytest.mark.parametrize(
@@ -39,6 +148,8 @@ def test_existing_checks_and_ci_share_the_configuration():
         lambda data: data["scopes"].update(ruff=["../outside"]),
         lambda data: data["scopes"].update(ruff=["D:/outside"]),
         lambda data: data["scopes"].update(ruff=["/outside"]),
+        lambda data: data["scopes"].update(ruff=["--output-format=json"]),
+        lambda data: data["scopes"].update(ruff=["src\n--fix"]),
         lambda data: data["checks"]["pytest"].update(ci_step=False),
         lambda data: data["checks"]["pytest"].update(required_tools=[]),
         lambda data: data["inputs"].update(common=["README.md"]),

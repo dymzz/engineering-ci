@@ -172,6 +172,22 @@ def test_linux_evidence_binds_the_original_checkout_and_exports_once(backend):
     assert backend.exports == [list(checks.PR_CHECKS)]
 
 
+def test_container_plan_only_validates_configuration_without_checks_or_probes(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        checks, "execute", lambda *args, **kwargs: pytest.fail("No check execution")
+    )
+    monkeypatch.setattr(
+        checks, "preflight", lambda *args, **kwargs: pytest.fail("No tool probe")
+    )
+    assert checks_container.main(["plan"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["packages"] == ["aria2", "bash", "ca-certificates", "gh", "git"]
+    assert set(plan) == {"schema_version", "toolchain", "packages"}
+    assert "SECRET" not in json.dumps(plan)
+
+
 @pytest.mark.parametrize("failure,skip,expected", [(1, False, 1), (0, True, 3)])
 def test_raw_failure_and_required_skip_never_admit_delivery(
     backend, failure, skip, expected
@@ -444,4 +460,12 @@ def test_default_dagger_check_list_does_not_repeat_repository_pytest():
 def test_invalid_report_path_is_rejected_before_any_operation(backend, junit):
     with pytest.raises(ValueError):
         execute(backend, junit=junit)
+    assert not backend.exports and backend.probes == 0
+
+
+def test_empty_dagger_request_is_rejected_before_any_operation(backend):
+    with pytest.raises(ValueError, match="explicit check"):
+        dagger_checks.execute(
+            [], root=backend.root, run=backend.run, which=backend.which
+        )
     assert not backend.exports and backend.probes == 0
