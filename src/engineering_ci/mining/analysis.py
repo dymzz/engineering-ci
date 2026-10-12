@@ -1,4 +1,4 @@
-"""Select honest observed sequences and delegate discovery to PM4Py."""
+"""Select honest observed sequences and delegate discovery to Rust4PM."""
 
 from __future__ import annotations
 
@@ -7,11 +7,82 @@ import json
 from collections import Counter, defaultdict
 from importlib.metadata import version
 from itertools import pairwise
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from xml.etree import ElementTree as ET
 
 from ..tracing.projection import ACTIVITIES, PROJECTION_VERSION
 from ..tracing.store import ArchiveError
 
-ANALYSIS_VERSION = "observed-turn-variants/1"
+LEGACY_ANALYSIS_VERSION = "observed-turn-variants/1"
+ANALYSIS_VERSION = "observed-turn-variants/2"
+
+
+def analysis_identity(value):
+    """Keep historical PM4Py identities distinct from the Rust4PM backend."""
+    names = (
+        "input_sha256",
+        "snapshot_id",
+        "projection_id",
+        "analysis_version",
+        "case_scope",
+        "allow_incomplete",
+        "dependencies",
+    )
+    if value["analysis_version"] == ANALYSIS_VERSION:
+        names += ("engine",)
+    return {name: value[name] for name in names}
+
+
+def discover(selected):
+    """Adapt admitted sequences to XES; Rust4PM owns variants and DFG discovery."""
+    import r4pm
+    from r4pm import bindings
+
+    if not selected:
+        return {}, {}, {}, {}
+    log = ET.Element(
+        "log", {"xes.version": "1.0", "xmlns": "http://www.xes-standard.org/"}
+    )
+    for case in selected:
+        trace = ET.SubElement(log, "trace")
+        ET.SubElement(trace, "string", key="concept:name", value=case["turn_id"])
+        for operation in case["operations"]:
+            event = ET.SubElement(trace, "event")
+            ET.SubElement(
+                event, "string", key="concept:name", value=operation["activity"]
+            )
+    identifiers = []
+    try:
+        with TemporaryDirectory(prefix="engineering-ci-mining-") as directory:
+            path = Path(directory) / "cases.xes"
+            ET.ElementTree(log).write(path, encoding="utf-8", xml_declaration=True)
+            log_id = r4pm.import_item("EventLog", str(path))
+            identifiers.append(log_id)
+            projection_id = bindings.log_to_activity_projection(log_id)
+            identifiers.append(projection_id)
+            variants = {
+                tuple(item["activities"]): item["count"]
+                for item in bindings.get_variants(projection_id)
+            }
+            graph = bindings.discover_dfg(log_id)
+            edges = {
+                tuple(edge): count
+                for edge, count in graph["directly_follows_relations"]
+            }
+            # Rust4PM returns boundary sets; preserve the existing frequency fields.
+            starts, ends = Counter(), Counter()
+            for activities, count in variants.items():
+                starts[activities[0]] += count
+                ends[activities[-1]] += count
+            return variants, edges, starts, ends
+    except (ValueError, RuntimeError, KeyError, TypeError):
+        raise ArchiveError(
+            "analysis_failed", "Rust4PM could not analyze the admitted event log"
+        ) from None
+    finally:
+        for identifier in reversed(identifiers):
+            r4pm.remove_item(identifier)
 
 
 def select_cases(projection, *, allow_incomplete=False):
@@ -88,25 +159,9 @@ def select_cases(projection, *, allow_incomplete=False):
 
 def analyze(projection, input_digest, *, allow_incomplete=False):
     """Use variants and DFG APIs only; models and production execution are absent."""
-    import pandas as pd
-    import pm4py
-
     selected, excluded = select_cases(projection, allow_incomplete=allow_incomplete)
-    rows = [
-        {
-            "case:concept:name": case["turn_id"],
-            "concept:name": operation["activity"],
-            "time:timestamp": pd.to_datetime(operation["end_ns"], unit="ns", utc=True),
-        }
-        for case in selected
-        for operation in case["operations"]
-    ]
-    variants, dfg, starts, ends = {}, {}, {}, {}
-    if rows:
-        frame = pd.DataFrame(rows)
-        variants = pm4py.get_variants_as_tuples(frame)
-        dfg, starts, ends = pm4py.discover_dfg(frame)
-    dependencies = {name: version(name) for name in ("pm4py", "pandas", "numpy")}
+    variants, dfg, starts, ends = discover(selected)
+    dependencies = {"r4pm": version("r4pm")}
     identity = {
         "input_sha256": input_digest,
         "snapshot_id": projection.get("snapshot_id"),
@@ -115,9 +170,12 @@ def analyze(projection, input_digest, *, allow_incomplete=False):
         "case_scope": "turn",
         "allow_incomplete": allow_incomplete,
         "dependencies": dependencies,
+        "engine": "rust4pm",
     }
     analysis_id = hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            analysis_identity(identity), sort_keys=True, separators=(",", ":")
+        ).encode()
     ).hexdigest()
     counts = Counter(item["activity"] for item in projection["operations"])
     outcomes = Counter(item["outcome"] for item in projection["operations"])
@@ -125,9 +183,9 @@ def analyze(projection, input_digest, *, allow_incomplete=False):
         "schema_version": 1,
         "analysis_id": analysis_id,
         **identity,
-        "status": "passed" if rows else "unavailable",
+        "status": "passed" if selected else "unavailable",
         "reason": None
-        if rows
+        if selected
         else "No closed observed case has unambiguous operation times",
         "llm_used": False,
         "completeness": projection["completeness"],

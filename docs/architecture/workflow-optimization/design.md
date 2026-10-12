@@ -1,6 +1,6 @@
 # Trace-Driven Workflow Optimization Loop — 实施方案
 
-本文确定 v0.6.0 的实施范围、架构边界和交付步骤。各阶段按下文实施；已完成证据见[原始轨迹验收](../../verification/trace-validation.md)。
+本文保留 pre-0.6.0 的设计范围、架构边界和交付步骤。前期代码已随 PR #20 合并，未正式发布 0.6.0；本轮按用户确定的 v0.5.5 过渡版本交付两个 P0 与 Rust4PM 调整。各阶段按下文实施；已完成证据见[原始轨迹验收](../../verification/trace-validation.md)。
 基线为正式 v0.5.4，提交 `f1d7d31014417468fa7299be27a86f0a57b47521`。
 P0-0 至 P0-4 已实现并获得分阶段实测证据，版本元数据在功能 PR 交付前统一准备。
 归档存储复用本地宿主 PostgreSQL，由 `VESRYN_DATABASE` 提供连接配置；不保留 SQLite 后端或回退。
@@ -22,7 +22,7 @@ v0.6.0 不应声称整个自动优化循环已经实现。最低交付范围为�
 2. 保留原始字节的归档、幂等导入、恢复导入与回放。
 3. CloudEvents 封装与少量归档元数据；来源完整性可以解释。
 4. 复用标准 OTel 数据模型及成熟插桩；支持范围内的数据可以重新生成标准化视图。
-5. 同一固定数据集的非 LLM 变体分析；具备适当事件顺序和时间信息的数据可调用 PM4Py 发现 DFG。
+5. 同一固定数据集的非 LLM 变体分析；具备适当事件顺序和时间信息的数据可调用 Rust4PM 发现 DFG。
 6. 分析结果可追溯到原始事件，并明确未支持、未知或缺失的信息。
 
 跨运行优化效果验证、LLM 辅助建议、Workflow IR 及编译器属于后续阶段，
@@ -53,7 +53,7 @@ v0.6.0 不应声称整个自动优化循环已经实现。最低交付范围为�
 | Trace / Span / Log 模型 | OTel、OTLP、版本固定的语义约定 | 关联既有执行身份；处理来源到标准模型的实际缺口 |
 | 传输、重试、可观测性 | OTel exporter / 可选 Collector、既有后端 | 配置和兼容性验证，不自建 Collector 或 Trace UI |
 | 原始归档 | 宿主 PostgreSQL、Psycopg 3、CloudEvents | 实现归档索引、来源游标及字节回放；复用服务器事务与持久性机制 |
-| 流程发现与一致性分析 | PM4Py | 定义 case、活动粒度、入选数据和分析身份 |
+| 流程发现与一致性分析 | Rust4PM | 定义 case、活动粒度、入选数据和分析身份 |
 | 工作流执行 | 既有注册 Handler、Pipeline、Dagger、Actions | 后续只把经过审查的候选接到现有执行边界 |
 
 [OpenTelemetry Python GenAI](https://github.com/open-telemetry/opentelemetry-python-genai)
@@ -86,7 +86,7 @@ Codex 是独立运行时，给 Python OpenAI SDK 插桩不等于覆盖桌面 Cod
 | Trace 结束就说明事件 complete | 结束只证明边界被观察到；是否缺事件必须根据来源协议判断，无法判断时为 unknown |
 | 所有 Span 按时间排序就是流程顺序 | 并发、跨进程时钟和传输乱序使该推论不成立；保留因果关系和并行关系 |
 | 一个 Trace ID 就是一个完整交付 case | Trace 常对应一次调用，开发交付可跨多次调用、人工停点及多个 Actions Attempt；case 必须单独定义 |
-| PM4Py 发现的图就是可执行 Pipeline | 发现的是历史行为模型，不含可信权限、依赖准入或重试安全性，需要候选审查和验证 |
+| Rust4PM 发现的图就是可执行 Pipeline | 发现的是历史行为模型，不含可信权限、依赖准入或重试安全性，需要候选审查和验证 |
 | 重复调用就是可删除步骤 | 可能是失败恢复、输入变化、不同环境或显式负向测试；必须结合检查身份与执行结果 |
 
 [Collector 的持久化发送队列](https://opentelemetry.io/docs/collector/resiliency/)
@@ -105,7 +105,7 @@ flowchart TD
     G --> H[可选 Trace 可观测性后端]
     E --> I[Event Log Projection]
     F --> I
-    I --> J[PM4Py 非 LLM 分析]
+    I --> J[Rust4PM 非 LLM 分析]
     J --> K[流程候选与证据]
     K --> L[人工审查 + 既有门禁验证]
     L --> M[后续固化到既有 Pipeline / Dagger / Actions]
@@ -126,7 +126,7 @@ flowchart TD
 | Source adapter | 读取显式选定的原生来源，声明覆盖能力、标识、游标及结束条件 | 重写成熟插桩、推断不可见操作 |
 | ArchiveStore | 原始字节、封装、去重、事务、导入恢复、不可变快照 | 网络调度、Span 语义、FSM 状态 |
 | Projection | 来源到标准 Trace / Event Log 的版本化投影、完整性解释 | 修改原始归档、补造事件或时间 |
-| Mining | 调用 PM4Py、记录分析输入及候选依据 | 执行候选、修改门禁、发起远端副作用 |
+| Mining | 调用 Rust4PM、记录分析输入及候选依据 | 执行候选、修改门禁、发起远端副作用 |
 
 代码放 `src/engineering_ci/tracing/` 与 `src/engineering_ci/mining/`。
 用户操作接到已有 `engineering-ci` CLI；`scripts/` 继续只有 release.py、download.py。
@@ -164,7 +164,7 @@ payload 大小与摘要、采集范围/能力及策略版本。扩展属性名�
 
 使用标准 OTel Resource / Scope / Span / Event / Link、OTLP 表达及可用的标准属性。
 原生 Trace/Span/Parent/Tool Call ID 优先保留；跨进程、恢复和多父因果关系采用可解释的关联与 Links。
-没有时间信息时不伪造开始/结束时间来满足 Span 或 PM4Py API；保留为可关联的原始事件，
+没有时间信息时不伪造开始/结束时间来满足 Span 或 Rust4PM API；保留为可关联的原始事件，
 或选择允许仅使用实际顺序的分析。缺失时间的时长分析明确不可用。
 
 每个投影能定位到原始事件，记录投影实现、语义约定和相关配置版本。
@@ -260,29 +260,24 @@ GitHub runner 不假定可访问开发机的 PostgreSQL；CI 的测试实例是�
 Trace 出口失败不改写原工具的退出码；采集/归档命令自身返回实际失败，避免暗示仍有完整证据。
 归档、遥测出口和挖掘操作不再次写入自身采集流；内部观测采用独立范围，避免递归插桩与重复计费。
 
-## Event Log 与 PM4Py
+## Event Log 与 Rust4PM
 
 Event Log 是可重建的分析视图，不是第四套全量 Agent Schema。
-优先使用 PM4Py 已支持的 EventLog / DataFrame / XES 表达。
-[PM4Py DFG 接口](https://github.com/process-intelligence-solutions/pm4py/blob/release/pm4py/discovery.py)
-支持显式指定 case、activity 和 timestamp 列；适配重点是这些字段的真实语义。
+当前使用 [Rust4PM Python 绑定 r4pm](https://github.com/aarkue/r4pm) 的 XES、活动投影、variants 和 DFG 接口。
+只将准入的 case 与稳定活动名称序列序列化为临时 XES；Rust4PM 完成发现算法。
+XES 不包含命令、输出或虚构时间。临时文件和本进程的 Rust 注册对象在调用结束后清理。
+顺序准入继续依赖原投影的真实时间和 Turn 边界，不以 XES 行序推导新的因果依赖。
+Rust4PM 的边界活动集合没有频次；兼容字段的频次由它返回的变体及 case 数聚合。
 
-- `case:concept:name`：本次明确选定的 case 身份。
-- `concept:name`：稳定、低基数的活动类别，例如一个已注册的检查操作；不以完整命令或输出作为活动名。
-- `time:timestamp`：实际可用的来源时间；没有真实时间时不调用要求它的分析接口。
-- 可用时保留 lifecycle、父子/因果关联、结果、attempt 和来源事件引用。
+同一工具的 started、delta、completed 不计为多次工具调用。首版用完成的操作作为活动，
+开始/结束用于顺序准入，delta 留在归档中。失败和取消样本保留，不美化为成功。
+缺少边界、无效时间、重叠及并列 case 保留排除原因。DFG 描述观察到的顺序，不直接成为执行依赖。
+更复杂的 Process Tree/Petri Net/OCEL 按真实需要加入。
 
-同一工具的 started、delta、completed 不计为多次工具调用。首版用完成的操作作为主要活动，
-开始/结束用于时间分析，delta 留在归档中。未结束操作保留，不当作成功完成。
-先分析顺序确定的片段；并发片段保留并行说明，不因导出行序或完成先后推导新的依赖。
-同时间戳的稳定排序仅保障输出一致，不作为真实因果证据。
-先提供变体、频次、重复操作和 DFG；更复杂的 Process Tree/Petri Net/OCEL 按真实需要加入。
-
-调用 PM4Py 而不重写发现算法。
-[上游许可与依赖](https://github.com/process-intelligence-solutions/pm4py)
-需要在引入前核对：项目标注 AGPL，科学计算依赖也需验证 Python 3.14、Windows 和 Linux。
-将挖掘依赖做为明确的可选功能，不使现有 release/download 或消费者承担它们；
-尚未完成兼容与分发方式确认时，不宣称安装方案已经可用。
+`mining` 仅显式安装 r4pm 0.6.2，不内置 PM4Py，不创建双后端框架。
+原先的 PM4Py 集成仅涉及两个本地分析接口；旧的 `observed-turn-variants/1` 结果保留、可登记和查询。
+新结果为 `/2`，身份含 engine=rust4pm 和 r4pm 版本，不将两种后端的证据混为同一次执行。
+项目没有修改或复制上游算法。[依赖与许可](../../configuration/tracing.md#可选离线挖掘)独立说明。
 
 ## 非 LLM 与 LLM 两条输出
 
@@ -293,7 +288,7 @@ LLM 路径显式启用，在同一份非 LLM 结果之上解释或建议，单�
 记录输入快照、基础分析摘要、模型/提供者、参数和实际请求身份；不覆盖基础结果。
 token/cost 不可获得时为未知，不记为零。LLM 不可用或生成无效建议时，基础分析仍可使用。
 
-[PM4Py 的 LLM 模块](https://github.com/process-intelligence-solutions/pm4py/blob/release/pm4py/llm.py)
+[PM4Py 的 LLM 模块（历史方案中的能力示例）](https://github.com/process-intelligence-solutions/pm4py/blob/release/pm4py/llm.py)
 同时包含文本抽象和真正的模型查询；调用 `pm4py.llm` 中的格式化函数不一定使用了模型。
 `llm_used` 根据实际模型调用判断，不能根据模块名称判断。
 不执行 LLM 生成的任意 Python 或 shell；其建议需要经过相同的静态校验和人工审查。
@@ -321,7 +316,7 @@ token/cost 不可获得时为未知，不记为零。LLM 不可用或生成无�
 自动发现的关系不直接成为生产依赖；业务输入输出、权限、副作用和重试策略仍需要明确声明。
 
 后续 Workflow IR 只覆盖已有注册 Handler 的可表达动作、参数、数据依赖及准入约束。
-发现模型可采用 PM4Py 原生形式，没必要先发明一个通用工作流语言。
+发现模型可采用后端原生形式，没必要先发明一个通用工作流语言。
 没有实际目标需求时，候选报告已足够，不建立空编译器。
 
 固化到 TOML / Dagger / YAML 必须显式拒绝目标无法表达的能力：
@@ -335,7 +330,7 @@ Dagger 执行实际容器任务，不持有完整 Agent 开发生命周期。
 
 首个实际来源为用户授权的单个桌面 Codex 原生 rollout JSONL（生产者 0.162.0-alpha.2），按固定文件前缀离线导入，不再次执行 Agent。该内部格式与公共 codex exec --json 事件流分开；后者不作为导出现有会话的命令。
 已有 OTel 数据保留原生形式；其他运行时的在线插桩按实际需求接入成熟实现，首轮不同时建设多个采集后端。格式核对只采样文件开头和末尾，其余 Codex 输出默认可信；归档和挖掘按职责流式处理实际字节，不把采样当成全量检查。
-原始归档与非 LLM 分析是 v0.6.0 的交付内容；LLM、可观测性后端和候选固化不阻塞本轮交付。
+原始归档与非 LLM 分析是 pre-0.6.0 的设计范围；本轮按用户选择以 v0.5.5 过渡交付；LLM、可观测性后端和候选固化不阻塞本轮交付。
 
 | 顺序 | 实施动作 | 完成证据 |
 | --- | --- | --- |
@@ -343,13 +338,13 @@ Dagger 执行实际容器任务，不持有完整 Agent 开发生命周期。
 | P0-1 来源能力核对 | 用显式 JSONL 实录核对事件、身份、时间、顺序、终止和内容策略；复用公开协议 | 来源能力表、实录样本、未知字段处理；源缺少信息时明确不可用或 unknown |
 | P0-2 PostgreSQL 归档 | 编写专用 schema 迁移及 ArchiveStore，按上述事务、去重、游标与快照契约实现 | 字节回放、回滚/提交响应丢失、强杀/并发/重复/截断/身份冲突测试；宿主 PostgreSQL 真实集成结果 |
 | P0-3 标准与完整性 | 复用原生 OTel，补真实缺口；版本化投影和三态完整性 | 同一字节快照可重建；没有足够协议证据时保持 unknown |
-| P0-4 基础流程分析 | 调用 PM4Py，固定 case 和活动映射，输出非 LLM 变体和适用范围内的 DFG | 真实样本分析、确定输出、来源引用；缺时间/并行不伪造顺序或时长 |
+| P0-4 基础流程分析 | 调用 Rust4PM，固定 case 和活动映射，输出非 LLM 变体和适用范围内的 DFG | 真实样本分析、确定输出、来源引用；缺时间/并行不伪造顺序或时长 |
 | P0-5 CLI 与回归 | 注册统一 CLI 操作，增加必要配置、可选依赖、使用说明及检查范围 | 单项操作可调用；原始退出状态有效；release/download 无数据库依赖；现有 PR 检查和消费者契约不退化 |
-| P0-6 同 PR 交付 | 准备四处 v0.6.0 元数据，运行相关检查及现有 PR CI；人工审查合并后按既有机制正式发布 | 代码、版本、检查输入与 PR Commit 一致；正式 Release 使用真实 Run/Attempt/Manifest，未合并不发布 |
+| P0-6 同 PR 交付 | 准备四处本轮 v0.5.5 元数据，运行相关检查及现有 PR CI；人工审查合并后按既有机制正式发布 | 代码、版本、检查输入与 PR Commit 一致；正式 Release 使用真实 Run/Attempt/Manifest，未合并不发布 |
 | P1 可观测性与评估 | 可选 OTLP / Collector / 一个现成后端，候选与基线比较 | 出口失败不影响原始事实；验证正确性不退化、优化比较条件明确 |
 | P2 辅助与固化 | 可选 LLM 第二输出；有实际候选后接入既有 Pipeline / Dagger | 两条输出分开、合法 Handler、可审查 diff、现有门禁与人工边界有效 |
 
-P0 是 v0.6.0 核心范围。若某项不可实现，应报告阻碍并调整交付范围，
+P0 是 pre-0.6.0 核心设计范围。若某项不可实现，应报告阻碍并调整交付范围，
 不能把模拟测试通过当成真实采集或闭环优化成功。
 各阶段验证其新增行为和受影响契约；身份匹配的已有证据继续复用，不为切换阶段重复执行检查。
 不提前连写所有接口和未来空实现。
@@ -364,7 +359,7 @@ P0 是 v0.6.0 核心范围。若某项不可实现，应报告阻碍并调整交
 | P0-1 | `tracing/sources/` 中的 Codex JSONL 薄适配；脱敏实录 fixture、来源能力及未知事件测试 |
 | P0-2 | `tracing/store.py`、专用 SQL 迁移、归档/回放/恢复测试；保留 ArchiveStore 接口，首版只有 PostgreSQL 实现 |
 | P0-3 | `tracing/projection.py`、完整性评估及相应测试；标准语义依赖和投影版本明确锁定 |
-| P0-4 | `mining/` 的 Event Log 投影及 PM4Py 调用；确定性输出和来源追溯测试，所需可选依赖 |
+| P0-4 | `mining/` 的 Event Log 投影及 Rust4PM 调用；确定性输出和来源追溯测试，所需可选依赖 |
 | P0-5 | 既有 CLI 注册点及当期实际 trace/mining 命令；`config/pipeline.toml` 的必要检查范围、指南和配置导航 |
 | P0-6 | 两份 `pyproject.toml`、两份 `uv.lock`、同一功能 PR 的说明及实际验证记录 |
 
@@ -372,7 +367,7 @@ P0-0 只做只读预检。P0-2 的迁移操作显式执行，限制在已经确�
 缺权限或目标归属不清时报告需要决定的事项，不自动创建新数据库或移动工作区。
 
 已实现 `engineering-ci trace status/inspect/init/import/replay`；参数见[CLI 参考](../../../guides/cli-reference.md#原始轨迹)。
-`engineering-ci trace project` 使用官方 OTel SDK 生成离线 Span JSON；`engineering-ci mine` 已接入显式安装后的 PM4Py 本地非 LLM 变体和 DFG 分析。
+`engineering-ci trace project` 使用官方 OTel SDK 生成离线 Span JSON；`engineering-ci mine` 已接入显式安装后的 Rust4PM 本地非 LLM 变体和 DFG 分析。
 导入以用户给定文件为输入，回放只输出原始数据，分析以固定快照为输入。
 既有 `release.py`、`download.py` 的职责不增加轨迹采集或挖掘操作。
 
@@ -380,7 +375,7 @@ P0-0 只做只读预检。P0-2 的迁移操作显式执行，限制在已经确�
 首版不增加 ORM、常驻服务或数据库任务队列，不为未经证明的吞吐需求增加连接池。
 对二进制/JSON/SQL 采用成熟库和参数化接口，不自行实现它们的协议。
 
-在功能 PR 交付前执行既有 `engineering-ci version set v0.6.0`，让版本元数据与实现一同交付。
+在功能 PR 交付前执行既有 `engineering-ci version set v0.5.5`，让版本元数据与实现一同交付。
 版本准备不能留到人工合并之后，也不使身份仍匹配的既有检查证据无条件失效。
 
 必须验证的异常还包括：来源重启及文件轮换、未知事件类型、采样/截断、迟到完成事件、
@@ -409,13 +404,37 @@ Dagger 提供固定依赖的 Linux 分析/测试环境，Windows 验证宿主数
 这些选择不因工具环境缺失而自动换成另一套后端。
 
 仍需在对应步骤实际核对：宿主 PostgreSQL 版本及 schema 权限、当前进程的环境传递、
-来源样本的可见性/时间/顺序能力、内容保留期及容量、驱动与 PM4Py 锁定版本及跨平台兼容性。
+来源样本的可见性/时间/顺序能力、内容保留期及容量、驱动与分析后端锁定版本及跨平台兼容性。
 无法核验的项明确保留未完成，不猜测账号、数据库目标、事件完整性或可用费用。
 
-P0-0 的宿主预检、P0-1 来源适配、P0-2 归档/恢复、P0-3 OTel SDK 投影与 P0-4 PM4Py 实录分析已完成分阶段验证，
+P0-0 的宿主预检、P0-1 来源适配、P0-2 归档/恢复、P0-3 OTel SDK 投影与 P0-4 历史 PM4Py 实录分析已完成分阶段验证，
 实际证据与剩余限制见[阶段验收](../../verification/trace-validation.md)。
 运行进程读取 VESRYN_DATABASE，不在代码中添加用户注册表或第二套连接来源。
 按项目上游观察规则，将遇到的 Windows free-threaded Psycopg wheel 限制记录到 `.agent/upstream-observations.md`，未开展额外上游调查。
 
 未来扩展沿来源、投影、挖掘和执行四个边界推进；标准或后端变化不要求重新归档原始数据，
 但也不承诺无需任何后续迁移。本文承担长期设计上下文，实施进度及实测结果引用各自真实 PR 和验证记录。
+
+## 归档查询与派生证据关联（v0.5.5 两个 P0）
+
+P0 查询读取已归档的 source、已提交 cursor 和固定 snapshot；列表有上限和 keyset 翻页。
+`status --file` 只读选中文件的 session header 来定位来源，不扫描其余 payload。
+数据库游标是已提交事实，查询输出 `file_prefix_not_checked`；真正恢复仍由 import 校验旧前缀。
+snapshot 的成员集和完整性固定，不能由后来的 source cursor 覆盖。
+
+P0 关联在专用 schema 2 增加 projection/analysis 派生结果，复用既有身份定义。
+投影引用 snapshot 和原始字节摘要；分析引用已登记投影及实际输入 JSON 字节摘要。
+内容以不可变派生 JSON 保存，摘要、映射/算法版本、后端及工具版本可查询；lineage 在一个只读一致快照内读取。
+同一身份不同内容拒绝覆盖，缺失父结果或内容不一致拒绝登记。
+只查询 metadata 不声称读回全部内容；export 和 mine 的 ID 输入读回时检查完整文档摘要。
+
+`project/mine --record` 显式登记，原文件模式不自动写数据库。
+`register` 可补登记历史文件，不再次执行投影或算法；origin=file 表明文件来源，
+身份/关联校验不证明历史算法确曾执行。现有 SDK/算法实际执行生成的结果标为 computed。
+新产生的结果先登记再导出；文件导出失败返回非零，已登记身份及恢复 export argv 保留。
+数据库与文件系统没有联合事务；数据库不可用或提交确认丢失不伪造 registered。
+查询/登记成功、分析 passed/unavailable、原工具成功和工作流优化有效是独立事实。
+
+配置 TOML 格式仍为 1；数据库 1→2 仅通过显式 trace init 原子升级，不重写原始字节。
+旧版 sources/snapshots/import/replay 仍可读 schema 1，结果查询报告 migration_required。
+命令与恢复步骤见 [CLI 参考](../../../guides/cli-reference.md#归档查询与结果恢复)。

@@ -1,11 +1,13 @@
 """Case admission and CLI semantics without requiring the optional mining stack."""
 
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from engineering_ci.cli import mine
-from engineering_ci.mining.analysis import select_cases
+from engineering_ci.mining.analysis import discover, select_cases
 from engineering_ci.tracing.projection import PROJECTION_VERSION
 from engineering_ci.tracing.store import ArchiveError
 
@@ -112,3 +114,23 @@ def test_mine_missing_optional_package_is_not_success(tmp_path, capsys, monkeypa
     assert mine.main([str(path), "--out", str(tmp_path / "result.json"), "--json"]) == 2
     value = capsys.readouterr().out
     assert "SECRET" not in value and json.loads(value)["status"] == "missing_tool"
+
+
+def test_rust_failure_is_safe_and_releases_all_registry_objects(monkeypatch):
+    removed = []
+
+    def failed(_):
+        raise ValueError("SECRET")
+
+    fake = SimpleNamespace(
+        import_item=lambda *a: "log",
+        remove_item=removed.append,
+        bindings=SimpleNamespace(
+            log_to_activity_projection=lambda _: "projection", get_variants=failed
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "r4pm", fake)
+    with pytest.raises(ArchiveError) as error:
+        discover(select_cases(projection())[0])
+    assert error.value.status == "analysis_failed" and "SECRET" not in str(error.value)
+    assert removed == ["projection", "log"]

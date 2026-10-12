@@ -62,13 +62,31 @@ free-threaded 的 cp314t wheel。Windows/Linux 应使用该版本提供 wheel �
 uv sync --locked --extra trace --extra mining --group dev
 ```
 
-`mining` 锁定 PM4Py 2.7.23.9，当前环境解析到 pandas 3.0.6、NumPy 2.5.4。
-它不进入基础消费者或 dev 依赖，不启动数据库、Collector、图形服务或模型。
-首版调用 variants/DFG，无 Graphviz 可执行程序也可分析，不承诺 Windows free-threaded 兼容。
+`mining` 锁定 [r4pm 0.6.2](https://pypi.org/project/r4pm/)，即 Rust4PM 的 Python 绑定。
+使用 default 包，不安装 r4pm-full、DuckDB、Polars、PM4Py 或 pandas。
+Windows x86-64、Linux glibc/musl x86-64 有 cp39-abi3 wheel；普通 CPython 3.14 可使用。
+不承诺 free-threaded 兼容，未提供 wheel 的平台需按上游支持范围处理，不自动切换运行时。
+它不进入基础/dev 依赖或基础 CI/Release，显式专项使用实际库；缺包返回 missing_tool。
+[r4pm 上游](https://github.com/aarkue/r4pm)许可为 Apache-2.0 或 MIT，项目未复制上游实现。
 
-[PM4Py 上游许可证](https://github.com/process-intelligence-solutions/pm4py/blob/release/LICENSE)
-为 AGPL-3.0-or-later。当前集成用于本地运行未修改库，未复制上游实现或发布包含库的镜像/服务。
-库仍保留自己的许可，不将其标为 Apache-2.0。正式分发组合程序、重新分发库或提供修改后的网络服务，
-应按实际分发方式审查通知、相应源码与许可义务；“不改库源码”不等于所有使用方式都无义务。
-用户确定 PM4Py 只保留显式安装后的本地调用，不纳入基础 CI、Release 或默认安装。
-本轮不改变项目 LICENSE；未来若改变为内置库、镜像或网络服务，重新审查实际分发方式。
+此前 PM4Py 2.7.23.9 的两接口集成属于历史验收，AGPL-3.0-or-later 的上游许可仍适用于该库；
+当前已移除安装/执行依赖，不重新分发它。旧分析结果 `/1` 仍可作为历史文件显式登记；
+新 Rust4PM `/2` 结果具有不同身份。历史结果兼容不代表仍提供 PM4Py 执行后端。
+
+## 查询与结果登记
+
+数据库迁移版本 2 增加派生结果表；TOML 的 schema_version 仍为 1。
+在已有专用 schema 运行 `trace init` 显式原子升级，保留原始归档和快照。
+查询不会自动迁移；schema 1 仍支持源/快照查询和原有归档回放，结果功能要求升级。
+只有组件归属、旧 SQL 摘要及版本一致时允许升级；失败不会接管其他 schema。
+
+查询列表默认 20 条，最多 100，next_after 用于后续页。source 页面按来源排序，快照和结果按登记时间/ID 排序。
+不在列表读取原始事件；status --file 只读文件 header，不验证前缀，import 才执行恢复校验。
+project/mine 的 --record 允许显式写派生结果；没有该选项的旧文件调用保持原行为。
+登记文件保存其规范化 JSON，JSON 原始文件的实际字节摘要仍参与分析身份；重新排版可产生不同分析身份。
+查询摘要只包含受支持的计数、状态、映射和依赖，不复制原始日志或环境值。
+原文件登记标明 origin=file，不作为算法真实执行证明，也不替代 CI 或发布门禁。
+
+数据库与文件导出分两次确认：导出失败不会删除已登记结果，CLI 给出 ID 和 export 继续命令。
+已有文件拒绝覆盖；选新路径导出无需重算。没有确认数据库提交时，不把结果记为已登记。
+详细命令见 [CLI 参考](../../guides/cli-reference.md#归档查询与结果恢复)。
