@@ -747,7 +747,9 @@ def execute(options):
                     "Execution checkpoint could not be read; retain the original exit code",
                 )
         if result == 0 and options.command == "publish":
-            receipt = verification.published(api, options.repo, identity["tag"])
+            receipt = verification.published(
+                api, options.repo, identity["tag"], head=identity["commit_sha"]
+            )
             if receipt is None or receipt["status"] != "published":
                 raise ValueError("Release Run ended without a verified final Release")
             result_view(options).published(receipt)

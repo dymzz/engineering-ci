@@ -250,6 +250,61 @@ def test_success_without_final_release_is_not_reported_as_publication(monkeypatc
     assert not api.writes
 
 
+def test_final_release_receipt_must_match_the_requested_commit(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    from test_release_manifest import IDS, facts
+
+    from engineering_ci.release import manifest
+
+    api, other = API(), "b" * 40
+    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
+    monkeypatch.setattr(cli, "prepare_publication", lambda options: 0)
+    monkeypatch.setattr(cli, "execution_checkpoint", lambda *args: False)
+
+    def completed(args):
+        # The receipt is valid on its own, but belongs to a different SHA.
+        api.main = other
+        api.run["head_sha"] = other
+        for job in api.jobs:
+            job["head_sha"] = other
+        for artifact in api.artifacts:
+            artifact["workflow_run"]["head_sha"] = other
+        value = manifest.manifest(
+            api,
+            REPOSITORY,
+            TAG,
+            other,
+            123,
+            1,
+            "publication",
+            facts(),
+            ids=IDS,
+        )
+        publishing.publish_release(
+            api,
+            TAG,
+            other,
+            value,
+            tmp_path / "release-manifest.json",
+        )
+        assert verification.published(api, REPOSITORY, TAG)["commit_sha"] == other
+        return 0
+
+    monkeypatch.setattr(cli, "entrypoint", completed)
+    assert (
+        cli.main(["publish", "--repo", REPOSITORY, "--version", TAG[1:], "--json"]) == 1
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["operations"][0]["commit_sha"] == HEAD
+    assert result["operations"][0]["exit_code"] == 0
+    assert result["publication"]["status"] == "unconfirmed"
+    assert result["status"] == "failed"
+    assert result["next_actions"][0]["kind"] == "status"
+
+
 @pytest.mark.parametrize("latest_conclusion", ["success", "failure"])
 def test_published_evidence_keeps_original_attempt_after_run_retry(
     latest_conclusion, monkeypatch, capsys, tmp_path

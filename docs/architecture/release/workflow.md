@@ -214,6 +214,7 @@ Coordinator 的串行调度链。配置的具体读取位置见[Pipeline 配置]
 | PR | OPEN PR 的 head 与本地及远端提交一致；进入等待人工审查 |
 | 人工 Merge | 实际 Merge SHA、被审查 head、远端 main 的祖先关系；准入发布目标 |
 | 发布目标 | main SHA、版本和已有 Merge 证据一致；交给原 execution FSM 请求同一 Release Workflow |
+| Run 完成 | 最终 Tag / Manifest 必须绑定本次已准入的发布 SHA；另一 SHA 的有效 Release 证据不能作为本次成功 |
 
 输入过期、PR head 改变、报告替换或证据缺失均不能越过准入；已合并 PR 留有本地改动进入
 BLOCKED.merged，不能被旧 Run 或原 PR 的绿色检查覆盖。错误输出包含当前阶段和接续命令。
