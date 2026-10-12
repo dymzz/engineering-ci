@@ -1,6 +1,6 @@
 # 架构
 
-本目录定义现有组件的职责、接口契约及执行约束。
+本目录定义组件的职责、接口契约、执行约束及拟议扩展边界。
 
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 统一 PR 检查、执行身份、结果有效性与平台限制。
@@ -8,5 +8,6 @@
 - [执行与恢复](execution/README.md) — Workflow 执行 FSM、持久化与恢复契约。
 - [发布](release/README.md) — Release Workflow 的门禁、证据与异常恢复。
 - [测试](testing/README.md) — Pytest 报告、显式质量策略及 Python 兼容性。
+- [轨迹驱动优化](workflow-optimization/README.md) — 轨迹归档、流程挖掘及 v0.6.0 分阶段实施方案。
 
 上级入口：[技术文档](../README.md)。

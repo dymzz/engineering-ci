@@ -10,6 +10,8 @@ scripts/release.py validate → execution Coordinator（独立完整验证请求
 scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
+engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
+engineering-ci mine → cli/mine.py → mining/（固定派生视图、PM4Py 非 LLM 分析）
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
@@ -33,6 +35,9 @@ status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 
 公开 verify 必须指定实际 Run，只读取远端状态与证据，不调用 Coordinator 或写 FSM。
 GitHub Actions 负责完整检查和发布决定，JSON 生成或文件收集不能覆盖原始失败。
 Release 不初始化下载后端或读取下载配置；只有 download 负责收集日志及 Artifact。
+轨迹的来源与归档游标不进入 ExecutionContext 或发布门禁，归档回放不推进业务 FSM。
+`trace status/inspect` 为只读；`init/import` 明确修改专用数据库对象；
+`replay` 明确输出原始快照文件。详细契约见[轨迹架构](workflow-optimization/design.md)。
 
 ## 操作结果与恢复视图
 

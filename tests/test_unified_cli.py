@@ -62,6 +62,8 @@ def mock_release_request_metadata(monkeypatch):
         ("release", "engineering_ci.cli.release"),
         ("download", "engineering_ci.cli.download"),
         ("version", "engineering_ci.release.version"),
+        ("trace", "engineering_ci.cli.trace"),
+        ("mine", "engineering_ci.cli.mine"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
