@@ -148,7 +148,7 @@ def repository(tmp_path, monkeypatch):
 def passing_checks(monkeypatch):
     calls = []
 
-    def execute(selectors, *, root, output, reuse=False):
+    def execute(selectors, *, root, output, reuse=False, run=None):
         if (
             reuse
             and output.is_file()
@@ -231,6 +231,517 @@ def test_repeating_before_human_merge_does_not_execute_checks_or_push(
         for call in repository.calls
     )
     assert "Awaiting human review" in capsys.readouterr().out
+
+
+@pytest.fixture
+def json_cli(repository, monkeypatch, tmp_path):
+    """Use real local Git and safe fake gh; every Dispatch is forbidden by default."""
+    from engineering_ci.execution import cli as execution_cli
+
+    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
+    monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+    monkeypatch.setattr(cli.verification, "published", lambda *args, **kwargs: None)
+    monkeypatch.setattr(execution_cli, "default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        cli, "entrypoint", lambda *args: pytest.fail("Not admitted to Dispatch")
+    )
+    return checkout
+
+
+def json_args(command, *extra):
+    return [command, "--version", VERSION, "--json", *extra]
+
+
+def test_json_status_is_a_read_only_query_not_a_publication_pass(
+    repository,
+    json_cli,
+    monkeypatch,
+    capsys,
+):
+    repository.existing_pr()
+    repository.pr["body"] = "SECRET github_pat_sensitive"
+    monkeypatch.setattr(
+        checks, "run_checks", lambda *args, **kwargs: pytest.fail("Read only")
+    )
+    assert cli.main(json_args("status")) == 0
+    output = capsys.readouterr()
+    value = json.loads(output.out)
+    assert value["status"] == "completed" and value["exit_code"] == 0
+    assert value["publication"]["status"] == "unconfirmed"
+    assert value["local_checks"]["status"] == "not_run"
+    assert value["stop"]["code"] == "pending_delivery"
+    assert value["delivery"]["files"] == ["README.md"]
+    assert value["operations"] == [] and value["executions"] == []
+    assert "SECRET" not in output.out and "PR #11" in output.err
+    assert value["next_actions"][0]["argv"][-1] == "--all"
+    assert value["next_actions"][0]["prerequisite"]
+    assert not any(
+        call[:2] in (["git", "add"], ["git", "commit"], ["git", "push"])
+        for call in repository.calls
+    )
+
+
+def test_json_publish_retains_receipts_and_repeated_review_has_no_mutations(
+    repository,
+    json_cli,
+    passing_checks,
+    capsys,
+):
+    args = json_args("publish", "--all", "-m", "中文 commit with spaces")
+    assert cli.main(args) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["status"] == "stopped"
+    assert value["delivery"]["phase"] == "REVIEW_waiting"
+    assert value["stop"]["code"] == "pr_ci"
+    assert [item["name"] for item in value["operations"]] == [
+        "checks",
+        "commit",
+        "push",
+        "pr_create",
+    ]
+    assert value["delivery"]["evidence"]["push"]["head"] == repository.pr["headRefOid"]
+    assert value["local_checks"]["status"] == "passed"
+    repository.calls.clear()
+    assert cli.main(args) == 3
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated["operations"] == [] and passing_checks == [["pr"]]
+    assert repeated["publication"]["status"] == "unconfirmed"
+    assert not any(
+        call[:2] in (["git", "add"], ["git", "commit"], ["git", "push"])
+        for call in repository.calls
+    )
+
+
+@pytest.mark.parametrize("conclusion", ["SUCCESS", "FAILURE", "SKIPPED", "IN_PROGRESS"])
+def test_json_review_actions_require_current_ci_and_human_approval(
+    repository,
+    json_cli,
+    passing_checks,
+    capsys,
+    conclusion,
+):
+    delivery.prepare(
+        REPOSITORY, VERSION, checkout=json_cli, include_all=True, message="Delivered"
+    )
+    capsys.readouterr()
+    original = repository.run
+
+    def run(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[:3] == ["gh", "pr", "view"]:
+            state = json.loads(result.stdout)
+            state["statusCheckRollup"] = [
+                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+            ]
+            result.stdout = json.dumps(state)
+        return result
+
+    json_cli.run = run
+    assert cli.main(json_args("publish")) == 3
+    value = json.loads(capsys.readouterr().out)
+    actions = {item["kind"]: item for item in value["next_actions"]}
+    assert ("merge" in actions) is (conclusion == "SUCCESS")
+    assert value["stop"]["code"] == (
+        "human_review" if conclusion == "SUCCESS" else "pr_ci"
+    )
+    if conclusion == "SUCCESS":
+        assert actions["merge"]["requires_human"]
+        assert "--match-head-commit" in actions["merge"]["argv"]
+        assert repository.pr["headRefOid"] in actions["merge"]["argv"]
+        assert actions["publish"]["prerequisite"]
+
+
+@pytest.mark.parametrize(
+    "code,status", [(1, "failed"), (3, "missing_tool"), (7, "failed")]
+)
+def test_json_local_check_failure_is_not_a_review_handoff(
+    repository,
+    json_cli,
+    monkeypatch,
+    capsys,
+    code,
+    status,
+):
+    def execute(*args, **kwargs):
+        print("tool progress")
+        return {
+            "checks": [{"name": "pytest", "status": status, "exit_code": code}]
+        }, code
+
+    monkeypatch.setattr(checks, "run_checks", execute)
+    assert cli.main(json_args("publish", "--all", "-m", "Change")) == code
+    output = capsys.readouterr()
+    value = json.loads(output.out)
+    assert value["exit_code"] == code and value["stop"]["code"] == "local_checks"
+    assert value["delivery"]["phase"] == "DELIVERY_checking"
+    assert value["local_checks"]["checks"][0]["status"] == status
+    assert value["local_checks"]["status"] == "not_current_pass"
+    assert "tool progress" in output.err
+    assert not any(item["kind"] == "merge" for item in value["next_actions"])
+    assert not any(
+        call[:2] in (["git", "add"], ["git", "push"]) for call in repository.calls
+    )
+
+
+def test_json_partial_push_failure_keeps_commit_and_safe_diagnostic(
+    repository,
+    json_cli,
+    passing_checks,
+    capsys,
+):
+    repository.failure = ["git", "push"]
+    assert cli.main(json_args("publish", "--all", "-m", "Change")) == 1
+    output = capsys.readouterr()
+    value = json.loads(output.out)
+    assert "SECRET" not in output.out and "permission denied" in value["stop"]["reason"]
+    assert value["delivery"]["phase"] == "DELIVERY_pushing"
+    assert value["delivery"]["evidence"]["commit"]["head"] == repository.git(
+        "rev-parse", "HEAD"
+    )
+    assert "push" not in value["delivery"]["evidence"]
+    assert value["operations"][-1] == {
+        "name": "push",
+        "status": "failed",
+        "exit_code": 1,
+    }
+    assert value["next_actions"][0]["kind"] == "status"
+
+
+def test_json_merged_pr_with_new_files_does_not_offer_publish_retry(
+    repository,
+    json_cli,
+    passing_checks,
+    capsys,
+):
+    delivery.prepare(
+        REPOSITORY, VERSION, checkout=json_cli, include_all=True, message="Delivered"
+    )
+    repository.existing_pr(state="MERGED")
+    (repository.root / "README.md").write_text("Undelivered change")
+    capsys.readouterr()
+    assert cli.main(json_args("publish", "--all", "-m", "Undelivered")) == 1
+    value = json.loads(capsys.readouterr().out)
+    assert value["delivery"]["phase"] == "BLOCKED_merged"
+    assert value["stop"]["code"] == "undelivered_after_merge"
+    assert value["delivery"]["files"] == ["README.md"]
+    assert {item["kind"] for item in value["next_actions"]} == {
+        "status",
+        "resolve_delivery",
+    }
+    assert value["operations"] == []
+
+
+@pytest.mark.parametrize(
+    "fault,expected", [(KeyboardInterrupt, 130), (RuntimeError, 1)]
+)
+def test_json_interrupt_and_untrusted_error_keep_recovery_information(
+    monkeypatch,
+    capsys,
+    fault,
+    expected,
+    json_cli,
+):
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+
+    def fail(*args):
+        raise fault("SECRET https://example.invalid/?token=secret")
+
+    monkeypatch.setattr(cli, "GitHub", fail)
+    assert cli.main(json_args("status")) == expected
+    value = json.loads(capsys.readouterr().out)
+    assert "SECRET" not in json.dumps(value) and "token=" not in json.dumps(value)
+    assert value["publication"]["status"] == "unconfirmed"
+    assert value["next_actions"][0]["kind"] == "status"
+    assert value["status"] == ("interrupted" if expected == 130 else "failed")
+
+
+def test_json_missing_environment_retains_exit_two(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "execution_environment", lambda: 2)
+    assert cli.main(json_args("publish")) == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["stop"]["code"] == "environment" and value["exit_code"] == 2
+    assert value["operations"] == []
+
+
+def test_json_checks_stream_real_child_output_to_stderr(tmp_path):
+    """A real child process must not contaminate the CLI's JSON stdout."""
+    script = """
+import subprocess, sys
+from pathlib import Path
+from engineering_ci.release import pipeline
+from engineering_ci.release.results import OperationResult
+from types import SimpleNamespace
+view = OperationResult("publish", "dymzz/engineering-ci", "0.5.3", output_stream=sys.stderr)
+def checks(selectors, **kwargs):
+    kwargs["run"]([sys.executable, "-c", "print('child stdout'); import sys; print('child stderr', file=sys.stderr)"])
+    probe = kwargs["run"]([sys.executable, "-c", "print('captured')"], capture_output=True, text=True)
+    assert probe.stdout.strip() == "captured"
+    return {"checks": []}, 7
+pipeline.checks.run_checks = checks
+checkout = SimpleNamespace(root=Path.cwd(), execution_context=SimpleNamespace(result=view))
+from contextlib import redirect_stdout
+with redirect_stdout(sys.stderr):
+    code = pipeline.current_checks(checkout, Path("absent.json"))
+view.finish(code)
+import json
+print(json.dumps(view.to_dict()))
+sys.exit(code)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 7
+    assert json.loads(result.stdout)["exit_code"] == 7
+    assert "child stdout" in result.stderr and "child stderr" in result.stderr
+
+
+def test_json_status_unknown_candidates_never_become_resume_actions(
+    repository,
+    json_cli,
+    saved_publication,
+    capsys,
+    monkeypatch,
+):
+    from engineering_ci.execution.models import DispatchErrorInfo, DispatchErrorReason
+
+    api, _inputs, store = saved_publication
+    previous = store.load()
+    state = TaskRecord(
+        previous.dispatch,
+        previous.collection,
+        phase="UNKNOWN",
+        last_error=DispatchErrorInfo(
+            DispatchErrorReason.NETWORK_TIMEOUT
+        ).to_state_error(),
+    )
+    store.save(state)
+
+    def query(path, method="GET", data=None):
+        if path.startswith("actions/workflows/release.yml/runs?"):
+            assert method == "GET"
+            return {"workflow_runs": [dict(api.run, created_at="2026-10-12T00:00:00Z")]}
+        return api(path, method, data)
+
+    monkeypatch.setattr(cli, "GitHub", lambda repo: query)
+    before = store.path.read_bytes()
+    assert cli.main(json_args("status")) == 0
+    value = json.loads(capsys.readouterr().out)
+    checkpoint = value["executions"][0]
+    assert checkpoint["phase"] == "UNKNOWN"
+    assert checkpoint["error"]["reason"] == "network_timeout"
+    assert not any(action["kind"] == "resume" for action in value["next_actions"])
+    assert store.path.read_bytes() == before and not api.writes
+
+
+@pytest.mark.parametrize(
+    "complete,current", [(True, True), (True, False), (False, True)]
+)
+def test_json_status_projects_freshness_without_claiming_a_new_execution(
+    json_cli,
+    monkeypatch,
+    capsys,
+    complete,
+    current,
+):
+    path = json_cli.root / ".test-tools/checks/pr.json"
+    checks.atomic_json(path, {})
+    names = checks.PR_CHECKS if complete else checks.PR_CHECKS[:1]
+    report = {
+        "checks": [
+            {
+                "name": name,
+                "status": "passed",
+                "freshness": "current" if current else "stale",
+                "passed_for_current_input": current,
+                "executed_this_invocation": True,
+                "environment": {"platform": "linux", "TOKEN": "SECRET"},
+                "identity": {"sha256": "f" * 64, "credentials": "SECRET"},
+            }
+            for name in names
+        ]
+    }
+    monkeypatch.setattr(
+        checks, "inspect", lambda *args, **kwargs: (report, 0 if current else 3)
+    )
+    assert cli.main(json_args("status")) == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value["local_checks"]["status"] == (
+        "passed" if current and complete else "not_current_pass"
+    )
+    assert value["local_checks"]["profile_complete"] == complete
+    assert all(
+        not item["executed_this_invocation"] for item in value["local_checks"]["checks"]
+    )
+    assert "SECRET" not in json.dumps(value)
+
+
+def test_json_unmerged_input_cannot_resume_a_publication_checkpoint(
+    json_cli,
+    saved_publication,
+    capsys,
+):
+    api, _, store = saved_publication
+    before = store.path.read_bytes()
+    assert cli.main(json_args("status")) == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value["stop"]["code"] == "pending_delivery"
+    assert not any(
+        item["kind"] == "resume" or "--resume" in item["argv"]
+        for item in value["next_actions"]
+    )
+    assert value["executions"][0]["phase"] == "FINISHED"
+    assert store.path.read_bytes() == before and not api.writes
+
+
+def test_json_explicit_resume_retains_the_run_and_original_failure(
+    monkeypatch,
+    saved_publication,
+    capsys,
+):
+    api, _, store = saved_publication
+    previous = store.load()
+    store.save(
+        TaskRecord(
+            previous.dispatch,
+            previous.collection,
+            phase="PAUSED",
+            paused_from="RUNNING",
+            run_id=123,
+        )
+    )
+    before = store.path.read_bytes()
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+    calls = []
+    monkeypatch.setattr(cli, "entrypoint", lambda args: calls.append(args) or 1)
+    monkeypatch.setattr(
+        cli,
+        "prepare_publication",
+        lambda *args: pytest.fail("Explicit resume does not deliver again"),
+    )
+    assert cli.main(json_args("publish", "--resume", "123")) == 1
+    value = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1 and calls[0][-2:] == ["--resume", "123"]
+    assert value["executions"][0]["run_id"] == 123
+    assert value["executions"][0]["paused_from"] == "RUNNING"
+    assert value["stop"]["code"] == "existing_run"
+    assert value["next_actions"][0]["kind"] == "resume"
+    assert value["publication"]["status"] == "unconfirmed"
+    assert store.path.read_bytes() == before and not api.writes
+
+
+@pytest.mark.parametrize("mode", ["validate", "publish"])
+def test_json_unknown_dispatch_repetition_uses_the_real_coordinator_once(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    mode,
+):
+    from test_release_verification import API
+    from test_release_verification import REPOSITORY as REPORT_REPO
+
+    from engineering_ci.execution import cli as execution_cli
+    from engineering_ci.execution.models import (
+        DispatchErrorInfo,
+        DispatchErrorReason,
+        DispatchUnknown,
+    )
+
+    api, posts = API(), []
+
+    class Client:
+        def validate(self, identity):
+            pass
+
+        def dispatch(self, identity, inputs):
+            posts.append(identity)
+            raise DispatchUnknown(
+                details=DispatchErrorInfo(DispatchErrorReason.NETWORK_INTERRUPTED)
+            )
+
+    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
+    monkeypatch.setattr(cli, "prepare_publication", lambda *args: 0)
+    monkeypatch.setattr(execution_cli, "GitHubActionsClient", Client)
+    monkeypatch.setattr(execution_cli.shutil, "which", lambda name: "/mock/gh")
+    monkeypatch.setattr(execution_cli, "default_cache_dir", lambda: tmp_path)
+    for _ in range(2):
+        assert cli.main(json_args(mode, "--repo", REPORT_REPO)) == 1
+        value = json.loads(capsys.readouterr().out)
+        assert value["executions"][0]["phase"] == "UNKNOWN"
+        assert value["stop"]["code"] == "dispatch_unknown"
+        assert value["executions"][0]["error"]["reason"] == "network_interrupted"
+        assert value["publication"]["status"] == "unconfirmed"
+        assert not any(item["kind"] == "resume" for item in value["next_actions"])
+    assert len(posts) == 1 and not api.writes
+
+
+def test_json_workflow_success_without_release_evidence_is_not_publication(
+    monkeypatch,
+    capsys,
+):
+    from test_release_verification import API
+    from test_release_verification import REPOSITORY as REPORT_REPO
+
+    api = API()
+    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
+    monkeypatch.setattr(cli, "prepare_publication", lambda *args: 0)
+    monkeypatch.setattr(cli, "execution_checkpoint", lambda *args: None)
+    monkeypatch.setattr(cli, "entrypoint", lambda args: 0)
+    assert cli.main(json_args("publish", "--repo", REPORT_REPO)) == 1
+    value = json.loads(capsys.readouterr().out)
+    assert value["operations"][0]["exit_code"] == 0
+    assert value["exit_code"] == 1 and value["publication"]["status"] == "unconfirmed"
+    assert value["status"] == "failed" and not api.writes
+
+
+def test_json_already_published_keeps_original_run_attempt_and_is_idempotent(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    from test_release_verification import (
+        API,
+        TAG,
+        make_manifest,
+        publishing,
+    )
+    from test_release_verification import (
+        REPOSITORY as REPORT_REPO,
+    )
+
+    api = API()
+    value = make_manifest(api, mode="publication")
+    publishing.publish_release(
+        api, TAG, api.run["head_sha"], value, tmp_path / "release-manifest.json"
+    )
+    api.original = dict(api.run)
+    original = api.__call__
+
+    def query(path, method="GET", data=None):
+        if path == "actions/runs/123/attempts/1":
+            return api.original
+        return original(path, method, data)
+
+    # Preserve methods used for assets and the original attempt's jobs.
+    class Reader:
+        __call__ = staticmethod(query)
+        download = api.download
+
+    api.run.update(run_attempt=2, conclusion="failure")
+    writes = list(api.writes)
+    monkeypatch.setattr(cli, "execution_environment", lambda: 0)
+    monkeypatch.setattr(cli, "GitHub", lambda repo: Reader())
+    monkeypatch.setattr(
+        cli, "prepare_publication", lambda *args: pytest.fail("Already published")
+    )
+    monkeypatch.setattr(cli, "entrypoint", lambda *args: pytest.fail("No new POST"))
+    for _ in range(2):
+        assert cli.main(json_args("publish", "--repo", REPORT_REPO)) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["publication"]["status"] == "published"
+        assert result["publication"]["workflow"]["run_attempt"] == 1
+        assert result["operations"] == [] and result["next_actions"] == []
+    assert api.writes == writes
 
 
 def test_existing_pr_is_updated_without_overwriting_human_context(
@@ -780,7 +1291,11 @@ def test_status_recovers_run_id_and_live_result_without_execution(
 
     api = API()
     api.run["conclusion"] = "failure"
+    repository.git("add", ".")
+    repository.git("commit", "-m", "Reviewed changes")
+    repository.existing_pr(state="MERGED")
     checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
+    monkeypatch.setattr(checkout, "main_commit", lambda: api.run["head_sha"])
     monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
     monkeypatch.setattr(cli, "GitHub", lambda repository: api)
     monkeypatch.setattr(execution_cli, "default_cache_dir", lambda: tmp_path / "cache")

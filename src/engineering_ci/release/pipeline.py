@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 from .. import checks
@@ -25,6 +26,17 @@ def current_checks(checkout, path):
     """Reuse each matching execution; refresh only missing or invalidated checks."""
     print(f"Local PR checks: checking per-check evidence in {path}")
     output_options = {}
+    view = getattr(getattr(checkout, "execution_context", None), "result", None)
+    if view and view.output_stream is not None:
+        # Python stdout redirection does not redirect child process handles.
+        # Only uncaptured calls are routed; preflight probes keep their output.
+        def streamed_run(args, **kwargs):
+            if not kwargs.get("capture_output"):
+                kwargs.setdefault("stdout", view.output_stream)
+                kwargs.setdefault("stderr", view.output_stream)
+            return subprocess.run(args, check=kwargs.pop("check", False), **kwargs)
+
+        output_options["run"] = streamed_run
     try:
         saved = checks.read_report(path)
         parameters = [entry["identity"]["parameters"] for entry in saved["checks"]]
@@ -42,13 +54,21 @@ def current_checks(checkout, path):
                     output_options["junit"] = value["junit"]
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    _, code = checks.run_checks(
+    report, code = checks.run_checks(
         [PIPELINE["delivery"]["checks_profile"]],
         root=checkout.root,
         output=path,
         reuse=True,
         **output_options,
     )
+    result = getattr(getattr(checkout, "execution_context", None), "result", None)
+    if result:
+        result.checks_view(report, path, current=code == 0)
+        result.operations.append({"name": "checks", "exit_code": code})
+        if code:
+            result.stopped(
+                "local_checks", "Local checks did not pass for the current input"
+            )
     return code
 
 
@@ -103,6 +123,17 @@ class DeliveryPipeline:
             identities,
             self.context.facts["working_digest"],
         )
+        if self.context.result:
+            # Inspection adds freshness; the saved report retains this call's
+            # actual execution/reuse flags and tool identity.
+            saved_checks = {entry["name"]: entry for entry in saved["checks"]}
+            observed = {
+                "checks": [
+                    {**saved_checks[entry["name"]], **entry}
+                    for entry in current["checks"]
+                ]
+            }
+            self.context.result.checks_view(observed, self.report, current=True)
         return 0
 
     def committed(self, facts):

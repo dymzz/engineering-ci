@@ -28,7 +28,10 @@ uv run scripts/release.py
 verify 还必须提供已有 --run RUN_ID；读取元数据仅校验版本，不替用户选择版本。
 --help 同样只显示帮助。
 
-默认输出终端文本，通过退出码报告结果。verify --json 输出结构化状态，不包含日志或凭据：
+默认输出终端文本，通过退出码报告结果。status / validate / publish 支持 `--json`：
+stdout 输出一个操作结果对象，原有进度及工具输出写到 stderr；非零退出码仍保留。
+verify --json 的既有 Run 验证结构保持兼容。
+字段、停止原因与证据边界见[操作结果契约](../docs/architecture/cli-boundaries.md#操作结果与恢复视图)。
 
 | 操作 | 终端输出 | 本地文件 |
 | --- | --- | --- |
@@ -83,7 +86,7 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 | 原脚本 | 当前调用 |
 | --- | --- |
 | checks.py | `uv run --locked engineering-ci checks pr`，支持 ruff/tests/version/lock/inspect |
-| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.4.12 |
+| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.5.4 |
 | manual_release.py | Workflow 内部 `python -m engineering_ci.workflow_actions release ...` |
 | release_manifest.py | Workflow 内部 `python -m engineering_ci.workflow_actions manifest ...` |
 | dependency_security.py | `uv run --locked python -m engineering_ci.tools.security ...` |

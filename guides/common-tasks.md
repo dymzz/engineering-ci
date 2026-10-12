@@ -7,13 +7,13 @@
 在当前功能分支完成改动。目标版本已经准备好时无需再次修改；需要对齐四处元数据时使用：
 
 ```powershell
-uv run --locked engineering-ci version set v0.4.12
+uv run --locked engineering-ci version set v0.5.4
 ```
 
 查看当前交付上下文，不需要手工寻找分支、PR 或 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.4.12
+uv run --locked python scripts/release.py status --version v0.5.4
 ```
 
 `status` 只查询，显示 checkout、分支与提交、未提交文件、对应 PR 和实际 CI 状态、本地检查
@@ -25,7 +25,7 @@ uv run --locked python scripts/release.py status --version v0.4.12
 用同一个 `publish` 入口贯穿交付与发布，沿用 Git 的参数词汇：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.4.12 --all -m "统一本地与 PR 检查及发布入口"
+uv run --locked python scripts/release.py publish --version v0.5.4 --all -m "统一本地与 PR 检查及发布入口"
 ```
 
 `--all` 对应 `git add --all`，将当前 checkout 中列出的全部改动暂存，包括未跟踪文件；
@@ -61,7 +61,7 @@ Ready / Merge 命令；Merge 用 --match-head-commit 绑定当前已检查的 PR
 人工合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.4.12
+uv run --locked python scripts/release.py publish --version v0.5.4
 ```
 
 入口确认该 PR 的实际合并提交已包含在远端 main，再请求一次正式 Release Run。
@@ -76,12 +76,25 @@ uv run --locked python scripts/release.py publish --version v0.4.12
 统一先使用：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.4.12
+uv run --locked python scripts/release.py status --version v0.5.4
 ```
 
 不需要猜选 checks、validate 或 verify，也不需要从历史终端输出寻找 ID。
 `status` 使用与 publish 相同的层次化交付 FSM 识别实际 Git / PR 阶段，并查询原有 execution checkpoint。
 本地阶段不另建持久化记录；中断后从实际 Git / PR 和经过身份核验的报告恢复。
+
+Agent 或脚本需要结构化停点时，在相同命令上加 `--json`：
+
+```powershell
+uv run --locked python scripts/release.py status --version v0.5.4 --json
+uv run --locked python scripts/release.py publish --version v0.5.4 --json
+```
+
+第一条只查询。第二条仍执行原有 publish 行为；有未提交改动时仍需审核文件，并显式提供 `--all -m`。
+根据 `stop.code`、`publication.status` 和 `next_actions` 决定后续操作，不将查询的 exit_code=0 当成发布成功。
+`next_actions[].argv` 已包含实际仓库、版本以及可确认的 Run / SHA；按参数数组调用，先满足 prerequisite。
+requires_human=true 必须由人决定；空 argv 是人工决定事项，不是可执行命令。
+JSON 不包含工具日志；需要保存时分别重定向 stdout 与 stderr，并保留 `$LASTEXITCODE`。
 
 | 停点 | 信息与接续 |
 | --- | --- |
@@ -125,7 +138,7 @@ Git/gh 权限、仓库选择或工作区位置阻碍操作时，在原 checkout 
 `validate` 只用于主动选择一次独立全量验证，不发布。候选分支和版本显式指定：
 
 ```powershell
-uv run --locked python scripts/release.py validate --version v0.4.12 --ref codex/release-delivery-fix-v0.4.11
+uv run --locked python scripts/release.py validate --version v0.5.4 --ref codex/release-delivery-fix-v0.4.11
 ```
 
 `verify --run` 保留为指定 Run 的只读证据核验；日常停点定位用 `status`。

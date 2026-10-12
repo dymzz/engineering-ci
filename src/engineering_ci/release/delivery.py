@@ -45,6 +45,21 @@ class Checkout:
             },
         )
         if result.returncode:
+            view = getattr(getattr(self, "execution_context", None), "result", None)
+            if view and (
+                args[:2] in (("git", "commit"), ("git", "push"))
+                or args[:3] in (("gh", "pr", "create"), ("gh", "pr", "edit"))
+            ):
+                name = (
+                    args[1]
+                    if args[0] == "git"
+                    else "pr_create"
+                    if args[2] == "create"
+                    else "pr_update"
+                )
+                view.operations.append(
+                    {"name": name, "status": "failed", "exit_code": result.returncode}
+                )
             # Raw stderr may contain credential-bearing URLs or API responses.
             reason = "operation failed"
             for pattern, description in (
@@ -354,6 +369,33 @@ def handoff(checkout, context, *, require_head=True, execution=None):
         in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "SKIPPED", "ACTION_REQUIRED"}
         for value in required
     )
+    result = execution.result if execution else None
+    if result:
+        result.review = {
+            "head": state["headRefOid"],
+            "pending_delivery": pending,
+            "ci_status": "passed" if passed else "failed" if failed else "pending",
+            "mergeable": state["mergeable"],
+            "merge_state": state["mergeStateStatus"],
+            "checks": [
+                {"name": name, "status": conclusions.get(name, "unavailable")}
+                for name in checks.PR_CI_JOBS
+            ],
+        }
+        result.stopped(
+            "pending_delivery"
+            if pending
+            else "human_review"
+            if passed and state["mergeable"] == "MERGEABLE"
+            else "pr_ci",
+            "Local changes still need delivery"
+            if pending
+            else "Human review and merge are required"
+            if passed and state["mergeable"] == "MERGEABLE"
+            else "Required PR CI failed or was skipped"
+            if failed
+            else "Required PR results or conflict resolution are pending",
+        )
     if execution is not None and not pending:
         execution.review = ReviewEvidence(
             pr["number"],
@@ -362,6 +404,55 @@ def handoff(checkout, context, *, require_head=True, execution=None):
             "passed" if passed else "failed" if failed else "pending",
         )
     if not pending and passed and state["mergeable"] == "MERGEABLE":
+        if result:
+            if pr.get("isDraft"):
+                result.action(
+                    "ready",
+                    [
+                        "gh",
+                        "pr",
+                        "ready",
+                        str(pr["number"]),
+                        "--repo",
+                        checkout.repository,
+                    ],
+                    requires_human=True,
+                    prerequisite="Human code review approved",
+                )
+            result.action(
+                "merge",
+                [
+                    "gh",
+                    "pr",
+                    "merge",
+                    str(pr["number"]),
+                    "--repo",
+                    checkout.repository,
+                    "--squash",
+                    "--match-head-commit",
+                    state["headRefOid"],
+                    "--delete-branch",
+                ],
+                requires_human=True,
+                prerequisite="Human approval and required CI still passed",
+            )
+            result.action(
+                "publish",
+                [
+                    "uv",
+                    "run",
+                    "--locked",
+                    "python",
+                    "scripts/release.py",
+                    "publish",
+                    "--repo",
+                    checkout.repository,
+                    "--version",
+                    "v" + context["version"],
+                ],
+                requires_human=True,
+                prerequisite="PR merged and its commit included in main",
+            )
         print(
             "Review the linked PR, mark its Draft ready when appropriate, and merge it in GitHub."
         )
@@ -397,16 +488,25 @@ def handoff(checkout, context, *, require_head=True, execution=None):
 
 
 def prepare(
-    repository, version, *, message=None, include_all=False, report=None, checkout=None
+    repository,
+    version,
+    *,
+    message=None,
+    include_all=False,
+    report=None,
+    checkout=None,
+    result=None,
 ):
     """Advance delivery with predecessor evidence, stopping at human review."""
     from .lifecycle import ReleaseLifecycle
 
     checkout = checkout or Checkout(repository)
-    context = ExecutionContext(checkout.root, checkout.context(version))
+    context = ExecutionContext(checkout.root, checkout.context(version), result=result)
     lifecycle = ReleaseLifecycle(context)
     pipeline = DeliveryPipeline(context, checkout, report)
     checkout.execution_context, checkout.lifecycle = context, lifecycle
+    if result:
+        result.context, result.lifecycle = context, lifecycle
     facts = context.facts
     checkout.show(facts)
     print(f"Delivery phase: {lifecycle.phase}")
@@ -459,6 +559,8 @@ def prepare(
     if facts["files"]:
         checkout.command("git", "add", "--all", "--", ".")
         checkout.command("git", "commit", "-m", message)
+        if result:
+            result.operations.append({"name": "commit", "exit_code": 0})
         facts = checkout.context(version)
         if facts["files"]:
             raise DeliveryError("Files changed during commit; stopped before push")
@@ -467,6 +569,8 @@ def prepare(
     lifecycle.advance("committed")
     lifecycle.advance("start_push")
     checkout.command("git", "push", "--set-upstream", "origin", "HEAD")
+    if result:
+        result.operations.append({"name": "push", "exit_code": 0})
     pipeline.pushed(checkout.context(version))
     lifecycle.advance("pushed")
     facts = context.facts
@@ -492,6 +596,10 @@ def prepare(
             subject,
             "--body-file",
             str(body_file),
+        )
+    if result:
+        result.operations.append(
+            {"name": "pr_update" if pr else "pr_create", "exit_code": 0}
         )
     pipeline.reviewed(checkout.context(version))
     lifecycle.advance("open_review")

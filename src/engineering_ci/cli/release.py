@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 
 if not __package__:
@@ -16,6 +16,7 @@ if not __package__:
 from ..github_cli import GitHub
 from ..pipeline import PIPELINE
 from ..release import verification
+from ..release.results import OperationResult, command_text
 from ..release.version import checked_version, normalize
 from ._execution import (
     add_wait_arguments,
@@ -25,6 +26,15 @@ from ._execution import (
 )
 
 RELEASE_CONFIG = PIPELINE["delivery"]["release"]
+
+
+def result_view(options):
+    """Use one transient view alongside the existing execution context."""
+    if not getattr(options, "operation_result", None):
+        options.operation_result = OperationResult(
+            getattr(options, "command", "status"), options.repo, options.version
+        )
+    return options.operation_result
 
 
 def continue_command(options, *, run_id=None, inspect_run=False):
@@ -51,18 +61,35 @@ def continue_command(options, *, run_id=None, inspect_run=False):
             args += ["--all"]
         if getattr(options, "message", None):
             args += ["-m", options.message]
-    # Single-quoted arguments work for both PowerShell and shell in normal examples.
-    import os
-    import shlex
-
-    def quote(value):
-        if os.name == "nt":
-            if re.fullmatch(r"[A-Za-z0-9_./:@+-]+", value):
-                return value
-            return "'" + value.replace("'", "''") + "'"
-        return shlex.quote(value)
-
-    print("Continue: " + " ".join(quote(value) for value in args))
+    view = getattr(options, "operation_result", None)
+    if view and getattr(options, "allow_continue", True):
+        retry = view.stop and view.stop["code"] in {
+            "api_error",
+            "operation_error",
+            "permission_or_delivery",
+        }
+        view.action(
+            "verify" if inspect_run else "resume" if run_id else command,
+            args,
+            requires_human=not inspect_run
+            and not run_id
+            and (
+                command == "validate"
+                or command == "publish"
+                and (
+                    view.context is None
+                    or getattr(view.lifecycle, "phase", None) == "PUBLICATION_ready"
+                )
+            ),
+            prerequisite="Confirmed original Run"
+            if run_id
+            else "Resolve the reported failure and inspect status before retrying"
+            if retry
+            else "Review changes and supply --all and -m before committing"
+            if getattr(options, "include_all", False)
+            else None,
+        )
+    print("Continue: " + command_text(args))
 
 
 def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
@@ -78,6 +105,27 @@ def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
     state = store.load()
     if state is None:
         return False
+    view = getattr(options, "operation_result", None)
+    checkpoint = {
+        "operation": options.command,
+        "ref": ref,
+        "phase": state.phase,
+        "paused_from": state.paused_from,
+        "state_file": str(store.path),
+        "run_id": state.run_id,
+        "run_url": f"https://github.com/{options.repo}/actions/runs/{state.run_id}"
+        if state.run_id
+        else None,
+        "remote_conclusion": state.remote_conclusion,
+        "binding": "unverified",
+    }
+    from ..execution.models import DispatchErrorInfo
+
+    diagnostic = DispatchErrorInfo.from_state_error(state.last_error)
+    if diagnostic:
+        checkpoint["error"] = json.loads(diagnostic.to_state_error())
+    if view:
+        view.executions.append(checkpoint)
     print(
         f"Execution checkpoint: {options.command} on {ref}: {state.phase}; state file: {store.path}"
     )
@@ -93,30 +141,67 @@ def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
                 f"Live Run: {run['status']} / {run.get('conclusion') or '-'}; "
                 f"attempt: {run['run_attempt']}; commit: {run['head_sha']}"
             )
+            checkpoint.update(
+                {
+                    "status": run["status"],
+                    "run_attempt": run["run_attempt"],
+                    "commit_sha": run["head_sha"],
+                    "live_conclusion": run.get("conclusion"),
+                }
+            )
             actual_version = verification.version_at(api, run["head_sha"])
             if actual_version != options.version:
+                checkpoint["binding"] = "historical"
                 print(
                     f"Historical Run: metadata is v{actual_version}, requested v{options.version}. "
                     "It is not a usable checkpoint for this version; the saved state is preserved."
                 )
                 return False
             if expected_head and run["head_sha"] != expected_head:
+                checkpoint["binding"] = "historical"
                 print(
                     f"Historical Run: commit {run['head_sha']} differs from the current "
                     f"publication commit {expected_head}; the saved state is preserved."
                 )
                 return False
-        if state.phase == "FINISHED":
+            checkpoint["binding"] = "matched"
+        if (
+            view
+            and options.command == "publish"
+            and getattr(options, "allow_continue", True)
+        ):
+            view.stopped(
+                "run_failed"
+                if state.phase == "FINISHED" and state.remote_conclusion != "success"
+                else "existing_run",
+                "Inspect the recorded Run result before continuing"
+                if state.phase == "FINISHED"
+                else "Resume the confirmed existing Run",
+            )
+        if not getattr(options, "allow_continue", True):
             print(
-                "The recorded attempt finished; inspect its linked failure before requesting another attempt."
+                "This checkpoint does not admit publication before current delivery is complete."
             )
-            continue_command(
-                options,
-                run_id=state.run_id if state.remote_conclusion == "success" else None,
+        elif state.phase == "FINISHED":
+            print(
+                "The recorded execution finished; verify the existing Run evidence before requesting another attempt."
             )
+            continue_command(options, run_id=state.run_id, inspect_run=True)
         else:
             continue_command(options, run_id=state.run_id)
     elif state.phase in {"UNKNOWN", "DISPATCHING"}:
+        if view:
+            if getattr(options, "allow_continue", True):
+                view.stopped(
+                    "dispatch_unknown",
+                    "Confirm the original request in GitHub; no automatic second POST",
+                )
+            view.action(
+                "confirm_run",
+                requires_human=True,
+                prerequisite="Manually confirm the original Run ID before using --resume",
+            )
+        checkpoint["candidates"] = []
         print("Dispatch is uncertain: no automatic second POST is allowed.")
         print(
             f"Confirm the Run at https://github.com/{options.repo}/actions/workflows/{RELEASE_CONFIG['workflow']}"
@@ -137,13 +222,23 @@ def execution_checkpoint(options, inputs, ref, *, api=None, expected_head=None):
                     continue
                 if verification.version_at(api, run["head_sha"]) != options.version:
                     continue
+                checkpoint["candidates"].append(
+                    {
+                        key: run.get(key)
+                        for key in ("id", "head_sha", "status", "conclusion")
+                    }
+                )
                 print(
                     f"Unconfirmed candidate Run {run['id']}: "
                     f"https://github.com/{options.repo}/actions/runs/{run['id']}; "
                     f"commit: {run['head_sha']}; {run['status']} / {run.get('conclusion') or '-'}"
                 )
                 print("Only after confirming this is the original request:")
-                continue_command(options, run_id=run["id"])
+                from copy import copy
+
+                candidate_options = copy(options)
+                candidate_options.allow_continue = False
+                continue_command(candidate_options, run_id=run["id"])
     return True
 
 
@@ -158,8 +253,10 @@ def show_status(options):
 
     checkout = Checkout(options.repo)
     context = checkout.context(options.version, validate_version=False)
-    execution = ExecutionContext(checkout.root, context)
+    view = result_view(options)
+    execution = ExecutionContext(checkout.root, context, result=view)
     lifecycle = ReleaseLifecycle(execution)
+    view.context, view.lifecycle = execution, lifecycle
     checkout.show(context, diff=options.diff)
     print(f"Delivery phase: {lifecycle.phase}")
     path = checkout.root / ".test-tools/checks/pr.json"
@@ -168,8 +265,14 @@ def show_status(options):
 
         try:
             result, code = checks.inspect(path, root=checkout.root)
+            complete = [entry["name"] for entry in result["checks"]] == PIPELINE[
+                "profiles"
+            ][PIPELINE["delivery"]["checks_profile"]]
+            current = code == 0 and complete
+            view.checks_view(result, path, current=current, inspection=True)
+            view.local_checks["profile_complete"] = complete
             print(
-                f"Local checks: {'passed for current input' if not code else 'not a current pass'}; {path}"
+                f"Local checks: {'passed for current input' if current else 'not a current pass'}; {path}"
             )
             for entry in result["checks"]:
                 platform = (entry.get("environment") or {}).get("platform", "unknown")
@@ -186,10 +289,12 @@ def show_status(options):
                 if entry.get("invalidation_reason"):
                     print(f"  {entry['invalidation_reason']}")
         except (OSError, ValueError, KeyError, TypeError):
+            view.local_checks = {"status": "unavailable", "report": str(path)}
             print(
                 f"Local checks: saved report unavailable or invalid; {path}; not a pass"
             )
     else:
+        view.local_checks = {"status": "not_run", "report": str(path)}
         print("Local checks: no saved PR report")
     pr = context["pr"]
     pending_delivery = False
@@ -199,6 +304,11 @@ def show_status(options):
             f"Human merge confirmed: {pr['url']}; merge commit: {pr['mergeCommit']['oid']}"
         )
         if lifecycle.phase == "BLOCKED_merged":
+            view.stopped(
+                "undelivered_after_merge",
+                "Merged PR excludes the local changes; human decision on a follow-up PR is required",
+            )
+            view.action("resolve_delivery", requires_human=True)
             pending_delivery = True
             print(
                 f"Stopped at delivery: PR #{pr['number']} is merged, but the listed local "
@@ -212,9 +322,29 @@ def show_status(options):
         publication_head = DeliveryPipeline(execution, checkout).merged()
         lifecycle.advance("confirm_merge")
     elif lifecycle.phase.startswith("BLOCKED_"):
+        view.stopped(
+            "delivery_blocked",
+            "Resolve local metadata, conflicts or main changes before delivery",
+        )
+        view.action("resolve_delivery", requires_human=True)
         pending_delivery = True
         print(
             "Stopped before delivery: resolve local metadata, conflicts or main changes; historical Runs do not authorize publication."
+        )
+    elif lifecycle.phase == "DELIVERY_pending" and not pr:
+        pending_delivery = True
+        view.stopped(
+            "pending_delivery", "Deliver the current branch before publication"
+        )
+        continue_command(
+            Namespace(
+                command="publish",
+                repo=options.repo,
+                version=options.version,
+                include_all=bool(context["files"]),
+                message=None,
+                operation_result=view,
+            )
         )
     if pr and pr["state"] == "OPEN":
         from ..release.delivery import handoff
@@ -233,11 +363,13 @@ def show_status(options):
                     version=options.version,
                     include_all=bool(context["files"]),
                     message=None,
+                    operation_result=view,
                 )
             )
     api = GitHub(options.repo)
     receipt = verification.published(api, options.repo, "v" + options.version)
     if receipt and receipt["status"] == "published":
+        view.published(receipt)
         print(f"Completed: published v{options.version}; {receipt['release_url']}")
         print(f"Published commit: {receipt['commit_sha']}")
         evidence = receipt["manifest"]["workflow"]
@@ -263,6 +395,8 @@ def show_status(options):
             scenario=scenario,
             include_all=False,
             message=None,
+            operation_result=view,
+            allow_continue=mode != "publish" or lifecycle.phase == "PUBLICATION_ready",
         )
         inputs = {
             "version": "v" + options.version,
@@ -298,6 +432,12 @@ def show_status(options):
             print(
                 f"Next step: request complete validation and publication of {identity['tag']} at {publication_head}."
             )
+        view.stopped(
+            "publication_not_requested" if publication_head else "pending_delivery",
+            "Human initiation is required for complete validation and publication"
+            if publication_head
+            else "Deliver the current changes before publication",
+        )
         continue_command(
             Namespace(
                 command="publish",
@@ -305,6 +445,7 @@ def show_status(options):
                 version=options.version,
                 include_all=bool(context["files"]),
                 message=None,
+                operation_result=view,
             )
         )
     print("Publication is not confirmed; status only queried the current facts.")
@@ -360,6 +501,7 @@ def prepare_publication(options):
             include_all=options.include_all,
             report=options.checks_report,
             checkout=checkout,
+            result=result_view(options),
         )
     finally:
         if hasattr(checkout, "execution_context"):
@@ -397,6 +539,12 @@ def main(argv=None):
             required=True,
             help="Explicit version; checked against all four metadata fields",
         )
+        if name in {"status", "validate", "publish"}:
+            command.add_argument(
+                "--json",
+                action="store_true",
+                help="Print an operation result as JSON; progress stays on stderr",
+            )
         if name == "publish":
             command.add_argument(
                 "-m",
@@ -454,11 +602,33 @@ def main(argv=None):
     options = parser.parse_args(argv)
     if options.command is None:
         parser.error("Choose status, validate, verify or publish")
-    if options.command in {"status", "validate", "publish"}:
-        environment_status = execution_environment()
-        if environment_status:
-            return environment_status
+    if options.command == "verify":
+        return execute(options)
+    view = result_view(options)
+    if options.json:
+        view.output_stream = sys.stderr
+    with redirect_stdout(sys.stderr) if options.json else nullcontext():
+        code = execute(options)
+    if code and not view.next_actions:
+        add_status_action(options)
+    view.finish(code)
+    if options.json:
+        print(json.dumps(view.to_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        view.render()
+    return code
+
+
+def execute(options):
+    """Run the existing operation; output views never decide its exit status."""
     try:
+        if options.command in {"status", "validate", "publish"}:
+            environment_status = execution_environment()
+            if environment_status:
+                result_view(options).stopped(
+                    "environment", "Required project dependencies are unavailable"
+                )
+                return environment_status
         if options.command == "status":
             return show_status(options)
         api = GitHub(options.repo)
@@ -484,6 +654,8 @@ def main(argv=None):
             return 0 if result["result"] == "passed" else 1
         if options.command == "publish":
             receipt = verification.published(api, options.repo, "v" + options.version)
+            if receipt:
+                result_view(options).published(receipt)
             if receipt and receipt["status"] == "published":
                 print(f"Already published: {receipt['release_url']}")
                 return 0
@@ -494,6 +666,10 @@ def main(argv=None):
                     phase = getattr(getattr(options, "lifecycle", None), "phase", None)
                     if phase != "REVIEW_waiting":
                         continue_command(options)
+                    elif not result_view(options).stop:
+                        result_view(options).stopped(
+                            "human_review", "Human review and merge are required"
+                        )
                     return result
         identity = resolve_target(
             api, getattr(options, "ref", RELEASE_CONFIG["branch"]), options.version
@@ -520,6 +696,15 @@ def main(argv=None):
                 or run.get("head_branch") != identity["ref"]
             ):
                 raise ValueError("Resume Run belongs to another release commit")
+        result_view(options).operations.append(
+            {
+                "name": "workflow_execution",
+                "status": "started",
+                "commit_sha": identity["commit_sha"],
+                "run_id": options.resume,
+                "resume_requested": bool(options.resume),
+            }
+        )
         args = [
             "--repo",
             options.repo,
@@ -538,20 +723,57 @@ def main(argv=None):
             flush=True,
         )
         result = entrypoint(args)
-        if result:
+        operation = result_view(options).operations[-1]
+        operation.update(
+            {
+                "status": "completed"
+                if result == 0
+                else "interrupted"
+                if result == 130
+                else "failed",
+                "exit_code": result,
+            }
+        )
+        # Reading the original checkpoint also supplies Run identity on success.
+        if result or getattr(options, "operation_result", None):
             try:
                 execution_checkpoint(options, inputs, identity["ref"])
             except (OSError, ValueError, RuntimeError):
                 print(
                     "Checkpoint could not be read; original execution failure is retained."
                 )
+                result_view(options).stopped(
+                    "checkpoint_unavailable",
+                    "Execution checkpoint could not be read; retain the original exit code",
+                )
         if result == 0 and options.command == "publish":
             receipt = verification.published(api, options.repo, identity["tag"])
             if receipt is None or receipt["status"] != "published":
                 raise ValueError("Release Run ended without a verified final Release")
+            result_view(options).published(receipt)
+            result_view(options).stop = None
+            result_view(options).next_actions.clear()
             print(f"Published: {receipt['release_url']}")
+        elif result and not result_view(options).stop:
+            result_view(options).stopped(
+                "execution_failed",
+                "Workflow execution failed; inspect status before continuing",
+            )
+        if result == 130:
+            result_view(options).stopped(
+                "interrupted", "Inspect the saved execution context before continuing"
+            )
+            add_status_action(options)
+        elif result == 0 and options.command == "validate":
+            result_view(options).next_actions.clear()
         return result
     except KeyboardInterrupt:
+        if options.command != "verify":
+            result_view(options).next_actions.clear()
+            result_view(options).stopped(
+                "interrupted", "Inspect the saved context before continuing"
+            )
+            add_status_action(options)
         print("Release operation interrupted", file=sys.stderr)
         print(
             "Inspect context: uv run --locked python scripts/release.py status "
@@ -566,6 +788,33 @@ def main(argv=None):
         RuntimeError,
         subprocess.SubprocessError,
     ) as error:
+        if options.command != "verify":
+            view = result_view(options)
+            view.next_actions.clear()
+            from ..github_cli import ApiError
+            from ..release.pipeline import EvidenceError
+
+            # Native adapters already classify safe diagnostics. Other exceptions
+            # may carry responses/credentials, so their text is not copied to JSON.
+            reason = (
+                str(error)
+                if isinstance(error, (EvidenceError, ApiError))
+                else "Operation could not complete; inspect the current context"
+            )
+            view.stopped(
+                "permission_or_delivery"
+                if isinstance(error, EvidenceError)
+                else "api_error"
+                if isinstance(error, ApiError)
+                else "operation_error",
+                reason,
+            )
+            if getattr(view.lifecycle, "phase", None) == "BLOCKED_merged":
+                view.stopped(
+                    "undelivered_after_merge",
+                    "Merged PR excludes the local changes; human decision on a follow-up PR is required",
+                )
+            add_status_action(options)
         if options.command == "verify" and options.json:
             print(
                 json.dumps(
@@ -593,7 +842,12 @@ def main(argv=None):
                     actual = checked_version()
                 except (OSError, ValueError, KeyError, TypeError):
                     actual = None
-                if actual == options.version:
+                if getattr(view.lifecycle, "phase", None) == "BLOCKED_merged":
+                    print(
+                        "Preserve local changes; decide on a follow-up development PR before publication."
+                    )
+                    view.action("resolve_delivery", requires_human=True)
+                elif actual == options.version:
                     continue_command(options)
                 else:
                     print(
@@ -615,6 +869,25 @@ def main(argv=None):
                             "Resolve the four version fields before requesting publication."
                         )
         return 1
+
+
+def add_status_action(options):
+    """Offer a read-only recovery entry after errors and interruptions."""
+    result_view(options).action(
+        "status",
+        [
+            "uv",
+            "run",
+            "--locked",
+            "python",
+            "scripts/release.py",
+            "status",
+            "--repo",
+            options.repo,
+            "--version",
+            "v" + options.version,
+        ],
+    )
 
 
 if __name__ == "__main__":
