@@ -109,3 +109,66 @@ E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 `version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
 使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
 绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。
+
+## 原始轨迹
+
+轨迹命令独立于 release/download，不创建 Workflow，不改变检查或发布状态。
+安装和连接配置见[归档配置](../docs/configuration/tracing.md)。
+
+```powershell
+# 只读确认连接；不自动初始化。
+uv run --locked --extra trace engineering-ci trace status --json
+# 只读检查明确选择的一份 rollout；无需数据库。
+uv run --locked engineering-ci trace inspect 'C:/path/to/rollout.jsonl' --json
+# 明确创建专用归档 schema，不接管同名其他应用对象。
+uv run --locked --extra trace engineering-ci trace init --json
+# 归档并返回 snapshot_id、source、字节摘要、游标与完整性。
+uv run --locked --extra trace engineering-ci trace import 'C:/path/to/rollout.jsonl' --json
+```
+
+Linux 使用同样命令及本机文件路径。`--config` 可指定非敏感 TOML；相对配置路径从项目定位，
+输入文件路径从调用目录定位。仅接受单个原生 rollout，不扫描 .codex 目录；
+`codex exec --json` 用于新执行的 stdout 事件流，不是导出现有桌面会话的命令，其格式单独处理。
+目前原生来源核对版本为 0.162.0-alpha.2；其他版本可以保真归档，但不声称语义投影已经兼容。
+
+中断后重复同一条 import 命令，读取数据库的已提交游标，核对之前归档的文件前缀，
+继续新增完整行。重复事件核对内容和属性，冲突拒绝覆盖。文件改写/缩短拒绝继续；
+移动或复制相同文件不改变来源身份。截断尾片段保留为独立记录，游标停在它之前，
+完成后建立新快照，旧快照不改变。活跃文件只捕获命令开始时的固定字节前缀。
+
+回放必须明确提供 import 返回的 snapshot_id 和新输出路径：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace replay SNAPSHOT_ID --out '.test-tools/trace-replay.jsonl' --json
+```
+
+将 SNAPSHOT_ID 替换为该次结果中的值。回放只读数据库，不执行历史工具；
+内容校验全部通过后才创建目标文件，已有文件拒绝覆盖。输出含完整私密原始内容，
+不会自动上传、加入 Git 或写到终端。trace 操作的 `--json` 输出一个脱敏结果对象，
+退出码 0 表示该操作完成，2 表示配置、来源、数据库或输出错误；
+`completeness=unknown/incomplete`、归档成功和原任务成功是不同事实。
+
+## 标准化与离线分析
+
+使用 import 返回的固定快照 ID，生成不包含命令、参数、prompt、输出及推理内容的派生视图：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace project SNAPSHOT_ID --out '.test-tools/otel-projection.json' --json
+uv run --locked --extra mining engineering-ci mine '.test-tools/otel-projection.json' --out '.test-tools/mining-result.json' --json
+```
+
+project 输出官方 OTel SDK Span JSON；这是离线 SDK 视图，不是 OTLP JSON 或已发送的遥测。
+只使用已核对 rollout 版本的 item_completed 结构化时间、状态和退出码，缺时间不生成 Span；
+外层工具包装记录不再计为第二次操作。未知退出码保持 unknown，不根据终端日志推测。
+
+mine 只运行 PM4Py 非 LLM 算法，不需要数据库或 OTel SDK。输入 JSON 全部字节摘要、
+投影版本、case 范围、算法和依赖版本组成分析身份；同一输入的核心结果确定。
+case 为 Turn，活动为 command_execution/file_change/mcp_tool_call，
+尚不能区分命令内部具体 pytest/check 身份。结果中的操作引用可以定位回原快照。
+
+没有可验证的全局序列时，unknown 完整性可参与观察性分析，并原样标注。
+incomplete 输入需显式 --allow-incomplete。缺少 Turn 边界、时间缺失、并发重叠及时间并列的
+case 保留排除原因，不用稳定排序冒充实际执行顺序。失败/取消也保留，不当作成功。
+没有合格顺序片段时仍保存 unavailable 结果并返回 3；依赖、输入或输出错误返回 2。
+结果文件拒绝覆盖。原始业务退出码、分析运行成功和发现优化效果是不同事实。
+不执行工作流候选，不调用付费模型；PM4Py 安装与许可见[配置说明](../docs/configuration/tracing.md#可选离线挖掘)。

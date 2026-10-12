@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.5.4"
+version = "0.6.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -14,7 +14,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest==9.0.3", "pytest-cov==7.0.0"]
+dev = [
+    "cloudevents==2.2.0",
+    "psycopg[binary]==3.3.6",
+    "pytest==9.0.3",
+    "pytest-cov==7.0.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -22,6 +27,16 @@ pythonpath = ["src"]
 
 [project.scripts]
 engineering-ci = "engineering_ci:main"
+
+[project.optional-dependencies]
+trace = [
+    "cloudevents==2.2.0",
+    "opentelemetry-sdk==1.45.1",
+    "psycopg[binary]==3.3.6",
+]
+mining = [
+    "pm4py==2.7.23.9",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

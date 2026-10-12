@@ -1,0 +1,10 @@
+# PostgreSQL credentials come only from VESRYN_DATABASE.
+schema_version = 1
+
+[archive]
+schema = "engineering_ci_trace"
+connect_timeout = 10
+statement_timeout = 15
+lock_timeout = 5
+batch_size = 100
+max_record_bytes = 4194304
