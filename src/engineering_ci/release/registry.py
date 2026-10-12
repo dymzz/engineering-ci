@@ -15,6 +15,16 @@ STATES = {
     "startup_failure": "failed",
 }
 
+# Minimum direct inputs used by release guards, not a second Workflow DAG.
+RELEASE_DEPENDENCIES = {
+    "candidate": frozenset(),
+    "core-tests": frozenset({"candidate"}),
+    "complete-ci": frozenset({"candidate"}),
+    "evidence": frozenset({"candidate", "core-tests", "complete-ci"}),
+    "verified": frozenset({"candidate", "core-tests", "complete-ci", "evidence"}),
+    "publish": frozenset({"candidate", "verified"}),
+}
+
 CHECKS = {
     "candidate": ("candidate", "Validate manual release request"),
     "ruff_lint": (

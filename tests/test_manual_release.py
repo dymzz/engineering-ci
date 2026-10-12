@@ -181,9 +181,13 @@ class ManualReleaseTests(unittest.TestCase):
                     self.assertRaises(ValueError),
                 ):
                     release.require_jobs(facts, HEAD)
-        for facts in ({}, {**needs(), "extra": {"result": "success"}}):
+        for facts in (
+            {},
+            {key: item for key, item in needs().items() if key != "evidence"},
+        ):
             with self.assertRaises(ValueError):
                 release.require_jobs(facts, HEAD)
+        release.require_jobs({**needs(), "extra": {"result": "success"}}, HEAD)
         facts = needs()
         facts["candidate"]["outputs"]["sha"] = OTHER
         with self.assertRaises(ValueError):

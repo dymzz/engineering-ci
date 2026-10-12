@@ -12,6 +12,7 @@ import yaml
 from engineering_ci import checks, pipeline
 from engineering_ci import workflow_consistency as mod
 from engineering_ci.release import publishing, version
+from engineering_ci.release.registry import RELEASE_DEPENDENCIES
 
 
 @pytest.fixture
@@ -74,9 +75,7 @@ def test_current_workflows_and_yaml_boolean_rules(workflows):
         (
             "ci.yml",
             lambda d: d["jobs"]["sync-tool-tests"]["steps"][4].update(
-                run=d["jobs"]["sync-tool-tests"]["steps"][4]["run"].replace(
-                    "set -euo pipefail", "set +e"
-                )
+                run=d["jobs"]["sync-tool-tests"]["steps"][4]["run"] + " || true"
             ),
         ),
         (
@@ -155,6 +154,161 @@ def test_changed_bindings_are_rejected(workflows, filename, mutation):
     change(workflows, filename, mutation)
     with pytest.raises(ValueError, match="Pipeline / Workflow mismatch"):
         mod.validate(root=workflows)
+
+
+@pytest.mark.parametrize("filename", ["ci.yml", "release.yml"])
+def test_ordinary_steps_and_read_only_jobs_do_not_redeclare_the_workflow(
+    workflows, filename
+):
+    def adjust(data):
+        for job in data["jobs"].values():
+            if "steps" in job:
+                job["timeout-minutes"] = 12
+                for step in job["steps"]:
+                    if step.get("id") == "check_toolchain":
+                        step["name"] = "Load configured tools"
+                job["steps"].append(
+                    {"name": "Diagnostics", "run": "echo changed diagnostics"}
+                )
+        data["jobs"]["diagnostics"] = {
+            "runs-on": "ubuntu-24.04",
+            "permissions": {},
+            "if": "${{ always() }}",
+            "continue-on-error": True,
+            "strategy": {"matrix": {"sample": [1, 2]}},
+            "steps": [{"run": "echo diagnostic matrix"}],
+        }
+        if filename == "release.yml":
+            data["jobs"]["verified"]["needs"].append("diagnostics")
+            data["jobs"]["publish"]["needs"].append("diagnostics")
+
+    change(workflows, filename, adjust)
+    mod.validate(root=workflows)
+
+
+@pytest.mark.parametrize("filename", ["ci.yml", "release.yml"])
+@pytest.mark.parametrize(
+    "permissions", [{"contents": "write"}, {"id-token": "write"}, "write-all"]
+)
+def test_extra_jobs_cannot_acquire_write_permissions(workflows, filename, permissions):
+    change(
+        workflows,
+        filename,
+        lambda d: d["jobs"].update(
+            extra={
+                "runs-on": "ubuntu-24.04",
+                "permissions": permissions,
+                "steps": [{"run": "echo extra"}],
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="permissions"):
+        mod.validate(root=workflows)
+
+
+@pytest.mark.parametrize(
+    "job_id,dependency",
+    [
+        (job_id, dependency)
+        for job_id, dependencies in RELEASE_DEPENDENCIES.items()
+        for dependency in sorted(dependencies)
+    ],
+)
+def test_every_critical_direct_dependency_is_required(workflows, job_id, dependency):
+    def remove(data):
+        job = data["jobs"][job_id]
+        actual = job["needs"]
+        job["needs"] = [
+            value
+            for value in ([actual] if isinstance(actual, str) else actual)
+            if value != dependency
+        ]
+
+    change(workflows, "release.yml", remove)
+    with pytest.raises(ValueError, match=f"{job_id} dependencies"):
+        mod.validate(root=workflows)
+
+
+@pytest.mark.parametrize("job_id", ["verified", "publish"])
+def test_extra_dependencies_must_pass_at_runtime_as_well_as_static_validation(
+    workflows, job_id
+):
+    change(
+        workflows,
+        "release.yml",
+        lambda d: (
+            d["jobs"].update(
+                diagnostics={
+                    "runs-on": "ubuntu-24.04",
+                    "steps": [{"run": "echo diagnostics"}],
+                }
+            ),
+            d["jobs"][job_id]["needs"].append("diagnostics"),
+        ),
+    )
+    mod.validate(root=workflows)
+    head = "a" * 40
+    facts = {name: {"result": "success"} for name in RELEASE_DEPENDENCIES[job_id]}
+    facts["candidate"]["outputs"] = {"sha": head}
+    facts["diagnostics"] = {"result": "success"}
+    publishing.require_jobs(facts, head, publishing=job_id == "publish")
+    for state in ("failure", "skipped", "cancelled", "unknown"):
+        facts["diagnostics"]["result"] = state
+        with pytest.raises(ValueError, match="actually succeeded"):
+            publishing.require_jobs(facts, head, publishing=job_id == "publish")
+
+
+@pytest.mark.parametrize(
+    "job_id,mutation",
+    [
+        (
+            "evidence",
+            lambda j: j["outputs"].update(
+                facts_artifact_id="${{ steps.other.outputs.artifact-id }}"
+            ),
+        ),
+        (
+            "verified",
+            lambda j: j["outputs"].update(
+                manifest_artifact_id="${{ steps.other.outputs.artifact-id }}"
+            ),
+        ),
+        (
+            "evidence",
+            lambda j: j["steps"][2]["with"].update(
+                **{
+                    "artifact-ids": "${{ needs.complete-ci.outputs.security_artifact_id }}"
+                }
+            ),
+        ),
+        (
+            "publish",
+            lambda j: j["steps"][1]["with"].update(
+                **{"artifact-ids": "${{ needs.evidence.outputs.facts_artifact_id }}"}
+            ),
+        ),
+        (
+            "verified",
+            lambda j: j["steps"][-1]["with"].update(name="different-manifest"),
+        ),
+    ],
+)
+def test_artifact_producer_consumer_contracts_cannot_drift(workflows, job_id, mutation):
+    change(workflows, "release.yml", lambda d: mutation(d["jobs"][job_id]))
+    with pytest.raises(ValueError, match="Artifact|exactly one Step"):
+        mod.validate(root=workflows)
+
+
+def test_artifact_step_ids_can_change_when_declared_outputs_follow_them(workflows):
+    def rename(data):
+        job = data["jobs"]["evidence"]
+        job["steps"][-1]["id"] = "facts_receipt"
+        job["outputs"]["facts_artifact_id"] = (
+            "${{ steps.facts_receipt.outputs.artifact-id }}"
+        )
+
+    change(workflows, "release.yml", rename)
+    mod.validate(root=workflows)
 
 
 def test_a_name_in_comments_or_the_wrong_job_is_not_evidence(workflows):

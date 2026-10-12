@@ -28,6 +28,8 @@ GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与
 请求前执行相同校验。绑定范围和配置升级规则统一见
 [GitHub Actions 一致性](../../configuration/pipeline.md#github-actions-一致性)。
 Job DAG、权限、条件继续由 YAML 声明，不由 TOML 动态调度。
+一致性校验保护跨层契约和发布不变量，允许普通 Step 及只读 Job 演进；
+最小关键依赖及新增 `needs` 的实际成功要求见上述配置契约，不复制完整 Workflow。
 直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
 
 原生 Windows 的 Bash 测试无法完整执行时，pytest 原始退出码和 skipped 数量

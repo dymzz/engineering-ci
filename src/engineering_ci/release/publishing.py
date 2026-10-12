@@ -98,14 +98,15 @@ def find_release(api, tag):
 
 
 def require_jobs(needs, head, publishing=False):
-    expected = (
-        {"candidate", "verified"}
-        if publishing
-        else {"candidate", "core-tests", "complete-ci", "evidence"}
-    )
-    if set(needs) != expected:
-        raise ValueError("Missing or unexpected verification jobs")
-    if any(item.get("result") != "success" for item in needs.values()):
+    from .registry import RELEASE_DEPENDENCIES
+
+    expected = RELEASE_DEPENDENCIES["publish" if publishing else "verified"]
+    if not isinstance(needs, dict) or not expected <= needs.keys():
+        raise ValueError("Missing required verification jobs")
+    if any(
+        not isinstance(item, dict) or item.get("result") != "success"
+        for item in needs.values()
+    ):
         raise ValueError("Every required job must have actually succeeded")
     if needs["candidate"].get("outputs", {}).get("sha") != head:
         raise ValueError("Verified candidate SHA mismatch")
