@@ -161,7 +161,7 @@ project 输出官方 OTel SDK Span JSON；这是离线 SDK 视图，不是 OTLP 
 只使用已核对 rollout 版本的 item_completed 结构化时间、状态和退出码，缺时间不生成 Span；
 外层工具包装记录不再计为第二次操作。未知退出码保持 unknown，不根据终端日志推测。
 
-mine 只运行 PM4Py 非 LLM 算法，不需要数据库或 OTel SDK。输入 JSON 全部字节摘要、
+mine 只运行 Rust4PM 非 LLM 算法，不需要数据库或 OTel SDK。输入 JSON 全部字节摘要、
 投影版本、case 范围、算法和依赖版本组成分析身份；同一输入的核心结果确定。
 case 为 Turn，活动为 command_execution/file_change/mcp_tool_call，
 尚不能区分命令内部具体 pytest/check 身份。结果中的操作引用可以定位回原快照。
@@ -171,4 +171,50 @@ incomplete 输入需显式 --allow-incomplete。缺少 Turn 边界、时间缺�
 case 保留排除原因，不用稳定排序冒充实际执行顺序。失败/取消也保留，不当作成功。
 没有合格顺序片段时仍保存 unavailable 结果并返回 3；依赖、输入或输出错误返回 2。
 结果文件拒绝覆盖。原始业务退出码、分析运行成功和发现优化效果是不同事实。
-不执行工作流候选，不调用付费模型；PM4Py 安装与许可见[配置说明](../docs/configuration/tracing.md#可选离线挖掘)。
+不执行工作流候选，不调用付费模型；Rust4PM 安装与历史 PM4Py 结果兼容见[配置说明](../docs/configuration/tracing.md#可选离线挖掘)。
+
+## 归档查询与结果恢复
+
+连接预检仍是 `trace status`；带选择器时查询已归档证据，不导入或重算。
+source cursor 与 snapshot 分开显示，前缀校验标为未执行。status --file 只读 session header。
+
+```powershell
+uv run --locked --extra trace engineering-ci trace sources --limit 20 --json
+uv run --locked --extra trace engineering-ci trace status --file 'C:/path/to/rollout.jsonl' --json
+uv run --locked --extra trace engineering-ci trace snapshots --source SOURCE_URI --limit 20 --json
+uv run --locked --extra trace engineering-ci trace status --snapshot SNAPSHOT_ID --json
+# next_after 非空时，将值传给同一查询的 --after；不猜测 offset 或重读实录。
+```
+
+选择同一固定快照，显式建立完整结果链：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace init --json
+uv run --locked --extra trace engineering-ci trace project SNAPSHOT_ID --record --out '.test-tools/projection-new.json' --json
+uv run --locked --extra trace engineering-ci trace results --snapshot SNAPSHOT_ID --kind projection --json
+uv run --locked --extra trace --extra mining engineering-ci mine --projection-result PROJECTION_ID --record --out '.test-tools/analysis-new.json' --json
+uv run --locked --extra trace engineering-ci trace status --result ANALYSIS_ID --json
+```
+
+source/snapshot/projection/analysis ID 都来自对应查询或命令结果。源 URI 可以用 status --file 取得。
+`--projection-result` 与位置文件参数互斥。读取 ID 要数据库；普通 mine 文件模式仍无需数据库或 OTel。
+无合格 case 的 unavailable 结果同样可登记，mine 保持退出码 3，不变为通过。
+
+已有投影/PM4Py 分析文件可补登记而不重跑。分析的 --input 必须是它实际使用的原投影文件，字节摘要需匹配：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace register '.test-tools/otel-projection.json' --json
+uv run --locked --extra trace engineering-ci trace register '.test-tools/mining-result.json' --input '.test-tools/otel-projection.json' --json
+```
+
+登记检查身份和父结果，不证明历史算法执行；origin=file 在查询中保留。
+project/mine --record 在输出文件创建前确认数据库登记。导出失败会返回非零，
+同时给出 registered_result 和 next_actions argv；选新路径执行 export，无需再运行算法：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace export --result RESULT_ID --out '.test-tools/recovered-new.json' --json
+```
+
+已有目标拒绝覆盖。result ID 已知但提交未确认时，先查 status --result；不存在就明确报 result_unavailable。
+--config 是相对项目定位的非敏感配置；继续命令保留实际配置路径。
+JSON 字段 status 表示当前操作，analysis.summary.status 才是分析结果，二者均不代表原任务全部成功。

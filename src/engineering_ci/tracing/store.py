@@ -15,13 +15,17 @@ from .preflight import failure
 from .sources.codex_rollout import Cursor, record_at
 
 COMPONENT = "engineering-ci.trace"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MIGRATION = Path(__file__).with_name("migrations") / "001.sql"
+RESULT_MIGRATION = MIGRATION.with_name("002.sql")
 
 
-def migration_digest():
+def migration_digest(version=1):
     """Use normalized SQL text so checkout line endings do not change ownership."""
-    return hashlib.sha256(MIGRATION.read_text(encoding="utf-8").encode()).hexdigest()
+    text = MIGRATION.read_text(encoding="utf-8")
+    if version == 2:
+        text += "\n-- migration:002 --\n" + RESULT_MIGRATION.read_text(encoding="utf-8")
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class ArchiveError(RuntimeError):
@@ -101,7 +105,7 @@ class ArchiveStore:
             )
             yield cursor
 
-    def _owned(self, cursor):
+    def _owned(self, cursor, *, required_version=1):
         """Reject uninitialized, foreign or unsupported namespaces without modifying them."""
         cursor.execute(
             "SELECT to_regclass(%s)", (f"{self.config.schema}.archive_meta",)
@@ -117,8 +121,12 @@ class ArchiveStore:
             )
         )
         row = cursor.fetchone()
-        expected = (COMPONENT, SCHEMA_VERSION, migration_digest())
-        if row != expected:
+        version = row[1] if row else None
+        if version not in {1, 2} or row != (
+            COMPONENT,
+            version,
+            migration_digest(version),
+        ):
             raise ArchiveError(
                 "schema_conflict",
                 "Archive schema ownership or migration version does not match",
@@ -134,6 +142,25 @@ class ArchiveStore:
             raise ArchiveError(
                 "archive_corrupt", "Archive schema has missing component tables"
             )
+        if version >= 2:
+            cursor.execute(
+                "SELECT to_regclass(%s)", (f"{self.config.schema}.derived_results",)
+            )
+            if cursor.fetchone()[0] is None:
+                raise ArchiveError(
+                    "archive_corrupt", "Archive result catalog table is missing"
+                )
+        if version < required_version:
+            raise ArchiveError(
+                "migration_required",
+                "Result catalog needs archive schema 2; run trace init explicitly",
+            )
+        return version
+
+    def schema_version(self):
+        """Read component ownership and version without performing a migration."""
+        with self.transaction(readonly=True) as cursor:
+            return self._owned(cursor)
 
     def initialize(self):
         """Create the dedicated namespace once; never adopt arbitrary existing objects."""
@@ -144,16 +171,27 @@ class ArchiveStore:
             )
             cursor.execute("SELECT to_regnamespace(%s)", (self.config.schema,))
             if cursor.fetchone()[0] is not None:
-                self._owned(cursor)
+                previous = self._owned(cursor)
+                if previous == 1:
+                    cursor.execute(
+                        self.query(RESULT_MIGRATION.read_text(encoding="utf-8"))
+                    )
+                    cursor.execute(
+                        self.query(
+                            "UPDATE {schema}.archive_meta SET schema_version = %s, migration_digest = %s WHERE singleton"
+                        ),
+                        (SCHEMA_VERSION, migration_digest(SCHEMA_VERSION)),
+                    )
                 return False
             cursor.execute(self.query("CREATE SCHEMA {schema}"))
             cursor.execute(self.query("REVOKE ALL ON SCHEMA {schema} FROM PUBLIC"))
             cursor.execute(self.query(MIGRATION.read_text(encoding="utf-8")))
+            cursor.execute(self.query(RESULT_MIGRATION.read_text(encoding="utf-8")))
             cursor.execute(
                 self.query(
                     "INSERT INTO {schema}.archive_meta VALUES (true, %s, %s, %s)"
                 ),
-                (COMPONENT, SCHEMA_VERSION, migration_digest()),
+                (COMPONENT, SCHEMA_VERSION, migration_digest(SCHEMA_VERSION)),
             )
         return True
 

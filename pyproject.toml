@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.0"
+version = "0.5.5"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -35,7 +35,7 @@ trace = [
     "psycopg[binary]==3.3.6",
 ]
 mining = [
-    "pm4py==2.7.23.9",
+    "r4pm==0.6.2",
 ]
 
 [build-system]

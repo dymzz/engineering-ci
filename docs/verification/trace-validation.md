@@ -78,3 +78,42 @@ Ruff Lint、Ruff Format、四处 v0.6.0 元数据/Workflow 绑定、锁文件均
 Linux 核心容器回归已通过；Linux 可选 OTel/PM4Py 专项、真实 PR CI 和正式 v0.6.0 Release 尚未验收。
 服务器掉电、备份恢复、真实提交响应丢失、公开稳定 rollout 协议兼容性未验证。
 非 LLM 分析与原始归档的整体完成状态继续以[实施步骤](../architecture/workflow-optimization/design.md#实施顺序与阶段验收)为准。
+
+## v0.5.5 查询、关联与 Rust4PM 联合验收
+
+2026-10-12 在同一主 checkout、分支 codex/trace-evidence-query-v0.5.5 继续开发。
+基线为 PR #20 合并后的 main（48353f534a19104fa1ea76ad3082f555fe8945c4）；
+此前 0.6.0 是未发布的设计/预备阶段。本轮按用户选择将四处元数据统一为 0.5.5。
+历史 PM4Py 证据保留，不把新后端结果改写到旧分析身份中。
+
+- 宿主联合专项 183 passed，包括真实 PostgreSQL 归档恢复、查询和显式迁移、OTel SDK、Rust4PM，以及相应单元测试。
+- Dagger/Linux 核心 PR Profile：996 tests、105 subtests；Ruff、版本/Workflow 绑定、锁文件通过。
+- Dagger 1.0.0-beta.16、Linux CPython 3.14.8 可选专项：6 passed（4 项 Rust4PM、2 项 OTel SDK），实际安装锁定 r4pm 0.6.2。
+- Windows 普通 CPython 3.14.3 实际运行 r4pm 0.6.2，验证多个变体、边界频次、XML 转义、确定性身份和 Rust 注册对象清理。
+- wheel 构建通过，包含迁移 001/002，没有打包上游 mining 源码、原始实录或凭据；受影响文档文件链接通过。
+
+专项命令：
+
+```powershell
+uv run --locked --no-sync pytest -q tests/test_trace_preflight.py tests/test_trace_source.py tests/test_trace_store.py tests/test_trace_projection.py tests/test_trace_mining.py tests/test_trace_results.py tests/integration/trace_catalog.py tests/integration/trace_mining.py tests/integration/trace_projection.py tests/integration/trace_store.py
+uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/trace-evidence-query/pr-checks.json
+```
+
+`--no-sync` 使用已经通过 `uv sync --locked --extra trace --extra mining --group dev` 安装的可选环境。
+基础 CI 不运行可选 mining/数据库专项，不把单元替身成功冒充真实 SDK/服务器结果。
+Linux 可选专项通过固定 Dagger SDK/Engine 执行既有 integration 文件，未传宿主 PostgreSQL DSN。
+操作 JSON、JUnit、完整 PR 检查报告及构建产物位于忽略目录 `.test-tools/trace-evidence-query`。
+
+专用宿主 schema 显式从 1 升级至 2；来源和原快照的 metadata 保持一致，没有重读或重写原始实录。
+已有投影 3a85a34406134b30c3bcf7d10a1421eec386662daad6fce4a54dc82934a4c3aa
+和历史 PM4Py 分析 ec3b43164b3c497db6509893ff5d141dd4edcd05ce780be8efcd13c7fd622293
+直接登记为 origin=file，没有重跑 SDK 或 PM4Py。
+Rust4PM 同一固定投影的分析为 1a730b2a683b402ef06ce4eb1073505886ec4a4183413f94b81d5b217b6a66d0，origin=computed。
+6 个入选 Turn、6 个变体、8 条 DFG 边；56 个排除 Turn 的原因和所有比较统计字段与历史 PM4Py 相同。
+lineage 关联 source → 同一 snapshot → projection → analysis；费用仍 unknown，llm_used=false。
+
+覆盖输出路径已存在后的结果恢复、原文件登记不重算、旧 schema 查询不自动升级、
+缺父结果、摘要损坏、同身份内容冲突、分页过滤和 metadata 查询不读取原始 payload。
+提交确认丢失使用实际 PostgreSQL 提交后的客户端错误注入，不是实际网络切断。
+不声称已经完成 OTLP 在线传输、优化效果验证、服务器掉电/备份恢复或正式发布。
+新 PR 的真实 CI 状态在 PR 中另行记录，模拟和本地容器结果不替代远端门禁。

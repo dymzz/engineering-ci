@@ -149,6 +149,14 @@ def operations(records):
     }
 
 
+def projection_identity(value):
+    """Share the projection identity with evidence registration."""
+    return {
+        name: value[name]
+        for name in ("snapshot_id", "projection_version", "mapping", "dependencies")
+    }
+
+
 def standardize(records, snapshot_id):
     """Use actual SDK Span objects without exporters, clock fabrication or raw content."""
     from opentelemetry.sdk.resources import Resource
@@ -175,7 +183,9 @@ def standardize(records, snapshot_id):
         "dependencies": dependencies,
     }
     projection_id = hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            projection_identity(identity), sort_keys=True, separators=(",", ":")
+        ).encode()
     ).hexdigest()
     spans, no_time = [], 0
     resource = Resource(
