@@ -34,6 +34,49 @@ status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 
 GitHub Actions 负责完整检查和发布决定，JSON 生成或文件收集不能覆盖原始失败。
 Release 不初始化下载后端或读取下载配置；只有 download 负责收集日志及 Artifact。
 
+## 操作结果与恢复视图
+
+`release/results.py` 的 `OperationResult` 是当前调用的只读结果视图。
+它引用 FSM / Pipeline 使用的同一个 `ExecutionContext`，不增加持久化状态，不参与准入判断。
+`status`、`validate`、`publish` 的最终文字摘要与 `--json` 使用同一视图。
+原有进度和工具输出继续保留；JSON 模式把这些输出送到 stderr，stdout 只输出一个 JSON 对象。
+子进程的未捕获输出也显式送到 stderr；用于工具探测的捕获输出保持原用途。
+
+Schema 版本为 1，其顶层字段如下：
+
+| 字段 | 定义 |
+| --- | --- |
+| `operation`、`repository`、`version`、`tag` | 本次显式请求身份；version 不含 v，tag 包含 v |
+| `status`、`exit_code` | 调用完成、停止、失败或中断，以及原始 CLI 退出码；不是正式发布资格 |
+| `delivery` | 当前 FSM 阶段、checkout / 分支 / SHA / 未提交文件 / PR 身份及已经形成的阶段证据 |
+| `local_checks` | 既有检查报告的投影，包括是否当前通过、逐项有效性、执行/复用情况和报告位置；不复制环境变量或日志 |
+| `review` | 实际 PR head、必需 CI 结果与可合并状态；未查询时为 null |
+| `executions` | 原 execution checkpoint 的阶段、Run、恢复阶段和脱敏 Dispatch 诊断；服务器提供时包含 Run Attempt / SHA |
+| `publication` | 未确认、Draft 或经过既有 Manifest 校验的正式 Release 及其原始验证 Run / Attempt |
+| `operations` | 本次实际调用的检查、Commit、Push、PR 更新和 Workflow executor；调用 executor 不表示一定发出了 POST |
+| `stop` | 停止原因代码及安全说明；没有停止原因为 null |
+| `next_actions` | 动作种类、独立 argv 参数数组、人工操作标志及前置条件；空 argv 表示需要人工决定，不能执行 |
+
+`status=completed` 只表示当前操作成功完成。例如 status 查询成功时 exit_code 为 0，
+publication 仍可为 unconfirmed，stop 可为 human_review 或 pr_ci。
+publish 等待审查与本地 incomplete 都可能退出 3，调用方必须同时查看 stop.code、review 和 local_checks。
+环境缺失、失败、中断保留原有 2、非零工具退出码和 130，JSON 生成不覆盖它们。
+
+checkpoint 的 binding 为 matched（远端 Run 满足已提供的版本 / 分支及 SHA 约束）、
+historical（已确认不对应本次身份）或 unverified（尚未完成远端身份核对）。
+binding 本身不是当前交付准入；status 只有 FSM 已确认 PUBLICATION_ready 才给出 publication Run 的恢复命令。
+UNKNOWN 候选只列为候选，不能成为已确认 Run 或可执行的 resume 动作。
+checkpoint 的 remote_conclusion 来自原执行记录，live_conclusion / status / run_attempt 来自本次远端查询，
+不将重跑后的最新结果覆盖成原记录。FINISHED 的继续动作先核验同一 Run，不提示盲目重新 Dispatch。
+历史 Run 不产生当前恢复建议；已经合并却仍有未交付文件时，需要人工决定后续 PR。
+任何后续查询异常或中断都保留已完成阶段证据，并移除先前的合并建议，优先给出只读 status。
+重新尝试必须先解决所报告的错误，并继续接受原有门禁校验。
+
+next_actions 是提示，执行前仍经过原有身份核对和门禁，不能直接成为放行依据。
+本次未执行或未查询的信息保持 not_run / not_inspected / null；旧检查是否有效仍由 checks.inspect 判定。
+不读取终端文字来推断结果，不复制原始 API 响应、PR body、认证信息或旧状态中的任意错误字符串。
+公开 `verify --json` 继续使用原有 Run 验证结构；本视图不合并本地检查 JSON 或 Release Manifest 的 Schema。
+
 ## 交互与非交互下载
 
 显式 --interactive 后依次选择 Workflow、最近 30 个 Run 与未过期 Artifact 名称。0 收集所有名称，q
