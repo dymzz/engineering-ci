@@ -62,3 +62,18 @@ Provide a concise handoff containing:
 - Known limitations or unresolved issues.
 
 Further improvements may be suggested separately; they are not automatically part of the current task.
+
+## Upstream Library Observations
+
+During normal development, testing, and debugging, watch for potential bugs, compatibility issues, documentation errors, and clear improvement opportunities in third-party libraries.
+
+- Record only issues encountered during normal work and supported by concrete observations. Do not proactively search for problems.
+- Distinguish potential upstream defects from local usage or configuration errors. Mark uncertain findings as `suspected`.
+- Append relevant findings to `.agent/upstream-observations.md`, including the library name, version (if known), brief description, available evidence, and status.
+- Avoid duplicate entries.
+- Do not expand the current task, investigate upstream issues, or attempt fixes solely for the purpose of recording observations.
+- If nothing noteworthy is found, take no action.
+
+When explicitly asked to review upstream observations, read the collected records, check relevant upstream Issues, PRs, or releases as needed, and summarize actionable findings.
+
+Do not automatically submit Issues or PRs, or modify third-party libraries.
