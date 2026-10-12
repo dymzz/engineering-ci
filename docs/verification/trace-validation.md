@@ -117,3 +117,52 @@ lineage 关联 source → 同一 snapshot → projection → analysis；费用�
 提交确认丢失使用实际 PostgreSQL 提交后的客户端错误注入，不是实际网络切断。
 不声称已经完成 OTLP 在线传输、优化效果验证、服务器掉电/备份恢复或正式发布。
 新 PR 的真实 CI 状态在 PR 中另行记录，模拟和本地容器结果不替代远端门禁。
+
+## v0.5.6 遥测与比较验收
+
+2026-10-12 至 2026-10-13，基线为 PR #21 合并提交 541e1264bb4f1e101123b9abeaff0fbf2e6f9861，
+同一主 checkout 的分支 codex/trace-observability-v0.5.6。四处元数据提前统一为 0.5.6。
+用户选择本地 Jaeger 与 OTLP/结果比较联合验收，未发起正式发布。
+
+官方 exporter 1.45.1 + 真实本地 HTTP 协议 fixture 覆盖 Protobuf/时间/失败/ID、
+HTTP 200 partial 拒绝、401/403/422、307 不跟随、损坏正文、响应丢失及 TLS 错误。
+服务器是测试替身；真实 HTTP/SDK 成功不作为真实 Jaeger 交付结果。
+该使用过程发现 SDK 返回 SUCCESS 不包含部分接收信息，观察记录在 `.agent/upstream-observations.md`。
+项目用官方 Protobuf 读取确认，未修改库或搜索/提交上游问题。
+
+另行实际启动 Jaeger 2.22.0 与 Collector 0.162.0，Docker Server 29.4.0。
+Jaeger 镜像 digest 为 sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17；
+Collector 为 sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2。
+显式 `tests/integration/trace_jaeger.py` 3 passed：直连、Collector 转发、Jaeger 停止后恢复。
+读回确认原退出码 1、failed、实际开始/持续时间和 snapshot/Span ID；Collector 确认与后端读回分别断言。
+仅使用本次带专属标签的容器、network 及 loopback 随机端口，最终只清理这些资源。
+
+对 P0 已登记的固定投影进行一次真实 Collector → Jaeger 发送和完整读回：3017 Span、62 Trace。
+projection 3a85a34406134b30c3bcf7d10a1421eec386662daad6fce4a54dc82934a4c3aa，
+snapshot 4add04f0a96013dd0aacfe2ddb5e72aa40b07e223af274c72e3b71fe7909b237。
+PostgreSQL 中同一投影的摘要未变化；没有重读原始 rollout、重新投影或执行历史工具。
+实际 receipt 与后端读回证据分别保存为 `.test-tools/trace-p1/real-send.json`、`real-backend-readback.json`。
+
+已登记历史 PM4Py 分析与 Rust4PM 分析，通过同一投影父关联进行比较，结果 equivalent。
+没有重跑任一分析后端。比较为固定输入的算法结果，quality_gate=not_evaluated、optimization_verified=false。
+没有伪造工作流总耗时、分析运行时间、费用或跨运行质量验证，完整性仍 unknown。
+比较结果在 `.test-tools/trace-p1/real-comparison.json`，相关测试 JUnit 同样保存在忽略目录。
+
+最终宿主联合专项 191 passed，包含真实 PostgreSQL、SDK/Rust4PM/HTTP 协议测试与单元替身。
+Dagger/Linux 可选专项 15 passed，实际安装 trace/mining/telemetry extras；未传宿主数据库凭据。
+完整 PR Profile：1036 tests、105 subtests；Ruff、四处版本、Workflow 绑定和锁文件通过。
+该报告的五项检查 input_stable 均为 true；对应 JUnit 与 JSON 保存在 `.test-tools/trace-p1`。
+v0.5.6 wheel 构建及内容检查通过，含新 CLI/模块和既有迁移 001/002；
+未打包原始实录、凭据、上游 mining 实现或本地验收产物。文档文件链接检查通过。
+专项命令：
+
+```powershell
+uv sync --locked --extra trace --extra mining --extra telemetry
+uv run --locked --no-sync pytest -q tests/test_trace_telemetry.py tests/test_trace_comparison.py tests/test_trace_preflight.py tests/test_trace_results.py tests/test_trace_mining.py tests/integration/trace_telemetry.py tests/integration/trace_catalog.py tests/integration/trace_store.py tests/integration/trace_projection.py tests/integration/trace_mining.py
+uv run --locked --no-sync pytest -q tests/integration/trace_jaeger.py
+uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/trace-p1/pr-checks.json
+```
+
+真实 GitHub PR CI 的链接、候选 SHA 和最终状态在交付 PR 中另行记录。
+本轮不验证 Collector 持久化队列、Jaeger 长期保存/服务器掉电、远端认证/mTLS或跨运行优化效果。
+基础 CI 不依赖个人数据库、Docker 后端或可选 telemetry 服务；发布与消费者契约保持原职责。

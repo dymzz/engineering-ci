@@ -218,3 +218,51 @@ uv run --locked --extra trace engineering-ci trace export --result RESULT_ID --o
 已有目标拒绝覆盖。result ID 已知但提交未确认时，先查 status --result；不存在就明确报 result_unavailable。
 --config 是相对项目定位的非敏感配置；继续命令保留实际配置路径。
 JSON 字段 status 表示当前操作，analysis.summary.status 才是分析结果，二者均不代表原任务全部成功。
+
+## 可选遥测与结果比较
+
+下面从已经完成 P0 的 `.test-tools/otel-projection.json` 开始；换成你实际生成的投影文件。
+这些操作观察历史数据，不调用原 Agent、pytest、Dagger 检查或 Release Workflow。
+
+```powershell
+# 仅本地 Jaeger；UI 为 http://127.0.0.1:16686。
+docker run --detach --name engineering-ci-jaeger --publish 127.0.0.1:16686:16686 --publish 127.0.0.1:4318:4318 cr.jaegertracing.io/jaegertracing/jaeger:2.22.0
+uv run --locked --extra telemetry engineering-ci trace send '.test-tools/otel-projection.json' --endpoint 'http://127.0.0.1:4318/v1/traces' --out '.test-tools/otlp-receipt.json' --json
+```
+
+已有同名容器/端口时查看现有 Docker 配置，不覆盖其他服务。Linux 使用相同命令。
+可选 Collector 转发使用仓库配置：
+
+```powershell
+docker network create engineering-ci-telemetry
+docker network connect --alias jaeger engineering-ci-telemetry engineering-ci-jaeger
+# 将转发端口单独映射到本机 4319；不用改动 Jaeger 4318。
+docker run --detach --name engineering-ci-collector --network engineering-ci-telemetry --publish 127.0.0.1:4319:4318 --mount "type=bind,source=$((Get-Location).Path)/config/collector.yaml,target=/etc/otelcol/config.yaml,readonly" otel/opentelemetry-collector:0.162.0 --config=/etc/otelcol/config.yaml
+uv run --locked --extra telemetry engineering-ci trace send '.test-tools/otel-projection.json' --endpoint 'http://127.0.0.1:4319/v1/traces' --out '.test-tools/collector-receipt.json' --json
+```
+
+该 PowerShell 挂载命令在 engineering-ci 根目录执行；Linux 将 source 替换为当前 checkout 的绝对路径。
+receipt.trace_ids 可用于 Jaeger 原生 UI 查看对应 Trace。历史实录时间可能较早，按真实时间调整 UI 查询范围；
+没有默认最近一小时结果不等于没有收到 Trace。数据库输入也可用已有的 --projection-result ID，另加 --extra trace。
+
+accepted 表示当前 OTLP 接收节点确认；原工具失败、采集完整性与后端读回都单独保留。
+partial、network_error、tls_error、rejected、unconfirmed 或 response_invalid 返回非零并保存实际 receipt；
+无 Span 的 unavailable 返回 3，不记为一次成功发送。配置/依赖/输出错误返回 2。
+结果写入失败时终端 JSON 仍保留已经取得的接收事实；不要把“文件未写出”理解为“没有发送”。
+失败的 next_actions 带同一输入/目标和一个新的 receipt 文件名，可直接继续，不覆盖已有报告。
+重发可能重复投递，但不重新执行历史工具。成功时没有自动重发建议。
+
+比较已有结果无需安装 mining，也不重新计算算法。文件模式提供各自实际使用的原投影文件：
+
+```powershell
+uv run --locked engineering-ci mine compare '.test-tools/baseline-analysis.json' '.test-tools/candidate-analysis.json' --baseline-projection '.test-tools/baseline-projection.json' --candidate-projection '.test-tools/candidate-projection.json' --out '.test-tools/comparison.json' --json
+# 已完成 register 的分析，可改用数据库 ID 关联，不需要手工拼原投影路径。
+uv run --locked --extra trace engineering-ci mine compare --baseline-result BASELINE_ANALYSIS_ID --candidate-result CANDIDATE_ANALYSIS_ID --out '.test-tools/registered-comparison.json' --json
+```
+
+分析和输入摘要不符时拒绝；未提供原投影时仍可生成 not_comparable 报告，但不能认定可比。
+不同快照/case/映射/完整性策略、不可用分析或缺失测量明确保留原因，not_comparable 返回 3。
+compared 返回 0 表示比较操作完成；results_equivalent 才表示本范围内的输出是否一致。
+质量门禁不由该命令判断。缺整体耗时、费用或跨运行证据时保持未知，optimization_verified=false。
+当前支持固定输入的算法结果比较，未将发现的重复步骤转为可删除测试或可执行 Workflow。
+完整配置和边界见 [遥测配置](../docs/configuration/tracing.md#可选-otlp-出口与本地-jaeger)。

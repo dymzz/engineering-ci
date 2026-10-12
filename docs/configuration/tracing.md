@@ -90,3 +90,43 @@ project/mine 的 --record 允许显式写派生结果；没有该选项的旧文
 数据库与文件导出分两次确认：导出失败不会删除已登记结果，CLI 给出 ID 和 export 继续命令。
 已有文件拒绝覆盖；选新路径导出无需重算。没有确认数据库提交时，不把结果记为已登记。
 详细命令见 [CLI 参考](../../guides/cli-reference.md#归档查询与结果恢复)。
+
+## 可选 OTLP 出口与本地 Jaeger
+
+```powershell
+uv sync --locked --extra trace --extra mining --extra telemetry --group dev
+```
+
+`telemetry` 仅为明确安装的官方 opentelemetry-exporter-otlp-proto-http 1.45.1，
+与现有 SDK 1.45.1 一致；不进入基础消费者/dev 安装或 CI 的必需外部服务。
+纯文件 send 不使用 PostgreSQL 或 mining；result ID 模式另需 trace 依赖及已有归档。
+Linux 与普通 Windows CPython 3.14 使用相同配置和命令。
+
+tracing.toml 增加可选 [telemetry]，旧配置仍有效，配置 schema_version 保持 1，数据库仍为 2。
+
+| 字段 | 默认值 | 契约 |
+| --- | --- | --- |
+| telemetry.endpoint | 空字符串 | 完整 HTTP(S) /v1/traces 地址；没有目标不能发送 |
+| telemetry.timeout | 15 | SDK 单批导出超时预算，1–300 秒 |
+| telemetry.batch_size | 128 | 每批 1–1024 Span，超过 SDK 4 MiB 请求上限的批次不发送 |
+
+CLI --endpoint/--timeout/--batch-size 覆盖 TOML，未提供时使用上表默认值。
+设置 endpoint 不会自动导出；只有显式 trace send 会产生网络请求。
+URL 不允许嵌入 userinfo、query token、fragment 或空白；配置不存认证凭据或任意 shell。
+本轮支持本地无认证 Jaeger，TLS 使用正常证书验证；不自动使用宿主 OTEL headers、netrc、代理认证或 mTLS 配置。
+远端认证、自定义 CA/mTLS 未接入，不在缺权限时自动切换账号或目标。
+
+本轮固定验证 [Jaeger 2.22.0](https://www.jaegertracing.io/docs/2.22/getting-started/)
+与 Collector 0.162.0；[config/collector.yaml](../../config/collector.yaml) 是可选的真实转发配置。
+其 jaeger 网络别名应指向同一 Docker 网络的本地 Jaeger。GitHub Job DAG 和 release/download 不使用该配置。
+Jaeger 默认 all-in-one 内存存储用于本地观察；容器重启或 Span 属性更新不作为历史证据保证。
+Collector 默认队列不是 PostgreSQL 原始归档，也不是经过本轮验收的持久化队列。
+
+OTLP 接收确认只覆盖当前一跳。[OTLP 契约](https://opentelemetry.io/docs/specs/otlp/)
+不保证多跳端到端交付或去重；SDK 的有限重试由上游实现处理，项目没有重写重试循环。
+partial 响应不会再次重试该请求；网络失败或显式再次 send 可能重复投递。
+receipt 记录总 Span/Trace ID、实际批次和请求次数、已确认/拒绝/不确定/剩余数量，
+但 backend_persistence_verified=false 表示本命令没有做后端读回，不表示后端已经失败。
+SDK 返回值单独保留，服务端原始错误文字不进入 JSON；原工具的失败状态始终不变。
+
+操作和本地启动示例见 [CLI 参考](../../guides/cli-reference.md#可选遥测与结果比较)。

@@ -12,3 +12,14 @@
 - 当前处理：用户授权使用已安装的普通 CPython 3.14.3，原 checkout 的 .venv 更新后安装和真实 PostgreSQL 预检通过；未改数据库。
 - 范围：仅影响采用 binary 实现的此运行时组合；不据此推断普通 CPython 3.14、纯 Python 实现或其他平台均不可用。
 - 未开展额外上游调查，未搜索或提交上游 Issue/PR，未修改第三方库。
+
+## OpenTelemetry Python OTLP/HTTP：导出返回值不含部分接收信息
+
+- 状态：已确认的 API 信息限制；未认定为上游 Bug。不是 Jaeger、Collector 或数据库配置错误。
+- 正常使用场景：v0.5.6 可选 OTLP/HTTP 出口，对官方 exporter 1.45.1 进行真实本地 HTTP 协议验收。
+- 复现：`uv run --locked --no-sync pytest -q tests/integration/trace_telemetry.py::test_actual_partial_rejection_is_not_sdk_full_success`。
+- 服务端实际返回 HTTP 200 + 官方 Protobuf ExportTraceServiceResponse，partial_success.rejected_spans=1。
+- 可观察结果：SDK SpanExportResult 为 SUCCESS；本项目解析实际服务响应后记录 partial、acknowledged_spans=0、rejected_spans=1，不重试该部分接收请求。
+- 同文件还验证 401/403、307 不跳转及畸形正文；SDK 状态不作为后端持久化或业务成功证据。
+- 当前处理：继续复用官方编码、HTTP 和有限重试；用官方 Protobuf 消息读取接收确认，不复制上游实现或修改库。
+- 未搜索或提交上游 Issue/PR，未开展额外上游调查。
