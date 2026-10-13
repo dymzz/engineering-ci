@@ -15,16 +15,21 @@ from .preflight import failure
 from .sources.codex_rollout import Cursor, record_at
 
 COMPONENT = "engineering-ci.trace"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATION = Path(__file__).with_name("migrations") / "001.sql"
 RESULT_MIGRATION = MIGRATION.with_name("002.sql")
+FEEDBACK_MIGRATION = MIGRATION.with_name("003.sql")
 
 
 def migration_digest(version=1):
     """Use normalized SQL text so checkout line endings do not change ownership."""
     text = MIGRATION.read_text(encoding="utf-8")
-    if version == 2:
+    if version >= 2:
         text += "\n-- migration:002 --\n" + RESULT_MIGRATION.read_text(encoding="utf-8")
+    if version >= 3:
+        text += "\n-- migration:003 --\n" + FEEDBACK_MIGRATION.read_text(
+            encoding="utf-8"
+        )
     return hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -122,7 +127,7 @@ class ArchiveStore:
         )
         row = cursor.fetchone()
         version = row[1] if row else None
-        if version not in {1, 2} or row != (
+        if version not in {1, 2, 3} or row != (
             COMPONENT,
             version,
             migration_digest(version),
@@ -153,8 +158,16 @@ class ArchiveStore:
         if version < required_version:
             raise ArchiveError(
                 "migration_required",
-                "Result catalog needs archive schema 2; run trace init explicitly",
+                f"This operation needs archive schema {required_version}; run trace init explicitly",
             )
+        if version >= 3:
+            cursor.execute(
+                "SELECT to_regclass(%s)", (f"{self.config.schema}.workflow_feedback",)
+            )
+            if cursor.fetchone()[0] is None:
+                raise ArchiveError(
+                    "archive_corrupt", "Archive feedback table is missing"
+                )
         return version
 
     def schema_version(self):
@@ -176,6 +189,11 @@ class ArchiveStore:
                     cursor.execute(
                         self.query(RESULT_MIGRATION.read_text(encoding="utf-8"))
                     )
+                if previous < 3:
+                    cursor.execute(
+                        self.query(FEEDBACK_MIGRATION.read_text(encoding="utf-8"))
+                    )
+                if previous < SCHEMA_VERSION:
                     cursor.execute(
                         self.query(
                             "UPDATE {schema}.archive_meta SET schema_version = %s, migration_digest = %s WHERE singleton"
@@ -187,6 +205,7 @@ class ArchiveStore:
             cursor.execute(self.query("REVOKE ALL ON SCHEMA {schema} FROM PUBLIC"))
             cursor.execute(self.query(MIGRATION.read_text(encoding="utf-8")))
             cursor.execute(self.query(RESULT_MIGRATION.read_text(encoding="utf-8")))
+            cursor.execute(self.query(FEEDBACK_MIGRATION.read_text(encoding="utf-8")))
             cursor.execute(
                 self.query(
                     "INSERT INTO {schema}.archive_meta VALUES (true, %s, %s, %s)"
@@ -194,6 +213,51 @@ class ArchiveStore:
                 (COMPONENT, SCHEMA_VERSION, migration_digest(SCHEMA_VERSION)),
             )
         return True
+
+    def register_feedback(self, value):
+        """Archive allowlisted actual-call facts idempotently; never advance a business FSM."""
+        from ..workflow_core.capabilities import FEEDBACK
+        from ..workflow_core.documents import canonical, digest
+        from ..workflow_core.schemas import validate
+
+        validate(value, FEEDBACK, label="archival capability feedback")
+        if value["feedback_id"] != digest(
+            {key: item for key, item in value.items() if key != "feedback_id"}
+        ):
+            raise ArchiveError("invalid_feedback", "Feedback content identity differs")
+        document = canonical(value)
+        if len(document) > 2 * 1024 * 1024:
+            raise ArchiveError("invalid_feedback", "Feedback exceeds 2 MiB")
+        identity, approval = value["feedback_id"], value["capability"]["approval_id"]
+        checksum = hashlib.sha256(document).hexdigest()
+        with self.transaction() as cursor:
+            self._owned(cursor, required_version=3)
+            cursor.execute(
+                self.query(
+                    "INSERT INTO {schema}.workflow_feedback (feedback_id, approval_id, document_digest, document) VALUES (%s, %s, %s, %s) ON CONFLICT (feedback_id) DO NOTHING"
+                ),
+                (identity, approval, checksum, document),
+            )
+            cursor.execute(
+                self.query(
+                    "SELECT approval_id, document_digest, document FROM {schema}.workflow_feedback WHERE feedback_id = %s"
+                ),
+                (identity,),
+            )
+            row = cursor.fetchone()
+            if row is None or (row[0], row[1], bytes(row[2])) != (
+                approval,
+                checksum,
+                document,
+            ):
+                raise ArchiveError(
+                    "feedback_conflict", "Archived feedback identity conflicts"
+                )
+        return {
+            "status": "registered",
+            "feedback_id": identity,
+            "document_sha256": checksum,
+        }
 
     def cursor(self, identity):
         """Read the committed recovery point, never a speculative sequence watermark."""

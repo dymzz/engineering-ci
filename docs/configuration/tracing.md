@@ -111,7 +111,21 @@ uv sync --locked --extra trace --extra mining --extra telemetry --group dev
 纯文件 send 不使用 PostgreSQL 或 mining；result ID 模式另需 trace 依赖及已有归档。
 Linux 与普通 Windows CPython 3.14 使用相同配置和命令。
 
-tracing.toml 增加可选 [telemetry]，旧配置仍有效，配置 schema_version 保持 1，数据库仍为 2。
+tracing.toml 增加可选 [telemetry]，旧配置仍有效，配置 schema_version 保持 1；该阶段数据库为 2。
+
+## 能力反馈归档
+
+v0.6.4 的数据库 migration 003 在本组件专用 schema 增加 workflow_feedback。schema 1/2
+仍支持原有归档/回放；反馈写入要求显式 `trace init` 升级到 3，保留原字节与派生结果，
+status/查询/feedback 不隐式迁移。配置格式版本仍为 1，不新增连接字段或独立数据库。
+实际反馈由 `workflow feedback EXECUTION_DIR --archive [--config FILE]` 显式登记，默认仅
+保存本地安全记录；重复同一身份写入会读回核验，不重新执行检查。
+契约见[工作流能力与反馈](../architecture/workflow-optimization/generated-workflows.md#能力批准版本选择与执行反馈)，
+操作见[用户指南](../../guides/generated-workflows.md#能力调用中断及反馈归档)。
+
+数据库升级独立于 Git 分支切换。只支持 schema 1/2 的旧版本客户端会拒绝读取 schema 3；
+切回旧 main 不会回退数据库。实验验收使用独立组件测试 schema，正式归档升级由操作者
+在确认新版本与 schema 归属后显式执行，不修改数据库服务器或账号配置。
 
 | 字段 | 默认值 | 契约 |
 | --- | --- | --- |

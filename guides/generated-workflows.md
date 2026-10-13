@@ -238,6 +238,78 @@ workflow status/resume 查看或恢复同一执行，再决定是否已有符合
 计数来自原报告的 executed_this_invocation；Dagger 内部缓存、费用和速度仍未测量。
 该报告不是当前代码、PR 或 Release 的通过凭据，也不批准某个候选。
 
+## 批准、启用、选择与调用能力
+
+使用上节已经产生的 `$baseline`、`$candidateRun.execution` 和比较文件；定义须来自前文
+“关联已经审查的真实候选”。人工编排 source=null 的试验仍可运行/比较，但不能冒充有来源
+的 Harness 能力。先审查定义、来源及比较逐项结果，再显式批准一个能力版本：
+
+```powershell
+$store = '.test-tools/workflow-capabilities'
+uv run --locked engineering-ci workflow approve .test-tools/pr-reuse-comparison.json $baseline $candidateRun.execution --name pr-check-reuse --version 1.0.0 --store $store --json .test-tools/capability-approval-action.json
+if ($LASTEXITCODE -ne 0) { throw '批准未完成，按输出保留原证据并处理问题' }
+uv run --locked engineering-ci workflow capabilities --name pr-check-reuse --store $store --limit 10 --max-bytes 16384
+
+# 批准没有启用；启用这一份明确的能力版本。
+uv run --locked engineering-ci workflow activate --name pr-check-reuse --version 1.0.0 --store $store
+if ($LASTEXITCODE -ne 0) { throw '启用准入失败，不调用' }
+uv run --locked engineering-ci workflow select --name pr-check-reuse --version 1.0.0 --store $store
+
+uv run --locked engineering-ci workflow call --name pr-check-reuse --version 1.0.0 --store $store --out .test-tools/workflow-runs --json .test-tools/capability-call-action.json
+$callExit = $LASTEXITCODE
+$call = Get-Content .test-tools/capability-call-action.json -Raw | ConvertFrom-Json
+$call | Select-Object status, exit_code, execution, capability, feedback, next_actions
+```
+
+1.0.0 是这份能力的版本，不是 engineering-ci 的发布版本。每个版本拥有独立文件；不会
+写入 pipeline.toml 或 pyproject.toml。默认 store 被 Git 忽略，跨机器保存须同时保留对应原
+定义/执行/比较证据；这不是签名或账户认证系统。discovery 的 admission=not_checked 只列
+索引；select 才复核启用与证据，call 再让原工具检查当前输入。
+
+call 默认核验并复用已批准候选的原结果，当前变化项才重跑。`$callExit` 是原检查退出码，
+即使 feedback.status=saved 也不能把失败当通过。能力名输入就能调用完整定义，Agent
+无需再次展开五个内部步骤。现有 tools 仍是原 Catalog，不生成新 console-script。
+
+停用以及明确切回仍有效的旧能力版本：
+
+```powershell
+uv run --locked engineering-ci workflow deactivate --name pr-check-reuse --store $store
+# 仅在决定重新启用已审查版本时执行。
+uv run --locked engineering-ci workflow activate --name pr-check-reuse --version 1.0.0 --store $store
+```
+
+不同版本不会因版本号较新而自动替换 active。原来源、契约或目标策略变化后，准入失败，
+按真实状态重新生成/试验/审查新版本；旧文件与失败结果保留。
+
+## 能力调用中断及反馈归档
+
+call 在执行前打印完整检查点。没有命令 JSON 时直接使用这个路径；有 JSON 时沿用 `$call`：
+
+```powershell
+uv run --locked engineering-ci workflow status $call.execution
+uv run --locked engineering-ci workflow resume $call.execution --json .test-tools/capability-resume-action.json
+uv run --locked engineering-ci workflow feedback $call.execution --json .test-tools/capability-feedback-action.json
+```
+
+恢复同一冻结能力版本，即使之后被停用，也不换成另一版本。feedback 默认只保存有界安全
+事实，不连接数据库、不执行测试；执行失败和反馈保存状态分别记录。写盘失败可重复该
+命令，原退出码保持不变。
+
+需要归档到已配置的宿主 PostgreSQL 时，先只读检查，再显式升级已确认属于本组件的 schema：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace status --json
+# 已确认连接与组件 schema，需要从 1/2 升级到 3 时执行一次；重复执行幂等。
+uv run --locked --extra trace engineering-ci trace init --json
+uv run --locked --extra trace engineering-ci workflow feedback $call.execution --archive --json .test-tools/capability-feedback-archive-action.json
+```
+
+配置仍读取已有 tracing.toml 和 VESRYN_DATABASE，不发送连接串。自定义 tracing 配置同时
+给 trace 命令与 feedback --archive 传 `--config FILE`。feedback 的能力 store 取自冻结调用
+绑定，没有另一个 --store 覆盖。数据库失败时返回非零和本地反馈路径；修复对应连接/权限/
+迁移问题后，重复同一 feedback --archive，不重跑检查。数据库读回核验只证明归档内容一致，
+不把模拟工具/测试数据或历史通过记录当成正式发布证据。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

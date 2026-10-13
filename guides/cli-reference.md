@@ -399,7 +399,8 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 
 ## 独立工作流入口
 
-`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume、evidence、compare。
+`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume、evidence、compare，
+以及 approve、activate、deactivate、capabilities、select、call、feedback。
 `workflow compare BASELINE_DIR CANDIDATE_DIR --out FILE.json [--json ACTION.json]` 只读比较
 完整 PR 检查的同输入复用证据。它与 `mine compare` 的固定分析结果比较是不同用途；
 原质量未通过或输入不可比时仍保存报告并非零。连贯调用见
@@ -408,3 +409,20 @@ generate 接受独立 Recipe 或显式 Profile，每次创建独立定义及来�
 resume 继续同一检查点，status 只读已记录事实。每个子命令支持 `--json FILE`。
 所有工具使用已有 console-script 入口；工具注册及实际命令不放入 pyproject 的 scripts 表。
 参数、连贯 PowerShell 示例、输入/输出引用和中断后的继续方式见[独立工作流](generated-workflows.md)。
+
+P2 参数如下，版本指能力版本，与项目发行版本独立：
+
+| 命令 | 参数与职责 |
+| --- | --- |
+| approve | `COMPARISON BASELINE_DIR CANDIDATE_DIR --name NAME --version VERSION`；独立批准，不启用 |
+| activate | `--name NAME --version VERSION`；核验后显式选择 active |
+| deactivate | `--name NAME`；阻止后续选择，保留历史/已准入执行 |
+| capabilities | `[--name NAME] [--limit N] [--max-bytes N] [--after TOKEN]`；有界发现 |
+| select | `--name NAME [--version VERSION]`；只查询启用版本与证据准入 |
+| call | `--name NAME [--version VERSION] --out DIR`；调用原 Runtime 和检查 |
+| feedback | `EXECUTION_DIR [--archive] [--config FILE]`；本地补写/显式 PostgreSQL 归档，不执行检查 |
+
+除 feedback 从冻结调用读取 store，以上命令支持 `--store DIR`，默认
+`.test-tools/workflow-capabilities`；所有命令支持独立操作回执 `--json FILE`。
+call 返回原执行退出码，反馈失败单列；feedback --archive 成功只代表归档成功。
+操作与恢复见[能力调用](generated-workflows.md#批准启用选择与调用能力)。

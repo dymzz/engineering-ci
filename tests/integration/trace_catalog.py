@@ -121,6 +121,7 @@ def test_v1_queries_work_and_catalog_migration_is_explicit_preserving_raw_bytes(
     # Simulate the actual previous schema in this unique component-owned namespace.
     with archive.transaction() as cursor:
         cursor.execute(archive.query("DROP TABLE {schema}.derived_results"))
+        cursor.execute(archive.query("DROP TABLE {schema}.workflow_feedback"))
         cursor.execute(
             archive.query(
                 "UPDATE {schema}.archive_meta SET schema_version = 1, migration_digest = %s"
@@ -132,7 +133,7 @@ def test_v1_queries_work_and_catalog_migration_is_explicit_preserving_raw_bytes(
     with pytest.raises(ArchiveError) as error:
         catalog.results()
     assert error.value.status == "migration_required" and archive.schema_version() == 1
-    assert not archive.initialize() and archive.schema_version() == 2
+    assert not archive.initialize() and archive.schema_version() == 3
     assert (
         b"".join(item.raw for item in archive.replay(captured["snapshot_id"]))
         == original

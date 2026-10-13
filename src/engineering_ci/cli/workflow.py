@@ -75,6 +75,9 @@ def main(argv=None):
     comparison.add_argument(
         "--out", required=True, type=Path, help="New independent comparison report"
     )
+    from .workflow_capability import COMMANDS, add_commands
+
+    add_commands(commands)
     for action in commands.choices.values():
         action.add_argument(
             "--json",
@@ -101,19 +104,35 @@ def main(argv=None):
                 "checks.json",
                 "intent.json",
                 "reuse-source.json",
+                "approval.json",
+                "catalog.json",
+                "capability.json",
+                "comparison.json",
             }:
                 raise WorkflowError(
                     "Operation JSON must not overwrite a definition or execution receipt"
                 )
             source_paths = [
                 getattr(options, name, None)
-                for name in ("workflow", "recipe", "analysis", "projection")
+                for name in (
+                    "workflow",
+                    "recipe",
+                    "analysis",
+                    "projection",
+                    "comparison_report",
+                )
             ]
             if options.json in {Path(path).resolve() for path in source_paths if path}:
                 raise WorkflowError("Operation JSON must not overwrite its source")
             executions = [
                 getattr(options, name, None)
-                for name in ("execution", "baseline_execution", "candidate_execution")
+                for name in (
+                    "execution",
+                    "baseline_execution",
+                    "candidate_execution",
+                    "capability_baseline",
+                    "capability_candidate",
+                )
             ]
             if any(
                 options.json.is_relative_to(path.resolve())
@@ -127,10 +146,21 @@ def main(argv=None):
                 raise WorkflowError(
                     "Operation JSON must not overwrite the comparison report"
                 )
+            if options.command in COMMANDS:
+                from .workflow_capability import store_path
+
+                if options.json.is_relative_to(store_path(options, ROOT)):
+                    raise WorkflowError(
+                        "Operation JSON must stay outside the capability store"
+                    )
             result_destination = options.json
         tools = catalog(ROOT)
         runtime = Runtime(tools)
-        if options.command == "tools":
+        if options.command in COMMANDS:
+            from .workflow_capability import execute
+
+            operation = execute(options, tools, runtime, ROOT, operation=operation)
+        elif options.command == "tools":
             operation.update(status="available", tools=tools.documents(), exit_code=0)
         elif options.command == "schemas":
             operation.update(status="available", schemas=SCHEMAS, exit_code=0)
@@ -360,6 +390,9 @@ def main(argv=None):
                 if options.command == "status"
                 else "see_individual_tool_results",
             )
+            from ..workflow_adapters.capabilities import call_reference
+
+            operation["capability_call"] = call_reference(directory, state)
             if options.command != "status":
                 operation["observations"] = {
                     "directory": str(directory / "observations"),
@@ -371,6 +404,10 @@ def main(argv=None):
                         str(directory),
                     ],
                 }
+                if (directory / "capability.json").exists():
+                    from .workflow_capability import saved_feedback
+
+                    operation["feedback"] = saved_feedback(directory, tools, ROOT)
             operation["next_actions"] = [
                 ["engineering-ci", "workflow", "status", str(directory)]
             ]
@@ -414,7 +451,7 @@ def main(argv=None):
                 reason="Operation JSON could not be saved",
                 exit_code=operation["exit_code"] or 3,
             )
-    if options.command == "evidence":
+    if options.command in {"evidence", "capabilities"}:
         from ..tracing.retrieval import encode
 
         print(encode(operation).decode("utf-8"), end="")
