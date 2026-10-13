@@ -59,17 +59,38 @@ SELECT pg_reload_conf();
 本轮同一宿主的只读检查发现当前 1 个客户端连接、max_connections=100，
 用户/数据库限额均为 -1；未观察到服务器连接数耗尽。
 
-当前宿主 `ssl=off`。仅对此本机配置，可在 Custom URI 明确指定 `sslmode=disable`：
+用户进一步确认：Propel 为 v0.3.1，pgAdmin4 使用 `sslmode=prefer` 可以登录，
+Propel 使用 `disable` 未解决连接问题。当前保持 `prefer`，不继续要求关闭 SSL。
+`prefer` 优先尝试 TLS、允许非 TLS 回退；pgAdmin 成功不证明实际会话使用了 TLS。
+可在该 pgAdmin 会话只读核对实际目标，不更改认证或服务器配置：
 
-```powershell
-$propelUri = [UriBuilder]$env:VESRYN_DATABASE
-$propelQuery = [System.Web.HttpUtility]::ParseQueryString($propelUri.Query)
-$propelQuery['sslmode'] = 'disable'
-$propelUri.Query = $propelQuery.ToString()
-Set-Clipboard -Value $propelUri.Uri.AbsoluteUri
+```sql
+SELECT current_user, current_database(),
+       inet_server_addr() AS server_address,
+       inet_server_port() AS server_port,
+       (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()) AS session_ssl;
 ```
 
-该参数由 [SQLx 连接接口](https://docs.rs/sqlx/latest/sqlx/postgres/struct.PgConnectOptions.html)
-支持。未启用 SSL 的本机诊断不推广到远端部署；需要 TLS 的服务器使用其实际策略。
-如果仍失败，由管理员读取对应日志，区分认证拒绝、网络故障与驱动行为。
-本项目 Psycopg 连接成功只是宿主连接证据，不冒充 Propel/SQLx 已成功连接。
+`connection limit=-1` 表示角色没有单独的连接数上限，不表示客户端连接池无限可用。
+用户确认来自本次 Propel 的 2026-10-13 15:56:39 CST 日志只有客户端强制断开，
+不能由此判定密码错误，也不能把其他时刻的 anonymous/密码失败尝试归给这一条连接。
+
+### v0.3.1 连接池生命周期风险
+
+[v0.3.1 锁文件](https://github.com/aarkue/propel/blob/v0.3.1/engine/Cargo.lock)
+锁定 dbcon 0.4.1，其 PostgreSQL 使用 SQLx 0.9.0。
+只在内存检查了[官方 dbcon 0.4.1 源码包](https://static.crates.io/crates/dbcon/dbcon-0.4.1.crate)，
+摘要与锁文件的 `e8a30c7fecab2cccb75a38cf2fe1a75ab8e203f70277d086740881a92893b3ca` 一致。
+
+可观察实现：`src/lib.rs` 的 inner_from_connection_string/new_postgres
+通过 on_a_runtime 创建 PgPool（约 201–205、350–353 行）；辅助函数在临时线程中
+创建局部 current-thread Runtime，完成 job 后退出（812–828 行）。
+发现表时又通过另一次 on_a_runtime 使用该池（约 979–980 行）。
+[Tokio Runtime 契约](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html#shutdown)
+说明销毁 Runtime 后，绑定其上的未结束 I/O 无法继续使用。
+
+这构成客户端 Runtime/连接池生命周期的具体风险，与断开和池超时症状相符；
+尚未在同版本独立执行复现，不能标为本次故障的已确认根因或已修复 Bug。
+后续应以相同连接参数对照直接 SQLx 连接与 dbcon new_any 的最小调用，
+再判断是否需要上游修复。本轮没有安装该 crate、创建源码副本、修改上游或提交 Issue。
+pgAdmin/Psycopg 成功、Propel 连接失败和这个源码风险分别记录。
