@@ -163,6 +163,81 @@ uv run --locked --extra trace engineering-ci workflow evidence $execution --otel
 Token/费用、Dagger 缓存命中保持未知。当前不自动上传 Collector/PostgreSQL，原 Codex 投影和
 OTLP 入口继续保留原契约，不能用此文件冒充 Codex 原生投影。
 
+## 分析已执行的注册工具并导出 XES
+
+沿用上面 run/resume 输出的 `$execution`；这些命令读取已存在的回执，不再执行 pytest 或 Dagger。
+先查安全事实：
+
+```powershell
+uv run --locked engineering-ci workflow evidence $execution --limit 5 --max-bytes 32768 --json .test-tools/workflow-evidence-details.json
+$proof = Get-Content .test-tools/workflow-evidence-details.json -Raw | ConvertFrom-Json
+$proof.items | Select-Object step_id, attempt, batch, time_scope, check
+```
+
+`check.details` 包括原报告中的实际版本、允许公开的参数、环境和测试统计。
+字段缺失不表示零；`batch` 为 Adapter 调用组，不能证明每项检查同时运行。
+
+只导出，交给 Propel 文件导入或其他 XES 工具：
+
+```powershell
+uv run --locked engineering-ci mine export-xes --execution $execution --out .test-tools/workflow-cases.xes --json
+```
+
+本地分析并保存同一组 Case：
+
+```powershell
+uv run --locked --extra mining engineering-ci mine workflow $execution --out .test-tools/workflow-analysis.json --xes-out .test-tools/workflow-analysis-cases.xes --json
+$analysis = Get-Content .test-tools/workflow-analysis.json -Raw | ConvertFrom-Json
+$analysis | Select-Object analysis_id, case_scope, completeness, activity_counts, check_execution_counts, recorded_result
+```
+
+每个 Case 对应一个 Step，事件为它的历次 attempt，活动名称是实际 tool_id。五个独立检查
+形成五个 Case，不伪造串行流程；重跑同一执行后，各 Case 会出现新的 attempt。
+跨 Step 的原依赖见 `workflow_dependencies`，DFG 不替代原 DAG。
+
+完整性 incomplete 默认拒绝；需要分析已知不完整观测时显式加 `--allow-incomplete`，缺起止或
+证据损坏的 Case 仍被排除。分析 `status=passed` 与 `recorded_result` 是两种事实；原失败保持失败。
+源码当前有效性未检查，缓存命中、费用及单项检查内部耗时仍未知。
+
+输出使用新文件名，不覆盖旧产物。分析已保存而 XES 失败时，按返回的 `next_actions` 继续导出，
+其中 `--event-log-id` 确保仍是同一证据；不要重新运行检查来补一份 XES。
+新 workflow-analysis 暂不登记 PostgreSQL 或用于旧 Codex candidates/bind。
+
+## 完整 PR 检查的同输入受控比较
+
+比较入口只读取两个已有执行。先沿用前文完整 PR Profile 的基线 run 回执：
+
+```powershell
+$baselineRun = Get-Content .test-tools/latest-workflow-run.json -Raw | ConvertFrom-Json
+$baseline = $baselineRun.execution
+$workflow = Join-Path $baseline 'workflow.json'
+uv run --locked engineering-ci workflow run $workflow --out .test-tools/workflow-runs --reuse-from $baseline --json .test-tools/candidate-run.json
+$candidateRun = Get-Content .test-tools/candidate-run.json -Raw | ConvertFrom-Json
+uv run --locked engineering-ci workflow compare $baseline $candidateRun.execution --out .test-tools/pr-reuse-comparison.json --json .test-tools/comparison-action.json
+$comparison = Get-Content .test-tools/pr-reuse-comparison.json -Raw | ConvertFrom-Json
+$comparison | Select-Object status, recorded_quality_gate, check_submissions_avoided, optimization_verified, verified_scope, reasons
+$comparison.checks | Select-Object step_id, status, reasons, baseline_gate_passed, candidate_gate_passed
+```
+
+候选 run 会重新接受原工具的证据准入；匹配项复用，变化项才提交检查。compare 本身不重新
+执行任何检查，不要求 trace/mining extra 或 PostgreSQL。基线必须完整、每项一次且未复用；
+两侧仍运行同一份完整 PR 定义，原五个必需检查都保留。
+
+已保存的两次执行可以直接从 compare 那一步进入。--out 每次使用新文件名，避免覆盖独立试验；
+--json 只是可更新的操作回执，里面有输出路径、两份执行和 next_actions。进程停止后先用原
+workflow status/resume 查看或恢复同一执行，再决定是否已有符合控制条件的样本。
+多次 attempt 不会自动压缩成一份有利样本，UNKNOWN 操作不能盲目重做。
+
+报告逐项列出输入、工具、参数、环境或 Executor 差异。不匹配时保留所有匹配项和历史证据，
+整体 status=not_comparable，退出 3；它不会为了生成报告自动重跑基线。缺回执或原质量失败也非零。
+若源码或检查配置已经变化，旧通过记录仍是历史事实，但不能代替当前输入；如确需新的控制样本，
+按前文重新生成当前定义并使用 run，而非删除旧报告或用它强行放行。
+
+两个已比较的原通过结果，只有减少检查提交时才标记该范围的收益；没有减少时退出也可以是 0，
+但 optimization_verified=false。原失败即使能复用，仍保持原失败且比较不认证收益。
+计数来自原报告的 executed_this_invocation；Dagger 内部缓存、费用和速度仍未测量。
+该报告不是当前代码、PR 或 Release 的通过凭据，也不批准某个候选。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

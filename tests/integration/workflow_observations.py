@@ -18,6 +18,11 @@ def test_real_sdk_spans_use_exact_tool_identity_without_genai_or_content(tmp_pat
     assert span["name"] == "workflow.tool.invoke math.increment"
     assert span["status"]["status_code"] == "ERROR"
     assert span["attributes"]["process.exit.code"] == 7
+    assert span["attributes"]["engineering_ci.workflow.batch_size"] == 1
+    assert (
+        span["attributes"]["engineering_ci.operation.time_scope"]
+        == "adapter_invocation"
+    )
     assert not any(key.startswith("gen_ai.") for key in span["attributes"])
     assert "inputs" not in json.dumps(span) and "outputs" not in json.dumps(span)
     assert projection["cost"] is None and projection["dagger_cache_hit"] is None

@@ -201,9 +201,10 @@ core 内部允许相对导入自身模块，外部系统通过 Protocol/参数�
 原执行模块不导入 workflow_core；移除新功能后原命令仍能工作。
 把核心目录迁到独立包后，原工程只保留适配器与组装层。
 
-当前调用面包括 tools、schemas、generate、validate、run、status、resume：
+当前调用面包括 tools、schemas、generate、validate、run、status、resume、evidence、compare：
 tools 返回可调用工具及契约；generate 写独立配置；validate 只核对定义与运行准入；
 run 执行定义；status 读已有事实；resume 继续同一执行。
+evidence 查询指定执行；compare 读取两份原执行证据，既不执行检查，也不选择批准版本。
 各入口支持 Codex 非交互调用及机器结果，原 CLI 参数保持原责任。
 CLI 的 Python console-script 注册不等于工具目录注册，不为每个工具增加 pyproject.toml 入口。
 Schema 2020-12 的唯一实现源为 workflow_core/schemas.py，可通过 schemas 导出。
@@ -216,6 +217,8 @@ ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapt
 admitted 是意图，invoking 是实际进入适配器边界，returned 是接收到的原结果；
 invoking 的持久化起点不证明子进程已执行；缺少该观测时不能判断调用未发生。
 各 attempt 保留，不因 resume 覆盖。recovered 只描述恢复时看见的旧事实，不补造旧调用时间。
+invoking/returned 可选记录同一 batch_id、batch_size，表示一次 Runtime 向 Adapter 提交的调用组，
+不是后端内部任务数量或并发证明。返回必须对应同一批次；旧记录不含批次时保持未知。
 主会话有独立起止与序号；记录仅含身份、摘要、结果布尔事实和本地观测时间，
 不复制参数、输出正文或错误字符串。观测写入失败单独计数，不改变原工具退出码。
 Schema 的唯一实现仍为 workflow_core/schemas.py，可通过 workflow schemas 导出。
@@ -232,6 +235,34 @@ workflow evidence 显式关联本执行的来源、生成身份、逐次调用�
 查询只读，current_input_validity=not_checked；原通过记录不因此获得当前代码的放行资格。
 原资源损坏时报告 unavailable，保留当时的原结果。未批准与未证明收益始终分别为 false。
 
+check.details 从经摘要核验的原报告读取：允许公开的 coverage/JUnit 相对路径、实际工具版本、
+平台/架构/后端和测试统计。不执行版本探测或工具，也不导出命令、绝对安装路径、环境变量或日志。
+未提供的事实保持 null/缺失；配置声明的版本不能替代实际版本。身份仍由原检查模块判定，
+查询书签同时绑定原回执事实摘要，资源变化使旧书签失效。
+
+### 已观测操作的 Event Log 与分析
+
+mine workflow 读取同一锁保护的完整有界证据视图，交给既有 Rust4PM discovery；
+mine export-xes --execution 仅导出同一准入逻辑产生的标准 XES，不要求 SDK、引擎或数据库。
+Case 为 execution_id + step_id，只包含该 Step 的连续 attempt；活动名称为实际注册 tool_id。
+跨 Step 依赖保留原 DAG，独立 Step 不因时间排序产生直接后继关系。该投影用于观察尝试、失败和
+复用，不能发现尚未采集的跨工具 Agent 决策序列。
+
+缺起止、时钟无效、同 Step 时间逆序、原检查证据损坏或没有调用观测的 Case 明确列入排除项。
+完整性 incomplete 默认拒绝，显式 --allow-incomplete 后仍保留排除与完整性状态。
+unknown 可以分析，但不变成 complete。完整性只覆盖观测协议，与 Case 准入及原任务成功分别表达。
+XES 保留事件身份、工具契约、批次、输入/结果/身份分量摘要、原报告摘要、已核验的安全事实及
+实际时间。缺失的历史参数或批次不倒填；适配器边界耗时不作为单项检查耗时。
+
+workflow-analysis 是独立的本地分析产物，身份包含 Event Log 内容、分析版本和实际引擎版本。
+它不冒充 Codex 投影或 PostgreSQL 现有 analysis 类型，不作为当前 mine candidates/bind 的输入。
+分析 passed 只表示数据处理成功，recorded_result 保留原执行结论；current_input_validity=not_checked。
+原 Codex 文件/登记分析、比较与候选入口保持原契约。
+
+分析和 XES 独立原子写入且不覆盖旧文件。若分析已保存而 XES 写入失败，命令非零，保留
+analysis_saved、analysis_status 和绑定 event_log_id 的导出恢复命令。执行或原资源改变后，
+该恢复命令拒绝混用新证据。原工具、质量门禁与 Release 状态均不由导出结果修改。
+
 可选 OTel SDK 投影使用实际 invoking/returned 时间和派生 Span ID，表示适配器调用边界，
 同批次 Span 可重叠，不代表每个检查内部耗时或 Agent 决策轮数。
 缺结束或时钟逆序不补造 Span；Token/费用与 Dagger 缓存命中保持未知。
@@ -239,6 +270,41 @@ workflow evidence 显式关联本执行的来源、生成身份、逐次调用�
 当前只导出 SDK Span JSON，不自动传输、归档 PostgreSQL 或调用 Mining。
 后续反馈接入仍按[Harness 实施设计](harness.md)进行，不把计划或最终检查点当成完整 Trace。
 工具实现替换不改写历史轨迹，投影/分析升级继续独立于工作流定义和 Runtime。
+
+### 完整 PR 检查的受控复用比较
+
+workflow compare 是只读的执行证据比较，不调用 Runtime.resume、Dagger、Mining 或数据库。
+输入为两个明确执行目录，同时按稳定顺序持有原执行锁，核验完整观测、回执和资源。
+门禁字段来自同一次原报告读取，只用于比较视图，不改变原查询证据身份。
+
+首个目标限定为完整已注册 PR Profile：原必需 Step 不能省略、改为 optional 或更换成功条件。
+两侧语义定义、候选来源、逐项工具契约、解析输入以及原检查的完整执行身份必须一致；
+输入、参数、工具、环境和 Executor 摘要分别列出差异。固定挖掘结果等价不替代这些检查。
+目标策略过期、执行未结束、观测不完整、丢失回执、缺身份或多次 attempt 均保存 not_comparable。
+历史和匹配的单项结果仍保留，不删除已验证证据或把一次不匹配扩大为所有数据无效。
+
+基线必须有一次未复用的原检查提交；候选使用既有 run --reuse-from 准入。
+候选复用必须指向这份基线的冻结检查点、确切 step/attempt/result 摘要及同一资源，
+其他执行的通过记录不能冒充本次控制样本。同一执行不能同时当作独立基线和候选。
+重复 resume 的全历史保留并显示计数，当前不自动选择有利的一次 attempt；需要独立样本时
+由调用者使用已有 run 新建执行，UNKNOWN 写操作仍遵守原恢复规则。
+
+统计区分原 required_checks、observed_check_attempts、原报告标记的 check_submissions、
+reused_checks 和 Runtime adapter_batches。提交数依据 executed_this_invocation，
+不是操作系统进程数或 Dagger 缓存未命中数。两侧不禁用或清空原缓存，不改变既有执行策略；
+cache_policy=backend-managed，命中状态未观测。因此不作速度、CPU、费用或整体 Agent 效果归因。
+
+原报告、原 ToolResult 和最终执行必须都是完整通过，才满足 recorded_quality_gate=passed。
+不同测试统计拒绝等价；失败、未执行、缺必需结果或输入执行时变化都不能由比较报告放行。
+可比且质量通过、提交确实减少时，optimization_verified=true 仅限定为
+verified_scope=check-submission-reuse。无减少仍可比较，但不宣称收益；失败复用保留原非零结果。
+
+workflow-comparison 为独立本地报告；ID 绑定两份精确证据与比较版本、目标和范围。
+缺乏可比性或质量不满足时仍保存报告，命令退出 3；已比较且原质量通过时退出 0，
+退出 0 不意味着 optimization_verified 一定为 true。--out 必须新文件；--json 是另存的操作回执，
+不能覆盖报告或原执行目录。保存失败单独非零并返回源执行和查询动作，不改原 FSM/门禁。
+报告始终 current_input_validity=not_checked、approved=false，不作为当前代码或 Release 准入，
+也不修改生成定义内的优化/批准状态。本轮不建立试验调度或批准存储。
 
 ## 实施顺序与架构验收
 

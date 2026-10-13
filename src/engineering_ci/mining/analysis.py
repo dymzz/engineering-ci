@@ -35,11 +35,28 @@ def analysis_identity(value):
     return {name: value[name] for name in names}
 
 
-def cases_xes(selected, *, analysis=None, excluded=0):
+def xes_attribute(parent, key, value):
+    """Write explicit scalar attributes; an unknown value is absent, never zero."""
+    if value is None:
+        return
+    kind = (
+        "boolean" if type(value) is bool else "int" if type(value) is int else "string"
+    )
+    ET.SubElement(
+        parent,
+        kind,
+        key=key,
+        value=str(value).lower() if type(value) is bool else str(value),
+    )
+
+
+def cases_xes(selected, *, analysis=None, excluded=0, attributes=None):
     """Serialize admitted cases; export details only from verified projected fields."""
     log = ET.Element(
         "log", {"xes.version": "1.0", "xmlns": "http://www.xes-standard.org/"}
     )
+    for key, value in (attributes or {}).items():
+        xes_attribute(log, key, value)
     if analysis is not None:
         for name in (
             "analysis_id",
@@ -60,7 +77,14 @@ def cases_xes(selected, *, analysis=None, excluded=0):
         ET.SubElement(log, "boolean", key="engineering_ci:llm_used", value="false")
     for case in selected:
         trace = ET.SubElement(log, "trace")
-        ET.SubElement(trace, "string", key="concept:name", value=case["turn_id"])
+        ET.SubElement(
+            trace,
+            "string",
+            key="concept:name",
+            value=case["case_id"] if "case_id" in case else case["turn_id"],
+        )
+        for key, value in case.get("attributes", {}).items():
+            xes_attribute(trace, key, value)
         if analysis is not None:
             ET.SubElement(
                 trace, "string", key="engineering_ci:boundary", value=case["boundary"]
@@ -70,6 +94,8 @@ def cases_xes(selected, *, analysis=None, excluded=0):
             ET.SubElement(
                 event, "string", key="concept:name", value=operation["activity"]
             )
+            for key, value in operation.get("attributes", {}).items():
+                xes_attribute(event, key, value)
             if analysis is not None:
                 for key in ("event_id", "outcome"):
                     ET.SubElement(
@@ -85,6 +111,7 @@ def cases_xes(selected, *, analysis=None, excluded=0):
                         key="engineering_ci:" + key,
                         value=str(operation[key]),
                     )
+            if analysis is not None or attributes is not None:
                 end = operation["end_ns"]
                 timestamp = datetime.fromtimestamp(end // 1_000_000_000, UTC).strftime(
                     "%Y-%m-%dT%H:%M:%S"

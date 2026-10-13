@@ -28,6 +28,8 @@ engineering-ci 是当前宿主和首个验收目标，Codex 是当前使用的 A
 | Agent 使用 | 当前 Codex 能通过现有 CLI 生成、执行、查询和恢复 | 已批准能力的发现、版本选择和效果反馈闭环尚未完成 |
 
 当前 `mine compare` 比较固定输入的分析结果；不是原工作流与候选工作流的 A/B 评估。
+`workflow compare` 的首个范围是完整 PR 检查同输入复用，使用原实际执行与冻结复用来源；
+它不代替 mine compare，也不认证其他任务、费用或整体 Agent 行为的优化。
 已有实测和未覆盖范围分别见[轨迹验收](../../verification/trace-validation.md)与
 [工作流验收](../../verification/workflow-validation.md)，不重复执行这些已完成阶段作为新功能。
 
@@ -146,7 +148,17 @@ Schema/契约升级有实际需求时再做兼容方案，保留原定义与执�
 ## 修订后的实施顺序
 
 已完成的基础不重建。P0-1/P0-2 已在当前注册工具边界接入，验收范围与结果见
-[工作流验收](../../verification/workflow-validation.md)；P1/P2 仍为后续计划。
+[工作流验收](../../verification/workflow-validation.md)。P1 已接入下述首个受控比较入口，
+其他优化指标与 P2 仍为后续计划；实测范围以验证记录为准。
+
+注册操作的字段补充与挖掘投影在 v0.6.3 接入：原报告提供允许公开的参数、实际工具版本、
+平台/后端与统计；Runtime 提供实际调用批次。标准 XES 与 Rust4PM 共用按 Step/attempt 准入的
+Event Log，跨 Step 依赖仍来自原定义，不能把共享批次的包装时间当成各项内部耗时。
+具体契约见[独立生成与编排](generated-workflows.md#已观测操作的-event-log-与分析)。
+这补齐 P1 的可观察输入；当前进一步提供完整 PR Profile 的同输入复用比较。
+P1 首个范围仅认证原报告标记的检查提交减少，保留原质量结果和复用来源；
+具体准入见[受控复用比较](generated-workflows.md#完整-pr-检查的受控复用比较)。
+它不是安全删除检查、整体 Agent 收益或批准激活的证明；P2 仍为后续计划。
 
 | 阶段 | 具体工作 | 准入/验收 |
 | --- | --- | --- |

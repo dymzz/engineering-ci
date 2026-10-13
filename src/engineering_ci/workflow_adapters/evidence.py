@@ -1,5 +1,6 @@
 """Join an explicit generation, attempt history and original check resources."""
 
+from contextlib import ExitStack
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -12,6 +13,80 @@ from ..workflow_core.observations import history
 from ..workflow_core.schemas import EXECUTION, validate
 from .candidates import verify_target
 from .checks import ChecksAdapter
+
+
+def check_details(entry):
+    """Expose allowlisted original facts; paths, commands and environment values stay private."""
+    identity = entry.get("identity") or {}
+    if not isinstance(identity, dict):
+        raise WorkflowError("Original check identity is malformed")
+    parameters = identity.get("parameters", {})
+    tools = identity.get("tools", {})
+    environment = identity.get("environment", {})
+    executor = identity.get("executor", {})
+    if not all(
+        isinstance(value, dict) for value in (parameters, tools, environment, executor)
+    ):
+        raise WorkflowError("Original check identity fields are malformed")
+    allowed_tools = {
+        "bootstrap_python",
+        "python",
+        "pytest",
+        "pytest-cov",
+        "pyyaml",
+        "ruff",
+    }
+    for spec in checks.PIPELINE["checks"].values():
+        allowed_tools.update(spec["required_tools"] + spec["linux_tools"])
+    allowed_tools.update(
+        spec["tool"] for spec in checks.PIPELINE["optional_backends"].values()
+    )
+    versions = {}
+    for name in sorted(allowed_tools & tools.keys()):
+        if not isinstance(tools[name], dict):
+            continue
+        value = tools[name].get("version")
+        if (
+            isinstance(value, str)
+            and len(value) <= 64
+            and checks.VERSION.fullmatch(value)
+        ):
+            versions[name] = value
+    safe_parameters = {}
+    if type(parameters.get("coverage")) is bool:
+        safe_parameters["coverage"] = parameters["coverage"]
+    junit = parameters.get("junit")
+    if isinstance(junit, str):
+        from .checks import INPUT
+
+        try:
+            validate({"junit": junit}, INPUT, label="observed check parameter")
+            safe_parameters["junit"] = junit
+        except WorkflowError:
+            pass
+    return {
+        "parameters": safe_parameters,
+        "tool_versions": versions,
+        "environment": {
+            "platform": environment.get("platform")
+            if environment.get("platform") in {"Linux", "Windows", "Darwin"}
+            else None,
+            "machine": environment.get("machine")
+            if environment.get("machine")
+            in {"AMD64", "x86_64", "arm64", "aarch64", "x86", "i686"}
+            else None,
+            "backend": executor.get("backend")
+            if executor.get("backend") in {"dagger", "native"}
+            else None,
+        },
+        "counts": {
+            key: value
+            for key, value in (entry.get("counts") or {}).items()
+            if key in {"tests", "failures", "errors", "skipped", "passed"}
+            and type(value) is int
+            and value >= 0
+        },
+    }
 
 
 def check_facts(directory, event, resources):
@@ -61,6 +136,18 @@ def check_facts(directory, event, resources):
             },
             "current_input_validity": "not_checked",
             "dagger_cache_hit": None,
+            "details": check_details(entry),
+            "recorded_gate": {
+                "status": entry["status"],
+                "exit_code": entry["exit_code"],
+                "executed": entry.get("executed") is True,
+                "input_stable": entry.get("input_stable") is True,
+                "passed_for_recorded_input": entry.get("passed_for_current_input")
+                is True,
+                "pytest_complete": entry.get("completeness") == "complete"
+                if name == "pytest"
+                else None,
+            },
         }
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         return {
@@ -74,22 +161,63 @@ def evidence(directory, catalog, root, *, limit=20, budget=16384, after=None):
     """Read one named execution; do not mine, run tools or infer an approval."""
     query = Query("evidence", limit=limit, max_bytes=budget, after=after)
     page_bounds(query)
+    view = execution_evidence(directory, catalog, root)
+    query = Query(
+        "evidence",
+        limit=limit,
+        max_bytes=budget,
+        after=after,
+        candidate=(view["metadata"]["source"] or {}).get("candidate_id"),
+    )
+    entries = after_items(query, view["scope"], view["items"], lambda row: row["key"])
+    result = page(
+        query,
+        view["scope"],
+        entries,
+        key=lambda row: row["key"],
+        remaining=len(entries),
+        metadata=view["metadata"],
+    )
+    result["operation"] = "workflow.evidence"
+    return result
+
+
+def execution_evidence(directory, catalog, root):
+    """Join one bounded execution under its lock, also for offline event-log export."""
     directory = Path(directory).resolve()
     try:
         with FileLock(directory / "execution.lock", timeout=0):
-            return _evidence(
-                directory, catalog, root, limit=limit, budget=budget, after=after
-            )
+            return _snapshot(directory, catalog, root)
     except Timeout:
         raise WorkflowError(
             "Execution is busy; use workflow status or query evidence after it stops"
         ) from None
 
 
-def _evidence(directory, catalog, root, *, limit, budget, after):
+def execution_pair(baseline, candidate, catalog, root):
+    """Hold both original execution locks in stable order while joining comparison inputs."""
+    directories = [Path(path).resolve() for path in (baseline, candidate)]
+    try:
+        with ExitStack() as stack:
+            for directory in sorted(set(directories)):
+                stack.enter_context(FileLock(directory / "execution.lock", timeout=0))
+            views = tuple(
+                _snapshot(directory, catalog, root) for directory in directories
+            )
+            for view in views:
+                for row in view["items"]:
+                    row["check"]["recorded_gate"] = view["recorded_gates"][row["key"]]
+            return views
+    except Timeout:
+        raise WorkflowError(
+            "Comparison input is busy; query status after it stops"
+        ) from None
+
+
+def _snapshot(directory, catalog, root):
     """Join a stable checkpoint while the existing execution lock is held."""
     state = Runtime(catalog).status(directory)
-    workflow, provenance, _ = load_generation(directory / "workflow.json", catalog)
+    workflow, provenance, plan = load_generation(directory / "workflow.json", catalog)
     definitions = {step["id"]: step for step in workflow["steps"]}
     events, completeness, diagnostics = history(directory, state)
     try:
@@ -134,10 +262,19 @@ def _evidence(directory, catalog, root, *, limit, budget, after):
             raise WorkflowError(
                 "Reuse source checkpoint changed or names another definition"
             )
-    entries = []
+    entries, recorded_gates = [], {}
     for (step, attempt), row in sorted(rows.items()):
         seen = row.pop("events")
         start, returned = seen.get("invoking"), seen.get("returned")
+        if (
+            start
+            and returned
+            and any(
+                start.get(key) != returned.get(key)
+                for key in ("batch_id", "batch_size")
+            )
+        ):
+            raise WorkflowError("Observed return names a different adapter batch")
         row.update(
             key=f"{step}:{attempt:08d}",
             invocation_started=True if start is not None else None,
@@ -149,11 +286,20 @@ def _evidence(directory, catalog, root, *, limit, budget, after):
             result_sha256=returned.get("result_sha256") if returned else None,
             started_ns=start["observed_ns"] if start else None,
             ended_ns=returned["observed_ns"] if returned else None,
+            session_id=(start or seen.get("admitted") or returned)["session_id"],
+            batch={"id": start["batch_id"], "size": start["batch_size"]}
+            if start and "batch_id" in start
+            else None,
+            time_scope="adapter_invocation",
+            contract_version=catalog.resolve(row["tool_id"])[0].contract_version,
+            contract_sha256=definitions[step]["contract_sha256"],
+            registered_check=row["tool_id"] in resources.names,
             check=check_facts(directory, returned, resources)
             if returned
             else {"status": "unavailable", "actual_check_executed": None},
             reuse_source=None,
         )
+        recorded_gates[row["key"]] = row["check"].pop("recorded_gate", None)
         previous_hash = seen.get("admitted", {}).get("previous_result_sha256")
         reused = (
             returned
@@ -193,26 +339,20 @@ def _evidence(directory, catalog, root, *, limit, budget, after):
                     "result_sha256": previous_hash,
                 }
         entries.append(row)
-    query = Query(
-        "evidence",
-        limit=limit,
-        max_bytes=budget,
-        after=after,
-        candidate=(provenance["source"] or {}).get("candidate_id"),
-    )
     scope = {
         "execution_id": state["execution_id"],
         "state_sha256": digest(state),
         "observations_sha256": digest(events),
+        "provenance_sha256": digest(provenance),
+        "evidence_sha256": digest(entries),
     }
-    entries = after_items(query, scope, entries, lambda row: row["key"])
-    result = page(
-        query,
-        scope,
-        entries,
-        key=lambda row: row["key"],
-        remaining=len(entries),
-        metadata={
+    return {
+        "scope": scope,
+        "items": entries,
+        "dependencies": plan["dependencies"],
+        "workflow": workflow,
+        "recorded_gates": recorded_gates,
+        "metadata": {
             "operation": "workflow.evidence",
             "execution_id": state["execution_id"],
             "execution": str(directory),
@@ -230,11 +370,17 @@ def _evidence(directory, catalog, root, *, limit, budget, after):
             "observation_completeness": completeness,
             "diagnostics": diagnostics,
             "attempts": len(rows),
+            "reuse_source": {
+                "execution_id": prior["execution_id"],
+                "generation_id": prior["generation_id"],
+                "definition_id": prior["definition_id"],
+                "state_sha256": digest(prior),
+            }
+            if prior
+            else None,
             "approved": False,
             "optimization_verified": False,
             "llm_used": False,
             "next_actions": [["engineering-ci", "workflow", "status", str(directory)]],
         },
-    )
-    result["operation"] = "workflow.evidence"
-    return result
+    }
