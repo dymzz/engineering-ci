@@ -235,3 +235,59 @@ check-submission-reuse，原 P1 文件 approved=false。
 没有认证速度、费用、整体 Agent 效果或任意任务成功。自动调优/跨版本试验、远端能力
 分发、签名身份和 PostgreSQL 反馈接入旧 trace query 尚未实施。旧 schema 2 客户端不能
 读取 schema 3，切换 Git 分支不会回退数据库，正式归档迁移需显式操作。
+
+## P3-1：已归档反馈的只读检索（v0.6.5）
+
+基于已合并 PR #28 的 main，在原 checkout 的 codex/feedback-retrieval 开发。
+实现 `workflow feedback-query`，复用原 FEEDBACK Schema、schema 3 表和分页预算机制；
+不构建 Runtime、不执行检查、不在查询中迁移或写入。规范见
+[反馈检索契约](../architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)，
+操作见[查询指南](../../guides/generated-workflows.md#查询已归档反馈)。
+
+新查询单元测试最终 39 项通过；查询、能力、比较、旧 Trace 检索/结果与统一 CLI 的相关
+回归 216 项通过。覆盖原失败与查询成功分离、参数拒绝、只读事务、损坏身份/摘要/字节、
+游标源/过滤绑定、稀疏空页继续、完整 UTF-8 编码预算和输出保护。替身只验证协议行为，
+不计为真实 PostgreSQL 或工具执行。
+
+实际宿主 PostgreSQL 的查询及原反馈归档回归 10 项通过，最终查询集成 6 项通过。
+使用唯一组件测试 namespace 并清理，包含原失败事实、同一执行累计 5/10 的两份快照、
+106 条记录的稀疏分页、字节预算、损坏拒绝和旧 schema 不自动升级。实际 CLI 使用已有
+TOML 查询并写安全 JSON，没有构建本地能力目录或运行原检查。
+
+### 默认宿主归档升级与查询
+
+P2 合并了 migration 003，但当时只升级组件测试 namespace；默认 engineering_ci_trace
+仍为 schema 2。本轮第一次只读查询明确返回 migration_required/退出 3，没有隐式迁移。
+2026-10-14 用户明确要求完成宿主 schema 3 后，使用原 ArchiveStore.initialize() 升级
+同一个已验证属于本组件的 schema；没有新建数据库、替换连接或修改迁移实现。
+
+| 原有表 | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| sources | 1 | 1 |
+| events | 20604 | 20604 |
+| snapshots | 1 | 1 |
+| snapshot_members | 20604 | 20604 |
+| derived_results | 3 | 3 |
+
+各表原身份/摘要元数据指纹一致，没有读取原 payload 或完整分析文档；这证明迁移保留原
+记录及其已存摘要，不冒充原始 Trace 全量内容校验。升级后 schema_version=3，新增反馈表
+为空。默认 CLI 查询 status=returned、exit_code=0、items=[]、next_after=null；这是有效
+空库查询，不是能力执行成功。实际正向/负向反馈查询由上述独立 PostgreSQL 夹具验证。
+
+本地证据保留在 `.test-tools/harness-p3-1/`：query-unit-junit.xml、related-junit.xml、
+postgres-regression-junit.xml、query-postgres-final-junit.xml、host-schema-upgrade.json、
+live-query-after-upgrade.json。一次 Windows 临时目录权限错误保留在执行记录中，获准使用
+标准临时目录后最终 6 项通过；没有跳过该测试或变更项目位置。
+
+最终实际 Dagger 1.0.0-beta.16/Linux PR Profile 五项通过，pytest 为 1300 tests + 105
+subtests；没有失败、错误或跳过。第一轮期间补了空游标的连接前拒绝，原报告将受影响的
+Ruff/pytest 结果标记 stale，整体退出 3；没有沿用该通过记录。最终 --reuse 只复用输入、
+工具及环境仍匹配的 version/lock，Ruff 和 pytest 重新执行。pr-checks.json 与
+pr-checks-final-console.log 保存当前结果，pr-checks-before-cursor-fix.json 保存过期证据。
+文档 55 个内部链接/锚点核对通过，git diff --check 通过；未修改 GitHub Workflow/Dagger
+实现或消费者仓库，也未发起正式发布。
+
+分页是每页只读快照上的实时 feedback ID 书签，不是固定长事务或执行顺序；并发插入且
+ID 在已读位置前时须从头新查。每页最多核验 100 条源记录，过滤稀疏时空页仍可有游标。
+返回对象仍是原累计反馈快照，collection_coverage=unknown；未做 P3-2 去重/覆盖聚合或
+P3-3 再审查依据，不推断当前源码有效、能力仍启用、整体成功率或优化收益。

@@ -80,3 +80,53 @@ Raw 先查选中快照的成员索引及字节大小，在预算容纳后才读 
 
 命令见[分层查询指南](../../../guides/trace-queries.md)，实测见
 [轨迹验收](../../verification/trace-validation.md#v062-分层检索)。
+
+## 已归档能力反馈的只读检索（P3-1）
+
+v0.6.5 的 `workflow feedback-query` 读取 schema 3 的 workflow_feedback；原
+`workflow feedback` 仍负责保存/显式归档，原 trace query 层级不改。执行与批准以
+[能力契约](generated-workflows.md#能力批准版本选择与执行反馈)为准。
+
+按 feedback_id、approval_id、execution_id、能力 name/version、原结果 status、观测
+completeness 过滤。字段类型/枚举复用 FEEDBACK Schema，非法输入在连接前拒绝。使用
+既有 VESRYN_DATABASE/tracing.toml，不依赖本地能力目录或执行文件，不构建 Runtime、
+执行工具、迁移或登记反馈。
+
+返回前核验实际字节 SHA-256、规范 JSON、原 Schema、feedback_id 内容身份和批准 ID
+列关联；损坏不会被过滤成空结果，不回显原文。仅返回能力/执行标识、原结果/退出码、
+累计观察指标、归档时间与摘要引用，不复制日志、Prompt、Diff、环境变量或连接串。
+数据库/用户身份只保留摘要。
+
+query.status=returned/exit_code=0 仅表示查询成功；item.recorded_result 的失败/非零、
+incomplete/unknown 保持原事实。current_input_validity、approval_state_now、
+execution_evidence_validation 为 not_checked，摘要核验不代替原执行文件或当前准入。
+
+### 有界源页与输出预算
+
+schema 3 没有执行 ID/状态等独立查询列。本轮不新增 migration 或任意 SQL 配置；按 ID/
+批准列参数化筛选，再核验并过滤其他字段。单页读取最多 101 个候选，核验最多 100 个；
+达到请求条数即停止核验。source_page 计数仅描述本页，不是整库统计。
+
+items=[] 且 next_after 非空表示本候选页无匹配，可继续；游标可指向最后已核验但不匹配
+的候选。预算不能容纳后面的匹配项时，只推进到最后实际返回项，不漏掉未返回数据。
+首项/完整信封放不下时 budget_exceeded/退出 3；增加预算重查，不输出半条 JSON。
+
+limit 默认 20、范围 1–100；max-bytes 默认 16384、范围 1024–16777216，包含紧凑 UTF-8
+完整 JSON、新行、元数据与游标。保存 JSON 使用原 2 MiB 原子文档限制，失败非零。
+输出预算不等于数据库读取字节预算。
+
+分页按 feedback_id 升序进行，游标绑定查询协议、数据库/用户摘要、schema 及全部过滤，
+不绑定 limit/预算；源/过滤变化或书签记录删除会拒绝旧游标。它不是权限凭据，也不是
+实际执行顺序或跨页固定快照。并发插入且 ID 位于已读位置之前的记录须从头新查；每页
+自身使用原只读 REPEATABLE READ 事务。
+
+普通列表无记录为成功空页；指定 feedback-id 无匹配为 feedback_unavailable/非零。
+权限、缺连接、旧 schema、内容损坏各自非零，不能成为正常空列表。不自动补授权、
+迁移或恢复原工作流。--json 只能覆盖同类查询回执，不能覆盖原证据。
+
+### 阶段边界
+
+查询对象是反馈快照，不是唯一调用或完整任务。恢复前后累计 5/10 条观察的两份快照都
+保留，不能相加为 15 次调用；collection_coverage=unknown，不推断整体成功率。
+P3-1 不聚合/去重、比较效果、选择/停用能力或宣称速度/费用收益。P3-2 覆盖关系核验、
+P3-3 再审查依据仍待实施。操作见[反馈查询](../../../guides/generated-workflows.md#查询已归档反馈)。

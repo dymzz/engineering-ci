@@ -400,7 +400,7 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 ## 独立工作流入口
 
 `engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume、evidence、compare，
-以及 approve、activate、deactivate、capabilities、select、call、feedback。
+以及 approve、activate、deactivate、capabilities、select、call、feedback、feedback-query。
 `workflow compare BASELINE_DIR CANDIDATE_DIR --out FILE.json [--json ACTION.json]` 只读比较
 完整 PR 检查的同输入复用证据。它与 `mine compare` 的固定分析结果比较是不同用途；
 原质量未通过或输入不可比时仍保存报告并非零。连贯调用见
@@ -426,3 +426,10 @@ P2 参数如下，版本指能力版本，与项目发行版本独立：
 `.test-tools/workflow-capabilities`；所有命令支持独立操作回执 `--json FILE`。
 call 返回原执行退出码，反馈失败单列；feedback --archive 成功只代表归档成功。
 操作与恢复见[能力调用](generated-workflows.md#批准启用选择与调用能力)。
+
+`workflow feedback-query` 单独只读 PostgreSQL 安全反馈，保留 feedback 保存/归档语义。
+支持 `--feedback-id`、`--approval-id`、`--execution-id`、`--name`、`--version`、
+`--result-status`、`--completeness`、`--limit`、`--max-bytes`、`--after`、`--config`、`--json`。
+ID 来自实际反馈记录；能力版本非项目版本，原状态过滤不是查询成功状态。
+分页可有空匹配页，保留过滤条件沿 next_after 继续；不汇总累计快照。
+命令与停止处理见[反馈查询](generated-workflows.md#查询已归档反馈)。

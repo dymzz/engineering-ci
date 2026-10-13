@@ -310,6 +310,54 @@ uv run --locked --extra trace engineering-ci workflow feedback $call.execution -
 迁移问题后，重复同一 feedback --archive，不重跑检查。数据库读回核验只证明归档内容一致，
 不把模拟工具/测试数据或历史通过记录当成正式发布证据。
 
+## 查询已归档反馈
+
+P3-1 使用 `workflow feedback-query`。已有 schema 3 和 VESRYN_DATABASE 时直接查，
+不再次 init、生成或执行检查：
+
+```powershell
+uv run --locked --extra trace engineering-ci workflow feedback-query --limit 5 --max-bytes 16384 --json .test-tools/feedback-query.json
+if ($LASTEXITCODE -ne 0) { throw '查询失败，查看诊断；不要重跑原检查' }
+$page = Get-Content .test-tools/feedback-query.json -Raw | ConvertFrom-Json
+$page.items | Select-Object feedback_id, capability, execution_id, recorded_result, observation_completeness, metrics, references
+
+# 标识取自实际返回项，限定某个批准或执行。
+if ($page.items.Count -gt 0) {
+    $feedback = $page.items[0]
+    uv run --locked --extra trace engineering-ci workflow feedback-query --feedback-id $feedback.feedback_id --json .test-tools/feedback-query-one.json
+    uv run --locked --extra trace engineering-ci workflow feedback-query --approval-id $feedback.capability.approval_id --execution-id $feedback.execution_id --limit 5 --max-bytes 16384 --json .test-tools/feedback-query-execution.json
+}
+```
+
+按能力及原失败状态过滤；1.0.0 是能力版本，不是项目版本：
+
+```powershell
+uv run --locked --extra trace engineering-ci workflow feedback-query --name pr-check-reuse --version 1.0.0 --result-status failed --completeness complete --limit 5 --max-bytes 16384 --json .test-tools/feedback-query-failed.json
+if ($LASTEXITCODE -ne 0) { throw '查询失败，按诊断处理' }
+$page = Get-Content .test-tools/feedback-query-failed.json -Raw | ConvertFrom-Json
+
+# 保留同一配置和全部过滤条件，沿游标继续。
+while ($page.page.next_after) {
+    uv run --locked --extra trace engineering-ci workflow feedback-query --name pr-check-reuse --version 1.0.0 --result-status failed --completeness complete --limit 5 --max-bytes 16384 --after $page.page.next_after --json .test-tools/feedback-query-failed.json
+    if ($LASTEXITCODE -ne 0) { throw '停止分页，查看本次诊断' }
+    $page = Get-Content .test-tools/feedback-query-failed.json -Raw | ConvertFrom-Json
+    $page.items | Select-Object feedback_id, execution_id, recorded_result, metrics
+}
+```
+
+items 为空但 next_after 非空仍可继续，只代表本页无匹配。source_page 是本页核验数，
+不是整库数量；按反馈 ID 分页不表示真实调用顺序。并发新增且 ID 在已读位置前的记录须
+从头新查。普通空列表不表示原工作流成功；指定 feedback-id 无匹配非零。
+
+status=returned/exit_code=0 是查询成功；recorded_result 的失败/非零、unknown/incomplete
+保留，不证明当前源码通过或能力仍启用。references 定位原证据，本命令不核验本地执行
+文件，也不重跑检查；同一执行的多份恢复快照分别保留，不把累计值相加。
+
+`--config FILE` 沿用 tracing 配置，不新建数据库/迁移。权限、缺连接、旧 schema 或损坏
+都非零，按 trace status 与诊断处理。budget_exceeded 时保留条件、增加 --max-bytes 重查，
+不执行或重新归档。默认预算 16384 UTF-8 字节含新行和游标；--json 仅覆盖同类查询回执，
+保护原反馈/批准/状态文件。细节见[检索契约](../docs/architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。
