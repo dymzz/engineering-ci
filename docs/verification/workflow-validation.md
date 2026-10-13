@@ -235,3 +235,169 @@ check-submission-reuse，原 P1 文件 approved=false。
 没有认证速度、费用、整体 Agent 效果或任意任务成功。自动调优/跨版本试验、远端能力
 分发、签名身份和 PostgreSQL 反馈接入旧 trace query 尚未实施。旧 schema 2 客户端不能
 读取 schema 3，切换 Git 分支不会回退数据库，正式归档迁移需显式操作。
+
+## P3-1：已归档反馈的只读检索（v0.6.5）
+
+基于已合并 PR #28 的 main，在原 checkout 的 codex/feedback-retrieval 开发。
+实现 `workflow feedback-query`，复用原 FEEDBACK Schema、schema 3 表和分页预算机制；
+不构建 Runtime、不执行检查、不在查询中迁移或写入。规范见
+[反馈检索契约](../architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)，
+操作见[查询指南](../../guides/generated-workflows.md#查询已归档反馈)。
+
+新查询单元测试最终 39 项通过；查询、能力、比较、旧 Trace 检索/结果与统一 CLI 的相关
+回归 216 项通过。覆盖原失败与查询成功分离、参数拒绝、只读事务、损坏身份/摘要/字节、
+游标源/过滤绑定、稀疏空页继续、完整 UTF-8 编码预算和输出保护。替身只验证协议行为，
+不计为真实 PostgreSQL 或工具执行。
+
+实际宿主 PostgreSQL 的查询及原反馈归档回归 10 项通过，最终查询集成 6 项通过。
+使用唯一组件测试 namespace 并清理，包含原失败事实、同一执行累计 5/10 的两份快照、
+106 条记录的稀疏分页、字节预算、损坏拒绝和旧 schema 不自动升级。实际 CLI 使用已有
+TOML 查询并写安全 JSON，没有构建本地能力目录或运行原检查。
+
+### 默认宿主归档升级与查询
+
+P2 合并了 migration 003，但当时只升级组件测试 namespace；默认 engineering_ci_trace
+仍为 schema 2。本轮第一次只读查询明确返回 migration_required/退出 3，没有隐式迁移。
+2026-10-14 用户明确要求完成宿主 schema 3 后，使用原 ArchiveStore.initialize() 升级
+同一个已验证属于本组件的 schema；没有新建数据库、替换连接或修改迁移实现。
+
+| 原有表 | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| sources | 1 | 1 |
+| events | 20604 | 20604 |
+| snapshots | 1 | 1 |
+| snapshot_members | 20604 | 20604 |
+| derived_results | 3 | 3 |
+
+各表原身份/摘要元数据指纹一致，没有读取原 payload 或完整分析文档；这证明迁移保留原
+记录及其已存摘要，不冒充原始 Trace 全量内容校验。升级后 schema_version=3，新增反馈表
+为空。默认 CLI 查询 status=returned、exit_code=0、items=[]、next_after=null；这是有效
+空库查询，不是能力执行成功。实际正向/负向反馈查询由上述独立 PostgreSQL 夹具验证。
+
+本地证据保留在 `.test-tools/harness-p3-1/`：query-unit-junit.xml、related-junit.xml、
+postgres-regression-junit.xml、query-postgres-final-junit.xml、host-schema-upgrade.json、
+live-query-after-upgrade.json。一次 Windows 临时目录权限错误保留在执行记录中，获准使用
+标准临时目录后最终 6 项通过；没有跳过该测试或变更项目位置。
+
+最终实际 Dagger 1.0.0-beta.16/Linux PR Profile 五项通过，pytest 为 1300 tests + 105
+subtests；没有失败、错误或跳过。第一轮期间补了空游标的连接前拒绝，原报告将受影响的
+Ruff/pytest 结果标记 stale，整体退出 3；没有沿用该通过记录。最终 --reuse 只复用输入、
+工具及环境仍匹配的 version/lock，Ruff 和 pytest 重新执行。pr-checks.json 与
+pr-checks-final-console.log 保存当前结果，pr-checks-before-cursor-fix.json 保存过期证据。
+文档 55 个内部链接/锚点核对通过，git diff --check 通过；未修改 GitHub Workflow/Dagger
+实现或消费者仓库，也未发起正式发布。
+
+分页是每页只读快照上的实时 feedback ID 书签，不是固定长事务或执行顺序；并发插入且
+ID 在已读位置前时须从头新查。每页最多核验 100 条源记录，过滤稀疏时空页仍可有游标。
+返回对象仍是原累计反馈快照，collection_coverage=unknown；未做 P3-2 去重/覆盖聚合或
+P3-3 再审查依据，不推断当前源码有效、能力仍启用、整体成功率或优化收益。
+
+## P3-2：显式反馈集合的覆盖核验与汇总（v0.6.5）
+
+PR #29 尚开放，继续原 checkout/分支和同一个版本 PR，没有为阶段新增平行 PR。新反馈
+文档 v2 提取已有安全 Attempt 索引；原反馈 v1 继续校验/查询/归档，数据库仍为 schema 3，
+没有新迁移。契约见[覆盖汇总](../architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)，
+操作见[用户指南](../../guides/generated-workflows.md#核验覆盖并汇总反馈)。
+
+模型/旧能力/查询兼容测试 69 项通过；最终查询、汇总、能力、比较、观测及归档相关
+回归 142 项通过。覆盖重复输入、相等/部分重叠/覆盖集合、不同执行不混并、原失败保持、
+旧 v1 未知、缺测量、同 Attempt 证据变化、绑定冲突、坏索引/摘要、非法参数和完整输出
+预算。极大 Attempt 编号的缺口校验按索引长度计算，不分配到该编号的范围。
+
+宿主 PostgreSQL 实际集成 15 项通过，最终汇总集成 5 项通过，使用唯一组件测试 namespace
+并清理。实际 Runtime 与反馈 writer 产生同一执行 5/10 两份索引，真实归档/CLI 只读汇总
+为 10 个唯一 Attempt、去除 5 个重复引用、提交 0；再次汇总不调用 Runtime 或迁移。
+这里原五个领域工具使用注明的进程替身，不冒充真实五项质量检查。
+
+### 已有真实 Dagger 来源的只读验收
+
+另读 P2 保留的实际 Dagger/Linux call `88051221bb734e0887987fac7d87d777`，从已有原资源
+提取 v2，没有 resume 或重新提交检查。原 v1
+`87f03cdc50c6668ba20f53ace6b7dd08f3293adfd89ab6b394d0da74e368a2e8` 保持不变；新 v2
+`4958425b629b2052885acc13dbc0604637899159d66f8ab9ec3506c3eb256ac5` 单独保存。
+
+通过实际 CLI 读取这两个归档反馈（重复传入 v2 ID 仍只读取一次），返回 10 个已知
+Attempt、已知复用 10、已知提交 0，而非把两个累计数相加。旧 v1 没有自己的索引，仍
+partial/legacy_unverifiable；没有用较大计数或同一执行 ID 补造历史覆盖关系。
+原 state/capability/observations 文件摘要前后一致，新增 Runtime resume 和检查提交均为 0。
+只在唯一组件测试 schema 写入这份验收数据并清理，没有写生产反馈表。
+
+summary_id 为 `47cac07b710f3a2d07f1c1a9ea4e014f0fefa8015de364284ad6d434bd064264`，
+本地 `.test-tools/harness-p3-2/acceptance.json`、actual-summary.json、各 JUnit 保存结果。
+该 ID 包含当时临时数据库 namespace 身份；不将其配置路径视为清理后的生产连接入口。
+此来源只证明历史反馈读取/索引核验，current_input_validity=not_checked，不能替代当前
+PR/Release 门禁，也未宣称新的速度、成本或整体优化收益。
+
+最终当前代码实际 Dagger 1.0.0-beta.16/Linux PR Profile 五项通过：1326 tests + 105
+subtests，JUnit 1431、无失败/错误/跳过；四处版本仍为 0.6.5，Pipeline/Workflow 一致性
+与锁文件检查通过。原 Workflow、Dagger 实现和消费者未修改。pr-checks.json 与
+pr-checks-console.log 保留实际输入/工具/环境身份。
+
+剩余边界：选中集合不是全库，整体覆盖 unknown；旧 v1、证据变化及部分边界补全不猜
+演进链。汇总报告成功不改变原失败，不认证当前输入、能力启用或原执行文件仍有效。
+P3-3 再审查依据及自动调优没有进入本轮。
+
+## P3-3：汇总、原比较与执行回执的再审查依据（v0.6.5）
+
+继续开放 PR #29 和原 checkout。`workflow feedback-review` 消费 P3-2 成功汇总，
+从同一归档重算完整内容摘要，再读显式能力目录与 call 回执。复用原 Scope/Schema、
+质量 gate 和比较核验；admission 保持原返回/拒绝语义，不自动批准、启用、执行或发布。
+契约见[再审查依据](../architecture/workflow-optimization/retrieval.md#已归档反馈的再审查依据p3-3)，
+操作见[指南](../../guides/generated-workflows.md#关联原比较与执行证据进行再审查)。
+
+初版审查将双方原生执行共同缺少可选 executor 误判为变化，5 项测试失败；依据原比较器
+规则修复，共享必需身份定义，双方共同缺少可选字段不算变化，缺必需字段不能证明可比。
+不是改预期值放行。查询/汇总/审查 84 项通过，随后相关回归 136 项通过；最终审查、
+原比较、能力及观测 91 项通过，包括真实 pytest assert 失败仍退出 1、审查报告退出 0
+但推荐 investigate、停用不启用、改汇总拒绝、输入期间变化拒绝、整份预算及错误回执
+也不进入原证据目录。初始失败 JUnit 与最终结果分别保留。
+
+真实宿主 PostgreSQL CLI 集成 4 项通过：整组归档→成功汇总→原批准/比较及 call 文件
+校验、篡改计数拒绝、坏字节拒绝和停用/原比较缺失诊断。使用唯一组件测试 namespace
+并清理；原领域工具为注明的替身，Runtime/数据库/原文件核验实际运行，不冒充真实质量门禁。
+
+### 保留的真实 Dagger 来源与策略停点
+
+只读实际 P2 Dagger/Linux call `88051221bb734e0887987fac7d87d777` 的 v2 反馈
+`4958425b629b2052885acc13dbc0604637899159d66f8ab9ec3506c3eb256ac5`，通过实际数据库
+及 CLI 消费新生成的 P3-2 汇总。执行回执完整匹配，但批准时目标策略已不匹配当前 Pipeline：
+
+| 事实 | 实测 |
+| --- | --- |
+| 原策略 SHA-256 | 412bfc4db968a7b2f0337db41847524d8d94a1f4776ba18bd265ed65a970c118 |
+| 当前策略 SHA-256 | f16fbbf39de6483f0fc04c4f5f11ee7245c59199830433c8ee023f92fb94ae4d |
+| 执行回执校验 | verified_exact_snapshot |
+| 原比较准入 | policy_changed，不伪造 verified |
+| 审查建议 | investigate；review_new_definition_and_controlled_trial |
+| 目录状态 | enabled_at_read=true；不代表策略仍可准入 |
+| 当前输入资格 | not_checked |
+
+这是现有证据揭示的真实停点。首次验收脚本错误预设旧能力仍可保留且已停用，断言失败；
+核对实际目标策略差异与目录状态后，改为检查真实失败诊断及后续依据，没有放宽比较准入。
+同一源的 approval `f02d6dd9f6c43fee9f650ae8840f9e33583ec1071d9c07fa38e47e771f393d0d`、
+comparison `d35ae9a14b81bb177b8d733d8bf7e91a371cfa145c88622c3575cc1fef81c927` 原样保留。
+review_id 为 `6c92260b6066d25e0d0a8610b9cc76d16fabdb300ef901e125d6ba22764e3b7e`；临时
+数据库 namespace 参与来源身份并已清理，不将该配置当作生产入口。
+
+原 catalog/state/capability/observations 摘要前后一致，新增检查提交 0，没有 activate/
+deactivate/call。只在唯一测试 schema 归档验收输入，生产反馈未写入。
+本地证据 `.test-tools/harness-p3-3/acceptance.json`、actual-summary.json、actual-review.json
+及各 JUnit；这些历史来源不替代当前 PR/Release 验证，不证明新的优化收益。
+
+### Agent 入口和实际验证方式
+
+保留本轮用户更新的 AGENTS.md，删除重复 AGENT.MD，并将 scripts/rules.md 引用指向
+AGENTS.md；没有重写用户约定。按新约定实际执行能力发现：默认目录无版本；对明确的
+历史能力目录再发现/选择，workflow select 退出 3，原因是 Target policy changed。
+没有适用且准入的能力可用于当前 PR 验证，因此采用既有 checks/Dagger，不批准或启用
+新的真实能力。发现和选择结果保留在 capabilities.json、historical-capabilities.json、
+historical-select.json。
+
+本轮不重建历史 state，不猜目录或自动运行新试验。保留/调查/新试验是人工审查依据，
+报告成功不改原失败，当前输入和全库覆盖仍不认证。
+
+最终实际 Dagger 1.0.0-beta.16/Linux PR Profile 五项通过，1347 tests + 105 subtests，
+JUnit 1452、无失败/错误/跳过；全部 input_stable=true。四处版本仍为 0.6.5，版本/
+Pipeline/Workflow 一致性与锁文件通过。pr-checks.json/pr-checks-console.log 保留原身份；
+受影响文档 65 个内部链接/锚点及 git diff --check 通过。未修改 Workflow、Dagger 实现
+或消费者，没有发起正式 Release。

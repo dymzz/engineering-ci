@@ -218,9 +218,11 @@ class ArchiveStore:
         """Archive allowlisted actual-call facts idempotently; never advance a business FSM."""
         from ..workflow_core.capabilities import FEEDBACK
         from ..workflow_core.documents import canonical, digest
+        from ..workflow_core.feedback_snapshot import checked_snapshot
         from ..workflow_core.schemas import validate
 
         validate(value, FEEDBACK, label="archival capability feedback")
+        checked_snapshot(value)
         if value["feedback_id"] != digest(
             {key: item for key, item in value.items() if key != "feedback_id"}
         ):

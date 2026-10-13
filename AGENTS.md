@@ -80,3 +80,14 @@ Further improvements may be suggested separately; they are not automatically par
 - 同一问题更新已有记录，避免重复积累。
 - 不自动搜索上游 Issue、提交 Issue/PR、修改第三方库或开展额外修复。
 - 不因记录工作阻
+
+### Harness Tool Usage
+
+- When a task is covered by an existing Engineering CI workflow capability, discover it through `engineering-ci workflow capabilities`.
+- Use `workflow select` to verify that the capability is active and admissible before invoking `workflow call`.
+- Prefer an applicable approved capability over manually reconstructing its internal tool sequence.
+- If no applicable approved capability is available, continue with the existing development and verification tools.
+- Do not approve, activate, or modify workflow capabilities without explicit authorization.
+- In the task handoff, report whether a workflow capability was used, its execution evidence, or why it was not applicable.
+
+Follow `guides/generated-workflows.md` for the actual commands and recovery procedure.

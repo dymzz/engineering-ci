@@ -9,4 +9,4 @@
 - CLI、Workflow dispatcher 或注册表不得重新实现业务逻辑。
 - 修改入口、参数或位置时同步维护受影响的指南和 Workflow 调用；scripts/README.md 仅维护入口索引。
 - 本地交付 FSM 与 Pipeline 必须共享同一 ExecutionContext，使用前一阶段产生且身份匹配的证据作为下一阶段准入；远端 DAG 继续由 Workflow 定义，不在配置中复制。
-- 工作区、Git/gh 认证与失败处理遵循根目录 AGENT.MD；不得用替代 checkout 绕过阻碍。
+- 工作区、Git/gh 认证与失败处理遵循根目录 [AGENTS.md](../AGENTS.md)；不得用替代 checkout 绕过阻碍。

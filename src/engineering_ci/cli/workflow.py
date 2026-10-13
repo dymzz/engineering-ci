@@ -13,6 +13,34 @@ from ..workflow_core import Runtime, generate, load_generation
 from ..workflow_core.documents import WorkflowError, digest, read, write
 from ..workflow_core.schemas import SCHEMAS
 
+PROTECTED_RECEIPTS = frozenset(
+    {
+        "workflow.json",
+        "provenance.json",
+        "state.json",
+        "result.json",
+        "checks.json",
+        "intent.json",
+        "reuse-source.json",
+        "approval.json",
+        "catalog.json",
+        "capability.json",
+        "comparison.json",
+    }
+)
+
+
+def result_path(path, root):
+    """Share output protection without treating a query as an execution operation."""
+    from ..checks import report_path
+
+    path = report_path(path, root)
+    if path.name in PROTECTED_RECEIPTS:
+        raise WorkflowError(
+            "Operation JSON must not overwrite a definition or execution receipt"
+        )
+    return path
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -76,8 +104,10 @@ def main(argv=None):
         "--out", required=True, type=Path, help="New independent comparison report"
     )
     from .workflow_capability import COMMANDS, add_commands
+    from .workflow_feedback_query import add_command
 
     add_commands(commands)
+    add_command(commands)
     for action in commands.choices.values():
         action.add_argument(
             "--json",
@@ -85,6 +115,10 @@ def main(argv=None):
             help="Save the operation JSON separately from original tool output",
         )
     options = parser.parse_args(argv)
+    if options.command in {"feedback-query", "feedback-summary", "feedback-review"}:
+        from .workflow_feedback_query import main as query_main
+
+        return query_main(options, ROOT)
     operation = {
         "schema_version": 1,
         "operation": "workflow." + options.command,
@@ -93,25 +127,7 @@ def main(argv=None):
     result_destination = None
     try:
         if options.json:
-            from ..checks import report_path
-
-            options.json = report_path(options.json, ROOT)
-            if options.json.name in {
-                "workflow.json",
-                "provenance.json",
-                "state.json",
-                "result.json",
-                "checks.json",
-                "intent.json",
-                "reuse-source.json",
-                "approval.json",
-                "catalog.json",
-                "capability.json",
-                "comparison.json",
-            }:
-                raise WorkflowError(
-                    "Operation JSON must not overwrite a definition or execution receipt"
-                )
+            options.json = result_path(options.json, ROOT)
             source_paths = [
                 getattr(options, name, None)
                 for name in (
