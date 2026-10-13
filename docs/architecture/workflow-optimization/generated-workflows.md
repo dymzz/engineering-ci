@@ -203,8 +203,10 @@ ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapt
 携带待核验的旧事实；检查适配器将恢复交给原 checks/Dagger，而非核心猜测复用。
 静态 validate 不执行工具预检或承诺当前输入通过，实际环境及资源在调用时核验。
 
-OTel/GenAI 及既有 instrumentation 继续承担遥测；观察接口从实际调用取得
-工具 ID、步骤、attempt、输入/结果身份和已知复用来源，不把生成配置的计划步骤当成实际 Trace。
+OTel/GenAI 及既有 instrumentation 继续承担适用的遥测。
+当前已有原工具结果、步骤/attempt 和输入输出摘要，尚未形成完整的统一操作观测与反馈归档接口。
+后续按[Harness 实施设计](harness.md)从实际调用取得工具身份和已核验的复用来源，
+不把生成配置的计划步骤或最终检查点当成完整 Trace。
 工具实现替换不改写历史轨迹，投影/分析升级继续独立于工作流定义和 Runtime。
 
 ## 实施顺序与架构验收

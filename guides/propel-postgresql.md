@@ -1,5 +1,8 @@
 # Propel 连接宿主 PostgreSQL
 
+本次连接排障已按用户决定停止，以下保留操作和观察的历史范围。
+Propel 不属于当前 Agent Harness 方案的必需依赖或验收门槛；后续工作使用既有 Rust4PM 接口。
+
 Propel 是 Rust4PM 的图形程序，不是 engineering-ci 的查询后端。
 本项目没有注册 Propel 数据源或实现自动数据库提取 Blueprint。
 以下依据 [Propel 上游连接界面](https://github.com/aarkue/propel/blob/main/packages/components/src/extraction-blueprint/edit/ConnectionsDialog.tsx)
