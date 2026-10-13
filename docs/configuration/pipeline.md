@@ -21,6 +21,14 @@
 schema_version=1；缺失、非法配置或未知实现明确失败，不静默使用另一套默认定义。
 PR profile 保留既有五项检查。工具的实际版本和当前输入仍需执行时核验，配置不能作为通过证据。
 
+早期 Handler 绑定兼容桥引用已校验配置的 canonical JSON 摘要和完整 `pr` 顺序，
+不复制 TOML 中的工具、命令、权限或检查定义。配置变化后重新生成绑定；实际检查结果仍逐项核验。
+绑定解析留在宿主 CLI，不再让原 checks 反向导入 mining 或成为全部基础检查的公共输入。
+绑定不是新的 Pipeline 配置段，不改变 schema 1 或 Actions Job DAG；契约见
+[Handler 固化](../architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+生成工作流采用每次独立的定义/来源文件，不向本 TOML 累积业务映射；
+实际边界见[独立生成与编排](../architecture/workflow-optimization/generated-workflows.md)。
+
 ## 操作契约与编排边界
 
 `check_operations.py` 集中注册五项已实现的基础检查，提供 argv 构造、最小工具依赖和必要输入。
@@ -183,6 +191,12 @@ Workflow、绑定校验或 Manifest 注册信息变化同样使所有基础检�
 PyYAML 的依赖 / 锁变化属于版本、锁文件和 pytest 输入；Ruff 按其实际工具及源码范围判断，
 不因单纯准备发布版本而重跑。
 查询保留原始历史记录，下一次执行只允许复用仍匹配当前身份的结果。
+
+独立生成工作流不向本 TOML 添加业务映射。宿主适配器从现有 Operation/Profile 生成步骤，
+每次产生独立 workflow.json / provenance.json；执行定义决定调用，不固定重新选择 pr。
+人工 Recipe 示例位于 [config/workflow.example.json](../../config/workflow.example.json)，
+生成与恢复操作见[工作流指南](../../guides/generated-workflows.md)。生成文件、工具契约和运行
+记录的身份分别管理，目录变化不构成原检查输入变化；实际参数和证据仍由原检查核验。
 四处元数据只有一致的本项目版本值变化时，pytest 指纹保留其他全部内容，
 版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。
 运行、结果与环境限制见[本地检查](../architecture/local-checks.md)，阶段证据传递见

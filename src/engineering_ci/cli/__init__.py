@@ -12,7 +12,16 @@ def main(argv=None):
         description="Engineering CI: local checks, Release Workflow, Run downloads, trace archive and offline mining"
     )
     parser.add_argument(
-        "command", choices=("checks", "release", "download", "version", "trace", "mine")
+        "command",
+        choices=(
+            "checks",
+            "release",
+            "download",
+            "version",
+            "trace",
+            "mine",
+            "workflow",
+        ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
         parser.print_help()
@@ -20,7 +29,10 @@ def main(argv=None):
     namespace = parser.parse_args(argv[:1])
     args = argv[1:]
     if namespace.command == "checks":
-        from ..checks import main as invoke
+        if any(arg == "--binding" or arg.startswith("--binding=") for arg in args):
+            from .checks_binding import main as invoke
+        else:
+            from ..checks import main as invoke
     elif namespace.command == "release":
         from .release import main as invoke
     elif namespace.command == "version":
@@ -29,6 +41,8 @@ def main(argv=None):
         from .trace import main as invoke
     elif namespace.command == "mine":
         from .mine import main as invoke
+    elif namespace.command == "workflow":
+        from .workflow import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

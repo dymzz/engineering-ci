@@ -25,9 +25,13 @@ def main(argv=None):
         from .mine_candidates import main as candidate_command
 
         return candidate_command(args[1:])
+    if args and args[0] == "bind":
+        from .mine_bind import main as binding_command
+
+        return binding_command(args[1:])
     parser = argparse.ArgumentParser(
         description=__doc__,
-        epilog="Existing-result operations: mine compare --help; mine candidates --help",
+        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help",
     )
     parser.add_argument(
         "projection", nargs="?", help="Content-free JSON produced by trace project"

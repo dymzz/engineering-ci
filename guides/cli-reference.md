@@ -313,6 +313,62 @@ status=reported 与退出码 0 仅表示报告生成完成，即使没有候选�
 4. 原质量门禁与基线/候选执行证据是否足以验证改动。
 
 当前均为 needs_review、executable=false、handler=null，报告没有自动批准或改写检查策略的命令。
-LLM 与固化执行尚未启用，llm_used=false、quality_gate=not_evaluated、optimization_verified=false。
-选定具体候选并补齐证据后，才另行提出可审查的代码/配置 diff；流程边界见
+候选报告自身不启用执行，llm_used=false、quality_gate=not_evaluated、optimization_verified=false。
+显式选择目标后，可按下一节绑定已支持的 Handler；候选报告保持原审查状态。流程边界见
 [实施方案](../docs/architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
+
+## 绑定并调用 PR 检查 Handler
+
+先生成上一节的候选报告，选择 `kind=adjacent_activity_repeat` 且
+`pattern.activities=["command_execution","command_execution"]` 的 candidate_id。
+下面的变量来自实际报告，不需要手工寻找或填写摘要：
+
+```powershell
+$report = Get-Content '.test-tools/workflow-candidates.json' -Raw | ConvertFrom-Json
+$candidate = @($report.candidates | Where-Object {
+    $_.kind -eq 'adjacent_activity_repeat' -and
+    ($_.pattern.activities -join ',') -eq 'command_execution,command_execution'
+})
+if ($candidate.Count -ne 1) { throw '请选择报告中实际存在的连续 command 候选' }
+uv run --locked engineering-ci mine bind '.test-tools/mining-result.json' --projection '.test-tools/otel-projection.json' --candidate $candidate[0].candidate_id --profile pr --out '.test-tools/pr-check-reuse.json' --json
+```
+
+登记模式使用同一分析记录的 result_id 替换文件和 `--projection`：
+`mine bind --analysis-result ANALYSIS_ID --candidate CANDIDATE_ID --profile pr --out FILE --json`。
+只有登记模式需要 trace extra、PostgreSQL 和 VESRYN_DATABASE；文件模式及执行已绑定操作均不需要。
+绑定只创建新的 JSON 文件，不启动检查、重新挖掘或执行历史命令。
+打开该文件审查 source、target 和摘要；当前目标只支持完整 PR 检查，没有任意命令或其他 Profile。
+
+审查后使用绑定输出 `next_actions` 中的完整调用；也可以明确选择现有报告位置：
+
+```powershell
+uv run --locked engineering-ci checks --binding '.test-tools/pr-check-reuse.json' --reuse --json '.test-tools/checks/pr.json'
+uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
+```
+
+已有 `checks pr --reuse` 继续有效，两者调用同一实现。首次运行核验报告，执行缺失或不匹配项；
+再次运行复用同输入、工具、参数和环境的事实。失败和 incomplete 仍阻断，修复后重新执行受影响检查。
+可以继续给出原 `--coverage`、`--junit`、`--executor` 参数；参数变化参与原检查身份。
+`--binding` 必须与 `--reuse --json` 一起使用，不能同时传入其他检查选择，也不能让输出覆盖绑定。
+
+绑定创建成功为 status=bound、退出 0，表示显式目标可调用；不表示检查或优化已通过。
+创建失败退出 2，已有文件拒绝覆盖；next_actions 保留新文件名和原输入，binding_saved=false 表示未保存。
+绑定过期或无效时，检查入口在调用工具前返回 3；用原分析/投影和候选重新 bind 到新文件并审查。
+实际执行继续传播原工具退出码。检查 JSON 的 handler_binding 只关联来源，不替代原检查事实。
+终止后重复同一 checks 调用，原始 Dagger 文件缺失/损坏或当前输入变化会使相关证据失效。
+最终关联保存失败会保留原检查文件；成功执行返回 3，已有失败保留原非零码。
+
+历史投影没有具体检查身份，绑定是用户显式选择的新目标，不证明历史重复命令就是 PR 检查，
+也不批准删检查、自动发布或扩展远端权限。详细契约见
+[Handler 固化](../docs/architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+
+以上调用是早期证据绑定原型的兼容入口。新配置执行使用 `engineering-ci workflow`，见
+[完整操作说明](generated-workflows.md)，不要将旧绑定文件当作新的 workflow.json。
+
+## 独立工作流入口
+
+`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume。
+generate 接受独立 Recipe 或显式 Profile，每次创建独立定义及来源；run 创建独立执行；
+resume 继续同一检查点，status 只读已记录事实。每个子命令支持 `--json FILE`。
+所有工具使用已有 console-script 入口；工具注册及实际命令不放入 pyproject 的 scripts 表。
+参数、连贯 PowerShell 示例、输入/输出引用和中断后的继续方式见[独立工作流](generated-workflows.md)。
