@@ -166,3 +166,47 @@ uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/tr
 真实 GitHub PR CI 的链接、候选 SHA 和最终状态在交付 PR 中另行记录。
 本轮不验证 Collector 持久化队列、Jaeger 长期保存/服务器掉电、远端认证/mTLS或跨运行优化效果。
 基础 CI 不依赖个人数据库、Docker 后端或可选 telemetry 服务；发布与消费者契约保持原职责。
+
+## v0.5.7 候选与审查依据验收
+
+2026-10-13，以 PR #22 合并提交 fe44fa3d95a859c6b0bc710f1e2e0afdadd93fb7 为基线，
+在原 checkout 的 codex/trace-candidates-v0.5.7 分支交付；四处版本提前统一为 0.5.7。
+用户选择先做可追溯候选与审查依据，LLM 第二输出和固化执行未进入本轮验收。
+
+- 宿主联合专项 84 passed：候选/比较/身份/case 准入单元测试，以及真实 SDK、Rust4PM、PostgreSQL 集成。
+- Dagger 1.0.0-beta.16 / Linux 可选端到端专项 1 passed：真实原生协议 fixture → SDK 投影 → Rust4PM → 候选。
+  没有向容器传 PostgreSQL 凭据，数据库专项仍在宿主运行。
+- 完整共享 PR Profile：1067 tests、105 subtests；Ruff、版本/Workflow 绑定、锁文件通过。
+  五项检查 input_stable 均为 true；基础 CI 未增加个人数据库、模型或后端服务依赖。
+- wheel 构建与内容检查通过，含新模块及既有 SQL 迁移，没有打包本地数据、凭据或上游实现。
+  文档文件链接检查通过。
+
+真实库的协议 fixture 与此前用户实录分开验收。已登记历史分析仅只读加载一次当前派生输入，
+未重读原始 rollout、重新投影或执行历史工具/发现算法。Rust4PM 和历史 PM4Py 两份分析的候选观察相同，
+原分析与投影文档摘要未变，身份及 origin 仍分开。
+固定投影/分析 ID 延续上一节；实际 report_id 为
+0efa268cb8969c1f44cd5c9f5545446171cc4742801268f3f1971b100152e543。
+真实 ID 模式 CLI 与直接候选 API 生成的报告一致。
+
+当前实录有 3017 个投影操作，其中仅 6 个 Turn、40 个操作满足顺序准入。
+56 个 Turn、2977 个操作被排除：54 个 Turn 重叠/并列、2 个缺结束边界。
+得到 6 个候选（3 类活动的相邻重复与观察后继各 3 个），没有重复完整变体候选。
+全量统计仍为 255 failed、2759 passed、3 unknown；准入操作为 1 failed、39 passed。
+这不是整体工作流的优化效果验收，也不把排除操作当作已通过。
+报告均为 not_reviewed、quality_gate=not_evaluated、optimization_verified=false、llm_used=false。
+
+覆盖历史分析兼容、真实父关联、输入字节变动、模型/统计不符、空结果、失败/取消/未知、
+排除覆盖率、输出上限、长见证截断和每条观察后继引用；写入错误返回非零并保留可继续的来源信息。
+已有输出拒绝覆盖，不为该错误连接数据库；新输出可从同一派生证据恢复，不重跑算法。
+宿主 JUnit、Linux JUnit、PR JSON、real-candidates/real-legacy-candidates/real-cli-candidates 在忽略目录 `.test-tools/trace-p2`。
+
+专项命令：
+
+```powershell
+uv sync --locked --extra trace --extra mining
+uv run --locked --no-sync pytest -q tests/test_trace_candidates.py tests/test_trace_comparison.py tests/test_trace_results.py tests/test_trace_mining.py tests/integration/trace_candidates.py --junitxml=.test-tools/trace-p2/junit-host.xml
+uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/trace-p2/pr-checks.json
+```
+
+默认核心测试的替身成功不替代真实库/数据库证据；GitHub PR CI 的实际候选 SHA、Run 与结果另记于交付 PR。
+本轮不声称获得完整任务/检查身份、条件分支或因果 DAG；具体 Handler、质量及跨运行比较证据仍待选定目标后补充。

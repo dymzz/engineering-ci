@@ -91,6 +91,10 @@ project/mine 的 --record 允许显式写派生结果；没有该选项的旧文
 已有文件拒绝覆盖；选新路径导出无需重算。没有确认数据库提交时，不把结果记为已登记。
 详细命令见 [CLI 参考](../../guides/cli-reference.md#归档查询与结果恢复)。
 
+已有结果的 mine compare 与 mine candidates 文件模式均不需要 mining/trace/telemetry extra，
+也不调用发现算法；ID 模式只使用既有 trace 归档依赖。候选的范围和审查条件见
+[实施方案](../architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
+
 ## 可选 OTLP 出口与本地 Jaeger
 
 ```powershell

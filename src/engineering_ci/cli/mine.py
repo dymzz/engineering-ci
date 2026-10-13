@@ -21,7 +21,14 @@ def main(argv=None):
         from .mine_compare import main as comparison_command
 
         return comparison_command(args[1:])
-    parser = argparse.ArgumentParser(description=__doc__)
+    if args and args[0] == "candidates":
+        from .mine_candidates import main as candidate_command
+
+        return candidate_command(args[1:])
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Existing-result operations: mine compare --help; mine candidates --help",
+    )
     parser.add_argument(
         "projection", nargs="?", help="Content-free JSON produced by trace project"
     )

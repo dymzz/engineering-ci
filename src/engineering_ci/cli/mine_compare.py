@@ -5,55 +5,12 @@ import json
 from contextlib import ExitStack
 from pathlib import Path
 
-from ..mining.comparison import AnalysisEvidence, compare
+from ..mining.comparison import compare
 from ..tracing.config import TraceConfigurationError, load_config
-from ..tracing.results import canonical, digest, prepare_result
+from ..tracing.results import canonical
 from ..tracing.store import ArchiveError
-from .trace import load_document, write_new_file
-
-
-def file_evidence(path, projection_path):
-    _, analysis = load_document(path)
-    projection = None
-    if projection_path:
-        raw, projection = load_document(projection_path)
-        prepare_result(projection, "0" * 64)
-        if digest(raw) != analysis.get("input_sha256") or (
-            projection["projection_id"],
-            projection["snapshot_id"],
-        ) != (analysis.get("projection_id"), analysis.get("snapshot_id")):
-            raise ArchiveError(
-                "identity_conflict",
-                "Analysis does not match its original projection bytes",
-            )
-    return AnalysisEvidence(analysis, projection, "file", projection is not None)
-
-
-def registered_evidence(catalog, identifier):
-    metadata = catalog.result(identifier)
-    if metadata["kind"] != "analysis":
-        raise ArchiveError(
-            "invalid_input", "Comparison requires registered analysis results"
-        )
-    analysis = json.loads(catalog.document(identifier))
-    projection = json.loads(catalog.document(metadata["parent_result_id"]))
-    prepare_result(analysis, metadata["input_digest"], origin="file")
-    prepare_result(projection, "0" * 64)
-    if (
-        (analysis["analysis_id"], analysis["projection_id"], analysis["snapshot_id"])
-        != (
-            metadata["result_id"],
-            metadata["parent_result_id"],
-            metadata["snapshot_id"],
-        )
-        or projection["snapshot_id"] != metadata["snapshot_id"]
-        or digest(canonical(projection))
-        != catalog.result(metadata["parent_result_id"])["document_digest"]
-    ):
-        raise ArchiveError(
-            "archive_corrupt", "Registered projection association is unavailable"
-        )
-    return AnalysisEvidence(analysis, projection, metadata["origin"], True)
+from .mine_inputs import file_evidence, registered_evidence
+from .trace import write_new_file
 
 
 def main(argv=None):
