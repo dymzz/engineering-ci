@@ -216,6 +216,8 @@ def execution_pair(baseline, candidate, catalog, root):
 
 def _snapshot(directory, catalog, root):
     """Join a stable checkpoint while the existing execution lock is held."""
+    from .capabilities import call_reference
+
     state = Runtime(catalog).status(directory)
     workflow, provenance, plan = load_generation(directory / "workflow.json", catalog)
     definitions = {step["id"]: step for step in workflow["steps"]}
@@ -379,6 +381,7 @@ def _snapshot(directory, catalog, root):
             if prior
             else None,
             "approved": False,
+            "capability_call": call_reference(directory, state),
             "optimization_verified": False,
             "llm_used": False,
             "next_actions": [["engineering-ci", "workflow", "status", str(directory)]],

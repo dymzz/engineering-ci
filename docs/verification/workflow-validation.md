@@ -177,3 +177,61 @@ current_input_validity=not_checked。原检查点摘要与 run 回执一致，�
 这是一组匹配的历史控制样本。资源排序校正及规则版本修订后的最终代码由相关测试和当前
 PR CI 验证，不能用校正前基线的通过记录声称当前输入已通过。报告也不替代 PR/Release 门禁。
 本轮没有认证整体 Agent 决策、速度、费用、故障率或发布资格；P2 批准/激活/反馈尚未实施。
+
+## P2：已批准能力的选择、调用和反馈（v0.6.4）
+
+本轮基于已 Squash 合并的 PR #27，使用原 checkout 的 codex/workflow-capabilities。
+四处项目版本为 0.6.4；能力 pr-check-reuse 的版本为 1.0.0，两者身份独立。
+规范和操作见[能力契约](../architecture/workflow-optimization/generated-workflows.md#能力批准版本选择与执行反馈)
+及[用户指南](../../guides/generated-workflows.md#批准启用选择与调用能力)。
+
+相关回归 200 项通过；新增能力最终测试 23 项通过，包括真实 pytest assert 失败退出 1、
+批准不启用、显式切换/停用、拒绝损坏/修改证据、部分写入恢复、锁、冻结上下文、输入改变
+只重跑相关项、操作 JSON 不覆盖目录索引、预算及反馈失败不改原退出码。其他原检查替身
+按测试注明，没有把模拟五项检查计为真实 Dagger 执行。
+
+宿主 PostgreSQL 显式集成 12 项通过：组件测试 schema 的 1/2→3 迁移、旧字节保持、原
+projection/analysis 目录兼容、反馈真实写入与读回、同身份重复写入、内容冲突、非法敏感
+字段拒绝。默认 CI 不连接宿主数据库，不跳过必需核心测试；手动入口为：
+
+```powershell
+uv run --locked --extra trace --extra mining pytest -q tests/integration/workflow_feedback.py tests/integration/trace_catalog.py
+```
+
+### 实际 CLI、Dagger/Linux 与反馈链
+
+实际控制样本保留在 `.test-tools/harness-p2/`：
+
+| 事实 | 实测结果 |
+| --- | --- |
+| 完整 PR 基线 | 五项原门禁通过；JUnit 1366 个用例，无失败/错误/跳过 |
+| 受控候选 | 同输入五项通过，原检查提交 0、复用 5 |
+| 批准/启用/发现/选择 | 各自返回独立动作；未自动启用或选择较新版本 |
+| 能力 call | 原五项通过、提交 0、复用 5，生成真实安全反馈 |
+| 停用后新 call | 退出 3，没有开始新检查 |
+| 停用后恢复原 call | 同一 execution/approval，退出 0；十条累计观察、提交仍 0 |
+| 实际调用反馈归档 | 组件测试 PostgreSQL schema 3；两次写入只有一条，读回原字节与摘要一致 |
+
+实际 definition 为 `97bcfa370aeb680dca4933c9f27b9d63d61797dbd65ae0f9a657ef60c181959d`；
+baseline `ff810223f52643ac8b1259fb7ab1fb82`，candidate `392f78c101394a58a078a6ec1e72ec75`，
+call `88051221bb734e0887987fac7d87d777`。比较 ID
+`d35ae9a14b81bb177b8d733d8bf7e91a371cfa145c88622c3575cc1fef81c927`，仍只认证
+check-submission-reuse，原 P1 文件 approved=false。
+
+显式验收 store 为 `.test-tools/harness-p2/final-capabilities`；approval
+`f02d6dd9f6c43fee9f650ae8840f9e33583ec1071d9c07fa38e47e771f393d0d`。
+它记录验收命令，不声称经过额外人工批准或签名认证。反馈
+`87f03cdc50c6668ba20f53ace6b7dd08f3293adfd89ab6b394d0da74e368a2e8` 已在真实宿主的
+唯一组件测试 schema 归档并读回；测试 namespace 清理，生产归档 schema 未迁移。
+原基线与候选状态摘要未改变，反馈操作新增检查提交为 0。
+
+`acceptance.json` 汇总实际身份、逐项指标和 PostgreSQL 读回事实；原命令 JSON、日志和
+完整回执仍独立保留。中间失败验证也保留：SQL 模板量词转义/夹具/可选 SDK 安装问题，
+以及新测试误读原分页返回字段；按实际失败修正，没有删除负向用例或改原失败传播。
+审查补齐了批准后到 Runtime 冻结源之间的竞态核验，以及新命令在编码预算前的身份设置。
+
+这些是当时相同输入的控制样本，不是后续代码的无条件通过记录。最后预算修订由当前
+能力测试与 PR CI 验证；旧样本不能替代当前输入、PR SHA 或正式 Release 门禁。
+没有认证速度、费用、整体 Agent 效果或任意任务成功。自动调优/跨版本试验、远端能力
+分发、签名身份和 PostgreSQL 反馈接入旧 trace query 尚未实施。旧 schema 2 客户端不能
+读取 schema 3，切换 Git 分支不会回退数据库，正式归档迁移需显式操作。
