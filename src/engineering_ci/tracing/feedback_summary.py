@@ -215,6 +215,12 @@ def summarize(values, scope):
 
 def query_summary(store, request):
     """Read one explicit selection in a single repeatable read; reject missing or corrupt members."""
+    values, scope = read_selection(store, request)
+    return summary_result(values, scope, request.max_bytes)
+
+
+def read_selection(store, request):
+    """Share verified input retrieval with review; never use saved totals as source facts."""
     request.validate()
     with store.transaction(readonly=True) as cursor:
         store._owned(cursor, required_version=3)
@@ -241,15 +247,20 @@ def query_summary(store, request):
                 "An explicitly selected feedback snapshot is missing; no partial total was produced",
             )
         values = [checked_document(row) for row in rows]
+    return values, scope
+
+
+def summary_result(values, scope, max_bytes):
+    """Reconstruct the complete original summary, including its requested output budget."""
     result = summarize(values, scope)
     result["budget"] = {
-        "max_bytes": request.max_bytes,
+        "max_bytes": max_bytes,
         "unit": "utf8_bytes_including_newline",
     }
     size = len(encode(result))
-    if size > request.max_bytes:
+    if size > max_bytes:
         failure = budget_error(
-            Query("evidence", max_bytes=request.max_bytes),
+            Query("evidence", max_bytes=max_bytes),
             required_bytes=size,
             reference=result["summary_id"],
         )

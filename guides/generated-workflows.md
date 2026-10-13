@@ -397,6 +397,40 @@ if ($ids.Count -gt 0) {
 再次查询，不重跑原执行。不把多页结果直接累加，因为同一执行可能跨页重复出现。
 真实来源、过滤和覆盖边界见[汇总契约](../docs/architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)。
 
+## 关联原比较与执行证据进行再审查
+
+使用上一节保存的 `.test-tools/feedback-summary.json` 和前文实际 call 回执。不要手填或
+修改汇总计数；审查会从同一 PostgreSQL 归档重算，并核验原比较及 call 文件：
+
+```powershell
+$call = Get-Content .test-tools/capability-call-action.json -Raw | ConvertFrom-Json
+uv run --locked --extra trace engineering-ci workflow feedback-review --summary .test-tools/feedback-summary.json --store $call.store --execution $call.execution --max-bytes 16384 --json .test-tools/feedback-review.json
+if ($LASTEXITCODE -ne 0) { throw '审查输入或输出失败，按诊断保留原来源处理' }
+$review = Get-Content .test-tools/feedback-review.json -Raw | ConvertFrom-Json
+$review.items | Select-Object capability, enabled_at_read, recommendation, reasons, trial, feedback
+```
+
+选择多个 call 时重复 `--execution`，最多 32 个，使用其各自实际回执中的 execution 路径。
+没有提供执行文件不会猜目录；原证据不可用时返回调查依据。自定义 tracing 配置与汇总
+使用同一个 `--config FILE`。能力停用不妨碍历史审查，也不会因此被重新启用。
+
+retain_evidence 只表示原试验与选中证据的历史依据可保留，不等于当前源码已通过或
+能力已启用。new_controlled_trial 表示记录中的输入/工具/参数/环境已不匹配；由人决定
+是否另做受控试验，本命令不启动。investigate 保留原失败、缺口或证据冲突；先查看
+feedback 内的原结果、execution_scope_at_read 和 differences，不删除旧报告使其“通过”。
+
+如果原执行已经恢复，v2 可核验保留的 Attempt 行，但旧 state 未保存就明确 not_available；
+旧 v1 只在原完整 Scope 仍匹配时可核验。报告成功和原检查成功是两个状态。
+选择与调用仍按前文 capabilities → select → call，并依赖显式授权及当前准入。
+
+trial.status=policy_changed 时查看 recorded_policy_sha256/current_policy_sha256 和 follow_up；
+先审查当前 Pipeline 与旧定义的差异，再由人决定新定义/受控试验，不修改旧策略摘要来
+“恢复准入”。能力目录仍标记 active 也不表示现有策略可用。
+
+汇总与数据库不一致时，保持原反馈 ID，先用上一节 feedback-summary 重查，不重跑检查。
+budget_exceeded 只增加 max-bytes 后重查；输入文件、能力目录及 baseline/candidate/call
+文件均禁止作为 JSON 输出位置。边界见[再审查契约](../docs/architecture/workflow-optimization/retrieval.md#已归档反馈的再审查依据p3-3)。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

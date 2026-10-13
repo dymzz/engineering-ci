@@ -72,7 +72,7 @@ def approve(store, report, baseline, candidate, name, version, catalog, root):
     return store.publish(value, workflow, provenance, verified)
 
 
-def admission(approval, directory, catalog, root):
+def verified_comparison(approval, directory, catalog, root):
     """Historical evidence admits this capability; each original tool still checks current inputs."""
     workflow, provenance, _ = load_generation(directory / "workflow.json", catalog)
     verify_target(workflow, provenance)
@@ -93,6 +93,12 @@ def admission(approval, directory, catalog, root):
         raise WorkflowError(
             "Approved evidence is changed, unavailable or no longer admitted; review a new trial"
         )
+    return result
+
+
+def admission(approval, directory, catalog, root):
+    """Retain the existing call admission contract using the same comparison verification."""
+    verified_comparison(approval, directory, catalog, root)
 
 
 def create_call(store, name, version, destination, catalog, root):

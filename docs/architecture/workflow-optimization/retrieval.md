@@ -132,7 +132,7 @@ limit 默认 20、范围 1–100；max-bytes 默认 16384、范围 1024–167772
 查询对象是反馈快照，不是唯一调用或完整任务。恢复前后累计 5/10 条观察的两份快照都
 保留，不能相加为 15 次调用；collection_coverage=unknown，不推断整体成功率。
 P3-1 不聚合/去重、比较效果、选择/停用能力或宣称速度/费用收益。P3-2 覆盖关系核验、
-汇总由下节单独入口执行；P3-3 再审查依据仍待实施。操作见[反馈查询](../../../guides/generated-workflows.md#查询已归档反馈)。
+汇总和 P3-3 再审查依据由下文单独入口执行。操作见[反馈查询](../../../guides/generated-workflows.md#查询已归档反馈)。
 
 ## 已归档反馈的覆盖与汇总（P3-2）
 
@@ -169,3 +169,48 @@ collection_coverage=unknown，统计范围仅 explicit_feedback_snapshot_selecti
 则 budget_exceeded/非零并给出摘要引用；不删掉执行组后输出一个不完整总数。增加预算
 只重查同一证据，不重跑检查。--json 只能覆盖同类汇总回执，原反馈和查询回执不覆盖。
 操作见[反馈汇总指南](../../../guides/generated-workflows.md#核验覆盖并汇总反馈)。
+
+## 已归档反馈的再审查依据（P3-3）
+
+`workflow feedback-review` 消费已成功生成的 P3-2 汇总 JSON，以及明确指定的现有能力
+目录和最多 32 个 call 执行目录，不扫描目录猜测关联。沿用同一 tracing 配置，从数据库
+重读原 1–32 个明确反馈并重算汇总；完整规范 JSON 摘要必须与输入文件一致。编辑过的
+计数、未知字段、缺记录、错误来源或旧协议均不能成为审查依据。读取过程中汇总文件
+改变也非零。数据库仍只读，不迁移、归档或用文件内统计替代真实来源。
+
+复用 CapabilityStore 的身份/定义校验和原 admission 的比较核验：批准中的 baseline/
+candidate Scope、比较内容摘要与 ID、原质量门禁和 check-submission-reuse 范围必须匹配。
+不再实现一套比较器，也不运行两个源执行。能力 enabled_at_read 是目录读取时状态；
+已停用仍可审查历史，但不会因报告而启用。
+
+目标 Pipeline 策略变化单独报告 trial.status=policy_changed、旧/新策略摘要和
+follow_up=review_new_definition_and_controlled_trial，建议 investigate。这不是文件损坏，
+也不能把原比较冒充当前准入；需由人确认新定义和受控试验。enabled_at_read=true 不代表
+旧定义仍可准入，实际 select/call 继续执行原策略检查，不放宽 admission。
+
+每份反馈关联显式 call 目录的冻结绑定（能力/批准、generation/definition、catalog_revision
+及 store）。完全相同 Scope 还要匹配原结果、metrics 与 v2 索引；v1 也可按此核验完整
+同一时点。较旧 v2 仅在当前保留的每个原 Attempt 行一致时标记 verified_retained_attempt_rows，
+historical_state_validation=not_available，不伪造旧 state 文件。较旧 v1 无完整匹配 Scope
+则保持不可核验。报告保留 execution_scope_at_read，使读取事实可追溯。
+
+核验到的实际 call 原检查还必须通过既有质量 gate，并与原 candidate 的完整身份、
+输入/工具/参数/环境及可选 executor 身份匹配。双方原生执行共同没有 executor 不算
+变化；必需身份缺失不能成为已知可比事实。Scope/索引核验不替代原工具质量结果。
+
+返回三种确定性的人工审查依据：
+
+- retain_evidence：原比较和选中 call 证据成立，所记录上下文匹配；只表示保留历史依据。
+- new_controlled_trial：证据成立，但 call 的已记录输入、工具、参数或环境不同；需要人工决定新试验。
+- investigate：原失败、缺证据/身份、内容/绑定冲突、不可核验快照或原质量门禁不成立；保留原因和原结果。
+
+status=reviewed/exit_code=0 只表示报告生成；decision_required=true，当前工作区输入仍
+not_checked，整体历史覆盖 unknown。不得据此自动 approve/activate/deactivate/call、
+放行 CI、调优或发布。原失败/非零不被后续成功或 retain_evidence 改写；报告不宣称新的
+优化收益、速度、成本或整体 Agent 效果。llm_used=false，规则版本为 workflow-feedback-review/1。
+
+review_id 绑定源汇总内容摘要、读取时能力目录摘要和明确校验结果；不包含时钟或日志。
+--max-bytes 预算覆盖完整 UTF-8 JSON，超限整份非零，不丢组。--json 只覆盖同类审查回执，
+不得覆盖输入汇总或进入能力目录、call 目录、原 baseline/candidate，即使失败回执也一样。
+锁与校验限定读取时点，事后输入改变不产生当前放行；能力选择和原检查继续独立准入。
+命令见[再审查指南](../../../guides/generated-workflows.md#关联原比较与执行证据进行再审查)。

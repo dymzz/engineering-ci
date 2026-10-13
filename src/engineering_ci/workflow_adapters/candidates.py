@@ -7,6 +7,17 @@ from ..workflow_core.documents import WorkflowError
 from .checks import tool_id
 
 
+class TargetPolicyChanged(WorkflowError):
+    """Keep policy drift distinct from missing or corrupted original evidence."""
+
+    def __init__(self, recorded, current):
+        self.recorded_policy = (
+            recorded.get("policy_sha256") if isinstance(recorded, dict) else None
+        )
+        self.current_policy = current["policy_sha256"]
+        super().__init__("Target policy changed; generate and review a new definition")
+
+
 def selected_source(evidence, candidate_id):
     """Reuse the verified candidate admission; mapping stays an explicit user choice."""
     return bind(evidence, candidate_id)["source"]
@@ -36,8 +47,7 @@ def verify_target(workflow, provenance, *, pipeline=PIPELINE):
     """Reject a changed policy before invocation; legacy definitions stay readable."""
     if "target" not in provenance:
         return "unavailable"
-    if provenance["target"] != profile_target(workflow, pipeline=pipeline):
-        raise WorkflowError(
-            "Target policy changed; generate and review a new definition"
-        )
+    current = profile_target(workflow, pipeline=pipeline)
+    if provenance["target"] != current:
+        raise TargetPolicyChanged(provenance["target"], current)
     return "matched"

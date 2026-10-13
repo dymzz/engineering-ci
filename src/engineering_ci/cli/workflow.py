@@ -115,7 +115,7 @@ def main(argv=None):
             help="Save the operation JSON separately from original tool output",
         )
     options = parser.parse_args(argv)
-    if options.command in {"feedback-query", "feedback-summary"}:
+    if options.command in {"feedback-query", "feedback-summary", "feedback-review"}:
         from .workflow_feedback_query import main as query_main
 
         return query_main(options, ROOT)
