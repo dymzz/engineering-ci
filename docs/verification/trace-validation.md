@@ -1,6 +1,6 @@
-# 原始轨迹阶段验收
+# 轨迹归档与分析阶段验收
 
-本记录对应 v0.6.0 功能分支的阶段验收，不代表正式发布或自动优化闭环已经完成。
+本记录汇总 pre-0.6.0、v0.5.5–v0.5.7 的阶段验收及 v0.6.0 版本准备，不代表正式发布或自动优化闭环已经完成。
 基线为 v0.5.4，提交 f1d7d31014417468fa7299be27a86f0a57b47521。
 
 ## 实际来源与数据库
@@ -74,6 +74,9 @@ Ruff Lint、Ruff Format、四处 v0.6.0 元数据/Workflow 绑定、锁文件均
 文档相对文件链接核对通过。
 
 ## 未完成范围
+
+本节为 P0 首轮结束时的历史范围。后续 Rust4PM、Linux SDK/算法专项及 PR CI 已在下文各阶段验收；
+PM4Py 执行依赖已移除，其历史结果保留。正式发布事实仍须由对应 Release/Manifest 确认。
 
 Linux 核心容器回归已通过；Linux 可选 OTel/PM4Py 专项、真实 PR CI 和正式 v0.6.0 Release 尚未验收。
 服务器掉电、备份恢复、真实提交响应丢失、公开稳定 rollout 协议兼容性未验证。
@@ -210,3 +213,30 @@ uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/tr
 
 默认核心测试的替身成功不替代真实库/数据库证据；GitHub PR CI 的实际候选 SHA、Run 与结果另记于交付 PR。
 本轮不声称获得完整任务/检查身份、条件分支或因果 DAG；具体 Handler、质量及跨运行比较证据仍待选定目标后补充。
+
+## v0.6.0 版本准备
+
+2026-10-13，PR #23 已合并，基线为 a91fc9303e3b16529efc8b86b3b95500961593c6。
+用户确定按已完成能力准备 v0.6.0，不增加 LLM 或固化执行。使用同一 checkout 的
+codex/prepare-release-v0.6.0 分支；源代码、依赖及配置契约保持不变，四处元数据一致为 0.6.0。
+
+阶段实测证据继续按上文原样保留。本轮没有重新读取原始会话、导入/投影、挖掘、
+发送相同 OTLP 数据或连接数据库进行迁移，也没有将历史通过记录直接冒充当前通过。
+
+```powershell
+uv run --locked --no-sync engineering-ci version set v0.6.0
+uv run --locked --no-sync engineering-ci checks pr --reuse --json .test-tools/trace-v060/pr-checks.json
+uv build --wheel --out-dir .test-tools/trace-v060/dist
+```
+
+独立结果文件从 P2 检查证据起步，原 P2 记录未覆盖。入口实际核验输入、工具、环境及原证据，
+复用 Ruff Lint、Format、pytest（原实际 1067 tests、105 subtests），仅在 Dagger/Linux 执行 version/lock。
+四处 v0.6.0、Pipeline/Workflow 绑定与锁文件检查通过，五项 input_stable 均为 true。
+此处的 pytest 数量是原执行证据，不能解释成本轮新增执行了同样测试。
+
+v0.6.0 wheel 构建及内容检查通过：版本、trace/mining/telemetry extras、新模块与迁移 001/002 正确，
+没有打包本地原始/派生数据、凭据或上游实现。受影响文档文件及标题链接检查通过。
+新 PR 的实际 CI 会使用新提交运行并另记于 PR；上述复用不替代 GitHub 门禁。
+本轮未启动 release.yml，未创建 Tag、Draft Release 或正式 Release。
+正式发布的 Run/Attempt/SHA、完整检查及 Manifest 仍须人工合并后从既有 publish 流程取得，
+不能以此版本准备记录认定 v0.6.0 已发布。

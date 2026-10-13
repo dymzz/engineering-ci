@@ -86,7 +86,7 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 | 原脚本 | 当前调用 |
 | --- | --- |
 | checks.py | `uv run --locked engineering-ci checks pr`，支持 ruff/tests/version/lock/inspect |
-| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.5.4 |
+| release_version.py | `uv run --locked engineering-ci version check` / show / set v0.6.0 |
 | manual_release.py | Workflow 内部 `python -m engineering_ci.workflow_actions release ...` |
 | release_manifest.py | Workflow 内部 `python -m engineering_ci.workflow_actions manifest ...` |
 | dependency_security.py | `uv run --locked python -m engineering_ci.tools.security ...` |

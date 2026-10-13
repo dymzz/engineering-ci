@@ -29,3 +29,21 @@ uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
 
 `--executor native` 可诊断原生 Windows；必需 Linux 测试
 被跳过时结果为 incomplete，不能用于交付准入。
+
+## 可选轨迹能力
+
+v0.6.0 在既有 CI 能力之外提供离线轨迹归档、标准投影、非 LLM 分析，以及可选 OTLP 出口和候选报告。
+基础安装与 release/download 不要求 PostgreSQL、Rust4PM 或 Jaeger；按实际需要安装：
+
+| 需求 | 安装及后续入口 |
+| --- | --- |
+| 宿主归档、查询、SDK 投影 | `uv sync --locked --extra trace`；[归档配置](../docs/configuration/tracing.md)与 [trace 命令](cli-reference.md#原始轨迹) |
+| 生成离线变体/DFG | `uv sync --locked --extra mining`；[标准化与分析](cli-reference.md#标准化与离线分析) |
+| 显式发送已有投影 | `uv sync --locked --extra telemetry`；[本地遥测](cli-reference.md#可选遥测与结果比较) |
+| 比较文件或生成候选 | 基础安装即可；[比较](cli-reference.md#可选遥测与结果比较)与 [人工审查](cli-reference.md#工作流候选与人工审查) |
+
+同时使用多个能力时，在同一 sync/run 命令中列出需要的各个 --extra；dev 组按开发需要保留。
+归档使用既有宿主 PostgreSQL 和 VESRYN_DATABASE，显式 trace init 才建立/升级专用 schema。
+当前已核对的来源是 Codex 原生 rollout 0.162.0-alpha.2；不扫描所有会话，不自动执行历史工具。
+能力范围与未实现事项见[版本设计](../docs/architecture/workflow-optimization/design.md#版本升级依据)，
+实测记录见[验证记录](../docs/verification/trace-validation.md)。
