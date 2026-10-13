@@ -167,6 +167,10 @@ uv run --locked engineering-ci checks pr --reuse --json .test-tools/checks/pr.js
 修复导致输入变化时仅刷新受影响项；确需在相同输入下重试时，去掉 `--reuse` 或独立运行对应检查。
 publish 使用同一逐项复用方式。查询仅比较身份，复用仍做末尾一致性核验，执行期间输入变化不能放行。
 
+显式固化的 PR Handler 可通过 `checks --binding FILE --reuse --json REPORT` 使用。
+它仍选择完整 `pr` 并调用同一执行器；JSON 的 `handler_binding` 仅关联候选和绑定，
+不参与通过判定。绑定创建及失效规则见[Handler 固化](workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+
 交付沿用已有报告的 Coverage 开关和 JUnit 输出位置，不因输出选项回到默认值而重跑
 pytest。只接受既有类型化输出参数；检查选择和参数定义仍来自完整 `pr` Profile，
 每项证据都必须通过当前输入与执行环境核验。

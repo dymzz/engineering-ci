@@ -21,6 +21,12 @@
 schema_version=1；缺失、非法配置或未知实现明确失败，不静默使用另一套默认定义。
 PR profile 保留既有五项检查。工具的实际版本和当前输入仍需执行时核验，配置不能作为通过证据。
 
+显式 Handler 绑定引用当前已校验配置的 canonical JSON 摘要和完整 `pr` 顺序，
+不复制 TOML 中的工具、命令、权限或检查定义。配置变化后重新生成绑定；实际检查结果仍逐项核验。
+绑定解析模块参与当前 `inputs.common`，使相关执行定义变更使原结果失效。
+绑定不是新的 Pipeline 配置段，不改变 schema 1 或 Actions Job DAG；契约见
+[Handler 固化](../architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+
 ## 操作契约与编排边界
 
 `check_operations.py` 集中注册五项已实现的基础检查，提供 argv 构造、最小工具依赖和必要输入。

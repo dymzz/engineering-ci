@@ -240,3 +240,77 @@ v0.6.0 wheel 构建及内容检查通过：版本、trace/mining/telemetry extra
 本轮未启动 release.yml，未创建 Tag、Draft Release 或正式 Release。
 正式发布的 Run/Attempt/SHA、完整检查及 Manifest 仍须人工合并后从既有 publish 流程取得，
 不能以此版本准备记录认定 v0.6.0 已发布。
+
+### v0.6.0 正式发布后的只读确认
+
+用户完成正式发布后，本轮只读核对 [v0.6.0 Release](https://github.com/dymzz/engineering-ci/releases/tag/v0.6.0)：
+PR #24 的合并提交为 `e4fc1cdd98140e380e5dbec401290bc87de79f15`，Release 非 Draft，
+发布时间为 2026-10-13 01:53:48 UTC。实际 Manifest 关联
+[Run 38333998282](https://github.com/dymzz/engineering-ci/actions/runs/38333998282)、Attempt 1、
+workflow_dispatch、release.yml 和同一 SHA，result=passed。
+
+下载 [release-manifest.json](https://github.com/dymzz/engineering-ci/releases/download/v0.6.0/release-manifest.json)
+并核对实际 6044 字节与 GitHub Asset digest 一致：
+`2f42f9c3cfb9d7a561bc1fc8c5583665976a7217a5feb8c5659d08891137e9d5`。
+这是已有正式发布的身份/Asset 只读确认，没有再次启动发布流程，
+也没有将下载成功当成本轮重新执行了全部发布检查。
+
+## v0.6.1：首个 PR 检查 Handler 绑定
+
+用户确定首个目标为基础 PR 检查的同输入复用，以已发布 v0.6.0 main 为基线，
+在原 checkout 的 codex/pr-check-handler-v0.6.1 分支交付四处 0.6.1 元数据、代码与文档。
+
+实际选定候选 `5de6ca846d52575adae5313249a8ad45f57e03fd34b630563b901de91c098cb4`：
+连续 command_execution 相邻对出现 9 次、涉及 5 个 case。
+只读使用上文登记的 Rust4PM 分析及父投影；完整性仍为 unknown。
+没有重新读原始 Codex 实录、运行 mining 或 SDK、写数据库或发送 OTLP。
+
+```powershell
+uv run --locked --no-sync engineering-ci mine bind --analysis-result 1a730b2a683b402ef06ce4eb1073505886ec4a4183413f94b81d5b217b6a66d0 --candidate 5de6ca846d52575adae5313249a8ad45f57e03fd34b630563b901de91c098cb4 --profile pr --out .test-tools/handler-v061/pr-check-reuse.json --json
+uv run --locked --no-sync engineering-ci checks --binding .test-tools/handler-v061/pr-check-reuse.json --reuse --json .test-tools/handler-v061/pr-checks.json
+```
+
+生成绑定 `a54203a4b8d97687b08baa3c1d68f90b2658c84d926fd9b62731b6b125b23ad0`，
+固定完整五项 Profile，Pipeline SHA-256 为
+`ac38cbd6b63a749490686e63855a304aefbb3013064acfd6a97aadbff9b4145a`。
+产物和实际检查 JSON 保留在 `.test-tools/handler-v061/`，不提交派生来源数据。
+mapping_basis=explicit_target_selection、historical_check_identity=unavailable、optimization_verified=false；
+绑定成功不表示历史检查冗余已证明。
+
+Host 局部故障回归：160 passed（原检查、Dagger 协议替身、候选及新增 26 项绑定测试）。
+使用真实 pytest 和原执行器，以外部进程替身覆盖拒绝无关候选/缺关联、模型篡改、部分 Profile、
+任意 Handler/命令、配置变更、内容损坏、失败复用、缺工具、运行中输入改变、输出冲突及关联写入失败。
+这些替身结果与下面实际 Dagger/Linux 执行分别记录。
+
+首次实际绑定调用：Ruff Lint/Format、pytest、version、lock 全部通过。
+Dagger CLI/Engine 1.0.0-beta.16、Linux、锁定 uv 0.12.23、Ruff 0.16.10 与 Python 3.14；
+核心 pytest 为 1093 passed、105 subtests passed，必需测试没有跳过，四处元数据和 Workflow 绑定一致。
+JSON/JUnit 计数为 1198，包含这些 subtests，不能当成额外执行了 1198 个普通测试。
+
+同一命令再次调用：五项都 reused=true、executed_this_invocation=false、当前输入通过；
+核验原始 Dagger 文件与环境，未向 Dagger 提交任何检查执行。
+这证明受控同输入复用可用，不是历史成本节省或跨运行优化结论。
+
+真实负向验证在原 checkout 临时新增 `tests/test_handler_negative_probe.py`，只含明确失败的 assert。
+使用同一绑定、独立 negative-checks.json 和 `.test-tools/handler-v061/negative-junit.xml`：
+实际 pytest 为 1 failed、1093 passed、105 subtests passed，工具及宿主入口都返回 1。
+虽然 Dagger 文件导出的外层 Trace 为 PASSED，报告仍为 failed，不以导出完成代替检查通过。
+相同负向输入再次调用：五项均复用，其中 pytest 仍 failed/exit 1，当前通过为 false，
+没有重新提交检查。失败条目的统计沿用原契约，由保留的 JUnit 提供，不补造 JSON counts。
+
+finally 仅移除本轮创建的探针；恢复原正向输入后，原 pr-checks.json 五项重新匹配并全部复用通过。
+负向报告、JUnit 和原始文件摘要独立保存，没有覆盖正向报告或修改测试预期。
+上述验证没有触发 GitHub Workflow、Merge、Tag 或 Release；PR 远端结果另行记录。
+
+### 范围外已复现的输入核验缺口
+
+在选择本轮目标前，使用内存中的受控数据确认两个已有集成问题，未修改来源或上游库：
+
+- `mining.analysis.analyze` 的直接文件输入路径可以接受缺少快照/投影等完整身份字段的投影，
+  真实 Rust4PM 发现返回 passed，但 snapshot_id/projection_id 为 null。后续应在发现前校验原投影契约。
+- `mining.comparison.compare` 可以在双方声明相同但实际投影不存在的成员时返回 results_equivalent=true。
+  后续应将声明成员与实际投影逐项核对，继续区分结果差异和不可比较。
+
+本轮绑定使用候选的完整元数据及 actual projection/model 核验，不使用上述宽松结果作为执行准入，
+不调用 comparison，也不将它的等价结论作为检查通过。上述问题保留为后续输入契约加固事项，
+不记成 Rust4PM/OTel 的上游问题或已完成修复。

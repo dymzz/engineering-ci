@@ -1,6 +1,6 @@
 # Trace-Driven Workflow Optimization Loop — 实施方案
 
-本文保留 pre-0.6.0 的设计范围、架构边界和交付步骤。前期代码随 PR #20 合并；过渡交付分别为 v0.5.5 的 P0 查询/关联与 Rust4PM、v0.5.6 的 P1 遥测/比较、v0.5.7 的 P2 候选与审查依据。当前按用户确定的已完成范围准备 v0.6.0，尚未正式发布。各阶段按下文实施；已完成证据见[轨迹验收](../../verification/trace-validation.md)。
+本文保留 pre-0.6.0 的设计范围、架构边界和交付步骤。前期代码随 PR #20 合并；过渡交付分别为 v0.5.5 的 P0 查询/关联与 Rust4PM、v0.5.6 的 P1 遥测/比较、v0.5.7 的 P2 候选与审查依据。v0.6.0 已正式发布；v0.6.1 的首个固化目标为基础 PR 检查的同输入复用。各阶段按下文实施；已完成证据见[轨迹验收](../../verification/trace-validation.md)。
 基线为正式 v0.5.4，提交 `f1d7d31014417468fa7299be27a86f0a57b47521`。
 P0-0 至 P0-4 已实现并获得分阶段实测证据，版本元数据在功能 PR 交付前统一准备。
 归档存储复用本地宿主 PostgreSQL，由 `VESRYN_DATABASE` 提供连接配置；不保留 SQLite 后端或回退。
@@ -506,7 +506,7 @@ Jaeger 的内存视图、去重或更新不替代 PostgreSQL；不同投影复�
 
 用户确定本轮先交付候选与审查依据；以 PR #22 合并后的 v0.5.6 为基线。
 复用已有分析及实际输入投影，不重跑 mining、不扫描原始实录，也不启用模型请求。
-LLM 辅助和有具体目标后的 Handler 固化仍是后续可选步骤，不把候选报告交付称为完整 P2 固化完成。
+该阶段未实施 LLM 辅助或 Handler 固化，不把候选报告交付称为完整 P2 固化完成。
 
 `mine candidates` 输出有身份的 JSON 报告，文件模式校验原投影字节，ID 模式校验既有父关联。
 重用既有 case 准入规则，核对分析成员、排除记录、统计、variants/DFG 与实际投影一致，
@@ -530,3 +530,45 @@ optimization_verified=false、llm_used=false。审查须核对具体检查/动�
 报告没有数据库注册或迁移，复用已有文件输出与 CLI 退出契约；同一身份内容确定，既有文件拒绝覆盖。
 输入加载与 P1 比较共用 cli/mine_inputs.py，避免重复维护文件字节校验及数据库父关联。
 具体调用与审查步骤见 [CLI 参考](../../../guides/cli-reference.md#工作流候选与人工审查)。
+
+## 首个 Handler 固化：基础 PR 检查复用（v0.6.1）
+
+用户选定“基础 PR 检查的同输入复用”，绑定现有 `pr` Profile 中的五个注册操作。
+首个来源候选是已登记分析中连续两次 `command_execution` 的调查项。
+该投影没有命令、参数、检查输入或环境身份，不能证明历史上重复执行了 pytest，
+也不能证明某一步可删除。`mapping_basis=explicit_target_selection` 表示用户选择的新执行目标；
+`historical_check_identity=unavailable` 和 `optimization_verified=false` 继续保留。
+
+`mine bind` 从文件加实际原投影或登记分析 ID 加父关联读取已有证据，
+复用候选的成员、统计、模型核验；不读取原始会话、不调用发现算法或模型，不写数据库。
+必须显式给出候选 ID 和 `--profile pr`；仅接受连续 command 活动候选。
+文件输出拒绝覆盖，写入失败返回错误和新输出路径的继续命令。
+
+固化产物是小型 JSON 绑定，不是通用 Workflow IR：
+
+| 字段 | 契约 |
+| --- | --- |
+| `schema_version` / `binding_version` | `1` / `registered-pr-check-reuse/1`，与归档 schema 和项目版本分开 |
+| `source` | 候选报告/候选/分析/投影/快照 ID，候选和派生文档摘要、来源完整性 |
+| `target` | 固定 `checks.pr`、当前完整 Profile 顺序、归一化已校验 Pipeline 的 SHA-256、`matching_execution_identity` |
+| `mapping_basis` / `historical_check_identity` | 固定显式目标选择 / 历史检查身份不可用 |
+| `optimization_verified` / `llm_used` | 均为 false；不新增历史质量或收益结论 |
+| `binding_id` | 除自身外全部字段的 canonical JSON（含末尾换行）SHA-256 |
+
+候选再生成使用 limit=100、默认见证上限，报告 ID 反映这些参数；候选 ID 不受输出上限影响。
+未知字段、任意命令、导入路径、部分 Profile、其他 Handler、改写复用策略或伪造优化批准均拒绝。
+绑定读取限制 64 KiB；内容摘要检测修改，不是签名、身份认证或发布授权。
+执行时离线核验绑定和当前 Pipeline，不重新查询数据库。
+配置变化使绑定过期，需要用同一实际候选重新生成并审查；代码/工具/参数变化按原检查身份决定执行。
+
+`checks --binding FILE --reuse --json REPORT` 只解析为已有 `pr` 选择，
+仍调用原 native/Dagger 执行器，不增加检查注册表、重试循环、调度器或 FSM。
+JUnit、Coverage、executor 参数继续沿用原 CLI；它们参与原执行身份，不能被绑定忽略。
+结果不得覆盖绑定，JSON 增加 `handler_binding` 来源关联；实际状态仍取逐项原退出码与当前输入有效性。
+Dagger 原始执行、环境、JUnit 和文件摘要的读回保持有效，GitHub CI 和 Release 不读取绑定作为放行依据。
+
+首次调用正常执行或使用已经匹配的证据；再次调用只复用匹配项，保留 failed/incomplete 状态。
+修复或相关输入变化后重新执行受影响项，执行中变化仍为 stale；不自动删测试。
+如最终来源关联保存失败，保留已经生成的检查报告及非零工具退出状态，成功检查返回 3 表示关联未保存。
+进程在最终关联写入前停止时，报告可能只有检查事实；再次用同一绑定和报告继续，先核验事实再补关联。
+本轮只证明受控 PR 检查复用路径，不声称已验证历史冗余、跨运行节省或全自动优化循环。

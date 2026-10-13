@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.0"
+version = "0.6.1"
 requires-python = ">=3.14"
 dependencies = ["dagger-io", "packaging>=24.2"]
 

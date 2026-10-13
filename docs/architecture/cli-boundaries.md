@@ -11,7 +11,8 @@ scripts/release.py verify → release/verification.py → GitHub GET（已有 Ru
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
 engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
-engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 非 LLM 分析及已有结果比较）
+engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 分析、比较、候选及显式 Handler 绑定）
+engineering-ci checks --binding → 绑定契约核验 → checks.py（完整 pr，原 native / Dagger 执行器）
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
