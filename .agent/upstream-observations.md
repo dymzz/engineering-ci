@@ -23,3 +23,14 @@
 - 同文件还验证 401/403、307 不跳转及畸形正文；SDK 状态不作为后端持久化或业务成功证据。
 - 当前处理：继续复用官方编码、HTTP 和有限重试；用官方 Protobuf 消息读取接收确认，不复制上游实现或修改库。
 - 未搜索或提交上游 Issue/PR，未开展额外上游调查。
+
+## Propel / SQLx：Windows PostgreSQL 本地化错误无法解码
+
+- 状态：用户实际桌面操作报告了协议错误，宿主配置已只读核实；未独立复现 SQLx 连接，未认定为新的上游 Bug。
+- 场景：Propel Extraction Blueprint 连接已有宿主 PostgreSQL，尚未发现表。
+- 用户错误：Postgres protocol error (reading ErrorResponse)，Postgres returned a non-UTF-8 string for its error message；其后改用同一 URI 报 pool timed out while waiting for an open connection。
+- 宿主证据：server/client encoding=UTF8；lc_messages=Chinese (Simplified)_China.936；Psycopg 连接同一数据库成功；ssl=off，1 个客户端连接，max_connections=100，角色/数据库连接限额=-1。
+- 分类：已观察到的错误诊断/本地化兼容性问题；真正的连接拒绝原因仍未知，不能从该错误认定密码错误、服务器连接耗尽或 Rust4PM 算法故障。
+- 边界：当前应用角色不是管理员，pg_current_logfile() 被权限拒绝，未读取服务端认证日志；没有修改 PostgreSQL、凭据或第三方代码。
+- 当前处理：[连接排障说明](../guides/propel-postgresql.md)提供 Source 别名语义、Custom URI 与针对本机 ssl=off 的显式参数；是否需要调整服务端消息语言由管理员决定。Propel 连接成功仍未验收。
+- 未搜索或提交上游 Issue/PR，未扩大为第三方库修复。

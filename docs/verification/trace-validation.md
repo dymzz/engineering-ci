@@ -1,7 +1,43 @@
 # 轨迹归档与分析阶段验收
 
-本记录汇总 pre-0.6.0、v0.5.5–v0.5.7 的阶段验收及 v0.6.0 版本准备，不代表正式发布或自动优化闭环已经完成。
-基线为 v0.5.4，提交 f1d7d31014417468fa7299be27a86f0a57b47521。
+本记录汇总 pre-0.6.0、v0.5.5–v0.5.7、v0.6.0 版本准备和 v0.6.2 检索的阶段验收，不代表正式发布或自动优化闭环已经完成。
+早期验收基线为 v0.5.4，提交 f1d7d31014417468fa7299be27a86f0a57b47521。
+
+## v0.6.2 分层检索
+
+本轮增加只读 Summary/Pattern/Candidate/Evidence/Raw 查询。
+实现契约见[分层检索](../architecture/workflow-optimization/retrieval.md)，
+入口操作见[查询指南](../../guides/trace-queries.md)。
+
+- 相关单元回归及宿主联合专项：90 passed。其中新增 31 项查询单元测试和 4 项真实
+  PostgreSQL 集成测试；后者以真实 OTel SDK/Rust4PM 产生的合成协议样本验证关联。
+  专用测试 schema 由原有 fixture 创建/核对/删除，没有改生产归档。
+- 覆盖同源分页与过滤、输入变化/跨层书签拒绝、预算过小、整条 JSON 返回、
+  超过 100 个候选的完整分页、不可用分析原状态、敏感附加字段不进入输出、
+  Raw 显式确认、Base64 原字节/尾片段恢复、未准入 payload 不读取、损坏拒绝。
+- 原有完整 PR 入口在 Dagger 1.0.0-beta.16 / Linux 通过：1172 tests、105 subtests；
+  Ruff Lint/Format、版本一致性及 Lockfile 检查全部 passed。未把宿主专项冒充核心 CI。
+- 实际 PostgreSQL 登记分析的目录和四层查询完成，只读使用此前的 Rust4PM 分析
+  `1a730b2a683b402ef06ce4eb1073505886ec4a4183413f94b81d5b217b6a66d0`
+  及原投影；候选 `5de6ca846d52575adae5313249a8ad45f57e03fd34b630563b901de91c098cb4`
+  保持原身份。结果仍为 completeness=unknown、6 个准入 Turn、56 个排除 Turn、
+  3017 个投影操作，准入结果包含 1 failed / 39 passed。
+- 目录、选中分析 Summary、Pattern、Candidate、2 条 Evidence 的实际 stdout 分别为
+  1542 / 2288 / 2340 / 1987 / 1957 字节，均小于请求的 8192 字节。
+  未重读真实 rollout/原始 payload、重新投影、执行历史工具或再次调用发现算法。
+  本地证据为 `.test-tools/trace-v062/acceptance.json` 及同目录逐层 JSON；完整 PR 报告为
+  `.test-tools/checks/pr.json`，路径属于忽略的验收输出，不提交历史内容。
+
+保留限制：输出预算不是数据库 I/O 或模型 Token 预算；选中分析仍读完整派生文档。
+粗粒度投影没有真实参数、因果依赖或历史检查身份，Candidate 保持 unavailable/unmapped、
+not_reviewed、not_evaluated、optimization_verified=false；不扫描生成目录伪造验证关联。
+Raw 分页只证明选中记录摘要，不冒充完整快照回放校验。
+
+用户的 Propel 桌面 PostgreSQL 连接仍未确认成功。只读核实宿主编码 UTF8、
+lc_messages=Chinese (Simplified)_China.936、ssl=off、1/100 客户端连接以及应用角色
+没有 `pg_current_logfile()` 执行权限；未更改服务端配置或认证。
+该诊断与本项目 Psycopg/查询接口通过是独立事实，操作见
+[Propel 排障](../../guides/propel-postgresql.md)。
 
 ## 实际来源与数据库
 

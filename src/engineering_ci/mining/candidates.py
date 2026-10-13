@@ -153,19 +153,11 @@ def validate_limits(limit, evidence_limit):
         )
 
 
-def candidates(evidence, *, limit=20, evidence_limit=3):
-    """Build review-only evidence; operation success never means optimization approval."""
-    validate_limits(limit, evidence_limit)
+def candidate_source(evidence):
+    """Use the same immutable source identity for reports and paged queries."""
     analysis, projection = evidence.analysis, evidence.projection
-    if (
-        not isinstance(analysis, dict)
-        or type(evidence.association_verified) is not bool
-    ):
-        raise ArchiveError(
-            "invalid_evidence", "Expected a supported analysis evidence reference"
-        )
     prepare_result(analysis, analysis.get("input_sha256"), origin=evidence.origin)
-    source = {
+    return {
         "analysis_id": analysis["analysis_id"],
         "projection_id": analysis["projection_id"],
         "snapshot_id": analysis["snapshot_id"],
@@ -178,6 +170,42 @@ def candidates(evidence, *, limit=20, evidence_limit=3):
         "association_verified": evidence.association_verified,
         "dependencies": analysis["dependencies"],
     }
+
+
+def pattern_identity(source, kind, activities, targets):
+    """Keep candidate IDs independent of pagination and witness limits."""
+    pattern = {
+        "activities": list(activities[:REFERENCE_LIMIT]),
+        "activity_count": len(activities),
+        "omitted_activities": max(0, len(activities) - REFERENCE_LIMIT),
+        "activity_sequence_digest": digest(canonical(list(activities))),
+        "successor_counts": targets,
+    }
+    candidate_id = digest(
+        canonical(
+            {
+                "version": REPORT_VERSION,
+                "source": source,
+                "kind": kind,
+                "pattern": pattern,
+            }
+        ).rstrip(b"\n")
+    )
+    return candidate_id, pattern
+
+
+def candidates(evidence, *, limit=20, evidence_limit=3):
+    """Build review-only evidence; operation success never means optimization approval."""
+    validate_limits(limit, evidence_limit)
+    analysis, projection = evidence.analysis, evidence.projection
+    if (
+        not isinstance(analysis, dict)
+        or type(evidence.association_verified) is not bool
+    ):
+        raise ArchiveError(
+            "invalid_evidence", "Expected a supported analysis evidence reference"
+        )
+    source = candidate_source(evidence)
     identity = {
         "candidate_report_version": REPORT_VERSION,
         "source": source,
@@ -237,23 +265,7 @@ def candidates(evidence, *, limit=20, evidence_limit=3):
         return report
     proposed = []
     for kind, activities, members, targets in observations(selected):
-        pattern = {
-            "activities": list(activities[:REFERENCE_LIMIT]),
-            "activity_count": len(activities),
-            "omitted_activities": max(0, len(activities) - REFERENCE_LIMIT),
-            "activity_sequence_digest": digest(canonical(list(activities))),
-            "successor_counts": targets,
-        }
-        candidate_id = digest(
-            canonical(
-                {
-                    "version": REPORT_VERSION,
-                    "source": source,
-                    "kind": kind,
-                    "pattern": pattern,
-                }
-            ).rstrip(b"\n")
-        )
+        candidate_id, pattern = pattern_identity(source, kind, activities, targets)
         proposed.append(
             {
                 "candidate_id": candidate_id,

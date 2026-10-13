@@ -221,6 +221,10 @@ JSON 字段 status 表示当前操作，analysis.summary.status 才是分析结�
 
 ## 可选遥测与结果比较
 
+需要限制当前 Agent 收到的数据量时，先使用 `engineering-ci trace query summary`，
+再按返回的分析及候选引用查询 pattern/candidate/evidence。Raw 需要显式 snapshot 与 allow-raw。
+完整命令和预算见[分层查询](trace-queries.md)。
+
 下面从已经完成 P0 的 `.test-tools/otel-projection.json` 开始；换成你实际生成的投影文件。
 这些操作观察历史数据，不调用原 Agent、pytest、Dagger 检查或 Release Workflow。
 
