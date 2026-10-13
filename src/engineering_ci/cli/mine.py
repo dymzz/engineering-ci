@@ -17,6 +17,10 @@ from .trace import config_path, load_document, write_new_file
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == "workflow":
+        from .mine_workflow import main as workflow_command
+
+        return workflow_command(args[1:])
     if args and args[0] == "compare":
         from .mine_compare import main as comparison_command
 
@@ -35,7 +39,7 @@ def main(argv=None):
         return xes_command(args[1:])
     parser = argparse.ArgumentParser(
         description=__doc__,
-        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help; mine export-xes --help",
+        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help; mine export-xes --help; mine workflow --help",
     )
     parser.add_argument(
         "projection", nargs="?", help="Content-free JSON produced by trace project"

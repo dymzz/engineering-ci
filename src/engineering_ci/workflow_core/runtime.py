@@ -164,12 +164,13 @@ class Runtime:
         self.observation_errors = 0
         journal.record("session_started", phase=fsm.state, status=state["status"])
 
-        def observe(event, key):
+        def observe(event, key, **facts):
             journal.record(
                 event,
                 step=definitions[key],
                 item=state["steps"][key],
                 spec=self.catalog.resolve(definitions[key]["tool"])[0],
+                **facts,
             )
 
         def finished():
@@ -302,8 +303,9 @@ class Runtime:
                     )
                 )
                 interrupted = False
+                batch = {"batch_id": uuid4().hex, "batch_size": len(calls)}
                 for call in calls:
-                    observe("invoking", call.step_id)
+                    observe("invoking", call.step_id, **batch)
                 try:
                     results = adapter.invoke(tuple(calls), context)
                     if set(results) != {call.step_id for call in calls}:
@@ -355,7 +357,7 @@ class Runtime:
                     pending.remove(call.step_id)
                 save()
                 for call in calls:
-                    observe("returned", call.step_id)
+                    observe("returned", call.step_id, **batch)
                 if any(
                     state["steps"][call.step_id]["status"] == "unknown"
                     for call in calls

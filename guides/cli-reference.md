@@ -191,6 +191,12 @@ uv run --locked engineering-ci mine export-xes '.test-tools/mining-result.json' 
 文件模式必须提供原 projection，核验原字节摘要、case 准入及已存统计。
 可选登记模式为 `mine export-xes --analysis-result ANALYSIS_ID --out FILE.xes --json`，
 只有该模式需要 trace extra 与 PostgreSQL；文件导入操作见[Propel 指南](propel-postgresql.md#使用离线-casesxes)。
+
+已有注册工具执行使用 `mine export-xes --execution EXECUTION_DIR --out FILE.xes --json`；
+该模式仅导出原回执，无需数据库或 mining extra。分析它使用
+`mine workflow EXECUTION_DIR --out ANALYSIS.json [--xes-out FILE.xes] --json`，需要显式安装 mining extra。
+两种来源不能混用；完整操作、Step/attempt Case 和字段说明见
+[生成工作流使用说明](generated-workflows.md#分析已执行的注册工具并导出-xes)。
 `cases.xes` 保留来源、完整性三态及排除数量，仅输出准入 case；失败/取消/未知不改为通过。
 `time:timestamp` 使用原完成时间，另保留 start_ns/end_ns；没有因果或精确检查身份推断。
 状态 exported 与退出码 0 表示文件成功导出，不表示采集完整或优化通过。已有文件拒绝覆盖。

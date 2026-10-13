@@ -247,6 +247,8 @@ OBSERVATION = {
             "output_sha256": HASH,
             "result_sha256": HASH,
             "previous_result_sha256": HASH,
+            "batch_id": ID,
+            "batch_size": {"type": "integer", "minimum": 1},
             "result": object_schema(
                 {
                     key: RESULT["properties"][key]
@@ -281,6 +283,10 @@ OBSERVATION = {
     ),
 }
 SCHEMAS["observation"] = OBSERVATION
+OBSERVATION["dependentRequired"] = {
+    "batch_id": ["batch_size"],
+    "batch_size": ["batch_id"],
+}
 OBSERVATION["allOf"] = [
     {"if": {"properties": {"event": {"enum": events}}}, "then": {"required": fields}}
     for events, fields in (

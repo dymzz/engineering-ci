@@ -163,6 +163,46 @@ uv run --locked --extra trace engineering-ci workflow evidence $execution --otel
 Token/费用、Dagger 缓存命中保持未知。当前不自动上传 Collector/PostgreSQL，原 Codex 投影和
 OTLP 入口继续保留原契约，不能用此文件冒充 Codex 原生投影。
 
+## 分析已执行的注册工具并导出 XES
+
+沿用上面 run/resume 输出的 `$execution`；这些命令读取已存在的回执，不再执行 pytest 或 Dagger。
+先查安全事实：
+
+```powershell
+uv run --locked engineering-ci workflow evidence $execution --limit 5 --max-bytes 32768 --json .test-tools/workflow-evidence-details.json
+$proof = Get-Content .test-tools/workflow-evidence-details.json -Raw | ConvertFrom-Json
+$proof.items | Select-Object step_id, attempt, batch, time_scope, check
+```
+
+`check.details` 包括原报告中的实际版本、允许公开的参数、环境和测试统计。
+字段缺失不表示零；`batch` 为 Adapter 调用组，不能证明每项检查同时运行。
+
+只导出，交给 Propel 文件导入或其他 XES 工具：
+
+```powershell
+uv run --locked engineering-ci mine export-xes --execution $execution --out .test-tools/workflow-cases.xes --json
+```
+
+本地分析并保存同一组 Case：
+
+```powershell
+uv run --locked --extra mining engineering-ci mine workflow $execution --out .test-tools/workflow-analysis.json --xes-out .test-tools/workflow-analysis-cases.xes --json
+$analysis = Get-Content .test-tools/workflow-analysis.json -Raw | ConvertFrom-Json
+$analysis | Select-Object analysis_id, case_scope, completeness, activity_counts, check_execution_counts, recorded_result
+```
+
+每个 Case 对应一个 Step，事件为它的历次 attempt，活动名称是实际 tool_id。五个独立检查
+形成五个 Case，不伪造串行流程；重跑同一执行后，各 Case 会出现新的 attempt。
+跨 Step 的原依赖见 `workflow_dependencies`，DFG 不替代原 DAG。
+
+完整性 incomplete 默认拒绝；需要分析已知不完整观测时显式加 `--allow-incomplete`，缺起止或
+证据损坏的 Case 仍被排除。分析 `status=passed` 与 `recorded_result` 是两种事实；原失败保持失败。
+源码当前有效性未检查，缓存命中、费用及单项检查内部耗时仍未知。
+
+输出使用新文件名，不覆盖旧产物。分析已保存而 XES 失败时，按返回的 `next_actions` 继续导出，
+其中 `--event-log-id` 确保仍是同一证据；不要重新运行检查来补一份 XES。
+新 workflow-analysis 暂不登记 PostgreSQL 或用于旧 Codex candidates/bind。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

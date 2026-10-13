@@ -103,3 +103,35 @@ Propel 桌面 UI 文件导入仍由用户人工确认。
 文件模式候选 ID 与登记模式按现有 origin 规则分别产生，不能互相冒充。
 来源完整性 unknown、历史检查身份 unavailable、approved=false、optimization_verified=false 均保持。
 本轮证明已注册调用的本地观测及来源/目标关联；没有宣称完整 Agent 轨迹、优化收益或反馈入库。
+
+## 注册操作事实与 Step Event Log（v0.6.3）
+
+在原 checkout 从已合并 v0.6.2 main 开发。相关单元、旧来源/查询/候选回归及实际
+Rust4PM/OTel SDK 集成共 194 项通过；随后新增的未执行结果测试所在文件 13 项通过。
+测试覆盖安全字段、执行/复用区分、工具版本变化、缺边界、坏时钟、资源损坏、批次不一致、
+旧观测、输出保护和分析/XES 部分保存。集成夹具的领域工具使用替身，Rust4PM 与 SDK 使用真实安装。
+既有真实 pytest 成功、assert 失败、异常及强杀恢复测试仍通过，不用模拟成功代替发布结果。
+
+本轮真实 Dagger 1.0.0-beta.16/Linux 完整 PR Profile 五项全部通过，JUnit 1315 个测试结果，
+failures/errors/skipped 均为 0；原报告保留 actual tool versions 与 Linux/x86_64 环境。
+执行 `c4023dd40c664876890371785edaccc7`，生成 `5913cc09b92e45a1ad06f8588ecf7021`，
+原 Codex 候选继续通过显式来源关联；候选历史来源 unknown 与本地观测 complete 分别保留。
+
+`mine workflow` 只读该执行，真实 Rust4PM 0.6.2 生成 5 个 Step Case/5 个事件，0 个排除项。
+各事件有 35–47 个允许公开的属性，包括实际工具身份、批次、参数、实际版本、环境、结果和摘要。
+Case 内没有跨 Step 的伪造后继边；原 DAG 另保留。OTel SDK 1.45.1 导出 5 个 Span，明确为
+adapter_invocation；检查内部耗时、成本与 Dagger 缓存命中仍未知。
+
+Event Log 身份 `39740bc902b76d090019b3cd56a8f2b26a258a6cd0a56d9f7f7bb39639d457cb`；
+分析身份 `ef08f29401cbf6e8157f9f1c0c54f135c7ac7242ac775d641e5b6808547d0536`。
+移除本次进程 VESRYN_DATABASE 后独立 XES 导出成功，与分析时导出的字节相同。
+XES SHA-256 `9fffe2a06e4896e025fd5844b95410075f47e13217a6de25aa06e1bde148cb51`，
+真实 Rust4PM 读回变体与分析一致，局部注册对象清理。
+
+导出前后原执行目录文件摘要一致（互斥锁文件除外），新增检查 Attempt 为 0。
+本地证据在 `.test-tools/harness-v063/acceptance.json`、analysis.json、cases.xes 与原工具回执。
+输出可再导出，不需要再次执行 pytest/Dagger；CLI 的失败恢复命令绑定 Event Log 身份。
+受影响文档的 29 个内部链接/锚点通过核对。
+
+本轮不证明优化收益或完整 Agent 决策流，不写 PostgreSQL，也没有重新排查 Propel。
+Propel 桌面文件导入与正式 Release 仍未作为本轮真实验收结果；原 CI/Release 门禁保持独立。

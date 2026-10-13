@@ -216,6 +216,8 @@ ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapt
 admitted 是意图，invoking 是实际进入适配器边界，returned 是接收到的原结果；
 invoking 的持久化起点不证明子进程已执行；缺少该观测时不能判断调用未发生。
 各 attempt 保留，不因 resume 覆盖。recovered 只描述恢复时看见的旧事实，不补造旧调用时间。
+invoking/returned 可选记录同一 batch_id、batch_size，表示一次 Runtime 向 Adapter 提交的调用组，
+不是后端内部任务数量或并发证明。返回必须对应同一批次；旧记录不含批次时保持未知。
 主会话有独立起止与序号；记录仅含身份、摘要、结果布尔事实和本地观测时间，
 不复制参数、输出正文或错误字符串。观测写入失败单独计数，不改变原工具退出码。
 Schema 的唯一实现仍为 workflow_core/schemas.py，可通过 workflow schemas 导出。
@@ -231,6 +233,34 @@ workflow evidence 显式关联本执行的来源、生成身份、逐次调用�
 同一次执行的前序 attempt 与 reuse-from 的冻结检查点均保留明确引用。
 查询只读，current_input_validity=not_checked；原通过记录不因此获得当前代码的放行资格。
 原资源损坏时报告 unavailable，保留当时的原结果。未批准与未证明收益始终分别为 false。
+
+check.details 从经摘要核验的原报告读取：允许公开的 coverage/JUnit 相对路径、实际工具版本、
+平台/架构/后端和测试统计。不执行版本探测或工具，也不导出命令、绝对安装路径、环境变量或日志。
+未提供的事实保持 null/缺失；配置声明的版本不能替代实际版本。身份仍由原检查模块判定，
+查询书签同时绑定原回执事实摘要，资源变化使旧书签失效。
+
+### 已观测操作的 Event Log 与分析
+
+mine workflow 读取同一锁保护的完整有界证据视图，交给既有 Rust4PM discovery；
+mine export-xes --execution 仅导出同一准入逻辑产生的标准 XES，不要求 SDK、引擎或数据库。
+Case 为 execution_id + step_id，只包含该 Step 的连续 attempt；活动名称为实际注册 tool_id。
+跨 Step 依赖保留原 DAG，独立 Step 不因时间排序产生直接后继关系。该投影用于观察尝试、失败和
+复用，不能发现尚未采集的跨工具 Agent 决策序列。
+
+缺起止、时钟无效、同 Step 时间逆序、原检查证据损坏或没有调用观测的 Case 明确列入排除项。
+完整性 incomplete 默认拒绝，显式 --allow-incomplete 后仍保留排除与完整性状态。
+unknown 可以分析，但不变成 complete。完整性只覆盖观测协议，与 Case 准入及原任务成功分别表达。
+XES 保留事件身份、工具契约、批次、输入/结果/身份分量摘要、原报告摘要、已核验的安全事实及
+实际时间。缺失的历史参数或批次不倒填；适配器边界耗时不作为单项检查耗时。
+
+workflow-analysis 是独立的本地分析产物，身份包含 Event Log 内容、分析版本和实际引擎版本。
+它不冒充 Codex 投影或 PostgreSQL 现有 analysis 类型，不作为当前 mine candidates/bind 的输入。
+分析 passed 只表示数据处理成功，recorded_result 保留原执行结论；current_input_validity=not_checked。
+原 Codex 文件/登记分析、比较与候选入口保持原契约。
+
+分析和 XES 独立原子写入且不覆盖旧文件。若分析已保存而 XES 写入失败，命令非零，保留
+analysis_saved、analysis_status 和绑定 event_log_id 的导出恢复命令。执行或原资源改变后，
+该恢复命令拒绝混用新证据。原工具、质量门禁与 Release 状态均不由导出结果修改。
 
 可选 OTel SDK 投影使用实际 invoking/returned 时间和派生 Span ID，表示适配器调用边界，
 同批次 Span 可重叠，不代表每个检查内部耗时或 Agent 决策轮数。

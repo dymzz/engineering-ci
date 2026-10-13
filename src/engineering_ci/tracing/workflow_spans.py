@@ -30,6 +30,10 @@ def standardize(events, state, completeness, diagnostics):
         if (
             start is None
             or not 0 <= start["observed_ns"] <= event["observed_ns"] < 2**63
+            or any(
+                start.get(name) != event.get(name)
+                for name in ("batch_id", "batch_size")
+            )
         ):
             missing += 1
             continue
@@ -50,6 +54,10 @@ def standardize(events, state, completeness, diagnostics):
             attrs["process.exit.code"] = result["exit_code"]
         if "input_sha256" in event:
             attrs["engineering_ci.operation.input_sha256"] = event["input_sha256"]
+        if "batch_id" in start:
+            attrs["engineering_ci.workflow.batch_id"] = start["batch_id"]
+            attrs["engineering_ci.workflow.batch_size"] = start["batch_size"]
+        attrs["engineering_ci.operation.time_scope"] = "adapter_invocation"
         span = ReadableSpan(
             name="workflow.tool.invoke " + event["tool_id"],
             context=SpanContext(
