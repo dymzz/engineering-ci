@@ -358,6 +358,45 @@ status=returned/exit_code=0 是查询成功；recorded_result 的失败/非零�
 不执行或重新归档。默认预算 16384 UTF-8 字节含新行和游标；--json 仅覆盖同类查询回执，
 保护原反馈/批准/状态文件。细节见[检索契约](../docs/architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)。
 
+## 核验覆盖并汇总反馈
+
+P3-2 不执行原检查。新 call/resume 自动生成反馈 v2；对已有执行也可以显式补提取：
+
+```powershell
+# $call.execution 来自前文实际 call 回执；这两条只提取/归档已有事实。
+uv run --locked engineering-ci workflow feedback $call.execution --json .test-tools/capability-feedback-action.json
+uv run --locked --extra trace engineering-ci workflow feedback $call.execution --archive --json .test-tools/capability-feedback-archive-action.json
+```
+
+旧 v1 文件仍保留；这不会凭空生成旧时点的 v2 索引。没有多份已归档反馈时，先查询已有
+记录，不为凑统计样本重复运行测试。取得 P3-1 查询结果后，明确选择本页反馈，最多 32 个：
+
+```powershell
+uv run --locked --extra trace engineering-ci workflow feedback-query --name pr-check-reuse --version 1.0.0 --limit 20 --max-bytes 16384 --json .test-tools/feedback-query.json
+if ($LASTEXITCODE -ne 0) { throw '查询失败，按诊断处理' }
+$page = Get-Content .test-tools/feedback-query.json -Raw | ConvertFrom-Json
+$ids = @($page.items | Select-Object -ExpandProperty feedback_id)
+if ($ids.Count -gt 0) {
+    $summaryArgs = @('run', '--locked', '--extra', 'trace', 'engineering-ci', 'workflow', 'feedback-summary', '--max-bytes', '16384', '--json', '.test-tools/feedback-summary.json')
+    foreach ($id in $ids) { $summaryArgs += @('--feedback-id', $id) }
+    & uv @summaryArgs
+    if ($LASTEXITCODE -ne 0) { throw '汇总失败，查看诊断；保留 ID 与原证据' }
+    $summary = Get-Content .test-tools/feedback-summary.json -Raw | ConvertFrom-Json
+    $summary.executions | Select-Object execution_id, snapshot_coverage, metrics, snapshots, legacy_feedback_ids, conflicting_attempts
+} else {
+    Write-Host '本页没有可选反馈；有 next_after 时按前文继续查询，不重跑检查'
+}
+```
+
+可重复 `--feedback-id` 明确选择多个时点，本页选择不是全库统计。多份一致索引累计
+5/10 去重后是 10；部分/旧 v1/原失败不会被藏掉。covered_by 是所选证据间的覆盖引用，
+不是哪个 Run 更新或哪个结果可放行。metrics=null 的冲突组保留诊断，不自行删除快照。
+返回 0 仅表示生成汇总；统计不会替代 checks、能力 select 或 Release 门禁。
+
+缺 ID、权限不足、坏字节等非零；budget_exceeded 时保持 `$ids`，增加上述 max-bytes
+再次查询，不重跑原执行。不把多页结果直接累加，因为同一执行可能跨页重复出现。
+真实来源、过滤和覆盖边界见[汇总契约](../docs/architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

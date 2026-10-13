@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..workflow_core.capabilities import FEEDBACK, REFERENCE, VERSION
 from ..workflow_core.documents import WorkflowError, canonical, digest
+from ..workflow_core.feedback_snapshot import checked_snapshot
 from ..workflow_core.schemas import HASH, ID, validate
 from .catalog import timestamp
 from .retrieval import Query, cursor, page, page_bounds, token
@@ -80,15 +81,16 @@ class FeedbackQuery:
         return self
 
 
-def checked_row(row):
+def checked_document(row):
     """Verify column identities, actual bytes and original feedback schema before exposing facts."""
-    identity, approval, checksum, payload, archived_at = row
+    identity, approval, checksum, payload, _archived_at = row
     try:
         raw = bytes(payload)
         if len(raw) > 2 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != checksum:
             raise ValueError
         value = json.loads(raw)
         validate(value, FEEDBACK, label="archived capability feedback")
+        checked_snapshot(value)
         if (
             canonical(value) != raw
             or value["feedback_id"] != identity
@@ -99,29 +101,7 @@ def checked_row(row):
             != identity
         ):
             raise ValueError
-        item = {
-            "feedback_id": identity,
-            "capability": value["capability"],
-            "execution_id": value["evidence"]["execution_id"],
-            "definition_id": value["definition_id"],
-            "generation_id": value["generation_id"],
-            "catalog_revision_at_call": value["catalog_revision"],
-            "archived_at": timestamp(archived_at),
-            "recorded_result": value["recorded_result"],
-            "observation_completeness": value["observation_completeness"],
-            "metrics": value["metrics"],
-            "references": {
-                "document_sha256": checksum,
-                "execution_evidence": value["evidence"],
-            },
-            "current_input_validity": "not_checked",
-            "approval_state_now": "not_checked",
-            "execution_evidence_validation": "not_checked",
-            "task_outcome_scope": value["task_outcome_scope"],
-            "optimization_evaluated": False,
-            "llm_used": False,
-        }
-        return item
+        return value
     except (
         WorkflowError,
         ValueError,
@@ -133,6 +113,41 @@ def checked_row(row):
         raise ArchiveError(
             "feedback_corrupt", "Archived feedback content or identity is invalid"
         ) from None
+
+
+def checked_row(row):
+    """Return bounded facts and index references, never the entire archived attempt list."""
+    value = checked_document(row)
+    identity, _approval, checksum, _payload, archived_at = row
+    item = {
+        "feedback_id": identity,
+        "capability": value["capability"],
+        "execution_id": value["evidence"]["execution_id"],
+        "definition_id": value["definition_id"],
+        "generation_id": value["generation_id"],
+        "catalog_revision_at_call": value["catalog_revision"],
+        "archived_at": timestamp(archived_at),
+        "recorded_result": value["recorded_result"],
+        "observation_completeness": value["observation_completeness"],
+        "metrics": value["metrics"],
+        "references": {
+            "document_sha256": checksum,
+            "execution_evidence": value["evidence"],
+        },
+        "current_input_validity": "not_checked",
+        "approval_state_now": "not_checked",
+        "execution_evidence_validation": "not_checked",
+        "task_outcome_scope": value["task_outcome_scope"],
+        "optimization_evaluated": False,
+        "llm_used": False,
+    }
+    if value["schema_version"] == 2:
+        item["attempt_snapshot"] = {
+            "protocol": value["attempt_snapshot"]["protocol"],
+            "sha256": digest(value["attempt_snapshot"]),
+            "attempts": len(value["attempt_snapshot"]["attempts"]),
+        }
+    return item
 
 
 def matches(item, request):

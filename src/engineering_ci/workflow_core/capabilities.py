@@ -7,6 +7,7 @@ from filelock import FileLock, Timeout
 
 from .definition import load_generation
 from .documents import WorkflowError, digest, read, write
+from .feedback_snapshot import SNAPSHOT
 from .schemas import HASH, ID, NAME, SCHEMAS, object_schema, validate
 
 VERSION = {"type": "string", "pattern": r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"}
@@ -127,6 +128,15 @@ FEEDBACK = object_schema(
         "llm_used": {"const": False},
     }
 )
+FEEDBACK["properties"]["schema_version"] = {"enum": [1, 2], "type": "integer"}
+FEEDBACK["properties"]["attempt_snapshot"] = SNAPSHOT
+FEEDBACK["allOf"] = [
+    {
+        "if": {"properties": {"schema_version": {"const": 2}}},
+        "then": {"required": ["attempt_snapshot"]},
+        "else": {"not": {"required": ["attempt_snapshot"]}},
+    }
+]
 SCHEMAS.update(
     capability_approval=APPROVAL,
     capability_catalog=INDEX,

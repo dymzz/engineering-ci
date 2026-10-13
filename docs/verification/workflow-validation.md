@@ -291,3 +291,48 @@ pr-checks-final-console.log 保存当前结果，pr-checks-before-cursor-fix.jso
 ID 在已读位置前时须从头新查。每页最多核验 100 条源记录，过滤稀疏时空页仍可有游标。
 返回对象仍是原累计反馈快照，collection_coverage=unknown；未做 P3-2 去重/覆盖聚合或
 P3-3 再审查依据，不推断当前源码有效、能力仍启用、整体成功率或优化收益。
+
+## P3-2：显式反馈集合的覆盖核验与汇总（v0.6.5）
+
+PR #29 尚开放，继续原 checkout/分支和同一个版本 PR，没有为阶段新增平行 PR。新反馈
+文档 v2 提取已有安全 Attempt 索引；原反馈 v1 继续校验/查询/归档，数据库仍为 schema 3，
+没有新迁移。契约见[覆盖汇总](../architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)，
+操作见[用户指南](../../guides/generated-workflows.md#核验覆盖并汇总反馈)。
+
+模型/旧能力/查询兼容测试 69 项通过；最终查询、汇总、能力、比较、观测及归档相关
+回归 142 项通过。覆盖重复输入、相等/部分重叠/覆盖集合、不同执行不混并、原失败保持、
+旧 v1 未知、缺测量、同 Attempt 证据变化、绑定冲突、坏索引/摘要、非法参数和完整输出
+预算。极大 Attempt 编号的缺口校验按索引长度计算，不分配到该编号的范围。
+
+宿主 PostgreSQL 实际集成 15 项通过，最终汇总集成 5 项通过，使用唯一组件测试 namespace
+并清理。实际 Runtime 与反馈 writer 产生同一执行 5/10 两份索引，真实归档/CLI 只读汇总
+为 10 个唯一 Attempt、去除 5 个重复引用、提交 0；再次汇总不调用 Runtime 或迁移。
+这里原五个领域工具使用注明的进程替身，不冒充真实五项质量检查。
+
+### 已有真实 Dagger 来源的只读验收
+
+另读 P2 保留的实际 Dagger/Linux call `88051221bb734e0887987fac7d87d777`，从已有原资源
+提取 v2，没有 resume 或重新提交检查。原 v1
+`87f03cdc50c6668ba20f53ace6b7dd08f3293adfd89ab6b394d0da74e368a2e8` 保持不变；新 v2
+`4958425b629b2052885acc13dbc0604637899159d66f8ab9ec3506c3eb256ac5` 单独保存。
+
+通过实际 CLI 读取这两个归档反馈（重复传入 v2 ID 仍只读取一次），返回 10 个已知
+Attempt、已知复用 10、已知提交 0，而非把两个累计数相加。旧 v1 没有自己的索引，仍
+partial/legacy_unverifiable；没有用较大计数或同一执行 ID 补造历史覆盖关系。
+原 state/capability/observations 文件摘要前后一致，新增 Runtime resume 和检查提交均为 0。
+只在唯一组件测试 schema 写入这份验收数据并清理，没有写生产反馈表。
+
+summary_id 为 `47cac07b710f3a2d07f1c1a9ea4e014f0fefa8015de364284ad6d434bd064264`，
+本地 `.test-tools/harness-p3-2/acceptance.json`、actual-summary.json、各 JUnit 保存结果。
+该 ID 包含当时临时数据库 namespace 身份；不将其配置路径视为清理后的生产连接入口。
+此来源只证明历史反馈读取/索引核验，current_input_validity=not_checked，不能替代当前
+PR/Release 门禁，也未宣称新的速度、成本或整体优化收益。
+
+最终当前代码实际 Dagger 1.0.0-beta.16/Linux PR Profile 五项通过：1326 tests + 105
+subtests，JUnit 1431、无失败/错误/跳过；四处版本仍为 0.6.5，Pipeline/Workflow 一致性
+与锁文件检查通过。原 Workflow、Dagger 实现和消费者未修改。pr-checks.json 与
+pr-checks-console.log 保留实际输入/工具/环境身份。
+
+剩余边界：选中集合不是全库，整体覆盖 unknown；旧 v1、证据变化及部分边界补全不猜
+演进链。汇总报告成功不改变原失败，不认证当前输入、能力启用或原执行文件仍有效。
+P3-3 再审查依据及自动调优没有进入本轮。

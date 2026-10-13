@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from ..tracing.feedback_query import SELECTORS, FeedbackQuery, query_feedback
+from ..tracing.feedback_summary import FeedbackSummary, query_summary
 from ..tracing.retrieval import encode
 from ..tracing.store import ArchiveError
 from ..workflow_core.documents import WorkflowError, read, write
@@ -29,6 +30,19 @@ def add_command(commands):
         "--after", help="page.next_after from the same source and filters"
     )
     action.add_argument("--config", help="Existing tracing TOML; uses VESRYN_DATABASE")
+    summary = commands.add_parser(
+        "feedback-summary",
+        help="Summarize explicitly selected archived feedback without double counting attempts",
+    )
+    summary.add_argument(
+        "--feedback-id",
+        required=True,
+        action="append",
+        dest="feedback_ids",
+        help="An actual feedback ID; repeat for 1–32 snapshots",
+    )
+    summary.add_argument("--max-bytes", type=int, default=16384)
+    summary.add_argument("--config", help="Existing tracing TOML; uses VESRYN_DATABASE")
 
 
 def main(options, root):
@@ -43,17 +57,23 @@ def main(options, root):
         "exit_code": 3,
     }
     destination = None
+    operation = "workflow." + options.command
+    result["operation"] = operation
     try:
-        request = FeedbackQuery(
-            **{
-                key: getattr(options, key)
-                for key in (
-                    *SELECTORS,
-                    "limit",
-                    "max_bytes",
-                    "after",
-                )
-            }
+        request = (
+            FeedbackSummary(tuple(options.feedback_ids), options.max_bytes)
+            if options.command == "feedback-summary"
+            else FeedbackQuery(
+                **{
+                    key: getattr(options, key)
+                    for key in (
+                        *SELECTORS,
+                        "limit",
+                        "max_bytes",
+                        "after",
+                    )
+                }
+            )
         )
         if options.json:
             path = result_path(options.json, root)
@@ -66,17 +86,18 @@ def main(options, root):
                 raise WorkflowError(
                     "Query JSON must not overwrite repository or runtime files"
                 )
-            if (
-                path.exists()
-                and read(path).get("operation") != "workflow.feedback-query"
-            ):
+            if path.exists() and read(path).get("operation") != operation:
                 raise WorkflowError(
                     "Query JSON must not overwrite original evidence or another operation"
                 )
             destination = path
         request.validate()
         with open_store(load_config(options.config)) as store:
-            result = query_feedback(store, request)
+            result = (
+                query_summary(store, request)
+                if options.command == "feedback-summary"
+                else query_feedback(store, request)
+            )
     except Exception as error:  # noqa: BLE001 -- raw driver responses may contain credentials
         result.update(
             status=error.status
@@ -94,7 +115,7 @@ def main(options, root):
         except (WorkflowError, OSError):
             result = {
                 "schema_version": 1,
-                "operation": "workflow.feedback-query",
+                "operation": operation,
                 "status": "output_unavailable",
                 "exit_code": 3,
                 "reason": "Query JSON could not be saved; original archived feedback is unchanged",

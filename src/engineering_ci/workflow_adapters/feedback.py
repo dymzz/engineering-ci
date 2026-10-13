@@ -2,6 +2,7 @@
 
 from ..workflow_core.capabilities import CALL, FEEDBACK, CapabilityStore
 from ..workflow_core.documents import WorkflowError, digest, read, write
+from ..workflow_core.feedback_snapshot import checked_snapshot, from_view
 from ..workflow_core.schemas import validate
 from .capabilities import inside
 from .comparison import metrics
@@ -27,7 +28,7 @@ def prepare(execution, catalog, root):
     ):
         raise WorkflowError("Execution does not match its frozen approved capability")
     value = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "workflow-capability-feedback",
         "capability": {key: binding[key] for key in ("name", "version", "approval_id")},
         "definition_id": view["metadata"]["definition_id"],
@@ -41,6 +42,7 @@ def prepare(execution, catalog, root):
             for key, item in metrics(view).items()
             if key in FEEDBACK["properties"]["metrics"]["properties"]
         },
+        "attempt_snapshot": from_view(view),
         "current_input_validity": "not_checked",
         "task_outcome_scope": "original-registered-checks",
         "optimization_evaluated": False,
@@ -48,6 +50,7 @@ def prepare(execution, catalog, root):
     }
     value["feedback_id"] = digest(value)
     validate(value, FEEDBACK, label="capability feedback")
+    checked_snapshot(value)
     path = store.directory / "feedback" / (value["feedback_id"] + ".json")
     if path.exists():
         if read(path) != value:

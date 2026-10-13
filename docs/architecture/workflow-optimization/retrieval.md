@@ -97,6 +97,9 @@ completeness 过滤。字段类型/枚举复用 FEEDBACK Schema，非法输入�
 累计观察指标、归档时间与摘要引用，不复制日志、Prompt、Diff、环境变量或连接串。
 数据库/用户身份只保留摘要。
 
+同时接受反馈文档 v1/v2；v2 额外核验索引与累计计数的一致性，只返回索引协议、摘要与
+数量，不展开整个 Attempt 列表。文档升级以[反馈契约](generated-workflows.md#反馈文档-v2-与-attempt-索引)为准。
+
 query.status=returned/exit_code=0 仅表示查询成功；item.recorded_result 的失败/非零、
 incomplete/unknown 保持原事实。current_input_validity、approval_state_now、
 execution_evidence_validation 为 not_checked，摘要核验不代替原执行文件或当前准入。
@@ -129,4 +132,40 @@ limit 默认 20、范围 1–100；max-bytes 默认 16384、范围 1024–167772
 查询对象是反馈快照，不是唯一调用或完整任务。恢复前后累计 5/10 条观察的两份快照都
 保留，不能相加为 15 次调用；collection_coverage=unknown，不推断整体成功率。
 P3-1 不聚合/去重、比较效果、选择/停用能力或宣称速度/费用收益。P3-2 覆盖关系核验、
-P3-3 再审查依据仍待实施。操作见[反馈查询](../../../guides/generated-workflows.md#查询已归档反馈)。
+汇总由下节单独入口执行；P3-3 再审查依据仍待实施。操作见[反馈查询](../../../guides/generated-workflows.md#查询已归档反馈)。
+
+## 已归档反馈的覆盖与汇总（P3-2）
+
+`workflow feedback-summary` 只读显式选择的 1–32 个反馈 ID。重复 ID 去重；不从一页
+查询结果冒充全库，也不自动遍历所有历史。一个只读 REPEATABLE READ 事务读取整组选中
+记录；所有记录先走原字节/身份/Schema 与 v2 语义校验。缺少任何明确选择的成员或损坏
+均非零，不用剩余部分产生总数。schema 3 不变，不执行工具、登记反馈或自动迁移。
+
+按 execution_id 分组。同一执行必须保持批准、能力版本、generation/definition、冻结
+catalog_revision 和 required_step_ids 一致，才能汇总。跨执行同名 Step/Attempt 仍是
+不同观察。组内以 Step/Attempt 标识去重：相同身份的事实及来源行摘要必须一致；变化
+标记 conflicting，整个组 metrics=null，保留冲突键和每份原结果，不挑对结果有利的快照。
+部分边界后来补全也可能改变摘要，本轮保守列为冲突，不自动推断演进链。
+
+索引一致的子集可由另一份选中索引覆盖，covered_by 给出实际反馈 ID。相等集合使用
+固定 ID 顺序选代表，不形成循环；独立/部分重叠索引取集合并集，只去除明确重复引用。
+因此累计 5/10 的两个一致索引返回 10 个 unique_observed_attempts，去除 5 个重复引用，
+不会返回 15。required_checks 不是执行次数；adapter batch 按 session/batch 身份去重，
+不代表进程数或 Dagger 缓存未命中。
+
+原 v1 没有索引，legacy_unverifiable；不比较累计值来猜覆盖。与 v2 混合时只计算已核验
+索引子集，标记 partial 并列出未覆盖的 legacy_feedback_ids。incomplete/unknown 保持
+缺口。known_check_submissions/known_reused_checks 只计已知真标记，unknown_*_measurements
+列出未知项，不把未知视为实际零；Attempt 原结果分布与快照原失败/非零分别保留。
+covered_by 不把旧失败改成通过，不通过归档时间或较大计数选“最新结果”。
+
+返回 status=summarized/exit_code=0 表示汇总操作成功。snapshot_coverage、has_coverage_gaps
+说明可聚合程度，conflicting/legacy 组也可作为诊断返回，不能作为质量放行。全局
+collection_coverage=unknown，统计范围仅 explicit_feedback_snapshot_selection；当前输入、
+能力启用及原执行文件核验均 not_checked。不计算全库成功率、整体优化效果、时间或成本。
+
+核心结果与 summary_id 由协议、来源身份及排序后的明确反馈集合决定；输入顺序和重复
+参数不影响身份。--max-bytes 沿用完整 UTF-8 JSON 预算，默认 16384。无法容纳整份结果
+则 budget_exceeded/非零并给出摘要引用；不删掉执行组后输出一个不完整总数。增加预算
+只重查同一证据，不重跑检查。--json 只能覆盖同类汇总回执，原反馈和查询回执不覆盖。
+操作见[反馈汇总指南](../../../guides/generated-workflows.md#核验覆盖并汇总反馈)。
