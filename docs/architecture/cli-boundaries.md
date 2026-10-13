@@ -11,7 +11,7 @@ scripts/release.py verify → release/verification.py → GitHub GET（已有 Ru
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
 engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
-engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 非 LLM 分析）
+engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 非 LLM 分析及已有结果比较）
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
@@ -116,3 +116,5 @@ Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者�
 
 普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
 有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见[使用说明](../../guides/README.md)。
+
+trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](workflow-optimization/design.md)。

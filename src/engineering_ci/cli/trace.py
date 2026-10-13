@@ -84,6 +84,20 @@ def main(argv=None):
     )
     export.add_argument("--result", required=True)
     export.add_argument("--out", required=True)
+    send = commands.add_parser(
+        "send",
+        help="Explicitly send a content-free projection using official OTLP/HTTP",
+    )
+    send.add_argument("file", nargs="?")
+    send.add_argument("--projection-result")
+    send.add_argument("--endpoint", help="Complete OTLP /v1/traces URL; overrides TOML")
+    send.add_argument("--timeout", type=int)
+    send.add_argument("--batch-size", type=int)
+    send.add_argument(
+        "--out", required=True, help="New receiver acknowledgement receipt JSON"
+    )
+    send.add_argument("--config")
+    send.add_argument("--json", action="store_true")
     for command in (*queries, register, export):
         command.add_argument("--config")
         command.add_argument("--json", action="store_true")
@@ -91,6 +105,12 @@ def main(argv=None):
         command.add_argument("--config")
         command.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
+    if options.command == "send":
+        if bool(options.file) == bool(options.projection_result):
+            parser.error("Choose a projection file or --projection-result, exactly one")
+        from .trace_send import main as send_command
+
+        return send_command(options)
     if options.command in {
         "init",
         "import",

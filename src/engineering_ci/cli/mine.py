@@ -16,6 +16,11 @@ from .trace import config_path, load_document, write_new_file
 
 
 def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == "compare":
+        from .mine_compare import main as comparison_command
+
+        return comparison_command(args[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "projection", nargs="?", help="Content-free JSON produced by trace project"

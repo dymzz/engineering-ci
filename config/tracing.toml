@@ -8,3 +8,9 @@ statement_timeout = 15
 lock_timeout = 5
 batch_size = 100
 max_record_bytes = 4194304
+
+# Only an explicit trace send command uses these settings; blank means unconfigured.
+[telemetry]
+endpoint = ""
+timeout = 15
+batch_size = 128

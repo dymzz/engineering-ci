@@ -438,3 +438,41 @@ P0 关联在专用 schema 2 增加 projection/analysis 派生结果，复用既�
 配置 TOML 格式仍为 1；数据库 1→2 仅通过显式 trace init 原子升级，不重写原始字节。
 旧版 sources/snapshots/import/replay 仍可读 schema 1，结果查询报告 migration_required。
 命令与恢复步骤见 [CLI 参考](../../../guides/cli-reference.md#归档查询与结果恢复)。
+
+## P1：可选遥测出口与结果评估（v0.5.6）
+
+以 PR #21 合并后的 main 为基线，P1 使用已有固定投影和已登记分析；不重新导入实录或执行历史工具。
+OTLP 出口放 tracing/telemetry.py，比较放 mining/comparison.py；CLI 继续由统一入口调用。
+PostgreSQL 仍保存原始字节与不可变派生 JSON；本轮不增加数据库迁移、原始 Agent Schema 或业务 FSM。
+
+`trace send` 显式读取文件或 projection result ID，将受支持、无内容的 SDK Span 还原为 ReadableSpan。
+官方 OTLP/HTTP exporter 1.45.1 负责 Protobuf 编码、HTTP 和有限重试；只增加接收确认与安全边界。
+保留 Trace/Span ID、真实时间、原业务失败及 archive snapshot/event 引用；未知内容属性拒绝发送。
+不安装全局 TracerProvider、不启动后台采集，不向出口传播 prompt、命令、输出或宿主认证配置。
+
+SDK export 返回值、OTLP 接收确认、Jaeger 读回和原任务成功是四种事实。
+HTTP 200 的 partial_success 用官方 Protobuf 消息读取，不把 SDK SUCCESS 当成全部 Span 已接收。
+401/403 等拒绝、响应格式异常、TLS/网络失败及未发送的剩余批次分别记录。
+只确认当前接收节点；经 Collector 转发时不将其确认推断为 Jaeger 已保存。
+失败依然写安全 receipt，下一命令携带同一投影、目标、超时、批次和新输出路径。
+再次发送复用稳定 Span ID；允许重复投递，不承诺 exactly-once，也不再次执行 Agent 或 Workflow。
+
+首个本地后端为官方 Jaeger 2.22.0，可选官方 Collector 0.162.0 转发；配置见
+[归档及遥测配置](../../configuration/tracing.md#可选-otlp-出口与本地-jaeger)。
+测试使用专属 Docker 标签、网络及仅绑定 loopback 的随机端口；仅清理本次创建的对象。
+Collector 的默认内存发送队列可应对短暂后端故障，本轮没有引入持久化队列或长期 Jaeger 存储承诺。
+Jaeger 的内存视图、去重或更新不替代 PostgreSQL；不同投影复用同一 Span ID 时，后端可能更新旧属性。
+
+`mine compare` 比较两份已有分析，不调用 Rust4PM、PM4Py、LLM 或 CI。
+文件模式校验各自实际输入投影的字节摘要；ID 模式复用登记父关联并核对文档摘要。
+同一快照/投影、case 范围、完整性策略和成员一致时，可比较后端输出；工具版本差异明确保留。
+缺输入关联、不同成员/映射/范围、分析不可用或测量缺失时，报告 not_comparable，不猜测对应关系。
+
+本轮评估范围是固定输入的算法结果一致性，输出比较身份、入选/排除数量、活动/失败统计及等价字段。
+工具服务时长只求入选操作实际时间之和；不冒充工作流总耗时、算法运行时间或费用。
+两者一致/比较命令成功不成为 CI 放行或优化结论。quality_gate=not_evaluated、optimization_verified=false 明确保留。
+跨运行性能优化还需要相同任务/输入与环境的基准、原始质量门禁及候选执行证据；当前实录不能提供它们。
+没有这些证据时本轮不创建空工作流候选执行器或编译器，P2 的人工审查/固化边界继续有效。
+
+安装、调用、继续路径见 [CLI 参考](../../../guides/cli-reference.md#可选遥测与结果比较)，
+真实后端验收与协议替身测试分别记于 [验证记录](../../verification/trace-validation.md#v056-遥测与比较验收)。
