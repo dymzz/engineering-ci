@@ -38,3 +38,12 @@
 - 当前处理：[连接排障说明](../guides/propel-postgresql.md)提供 Source 别名语义与当前已验证的 prefer 配置，记录源码风险及直接 SQLx/dbcon 对照的下一步。不再推荐 disable 作为本例修复；是否调整消息语言由管理员决定。Propel 连接成功仍未验收。
 - 未搜索或提交上游 Issue/PR，未扩大为第三方库修复。
 - 用户已决定停止本次 Propel 排障，跳过该可选 UI；不继续开展复现、上游修复或 Issue 调查。上述源码风险仍保留未独立复现状态，不因用户判断而伪造验证完成。
+
+## Dagger beta：Windows 非交互版本探测挂起
+
+- 状态：本地终端集成行为观察，未独立定位为 Dagger 上游 Bug。
+- 场景：本轮 Harness P0 验收，主 checkout 使用 Dagger 1.0.0-beta.16。
+- 实际结果：直接运行 dagger version，未设置 FORCE_DARK_MODE，超过一分钟无输出；已用 Ctrl+C 停止该探测，没有终止正式检查。
+- 当前对照：既有 dagger_checks.prepare 使用 FORCE_DARK_MODE=1 和 30 秒版本探测超时，同一二进制的版本/容器预检及五项 Linux 检查实际通过。
+- 现有代码已记录 Windows 显示探测风险；本轮没有证明具体根因，也没有改变第三方实现、安装或工作区位置。
+- 未搜索或提交上游 Issue/PR，未扩大为故障调查。

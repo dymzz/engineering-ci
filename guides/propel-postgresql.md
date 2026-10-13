@@ -3,6 +3,25 @@
 本次连接排障已按用户决定停止，以下保留操作和观察的历史范围。
 Propel 不属于当前 Agent Harness 方案的必需依赖或验收门槛；后续工作使用既有 Rust4PM 接口。
 
+## 使用离线 cases.xes
+
+当前推荐从文件导入。已有派生 analysis/projection 文件时，不需要连接数据库或再次运行 Mining：
+
+```powershell
+uv run --locked engineering-ci mine export-xes .test-tools/harness-p0/analysis.json --projection .test-tools/harness-p0/projection.json --out .test-tools/harness-p0/cases-new.xes --json
+```
+
+本轮已生成 `.test-tools/harness-p0/cases.xes`。将该文件拖入 Propel 窗口，使用 EventLog 文件导入；
+[Propel 上游说明](https://github.com/aarkue/propel#features)明确支持拖入 XES。
+这个路径不使用 Extraction Blueprint、数据库 Connection 或 Source id。
+本项目已验证导出及 Rust4PM 读回，当前桌面安装的实际 UI 导入仍由用户验收。
+
+XES 仅包含准入的 Turn/活动、原结果、真实完成时间与来源身份，
+根属性保留 completeness 和排除数量；不含 Prompt、命令、工具输出或认证信息。
+本轮实录仅有粗粒度活动，不能将 command_execution 当作具体 pytest。
+文件已存在时拒绝覆盖；改用新的输出文件名。命令完整说明见
+[CLI 参考](cli-reference.md#标准化与离线分析)。下文保留此前连接排障记录。
+
 Propel 是 Rust4PM 的图形程序，不是 engineering-ci 的查询后端。
 本项目没有注册 Propel 数据源或实现自动数据库提取 Blueprint。
 以下依据 [Propel 上游连接界面](https://github.com/aarkue/propel/blob/main/packages/components/src/extraction-blueprint/edit/ConnectionsDialog.tsx)

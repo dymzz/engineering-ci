@@ -294,6 +294,11 @@ Event Log 是可重建的分析视图，不是第四套全量 Agent Schema。
 当前使用 [Rust4PM Python 绑定 r4pm](https://github.com/aarkue/r4pm) 的 XES、活动投影、variants 和 DFG 接口。
 只将准入的 case 与稳定活动名称序列序列化为临时 XES；Rust4PM 完成发现算法。
 XES 不包含命令、输出或虚构时间。临时文件和本进程的 Rust 注册对象在调用结束后清理。
+同一序列化函数也支持显式导出 `cases.xes`：保留准入 case、来源身份、完整性及排除数量，
+time:timestamp 来自原完成时间，start_ns/end_ns 保留原整数精度。
+既有分析/原投影可通过 mine export-xes 校验后导出，不再次发现流程或访问原始 Trace；
+mine 的 --xes-out 在同次分析后导出，失败分别保留已完成产物，操作见
+[CLI 参考](../../../guides/cli-reference.md#标准化与离线分析)。
 顺序准入继续依赖原投影的真实时间和 Turn 边界，不以 XES 行序推导新的因果依赖。
 Rust4PM 的边界活动集合没有频次；兼容字段的频次由它返回的变体及 case 数聚合。
 

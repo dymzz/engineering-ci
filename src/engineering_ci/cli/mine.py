@@ -29,9 +29,13 @@ def main(argv=None):
         from .mine_bind import main as binding_command
 
         return binding_command(args[1:])
+    if args and args[0] == "export-xes":
+        from .mine_xes import main as xes_command
+
+        return xes_command(args[1:])
     parser = argparse.ArgumentParser(
         description=__doc__,
-        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help",
+        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help; mine export-xes --help",
     )
     parser.add_argument(
         "projection", nargs="?", help="Content-free JSON produced by trace project"
@@ -46,6 +50,7 @@ def main(argv=None):
         "--config", help="Tracing configuration for explicit database operations"
     )
     parser.add_argument("--out", required=True, help="New analysis result file")
+    parser.add_argument("--xes-out", help="Also save admitted cases to a new XES file")
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
@@ -53,7 +58,16 @@ def main(argv=None):
         parser.error("Choose a projection file or --projection-result, exactly one")
     registered = None
     attempted = None
+    analysis_saved = False
     try:
+        if options.xes_out and (
+            Path(options.xes_out).exists()
+            or Path(options.xes_out).resolve() == Path(options.out).resolve()
+        ):
+            raise ArchiveError(
+                "output_exists",
+                "XES output must be a new path distinct from analysis output",
+            )
         with ExitStack() as stack:
             catalog = None
             if options.record or options.projection_result:
@@ -90,6 +104,7 @@ def main(argv=None):
         write_new_file(
             Path(options.out), [json.dumps(result, sort_keys=True).encode() + b"\n"]
         )
+        analysis_saved = True
         value = {
             "schema_version": 1,
             "operation": "mine",
@@ -104,6 +119,19 @@ def main(argv=None):
             "engine": result.get("engine", "rust4pm"),
             "association": "registered" if options.record else "file_only",
         }
+        if options.xes_out:
+            from ..mining.comparison import AnalysisEvidence
+            from .mine_xes import export_bytes
+
+            data, _, _ = export_bytes(
+                AnalysisEvidence(result, projection, "file", True)
+            )
+            write_new_file(Path(options.xes_out), [data])
+            value["xes"] = {
+                "output": str(Path(options.xes_out).resolve()),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "saved": True,
+            }
     except ArchiveError as error:
         value = {
             "schema_version": 1,
@@ -150,6 +178,14 @@ def main(argv=None):
                 "--json",
             ]
         ]
+    if options.xes_out and value["exit_code"]:
+        value["analysis_saved"] = analysis_saved
+        value["xes_saved"] = False
+        if analysis_saved:
+            value["analysis_output"] = str(Path(options.out).resolve())
+            value["analysis_status"] = result["status"]
+            if result["status"] != "passed":
+                value["exit_code"] = 3
     if registered is not None:
         value["registered_result"] = registered
         value["next_actions"] = [
@@ -166,6 +202,28 @@ def main(argv=None):
                 "--json",
             ]
         ]
+    if options.xes_out and value["exit_code"] and analysis_saved:
+        recovery = ["engineering-ci", "mine", "export-xes"]
+        if registered is not None:
+            recovery += [
+                "--analysis-result",
+                registered["result_id"],
+                "--config",
+                str(config_path(options)),
+            ]
+        elif options.projection:
+            recovery += [
+                str(Path(options.out).resolve()),
+                "--projection",
+                str(Path(options.projection).resolve()),
+            ]
+        else:
+            recovery = None
+            value["source_projection_result"] = options.projection_result
+        if recovery:
+            value["next_actions"] = [
+                recovery + ["--out", str(Path(options.xes_out).resolve()), "--json"]
+            ]
     print(
         json.dumps(value, sort_keys=True)
         if options.json

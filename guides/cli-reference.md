@@ -173,6 +173,28 @@ case 保留排除原因，不用稳定排序冒充实际执行顺序。失败/�
 结果文件拒绝覆盖。原始业务退出码、分析运行成功和发现优化效果是不同事实。
 不执行工作流候选，不调用付费模型；Rust4PM 安装与历史 PM4Py 结果兼容见[配置说明](../docs/configuration/tracing.md#可选离线挖掘)。
 
+显式保留本轮 Mining 使用的准入 case 文件，供 Rust4PM/Propel 文件导入：
+
+```powershell
+uv run --locked --extra mining engineering-ci mine '.test-tools/otel-projection.json' --out '.test-tools/mining-new.json' --xes-out '.test-tools/cases-new.xes' --json
+```
+
+分析只执行一次。XES 写入失败时返回非零，已保存的分析仍保留，JSON 给出 analysis_saved、
+analysis_output 与下一命令；原分析不可用仍是不可用。两份文件分别原子创建，并非跨文件事务。
+
+已经有分析和它使用的原投影时，离线导出不需要数据库、OTel SDK 或 r4pm 安装，也不重跑算法：
+
+```powershell
+uv run --locked engineering-ci mine export-xes '.test-tools/mining-result.json' --projection '.test-tools/otel-projection.json' --out '.test-tools/cases.xes' --json
+```
+
+文件模式必须提供原 projection，核验原字节摘要、case 准入及已存统计。
+可选登记模式为 `mine export-xes --analysis-result ANALYSIS_ID --out FILE.xes --json`，
+只有该模式需要 trace extra 与 PostgreSQL；文件导入操作见[Propel 指南](propel-postgresql.md#使用离线-casesxes)。
+`cases.xes` 保留来源、完整性三态及排除数量，仅输出准入 case；失败/取消/未知不改为通过。
+`time:timestamp` 使用原完成时间，另保留 start_ns/end_ns；没有因果或精确检查身份推断。
+状态 exported 与退出码 0 表示文件成功导出，不表示采集完整或优化通过。已有文件拒绝覆盖。
+
 ## 归档查询与结果恢复
 
 连接预检仍是 `trace status`；带选择器时查询已归档证据，不导入或重算。

@@ -114,9 +114,54 @@ VESRYN_DATABASE；文件模式用 `--analysis ANALYSIS.json --projection PROJECT
 当前粗粒度实录不含具体检查身份，所以来源保留 `historical_check_identity=unavailable`、
 `optimization_verified=false`。生成不代表证明历史重复的工具可删，也不批准发布。
 
+关联候选时必须保留完整 PR Profile，provenance 同时保存目标策略与逐项 step/tool 映射。
+候选 ID 含来源模式：文件与登记模式分别使用各自 candidates/query 返回的 ID，不能混用；
+analysis/projection 的原内容身份仍保留，显式映射不倒填历史检查身份。
+目标 Pipeline 改变后，validate/run/resume 拒绝旧绑定，重新生成并审查；原结果保留。
+没有 target 字段的旧文件仍可读取，但目标策略状态为 unavailable，不自动补填历史身份。
+
 `mine bind` / `checks --binding` 是 PR #25 早期原型的兼容桥，旧绑定文件不作为新的可执行定义。
 新入口生成 `workflow.json` 与 `provenance.json`，宿主兼容桥保留在 CLI 层；原 checks 库
 不导入 mining 或工作流核心。
+
+## 查询实际尝试与导出标准 Span
+
+上面的 run/resume JSON 提供 `execution` 与 `observations.next_action`，不需要再查 ID：
+
+```powershell
+$run = Get-Content .test-tools/latest-workflow-run.json -Raw | ConvertFrom-Json
+$execution = $run.execution
+uv run --locked engineering-ci workflow evidence $execution --limit 5 --max-bytes 16384 --json .test-tools/workflow-evidence.json
+$proof = Get-Content .test-tools/workflow-evidence.json -Raw | ConvertFrom-Json
+$proof.items | Select-Object step_id, attempt, invocation_started, result, check, reuse_source
+
+if ($proof.page.next_after) {
+    uv run --locked engineering-ci workflow evidence $execution --limit 5 --max-bytes 16384 --after $proof.page.next_after
+}
+```
+
+查询读取指定执行的来源、生成定义、观测以及经摘要核验的原回执，不重新执行工具或 Mining。
+`recorded_result` 是当时结果，`current_input_validity=not_checked`；资源损坏时该项证据 unavailable。
+`check.actual_check_executed` 区分真正执行与 `check.evidence_reused`，未知时为 null；
+`reuse_source` 给出已关联的原 execution/generation/step/attempt，不代表这些证据至今仍有效。
+`approved=false`、`optimization_verified=false`，观察候选与原报告均不自动成为批准记录。
+
+恢复后观测追加新会话和 attempt，旧记录不覆盖。完整性 complete 仅覆盖这个本地观测协议；
+强杀或丢失记录为 incomplete，旧检查点不支持判断完整历史时为 unknown。
+观测保存失败单独报告 `write_errors`，原失败退出码保持。输出预算按 stdout 紧凑 UTF-8 JSON
+含换行计算，复用原查询的书签语义；执行变化使旧书签失效。单个执行读取上限为 10000 记录/16 MiB。
+`--json` 放在执行目录外，不能覆盖原回执。
+
+需要标准 Span JSON 时显式安装已有 trace extra 并指定新文件：
+
+```powershell
+uv run --locked --extra trace engineering-ci workflow evidence $execution --otel-json .test-tools/workflow-spans.json
+```
+
+使用官方 OTel SDK；缺 SDK 或文件写入失败使本次导出命令非零，不改变原工作流结果。
+文件已存在时不覆盖，换一个输出文件名。Span 衡量适配器边界，不能当成单项测试的内部耗时；
+Token/费用、Dagger 缓存命中保持未知。当前不自动上传 Collector/PostgreSQL，原 Codex 投影和
+OTLP 入口继续保留原契约，不能用此文件冒充 Codex 原生投影。
 
 ## 当前边界
 

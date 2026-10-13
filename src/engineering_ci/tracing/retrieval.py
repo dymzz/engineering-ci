@@ -39,6 +39,19 @@ def encode(value):
     )
 
 
+def page_bounds(query):
+    """Share pagination bounds across explicit evidence sources, not their semantics."""
+    page_limit(query.limit)
+    if type(query.max_bytes) is not int or not 1024 <= query.max_bytes <= 16777216:
+        raise ArchiveError(
+            "invalid_query", "Output budget must be 1024–16777216 UTF-8 bytes"
+        )
+    if query.after is not None and (
+        not isinstance(query.after, str) or len(query.after) > 2048
+    ):
+        raise ArchiveError("invalid_query", "Invalid continuation token")
+
+
 @dataclass(frozen=True)
 class Query:
     level: str
@@ -54,12 +67,8 @@ class Query:
 
     def validate(self):
         """Reject invalid bounds and unused selectors before opening data sources."""
-        page_limit(self.limit)
-        if (
-            self.level not in LEVELS
-            or type(self.max_bytes) is not int
-            or not 1024 <= self.max_bytes <= 16777216
-        ):
+        page_bounds(self)
+        if self.level not in LEVELS:
             raise ArchiveError(
                 "invalid_query", "Output budget must be 1024–16777216 UTF-8 bytes"
             )
@@ -98,10 +107,6 @@ class Query:
                 "invalid_query",
                 "These filters do not apply to the selected query level",
             )
-        if self.after is not None and (
-            not isinstance(self.after, str) or len(self.after) > 2048
-        ):
-            raise ArchiveError("invalid_query", "Invalid continuation token")
         return self
 
     def identity(self, scope):

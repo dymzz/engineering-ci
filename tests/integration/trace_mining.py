@@ -93,3 +93,32 @@ def test_rust_registry_cleanup_and_boundary_frequencies():
     assert result["end_activities"] == {"command_execution": 2, "file_change": 1}
     assert result["dependencies"] == {"r4pm": "0.6.2"}
     assert r4pm.list_items() == before
+
+
+def test_exported_xes_is_readable_by_real_rust4pm_and_preserves_variants(tmp_path):
+    import r4pm
+    from r4pm import bindings
+
+    from engineering_ci.mining.analysis import cases_xes, select_cases
+
+    projection = sample()
+    selected, excluded = select_cases(projection)
+    original = analyze(projection, "0" * 64)
+    path = tmp_path / "cases.xes"
+    path.write_bytes(cases_xes(selected, analysis=original, excluded=len(excluded)))
+    identifiers = []
+    before = r4pm.list_items()
+    try:
+        log = r4pm.import_item("EventLog", str(path))
+        identifiers.append(log)
+        activity = bindings.log_to_activity_projection(log)
+        identifiers.append(activity)
+        variants = bindings.get_variants(activity)
+        assert [
+            {"activities": item["activities"], "cases": item["count"]}
+            for item in variants
+        ] == original["variants"]
+    finally:
+        for identifier in reversed(identifiers):
+            r4pm.remove_item(identifier)
+    assert r4pm.list_items() == before

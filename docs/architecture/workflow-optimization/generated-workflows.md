@@ -103,6 +103,8 @@ workflow-generated/<generation-id>/
 workflow-runs/<execution-id>/
   state.json          # 当前执行恢复点
   result.json         # 完整结果、停点及继续调用
+  observations/       # 按调用会话顺序保存的不可覆盖操作观测
+  reuse-source.json   # 使用 reuse-from 时冻结的原执行检查点
   tool-results/       # 原工具证据、逐项 attempt 意图/回执及受核验的引用
 ```
 
@@ -116,6 +118,13 @@ attempt 表示工具调用尝试，四者不能混用。
 新结果目录、generation_id 或 execution_id 本身不能被当成代码输入变化而触发重复测试。
 复用时引用已经校验的不可变工具结果；需要重新执行时分配本次输出。
 实际参数、输入内容和环境仍按工具契约参与身份，不能为了复用擅自删除原执行参数。
+
+来源明确选择完整 PR 目标时，provenance.target 记录 registered-profile、Profile 名称、
+原 Pipeline 策略摘要及实际 step/tool 映射。来源身份不表示历史工具身份已知。
+宿主在 validate/run/resume 核验该策略；配置变化明确拒绝并要求重新生成、审查。
+缺少 target 的旧定义仍可读取、执行，但不能冒充已经绑定当前目标策略。
+新实现继续读取旧 Schema 1 定义/检查点；旧读取器不认识新增字段时应拒绝，
+升级读取器后再使用新产物，不能忽略 target 准入或冒充双向兼容。
 
 定义可以审查后放入任意受支持目录或提交为独立文件；核心不硬编码 engineering-ci 的根路径。
 config/pipeline.toml 保留原项目检查定义，只是 engineering-ci 工具适配器的输入之一，
@@ -203,10 +212,32 @@ ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapt
 携带待核验的旧事实；检查适配器将恢复交给原 checks/Dagger，而非核心猜测复用。
 静态 validate 不执行工具预检或承诺当前输入通过，实际环境及资源在调用时核验。
 
-OTel/GenAI 及既有 instrumentation 继续承担适用的遥测。
-当前已有原工具结果、步骤/attempt 和输入输出摘要，尚未形成完整的统一操作观测与反馈归档接口。
-后续按[Harness 实施设计](harness.md)从实际调用取得工具身份和已核验的复用来源，
-不把生成配置的计划步骤或最终检查点当成完整 Trace。
+本地操作观测由同一 Runtime/ExecutionContext 在持久化准入后、调用前及结果落盘后记录。
+admitted 是意图，invoking 是实际进入适配器边界，returned 是接收到的原结果；
+invoking 的持久化起点不证明子进程已执行；缺少该观测时不能判断调用未发生。
+各 attempt 保留，不因 resume 覆盖。recovered 只描述恢复时看见的旧事实，不补造旧调用时间。
+主会话有独立起止与序号；记录仅含身份、摘要、结果布尔事实和本地观测时间，
+不复制参数、输出正文或错误字符串。观测写入失败单独计数，不改变原工具退出码。
+Schema 的唯一实现仍为 workflow_core/schemas.py，可通过 workflow schemas 导出。
+
+complete/incomplete/unknown 只表达本地观测协议的覆盖程度，不表示整个 Agent 会话完整或任务成功。
+会话缺记录、缺结束、预期 attempt 缺准入记录均为 incomplete；旧检查点缺少协议声明时为 unknown。
+读取一个执行的观测最多 10000 记录或 16 MiB，超出范围明确拒绝；输出分页预算不代表任意历史读取成本。
+
+workflow evidence 显式关联本执行的来源、生成身份、逐次调用和原工具回执/资源摘要；
+查询与原执行使用同一文件锁，运行中可用 status 查看检查点；不拼接变化中的回执。
+原 check.executed 是历史执行事实，actual_check_executed 来自原 executed_this_invocation，
+不凭外层 invoke 推测执行了 pytest。复用来源与实际输入/工具/参数/环境摘要分别核对；
+同一次执行的前序 attempt 与 reuse-from 的冻结检查点均保留明确引用。
+查询只读，current_input_validity=not_checked；原通过记录不因此获得当前代码的放行资格。
+原资源损坏时报告 unavailable，保留当时的原结果。未批准与未证明收益始终分别为 false。
+
+可选 OTel SDK 投影使用实际 invoking/returned 时间和派生 Span ID，表示适配器调用边界，
+同批次 Span 可重叠，不代表每个检查内部耗时或 Agent 决策轮数。
+缺结束或时钟逆序不补造 Span；Token/费用与 Dagger 缓存命中保持未知。
+普通工程操作使用工程属性，不伪装为 GenAI 模型请求。
+当前只导出 SDK Span JSON，不自动传输、归档 PostgreSQL 或调用 Mining。
+后续反馈接入仍按[Harness 实施设计](harness.md)进行，不把计划或最终检查点当成完整 Trace。
 工具实现替换不改写历史轨迹，投影/分析升级继续独立于工作流定义和 Runtime。
 
 ## 实施顺序与架构验收

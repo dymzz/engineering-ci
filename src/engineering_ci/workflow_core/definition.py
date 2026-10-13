@@ -159,7 +159,7 @@ def compile_workflow(value, catalog):
     }
 
 
-def generate(recipe, catalog, destination, *, source=None):
+def generate(recipe, catalog, destination, *, source=None, target=None):
     """Create a new generation directory; semantic identity excludes output locations."""
     validate(recipe, RECIPE, label="recipe")
     generation_id = uuid4().hex
@@ -193,7 +193,10 @@ def generate(recipe, catalog, destination, *, source=None):
         "optimization_verified": False,
         "llm_used": False,
     }
+    if target is not None:
+        provenance["target"] = copy.deepcopy(target)
     validate(provenance, PROVENANCE, label="provenance")
+    validate_target(value, provenance)
     value["provenance_sha256"] = digest(provenance)
     compile_workflow(value, catalog)
     directory = Path(destination) / generation_id
@@ -215,7 +218,22 @@ def load_generation(path, catalog):
         provenance["mapping_basis"] == "explicit_target_selection"
     ):
         raise WorkflowError("Generation source and mapping basis differ")
+    validate_target(value, provenance)
     return value, provenance, plan
+
+
+def validate_target(value, provenance):
+    """An explicit profile mapping must describe the actual complete definition."""
+    if "target" not in provenance:
+        return
+    mapping = provenance["target"]["mapping"]
+    actual = [
+        {"step_id": step["id"], "tool_id": step["tool"]} for step in value["steps"]
+    ]
+    if mapping != actual or any(
+        not step["required"] or step["when"] != "success" for step in value["steps"]
+    ):
+        raise WorkflowError("Target mapping differs from the required workflow steps")
 
 
 def resolve_inputs(value, outputs):
