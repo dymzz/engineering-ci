@@ -153,7 +153,8 @@ flowchart TD
 
 代码放 `src/engineering_ci/tracing/` 与 `src/engineering_ci/mining/`。
 用户操作接到已有 `engineering-ci` CLI；`scripts/` 继续只有 release.py、download.py。
-Workflow 固化使用既有执行模块，暂不增加另一套调度器、插件注册系统或配置语言。
+实际工具执行继续复用既有模块。用户进一步确定的独立生成、通用编排核心和适配边界见
+[独立生成与编排](generated-workflows.md)；该方案尚未实施，不重复 GitHub Job 或 Dagger 容器调度。
 
 ## 三层数据与少量元数据
 
@@ -532,6 +533,9 @@ optimization_verified=false、llm_used=false。审查须核对具体检查/动�
 具体调用与审查步骤见 [CLI 参考](../../../guides/cli-reference.md#工作流候选与人工审查)。
 
 ## 首个 Handler 固化：基础 PR 检查复用（v0.6.1）
+
+本节记录当前 PR 的证据绑定原型，尚未完成独立执行配置生成。
+核心与工具解耦、每次独立产物及生成链路的后续实现以[独立生成与编排](generated-workflows.md)为准。
 
 用户选定“基础 PR 检查的同输入复用”，绑定现有 `pr` Profile 中的五个注册操作。
 首个来源候选是已登记分析中连续两次 `command_execution` 的调查项。

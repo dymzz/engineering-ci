@@ -361,3 +361,6 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 历史投影没有具体检查身份，绑定是用户显式选择的新目标，不证明历史重复命令就是 PR 检查，
 也不批准删检查、自动发布或扩展远端权限。详细契约见
 [Handler 固化](../docs/architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+
+以上调用是当前证据绑定原型。独立生成文件、统一工具契约与可剥离执行层的架构已记录在
+[独立生成与编排](../docs/architecture/workflow-optimization/generated-workflows.md)；其新入口尚未实现。

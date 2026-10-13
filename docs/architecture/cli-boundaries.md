@@ -23,6 +23,10 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 本地交付层次化 FSM 管阶段准入，已有 execution FSM 管 Dispatch、等待和恢复；
 两者不替代 Actions 的远端 DAG。
 
+当前 `checks --binding` 为证据绑定原型。后续独立生成及工具编排由单独调用层组装，
+原 checks/Release/Download 不反向依赖生成核心；拟议入口和依赖方向见
+[独立生成与编排](workflow-optimization/generated-workflows.md)，目前尚不可作为已实现命令调用。
+
 ## 公开调用契约
 
 操作步骤、参数示例和退出码统一维护在[使用说明](../../guides/README.md)。
