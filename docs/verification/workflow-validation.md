@@ -1,4 +1,4 @@
-# 独立工作流验收（v0.6.1）
+# 独立工作流验收
 
 本记录对应 PR #25 的独立生成/执行实现，区别于早期 `registered-pr-check-reuse/1` 绑定原型。
 验证在主 checkout 完成，没有替代工作区、数据库迁移、Workflow Dispatch、合并或正式发布。
@@ -63,3 +63,43 @@ GitHub PR CI 通过 Push 后的实际 Workflow 记录验收，正式 Release 仍
 native pytest 在完整 JUnit 回执形成前强杀时不能安全复用，将只重新执行证据不完整项。
 复杂 Schema 的静态引用推导限于明确的 object/array/type；运行值仍由正式 JSON Schema 校验。
 这些边界不能被生成配置当作已经提供的能力。
+
+## Harness P0 与离线 XES（v0.6.2）
+
+本轮在 PR #26 接入真实尝试观测、显式候选/目标/执行关联，以及用户要求的离线 XES 出口。
+沿用原五项检查和 Runtime，版本不另分 PR；未创建 Tag、Release 或手动 GitHub Run。
+
+专项回归分层记录，替身与真实运行的作用不同：
+
+- 原核心、适配器、有界查询、Handler 兼容及本轮操作观测专项共 **126 passed**。
+  包括真实进程 os._exit(91)、真实 pytest 成功/断言失败/异常失败；错误仍非零，观测文件不含错误正文。
+- XES 来源/失败保存及真实 Rust4PM 读回相关回归 **79 passed**；随后新增不可用分析语义及组合回归 **46 passed**。
+  组合命令：`pytest -q tests/test_trace_mining.py tests/test_workflow_observations.py tests/integration/trace_mining.py tests/integration/workflow_observations.py`。
+- 官方 OTel SDK 1.45.1 实测 Span 生成，失败状态/退出码保留；无 GenAI 冒充、无 Token/费用推断。
+  不发送 Collector，也不把缺结束/时钟逆序补为 Span。
+- 观测 OSError、旧检查点、整个旧会话丢失、过期分页书签、源资源损坏、目标策略变化与并发锁均有测试。
+  这些故障测试不替代 GitHub 发布验证，当前仍无真实写工具。
+
+真实 Dagger/Linux 最终输入检查：**1197 tests + 105 subtests**（JUnit 1302），
+failure/error/skipped 均为 0；Ruff Lint/Format、Version、Lockfile 全部 passed。
+该执行为 `.test-tools/harness-p0/final-run.json`，execution_id=`d37067b3da484240ad961adb704fa0b7`。
+XES 改动使原 Ruff/pytest 证据过期，实际重新执行这三项；版本/锁文件输入未变，继续复用原证据。
+这次执行不能与改动前的本地通过记录混用。
+最终输入再次调用，execution_id=`2f246930c2264497aa52faa4db27d9f5`：
+五项 actual_check_executed=false、evidence_reused=true，均引用上述原执行回执，
+没有提交新的 pytest/检查 Artifact 执行；原 Dagger 仍做真实环境和证据准入。
+读回的五项观测和原回执关联均通过，OTel 投影各有五个 Span，Dagger 内部缓存命中保持 unknown。
+本地汇总 `.test-tools/harness-p0/acceptance.json` 与 evidence-reuse.json 保存这些实际事实。
+
+本轮曾只读读取已登记的实际分析与投影，随后导出原字节到 analysis.json/projection.json。
+移除本进程的 VESRYN_DATABASE 后，`mine export-xes` 完全离线成功：
+6 个准入 cases、40 个事件、56 个排除 cases，completeness=unknown；失败与未知结果保留。
+真实 Rust4PM 0.6.2 导入后变体与原分析相同，局部 Rust 注册对象均清理。
+导出文件为 `.test-tools/harness-p0/cases.xes`，SHA-256：
+`2052b710c8c0e9379de353ed24b035d3b16942793584d0b26e099dd83292e6fa`。
+未读取原始 rollout、重新执行 Mining、写数据库或恢复 Propel 连接排障。
+Propel 桌面 UI 文件导入仍由用户人工确认。
+
+文件模式候选 ID 与登记模式按现有 origin 规则分别产生，不能互相冒充。
+来源完整性 unknown、历史检查身份 unavailable、approved=false、optimization_verified=false 均保持。
+本轮证明已注册调用的本地观测及来源/目标关联；没有宣称完整 Agent 轨迹、优化收益或反馈入库。

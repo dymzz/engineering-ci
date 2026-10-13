@@ -95,6 +95,11 @@ project/mine 的 --record 允许显式写派生结果；没有该选项的旧文
 也不调用发现算法；ID 模式只使用既有 trace 归档依赖。候选的范围和审查条件见
 [实施方案](../architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
 
+`trace query` 复用这些派生结果，提供预算受限的分层只读视图；文件模式无需可选依赖。
+它不增加 TOML 字段、数据库迁移或外部服务，分页/预算由 CLI 显式选择。
+契约见[分层检索](../architecture/workflow-optimization/retrieval.md)，
+操作见[查询指南](../../guides/trace-queries.md)。
+
 ## 可选 OTLP 出口与本地 Jaeger
 
 ```powershell

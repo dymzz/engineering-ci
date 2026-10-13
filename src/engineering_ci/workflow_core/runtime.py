@@ -11,6 +11,7 @@ from transitions import Machine
 from .contracts import ExecutionContext, Invocation, ToolResult
 from .definition import load_generation, resolve_inputs
 from .documents import WorkflowError, canonical, digest, read, write
+from .observations import ObservationJournal
 from .schemas import EXECUTION, RESULT, validate
 
 OUTCOMES = {"passed", "failed", "incomplete", "unavailable", "interrupted", "unknown"}
@@ -63,6 +64,7 @@ def checked_result(result, spec):
 class Runtime:
     def __init__(self, catalog):
         self.catalog = catalog
+        self.observation_errors = 0
 
     def create(self, workflow, destination, *, reuse_from=None):
         value, provenance, _ = load_generation(workflow, self.catalog)
@@ -82,6 +84,7 @@ class Runtime:
         state = {
             "schema_version": 1,
             "kind": "workflow-execution",
+            "observation_protocol": "workflow-observation/1",
             "execution_id": execution_id,
             "generation_id": value["generation_id"],
             "definition_id": value["definition_id"],
@@ -97,6 +100,9 @@ class Runtime:
                 for step in value["steps"]
             },
         }
+        if reuse_from:
+            write(directory / "reuse-source.json", saved)
+            state["reuse_source_sha256"] = digest(saved)
         write(directory / "state.json", state)
         return directory
 
@@ -154,6 +160,22 @@ class Runtime:
             MappingProxyType(predecessor_view),
         )
         fsm = ExecutionFSM(state["phase"], context)
+        journal = ObservationJournal(context)
+        self.observation_errors = 0
+        journal.record("session_started", phase=fsm.state, status=state["status"])
+
+        def observe(event, key):
+            journal.record(
+                event,
+                step=definitions[key],
+                item=state["steps"][key],
+                spec=self.catalog.resolve(definitions[key]["tool"])[0],
+            )
+
+        def finished():
+            journal.finish(state)
+            self.observation_errors = journal.errors
+            return state
 
         def save():
             state["phase"] = fsm.state
@@ -172,7 +194,7 @@ class Runtime:
                 fsm.uncertain()
             state.update(status="unknown", exit_code=3)
             save()
-            return state
+            return finished()
         if fsm.state == "RUNNING":
             fsm.pause()
         # All earlier outcomes are offered to adapters, never blindly trusted by the core.
@@ -181,6 +203,14 @@ class Runtime:
             for key, item in state["steps"].items()
         }
         for key, item in state["steps"].items():
+            if item["status"] != "pending":
+                journal.record(
+                    "recovered",
+                    step=definitions[key],
+                    item=item,
+                    spec=self.catalog.resolve(definitions[key]["tool"])[0],
+                    prior_status=item["status"],
+                )
             item["previous"] = old[key]
             item["status"] = "pending"
             for field in ("result", "reason", "input_sha256", "output_sha256"):
@@ -217,6 +247,7 @@ class Runtime:
                         status="skipped", reason="Predecessor condition did not hold"
                     )
                     pending.remove(key)
+                    observe("skipped", key)
                     continue
                 spec, adapter = self.catalog.resolve(step["tool"])
                 try:
@@ -232,6 +263,7 @@ class Runtime:
                         reason="Required predecessor output is unavailable or invalid",
                     )
                     pending.remove(key)
+                    observe("blocked", key)
                     continue
                 if spec.recovery == "manual" and old[key] is not None:
                     previous = old[key]
@@ -244,7 +276,8 @@ class Runtime:
                     )
                     fsm.pause()
                     save()
-                    return state
+                    observe("blocked", key)
+                    return finished()
                 item.update(
                     status="running",
                     attempt=item["attempt"] + 1,
@@ -254,6 +287,9 @@ class Runtime:
                     Invocation(key, step["tool"], inputs, item["attempt"], old[key])
                 )
             save()  # Intent for every admitted call is durable before invoking a tool.
+            for _, calls in groups.values():
+                for call in calls:
+                    observe("admitted", call.step_id)
             for adapter, calls in groups.values():
                 predecessor_view.clear()
                 predecessor_view.update(
@@ -266,6 +302,8 @@ class Runtime:
                     )
                 )
                 interrupted = False
+                for call in calls:
+                    observe("invoking", call.step_id)
                 try:
                     results = adapter.invoke(tuple(calls), context)
                     if set(results) != {call.step_id for call in calls}:
@@ -316,6 +354,8 @@ class Runtime:
                     )
                     pending.remove(call.step_id)
                 save()
+                for call in calls:
+                    observe("returned", call.step_id)
                 if any(
                     state["steps"][call.step_id]["status"] == "unknown"
                     for call in calls
@@ -323,7 +363,7 @@ class Runtime:
                     fsm.uncertain()
                     state.update(status="unknown", exit_code=3)
                     save()
-                    return state
+                    return finished()
                 if interrupted or any(
                     state["steps"][call.step_id]["status"] == "interrupted"
                     for call in calls
@@ -331,7 +371,7 @@ class Runtime:
                     fsm.pause()
                     state.update(status="interrupted", exit_code=130)
                     save()
-                    return state
+                    return finished()
         bad = [
             item
             for key, item in state["steps"].items()
@@ -353,4 +393,4 @@ class Runtime:
         )
         fsm.finish()
         save()
-        return state
+        return finished()

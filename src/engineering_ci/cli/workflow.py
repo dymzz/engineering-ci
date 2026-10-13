@@ -5,10 +5,12 @@ import json
 from contextlib import ExitStack
 from pathlib import Path
 
+from filelock import FileLock
+
 from .._paths import ROOT
 from ..workflow_adapters.checks import catalog, recipe
 from ..workflow_core import Runtime, generate, load_generation
-from ..workflow_core.documents import WorkflowError, read, write
+from ..workflow_core.documents import WorkflowError, digest, read, write
 from ..workflow_core.schemas import SCHEMAS
 
 
@@ -55,6 +57,16 @@ def main(argv=None):
     for name in ("status", "resume"):
         action = commands.add_parser(name)
         action.add_argument("execution", type=Path)
+    proof = commands.add_parser("evidence")
+    proof.add_argument("execution", type=Path)
+    proof.add_argument("--limit", type=int, default=20)
+    proof.add_argument("--max-bytes", type=int, default=16384)
+    proof.add_argument("--after")
+    proof.add_argument(
+        "--otel-json",
+        type=Path,
+        help="Export observed spans using the optional trace SDK",
+    )
     for action in commands.choices.values():
         action.add_argument(
             "--json",
@@ -80,6 +92,7 @@ def main(argv=None):
                 "result.json",
                 "checks.json",
                 "intent.json",
+                "reuse-source.json",
             }:
                 raise WorkflowError(
                     "Operation JSON must not overwrite a definition or execution receipt"
@@ -90,6 +103,12 @@ def main(argv=None):
             ]
             if options.json in {Path(path).resolve() for path in source_paths if path}:
                 raise WorkflowError("Operation JSON must not overwrite its source")
+            if getattr(options, "execution", None) and options.json.is_relative_to(
+                options.execution.resolve()
+            ):
+                raise WorkflowError(
+                    "Operation JSON must stay outside the execution evidence directory"
+                )
             result_destination = options.json
         tools = catalog(ROOT)
         runtime = Runtime(tools)
@@ -154,7 +173,14 @@ def main(argv=None):
                     junit=options.junit,
                 )
             )
-            path = generate(selected, tools, options.out, source=source).resolve()
+            target = None
+            if source:
+                from ..workflow_adapters.candidates import profile_target
+
+                target = profile_target(selected)
+            path = generate(
+                selected, tools, options.out, source=source, target=target
+            ).resolve()
             value, _, _ = load_generation(path, tools)
             operation.update(
                 status="generated",
@@ -175,7 +201,10 @@ def main(argv=None):
                 ],
             )
         elif options.command == "validate":
+            from ..workflow_adapters.candidates import verify_target
+
             value, provenance, plan = load_generation(options.workflow, tools)
+            target_admission = verify_target(value, provenance)
             operation.update(
                 status="valid",
                 exit_code=0,
@@ -183,16 +212,65 @@ def main(argv=None):
                 definition_id=value["definition_id"],
                 plan=plan,
                 provenance=provenance,
+                target_policy=target_admission,
                 execution_admission="tools verify actual environment, inputs and resources at invocation",
             )
+        elif options.command == "evidence":
+            from ..workflow_adapters.evidence import evidence
+
+            operation["execution"] = str(options.execution.resolve())
+            operation = evidence(
+                options.execution,
+                tools,
+                ROOT,
+                limit=options.limit,
+                budget=options.max_bytes,
+                after=options.after,
+            )
+            if options.otel_json and operation["exit_code"] == 0:
+                from ..checks import report_path
+                from ..tracing.workflow_spans import standardize
+                from ..workflow_core.observations import history
+
+                output = report_path(options.otel_json, ROOT)
+                if (
+                    output.is_relative_to(options.execution.resolve())
+                    or output == options.json
+                ):
+                    raise WorkflowError(
+                        "OTel projection must not overwrite execution or operation evidence"
+                    )
+                with FileLock(
+                    options.execution.resolve() / "execution.lock", timeout=0
+                ):
+                    state = runtime.status(options.execution)
+                    observations = history(options.execution.resolve(), state)
+                    if operation["scope"]["state_sha256"] != digest(state) or operation[
+                        "scope"
+                    ]["observations_sha256"] != digest(observations[0]):
+                        raise WorkflowError(
+                            "Execution changed during evidence export; repeat the query"
+                        )
+                    write(
+                        output, standardize(observations[0], state, *observations[1:])
+                    )
         else:
+            from ..workflow_adapters.candidates import verify_target
+
             if options.command == "run":
+                value, provenance, _ = load_generation(options.workflow, tools)
+                verify_target(value, provenance)
                 directory = runtime.create(
                     options.workflow, options.out, reuse_from=options.reuse_from
                 )
             else:
                 directory = options.execution.resolve()
             operation["execution"] = str(directory)
+            if options.command == "resume":
+                value, provenance, _ = load_generation(
+                    directory / "workflow.json", tools
+                )
+                verify_target(value, provenance)
             if options.command != "status":
                 print(f"Execution checkpoint: {directory}", flush=True)
                 print(
@@ -211,6 +289,17 @@ def main(argv=None):
                 if options.command == "status"
                 else "see_individual_tool_results",
             )
+            if options.command != "status":
+                operation["observations"] = {
+                    "directory": str(directory / "observations"),
+                    "write_errors": runtime.observation_errors,
+                    "next_action": [
+                        "engineering-ci",
+                        "workflow",
+                        "evidence",
+                        str(directory),
+                    ],
+                }
             operation["next_actions"] = [
                 ["engineering-ci", "workflow", "status", str(directory)]
             ]
@@ -224,13 +313,24 @@ def main(argv=None):
                     "Verify the uncertain domain operation; automatic re-invocation is prohibited",
                 )
     except Exception as error:  # noqa: BLE001 -- host SDK failures can contain private responses
+        from ..tracing.store import ArchiveError
+
         # Source SDK failures and raw subprocess responses can include private information.
         operation.update(
             status="invalid_or_unavailable",
+            exit_code=operation["exit_code"] or 3,
             reason=str(error)
-            if isinstance(error, WorkflowError)
+            if isinstance(error, (WorkflowError, ArchiveError))
             else "Cannot validate, persist or invoke the requested workflow",
         )
+        if (
+            isinstance(error, ImportError)
+            and options.command == "evidence"
+            and options.otel_json
+        ):
+            operation["reason"] = (
+                "OTel projection unavailable; install the locked trace extra"
+            )
         if "execution" in operation:
             operation["next_actions"] = [
                 ["engineering-ci", "workflow", "status", operation["execution"]]
@@ -243,5 +343,10 @@ def main(argv=None):
                 reason="Operation JSON could not be saved",
                 exit_code=operation["exit_code"] or 3,
             )
-    print(json.dumps(operation, indent=2, sort_keys=True))
+    if options.command == "evidence":
+        from ..tracing.retrieval import encode
+
+        print(encode(operation).decode("utf-8"), end="")
+    else:
+        print(json.dumps(operation, indent=2, sort_keys=True))
     return operation["exit_code"]

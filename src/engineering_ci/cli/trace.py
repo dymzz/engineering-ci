@@ -16,6 +16,9 @@ from ..tracing.sources.codex_rollout import RolloutSource, SourceError, inspect_
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    from .trace_query import add_command
+
+    add_command(commands)
     status = commands.add_parser(
         "status", help="Inspect PostgreSQL access without migrations or archive writes"
     )
@@ -105,6 +108,10 @@ def main(argv=None):
         command.add_argument("--config")
         command.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
+    if options.command == "query":
+        from .trace_query import run
+
+        return run(options)
     if options.command == "send":
         if bool(options.file) == bool(options.projection_result):
             parser.error("Choose a projection file or --projection-result, exactly one")

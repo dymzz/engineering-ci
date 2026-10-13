@@ -8,6 +8,8 @@
 - [常用操作](common-tasks.md) — 本地检查、开发 PR、发布、恢复、下载与旧函数迁移。
 - [CLI 参考](cli-reference.md) — Release/Download、轨迹归档、分析与候选审查的命令及输出。
 - [独立生成工作流](generated-workflows.md) — 工具发现、生成文件、配置执行、证据复用与恢复。
+- [分层查询](trace-queries.md) — 从分析概览逐层查询模式、候选、见证与授权原文。
+- [Propel 数据读取](propel-postgresql.md) — 当前离线 XES 导入、此前 Source 别名与数据库连接观察。
 
 ## 上级入口
 

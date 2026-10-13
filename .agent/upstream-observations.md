@@ -23,3 +23,27 @@
 - 同文件还验证 401/403、307 不跳转及畸形正文；SDK 状态不作为后端持久化或业务成功证据。
 - 当前处理：继续复用官方编码、HTTP 和有限重试；用官方 Protobuf 消息读取接收确认，不复制上游实现或修改库。
 - 未搜索或提交上游 Issue/PR，未开展额外上游调查。
+
+## Propel / SQLx：Windows PostgreSQL 本地化错误无法解码
+
+- 状态：用户实际桌面操作报告了协议错误，宿主配置已只读核实；未独立复现 SQLx 连接，未认定为新的上游 Bug。
+- 场景：Propel Extraction Blueprint 连接已有宿主 PostgreSQL，尚未发现表。
+- 用户错误：Postgres protocol error (reading ErrorResponse)，Postgres returned a non-UTF-8 string for its error message；其后改用同一 URI 报 pool timed out while waiting for an open connection。
+- 宿主证据：server/client encoding=UTF8；lc_messages=Chinese (Simplified)_China.936；Psycopg 连接同一数据库成功；ssl=off，1 个客户端连接，max_connections=100，角色/数据库连接限额=-1。
+- 分类：已观察到的错误诊断/本地化兼容性问题；真正的连接拒绝原因仍未知，不能从该错误认定密码错误、服务器连接耗尽或 Rust4PM 算法故障。
+- 边界：当前应用角色不是管理员，pg_current_logfile() 被权限拒绝，未读取服务端认证日志；没有修改 PostgreSQL、凭据或第三方代码。
+- 后续用户证据：Propel v0.3.1；pgAdmin4 使用 sslmode=prefer 可以登录，Propel 的 disable 尝试未解决问题。用户确认本次来源的 2026-10-13 15:56:39 CST 服务端日志仅为客户端强制断开；其他用户名/密码失败记录不作为该连接的归因依据。connection limit=-1 本身是正常的不限额设置。
+- 源码观察：v0.3.1 的 Cargo.lock 锁定 dbcon 0.4.1 / SQLx PostgreSQL 0.9.0；官方 crate 仅在内存读取，SHA256=e8a30c7fecab2cccb75a38cf2fe1a75ab8e203f70277d086740881a92893b3ca 与锁文件一致。lib.rs 201–205、350–353 行在 on_a_runtime 中创建 PgPool，812–828 行的局部 Runtime 随临时线程退出，979–980 行发现表时另建 Runtime 使用原池。
+- 待验证假设：原 Runtime 销毁后使用池内 I/O 的生命周期风险，与断开/池超时相符；Tokio 官方文档明确旧 Runtime 的未结束 I/O 无法继续使用。尚未执行相同版本最小复现，不把静态风险或 pgAdmin 登录成功当作已确认上游 Bug。
+- 当前处理：[连接排障说明](../guides/propel-postgresql.md)提供 Source 别名语义与当前已验证的 prefer 配置，记录源码风险及直接 SQLx/dbcon 对照的下一步。不再推荐 disable 作为本例修复；是否调整消息语言由管理员决定。Propel 连接成功仍未验收。
+- 未搜索或提交上游 Issue/PR，未扩大为第三方库修复。
+- 用户已决定停止本次 Propel 排障，跳过该可选 UI；不继续开展复现、上游修复或 Issue 调查。上述源码风险仍保留未独立复现状态，不因用户判断而伪造验证完成。
+
+## Dagger beta：Windows 非交互版本探测挂起
+
+- 状态：本地终端集成行为观察，未独立定位为 Dagger 上游 Bug。
+- 场景：本轮 Harness P0 验收，主 checkout 使用 Dagger 1.0.0-beta.16。
+- 实际结果：直接运行 dagger version，未设置 FORCE_DARK_MODE，超过一分钟无输出；已用 Ctrl+C 停止该探测，没有终止正式检查。
+- 当前对照：既有 dagger_checks.prepare 使用 FORCE_DARK_MODE=1 和 30 秒版本探测超时，同一二进制的版本/容器预检及五项 Linux 检查实际通过。
+- 现有代码已记录 Windows 显示探测风险；本轮没有证明具体根因，也没有改变第三方实现、安装或工作区位置。
+- 未搜索或提交上游 Issue/PR，未扩大为故障调查。

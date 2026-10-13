@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC
 
 from .results import canonical, digest, result_id
@@ -228,6 +229,83 @@ class TraceCatalog:
                 "archive_corrupt", "Derived result document digest does not match"
             )
         return raw
+
+    def raw_members(self, snapshot, *, limit=20, after=None):
+        """Page raw references without fetching payloads or scanning other snapshots."""
+        result_id(snapshot)
+        limit = page_limit(limit)
+        if after is not None and (type(after) is not int or after < 0):
+            raise ArchiveError("invalid_query", "Invalid raw member position")
+        with self.store.transaction(readonly=True) as cursor:
+            self.store._owned(cursor)
+            metadata = self._read_snapshot(cursor, snapshot)
+            if after is not None and after >= metadata["records"]:
+                raise ArchiveError(
+                    "invalid_query", "Raw cursor is outside this snapshot"
+                )
+            cursor.execute(
+                self.store.query(
+                    "SELECT m.position, e.event_id, e.record_offset, octet_length(e.payload), e.payload_digest, e.fragment FROM {schema}.snapshot_members m JOIN {schema}.events e ON e.source = m.source AND e.event_id = m.event_id WHERE m.snapshot_id = %s AND m.position > %s ORDER BY m.position LIMIT %s"
+                ),
+                (snapshot, -1 if after is None else after, limit + 1),
+            )
+            rows = cursor.fetchall()
+        start = 0 if after is None else after + 1
+        expected = min(limit + 1, metadata["records"] - start)
+        if len(rows) != expected or [row[0] for row in rows] != list(
+            range(start, start + expected)
+        ):
+            raise ArchiveError(
+                "archive_corrupt",
+                "Selected raw member positions are missing or inconsistent",
+            )
+        return {
+            "snapshot": metadata,
+            "items": [
+                dict(
+                    zip(
+                        (
+                            "position",
+                            "event_id",
+                            "offset",
+                            "bytes",
+                            "sha256",
+                            "fragment",
+                        ),
+                        row,
+                    )
+                )
+                for row in rows[:limit]
+            ],
+            "has_more": len(rows) > limit,
+        }
+
+    def raw_payload(self, snapshot, member):
+        """Read one admitted member and check its reference and stored byte digest."""
+        result_id(snapshot)
+        with self.store.transaction(readonly=True) as cursor:
+            self.store._owned(cursor)
+            cursor.execute(
+                self.store.query(
+                    "SELECT e.event_id, e.record_offset, e.payload, e.payload_digest, e.fragment FROM {schema}.snapshot_members m JOIN {schema}.events e ON e.source = m.source AND e.event_id = m.event_id WHERE m.snapshot_id = %s AND m.position = %s"
+                ),
+                (snapshot, member["position"]),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise ArchiveError("archive_corrupt", "Selected raw member is unavailable")
+        raw = bytes(row[2])
+        if (row[0], row[1], len(raw), row[3], row[4]) != (
+            member["event_id"],
+            member["offset"],
+            member["bytes"],
+            member["sha256"],
+            member["fragment"],
+        ) or digest(raw) != member["sha256"]:
+            raise ArchiveError(
+                "archive_corrupt", "Selected raw member digest or identity differs"
+            )
+        return base64.b64encode(raw).decode("ascii")
 
     def lineage(self, identifier):
         """Resolve actual stored foreign-key links; never infer parents from filenames."""

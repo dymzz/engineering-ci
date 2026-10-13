@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from importlib.metadata import version
 from itertools import pairwise
 from pathlib import Path
@@ -34,29 +35,81 @@ def analysis_identity(value):
     return {name: value[name] for name in names}
 
 
-def discover(selected):
-    """Adapt admitted sequences to XES; Rust4PM owns variants and DFG discovery."""
-    import r4pm
-    from r4pm import bindings
-
-    if not selected:
-        return {}, {}, {}, {}
+def cases_xes(selected, *, analysis=None, excluded=0):
+    """Serialize admitted cases; export details only from verified projected fields."""
     log = ET.Element(
         "log", {"xes.version": "1.0", "xmlns": "http://www.xes-standard.org/"}
     )
+    if analysis is not None:
+        for name in (
+            "analysis_id",
+            "projection_id",
+            "snapshot_id",
+            "input_sha256",
+            "completeness",
+        ):
+            ET.SubElement(
+                log, "string", key="engineering_ci:" + name, value=analysis[name]
+            )
+        ET.SubElement(
+            log, "int", key="engineering_ci:selected_cases", value=str(len(selected))
+        )
+        ET.SubElement(
+            log, "int", key="engineering_ci:excluded_cases", value=str(excluded)
+        )
+        ET.SubElement(log, "boolean", key="engineering_ci:llm_used", value="false")
     for case in selected:
         trace = ET.SubElement(log, "trace")
         ET.SubElement(trace, "string", key="concept:name", value=case["turn_id"])
+        if analysis is not None:
+            ET.SubElement(
+                trace, "string", key="engineering_ci:boundary", value=case["boundary"]
+            )
         for operation in case["operations"]:
             event = ET.SubElement(trace, "event")
             ET.SubElement(
                 event, "string", key="concept:name", value=operation["activity"]
             )
+            if analysis is not None:
+                for key in ("event_id", "outcome"):
+                    ET.SubElement(
+                        event,
+                        "string",
+                        key="engineering_ci:" + key,
+                        value=operation[key],
+                    )
+                for key in ("start_ns", "end_ns"):
+                    ET.SubElement(
+                        event,
+                        "int",
+                        key="engineering_ci:" + key,
+                        value=str(operation[key]),
+                    )
+                end = operation["end_ns"]
+                timestamp = datetime.fromtimestamp(end // 1_000_000_000, UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%S"
+                )
+                ET.SubElement(
+                    event,
+                    "date",
+                    key="time:timestamp",
+                    value=f"{timestamp}.{end % 1_000_000_000:09d}Z",
+                )
+    return ET.tostring(log, encoding="utf-8", xml_declaration=True)
+
+
+def discover(selected):
+    """Reuse the same admitted-case serializer; Rust4PM owns discovery algorithms."""
+    import r4pm
+    from r4pm import bindings
+
+    if not selected:
+        return {}, {}, {}, {}
     identifiers = []
     try:
         with TemporaryDirectory(prefix="engineering-ci-mining-") as directory:
             path = Path(directory) / "cases.xes"
-            ET.ElementTree(log).write(path, encoding="utf-8", xml_declaration=True)
+            path.write_bytes(cases_xes(selected))
             log_id = r4pm.import_item("EventLog", str(path))
             identifiers.append(log_id)
             projection_id = bindings.log_to_activity_projection(log_id)

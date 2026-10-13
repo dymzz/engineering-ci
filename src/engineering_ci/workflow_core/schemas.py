@@ -102,6 +102,19 @@ PROVENANCE = {
         }
     ),
 }
+TARGET = object_schema(
+    {
+        "kind": {"const": "registered-profile"},
+        "name": NAME,
+        "policy_sha256": HASH,
+        "mapping": {
+            "type": "array",
+            "minItems": 1,
+            "items": object_schema({"step_id": NAME, "tool_id": TOOL}),
+        },
+    }
+)
+PROVENANCE["properties"]["target"] = TARGET
 SCHEMAS = {"recipe": RECIPE, "workflow": WORKFLOW, "provenance": PROVENANCE}
 
 RESULT = object_schema(
@@ -177,6 +190,8 @@ EXECUTION = {
 }
 SCHEMAS.update(tool_result={"$schema": DRAFT, **RESULT}, execution=EXECUTION)
 EXECUTION["properties"]["decision_required"] = {"type": "string"}
+EXECUTION["properties"]["reuse_source_sha256"] = HASH
+EXECUTION["properties"]["observation_protocol"] = {"const": "workflow-observation/1"}
 TOOL_DESCRIPTOR = {
     "$schema": DRAFT,
     **object_schema(
@@ -199,6 +214,86 @@ TOOL_DESCRIPTOR = {
 }
 SCHEMAS["tool"] = TOOL_DESCRIPTOR
 TOOL_DESCRIPTOR["properties"]["contract_sha256"] = HASH
+
+OBSERVATION = {
+    "$schema": DRAFT,
+    **object_schema(
+        {
+            "schema_version": {"const": 1, "type": "integer"},
+            "kind": {"const": "workflow-observation"},
+            "execution_id": ID,
+            "generation_id": ID,
+            "definition_id": HASH,
+            "session_id": ID,
+            "sequence": {"type": "integer", "minimum": 1},
+            "observed_ns": {"type": "integer", "minimum": 0},
+            "event": {
+                "enum": [
+                    "session_started",
+                    "admitted",
+                    "invoking",
+                    "returned",
+                    "recovered",
+                    "skipped",
+                    "blocked",
+                    "session_finished",
+                ]
+            },
+            "step_id": NAME,
+            "tool_id": TOOL,
+            "contract_sha256": HASH,
+            "attempt": {"type": "integer", "minimum": 0},
+            "input_sha256": HASH,
+            "output_sha256": HASH,
+            "result_sha256": HASH,
+            "previous_result_sha256": HASH,
+            "result": object_schema(
+                {
+                    key: RESULT["properties"][key]
+                    for key in (
+                        "status",
+                        "exit_code",
+                        "executed",
+                        "complete",
+                        "current",
+                        "reused",
+                        "report_generated",
+                    )
+                }
+            ),
+            "phase": EXECUTION["properties"]["phase"],
+            "status": EXECUTION["properties"]["status"],
+            "exit_code": {"type": "integer"},
+            "prior_status": STEP_RESULT["properties"]["status"],
+            "missing_records": {"type": "integer", "minimum": 0},
+        },
+        [
+            "schema_version",
+            "kind",
+            "execution_id",
+            "generation_id",
+            "definition_id",
+            "session_id",
+            "sequence",
+            "observed_ns",
+            "event",
+        ],
+    ),
+}
+SCHEMAS["observation"] = OBSERVATION
+OBSERVATION["allOf"] = [
+    {"if": {"properties": {"event": {"enum": events}}}, "then": {"required": fields}}
+    for events, fields in (
+        (["session_started"], ["phase", "status"]),
+        (["session_finished"], ["phase", "status", "exit_code", "missing_records"]),
+        (
+            ["admitted", "invoking", "returned", "recovered", "skipped", "blocked"],
+            ["step_id", "tool_id", "attempt", "contract_sha256"],
+        ),
+        (["admitted", "invoking", "returned"], ["input_sha256"]),
+        (["returned"], ["result", "result_sha256", "output_sha256"]),
+    )
+]
 
 
 def validate(value, schema, *, label="document"):
