@@ -847,18 +847,13 @@ def main(argv=None, *, executor=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "checks",
-        nargs="*",
+        nargs="+",
         help="pr, ruff, tests, version, lock, ruff-lint, ruff-format; inspect REPORT; toolchain",
     )
     parser.add_argument(
         "--coverage",
         action="store_true",
         help="Export the existing core Coverage XML and JSON",
-    )
-    parser.add_argument(
-        "--binding",
-        type=Path,
-        help="Use an explicitly bound complete PR Handler; requires --json and --reuse",
     )
     parser.add_argument("--junit", default="core-junit.xml")
     parser.add_argument(
@@ -878,35 +873,9 @@ def main(argv=None, *, executor=None):
         "--github-output", type=Path, help="toolchain only: export setup-uv inputs"
     )
     args = parser.parse_args(argv)
-    binding = None
     try:
         if args.json:
             args.json = report_path(args.json, ROOT)
-        if args.binding:
-            if args.checks or not args.json or not args.reuse:
-                raise ValueError(
-                    "--binding requires --reuse and --json, without other check selectors"
-                )
-            if args.binding.resolve() in {
-                args.json,
-                (ROOT / args.junit).resolve(),
-                ROOT / "core-coverage.xml",
-                ROOT / "core-coverage.json",
-            }:
-                raise ValueError("Check outputs must not overwrite the Handler binding")
-            from .mining.bindings import read
-            from .tracing.store import ArchiveError
-
-            try:
-                binding = read(args.binding, pipeline=PIPELINE)
-            except ArchiveError as error:
-                raise ValueError(f"{error.status}: {error}") from None
-            args.checks = ["pr"]
-            print(
-                f"Handler binding: {binding['binding_id']}; executing the existing complete PR profile"
-            )
-        if not args.checks:
-            raise ValueError("Choose an explicit check or --binding")
         if args.checks == ["toolchain"]:
             versions = {
                 "uv_version": UV_VERSION,
@@ -937,7 +906,7 @@ def main(argv=None, *, executor=None):
             raise ValueError(f"This entry point requires the {executor} executor")
         if args.reuse and not args.json:
             raise ValueError("--reuse requires --json with the saved report path")
-        report, code = run_checks(
+        _, code = run_checks(
             args.checks,
             executor=executor or args.executor,
             coverage=args.coverage,
@@ -945,16 +914,6 @@ def main(argv=None, *, executor=None):
             output=args.json,
             reuse=args.reuse,
         )
-        if binding:
-            report["handler_binding"] = binding
-            try:
-                atomic_json(args.json, report)
-            except OSError:
-                print(
-                    "checks: cannot save the binding association; original check results retain their exit status",
-                    file=sys.stderr,
-                )
-                return code or 3
         return code
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"checks: {type(error).__name__}: {error}", file=sys.stderr)

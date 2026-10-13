@@ -11,6 +11,7 @@ from test_trace_candidates import evidence
 
 from engineering_ci import checks
 from engineering_ci.cli import mine
+from engineering_ci.cli.checks_binding import main as bound_main
 from engineering_ci.mining.bindings import bind, read, validate
 from engineering_ci.mining.candidates import candidates
 from engineering_ci.tracing.results import canonical, digest
@@ -190,16 +191,16 @@ def test_bound_pr_executes_then_reuses_all_five_without_duplicate_processes(
     calls = []
     process = fake_process(action=lambda args, kw: calls.append(args))
     args = run_bound(checkout, monkeypatch, process=process)
-    assert checks.main(args) == 0 and len(calls) == 5
+    assert bound_main(args) == 0 and len(calls) == 5
     report = checks.read_report(checkout / "result.json")
     assert report["handler_binding"] == binding()
-    assert checks.main(args) == 0 and len(calls) == 5
+    assert bound_main(args) == 0 and len(calls) == 5
     report = checks.read_report(checkout / "result.json")
     assert all(
         x["reused"] and not x["executed_this_invocation"] for x in report["checks"]
     )
     (checkout / "tests/test_new.py").write_text("def test_new(): pass\n")
-    assert checks.main(args) == 0 and len(calls) == 6
+    assert bound_main(args) == 0 and len(calls) == 6
     assert calls[-1][0:2] == ["uv", "run"] and "pytest" in calls[-1]
 
 
@@ -210,8 +211,8 @@ def test_failed_bound_check_remains_failed_when_reused(checkout, monkeypatch):
         monkeypatch,
         process=fake_process(7, lambda args, kw: calls.append(args)),
     )
-    assert checks.main(args) == 7
-    assert checks.main(args) == 7 and len(calls) == 5
+    assert bound_main(args) == 7
+    assert bound_main(args) == 7 and len(calls) == 5
     report = checks.read_report(checkout / "result.json")
     assert report["overall_status"] == "failed" and report["exit_code"] == 7
     assert all(x["status"] == "failed" for x in report["checks"])
@@ -224,7 +225,7 @@ def test_bound_execution_does_not_hide_input_change_or_missing_tool(
         (checkout / "tests/test_new.py").write_text("# changed\n")
 
     args = run_bound(checkout, monkeypatch, process=fake_process(action=change))
-    assert checks.main(args) == 3
+    assert bound_main(args) == 3
     report = checks.read_report(checkout / "result.json")
     assert report["checks"][2]["status"] == "stale"
     assert not report["checks"][2]["passed_for_current_input"]
@@ -233,7 +234,7 @@ def test_bound_execution_does_not_hide_input_change_or_missing_tool(
         raise checks.PreconditionError("missing_tool", "uv unavailable")
 
     monkeypatch.setattr(checks, "preflight", missing)
-    assert checks.main(args) == 127
+    assert bound_main(args) == 127
     assert all(
         x["status"] == "missing_tool"
         for x in checks.read_report(checkout / "result.json")["checks"]
@@ -242,10 +243,10 @@ def test_bound_execution_does_not_hide_input_change_or_missing_tool(
 
 def test_binding_rejects_selector_override_and_output_collisions(checkout, monkeypatch):
     args = run_bound(checkout, monkeypatch)
-    assert checks.main(["ruff", *args]) == 3
-    assert checks.main([*args, "--junit", str(checkout / "binding.json")]) == 3
+    assert bound_main(["ruff", *args]) == 3
+    assert bound_main([*args, "--junit", str(checkout / "binding.json")]) == 3
     assert (
-        checks.main(
+        bound_main(
             [
                 "--binding",
                 str(checkout / "binding.json"),
@@ -270,7 +271,7 @@ def test_binding_save_failure_keeps_original_failure_exit(checkout, monkeypatch)
         write(path, value)
 
     monkeypatch.setattr(checks, "atomic_json", fail_association)
-    assert checks.main(args) == 7
+    assert bound_main(args) == 7
     report = checks.read_report(checkout / "result.json")
     assert report["exit_code"] == 7 and "handler_binding" not in report
 
@@ -298,8 +299,8 @@ def test_bound_cli_uses_same_dagger_executor_and_receipts(checkout, monkeypatch)
             **{k: v for k, v in kw.items() if k != "executor"},
         ),
     )
-    assert checks.main(args) == 0 and len(backend.exports) == 1
-    assert checks.main(args) == 0 and len(backend.exports) == 1
+    assert bound_main(args) == 0 and len(backend.exports) == 1
+    assert bound_main(args) == 0 and len(backend.exports) == 1
     report = checks.read_report(checkout / "result.json")
     assert report["handler_binding"] == binding()
     assert all(x["reused"] for x in report["checks"])

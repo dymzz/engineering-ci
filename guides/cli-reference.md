@@ -362,5 +362,13 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 也不批准删检查、自动发布或扩展远端权限。详细契约见
 [Handler 固化](../docs/architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
 
-以上调用是当前证据绑定原型。独立生成文件、统一工具契约与可剥离执行层的架构已记录在
-[独立生成与编排](../docs/architecture/workflow-optimization/generated-workflows.md)；其新入口尚未实现。
+以上调用是早期证据绑定原型的兼容入口。新配置执行使用 `engineering-ci workflow`，见
+[完整操作说明](generated-workflows.md)，不要将旧绑定文件当作新的 workflow.json。
+
+## 独立工作流入口
+
+`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume。
+generate 接受独立 Recipe 或显式 Profile，每次创建独立定义及来源；run 创建独立执行；
+resume 继续同一检查点，status 只读已记录事实。每个子命令支持 `--json FILE`。
+所有工具使用已有 console-script 入口；工具注册及实际命令不放入 pyproject 的 scripts 表。
+参数、连贯 PowerShell 示例、输入/输出引用和中断后的继续方式见[独立工作流](generated-workflows.md)。

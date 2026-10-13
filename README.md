@@ -1,7 +1,7 @@
 # Engineering CI
 
 Engineering CI 提供可复用的 Python CI 能力，结合 Dagger、GitHub Actions 与本地执行工具，
-并提供可选的 Agent 轨迹归档、标准投影与离线流程分析。
+并提供可选的 Agent 轨迹归档、标准投影、离线流程分析及独立工具工作流生成和执行。
 
 ## 文档入口
 

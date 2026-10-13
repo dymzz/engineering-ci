@@ -154,7 +154,7 @@ flowchart TD
 代码放 `src/engineering_ci/tracing/` 与 `src/engineering_ci/mining/`。
 用户操作接到已有 `engineering-ci` CLI；`scripts/` 继续只有 release.py、download.py。
 实际工具执行继续复用既有模块。用户进一步确定的独立生成、通用编排核心和适配边界见
-[独立生成与编排](generated-workflows.md)；该方案尚未实施，不重复 GitHub Job 或 Dagger 容器调度。
+[独立生成与编排](generated-workflows.md)；v0.6.1 已实现独立调用层，不重复 GitHub Job 或 Dagger 容器调度。
 
 ## 三层数据与少量元数据
 
@@ -534,8 +534,8 @@ optimization_verified=false、llm_used=false。审查须核对具体检查/动�
 
 ## 首个 Handler 固化：基础 PR 检查复用（v0.6.1）
 
-本节记录当前 PR 的证据绑定原型，尚未完成独立执行配置生成。
-核心与工具解耦、每次独立产物及生成链路的后续实现以[独立生成与编排](generated-workflows.md)为准。
+本节保留 PR #25 早期证据绑定原型的历史定义及兼容行为。
+当前独立生成、核心与工具解耦及配置执行以[独立生成与编排](generated-workflows.md)为准。
 
 用户选定“基础 PR 检查的同输入复用”，绑定现有 `pr` Profile 中的五个注册操作。
 首个来源候选是已登记分析中连续两次 `command_execution` 的调查项。
@@ -548,7 +548,7 @@ optimization_verified=false、llm_used=false。审查须核对具体检查/动�
 必须显式给出候选 ID 和 `--profile pr`；仅接受连续 command 活动候选。
 文件输出拒绝覆盖，写入失败返回错误和新输出路径的继续命令。
 
-固化产物是小型 JSON 绑定，不是通用 Workflow IR：
+早期原型产物是小型 JSON 绑定，不是新工作流定义：
 
 | 字段 | 契约 |
 | --- | --- |
@@ -575,4 +575,5 @@ Dagger 原始执行、环境、JUnit 和文件摘要的读回保持有效，GitH
 修复或相关输入变化后重新执行受影响项，执行中变化仍为 stale；不自动删测试。
 如最终来源关联保存失败，保留已经生成的检查报告及非零工具退出状态，成功检查返回 3 表示关联未保存。
 进程在最终关联写入前停止时，报告可能只有检查事实；再次用同一绑定和报告继续，先核验事实再补关联。
-本轮只证明受控 PR 检查复用路径，不声称已验证历史冗余、跨运行节省或全自动优化循环。
+以上历史原型只证明受控 PR 检查复用路径；当前新增配置生成与执行的验收另行记录，
+两者均不声称已验证历史冗余或全自动优化循环。

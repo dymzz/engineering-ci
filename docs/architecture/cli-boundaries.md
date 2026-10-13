@@ -12,7 +12,8 @@ scripts/download.py → cli/download.py → execution Coordinator（已有 Run�
 engineering-ci checks/version → checks.py / release/version.py
 engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
 engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 分析、比较、候选及显式 Handler 绑定）
-engineering-ci checks --binding → 绑定契约核验 → checks.py（完整 pr，原 native / Dagger 执行器）
+engineering-ci checks --binding → cli/checks_binding.py（兼容桥）→ 原完整 pr
+engineering-ci workflow → cli/workflow.py（组装 Catalog）→ workflow_core → workflow_adapters → 原检查/查询
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
@@ -23,9 +24,9 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 本地交付层次化 FSM 管阶段准入，已有 execution FSM 管 Dispatch、等待和恢复；
 两者不替代 Actions 的远端 DAG。
 
-当前 `checks --binding` 为证据绑定原型。后续独立生成及工具编排由单独调用层组装，
-原 checks/Release/Download 不反向依赖生成核心；拟议入口和依赖方向见
-[独立生成与编排](workflow-optimization/generated-workflows.md)，目前尚不可作为已实现命令调用。
+当前 `checks --binding` 为证据绑定原型的兼容桥。独立生成及工具编排由单独调用层组装，
+原 checks/Release/Download 不反向依赖生成核心；实际入口和依赖方向见
+[独立生成与编排](workflow-optimization/generated-workflows.md)。
 
 ## 公开调用契约
 
@@ -125,3 +126,9 @@ Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者�
 trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](workflow-optimization/design.md)。
 mine candidates 复用已有分析和实际投影，仅产生候选与审查依据；不重跑分析、调用模型或执行候选。
 调用与停止后的继续方式见 [候选审查](../../guides/cli-reference.md#工作流候选与人工审查)。
+
+workflow 由 CLI 组装宿主 Catalog，调用独立 workflow_core。生成文件实际声明工具及步骤，
+workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不反向依赖 mining 或核心。
+原型 --binding 的兼容处理在 cli/checks_binding.py，只有显式选择该旧参数才加载。
+新调用及 Schema 见[独立生成工作流](workflow-optimization/generated-workflows.md)和
+[操作说明](../../guides/generated-workflows.md)，不改变 scripts 的发布/下载责任。

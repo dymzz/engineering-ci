@@ -4,11 +4,12 @@
 
 本方案记录用户确定的基础架构：配置驱动的工作流以统一工具契约调用外部能力，
 每次生成独立产物，生成链路与原项目执行链路分开，核心可剥离、适配器可替换。
-本文定义拟议接口与实施验收，不表示这些模块、工具 ID、Schema 或命令已经实现。
+本文维护契约及验收边界。v0.6.1 已接入独立生成、校验、执行及恢复入口，实际操作见
+[使用指南](../../../guides/generated-workflows.md)。
 
-当前 PR #25 已实现的是候选证据绑定及原 checks 路径验证。
-它已经写出独立 JSON，但没有生成可独立解释的步骤配置；目标仍固定为 pr，
-checks.py 反向依赖 mining.bindings，不满足下面的最终依赖边界。
+PR #25 早期的候选证据绑定保留为宿主 CLI 兼容桥，不是新的生成定义。
+当前执行读取各步骤的 tool、inputs、needs 和条件，原 checks.py 不反向依赖 mining
+或 workflow_core。旧原型证据与新架构验收分开记录。
 将每次生成的业务映射放回 config/pipeline.toml 的建议不采用。
 
 目标是把工具变化限制在适配层，把工作流变化表达在独立配置中。
@@ -46,16 +47,17 @@ checks、Pipeline 全局对象、release、tracing 数据库或 mining 后端。
 契约版本单独记录，不把已安装二进制版本或 Python 路径混入 ID。
 步骤 ID 由工作流定义，是一次调用的名字，不是工具名；同一工具可被多个步骤调用。
 
-拟议 ID 示例，尚未注册：
+当前已注册检查和报告查询；后续有实际需求时才注册其他工具：
 
 | 工具 ID | 责任 |
 | --- | --- |
-| python.ruff-lint / python.ruff-format | 单项静态检查 |
-| python.pytest | 原 pytest 执行及原结构化结果 |
-| engineering-ci.version-check / uv.lock-check | 版本及锁文件完整性 |
-| git.commit / git.push | 原生 Git 的单项有副作用操作 |
-| github.workflow-dispatch / github.run-get | 发起请求与查询既有 Run 分开 |
-| github.run-download | 调用原日志/Artifact 收集实现 |
+| python.ruff-lint / python.ruff-format | 已注册：单项静态检查 |
+| python.pytest | 已注册：原 pytest 执行及原结构化结果 |
+| engineering-ci.version-check / uv.lock-check | 已注册：版本及锁文件完整性 |
+| engineering-ci.check-inspect | 已注册：读取实际报告并核验当前输入 |
+| git.commit / git.push | 未注册：未来原生 Git 的单项有副作用操作 |
+| github.workflow-dispatch / github.run-get | 未注册：请求与查询分开 |
+| github.run-download | 未注册：原日志/Artifact 收集 |
 
 pr-checks 等便利入口保留为组合工作流或明确标注的过渡组合工具。
 组合仍应暴露子检查真实结果与身份。拆粒度不意味着重复初始化容器或重复执行 pytest。
@@ -92,7 +94,7 @@ ToolResult 分开保存：原工具执行结果/退出码、必需输出完整�
 工作流声明的规范表示采用 JSON，便于生成及 Schema 校验；以后其他编写格式由前端转换，
 不在每个执行后端重新定义一套流程语言。
 
-宿主可配置输出目录，示例结构如下，不是已经创建的目录：
+宿主可指定输出父目录；当前产物结构如下：
 
 ```text
 workflow-generated/<generation-id>/
@@ -101,7 +103,7 @@ workflow-generated/<generation-id>/
 workflow-runs/<execution-id>/
   state.json          # 当前执行恢复点
   result.json         # 完整结果、停点及继续调用
-  tool-results/       # 原工具证据或受核验的引用
+  tool-results/       # 原工具证据、逐项 attempt 意图/回执及受核验的引用
 ```
 
 每次生成分配独立 generation_id，不覆盖旧生成；相同语义内容可有相同 definition_id。
@@ -131,7 +133,8 @@ config/pipeline.toml 保留原项目检查定义，只是 engineering-ci 工具�
 校验重复 ID、未知工具、契约不兼容、缺失节点、循环依赖及可确定的输入/输出类型错误。
 动态返回值在工具完成时再次校验，不能只凭 Schema 看似兼容就认定具体输出已产生。
 
-首版图原语为 DAG、有限条件、顺序/并行及显式诊断分支。
+首版图原语为 DAG、有限条件、就绪批次及显式诊断分支。
+核心逐批调用适配器；就绪节点是否并行执行由后端决定，不把计划的并行能力当作已执行事实。
 循环、动态扩图、嵌套子流程应分别声明能力，未实现前明确拒绝；不假装已支持任意程序。
 需要重复调用时由恢复契约控制，不能把重试和一般业务循环混成一个功能。
 使用 [graphlib](https://docs.python.org/3/library/graphlib.html) 等成熟图能力核对依赖与环，
@@ -147,45 +150,58 @@ required 步骤未执行或结果不完整不能记为 passed；条件未满足�
 
 [Dagger](https://docs.dagger.io/getting-started/introduction/) 提供容器及 DAG 执行能力；
 其 [缓存](https://docs.dagger.io/reference/configuration/cache) 与工作流证据复用分别记录。
-本地容器步骤通过执行适配器共享同一会话、环境和源资源，将支持的依赖交给 Dagger。
+当前同参数的就绪检查共用原 Dagger 准备与 Artifact 请求。不同参数或依赖批次分别调用
+原入口，复用原 Engine 缓存；跨批次长驻 SDK 会话尚未实现。后续会话扩展保持适配器边界。
 工具数量不决定 Dagger 初始化次数；原 Git/HTTP/GitHub 实现仍调用成熟组件。
 Runtime 不重新实现容器传输、分段下载或 GitHub 同一次 Workflow 的 Job 调度。
 
 Pipeline、Runtime 和层次化 FSM 共享同一个执行上下文，步骤使用它的受限视图及子调用身份。
 上下文承载 definition/generation/execution、资源、授权需求与可核验的前置结果。
 前置证据成为后继实际输入和准入依据；不按相近时间、相同版本或相同仓库拼接证据。
-FSM 持有执行状态，调度读取准入事实，生成配置只声明流程；不让三处各维护一份状态。
+Runtime 和主 FSM 持有同一个 ExecutionContext，适配器调用接收该对象；前置事实提供
+结构只读、与权威检查点隔离的视图。检查点保存解析后的 input_sha256 和实际 output_sha256，
+可以直接核对数据引用是否传入下一工具，不把计划的引用当作执行证据。
+Runtime 持有一个主执行 FSM 和逐项步骤事实，调度读取同一检查点，生成配置只声明流程。
+主阶段为 READY/RUNNING/PAUSED/UNKNOWN/FINISHED，子项独立保存 pending/running/实际结果，
+不会为工具、Job 和 Artifact 的所有组合制造平面状态。
 原 release/execution FSM 留在业务适配器中，通用核心引用其检查点，不复制全部领域状态。
 
 读操作、可重启操作、幂等写入、响应丢失的未知写入具有不同恢复策略。
 UNKNOWN 写操作先查询/人工核验，不自动再次 Dispatch、Commit 或 Publish。
+已知写入结果不重新分类为 UNKNOWN。缺少领域恢复验证接口时保留原结果，在 PAUSED/blocked
+等待人工或领域核验，并保持原失败退出码。本轮宿主没有注册写工具，相关边界由替身测试验收。
 中断后输出精确状态、已完成证据、执行 ID/路径和完整下一调用；status 只读、resume 使用已有执行。
 输入、工具或环境变化使相关结果失效；运行中输入改变不能产生当前有效通过记录。
 必需工具/执行环境缺失明确 unavailable/missing_tool，不静默换后端或用 skipped 代替成功。
 
 ## 可剥离的代码边界与调用面
 
-拟议位置，不表示已经实现：
+当前代码边界：
 
 ```text
 src/engineering_ci/
-  workflow_core/       # 契约、定义校验/编译、Runtime、上下文与 Store 接口
+  workflow_core/       # 契约、定义校验/编译、Runtime、上下文与本地检查点
   workflow_adapters/   # engineering-ci 原模块及 Dagger 的实际适配
   cli/workflow.py     # 当前宿主的组装与命令入口
   mining/             # 保持分析；通过来源适配传递候选引用
 ```
 
 core 内部允许相对导入自身模块，外部系统通过 Protocol/参数注入，
-不增加依赖注入框架。工具目录、Store、资源及授权解析由宿主提供。
+不增加依赖注入框架。当前宿主提供工具目录及输出根；资源和权限在实际适配器中核验。
+本地检查点使用核心的有界原子 JSON 与文件锁，不声明尚未实现的数据库 Store 接口。
 原执行模块不导入 workflow_core；移除新功能后原命令仍能工作。
 把核心目录迁到独立包后，原工程只保留适配器与组装层。
 
-拟议调用面包括 tools、generate、validate、run、status、resume：
+当前调用面包括 tools、schemas、generate、validate、run、status、resume：
 tools 返回可调用工具及契约；generate 写独立配置；validate 只核对定义与运行准入；
 run 执行定义；status 读已有事实；resume 继续同一执行。
 各入口支持 Codex 非交互调用及机器结果，原 CLI 参数保持原责任。
 CLI 的 Python console-script 注册不等于工具目录注册，不为每个工具增加 pyproject.toml 入口。
-当前上述 workflow 子命令尚不可运行，现有 checks/mine 入口见使用指南。
+Schema 2020-12 的唯一实现源为 workflow_core/schemas.py，可通过 schemas 导出。
+ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapter 从原 Operation
+集合派生描述，不复制命令或工具版本。invoke 接收同一就绪批次及执行上下文，Invocation.previous
+携带待核验的旧事实；检查适配器将恢复交给原 checks/Dagger，而非核心猜测复用。
+静态 validate 不执行工具预检或承诺当前输入通过，实际环境及资源在调用时核验。
 
 OTel/GenAI 及既有 instrumentation 继续承担遥测；观察接口从实际调用取得
 工具 ID、步骤、attempt、输入/结果身份和已知复用来源，不把生成配置的计划步骤当成实际 Trace。
@@ -193,10 +209,10 @@ OTel/GenAI 及既有 instrumentation 继续承担遥测；观察接口从实际�
 
 ## 实施顺序与架构验收
 
-1. 先定义四类契约、Schema、命名和依赖方向，用独立假工具验证核心不依赖项目业务。
-2. 实现每次独立生成的定义/来源及只读集中校验，证明配置内容实际决定计划。
-3. 接一个实际 checks 适配器完成生成→校验→执行→失败→恢复，原模块维持独立。
-4. 逐项暴露现有原子检查及其结果，共享 Dagger 环境；组合 pr-checks 维持原必需检查。
+1. 已实现四类契约、Schema、命名和依赖方向；隔离测试核对核心不依赖项目业务。
+2. 已实现每次独立生成的定义/来源及只读集中校验，配置决定工具、参数、条件和依赖。
+3. 已接 checks 和报告查询适配器，保留原模块独立；实际验收记录见验证目录。
+4. 已暴露五个原子检查及事实；pr 在生成时展开完整现有 Profile，同批次共享 Dagger。
 5. 有实际需求后再加入 Git/GitHub/其他协议适配或独立仓库，不创建空后端。
 
 必须有直接验收证据：
