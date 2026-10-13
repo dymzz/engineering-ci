@@ -118,3 +118,5 @@ Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者�
 有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见[使用说明](../../guides/README.md)。
 
 trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](workflow-optimization/design.md)。
+mine candidates 复用已有分析和实际投影，仅产生候选与审查依据；不重跑分析、调用模型或执行候选。
+调用与停止后的继续方式见 [候选审查](../../guides/cli-reference.md#工作流候选与人工审查)。

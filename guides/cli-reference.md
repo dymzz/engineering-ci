@@ -266,3 +266,53 @@ compared 返回 0 表示比较操作完成；results_equivalent 才表示本范�
 质量门禁不由该命令判断。缺整体耗时、费用或跨运行证据时保持未知，optimization_verified=false。
 当前支持固定输入的算法结果比较，未将发现的重复步骤转为可删除测试或可执行 Workflow。
 完整配置和边界见 [遥测配置](../docs/configuration/tracing.md#可选-otlp-出口与本地-jaeger)。
+
+## 工作流候选与人工审查
+
+从上文已经生成的 mining-result.json 和实际输入 otel-projection.json 开始。
+下面的命令复用文件，不重跑 SDK/Rust4PM，不调用模型、执行历史工具或修改 Pipeline：
+
+```powershell
+uv run --locked engineering-ci mine candidates '.test-tools/mining-result.json' --projection '.test-tools/otel-projection.json' --out '.test-tools/workflow-candidates.json' --json
+```
+
+已登记的分析可直接使用此前 mine --record 或 trace results 返回的分析 ID：
+
+```powershell
+uv run --locked --extra trace engineering-ci trace results --kind analysis --limit 10 --json
+uv run --locked --extra trace engineering-ci mine candidates --analysis-result ANALYSIS_ID --out '.test-tools/registered-candidates.json' --json
+```
+
+ANALYSIS_ID 来自所选记录的 result_id；该模式检查既有分析→投影→快照关联，
+不需要导出原始 rollout 或重新计算。--config 仅用于 ID 模式的非敏感归档配置。
+文件模式不需要 PostgreSQL、OTel SDK 或 mining extra；其 --projection 必须是分析当时使用的实际字节。
+
+报告中的 source 给出快照/投影/分析 ID、输入及内容摘要、origin 和原工具版本。
+coverage 分别记录全部、准入和排除操作及失败/未知统计；排除数据不会被称为成功。
+三种 kind 分别表示相邻同类活动、多次出现的完整变体和不同观察后继。
+相邻对可能重叠；次数不等于可删除调用数，观察后继不等于因果依赖或执行条件。
+
+每个候选含 occurrences/case_count 计数、Turn/event 引用、原结果与实际时间。
+--limit 默认 20（1–100），--evidence-limit 默认 3（1–20）；上限不改变全量统计。
+omitted_candidates/omitted_witnesses 明确省略数量；每个见证和长变体最多展示 8 个操作/活动，
+另保留完整数量、序列摘要及 omitted_operations/omitted_activities。
+分支另为每个后继保留一个 successor_examples 见证，避免少量示例掩盖另一条观察路径。
+排序按种类及活动名称确定，不表示收益排名。需要更多见证时增加上限并选择新 --out 路径。
+
+status=reported 与退出码 0 仅表示报告生成完成，即使没有候选也不代表优化评估通过。
+缺原输入关联或没有准入 case 时保存 unavailable 报告并返回 3；
+配置/文件/关联/模型不一致或写入错误返回 2。已有输出拒绝覆盖，且不会为此连接数据库。
+输出中断保留已获得的 report_id、analysis_id 和 next_actions，继续命令使用新文件名；
+无网络副作用，也不重新运行发现算法。写入失败的 report_saved=false 不能视为报告已保存。
+
+打开实际输出文件，以 candidate_id 为审查引用，按 required_evidence 核对：
+
+1. 活动对应哪项具体检查或动作，参数、文件输入摘要及工具环境是否相同。
+2. 重复是否属于修复、失败恢复、不同 Attempt、负向测试或不同输入。
+3. 候选目标 Handler 的输入输出、权限、副作用和准入条件是否明确。
+4. 原质量门禁与基线/候选执行证据是否足以验证改动。
+
+当前均为 needs_review、executable=false、handler=null，报告没有自动批准或改写检查策略的命令。
+LLM 与固化执行尚未启用，llm_used=false、quality_gate=not_evaluated、optimization_verified=false。
+选定具体候选并补齐证据后，才另行提出可审查的代码/配置 diff；流程边界见
+[实施方案](../docs/architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
