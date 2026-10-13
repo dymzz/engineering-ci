@@ -399,7 +399,11 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 
 ## 独立工作流入口
 
-`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume。
+`engineering-ci workflow` 提供 tools、schemas、generate、validate、run、status、resume、evidence、compare。
+`workflow compare BASELINE_DIR CANDIDATE_DIR --out FILE.json [--json ACTION.json]` 只读比较
+完整 PR 检查的同输入复用证据。它与 `mine compare` 的固定分析结果比较是不同用途；
+原质量未通过或输入不可比时仍保存报告并非零。连贯调用见
+[受控比较操作](generated-workflows.md#完整-pr-检查的同输入受控比较)。
 generate 接受独立 Recipe 或显式 Profile，每次创建独立定义及来源；run 创建独立执行；
 resume 继续同一检查点，status 只读已记录事实。每个子命令支持 `--json FILE`。
 所有工具使用已有 console-script 入口；工具注册及实际命令不放入 pyproject 的 scripts 表。

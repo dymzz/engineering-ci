@@ -67,6 +67,14 @@ def main(argv=None):
         type=Path,
         help="Export observed spans using the optional trace SDK",
     )
+    comparison = commands.add_parser(
+        "compare", help="Read-only comparison of two controlled PR check executions"
+    )
+    comparison.add_argument("baseline_execution", metavar="BASELINE_DIR", type=Path)
+    comparison.add_argument("candidate_execution", metavar="CANDIDATE_DIR", type=Path)
+    comparison.add_argument(
+        "--out", required=True, type=Path, help="New independent comparison report"
+    )
     for action in commands.choices.values():
         action.add_argument(
             "--json",
@@ -103,11 +111,21 @@ def main(argv=None):
             ]
             if options.json in {Path(path).resolve() for path in source_paths if path}:
                 raise WorkflowError("Operation JSON must not overwrite its source")
-            if getattr(options, "execution", None) and options.json.is_relative_to(
-                options.execution.resolve()
+            executions = [
+                getattr(options, name, None)
+                for name in ("execution", "baseline_execution", "candidate_execution")
+            ]
+            if any(
+                options.json.is_relative_to(path.resolve())
+                for path in executions
+                if path
             ):
                 raise WorkflowError(
                     "Operation JSON must stay outside the execution evidence directory"
+                )
+            if options.command == "compare" and options.json == options.out.resolve():
+                raise WorkflowError(
+                    "Operation JSON must not overwrite the comparison report"
                 )
             result_destination = options.json
         tools = catalog(ROOT)
@@ -116,6 +134,59 @@ def main(argv=None):
             operation.update(status="available", tools=tools.documents(), exit_code=0)
         elif options.command == "schemas":
             operation.update(status="available", schemas=SCHEMAS, exit_code=0)
+        elif options.command == "compare":
+            from ..checks import report_path
+            from ..workflow_adapters.comparison import compare
+            from ..workflow_adapters.evidence import execution_pair
+
+            operation.update(
+                baseline=str(options.baseline_execution.resolve()),
+                candidate=str(options.candidate_execution.resolve()),
+                report_generated=False,
+                next_actions=[
+                    ["engineering-ci", "workflow", "status", str(path.resolve())]
+                    for path in (
+                        options.baseline_execution,
+                        options.candidate_execution,
+                    )
+                ],
+            )
+            output = report_path(options.out, ROOT)
+            if not output.is_relative_to(ROOT.resolve()) or any(
+                output.is_relative_to(path.resolve())
+                for path in (options.baseline_execution, options.candidate_execution)
+            ):
+                raise WorkflowError(
+                    "Comparison report must stay in the checkout outside original executions"
+                )
+            if output.exists():
+                raise WorkflowError("Comparison output exists; choose a new file")
+            operation["output"] = str(output)
+            left, right = execution_pair(
+                options.baseline_execution, options.candidate_execution, tools, ROOT
+            )
+            result = compare(left, right)
+            write(output, result)
+            operation.update(
+                status=result["status"],
+                exit_code=result["exit_code"],
+                output=str(output),
+                comparison_id=result["comparison_id"],
+                report_generated=True,
+                optimization_verified=result["optimization_verified"],
+                verified_scope=result["verified_scope"],
+                check_submissions_avoided=result["check_submissions_avoided"],
+                recorded_quality_gate=result["recorded_quality_gate"],
+                current_input_validity="not_checked",
+                reasons=result["reasons"],
+                next_actions=[
+                    ["engineering-ci", "workflow", "evidence", str(path.resolve())]
+                    for path in (
+                        options.baseline_execution,
+                        options.candidate_execution,
+                    )
+                ],
+            )
         elif options.command == "generate":
             if options.recipe and (
                 options.coverage

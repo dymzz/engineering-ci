@@ -201,9 +201,10 @@ core 内部允许相对导入自身模块，外部系统通过 Protocol/参数�
 原执行模块不导入 workflow_core；移除新功能后原命令仍能工作。
 把核心目录迁到独立包后，原工程只保留适配器与组装层。
 
-当前调用面包括 tools、schemas、generate、validate、run、status、resume：
+当前调用面包括 tools、schemas、generate、validate、run、status、resume、evidence、compare：
 tools 返回可调用工具及契约；generate 写独立配置；validate 只核对定义与运行准入；
 run 执行定义；status 读已有事实；resume 继续同一执行。
+evidence 查询指定执行；compare 读取两份原执行证据，既不执行检查，也不选择批准版本。
 各入口支持 Codex 非交互调用及机器结果，原 CLI 参数保持原责任。
 CLI 的 Python console-script 注册不等于工具目录注册，不为每个工具增加 pyproject.toml 入口。
 Schema 2020-12 的唯一实现源为 workflow_core/schemas.py，可通过 schemas 导出。
@@ -269,6 +270,41 @@ analysis_saved、analysis_status 和绑定 event_log_id 的导出恢复命令。
 当前只导出 SDK Span JSON，不自动传输、归档 PostgreSQL 或调用 Mining。
 后续反馈接入仍按[Harness 实施设计](harness.md)进行，不把计划或最终检查点当成完整 Trace。
 工具实现替换不改写历史轨迹，投影/分析升级继续独立于工作流定义和 Runtime。
+
+### 完整 PR 检查的受控复用比较
+
+workflow compare 是只读的执行证据比较，不调用 Runtime.resume、Dagger、Mining 或数据库。
+输入为两个明确执行目录，同时按稳定顺序持有原执行锁，核验完整观测、回执和资源。
+门禁字段来自同一次原报告读取，只用于比较视图，不改变原查询证据身份。
+
+首个目标限定为完整已注册 PR Profile：原必需 Step 不能省略、改为 optional 或更换成功条件。
+两侧语义定义、候选来源、逐项工具契约、解析输入以及原检查的完整执行身份必须一致；
+输入、参数、工具、环境和 Executor 摘要分别列出差异。固定挖掘结果等价不替代这些检查。
+目标策略过期、执行未结束、观测不完整、丢失回执、缺身份或多次 attempt 均保存 not_comparable。
+历史和匹配的单项结果仍保留，不删除已验证证据或把一次不匹配扩大为所有数据无效。
+
+基线必须有一次未复用的原检查提交；候选使用既有 run --reuse-from 准入。
+候选复用必须指向这份基线的冻结检查点、确切 step/attempt/result 摘要及同一资源，
+其他执行的通过记录不能冒充本次控制样本。同一执行不能同时当作独立基线和候选。
+重复 resume 的全历史保留并显示计数，当前不自动选择有利的一次 attempt；需要独立样本时
+由调用者使用已有 run 新建执行，UNKNOWN 写操作仍遵守原恢复规则。
+
+统计区分原 required_checks、observed_check_attempts、原报告标记的 check_submissions、
+reused_checks 和 Runtime adapter_batches。提交数依据 executed_this_invocation，
+不是操作系统进程数或 Dagger 缓存未命中数。两侧不禁用或清空原缓存，不改变既有执行策略；
+cache_policy=backend-managed，命中状态未观测。因此不作速度、CPU、费用或整体 Agent 效果归因。
+
+原报告、原 ToolResult 和最终执行必须都是完整通过，才满足 recorded_quality_gate=passed。
+不同测试统计拒绝等价；失败、未执行、缺必需结果或输入执行时变化都不能由比较报告放行。
+可比且质量通过、提交确实减少时，optimization_verified=true 仅限定为
+verified_scope=check-submission-reuse。无减少仍可比较，但不宣称收益；失败复用保留原非零结果。
+
+workflow-comparison 为独立本地报告；ID 绑定两份精确证据与比较版本、目标和范围。
+缺乏可比性或质量不满足时仍保存报告，命令退出 3；已比较且原质量通过时退出 0，
+退出 0 不意味着 optimization_verified 一定为 true。--out 必须新文件；--json 是另存的操作回执，
+不能覆盖报告或原执行目录。保存失败单独非零并返回源执行和查询动作，不改原 FSM/门禁。
+报告始终 current_input_validity=not_checked、approved=false，不作为当前代码或 Release 准入，
+也不修改生成定义内的优化/批准状态。本轮不建立试验调度或批准存储。
 
 ## 实施顺序与架构验收
 

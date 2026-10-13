@@ -203,6 +203,41 @@ $analysis | Select-Object analysis_id, case_scope, completeness, activity_counts
 其中 `--event-log-id` 确保仍是同一证据；不要重新运行检查来补一份 XES。
 新 workflow-analysis 暂不登记 PostgreSQL 或用于旧 Codex candidates/bind。
 
+## 完整 PR 检查的同输入受控比较
+
+比较入口只读取两个已有执行。先沿用前文完整 PR Profile 的基线 run 回执：
+
+```powershell
+$baselineRun = Get-Content .test-tools/latest-workflow-run.json -Raw | ConvertFrom-Json
+$baseline = $baselineRun.execution
+$workflow = Join-Path $baseline 'workflow.json'
+uv run --locked engineering-ci workflow run $workflow --out .test-tools/workflow-runs --reuse-from $baseline --json .test-tools/candidate-run.json
+$candidateRun = Get-Content .test-tools/candidate-run.json -Raw | ConvertFrom-Json
+uv run --locked engineering-ci workflow compare $baseline $candidateRun.execution --out .test-tools/pr-reuse-comparison.json --json .test-tools/comparison-action.json
+$comparison = Get-Content .test-tools/pr-reuse-comparison.json -Raw | ConvertFrom-Json
+$comparison | Select-Object status, recorded_quality_gate, check_submissions_avoided, optimization_verified, verified_scope, reasons
+$comparison.checks | Select-Object step_id, status, reasons, baseline_gate_passed, candidate_gate_passed
+```
+
+候选 run 会重新接受原工具的证据准入；匹配项复用，变化项才提交检查。compare 本身不重新
+执行任何检查，不要求 trace/mining extra 或 PostgreSQL。基线必须完整、每项一次且未复用；
+两侧仍运行同一份完整 PR 定义，原五个必需检查都保留。
+
+已保存的两次执行可以直接从 compare 那一步进入。--out 每次使用新文件名，避免覆盖独立试验；
+--json 只是可更新的操作回执，里面有输出路径、两份执行和 next_actions。进程停止后先用原
+workflow status/resume 查看或恢复同一执行，再决定是否已有符合控制条件的样本。
+多次 attempt 不会自动压缩成一份有利样本，UNKNOWN 操作不能盲目重做。
+
+报告逐项列出输入、工具、参数、环境或 Executor 差异。不匹配时保留所有匹配项和历史证据，
+整体 status=not_comparable，退出 3；它不会为了生成报告自动重跑基线。缺回执或原质量失败也非零。
+若源码或检查配置已经变化，旧通过记录仍是历史事实，但不能代替当前输入；如确需新的控制样本，
+按前文重新生成当前定义并使用 run，而非删除旧报告或用它强行放行。
+
+两个已比较的原通过结果，只有减少检查提交时才标记该范围的收益；没有减少时退出也可以是 0，
+但 optimization_verified=false。原失败即使能复用，仍保持原失败且比较不认证收益。
+计数来自原报告的 executed_this_invocation；Dagger 内部缓存、费用和速度仍未测量。
+该报告不是当前代码、PR 或 Release 的通过凭据，也不批准某个候选。
+
 ## 当前边界
 
 定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。

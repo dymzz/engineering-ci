@@ -1,5 +1,6 @@
 """Join an explicit generation, attempt history and original check resources."""
 
+from contextlib import ExitStack
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -136,6 +137,17 @@ def check_facts(directory, event, resources):
             "current_input_validity": "not_checked",
             "dagger_cache_hit": None,
             "details": check_details(entry),
+            "recorded_gate": {
+                "status": entry["status"],
+                "exit_code": entry["exit_code"],
+                "executed": entry.get("executed") is True,
+                "input_stable": entry.get("input_stable") is True,
+                "passed_for_recorded_input": entry.get("passed_for_current_input")
+                is True,
+                "pytest_complete": entry.get("completeness") == "complete"
+                if name == "pytest"
+                else None,
+            },
         }
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         return {
@@ -179,6 +191,26 @@ def execution_evidence(directory, catalog, root):
     except Timeout:
         raise WorkflowError(
             "Execution is busy; use workflow status or query evidence after it stops"
+        ) from None
+
+
+def execution_pair(baseline, candidate, catalog, root):
+    """Hold both original execution locks in stable order while joining comparison inputs."""
+    directories = [Path(path).resolve() for path in (baseline, candidate)]
+    try:
+        with ExitStack() as stack:
+            for directory in sorted(set(directories)):
+                stack.enter_context(FileLock(directory / "execution.lock", timeout=0))
+            views = tuple(
+                _snapshot(directory, catalog, root) for directory in directories
+            )
+            for view in views:
+                for row in view["items"]:
+                    row["check"]["recorded_gate"] = view["recorded_gates"][row["key"]]
+            return views
+    except Timeout:
+        raise WorkflowError(
+            "Comparison input is busy; query status after it stops"
         ) from None
 
 
@@ -230,7 +262,7 @@ def _snapshot(directory, catalog, root):
             raise WorkflowError(
                 "Reuse source checkpoint changed or names another definition"
             )
-    entries = []
+    entries, recorded_gates = [], {}
     for (step, attempt), row in sorted(rows.items()):
         seen = row.pop("events")
         start, returned = seen.get("invoking"), seen.get("returned")
@@ -267,6 +299,7 @@ def _snapshot(directory, catalog, root):
             else {"status": "unavailable", "actual_check_executed": None},
             reuse_source=None,
         )
+        recorded_gates[row["key"]] = row["check"].pop("recorded_gate", None)
         previous_hash = seen.get("admitted", {}).get("previous_result_sha256")
         reused = (
             returned
@@ -317,6 +350,8 @@ def _snapshot(directory, catalog, root):
         "scope": scope,
         "items": entries,
         "dependencies": plan["dependencies"],
+        "workflow": workflow,
+        "recorded_gates": recorded_gates,
         "metadata": {
             "operation": "workflow.evidence",
             "execution_id": state["execution_id"],
@@ -335,6 +370,14 @@ def _snapshot(directory, catalog, root):
             "observation_completeness": completeness,
             "diagnostics": diagnostics,
             "attempts": len(rows),
+            "reuse_source": {
+                "execution_id": prior["execution_id"],
+                "generation_id": prior["generation_id"],
+                "definition_id": prior["definition_id"],
+                "state_sha256": digest(prior),
+            }
+            if prior
+            else None,
             "approved": False,
             "optimization_verified": False,
             "llm_used": False,
