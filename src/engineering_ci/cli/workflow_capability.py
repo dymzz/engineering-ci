@@ -46,8 +46,10 @@ def add_commands(commands):
             action.add_argument(
                 "--store", type=Path, default=Path(".test-tools/workflow-capabilities")
             )
-        if name not in {"feedback"}:
-            action.add_argument("--name", required=name != "capabilities")
+        if name in {"approve", "activate", "deactivate"}:
+            action.add_argument("--name", required=True)
+        elif name in {"select", "call", "capabilities"}:
+            action.add_argument("--name", required=False)
         if name in {"approve", "activate", "select", "call"}:
             action.add_argument(
                 "--version",
@@ -58,7 +60,24 @@ def add_commands(commands):
     listed.add_argument("--limit", type=int, default=20)
     listed.add_argument("--max-bytes", type=int, default=16384)
     listed.add_argument("--after")
+    commands.choices["select"].add_argument(
+        "--tool", help="Direct Registry tool ID to select and bind"
+    )
+    commands.choices["select"].add_argument(
+        "--provider",
+        default="engineering-ci-dagger",
+        help="Domain provider offering the selected tool",
+    )
+    commands.choices["select"].add_argument(
+        "--out",
+        type=Path,
+        default=Path(".test-tools/workflow-bindings"),
+        help="Directory to save the selection binding and generated workflow",
+    )
     commands.choices["call"].add_argument("--out", required=True, type=Path)
+    commands.choices["call"].add_argument(
+        "--binding", type=Path, help="Explicit selection binding to execute"
+    )
     feedback = commands.choices["feedback"]
     feedback.add_argument("execution", type=Path)
     feedback.add_argument(
@@ -156,6 +175,42 @@ def execute(options, catalog, runtime, root, *, operation=None):
             after=options.after,
         )
     elif options.command == "select":
+        if getattr(options, "tool", None):
+            from ..workflow_adapters.binding import create_binding
+
+            binding, binding_file = create_binding(
+                catalog,
+                options.tool,
+                provider=getattr(options, "provider", "engineering-ci-dagger"),
+                out_dir=options.out,
+                root=root,
+            )
+            operation.update(
+                status="selected",
+                binding=binding,
+                binding_file=str(binding_file.resolve()),
+                tool_id=binding["tool_id"],
+                provider=binding["provider"],
+                version=binding["version"],
+                contract_sha256=binding["contract_sha256"],
+                contract_summary=binding["contract_summary"],
+                scope=binding["scope"],
+                current_input_validity="not_checked",
+                next_actions=[
+                    [
+                        "engineering-ci",
+                        "workflow",
+                        "call",
+                        "--binding",
+                        str(binding_file.resolve()),
+                        "--out",
+                        ".test-tools/workflow-runs",
+                    ]
+                ],
+            )
+            return operation
+        if not getattr(options, "name", None):
+            raise WorkflowError("Specify either --tool or --name for workflow select")
         with store.locked():
             value, path, revision = store.select(options.name, options.version, catalog)
             admission(value, path, catalog, root)
@@ -178,6 +233,30 @@ def execute(options, catalog, runtime, root, *, operation=None):
             ],
         )
     elif options.command == "call":
+        if getattr(options, "binding", None):
+            from ..workflow_adapters.binding import call_binding
+
+            binding_doc = read(options.binding)
+            called = call_binding(binding_doc, catalog, options.out, root=root)
+            directory = Path(called["execution"])
+            operation.update(
+                execution=str(directory),
+                binding=called["binding"],
+                status=called["status"],
+                exit_code=called["exit_code"],
+                result=called["state"],
+                step_results=called["step_results"],
+                next_actions=[
+                    ["engineering-ci", "workflow", "status", str(directory)],
+                    ["engineering-ci", "workflow", "resume", str(directory)],
+                    ["engineering-ci", "workflow", "evidence", str(directory)],
+                ],
+            )
+            print(f"Execution checkpoint: {directory}", flush=True)
+            print(f'Inspect: engineering-ci workflow status "{directory}"', flush=True)
+            return operation
+        if not getattr(options, "name", None):
+            raise WorkflowError("Specify either --binding or --name for workflow call")
         directory, binding = create_call(
             store, options.name, options.version, options.out, catalog, root
         )

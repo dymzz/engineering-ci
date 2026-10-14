@@ -70,3 +70,54 @@ FEEDBACK["allOf"] = [
         "else": {"not": {"required": ["attempt_snapshot"]}},
     }
 ]
+
+SELECTION_BINDING = object_schema(
+    {
+        "schema_version": {"const": 1, "type": "integer"},
+        "kind": {"const": "workflow-selection-binding"},
+        "binding_id": HASH,
+        "tool_id": {"type": "string"},
+        "provider": {"type": "string"},
+        "version": {"type": "string"},
+        "contract_sha256": HASH,
+        "contract_summary": object_schema(
+            {
+                "tool_id": {"type": "string"},
+                "description": {"type": "string"},
+                "domain": {"type": "string"},
+                "effect": {"type": "string"},
+                "contract_version": {"type": "string"},
+                "contract_sha256": HASH,
+            }
+        ),
+        "parameters": {"type": "object"},
+        "scope": object_schema(
+            {
+                "repository": {"type": "string"},
+                "environment": {"type": "string"},
+                "permissions": {"type": "array", "items": {"type": "string"}},
+            }
+        ),
+        "workflow": object_schema(
+            {
+                "definition_id": HASH,
+                "generation_id": ID,
+                "workflow_path": {"type": "string"},
+            }
+        ),
+        "execution_id": {"type": ["string", "null"], "pattern": "^[a-f0-9]{32}$"},
+    },
+    [
+        "schema_version",
+        "kind",
+        "binding_id",
+        "tool_id",
+        "provider",
+        "version",
+        "contract_sha256",
+        "contract_summary",
+        "parameters",
+        "scope",
+        "workflow",
+    ],
+)
