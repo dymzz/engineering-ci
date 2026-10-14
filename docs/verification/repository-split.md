@@ -41,6 +41,10 @@ These were integration errors, not confirmed upstream defects.
   was not added.
 - Read-only host PostgreSQL check through `vesryn.tracing.store`: schema 3, historical
   `engineering_ci_trace` ownership/migration digest valid. No database migration or copy.
+- Actual PostgreSQL feedback/query integration: 10 passed, including idempotent bytes,
+  strict domain validation, corruption rejection, bounded read-only query and schema-2
+  refusal without implicit upgrade. Fixtures create/remove synthetic test namespaces;
+  the existing archive is untouched. JUnit: `.test-tools/vesryn-split/postgres-feedback.xml`.
 - Installed explicit engineering-ci adapter descriptors equal the compatibility CLI
   descriptors. Tool IDs and domain approval/feedback identities are retained.
 - Existing explicit PostgreSQL/OTLP integration files stay in the host as compatibility
@@ -76,7 +80,11 @@ changed during execution; it was not reused as a current pass.
 Subsequent Release integration fixes forward the private install Secret to `core-tests`
 and keep prepare/verify/publish on base dependencies with `--no-default-groups`.
 The focused current regression passed 133 tests; version/Workflow binding passed.
-The immutable host PR CI is recorded below once completed. These later source changes
+[Host Draft PR #30](https://github.com/dymzz/engineering-ci/pull/30) passed
+[Run 38504053732](https://github.com/dymzz/engineering-ci/actions/runs/38504053732),
+head `efad2a4859bc313a0898598e99bde4c055872238`: all three existing Jobs passed;
+1061 tests and 105 subtests passed, original pytest exit 0. PR coverage is disabled, so
+Release-only Artifacts were skipped, not fabricated. These later source changes
 invalidate the earlier full local receipt; its raw execution remains historical evidence.
 
 The existing formal Release Security Gate only admits public PyPI lock entries.
@@ -85,6 +93,8 @@ The pinned private Vesryn Git source is a real unsupported dependency, yielding
 No exception, ignored dependency or fabricated pass was introduced. Formal v0.6.6
 publication remains blocked until an explicitly reviewed distribution/scanning contract
 can cover that source. This extraction does not initiate formal validation or publication.
+The user chose to deliver the extraction PRs first and retain this publication block;
+Git-source scanning is outside this increment.
 
 No simulated result substitutes for actual Runs. Historical receipts are not admitted for
 changed inputs. Human merge/release is required for formal versions.

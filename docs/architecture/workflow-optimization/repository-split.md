@@ -59,6 +59,13 @@ locked dependency installation. The SDK removes the secret variable before probe
 a runtime assertion checks that removal. An unapproved source URL or mutable revision
 is rejected before looking up or forwarding credentials.
 
+For review, merge the Vesryn core before completing the host dependency upgrade. The host
+currently pins the reviewed candidate SHA. If squash/rebase produces a new merged SHA,
+update that immutable pin and uv.lock in the same open host PR and let its normal CI
+validate the resulting dependency. Do not point the host at a mutable branch or claim the
+candidate is a published release. The existing Release Security Gate still rejects this
+private Git source as incomplete; source-scanning/distribution approval is a later decision.
+
 ## Compatibility and evidence
 
 The migration must preserve existing Tool IDs, definition/approval/feedback identities,
