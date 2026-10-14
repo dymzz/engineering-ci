@@ -2,6 +2,13 @@
 
 两个用户入口、输出、退出码和独立工具的参考。环境准备见[开始使用](getting-started.md)，操作顺序见[常用操作](common-tasks.md)。
 
+v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独立。
+`trace`、`mine`、`workflow` 与 `checks --binding` 使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
+原 trace/mining/telemetry extras 保留，转为固定 Vesryn extra。
+通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
+及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/harness-integration/repository-split.md)。
+
 ## 两个用户入口
 
 `scripts/` 只保留 `release.py` 和 `download.py`。脚本加载自身 checkout 的 `src/`，
@@ -13,7 +20,7 @@ GitHub Actions 调用 `engineering_ci.workflow_actions`，不调用这两个用�
 | `release.py status` | 定位交付停点，查询 PR / 本地结果 / 已确认 Run / Release 并输出继续命令 | 否；只读 |
 | `release.py validate` | 选择单独完整验证，不发布 | 是；恢复已有 Run 时除外 |
 | `release.py verify` | 查询指定 Run 的状态与版本 / Manifest / Release 一致性 | 否；只有 GET |
-| `release.py publish` | 功能分支上检查、提交、Push、交付 PR；人工合并后请求完整验证与正式发布 | 仅在确认合并后；恢复已有 Run 或已发布时除外 |
+| `release.py publish` | 功能分支上检查、提交、Push、交付 PR；确认实际合并后，由人请求完整验证与正式发布 | 仅在确认合并后；恢复已有 Run 或已发布时除外 |
 | `download.py` | 选择、等待、恢复已有 Run，下载日志及 Artifact | 否 |
 
 ## 无参数、输出与退出码
@@ -36,7 +43,7 @@ verify --json 的既有 Run 验证结构保持兼容。
 | 操作 | 终端输出 | 本地文件 |
 | --- | --- | --- |
 | Release status | 改动文件、PR / CI、检查结果有效性、已有 Run / Release、完整继续命令 | 不修改 Git / FSM 或结果文件 |
-| Release PR 交付 | 版本、分支、文件、提交、PR URL、CI 状态和人工合并停点 | 原有本地检查 JSON；其目录内的 PR 说明文本 |
+| Release PR 交付 | 版本、分支、文件、提交、PR URL、CI 状态和审查合并停点 | 原有本地检查 JSON；其目录内的 PR 说明文本 |
 | Release 请求 / 恢复 | Run ID、Run URL、Workflow 最终结论、状态文件位置 | 仅 FSM 状态缓存；不下载日志或 Artifact |
 | Release verify | 指定 Run 的真实状态、SHA、验证及发布结果；可选 JSON | 不写 FSM / 结果文件 |
 | 下载已有 Run | Run 身份、下载后端、保存位置、最终结论和状态文件位置 | --out/RUN_ID 下的日志及所选 Artifact |
@@ -51,11 +58,14 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 | 0 | 帮助正常显示，或 Workflow 成功且当前操作完成 |
 | 1 | Workflow 失败 / 取消，验证运行中 / 不可用 / 不一致，或暂停、UNKNOWN、API / 下载错误 |
 | 2 | 参数错误或缺少必需运行环境 |
-| 3 | publish 已交付 PR，等待人工审查合并；本地检查未完整通过也保留其原有 3 和具体原因 |
+| 3 | publish 已交付 PR，等待审查合并；本地检查未完整通过也保留其原有 3 和具体原因 |
 | 130 | 用户中断 |
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-and-delivery)，操作见
+[审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
+完成实际合并后才能接续，自动合并授权不包含正式发布。
 
 publish 的 `--all` 对应 `git add --all`，包括列出的未跟踪文件；`-m` / `--message` 对应 Git 提交信息。
 有未提交改动时必须同时提供这两个参数。新 PR 标题来自实际提交首行，PR 说明包含完整提交信息；
@@ -347,7 +357,7 @@ status=reported 与退出码 0 仅表示报告生成完成，即使没有候选�
 当前均为 needs_review、executable=false、handler=null，报告没有自动批准或改写检查策略的命令。
 候选报告自身不启用执行，llm_used=false、quality_gate=not_evaluated、optimization_verified=false。
 显式选择目标后，可按下一节绑定已支持的 Handler；候选报告保持原审查状态。流程边界见
-[实施方案](../docs/architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
+[实施方案](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/analysis.md#p2候选报告与人工审查依据v057)。
 
 ## 绑定并调用 PR 检查 Handler
 
@@ -392,7 +402,7 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 
 历史投影没有具体检查身份，绑定是用户显式选择的新目标，不证明历史重复命令就是 PR 检查，
 也不批准删检查、自动发布或扩展远端权限。详细契约见
-[Handler 固化](../docs/architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+[Handler 固化](../docs/architecture/harness-integration/legacy-binding.md#首个-handler-固化基础-pr-检查复用v061)。
 
 以上调用是早期证据绑定原型的兼容入口。新配置执行使用 `engineering-ci workflow`，见
 [完整操作说明](generated-workflows.md)，不要将旧绑定文件当作新的 workflow.json。

@@ -5,7 +5,7 @@
 ## 导航
 
 - [开始使用](getting-started.md) — 准备 Python / uv / gh 环境，选择可选轨迹能力并查看入口。
-- [常用操作](common-tasks.md) — 本地检查、开发 PR、发布、恢复、下载与旧函数迁移。
+- [常用操作](common-tasks.md) — 本地检查、PR 审查合并、阶段备份、发布、恢复与下载。
 - [CLI 参考](cli-reference.md) — Release/Download、轨迹归档、分析与候选审查的命令及输出。
 - [独立生成工作流](generated-workflows.md) — 工具发现、生成执行、证据复用、能力批准/启停/调用、反馈与恢复。
 - [分层查询](trace-queries.md) — 从分析概览逐层查询模式、候选、见证与授权原文。

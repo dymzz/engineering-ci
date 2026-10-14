@@ -3,7 +3,24 @@
 本入口调用现有检查，不改变 PR、Release Workflow 或发布权限。`scripts/` 仍只保留
 `release.py` 与 `download.py`。下面所有命令从主 checkout 执行。
 
+## 统一共享目录
+
+可选 `engineering-ci workflow registry` 使用 Vesryn 的统一工具目录和 Scope；
+`--transport dagger` 经独立共享工具模块执行，`--provider engineering-ci-dagger`
+显式加入本仓库的领域检查。仓库不复制共享 ToolSpec 或工具版本配置。
+模块路径、Vesryn source、当前项目、授权效果和实际可用性均由宿主明确提供。
+命令与边界见[统一目录](../docs/architecture/harness-integration/registry.md)。
+
 ## 安装和发现工具
+
+v0.6.6 的通用实现由独立 Vesryn 包提供。开发组安装锁定的 Vesryn 候选提交；
+基础安装不含 Harness，需要时显式执行 `uv sync --locked --no-dev --extra harness`。
+现有 `engineering-ci workflow` 命令保留 CI 专用生成、批准、选择和反馈流程。
+归档/分析命令委托给 Vesryn；其恢复提示可能使用已安装的 `vesryn` CLI，配置路径仍明确携带。
+直接从 Vesryn 调用宿主工具使用
+`vesryn workflow --adapter engineering-ci --root D:/workspace/engineering-ci tools`。
+这是已安装包的固定 Adapter 注册，不是把生成的 Pipeline 写进 pyproject.toml。
+分仓边界见[架构](../docs/architecture/harness-integration/repository-split.md)。
 
 ```powershell
 uv sync --locked --group dev
@@ -356,7 +373,7 @@ status=returned/exit_code=0 是查询成功；recorded_result 的失败/非零�
 `--config FILE` 沿用 tracing 配置，不新建数据库/迁移。权限、缺连接、旧 schema 或损坏
 都非零，按 trace status 与诊断处理。budget_exceeded 时保留条件、增加 --max-bytes 重查，
 不执行或重新归档。默认预算 16384 UTF-8 字节含新行和游标；--json 仅覆盖同类查询回执，
-保护原反馈/批准/状态文件。细节见[检索契约](../docs/architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)。
+保护原反馈/批准/状态文件。细节见[检索契约](../docs/architecture/harness-integration/feedback.md#已归档能力反馈的只读检索p3-1)。
 
 ## 核验覆盖并汇总反馈
 
@@ -395,7 +412,7 @@ if ($ids.Count -gt 0) {
 
 缺 ID、权限不足、坏字节等非零；budget_exceeded 时保持 `$ids`，增加上述 max-bytes
 再次查询，不重跑原执行。不把多页结果直接累加，因为同一执行可能跨页重复出现。
-真实来源、过滤和覆盖边界见[汇总契约](../docs/architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)。
+真实来源、过滤和覆盖边界见[汇总契约](../docs/architecture/harness-integration/feedback.md#已归档反馈的覆盖与汇总p3-2)。
 
 ## 关联原比较与执行证据进行再审查
 
@@ -429,11 +446,11 @@ trial.status=policy_changed 时查看 recorded_policy_sha256/current_policy_sha2
 
 汇总与数据库不一致时，保持原反馈 ID，先用上一节 feedback-summary 重查，不重跑检查。
 budget_exceeded 只增加 max-bytes 后重查；输入文件、能力目录及 baseline/candidate/call
-文件均禁止作为 JSON 输出位置。边界见[再审查契约](../docs/architecture/workflow-optimization/retrieval.md#已归档反馈的再审查依据p3-3)。
+文件均禁止作为 JSON 输出位置。边界见[再审查契约](../docs/architecture/harness-integration/feedback.md#已归档反馈的再审查依据p3-3)。
 
 ## 当前边界
 
-定义/schema/kind、工具契约及来源校验见[架构](../docs/architecture/workflow-optimization/generated-workflows.md)。
+定义/schema/kind、工具契约及来源校验见[架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 现阶段运行有限 DAG 和就绪批次，各批次之间顺序调用适配器；跨依赖批次可能再次准备原 Dagger
 调用，尚未提供跨批次长驻 SDK 会话或任意并发策略。循环、动态扩图、嵌套子工作流明确拒绝。
 数据引用的静态类型检查针对明确的 object/array/type Schema；复杂组合 Schema 的引用需要后续

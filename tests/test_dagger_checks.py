@@ -15,6 +15,26 @@ LINUX = {"platform": "Linux", "machine": "x86_64", "configuration_sha256": "a" *
 TOOLS = {"python": {"version": "3.14.8"}}
 
 
+def test_native_module_pin_and_legacy_fallback(tmp_path):
+    (tmp_path / "dagger.json").write_text('{"engineVersion":"v0.21.10"}')
+    assert dagger_checks.engine_version(tmp_path) == "0.21.10"
+    manifest = tmp_path / "dagger-module.toml"
+    manifest.write_text('engineVersion = "v1.0.0-beta.16"\n')
+    assert dagger_checks.engine_version(tmp_path) == "1.0.0-beta.16"
+    manifest.write_text('engineVersion = "latest"\n')
+    with pytest.raises(ValueError, match="valid engineVersion"):
+        dagger_checks.engine_version(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["dagger.toml", "dagger-module.toml"])
+def test_native_configuration_changes_invalidate_check_input(tmp_path, name):
+    path = tmp_path / name
+    path.write_text("# original configuration\n")
+    before = checks.snapshot(tmp_path, "ruff-lint")
+    path.write_text("# changed configuration\n")
+    assert checks.snapshot(tmp_path, "ruff-lint") != before
+
+
 @pytest.fixture
 def source(tmp_path, monkeypatch):
     for prefix in ("", ".dagger/"):
@@ -35,6 +55,89 @@ def source(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(checks, "preflight", lambda *args: copy.deepcopy(TOOLS))
     return tmp_path
+
+
+def private_source(root, url="https://github.com/dymzz/vesryn.git", rev="a" * 40):
+    with (root / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write(
+            f'\n[tool.uv.sources]\nvesryn = {{ git = "{url}", rev = "{rev}" }}\n'
+        )
+
+
+def test_private_install_uses_secret_reference_without_serializing_credential(source):
+    private_source(source)
+    environ = {}
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        assert kwargs["capture_output"] and kwargs["timeout"] == 30
+        return subprocess.CompletedProcess(args, 0, "private-test-credential\n", "")
+
+    options = dagger_checks.git_secret_options(
+        source, ["pytest"], run, lambda name: "gh", environ
+    )
+    assert calls == [["gh", "auth", "token", "--hostname", "github.com"]]
+    assert options == ["--git-token", "env:ENGINEERING_CI_READ_TOKEN"]
+    assert environ["ENGINEERING_CI_READ_TOKEN"] == "private-test-credential"
+    assert "private-test-credential" not in json.dumps(options)
+    assert checks.environment_identity(environ) == checks.environment_identity({})
+    assert (
+        dagger_checks.git_secret_options(
+            source, ["pytest"], run, lambda name: "gh", environ
+        )
+        == options
+    )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "url,rev",
+    [
+        ("https://example.com/vesryn.git", "a" * 40),
+        ("https://github.com/dymzz/vesryn.git", "main"),
+    ],
+)
+def test_private_install_refuses_unapproved_or_unpinned_source(source, url, rev):
+    private_source(source, url, rev)
+    with pytest.raises(checks.PreconditionError, match="approved repository"):
+        dagger_checks.git_secret_options(
+            source,
+            ["pytest"],
+            lambda *args: pytest.fail("No credential lookup"),
+            lambda name: "gh",
+            {},
+        )
+
+
+def test_non_test_profile_does_not_read_or_forward_credentials(source):
+    private_source(source)
+    assert (
+        dagger_checks.git_secret_options(
+            source,
+            ["version"],
+            lambda *args: pytest.fail("No credential lookup"),
+            lambda name: "gh",
+            {"ENGINEERING_CI_READ_TOKEN": "private-test-credential"},
+        )
+        == []
+    )
+
+
+def test_credential_failure_does_not_expose_auth_output(source, capsys):
+    private_source(source)
+
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, "sensitive-output", "sensitive-error"
+        )
+
+    with pytest.raises(
+        checks.PreconditionError, match="Existing gh authentication"
+    ) as error:
+        dagger_checks.git_secret_options(source, ["pytest"], run, lambda name: "gh", {})
+    assert "sensitive" not in str(error.value)
+    assert "sensitive" not in str(capsys.readouterr())
 
 
 class Dagger:
@@ -170,6 +273,29 @@ def test_linux_evidence_binds_the_original_checkout_and_exports_once(backend):
     )
     assert inspect(backend)[1] == 0
     assert backend.exports == [list(checks.PR_CHECKS)]
+
+
+def test_execution_graph_precondition_error_retains_classification(backend):
+    original = backend.run
+
+    def run(args, **kwargs):
+        result = original(args, **kwargs)
+        if "repository-check-artifacts" in args:
+            checks.atomic_json(
+                Path(args[-1]) / "environment.json",
+                {
+                    "error": {
+                        "status": "missing_tool",
+                        "reason": "Required tool unavailable",
+                    }
+                },
+            )
+        return result
+
+    backend.run = run
+    report, code = execute(backend)
+    assert code == 127
+    assert all(entry["status"] == "missing_tool" for entry in report["checks"])
 
 
 def test_container_plan_only_validates_configuration_without_checks_or_probes(

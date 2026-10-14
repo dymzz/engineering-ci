@@ -4,16 +4,16 @@
 当前用户命令与旧路径迁移见[使用说明](../../guides/README.md)。
 
 ```text
-scripts/release.py publish → release/delivery.py（检查/提交/Push/PR/人工合并停点）→ execution Coordinator → release.yml
+scripts/release.py publish → release/delivery.py（检查/提交/Push/PR/审查合并停点）→ execution Coordinator → release.yml
 scripts/release.py status → 当前 Git/PR、本地结果与已有 execution checkpoint → GitHub GET
 scripts/release.py validate → execution Coordinator（独立完整验证请求/等待）→ release.yml
 scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
-engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
-engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 分析、比较、候选及显式 Handler 绑定）
+engineering-ci trace → cli/trace.py（配置兼容）→ Vesryn tracing（明确文件、宿主归档及只读回放）
+engineering-ci mine → cli/mine.py → Vesryn mining；CI Handler 绑定与执行证据读取留在宿主
 engineering-ci checks --binding → cli/checks_binding.py（兼容桥）→ 原完整 pr
-engineering-ci workflow → cli/workflow.py（组装 Catalog）→ workflow_core → workflow_adapters → 原检查/查询
+engineering-ci workflow → cli/workflow.py（组装 Catalog）→ Vesryn workflow_core → workflow_adapters → 原检查/查询
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
@@ -26,7 +26,7 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 
 当前 `checks --binding` 为证据绑定原型的兼容桥。独立生成及工具编排由单独调用层组装，
 原 checks/Release/Download 不反向依赖生成核心；实际入口和依赖方向见
-[独立生成与编排](workflow-optimization/generated-workflows.md)。
+[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 
 ## 公开调用契约
 
@@ -35,7 +35,8 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 `python -m engineering_ci.cli`，需要已安装项目或设置 PYTHONPATH。
 
 Release 交付模块读取当前 checkout 和 PR 事实，复用检查定义与结果身份校验，调用原生 Git/gh 完成提交和 PR 交付。
-人工合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。合并后才交给已有 Coordinator 请求、等待。
+实际合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。PR 合并授权遵循根
+AGENTS.md；人或已授权 Agent 通过 gh 完成合并。正式发布仍须人主动请求，再交给已有 Coordinator 请求、等待。
 status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 Run 来自原 execution checkpoint。
 本地阶段不新增状态文件，恢复时读取原生 Git / PR 证据；不建立任务注册表。
 公开 verify 必须指定实际 Run，只读取远端状态与证据，不调用 Coordinator 或写 FSM。
@@ -43,7 +44,7 @@ GitHub Actions 负责完整检查和发布决定，JSON 生成或文件收集不
 Release 不初始化下载后端或读取下载配置；只有 download 负责收集日志及 Artifact。
 轨迹的来源与归档游标不进入 ExecutionContext 或发布门禁，归档回放不推进业务 FSM。
 `trace status/inspect` 为只读；`init/import` 明确修改专用数据库对象；
-`replay` 明确输出原始快照文件。详细契约见[轨迹架构](workflow-optimization/design.md)。
+`replay` 明确输出原始快照文件。详细契约见[轨迹架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
 
 ## 操作结果与恢复视图
 
@@ -123,12 +124,12 @@ Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者�
 普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
 有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见[使用说明](../../guides/README.md)。
 
-trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](workflow-optimization/design.md)。
+trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
 mine candidates 复用已有分析和实际投影，仅产生候选与审查依据；不重跑分析、调用模型或执行候选。
 调用与停止后的继续方式见 [候选审查](../../guides/cli-reference.md#工作流候选与人工审查)。
 
 workflow 由 CLI 组装宿主 Catalog，调用独立 workflow_core。生成文件实际声明工具及步骤，
 workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不反向依赖 mining 或核心。
 原型 --binding 的兼容处理在 cli/checks_binding.py，只有显式选择该旧参数才加载。
-新调用及 Schema 见[独立生成工作流](workflow-optimization/generated-workflows.md)和
+新调用及 Schema 见[独立生成工作流](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)和
 [操作说明](../../guides/generated-workflows.md)，不改变 scripts 的发布/下载责任。

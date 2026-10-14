@@ -25,9 +25,9 @@ PR profile 保留既有五项检查。工具的实际版本和当前输入仍需
 不复制 TOML 中的工具、命令、权限或检查定义。配置变化后重新生成绑定；实际检查结果仍逐项核验。
 绑定解析留在宿主 CLI，不再让原 checks 反向导入 mining 或成为全部基础检查的公共输入。
 绑定不是新的 Pipeline 配置段，不改变 schema 1 或 Actions Job DAG；契约见
-[Handler 固化](../architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+[Handler 固化](../architecture/harness-integration/legacy-binding.md#首个-handler-固化基础-pr-检查复用v061)。
 生成工作流采用每次独立的定义/来源文件，不向本 TOML 累积业务映射；
-实际边界见[独立生成与编排](../architecture/workflow-optimization/generated-workflows.md)。
+实际边界见[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 
 ## 操作契约与编排边界
 
@@ -76,7 +76,7 @@ trigger = "manual"
 只要显式写了 `delivery`，其全部字段必须有效，不能用局部默认值掩盖拼写错误。
 现有检查段的格式和必需项保持不变。
 
-TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也不能跳过远端完整检查。
+TOML 不能授予 GitHub 权限、PR 合并授权或正式发布授权，也不能跳过远端完整检查。
 版本、SHA、Run / Attempt、Manifest 与 Release Asset 的原有核验继续执行。
 若以后增加操作类型，应先映射到已注册的 Python Handler，不直接执行配置中的 shell。
 
@@ -201,3 +201,7 @@ PyYAML 的依赖 / 锁变化属于版本、锁文件和 pytest 输入；Ruff 按
 版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。
 运行、结果与环境限制见[本地检查](../architecture/local-checks.md)，阶段证据传递见
 [发布机制](../architecture/release/workflow.md#交付阶段与证据准入)。
+
+Dagger 容器执行器按已注册选择建立独立分支，内部依赖与并发由 Dagger 执行引擎处理；
+本文件不新增依赖表达式、拓扑排序或调度字段。分支证据汇总契约见
+[本地检查的执行图](../architecture/local-checks.md#dagger-pr-执行图)。

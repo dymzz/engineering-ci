@@ -1,236 +1,31 @@
-"""Analyze a fixed projection locally; never call models or execute candidates."""
+"""Host bindings remain here; portable analysis is delegated to Vesryn."""
 
-from __future__ import annotations
-
-import argparse
-import hashlib
-import json
 import sys
-from contextlib import ExitStack, redirect_stdout
-from pathlib import Path
 
-from ..mining.analysis import analyze
-from ..tracing.config import TraceConfigurationError
-from ..tracing.store import ArchiveError
-from .trace import config_path, load_document, write_new_file
+from vesryn.cli.mine import *
+from vesryn.cli.mine import main as portable_main
+
+from .._paths import ROOT
 
 
 def main(argv=None):
-    args = sys.argv[1:] if argv is None else argv
-    if args and args[0] == "workflow":
-        from .mine_workflow import main as workflow_command
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in {"bind", "workflow"}:
+        from importlib import import_module
 
-        return workflow_command(args[1:])
-    if args and args[0] == "compare":
-        from .mine_compare import main as comparison_command
-
-        return comparison_command(args[1:])
-    if args and args[0] == "candidates":
-        from .mine_candidates import main as candidate_command
-
-        return candidate_command(args[1:])
-    if args and args[0] == "bind":
-        from .mine_bind import main as binding_command
-
-        return binding_command(args[1:])
-    if args and args[0] == "export-xes":
-        from .mine_xes import main as xes_command
-
-        return xes_command(args[1:])
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        epilog="Existing-result operations: mine compare --help; mine candidates --help; mine bind --help; mine export-xes --help; mine workflow --help",
-    )
-    parser.add_argument(
-        "projection", nargs="?", help="Content-free JSON produced by trace project"
-    )
-    parser.add_argument(
-        "--projection-result", help="Registered projection ID instead of a file"
-    )
-    parser.add_argument(
-        "--record", action="store_true", help="Register the result before exporting it"
-    )
-    parser.add_argument(
-        "--config", help="Tracing configuration for explicit database operations"
-    )
-    parser.add_argument("--out", required=True, help="New analysis result file")
-    parser.add_argument("--xes-out", help="Also save admitted cases to a new XES file")
-    parser.add_argument("--allow-incomplete", action="store_true")
-    parser.add_argument("--json", action="store_true")
-    options = parser.parse_args(argv)
-    if bool(options.projection) == bool(options.projection_result):
-        parser.error("Choose a projection file or --projection-result, exactly one")
-    registered = None
-    attempted = None
-    analysis_saved = False
-    try:
-        if options.xes_out and (
-            Path(options.xes_out).exists()
-            or Path(options.xes_out).resolve() == Path(options.out).resolve()
-        ):
-            raise ArchiveError(
-                "output_exists",
-                "XES output must be a new path distinct from analysis output",
-            )
-        with ExitStack() as stack:
-            catalog = None
-            if options.record or options.projection_result:
-                from ..tracing.catalog import TraceCatalog
-                from ..tracing.config import load_config
-                from ..tracing.store import open_store
-
-                catalog = TraceCatalog(
-                    stack.enter_context(open_store(load_config(options.config)))
-                )
-            if options.projection_result:
-                if catalog.result(options.projection_result)["kind"] != "projection":
-                    raise ArchiveError(
-                        "invalid_input",
-                        "--projection-result must identify a registered projection",
-                    )
-                raw = catalog.document(options.projection_result)
-                projection = json.loads(raw)
-            else:
-                raw, projection = load_document(options.projection)
-            # Keep third-party warnings separate from the single JSON operation result.
-            with redirect_stdout(sys.stderr):
-                result = analyze(
-                    projection,
-                    hashlib.sha256(raw).hexdigest(),
-                    allow_incomplete=options.allow_incomplete,
-                )
-            if options.record:
-                from ..tracing.results import prepare_result
-
-                record = prepare_result(result, hashlib.sha256(raw).hexdigest())
-                attempted = record.result_id
-                registered = catalog.save(record, projection_input=projection)
-        write_new_file(
-            Path(options.out), [json.dumps(result, sort_keys=True).encode() + b"\n"]
+        return import_module(".mine_" + args[0], __package__).main(args[1:])
+    if (
+        args
+        and args[0] == "export-xes"
+        and any(
+            item == "--execution" or item.startswith("--execution=") for item in args
         )
-        analysis_saved = True
-        value = {
-            "schema_version": 1,
-            "operation": "mine",
-            "status": result["status"],
-            "exit_code": 0 if result["status"] == "passed" else 3,
-            "analysis_id": result["analysis_id"],
-            "cases": len(result["selected_cases"]),
-            "excluded_cases": len(result["excluded_cases"]),
-            "variants": len(result["variants"]),
-            "llm_used": False,
-            "output": str(Path(options.out).resolve()),
-            "engine": result.get("engine", "rust4pm"),
-            "association": "registered" if options.record else "file_only",
-        }
-        if options.xes_out:
-            from ..mining.comparison import AnalysisEvidence
-            from .mine_xes import export_bytes
+    ):
+        from .mine_xes import main as export_execution
 
-            data, _, _ = export_bytes(
-                AnalysisEvidence(result, projection, "file", True)
-            )
-            write_new_file(Path(options.xes_out), [data])
-            value["xes"] = {
-                "output": str(Path(options.xes_out).resolve()),
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "saved": True,
-            }
-    except ArchiveError as error:
-        value = {
-            "schema_version": 1,
-            "operation": "mine",
-            "status": error.status,
-            "reason": str(error),
-            "exit_code": 2,
-        }
-    except TraceConfigurationError:
-        value = {
-            "schema_version": 1,
-            "operation": "mine",
-            "status": "invalid_configuration",
-            "reason": "Tracing configuration is invalid",
-            "exit_code": 2,
-        }
-    except ImportError:
-        value = {
-            "schema_version": 1,
-            "operation": "mine",
-            "status": "missing_tool",
-            "reason": "Install the mining extra to enable Rust4PM (r4pm)",
-            "exit_code": 2,
-        }
-    except (OSError, ValueError, TypeError, RecursionError):
-        value = {
-            "schema_version": 1,
-            "operation": "mine",
-            "status": "invalid_input",
-            "reason": "Cannot read, validate or write the requested analysis data",
-            "exit_code": 2,
-        }
-    if attempted is not None and registered is None:
-        value["registration"] = {"result_id": attempted, "association": "unconfirmed"}
-        value["next_actions"] = [
-            [
-                "engineering-ci",
-                "trace",
-                "status",
-                "--result",
-                attempted,
-                "--config",
-                str(config_path(options)),
-                "--json",
-            ]
-        ]
-    if options.xes_out and value["exit_code"]:
-        value["analysis_saved"] = analysis_saved
-        value["xes_saved"] = False
-        if analysis_saved:
-            value["analysis_output"] = str(Path(options.out).resolve())
-            value["analysis_status"] = result["status"]
-            if result["status"] != "passed":
-                value["exit_code"] = 3
-    if registered is not None:
-        value["registered_result"] = registered
-        value["next_actions"] = [
-            [
-                "engineering-ci",
-                "trace",
-                "export",
-                "--result",
-                registered["result_id"],
-                "--out",
-                str(Path(options.out).resolve()),
-                "--config",
-                str(config_path(options)),
-                "--json",
-            ]
-        ]
-    if options.xes_out and value["exit_code"] and analysis_saved:
-        recovery = ["engineering-ci", "mine", "export-xes"]
-        if registered is not None:
-            recovery += [
-                "--analysis-result",
-                registered["result_id"],
-                "--config",
-                str(config_path(options)),
-            ]
-        elif options.projection:
-            recovery += [
-                str(Path(options.out).resolve()),
-                "--projection",
-                str(Path(options.projection).resolve()),
-            ]
-        else:
-            recovery = None
-            value["source_projection_result"] = options.projection_result
-        if recovery:
-            value["next_actions"] = [
-                recovery + ["--out", str(Path(options.xes_out).resolve()), "--json"]
-            ]
-    print(
-        json.dumps(value, sort_keys=True)
-        if options.json
-        else f"Workflow mining: {json.dumps(value, sort_keys=True)}"
-    )
-    return value["exit_code"]
+        return export_execution(args[1:])
+    if args and not any(
+        item == "--config" or item.startswith("--config=") for item in args
+    ):
+        args += ["--config", str(ROOT / "config/tracing.toml")]
+    return portable_main(args)

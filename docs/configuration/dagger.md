@@ -1,6 +1,6 @@
 # Dagger 版本与本地环境
 
-本轮使用 **v1.0.0-beta.16**：`dagger.json` 固定模块 Engine 版本，
+本轮使用 **v1.0.0-beta.16**：`dagger-module.toml` 固定模块 Engine 版本，
 共享 Workflow 的 `DAGGER_VERSION` 同时固定 CLI 和 Engine 镜像。
 版本一致性测试防止两处出现偏差。不使用浮动 `latest`。
 安装方式来自 [Dagger 官方文档](https://docs.dagger.io/getting-started/install/)。
@@ -55,7 +55,7 @@ Pipeline 的 `execution.backend=auto` 已在 Windows 选择该路径，`release.
 容器接口 `repository-check-artifacts` 导出原始执行报告，即使检查失败也可取回；
 统一入口从报告传播实际非零状态。`repository-check-environment` 只探测环境和源码。
 这些接口不注册为默认 fixture checks，避免 Release 重复执行核心 pytest。
-检查入口未设置 `DAGGER_ENGINE` 时，按 `dagger.json` 固定版本选择 Engine 镜像；
+检查入口未设置 `DAGGER_ENGINE` 时，按 `dagger-module.toml` 固定版本选择 Engine 镜像；
 显式覆盖仍需通过实际版本核验。旧 `_EXPERIMENTAL_DAGGER_RUNNER_HOST` 不决定该默认值。
 Dagger 1.0 的目录导入省略 `dagger.lock`，接口将它作为显式 File 输入传入；
 容器与宿主仍对锁文件内容做绑定校验。
@@ -64,7 +64,12 @@ Dagger 1.0 的目录导入省略 `dagger.lock`，接口将它作为显式 File �
 不将未执行的检查记为通过。
 证据有效性和出口定义见[本地检查](../architecture/local-checks.md)。
 
-1.0 仍支持 `dagger.json`。本轮保留 `.dagger/src` 和消费者已有模块引用；
+工作区 `dagger.toml` 安装本仓库模块作为 entrypoint；模块清单
+`dagger-module.toml` 声明名称、Engine、Python runtime 和 `.dagger` 源码。
+使用实际 beta.16 的 `dagger module migrate .` 原地生成模块清单，保留 `.dagger/src`。
+两个 TOML 和生成 SDK 均纳入检查输入，修改后旧证据失效。消费者已有 `dagger.json`
+读取兼容仍保留；不自动迁移消费者仓库。原生模块运行时要求生成的 SDK 随源码交付，`.dagger/sdk` 由 Engine 生成，
+不再由 `.dagger/.gitignore` 排除；不手写或格式化这些生成文件。
 不运行会移动源码的 workspace 自动迁移。参见[官方迁移说明](https://docs.dagger.io/config/migrate-dagger-json/)。
 
 ```sh
@@ -89,3 +94,10 @@ uv lock --project .dagger --check
 SDK 必须由实际 Engine 生成，不能只检查旧 SDK 的锁文件而声称完成升级。
 版本输出读取兼容 0.x 单行和 1.0 多行格式，Manifest 只保存校验后的版本值。
 发布门禁和证据关联仍由[发布机制](../architecture/release/workflow.md)定义。
+
+## Python 工作区生成限制
+
+beta.16 的官方 Python runtime SDK 不实现工作区 SDK 所需的 `findClientRoot`，
+实际注册后 `dagger generate` 失败。因此工作区只注册现有模块 entrypoint，
+SDK 更新继续使用上面的模块代码生成 API；不声明无法运行的 SDK scope。
+观察与版本信息见[上游使用记录](../../.agent/upstream-observations.md)。

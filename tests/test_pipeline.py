@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from engineering_ci import checks, pipeline, toolchain
+from engineering_ci import checks, dagger_checks, pipeline, toolchain
 from engineering_ci.check_operations import OPERATIONS, command, container_plan
 
 
@@ -174,9 +174,7 @@ def test_missing_configuration_does_not_silently_use_defaults(tmp_path):
 
 
 def test_dagger_cli_and_engine_pins_match_the_module():
-    version = json.loads((checks.ROOT / "dagger.json").read_text(encoding="utf-8"))[
-        "engineVersion"
-    ]
+    version = dagger_checks.engine_version(checks.ROOT)
     workflow = (checks.ROOT / ".github/workflows/reusable-python-ci.yml").read_text(
         encoding="utf-8"
     )
@@ -273,7 +271,9 @@ def test_legacy_schema_one_keeps_native_execution(tmp_path, monkeypatch):
         "src/engineering_ci/checks_container.py",
         ".dagger/src/engineering_ci/main.py",
         ".dagger/src/engineering_ci/pr_checks.py",
-        "dagger.json",
+        "dagger-module.toml",
+        ".dagger/sdk",
+        "dagger.toml",
     ],
 )
 def test_container_executor_inputs_cannot_be_removed(tmp_path, monkeypatch, path):

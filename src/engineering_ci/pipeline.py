@@ -157,7 +157,9 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
             "src/engineering_ci/checks_container.py",
             ".dagger/src/engineering_ci/main.py",
             ".dagger/src/engineering_ci/pr_checks.py",
-            "dagger.json",
+            "dagger-module.toml",
+            ".dagger/sdk",
+            "dagger.toml",
         } <= set(data["inputs"]["common"]):
             raise ValueError("Container executor definition inputs cannot be excluded")
         # Schema 1 previously grouped lock with version without repeating its CI identity.

@@ -224,7 +224,7 @@ wheels = [
 
 [[package]]
 name = "engineering-ci"
-version = "0.6.5"
+version = "0.6.6"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -234,16 +234,17 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+harness = [
+    { name = "vesryn" },
+]
 mining = [
-    { name = "r4pm" },
+    { name = "vesryn", extra = ["mining"] },
 ]
 telemetry = [
-    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "vesryn", extra = ["telemetry"] },
 ]
 trace = [
-    { name = "cloudevents" },
-    { name = "opentelemetry-sdk" },
-    { name = "psycopg", extra = ["binary"] },
+    { name = "vesryn", extra = ["trace"] },
 ]
 
 [package.dev-dependencies]
@@ -252,21 +253,21 @@ dev = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "vesryn", extra = ["mining", "telemetry", "trace"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cloudevents", marker = "extra == 'trace'", specifier = "==2.2.0" },
     { name = "filelock", specifier = "==3.20.3" },
     { name = "jsonschema", specifier = "==4.26.0" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'telemetry'", specifier = "==1.45.1" },
-    { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = "==1.45.1" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'trace'", specifier = "==3.3.6" },
     { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "r4pm", marker = "extra == 'mining'", specifier = "==0.6.2" },
     { name = "transitions", specifier = "==0.9.3" },
+    { name = "vesryn", marker = "extra == 'harness'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
+    { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
+    { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
+    { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
 ]
-provides-extras = ["trace", "mining", "telemetry"]
+provides-extras = ["harness", "trace", "mining", "telemetry"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -274,6 +275,7 @@ dev = [
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.6" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
+    { name = "vesryn", extras = ["trace", "mining", "telemetry"], git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
 ]
 
 [[package]]
@@ -764,4 +766,27 @@ source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3" },
+]
+
+[[package]]
+name = "vesryn"
+version = "0.1.0"
+source = { git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3#a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" }
+dependencies = [
+    { name = "filelock" },
+    { name = "jsonschema" },
+    { name = "transitions" },
+]
+
+[package.optional-dependencies]
+mining = [
+    { name = "r4pm" },
+]
+telemetry = [
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+]
+trace = [
+    { name = "cloudevents" },
+    { name = "opentelemetry-sdk" },
+    { name = "psycopg", extra = ["binary"] },
 ]

@@ -1,0 +1,3 @@
+[modules.engineering-ci]
+source = "."
+entrypoint = true

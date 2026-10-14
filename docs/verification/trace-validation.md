@@ -3,10 +3,13 @@
 本记录汇总 pre-0.6.0、v0.5.5–v0.5.7、v0.6.0 版本准备和 v0.6.2 检索的阶段验收，不代表正式发布或自动优化闭环已经完成。
 早期验收基线为 v0.5.4，提交 f1d7d31014417468fa7299be27a86f0a57b47521。
 
+以下命令及测试路径属于当时的验收基线。v0.6.6 分仓后，通用单元测试移至 Vesryn，
+宿主兼容集成保留；当前分仓操作和证据见[分仓验收](repository-split.md)，不直接重放历史路径。
+
 ## v0.6.2 分层检索
 
 本轮增加只读 Summary/Pattern/Candidate/Evidence/Raw 查询。
-实现契约见[分层检索](../architecture/workflow-optimization/retrieval.md)，
+实现契约见[分层检索](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/retrieval.md)，
 入口操作见[查询指南](../../guides/trace-queries.md)。
 
 - 相关单元回归及宿主联合专项：90 passed。其中新增 31 项查询单元测试和 4 项真实
@@ -116,7 +119,7 @@ PM4Py 执行依赖已移除，其历史结果保留。正式发布事实仍须�
 
 Linux 核心容器回归已通过；Linux 可选 OTel/PM4Py 专项、真实 PR CI 和正式 v0.6.0 Release 尚未验收。
 服务器掉电、备份恢复、真实提交响应丢失、公开稳定 rollout 协议兼容性未验证。
-非 LLM 分析与原始归档的整体完成状态继续以[实施步骤](../architecture/workflow-optimization/design.md#实施顺序与阶段验收)为准。
+非 LLM 分析与原始归档的整体完成状态继续以[实施步骤](harness-development.md#实施顺序与阶段验收)为准。
 
 ## v0.5.5 查询、关联与 Rust4PM 联合验收
 

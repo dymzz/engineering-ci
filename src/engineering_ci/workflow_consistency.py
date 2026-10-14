@@ -371,7 +371,7 @@ def validate(*, root=ROOT, config=None, environment=None):
             step = _step(job, step_name)
             _command(
                 step,
-                f"uv run --locked python -m engineering_ci.workflow_actions release {operation}{suffix}",
+                f"uv run --locked --no-default-groups python -m engineering_ci.workflow_actions release {operation}{suffix}",
                 f"{job_id} locked release operation",
             )
             _require(

@@ -1,0 +1,6 @@
+name = "engineering-ci"
+engineVersion = "v1.0.0-beta.16"
+source = ".dagger"
+
+[runtime]
+  source = "python"

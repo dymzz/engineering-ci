@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.5"
+version = "0.6.6"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -16,6 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "vesryn[trace,mining,telemetry]==0.1.0",
     "cloudevents==2.2.0",
     "psycopg[binary]==3.3.6",
     "pytest==9.0.3",
@@ -29,18 +30,24 @@ pythonpath = ["src"]
 [project.scripts]
 engineering-ci = "engineering_ci:main"
 
+[project.entry-points."vesryn.adapters"]
+engineering-ci = "engineering_ci.workflow_adapters.checks:catalog"
+engineering-ci-dagger = "engineering_ci.workflow_adapters.provider:catalog"
+
 [project.optional-dependencies]
+harness = ["vesryn==0.1.0"]
 trace = [
-    "cloudevents==2.2.0",
-    "opentelemetry-sdk==1.45.1",
-    "psycopg[binary]==3.3.6",
+    "vesryn[trace]==0.1.0",
 ]
 mining = [
-    "r4pm==0.6.2",
+    "vesryn[mining]==0.1.0",
 ]
 telemetry = [
-    "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "vesryn[telemetry]==0.1.0",
 ]
+
+[tool.uv.sources]
+vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" }
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
