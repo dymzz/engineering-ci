@@ -3,7 +3,9 @@
 ## Project and scope
 
 Engineering CI owns reusable Python CI/CD through Dagger and GitHub Actions: checks,
-delivery, Release evidence and Run downloads. Vesryn owns the portable Harness.
+delivery, Release evidence, Run downloads and engineering domain Providers. Vesryn owns
+the portable Harness, unified shared tool registration, scoped discovery/matching and generic
+invocation coordination. Shared definitions are not duplicated in this repository.
 
 Use `D:\workspace\engineering-ci` as this workspace's primary checkout, with branches
 in that checkout. Preserve existing changes; do not create worktrees/staging copies or
@@ -16,7 +18,15 @@ change project location to work around an obstacle.
 - Use the [repository overview](docs/architecture/repository-overview.md) as the factual basis for project instructions; keep task progress out of AGENTS.md.
 - Before editing `.github/`, read [.github/AGENTS.md](.github/AGENTS.md).
 - Before editing `.dagger/`, read [.dagger/AGENTS.md](.dagger/AGENTS.md).
+- Before editing `docs/architecture/`, read [docs/architecture/AGENTS.md](docs/architecture/AGENTS.md).
 - Root instructions own project boundaries; subtree instructions add their specialized constraints. Configuration and technical contracts stay in their existing authoritative files.
+
+## Technology context
+
+- Technology inventory: [docs/architecture/technology.md](docs/architecture/technology.md); maintenance rules: [docs/architecture/AGENTS.md](docs/architecture/AGENTS.md).
+- Read the relevant technology entries before modifying integrations or dependencies.
+- Verify implementation details against source code and dependency manifests (do not infer actual usage from installed dependencies alone).
+- Use incremental maintenance and targeted verification: update affected entries when technologies are introduced, replaced, or removed, distinguishing `adopted`, `experimental`, `planned`, and `removed`.
 
 ## Development and delivery
 

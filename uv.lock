@@ -262,10 +262,10 @@ requires-dist = [
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "transitions", specifier = "==0.9.3" },
-    { name = "vesryn", marker = "extra == 'harness'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
-    { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
-    { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
-    { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
+    { name = "vesryn", marker = "extra == 'harness'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
 ]
 provides-extras = ["harness", "trace", "mining", "telemetry"]
 
@@ -275,7 +275,7 @@ dev = [
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.6" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
-    { name = "vesryn", extras = ["trace", "mining", "telemetry"], git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" },
+    { name = "vesryn", extras = ["trace", "mining", "telemetry"], git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
 ]
 
 [[package]]
@@ -771,7 +771,7 @@ wheels = [
 [[package]]
 name = "vesryn"
 version = "0.1.0"
-source = { git = "https://github.com/dymzz/vesryn.git?rev=a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3#a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" }
+source = { git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4#fb984d44f84e1b4674ccb391746da14818de2bd4" }
 dependencies = [
     { name = "filelock" },
     { name = "jsonschema" },

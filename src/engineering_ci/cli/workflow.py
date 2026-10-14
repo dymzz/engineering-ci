@@ -26,6 +26,7 @@ PROTECTED_RECEIPTS = frozenset(
         "catalog.json",
         "capability.json",
         "comparison.json",
+        "binding.json",
     }
 )
 
@@ -434,6 +435,27 @@ def main(argv=None):
             from ..workflow_adapters.capabilities import call_reference
 
             operation["capability_call"] = call_reference(directory, state)
+            if (directory / "binding.json").exists():
+                from ..workflow_adapters.binding import restore_binding
+
+                try:
+                    restored = restore_binding(directory, tools)
+                    operation["selection_binding"] = {
+                        "status": "bound",
+                        "binding": restored["binding"],
+                        "tool_id": restored["binding"]["tool_id"],
+                        "provider": restored["binding"]["provider"],
+                        "version": restored["binding"]["version"],
+                        "contract_sha256": restored["binding"]["contract_sha256"],
+                        "step_results": restored["step_results"],
+                    }
+                except WorkflowError as error:
+                    operation["selection_binding"] = {
+                        "status": "stale_rejected",
+                        "reason": str(error),
+                    }
+                    if options.command == "resume":
+                        raise
             if options.command != "status":
                 operation["observations"] = {
                     "directory": str(directory / "observations"),

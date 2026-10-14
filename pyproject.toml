@@ -47,11 +47,15 @@ telemetry = [
 ]
 
 [tool.uv.sources]
-vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" }
+vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "fb984d44f84e1b4674ccb391746da14818de2bd4" }
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+wheel-exclude = ["**/AGENTS.md"]
+
 
 [tool.uv.workspace]
 members = [
