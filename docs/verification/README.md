@@ -10,6 +10,7 @@
 - [独立工作流验收](workflow-validation.md) — 生成、工具数据引用、检查复用与故障恢复的实际证据。
 - [Vesryn 分仓验收](repository-split.md) — 独立安装、旧证据兼容、私有依赖与两仓库真实 CI。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
+- [PR 检查执行图](pr-check-graph.md) — Dagger 分支、原始失败、Coverage 与证据复用验收。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 
 上级入口：[技术文档](../README.md)。

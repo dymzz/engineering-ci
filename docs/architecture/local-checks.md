@@ -54,13 +54,13 @@ uv run --locked engineering-ci checks tests --executor native --json .test-tools
 Pipeline / FSM。容器准备和身份查询不运行 pytest；报告导出使用一次检查执行。
 `checks inspect REPORT` 读取证据并核验当前身份，不执行检查。
 
-Dagger CLI 与 Engine 需要符合 `dagger.json` 的固定版本，并有可用的 Linux Docker
+Dagger CLI 与 Engine 需要符合 `dagger-module.toml` 的固定版本，并有可用的 Linux Docker
 Engine，安装见[Dagger 配置](../configuration/dagger.md)。缺少 Dagger 返回 127，
 环境不满足返回 3，显式容器执行失败不会回退到另一环境。
 
 容器使用锁定的 Python 镜像、Pipeline 固定的 uv/Ruff，以及完整 Profile 声明的 Git、gh、Bash
 和可选 aria2；具体清单来自共享配置的[环境准备契约](../configuration/pipeline.md#dagger-环境准备)。
-容器内继续调用现有检查执行器。宿主 Git / PR 操作仍在当前 checkout 进行。
+容器内的每个 Dagger 分支只调用一个既有检查。宿主 Git / PR 操作仍在当前 checkout 进行。
 源码输入不包含 `.git`、`.test-tools`、虚拟环境、机器专用下载配置或认证文件；
 宿主认证环境变量不传给检查容器。Windows 的已跟踪执行位由 Git 模式传入并记录身份。
 
@@ -202,3 +202,32 @@ JSON 写入失败不能把原本失败的检查改成成功，也不会覆盖其
 
 本地 JSON 是诊断记录。GitHub PR 和正式 Release 继续以真实 Workflow 状态、对应
 Commit SHA、Run Attempt 和必需原生证据为权威依据；本地报告不替代远程门禁。
+
+## Dagger PR 执行图
+
+`repository-check-artifacts` 保留原有请求和导出契约。Dagger 的共享准备节点产生
+相同工具环境和不可变源码，所选检查各自在独立容器分支中执行；Python 选择解析器
+只展开既有 Profile 并去重，不调度分支。Dagger 通过目录依赖解析执行与缓存。
+
+```mermaid
+flowchart LR
+    P[共享环境与源码] --> L[Ruff Lint]
+    P --> F[Ruff Format]
+    P --> T[pytest 一次]
+    P --> V[版本一致性]
+    P --> K[Lockfile]
+    L --> E[证据聚合]
+    F --> E
+    T --> E
+    V --> E
+    K --> E
+```
+
+聚合节点只读取分支原始 JSON、退出状态和环境证据，按请求顺序输出检查与日志。
+缺少证据、请求或环境不一致不能产生通过。原始失败、信号退出、必需测试跳过与输入
+过期分别保留；导出成功不等于检查成功。JUnit / Coverage 仅来自唯一 pytest 分支，
+聚合、状态查询和有效证据复用不会调用第二次 pytest。
+
+没有新增默认 fixture `@check`，避免正式 Release 的现有 fixture 和核心检查重复执行。
+原生 Linux / Actions 入口仍使用同一单项检查定义及原有 Job；GitHub 远端 DAG 不变。
+这不是把固定 Profile 改成通用 TOML DAG，也不替换 Release / 下载的跨 Run FSM。

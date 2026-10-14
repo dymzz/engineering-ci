@@ -475,10 +475,14 @@ def execute(
                     str(exported),
                 ]
                 invoke(root, args, run, environ)
-                native = checks.read_report(exported / "container-report.json")
                 actual = json.loads(
                     (exported / "environment.json").read_text(encoding="utf-8")
                 )
+                if "error" in actual:
+                    raise checks.PreconditionError(
+                        actual["error"]["status"], actual["error"]["reason"]
+                    )
+                native = checks.read_report(exported / "container-report.json")
                 if (
                     [item["name"] for item in native["checks"]] != pending
                     or any(

@@ -144,21 +144,58 @@ async def environment(source, request, executable_paths, git_token=None):
 
 
 async def artifacts(source, request, executable_paths, git_token=None):
+    """Build independent check branches; Dagger resolves their shared dependencies."""
     prepared, runtime = await container(source, executable_paths, git_token)
-    result = prepared.with_directory("/evidence", dag.directory()).with_exec(
-        [
-            "python",
-            "-m",
-            "engineering_ci.checks_container",
-            "execute",
-            "--request",
-            request,
-            "--runtime",
-            runtime,
-        ],
-        expect=dagger.ReturnType.ANY,
-        disable_dagger_in_dagger=True,
-        redirect_stdout="/evidence/stdout.log",
-        redirect_stderr="/evidence/stderr.log",
+    plan = json.loads(
+        await prepared.with_exec(
+            [
+                "python",
+                "-m",
+                "engineering_ci.checks_container",
+                "select",
+                "--request",
+                request,
+            ],
+            disable_dagger_in_dagger=True,
+        ).stdout()
+    )
+    branches = dag.directory()
+    for name in plan:
+        child_request = json.loads(request)
+        child_request["selectors"] = [name]
+        child = prepared.with_directory("/evidence", dag.directory()).with_exec(
+            [
+                "python",
+                "-m",
+                "engineering_ci.checks_container",
+                "execute",
+                "--request",
+                json.dumps(child_request),
+                "--runtime",
+                runtime,
+            ],
+            expect=dagger.ReturnType.ANY,
+            disable_dagger_in_dagger=True,
+            redirect_stdout="/evidence/stdout.log",
+            redirect_stderr="/evidence/stderr.log",
+        )
+        branches = branches.with_directory(name, child.directory("/evidence"))
+    result = (
+        prepared.with_directory("/branches", branches)
+        .with_directory("/evidence", dag.directory())
+        .with_exec(
+            [
+                "python",
+                "-m",
+                "engineering_ci.checks_container",
+                "aggregate",
+                "--request",
+                request,
+                "--runtime",
+                runtime,
+            ],
+            expect=dagger.ReturnType.ANY,
+            disable_dagger_in_dagger=True,
+        )
     )
     return result.directory("/evidence")

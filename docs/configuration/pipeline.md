@@ -201,3 +201,7 @@ PyYAML 的依赖 / 锁变化属于版本、锁文件和 pytest 输入；Ruff 按
 版本与锁文件检查仍使用完整元数据。依赖、测试配置或源码变化照常使相关结果过期。
 运行、结果与环境限制见[本地检查](../architecture/local-checks.md)，阶段证据传递见
 [发布机制](../architecture/release/workflow.md#交付阶段与证据准入)。
+
+Dagger 容器执行器按已注册选择建立独立分支，内部依赖与并发由 Dagger 执行引擎处理；
+本文件不新增依赖表达式、拓扑排序或调度字段。分支证据汇总契约见
+[本地检查的执行图](../architecture/local-checks.md#dagger-pr-执行图)。

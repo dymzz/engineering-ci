@@ -13,6 +13,98 @@ from .check_operations import container_plan
 OMITTED_INPUTS = ("config/ghwf.local.toml",)
 
 
+def aggregate(root, names, request, runtime, branches, out):
+    """Validate original branch facts and collect evidence without executing checks."""
+    current = prepare(root, names, runtime)
+    report = {
+        "schema_version": 1,
+        "profile": "+".join(request["selectors"]),
+        "selectors": request["selectors"],
+        "checks": [],
+    }
+    codes = []
+    for name in names:
+        branch = branches / name
+        environment = json.loads((branch / "environment.json").read_text())
+        if "error" in environment:
+            raise checks.PreconditionError(
+                environment["error"]["status"], environment["error"]["reason"]
+            )
+        native = checks.read_report(branch / "container-report.json")
+        if [entry["name"] for entry in native["checks"]] != [name]:
+            raise ValueError("Branch does not match the requested check")
+        entry = native["checks"][0]
+        if type(native.get("exit_code")) is not int or native["exit_code"] != int(
+            (branch / "exit-code.txt").read_text()
+        ):
+            raise ValueError("Branch exit evidence does not match")
+        if entry["identity"]["name"] != name or any(
+            entry["identity"][key] != expected
+            for key, expected in (
+                ("tools", environment["tools"][name]),
+                ("environment", environment["environment"]),
+            )
+        ):
+            raise ValueError("Branch identity differs from its environment")
+        if entry["status"] == "passed" and not (
+            entry.get("executed") is True
+            and entry.get("input_stable") is True
+            and entry.get("passed_for_current_input") is True
+            and entry.get("exit_code") == 0
+            and native["exit_code"] == 0
+        ):
+            raise ValueError("Branch pass lacks original successful execution")
+        if entry["identity"]["parameters"] != {
+            "coverage": request["coverage"],
+            "junit": request["junit"],
+        }:
+            raise ValueError("Branch execution parameters do not match")
+        codes.append(native["exit_code"])
+        if any(
+            environment[key] != current[key] for key in ("runtime", "environment")
+        ) or any(
+            environment[key][name] != current[key][name]
+            for key in ("tools", "source_inputs")
+        ):
+            entry.update(
+                status="stale",
+                input_stable=False,
+                passed_for_current_input=False,
+                reason="Branch inputs or environment differ from the completed graph",
+            )
+            codes.append(3)
+        report["checks"].append(entry)
+        if entry["status"] != "passed" and native["exit_code"] == 0:
+            codes.append(3)
+        for filename in ("stdout.log", "stderr.log"):
+            with (out / filename).open("ab") as destination:
+                destination.write((branch / filename).read_bytes())
+        if name == "pytest":
+            for filename in (
+                "core-junit.xml",
+                "core-coverage.xml",
+                "core-coverage.json",
+            ):
+                if (branch / filename).is_file():
+                    checks.shutil.copyfile(branch / filename, out / filename)
+    code = next((code for code in codes if code), 0)
+    report.update(
+        overall_status="passed"
+        if code == 0
+        and all(
+            entry.get("passed_for_current_input") is True for entry in report["checks"]
+        )
+        else "failed",
+        exit_code=code,
+    )
+    if report["overall_status"] != "passed" and code == 0:
+        report["exit_code"] = code = 3
+    checks.atomic_json(out / "container-report.json", report)
+    checks.atomic_json(out / "environment.json", current)
+    (out / "exit-code.txt").write_text(str(code), encoding="utf-8")
+    return 1 if 128 <= code < 192 else code
+
+
 def prepare(root, names, runtime):
     """Describe actual tools and source inputs without running a check."""
     environment = checks.execution_environment(root, os.environ)
@@ -33,9 +125,11 @@ def prepare(root, names, runtime):
     return result
 
 
-def main(argv=None, *, output=None):
+def main(argv=None, *, output=None, branches=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("plan", "prepare", "execute"))
+    parser.add_argument(
+        "operation", choices=("plan", "select", "prepare", "execute", "aggregate")
+    )
     parser.add_argument("--request")
     parser.add_argument("--runtime")
     args = parser.parse_args(argv)
@@ -43,6 +137,17 @@ def main(argv=None, *, output=None):
         if args.request is not None or args.runtime is not None:
             parser.error("plan reads the validated Pipeline only")
         print(json.dumps(container_plan(checks.PIPELINE), sort_keys=True))
+        return 0
+    if args.operation == "select":
+        if args.request is None or args.runtime is not None:
+            parser.error("select requires only a request")
+        request = json.loads(args.request)
+        if (
+            set(request) != {"selectors", "coverage", "junit"}
+            or type(request["coverage"]) is not bool
+        ):
+            raise ValueError("Invalid container request")
+        print(json.dumps(checks.selected(request["selectors"])))
         return 0
     if args.request is None or args.runtime is None:
         parser.error("prepare and execute require --request and --runtime")
@@ -60,6 +165,10 @@ def main(argv=None, *, output=None):
         junit = root / request["junit"]
         if not junit.resolve().is_relative_to(root):
             raise ValueError("JUnit must stay inside the source")
+        if args.operation == "aggregate":
+            return aggregate(
+                root, names, request, runtime, Path(branches or "/branches"), out
+            )
         before = prepare(root, names, runtime)
         checks.atomic_json(out / "environment.json", before)
         if args.operation == "prepare":

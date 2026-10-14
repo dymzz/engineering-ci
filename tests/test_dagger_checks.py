@@ -275,6 +275,29 @@ def test_linux_evidence_binds_the_original_checkout_and_exports_once(backend):
     assert backend.exports == [list(checks.PR_CHECKS)]
 
 
+def test_execution_graph_precondition_error_retains_classification(backend):
+    original = backend.run
+
+    def run(args, **kwargs):
+        result = original(args, **kwargs)
+        if "repository-check-artifacts" in args:
+            checks.atomic_json(
+                Path(args[-1]) / "environment.json",
+                {
+                    "error": {
+                        "status": "missing_tool",
+                        "reason": "Required tool unavailable",
+                    }
+                },
+            )
+        return result
+
+    backend.run = run
+    report, code = execute(backend)
+    assert code == 127
+    assert all(entry["status"] == "missing_tool" for entry in report["checks"])
+
+
 def test_container_plan_only_validates_configuration_without_checks_or_probes(
     monkeypatch, capsys
 ):
