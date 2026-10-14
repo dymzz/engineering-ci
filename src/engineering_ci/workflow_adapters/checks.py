@@ -60,9 +60,10 @@ def recipe(selectors, *, executor="auto", coverage=False, junit="core-junit.xml"
 
 
 class ChecksAdapter:
-    def __init__(self, root, *, runner=None):
+    def __init__(self, root, *, runner=None, executor=None):
         self.root = Path(root).resolve()
         self.runner = runner or checks.run_checks
+        self.executor = executor
         self.names = {tool_id(name): name for name in OPERATIONS}
 
     def resource(self, path):
@@ -143,8 +144,16 @@ class ChecksAdapter:
         results = {}
         grouped = {}
         for call in calls:
+            if (
+                self.executor
+                and call.inputs.get("executor", self.executor) != self.executor
+            ):
+                results[call.step_id] = ToolResult(
+                    "unavailable", 3, reason="Domain provider requires Dagger execution"
+                )
+                continue
             params = {
-                "executor": "auto",
+                "executor": self.executor or "auto",
                 "coverage": False,
                 "junit": "core-junit.xml",
                 **call.inputs,
@@ -302,4 +311,40 @@ def catalog(root=checks.ROOT, *, runner=None):
     from .inspection import SPEC, InspectionAdapter
 
     result.register(SPEC, InspectionAdapter(root))
+    return result
+
+
+def dagger_catalog(root=checks.ROOT, *, runner=None):
+    """Domain-only Provider; shared tool definitions remain exclusively in Vesryn."""
+    from dataclasses import replace
+
+    from vesryn.workflow_core.documents import digest
+
+    legacy = catalog(root, runner=runner)
+    result = Catalog()
+    adapter = ChecksAdapter(root, runner=runner, executor="dagger")
+    policy = digest(checks.PIPELINE)
+    for name in OPERATIONS:
+        identifier = tool_id(name)
+        spec = legacy.resolve(identifier)[0]
+        input_schema = copy.deepcopy(spec.input_schema)
+        input_schema["properties"]["executor"] = {"const": "dagger", "type": "string"}
+        result.register(
+            replace(
+                spec,
+                input_schema=input_schema,
+                output_schema={"oneOf": [object_schema({}), spec.output_schema]},
+                environments=("dagger",),
+                description=f"engineering-ci project {name} check with its Pipeline policy and original evidence",
+                domain="engineering",
+                use_when=(f"engineering-ci.{name}",),
+                tags=("ci", "domain-provider"),
+                source={
+                    "kind": "provider",
+                    "identity": "engineering-ci/dagger/1",
+                    "interface_sha256": policy,
+                },
+            ),
+            adapter,
+        )
     return result

@@ -43,6 +43,31 @@ def result_path(path, root):
 
 
 def main(argv=None):
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "registry":
+        try:
+            from vesryn import (
+                registry,
+            )  # availability check for the newer optional interface
+            from vesryn.cli.workflow import main as registry_main
+        except ImportError:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "operation": "workflow.registry",
+                        "status": "unavailable",
+                        "exit_code": 3,
+                        "reason": "Install the pinned Vesryn Harness with unified registry support",
+                    }
+                )
+            )
+            return 3
+        if not callable(registry.catalog):
+            return 3
+        return registry_main(["--adapter", "unified", "--root", str(ROOT), *argv[1:]])
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("tools")

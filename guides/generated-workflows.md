@@ -3,6 +3,14 @@
 本入口调用现有检查，不改变 PR、Release Workflow 或发布权限。`scripts/` 仍只保留
 `release.py` 与 `download.py`。下面所有命令从主 checkout 执行。
 
+## 统一共享目录
+
+可选 `engineering-ci workflow registry` 使用 Vesryn 的统一工具目录和 Scope；
+`--transport dagger` 经独立共享工具模块执行，`--provider engineering-ci-dagger`
+显式加入本仓库的领域检查。仓库不复制共享 ToolSpec 或工具版本配置。
+模块路径、Vesryn source、当前项目、授权效果和实际可用性均由宿主明确提供。
+命令与边界见[统一目录](../docs/architecture/harness-integration/registry.md)。
+
 ## 安装和发现工具
 
 v0.6.6 的通用实现由独立 Vesryn 包提供。开发组安装锁定的 Vesryn 候选提交；

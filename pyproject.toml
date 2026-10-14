@@ -32,6 +32,7 @@ engineering-ci = "engineering_ci:main"
 
 [project.entry-points."vesryn.adapters"]
 engineering-ci = "engineering_ci.workflow_adapters.checks:catalog"
+engineering-ci-dagger = "engineering_ci.workflow_adapters.provider:catalog"
 
 [project.optional-dependencies]
 harness = ["vesryn==0.1.0"]
@@ -46,7 +47,7 @@ telemetry = [
 ]
 
 [tool.uv.sources]
-vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "0dfc8f5a695f647651485d90943121314fef179e" }
+vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "a00e1ffdc505e33ba226ee2ac8cd485ac2ed4aa3" }
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

@@ -75,3 +75,13 @@ Python 保留单项检查及证据准入，pipeline.toml 仍是固定检查配�
 原生工作区和模块配置使用 dagger.toml / dagger-module.toml；
 现有 CLI、报告、单次 pytest 与失败契约保持不变。
 通用 Harness 的目标边界和技术正文由 [Vesryn 文档](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/README.md) 维护，不在本仓库保留平行实现方案。
+
+
+## 共享工具目录与领域 Provider
+
+Vesryn 统一维护共享注册、分层发现、确定性匹配和通用调用协调。
+engineering-ci 通过可选 `workflow registry` 消费它，并以显式 `engineering-ci-dagger`
+Provider 提供原有工程检查的契约/绑定。该 Provider 固定调用现有 Dagger 执行器；
+正式 CI Gate、检查策略和原始证据解释仍由本仓库负责。仓库名不是工具白名单。
+旧 Tool ID 和兼容入口保留，基础 CI/CD 不强制依赖 Vesryn；没有循环 Python 或
+Dagger 模块依赖。正文见[统一目录](harness-integration/registry.md)。
