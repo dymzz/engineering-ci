@@ -169,7 +169,7 @@ publish 使用同一逐项复用方式。查询仅比较身份，复用仍做末
 
 显式固化的 PR Handler 可通过 `checks --binding FILE --reuse --json REPORT` 使用。
 它仍选择完整 `pr` 并调用同一执行器；JSON 的 `handler_binding` 仅关联候选和绑定，
-不参与通过判定。绑定创建及失效规则见[Handler 固化](workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+不参与通过判定。绑定创建及失效规则见[Handler 固化](harness-integration/legacy-binding.md#首个-handler-固化基础-pr-检查复用v061)。
 
 交付沿用已有报告的 Coverage 开关和 JUnit 输出位置，不因输出选项回到默认值而重跑
 pytest。只接受既有类型化输出参数；检查选择和参数定义仍来自完整 `pr` Profile，

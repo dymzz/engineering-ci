@@ -2,7 +2,7 @@
 
 当前定位为个人开发：本地获得完整反馈，GitHub 提供快速 PR 检查，
 正式版本由人主动发起完整验收。无需团队审批环境、常驻服务或额外调度器。
-功能 PR 的合并授权与阶段备份遵循[Agent 指令](../../../AGENTS.md#development-workflow)；
+功能 PR 的合并授权与阶段备份遵循[Agent 指令](../../../AGENTS.md#development-and-delivery)；
 人或已授权 Agent 完成审查与合并，本地通过不能替代正式发布验收。
 本文解释发布机制；用户命令、执行顺序和迁移方式统一维护在[使用说明](../../../guides/README.md)。
 

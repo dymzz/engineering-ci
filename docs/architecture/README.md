@@ -12,6 +12,6 @@
 - [执行与恢复](execution/README.md) — Workflow 执行 FSM、持久化与恢复契约。
 - [发布](release/README.md) — Release Workflow 的门禁、证据与异常恢复。
 - [测试](testing/README.md) — Pytest 报告、显式质量策略及 Python 兼容性。
-- [轨迹驱动优化](workflow-optimization/README.md) — 轨迹归档、流程挖掘及 v0.6.0 分阶段实施方案。
+- [Harness 集成](harness-integration/README.md) — CI 适配、领域准入、反馈与分仓兼容约定。
 
 上级入口：[技术文档](../README.md)。

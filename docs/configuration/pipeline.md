@@ -25,9 +25,9 @@ PR profile 保留既有五项检查。工具的实际版本和当前输入仍需
 不复制 TOML 中的工具、命令、权限或检查定义。配置变化后重新生成绑定；实际检查结果仍逐项核验。
 绑定解析留在宿主 CLI，不再让原 checks 反向导入 mining 或成为全部基础检查的公共输入。
 绑定不是新的 Pipeline 配置段，不改变 schema 1 或 Actions Job DAG；契约见
-[Handler 固化](../architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+[Handler 固化](../architecture/harness-integration/legacy-binding.md#首个-handler-固化基础-pr-检查复用v061)。
 生成工作流采用每次独立的定义/来源文件，不向本 TOML 累积业务映射；
-实际边界见[独立生成与编排](../architecture/workflow-optimization/generated-workflows.md)。
+实际边界见[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 
 ## 操作契约与编排边界
 

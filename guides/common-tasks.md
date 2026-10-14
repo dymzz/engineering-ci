@@ -3,7 +3,7 @@
 本地检查、开发 PR、发布以及已有 Run 的下载步骤。命令语义与退出码见[CLI 参考](cli-reference.md)。
 
 本页示例使用当前准备版本 v0.6.0。开发时先在功能分支对齐四处元数据；对应 PR 合并后，该版本才能成为正式发布目标。
-v0.6.0 的能力范围与限制见[版本依据](../docs/architecture/workflow-optimization/design.md#v060-交付范围与既有证据)。
+v0.6.0 的能力范围与限制见[版本依据](../docs/verification/harness-development.md#v060-交付范围与既有证据)。
 版本元数据和本地/PR 检查通过都不表示已经正式发布；PR 实际合并后仍需人主动请求既有全量 Release Run。
 
 ## 本地检查与开发 PR
@@ -49,7 +49,7 @@ uv run --locked python scripts/release.py publish --version v0.6.0 --all -m "准
 4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，入口停在 **待审查合并**，返回 3。
 
 在输出的 PR 页面审查改动和真实 CI；Draft 就绪后转为 Ready。按当前
-[Agent 授权](../AGENTS.md#development-workflow)，Agent 可在本轮验收、代码审查和当前 PR head
+[Agent 授权](../AGENTS.md#development-and-delivery)，Agent 可在本轮验收、代码审查和当前 PR head
 的必需 CI 完成后执行合并，不必再次请求逐次合并许可。
 必需 CI 失败、跳过或尚未完成时，入口明确停在 PR CI，不给出当前可合并的提示。
 CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR。

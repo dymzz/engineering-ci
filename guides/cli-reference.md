@@ -7,7 +7,7 @@ v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独�
 开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
 原 trace/mining/telemetry extras 保留，转为固定 Vesryn extra。
 通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
-及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/workflow-optimization/repository-split.md)。
+及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/harness-integration/repository-split.md)。
 
 ## 两个用户入口
 
@@ -63,7 +63,7 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
-PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-workflow)，操作见
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-and-delivery)，操作见
 [审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
 完成实际合并后才能接续，自动合并授权不包含正式发布。
 
@@ -357,7 +357,7 @@ status=reported 与退出码 0 仅表示报告生成完成，即使没有候选�
 当前均为 needs_review、executable=false、handler=null，报告没有自动批准或改写检查策略的命令。
 候选报告自身不启用执行，llm_used=false、quality_gate=not_evaluated、optimization_verified=false。
 显式选择目标后，可按下一节绑定已支持的 Handler；候选报告保持原审查状态。流程边界见
-[实施方案](../docs/architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
+[实施方案](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/analysis.md#p2候选报告与人工审查依据v057)。
 
 ## 绑定并调用 PR 检查 Handler
 
@@ -402,7 +402,7 @@ uv run --locked engineering-ci checks inspect '.test-tools/checks/pr.json'
 
 历史投影没有具体检查身份，绑定是用户显式选择的新目标，不证明历史重复命令就是 PR 检查，
 也不批准删检查、自动发布或扩展远端权限。详细契约见
-[Handler 固化](../docs/architecture/workflow-optimization/design.md#首个-handler-固化基础-pr-检查复用v061)。
+[Handler 固化](../docs/architecture/harness-integration/legacy-binding.md#首个-handler-固化基础-pr-检查复用v061)。
 
 以上调用是早期证据绑定原型的兼容入口。新配置执行使用 `engineering-ci workflow`，见
 [完整操作说明](generated-workflows.md)，不要将旧绑定文件当作新的 workflow.json。

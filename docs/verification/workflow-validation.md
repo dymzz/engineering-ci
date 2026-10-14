@@ -3,7 +3,7 @@
 本记录对应 PR #25 的独立生成/执行实现，区别于早期 `registered-pr-check-reuse/1` 绑定原型。
 验证在主 checkout 完成，没有替代工作区、数据库迁移、Workflow Dispatch、合并或正式发布。
 操作说明见[生成工作流](../../guides/generated-workflows.md)，契约见
-[架构](../architecture/workflow-optimization/generated-workflows.md)。
+[架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 
 以下记录保留原执行版本及路径。v0.6.6 的通用核心和单元测试已迁至 Vesryn，
 当前职责与证据见[分仓验收](repository-split.md)。
@@ -185,7 +185,7 @@ PR CI 验证，不能用校正前基线的通过记录声称当前输入已通�
 
 本轮基于已 Squash 合并的 PR #27，使用原 checkout 的 codex/workflow-capabilities。
 四处项目版本为 0.6.4；能力 pr-check-reuse 的版本为 1.0.0，两者身份独立。
-规范和操作见[能力契约](../architecture/workflow-optimization/generated-workflows.md#能力批准版本选择与执行反馈)
+规范和操作见[能力契约](../architecture/harness-integration/capabilities.md#能力批准版本选择与执行反馈)
 及[用户指南](../../guides/generated-workflows.md#批准启用选择与调用能力)。
 
 相关回归 200 项通过；新增能力最终测试 23 项通过，包括真实 pytest assert 失败退出 1、
@@ -244,7 +244,7 @@ check-submission-reuse，原 P1 文件 approved=false。
 基于已合并 PR #28 的 main，在原 checkout 的 codex/feedback-retrieval 开发。
 实现 `workflow feedback-query`，复用原 FEEDBACK Schema、schema 3 表和分页预算机制；
 不构建 Runtime、不执行检查、不在查询中迁移或写入。规范见
-[反馈检索契约](../architecture/workflow-optimization/retrieval.md#已归档能力反馈的只读检索p3-1)，
+[反馈检索契约](../architecture/harness-integration/feedback.md#已归档能力反馈的只读检索p3-1)，
 操作见[查询指南](../../guides/generated-workflows.md#查询已归档反馈)。
 
 新查询单元测试最终 39 项通过；查询、能力、比较、旧 Trace 检索/结果与统一 CLI 的相关
@@ -299,7 +299,7 @@ P3-3 再审查依据，不推断当前源码有效、能力仍启用、整体成
 
 PR #29 尚开放，继续原 checkout/分支和同一个版本 PR，没有为阶段新增平行 PR。新反馈
 文档 v2 提取已有安全 Attempt 索引；原反馈 v1 继续校验/查询/归档，数据库仍为 schema 3，
-没有新迁移。契约见[覆盖汇总](../architecture/workflow-optimization/retrieval.md#已归档反馈的覆盖与汇总p3-2)，
+没有新迁移。契约见[覆盖汇总](../architecture/harness-integration/feedback.md#已归档反馈的覆盖与汇总p3-2)，
 操作见[用户指南](../../guides/generated-workflows.md#核验覆盖并汇总反馈)。
 
 模型/旧能力/查询兼容测试 69 项通过；最终查询、汇总、能力、比较、观测及归档相关
@@ -345,7 +345,7 @@ P3-3 再审查依据及自动调优没有进入本轮。
 继续开放 PR #29 和原 checkout。`workflow feedback-review` 消费 P3-2 成功汇总，
 从同一归档重算完整内容摘要，再读显式能力目录与 call 回执。复用原 Scope/Schema、
 质量 gate 和比较核验；admission 保持原返回/拒绝语义，不自动批准、启用、执行或发布。
-契约见[再审查依据](../architecture/workflow-optimization/retrieval.md#已归档反馈的再审查依据p3-3)，
+契约见[再审查依据](../architecture/harness-integration/feedback.md#已归档反馈的再审查依据p3-3)，
 操作见[指南](../../guides/generated-workflows.md#关联原比较与执行证据进行再审查)。
 
 初版审查将双方原生执行共同缺少可选 executor 误判为变化，5 项测试失败；依据原比较器

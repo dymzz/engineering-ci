@@ -5,6 +5,13 @@
 技术契约已经按所属仓库迁移；不得把旧待办重新安排为必需工作，或把计划表当作实际通过证据。
 实际执行记录分别见[轨迹验收](trace-validation.md)、[工作流验收](workflow-validation.md)和[分仓验收](repository-split.md)。
 
+## 初始范围与基线
+
+本文保留 pre-0.6.0 的设计范围、架构边界和交付步骤。前期代码随 PR #20 合并；过渡交付分别为 v0.5.5 的 P0 查询/关联与 Rust4PM、v0.5.6 的 P1 遥测/比较、v0.5.7 的 P2 候选与审查依据。v0.6.0 已正式发布；v0.6.1 的首个固化目标为基础 PR 检查的同输入复用。各阶段按下文实施；已完成证据见[轨迹验收](trace-validation.md)。
+基线为正式 v0.5.4，提交 `f1d7d31014417468fa7299be27a86f0a57b47521`。
+P0-0 至 P0-4 已实现并获得分阶段实测证据，版本元数据在功能 PR 交付前统一准备。
+归档存储复用本地宿主 PostgreSQL，由 `VESRYN_DATABASE` 提供连接配置；不保留 SQLite 后端或回退。
+
 ## 版本升级依据
 
 v0.6.0 的新增公开能力是：将实际 Agent 操作归档为可回放的证据，
@@ -36,10 +43,10 @@ PR #20–#23 已合并，v0.6.0 在这些已完成能力上准备版本，不增
 | --- | --- | --- |
 | 实际来源 | 单个明确授权的 Codex 原生 rollout 0.162.0-alpha.2；与 exec --json 区分 | [来源及数据库](trace-validation.md#实际来源与数据库) |
 | 字节归档与恢复 | PostgreSQL/CloudEvents、幂等导入、原字节回放、提交/进程恢复 | [归档验证](trace-validation.md#自动化验证) |
-| 完整性 | 保留 complete/incomplete/unknown；当前实录为 unknown | [标准与完整性](../architecture/workflow-optimization/design.md#标准化-trace-与分析投影) |
+| 完整性 | 保留 complete/incomplete/unknown；当前实录为 unknown | [标准与完整性](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md#标准化-trace-与分析投影) |
 | 标准投影 | 官方 OTel SDK、原时间及失败状态、稳定 ID；当前三类原生 item 活动 | [标准投影验收](trace-validation.md#标准化与真实非-llm-分析) |
 | 非 LLM 分析 | Rust4PM 变体/DFG、显式 case 准入、排除原因，不伪造并行顺序 | [Rust4PM 验收](trace-validation.md#v055-查询关联与-rust4pm-联合验收) |
-| 追溯与未知项 | 固定快照、投影/分析父关联、摘要核验、原文件登记/查询/恢复 | [证据链](../architecture/workflow-optimization/design.md#归档查询与派生证据关联v055-两个-p0) |
+| 追溯与未知项 | 固定快照、投影/分析父关联、摘要核验、原文件登记/查询/恢复 | [证据链](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md#归档查询与派生证据关联v055-两个-p0) |
 
 此外一并交付 P1 的可选 OTLP/Collector/本地 Jaeger 和固定输入比较，以及 P2 的候选与人工审查依据。
 这些是公开可调用的观察能力；报告成功、原任务成功、接收确认、后端读回和发布成功继续分开。
@@ -116,17 +123,6 @@ Dagger 提供固定依赖的 Linux 分析/测试环境，Windows 验证宿主数
 
 ## 内容策略、未完成预检与上下文衔接
 
-当前 Codex 的历史查询通过[分层检索](../architecture/workflow-optimization/retrieval.md)控制返回内容；PostgreSQL 的长期积累
-不扩大默认上下文。该接口复用既有分析，不实现 LLM 上下文服务。
-
-完整原始归档涉及输入输出和可能的机密，与原有脱敏发布证据是不同的数据范围。
-来源、保留期、访问控制与内容策略在第一次实际采集前明确；禁止自动扫描账号全部会话。
-原始内容保持不可变，导出可以脱敏；需要清理归档时执行明确的数据保留策略，
-不能同时承诺无限保留和删除敏感内容。
-清理需核对快照引用；原始成员已按策略删除时，将对应快照标记为不可回放，
-不能仅凭保留的摘要继续声称原始字节可用。
-按默认策略不导出 prompt、工具参数、环境变量或认证内容。遥测和分析结果不提交 Git。
-
 已确定的选择：宿主 PostgreSQL、`VESRYN_DATABASE`、Psycopg 3、首个来源为显式桌面 Codex rollout JSONL、
 成熟插桩优先、默认非 LLM 分析、原始归档与业务执行状态独立。
 这些选择不因工具环境缺失而自动换成另一套后端。
@@ -172,7 +168,7 @@ P0-0 的宿主预检、P0-1 来源适配、P0-2 归档/恢复、P0-3 OTel SDK �
 注册操作的字段补充与挖掘投影在 v0.6.3 接入：原报告提供允许公开的参数、实际工具版本、
 平台/后端与统计；Runtime 提供实际调用批次。标准 XES 与 Rust4PM 共用按 Step/attempt 准入的
 Event Log，跨 Step 依赖仍来自原定义，不能把共享批次的包装时间当成各项内部耗时。
-具体契约见[独立生成与编排](../architecture/workflow-optimization/generated-workflows.md#已观测操作的-event-log-与分析)。
+具体契约见[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/observations.md#已观测操作的-event-log-与分析)。
 这补齐 P1 的可观察输入；当前进一步提供完整 PR Profile 的同输入复用比较。
 P1 首个范围仅认证原报告标记的检查提交减少，保留原质量结果和复用来源；
 具体准入见[受控复用比较](../architecture/harness-integration/checks.md#完整-pr-检查的受控复用比较)。

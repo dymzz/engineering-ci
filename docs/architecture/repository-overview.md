@@ -51,7 +51,7 @@ Git 和 gh。HTTP 的 aria2 是可选后端，缺少时 auto 使用原生 HTTP�
 Vesryn 通过固定版本与不可变 Git Commit 显式安装，开发组安装其可选 SDK 用于兼容测试。
 Vesryn 的 Python 包不依赖 engineering-ci；它的 CI 消费固定 engineering-ci Workflow / Dagger 版本。
 这区分运行时依赖和 CI 使用关系，避免两个未发布开发分支互相构建。
-固定引用与旧身份兼容见[分仓契约](workflow-optimization/repository-split.md)。
+固定引用与旧身份兼容见[分仓契约](harness-integration/repository-split.md)。
 
 ## 验证、维护与 Agent 初稿
 
@@ -65,3 +65,11 @@ Vesryn 的 Python 包不依赖 engineering-ci；它的 CI 消费固定 engineeri
 层级说明见[Agent 指令](agent-instructions.md)，共享文档约定见[维护约定](../conventions.md)。
 
 自动优化 Loop、Bandit、通用任务平台或新 Agent 工作流并非这份 CI/CD 实现的已有能力。
+
+## Dagger 优先的迁移方向
+
+Dagger 拥有检查执行图、容器调度与缓存；GitHub Actions 拥有远端 Job DAG。
+engineering-ci 提供项目质量策略、证据准入、GitHub 交付和跨 Run 恢复。
+当前容器 PR 路径仍通过 Python 检查循环执行，pipeline.toml 仍是固定检查配置；
+原生配置和 Checks 迁移尚未实施，现有 CLI、报告与失败契约保持不变。
+通用 Harness 的目标边界和技术正文由 [Vesryn 文档](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/README.md) 维护，不在本仓库保留平行实现方案。

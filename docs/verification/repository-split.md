@@ -6,7 +6,7 @@ engineering-ci v0.6.6 consumes Vesryn v0.1.0 at immutable candidate
 `0dfc8f5a695f647651485d90943121314fef179e`. Vesryn CI consumes the existing
 engineering-ci v0.6.5 at `804d791c60d34468166b6910c88fbc8149fdbf26`.
 Neither version is published by this task. Ownership and compatibility constraints
-are defined in the [extraction contract](../architecture/workflow-optimization/repository-split.md).
+are defined in the [extraction contract](../architecture/harness-integration/repository-split.md).
 
 ## Independent Vesryn
 

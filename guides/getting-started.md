@@ -56,9 +56,9 @@ v0.6.0 在既有 CI 能力之外提供离线轨迹归档、标准投影、非 LL
 同时使用多个能力时，在同一 sync/run 命令中列出需要的各个 --extra；dev 组按开发需要保留。
 归档使用既有宿主 PostgreSQL 和 VESRYN_DATABASE，显式 trace init 才建立/升级专用 schema。
 当前已核对的来源是 Codex 原生 rollout 0.162.0-alpha.2；不扫描所有会话，不自动执行历史工具。
-能力范围与未实现事项见[版本设计](../docs/architecture/workflow-optimization/design.md#版本升级依据)，
+能力范围与未实现事项见[版本设计](../docs/verification/harness-development.md#版本升级依据)，
 实测记录见[验证记录](../docs/verification/trace-validation.md)。
 
 v0.6.6 起，上述通用实现由 Vesryn 单独维护；旧命令通过兼容层调用固定版本，
 CI 检查策略、批准与反馈门禁仍留在 engineering-ci。依赖边界见
-[分仓契约](../docs/architecture/workflow-optimization/repository-split.md)。
+[分仓契约](../docs/architecture/harness-integration/repository-split.md)。

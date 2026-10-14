@@ -70,4 +70,4 @@ uv run --locked --extra trace engineering-ci trace query raw --snapshot $snapsho
 
 `returned` / exit 0 是查询完成，不是候选执行或优化通过。
 非法查询/配置/文件/损坏返回 2；证据不可用或预算不足返回 3。
-详情见[检索契约](../docs/architecture/workflow-optimization/retrieval.md)。
+详情见[检索契约](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/retrieval.md)。

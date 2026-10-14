@@ -54,7 +54,7 @@ free-threaded 的 cp314t wheel。Windows/Linux 应使用该版本提供 wheel �
 宿主预检读取 fsync/synchronous_commit，不自动更改它们。
 归档失败不改变既有 pytest、Dagger、Workflow 或发布门禁。
 
-来源与完整性定义见[实施架构](../architecture/workflow-optimization/design.md)，
+来源与完整性定义见[实施架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)，
 命令见[CLI 参考](../../guides/cli-reference.md#原始轨迹)。
 
 ## 可选离线挖掘
@@ -94,11 +94,11 @@ project/mine 的 --record 允许显式写派生结果；没有该选项的旧文
 
 已有结果的 mine compare 与 mine candidates 文件模式均不需要 mining/trace/telemetry extra，
 也不调用发现算法；ID 模式只使用既有 trace 归档依赖。候选的范围和审查条件见
-[实施方案](../architecture/workflow-optimization/design.md#p2候选报告与人工审查依据v057)。
+[实施方案](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/analysis.md#p2候选报告与人工审查依据v057)。
 
 `trace query` 复用这些派生结果，提供预算受限的分层只读视图；文件模式无需可选依赖。
 它不增加 TOML 字段、数据库迁移或外部服务，分页/预算由 CLI 显式选择。
-契约见[分层检索](../architecture/workflow-optimization/retrieval.md)，
+契约见[分层检索](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/retrieval.md)，
 操作见[查询指南](../../guides/trace-queries.md)。
 
 ## 可选 OTLP 出口与本地 Jaeger
@@ -121,7 +121,7 @@ v0.6.4 的数据库 migration 003 在本组件专用 schema 增加 workflow_feed
 status/查询/feedback 不隐式迁移。配置格式版本仍为 1，不新增连接字段或独立数据库。
 实际反馈由 `workflow feedback EXECUTION_DIR --archive [--config FILE]` 显式登记，默认仅
 保存本地安全记录；重复同一身份写入会读回核验，不重新执行检查。
-契约见[工作流能力与反馈](../architecture/workflow-optimization/generated-workflows.md#能力批准版本选择与执行反馈)，
+契约见[工作流能力与反馈](../architecture/harness-integration/capabilities.md#能力批准版本选择与执行反馈)，
 操作见[用户指南](../../guides/generated-workflows.md#能力调用中断及反馈归档)。
 
 数据库升级独立于 Git 分支切换。只支持 schema 1/2 的旧版本客户端会拒绝读取 schema 3；

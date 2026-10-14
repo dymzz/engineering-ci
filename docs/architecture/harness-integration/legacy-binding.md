@@ -6,7 +6,7 @@
 ## 首个 Handler 固化：基础 PR 检查复用（v0.6.1）
 
 本节保留 PR #25 早期证据绑定原型的历史定义及兼容行为。
-当前独立生成、核心与工具解耦及配置执行以[独立生成与编排](../workflow-optimization/generated-workflows.md)为准。
+当前独立生成、核心与工具解耦及配置执行以[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)为准。
 
 用户选定“基础 PR 检查的同输入复用”，绑定现有 `pr` Profile 中的五个注册操作。
 首个来源候选是已登记分析中连续两次 `command_execution` 的调查项。

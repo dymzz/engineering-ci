@@ -26,7 +26,7 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 
 当前 `checks --binding` 为证据绑定原型的兼容桥。独立生成及工具编排由单独调用层组装，
 原 checks/Release/Download 不反向依赖生成核心；实际入口和依赖方向见
-[独立生成与编排](workflow-optimization/generated-workflows.md)。
+[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
 
 ## 公开调用契约
 
@@ -44,7 +44,7 @@ GitHub Actions 负责完整检查和发布决定，JSON 生成或文件收集不
 Release 不初始化下载后端或读取下载配置；只有 download 负责收集日志及 Artifact。
 轨迹的来源与归档游标不进入 ExecutionContext 或发布门禁，归档回放不推进业务 FSM。
 `trace status/inspect` 为只读；`init/import` 明确修改专用数据库对象；
-`replay` 明确输出原始快照文件。详细契约见[轨迹架构](workflow-optimization/design.md)。
+`replay` 明确输出原始快照文件。详细契约见[轨迹架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
 
 ## 操作结果与恢复视图
 
@@ -124,12 +124,12 @@ Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者�
 普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
 有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见[使用说明](../../guides/README.md)。
 
-trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](workflow-optimization/design.md)。
+trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
 mine candidates 复用已有分析和实际投影，仅产生候选与审查依据；不重跑分析、调用模型或执行候选。
 调用与停止后的继续方式见 [候选审查](../../guides/cli-reference.md#工作流候选与人工审查)。
 
 workflow 由 CLI 组装宿主 Catalog，调用独立 workflow_core。生成文件实际声明工具及步骤，
 workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不反向依赖 mining 或核心。
 原型 --binding 的兼容处理在 cli/checks_binding.py，只有显式选择该旧参数才加载。
-新调用及 Schema 见[独立生成工作流](workflow-optimization/generated-workflows.md)和
+新调用及 Schema 见[独立生成工作流](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)和
 [操作说明](../../guides/generated-workflows.md)，不改变 scripts 的发布/下载责任。
