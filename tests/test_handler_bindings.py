@@ -5,9 +5,9 @@ import json
 from dataclasses import replace
 
 import pytest
+from harness_fixtures import evidence
 from test_checks import checkout as check_checkout
 from test_checks import fake_process
-from test_trace_candidates import evidence
 
 from engineering_ci import checks
 from engineering_ci.cli import mine

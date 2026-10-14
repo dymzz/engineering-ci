@@ -1,1 +1,3 @@
-"""Offline non-LLM analysis of fixed, content-free execution views."""
+"""Compatibility package; portable implementation is in Vesryn."""
+
+from vesryn.mining import *

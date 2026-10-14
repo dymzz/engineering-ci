@@ -53,17 +53,19 @@ class EngineeringCi:
     async def repository_check_environment(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+        git_token: dagger.Secret | None = None,
     ) -> str:
         """Inspect actual Linux tools and inputs without executing repository checks."""
-        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     async def repository_check_artifacts(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
+        git_token: dagger.Secret | None = None,
     ) -> dagger.Directory:
         """Export one repository check execution, including failures and original exits."""
-        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths)
+        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     def container_echo(self, string_arg: str) -> dagger.Container:

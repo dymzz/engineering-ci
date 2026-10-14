@@ -363,7 +363,7 @@ def preflight(name, root, run, which, environ):
             uv,
             "run",
             "--locked",
-            *(["--group", "dev"] if name == "pytest" else []),
+            *(["--group", "dev"] if name == "pytest" else ["--no-default-groups"]),
             "--python",
             PYTHON_VERSION,
             "python",

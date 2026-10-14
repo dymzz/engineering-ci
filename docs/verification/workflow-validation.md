@@ -5,6 +5,9 @@
 操作说明见[生成工作流](../../guides/generated-workflows.md)，契约见
 [架构](../architecture/workflow-optimization/generated-workflows.md)。
 
+以下记录保留原执行版本及路径。v0.6.6 的通用核心和单元测试已迁至 Vesryn，
+当前职责与证据见[分仓验收](repository-split.md)。
+
 ## 替身及本地核心测试
 
 新增核心与适配器测试共 48 项通过，覆盖独立生成、规范 Schema、实际参数/依赖、JSON Pointer、

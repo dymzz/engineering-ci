@@ -53,13 +53,15 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
-        run: uv run --locked python -m engineering_ci.workflow_actions release prepare
+        run: uv run --locked --no-default-groups python -m engineering_ci.workflow_actions release prepare
 
   core-tests:
     needs: candidate
     uses: ./.github/workflows/ci.yml
     with:
       coverage: true
+    secrets:
+      ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
 
   complete-ci:
     needs: candidate
@@ -160,7 +162,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: uv run --locked python -m engineering_ci.workflow_actions release verify --directory release-facts --manifest release-manifest.json
+        run: uv run --locked --no-default-groups python -m engineering_ci.workflow_actions release verify --directory release-facts --manifest release-manifest.json
       - name: Preserve validation Manifest
         id: manifest_artifact
         if: ${{ always() && !cancelled() }}
@@ -204,7 +206,7 @@ jobs:
           RELEASE_PUBLISH: ${{ inputs.publish }}
           RELEASE_SCENARIO: ${{ inputs.pytest_scenario }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: uv run --locked python -m engineering_ci.workflow_actions release publish --manifest release-evidence/release-manifest.json
+        run: uv run --locked --no-default-groups python -m engineering_ci.workflow_actions release publish --manifest release-evidence/release-manifest.json
       - name: Preserve publication evidence after an API failure
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2

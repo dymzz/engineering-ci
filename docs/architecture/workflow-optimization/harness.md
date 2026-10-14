@@ -5,6 +5,10 @@
 当前扩展方向是 Agent Harness Optimization：以真实执行证据发现可复用模式，
 通过显式工具契约、试验和验证，将候选转为 Agent 可调用的能力，再观察使用效果。
 engineering-ci 是当前宿主和首个验收目标，Codex 是当前使用的 Agent。
+
+v0.6.6 / Vesryn v0.1.0 的职责迁移见[分仓契约](repository-split.md)：
+通用 Harness 由 Vesryn 维护，engineering-ci 继续负责 CI 领域工具、准入、验证与交付。
+当前 Loop 仍由用户和 Agent 驱动，本轮不实现自动 Loop 或 Contextual Bandit。
 优化层不重建 Agent 的模型调用循环或会话管理，也不接管原项目的 CI/Release 门禁。
 
 本文件维护后续实施顺序和闭环准入。已完成的归档/分析设计保留在

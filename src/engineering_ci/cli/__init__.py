@@ -6,6 +6,21 @@ import argparse
 import sys
 
 
+def require_harness():
+    """Report optional Harness installation before importing any of its commands."""
+    try:
+        import vesryn  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "vesryn":
+            raise
+        print(
+            "Harness is unavailable; install it with uv sync --locked --extra harness",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
@@ -28,6 +43,12 @@ def main(argv=None):
         return 0
     namespace = parser.parse_args(argv[:1])
     args = argv[1:]
+    needs_harness = namespace.command in {"trace", "mine", "workflow"} or (
+        namespace.command == "checks"
+        and any(arg == "--binding" or arg.startswith("--binding=") for arg in args)
+    )
+    if needs_harness and not require_harness():
+        return 2
     if namespace.command == "checks":
         if any(arg == "--binding" or arg.startswith("--binding=") for arg in args):
             from .checks_binding import main as invoke

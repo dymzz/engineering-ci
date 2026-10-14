@@ -457,7 +457,7 @@ def test_real_pytest_outcome_survives_reuse_and_comparison(checkout, body, expec
 def test_generate_candidate_id_is_not_treated_as_a_comparison_execution_path(
     checkout, monkeypatch, capsys
 ):
-    from test_trace_candidates import evidence as trace_evidence
+    from harness_fixtures import evidence as trace_evidence
 
     from engineering_ci.cli import mine_inputs, workflow
     from engineering_ci.mining.candidates import candidates

@@ -74,6 +74,7 @@ def _version(config, coverage, junit):
         "uv",
         "run",
         "--locked",
+        "--no-default-groups",
         "--python",
         config["toolchain"]["python"],
         "python",

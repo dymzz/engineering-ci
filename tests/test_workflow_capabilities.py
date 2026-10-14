@@ -564,7 +564,7 @@ def test_call_exception_keeps_context_and_resume_retains_selected_version(
 def test_partial_approval_write_is_unpublished_and_same_command_can_recover(
     checkout, monkeypatch
 ):
-    from engineering_ci.workflow_core import capabilities
+    from vesryn.workflow_core import capabilities
 
     runtime, store, _, baseline, candidate, report, _ = reviewed(checkout)
     original = capabilities.write

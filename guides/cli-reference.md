@@ -2,6 +2,13 @@
 
 两个用户入口、输出、退出码和独立工具的参考。环境准备见[开始使用](getting-started.md)，操作顺序见[常用操作](common-tasks.md)。
 
+v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独立。
+`trace`、`mine`、`workflow` 与 `checks --binding` 使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
+原 trace/mining/telemetry extras 保留，转为固定 Vesryn extra。
+通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
+及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/workflow-optimization/repository-split.md)。
+
 ## 两个用户入口
 
 `scripts/` 只保留 `release.py` 和 `download.py`。脚本加载自身 checkout 的 `src/`，

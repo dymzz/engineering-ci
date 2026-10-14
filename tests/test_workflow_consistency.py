@@ -31,11 +31,38 @@ def change(root, filename, mutation):
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
+def bound_step(data, job, check):
+    """Mutate the registered check rather than an unrelated bootstrap step position."""
+    name = pipeline.PIPELINE["checks"][check]["ci_step"]
+    return next(step for step in data["jobs"][job]["steps"] if step.get("name") == name)
+
+
 def test_current_workflows_and_yaml_boolean_rules(workflows):
     data = mod._workflow(workflows / ".github/workflows/release.yml")
     assert "on" in data and True not in data
     assert data["on"]["workflow_dispatch"]["inputs"]["publish"]["default"] is False
     mod.validate(root=workflows)
+
+
+def test_release_forwards_private_install_secret_and_keeps_base_operations_independent(
+    workflows,
+):
+    ci = mod._workflow(workflows / ".github/workflows/ci.yml")
+    release = mod._workflow(workflows / ".github/workflows/release.yml")
+    assert (
+        ci["on"]["workflow_call"]["secrets"]["ENGINEERING_CI_READ_TOKEN"]["required"]
+        is True
+    )
+    assert release["jobs"]["core-tests"]["secrets"] == {
+        "ENGINEERING_CI_READ_TOKEN": "${{ secrets.ENGINEERING_CI_READ_TOKEN }}"
+    }
+    for job in ("candidate", "verified", "publish"):
+        invocation = next(
+            step["run"]
+            for step in release["jobs"][job]["steps"]
+            if "engineering_ci.workflow_actions release " in step.get("run", "")
+        )
+        assert "uv run --locked --no-default-groups python" in invocation
 
 
 @pytest.mark.parametrize(
@@ -68,14 +95,14 @@ def test_current_workflows_and_yaml_boolean_rules(workflows):
         ),
         (
             "ci.yml",
-            lambda d: d["jobs"]["version-metadata"]["steps"][3].update(
+            lambda d: bound_step(d, "version-metadata", "version").update(
                 run="python3 -m engineering_ci.workflow_actions checks version"
             ),
         ),
         (
             "ci.yml",
-            lambda d: d["jobs"]["sync-tool-tests"]["steps"][4].update(
-                run=d["jobs"]["sync-tool-tests"]["steps"][4]["run"] + " || true"
+            lambda d: bound_step(d, "sync-tool-tests", "pytest").update(
+                run=bound_step(d, "sync-tool-tests", "pytest")["run"] + " || true"
             ),
         ),
         (
@@ -421,7 +448,7 @@ def test_real_child_version_command_fails_on_workflow_drift(workflows):
     change(
         workflows,
         "ci.yml",
-        lambda d: d["jobs"]["version-metadata"]["steps"][3].update(run="echo pass"),
+        lambda d: bound_step(d, "version-metadata", "version").update(run="echo pass"),
     )
     code = """import sys
 from pathlib import Path

@@ -5,10 +5,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path, PurePosixPath
 
 from . import checks
@@ -24,6 +26,58 @@ FACT_FIELDS = (
     "counts",
     "optional_tests",
 )
+
+GIT_SECRET_ENV = "ENGINEERING_CI_READ_TOKEN"
+
+
+def git_secret_options(root, names, run, which, environ):
+    """Supply an in-memory credential only for the pinned, approved private source."""
+    if "pytest" not in names:
+        return []
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    source = project.get("tool", {}).get("uv", {}).get("sources", {}).get("vesryn")
+    if source is None:
+        return []
+    if (
+        not isinstance(source, dict)
+        or source.get("git") != "https://github.com/dymzz/vesryn.git"
+        or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
+    ):
+        raise checks.PreconditionError(
+            "environment_error",
+            "Private Harness source must use the approved repository and a pinned commit",
+        )
+    if not environ.get(GIT_SECRET_ENV):
+        executable = which("gh")
+        if not executable:
+            raise checks.PreconditionError(
+                "missing_tool",
+                "Private dependency installation requires gh or ENGINEERING_CI_READ_TOKEN",
+            )
+        try:
+            result = run(
+                [executable, "auth", "token", "--hostname", "github.com"],
+                cwd=root,
+                env=environ,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise checks.PreconditionError(
+                "environment_error",
+                "Unable to read the existing gh credential for private dependency installation",
+            ) from None
+        token = result.stdout.strip() if result.returncode == 0 else ""
+        if not token or any(character.isspace() for character in token):
+            raise checks.PreconditionError(
+                "environment_error",
+                "Existing gh authentication cannot supply the private dependency credential",
+            )
+        environ[GIT_SECRET_ENV] = token
+    return ["--git-token", f"env:{GIT_SECRET_ENV}"]
 
 
 def request(selectors, coverage, junit):
@@ -140,6 +194,7 @@ def prepare(root, names, parameters, run, which, environ):
         json.dumps(request(names, **parameters)),
         "--executable-paths",
         json.dumps(modes),
+        *git_secret_options(root, names, run, which, environ),
     ]
     result = invoke(
         root,
@@ -401,6 +456,7 @@ def execute(
                     json.dumps(request(pending, **parameters)),
                     "--executable-paths",
                     json.dumps(modes),
+                    *git_secret_options(root, pending, run, which, environ),
                     "export",
                     "--path",
                     str(exported),

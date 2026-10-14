@@ -10,10 +10,10 @@ scripts/release.py validate → execution Coordinator（独立完整验证请求
 scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
 engineering-ci checks/version → checks.py / release/version.py
-engineering-ci trace → cli/trace.py → tracing/（明确文件、宿主归档及只读回放）
-engineering-ci mine → cli/mine.py → mining/（固定派生视图、Rust4PM 分析、比较、候选及显式 Handler 绑定）
+engineering-ci trace → cli/trace.py（配置兼容）→ Vesryn tracing（明确文件、宿主归档及只读回放）
+engineering-ci mine → cli/mine.py → Vesryn mining；CI Handler 绑定与执行证据读取留在宿主
 engineering-ci checks --binding → cli/checks_binding.py（兼容桥）→ 原完整 pr
-engineering-ci workflow → cli/workflow.py（组装 Catalog）→ workflow_core → workflow_adapters → 原检查/查询
+engineering-ci workflow → cli/workflow.py（组装 Catalog）→ Vesryn workflow_core → workflow_adapters → 原检查/查询
 GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```

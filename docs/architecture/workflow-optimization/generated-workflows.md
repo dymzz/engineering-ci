@@ -13,8 +13,10 @@ PR #25 早期的候选证据绑定保留为宿主 CLI 兼容桥，不是新的�
 将每次生成的业务映射放回 config/pipeline.toml 的建议不采用。
 
 目标是把工具变化限制在适配层，把工作流变化表达在独立配置中。
-初期仍在 engineering-ci 的原 checkout 和同一个功能 PR 中推进，不提前创建独立仓库。
-未来迁出核心时保留公开契约及产物格式；宿主适配层调整导入和组装位置。
+早期实现在 engineering-ci 中完成。v0.6.6 将通用 Runtime、工具契约、归档与分析迁入
+Vesryn v0.1.0；engineering-ci 保留 CI 领域准入与兼容入口。
+公开产物格式、Tool ID 及历史证据身份保持不变。职责和固定依赖见
+[分仓契约](repository-split.md)。本轮不实现自动 Loop 或策略学习。
 
 ## 依赖方向
 
@@ -188,11 +190,15 @@ UNKNOWN 写操作先查询/人工核验，不自动再次 Dispatch、Commit 或 
 当前代码边界：
 
 ```text
-src/engineering_ci/
+vesryn/src/vesryn/
   workflow_core/       # 契约、定义校验/编译、Runtime、上下文与本地检查点
+  tracing/            # 通用归档、投影和有界检索
+  mining/             # 离线分析与观察候选
+engineering-ci/src/engineering_ci/
+  workflow_core/       # 旧导入兼容；CI 批准/反馈契约来自宿主适配层
   workflow_adapters/   # engineering-ci 原模块及 Dagger 的实际适配
   cli/workflow.py     # 当前宿主的组装与命令入口
-  mining/             # 保持分析；通过来源适配传递候选引用
+  mining/bindings.py   # CI 候选与完整 PR 检查的显式绑定
 ```
 
 core 内部允许相对导入自身模块，外部系统通过 Protocol/参数注入，
@@ -207,7 +213,8 @@ run 执行定义；status 读已有事实；resume 继续同一执行。
 evidence 查询指定执行；compare 读取两份原执行证据，既不执行检查，也不选择批准版本。
 各入口支持 Codex 非交互调用及机器结果，原 CLI 参数保持原责任。
 CLI 的 Python console-script 注册不等于工具目录注册，不为每个工具增加 pyproject.toml 入口。
-Schema 2020-12 的唯一实现源为 workflow_core/schemas.py，可通过 schemas 导出。
+通用 Schema 2020-12 的唯一实现源为 Vesryn `workflow_core/schemas.py`，
+宿主 CI 批准和反馈 Schema 位于 `workflow_adapters/contracts.py`；旧 CLI 聚合导出实际使用的契约。
 ToolSpec 与具体 Adapter 由同一 Catalog.register 调用绑定；ChecksAdapter 从原 Operation
 集合派生描述，不复制命令或工具版本。invoke 接收同一就绪批次及执行上下文，Invocation.previous
 携带待核验的旧事实；检查适配器将恢复交给原 checks/Dagger，而非核心猜测复用。
@@ -221,7 +228,7 @@ invoking/returned 可选记录同一 batch_id、batch_size，表示一次 Runtim
 不是后端内部任务数量或并发证明。返回必须对应同一批次；旧记录不含批次时保持未知。
 主会话有独立起止与序号；记录仅含身份、摘要、结果布尔事实和本地观测时间，
 不复制参数、输出正文或错误字符串。观测写入失败单独计数，不改变原工具退出码。
-Schema 的唯一实现仍为 workflow_core/schemas.py，可通过 workflow schemas 导出。
+通用观测 Schema 的唯一实现为 Vesryn `workflow_core/schemas.py`，可通过 workflow schemas 导出。
 
 complete/incomplete/unknown 只表达本地观测协议的覆盖程度，不表示整个 Agent 会话完整或任务成功。
 会话缺记录、缺结束、预期 attempt 缺准入记录均为 incomplete；旧检查点缺少协议声明时为 unknown。

@@ -1,1 +1,3 @@
-"""Observe execution evidence independently of business state and release gates."""
+"""Compatibility package; portable implementation is in Vesryn."""
+
+from vesryn.tracing import *

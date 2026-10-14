@@ -8,11 +8,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from harness_fixtures import Arithmetic, execution, tools
+from harness_fixtures import evidence as trace_evidence
+from harness_fixtures import recipe as arithmetic_recipe
 from test_checks import checkout as check_checkout
 from test_checks import fake_process
-from test_generated_workflows import Arithmetic, execution, tools
-from test_generated_workflows import recipe as arithmetic_recipe
-from test_trace_candidates import evidence as trace_evidence
 from test_workflow_adapter import native
 
 from engineering_ci.cli import main as cli

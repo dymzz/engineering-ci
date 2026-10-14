@@ -2,7 +2,7 @@
 
 import json
 
-from test_generated_workflows import Arithmetic, execution
+from harness_fixtures import Arithmetic, execution
 
 from engineering_ci.tracing.workflow_spans import standardize
 from engineering_ci.workflow_core.observations import history

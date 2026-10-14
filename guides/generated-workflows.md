@@ -5,6 +5,15 @@
 
 ## 安装和发现工具
 
+v0.6.6 的通用实现由独立 Vesryn 包提供。开发组安装锁定的 Vesryn 候选提交；
+基础安装不含 Harness，需要时显式执行 `uv sync --locked --no-dev --extra harness`。
+现有 `engineering-ci workflow` 命令保留 CI 专用生成、批准、选择和反馈流程。
+归档/分析命令委托给 Vesryn；其恢复提示可能使用已安装的 `vesryn` CLI，配置路径仍明确携带。
+直接从 Vesryn 调用宿主工具使用
+`vesryn workflow --adapter engineering-ci --root D:/workspace/engineering-ci tools`。
+这是已安装包的固定 Adapter 注册，不是把生成的 Pipeline 写进 pyproject.toml。
+分仓边界见[架构](../docs/architecture/workflow-optimization/repository-split.md)。
+
 ```powershell
 uv sync --locked --group dev
 uv run --locked engineering-ci workflow tools
