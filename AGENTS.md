@@ -13,6 +13,7 @@ change project location to work around an obstacle.
 
 - Follow the shared development conventions in the user's global AGENTS.md.
 - Start project documentation at [docs/README.md](docs/README.md); follow its maintenance conventions.
+- Use the [repository overview](docs/architecture/repository-overview.md) as the factual basis for project instructions; keep task progress out of AGENTS.md.
 - Before editing `.github/`, read [.github/AGENTS.md](.github/AGENTS.md).
 - Before editing `.dagger/`, read [.dagger/AGENTS.md](.dagger/AGENTS.md).
 - Root instructions own project boundaries; subtree instructions add their specialized constraints. Configuration and technical contracts stay in their existing authoritative files.

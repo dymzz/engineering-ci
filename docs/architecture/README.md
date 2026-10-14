@@ -2,6 +2,8 @@
 
 本目录定义组件的职责、接口契约、执行约束及拟议扩展边界。
 
+- [仓库介绍](repository-overview.md) — 项目目标、已有能力、入口与依赖，作为 AGENTS 初稿的事实依据。
+
 - [Agent 指令](agent-instructions.md) — 全局、项目及专项指令的作用域、授权与配置边界。
 
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
