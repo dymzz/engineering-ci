@@ -97,7 +97,8 @@ The user chose to deliver the extraction PRs first and retain this publication b
 Git-source scanning is outside this increment.
 
 No simulated result substitutes for actual Runs. Historical receipts are not admitted for
-changed inputs. Human merge/release is required for formal versions.
+changed inputs. PR merging follows the current AGENTS.md authorization; formal releases
+remain human initiated. The original extraction handoff stopped at Draft PR review.
 
 No automatic optimization loop, Contextual Bandit, capability approval/activation or
 database movement was performed. Capability discovery returned an empty default catalog,

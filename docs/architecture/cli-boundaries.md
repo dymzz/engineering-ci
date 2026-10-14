@@ -4,7 +4,7 @@
 当前用户命令与旧路径迁移见[使用说明](../../guides/README.md)。
 
 ```text
-scripts/release.py publish → release/delivery.py（检查/提交/Push/PR/人工合并停点）→ execution Coordinator → release.yml
+scripts/release.py publish → release/delivery.py（检查/提交/Push/PR/审查合并停点）→ execution Coordinator → release.yml
 scripts/release.py status → 当前 Git/PR、本地结果与已有 execution checkpoint → GitHub GET
 scripts/release.py validate → execution Coordinator（独立完整验证请求/等待）→ release.yml
 scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
@@ -35,7 +35,8 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 `python -m engineering_ci.cli`，需要已安装项目或设置 PYTHONPATH。
 
 Release 交付模块读取当前 checkout 和 PR 事实，复用检查定义与结果身份校验，调用原生 Git/gh 完成提交和 PR 交付。
-人工合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。合并后才交给已有 Coordinator 请求、等待。
+实际合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。PR 合并授权遵循根
+AGENTS.md；人或已授权 Agent 通过 gh 完成合并。正式发布仍须人主动请求，再交给已有 Coordinator 请求、等待。
 status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 Run 来自原 execution checkpoint。
 本地阶段不新增状态文件，恢复时读取原生 Git / PR 证据；不建立任务注册表。
 公开 verify 必须指定实际 Run，只读取远端状态与证据，不调用 Coordinator 或写 FSM。

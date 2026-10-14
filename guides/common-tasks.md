@@ -4,7 +4,7 @@
 
 本页示例使用当前准备版本 v0.6.0。开发时先在功能分支对齐四处元数据；对应 PR 合并后，该版本才能成为正式发布目标。
 v0.6.0 的能力范围与限制见[版本依据](../docs/architecture/workflow-optimization/design.md#v060-交付范围与既有证据)。
-版本元数据和本地/PR 检查通过都不表示已经正式发布；人工合并后仍由同一 publish 入口请求既有全量 Release Run。
+版本元数据和本地/PR 检查通过都不表示已经正式发布；PR 实际合并后仍需人主动请求既有全量 Release Run。
 
 ## 本地检查与开发 PR
 
@@ -46,23 +46,25 @@ uv run --locked python scripts/release.py publish --version v0.6.0 --all -m "准
 1. 确认四处版本、Git origin、当前 gh 账号的仓库写权限和已有 PR。
 2. 逐项核验当前输入、参数、工具和环境，复用匹配的执行结果，只刷新缺失或过期项；失败和 incomplete 不会自动重复执行。
 3. 提交、Push 当前分支，创建 Draft PR 或更新同一个开放 PR。保留人工说明并补充实际提交、改动文件和本地检查信息。
-4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，停在 **待人工审查合并**，返回 3。
+4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，入口停在 **待审查合并**，返回 3。
 
-在输出的 PR 页面审查改动和真实 CI；Draft 就绪后转为 Ready，由人决定合并。
+在输出的 PR 页面审查改动和真实 CI；Draft 就绪后转为 Ready。按当前
+[Agent 授权](../AGENTS.md#development-workflow)，Agent 可在本轮验收、代码审查和当前 PR head
+的必需 CI 完成后执行合并，不必再次请求逐次合并许可。
 必需 CI 失败、跳过或尚未完成时，入口明确停在 PR CI，不给出当前可合并的提示。
 CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR。
 若输出仍是本地检查失败、未提交或未推送，原 PR 的绿色 CI 只对应它显示的 SHA；
 先完成当前改动的提交与推送，再审查更新后的 PR。
 
-## 人工审查与合并
+## 审查与合并
 
-人工合并属于上述流程。入口不会自动合并，也不会绕过检查。
+合并属于上述流程。`release.py` 入口本身仍不执行合并；人或已获授权的 Agent 通过 gh 执行。
 已经推送、没有新改动且 PR 尚未合并时，重复 `publish` 只显示停点，不重复本地测试或 Push。
-此时下一步是人工审查 PR，不是再次运行 publish。必需 CI 通过且可合并时，输出带实际 PR 号的
+此时下一步是审查并按授权合并 PR，不是再次运行 publish。必需 CI 通过且可合并时，输出带实际 PR 号的
 Ready / Merge 命令；Merge 用 --match-head-commit 绑定当前已检查的 PR SHA。
-只有人工完成合并后，才执行输出中 `After merge, continue` 的发布命令。
+核实实际合并 SHA 后，才具备执行 `After merge, continue` 的条件；正式发布仍需人明确发起。
 
-人工合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
+实际合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
 
 ```powershell
 uv run --locked python scripts/release.py publish --version v0.6.0
@@ -104,7 +106,7 @@ JSON 不包含工具日志；需要保存时分别重定向 stdout 与 stderr，
 | --- | --- |
 | 本地检查失败 / 输入过期 | 结果文件、失败步骤和原因（例如缺少 uv）；修复后重复原 publish 命令，沿用原 `-m` |
 | Commit / Push / PR 失败 | 已完成步骤、保留的提交、失败操作和权限 / 网络原因；解决后继续 publish |
-| 等待人工合并 | PR URL、SHA、实际 CI 状态；人合并后继续 publish |
+| 等待审查合并 | PR URL、SHA、实际 CI 状态；人或已授权 Agent 合并后，由人决定请求正式发布 |
 | PR 已合并，但仍有未交付的本地改动 | 已合并 PR / SHA 与实际文件清单；保留改动，通过后续修复 PR 交付，不能继续更新已合并 PR |
 | 确认 Run 后中断 / PAUSED | Run URL、状态文件、实际状态及带真实 `--resume` 的完整命令 |
 | Dispatch UNKNOWN | 不再次 POST；列出可核验候选 Run 和命令，须人工确认原请求后恢复 |
@@ -114,13 +116,45 @@ JSON 不包含工具日志；需要保存时分别重定向 stdout 与 stderr，
 Git/gh 权限、仓库选择或工作区位置阻碍操作时，在原 checkout 处理，由用户作出必要决定。
 入口不会自动换账号、登录或创建替代工作区。
 当前调用的接续命令保留原 `-m`；另一次 `status` 查询无法确认尚未提交的信息时，会提示补上自己的
-提交信息，不用 PR 标题替代它。已提交后从 Git 读取，人工合并后的接续命令不再需要 `--all` 或 `-m`。
+提交信息，不用 PR 标题替代它。已提交后从 Git 读取，实际合并后的接续命令不再需要 `--all` 或 `-m`。
+
 旧版本或其他提交的已确认 Run 标为历史记录，保留状态文件，但不作为当前发布的恢复点。
 已合并且改动全部交付时，`status` 核对远端 main、四处版本和合并关系后给出发布命令。
 有未交付改动时，以交付停点为准，不用旧 Run 的失败状态替代当前下一步。
 修改目标版本后使用当前版本接续。版本不匹配时显示本地真实版本，不再推荐同一条无效请求。
 只修改四处一致的本项目版本值时，沿用有效 Ruff / pytest 证据，重新核验版本和锁文件；
 源码或依赖变化仍使相关检查过期。具体规则见[证据继承](../docs/architecture/local-checks.md#版本准备与证据继承)。
+
+## 大阶段分支备份
+
+Agent 在每个已验收的大阶段 P0 / P1 / P2 等完成后执行 Git 备份，不按每个小步骤或每次测试创建。
+一个版本含多个大阶段时，各阶段独立备份，继续使用该版本的同一主开发 PR。
+自动合并授权不把尚未完成的版本 PR 提前合并。
+
+使用全局约定的 `codex/backup/<phase>-v<version>-<sha12>`。阶段名使用任务实际的 P 编号，
+或已确定的大阶段名称，例如 `repository-split`；不从版本号猜阶段。
+已合并阶段的来源是经 GitHub 确认、确实包含在 main 中的 merge SHA；未合并的内部阶段使用
+已提交、已 Push、验证对应的开发 SHA。未提交文件不在 Git 分支备份中，必须明确报告。
+
+执行时使用实际确定的变量，所有操作均在原 checkout：
+
+```powershell
+git branch $backup $verifiedSha
+git push origin "refs/heads/${backup}:refs/heads/${backup}"
+git ls-remote --exit-code origin "refs/heads/${backup}"
+```
+
+Agent 核对远端返回 SHA 等于来源 SHA 后，报告阶段、版本、备份分支及原 PR / CI 链接。
+同名备份已指向相同 SHA 时复用；指向其他 SHA 时停止并报告，不 Force Push 或覆盖。
+推送失败时保留本地备份并明确说明远端备份未完成，不改目录、账号或创建替代工作区。
+
+需要从阶段继续开发时，从该备份建立新的开发分支，不在备份分支上继续写入：
+
+```powershell
+git switch -c $newDevelopmentBranch $backup
+```
+
+这保留了已验收的提交。恢复前先检查当前未提交改动；备份不代表已发布版本，正式发布门禁保持独立。
 
 ## 按需独立调用
 

@@ -96,7 +96,8 @@ activation, approval or capability mutation is introduced.
    with Vesryn separately. Missing Harness must be an explicit optional-feature error.
 5. Run actual consumer CI using the existing pinned engineering-ci Workflow. Preserve
    original pytest failure semantics; export reports from the same execution.
-6. Review both repository diffs and PRs. Human merge/release remains outside automatic work.
+6. Review both repository diffs and PRs. Authorized PR merge follows the current AGENTS.md rules;
+   formal release remains human initiated. Preserve accepted phase SHAs with stage backup branches.
 
 These are extraction checks. They do not establish optimization benefit or require Loop B.
 

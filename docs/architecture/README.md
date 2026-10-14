@@ -2,6 +2,8 @@
 
 本目录定义组件的职责、接口契约、执行约束及拟议扩展边界。
 
+- [Agent 指令](agent-instructions.md) — 全局、项目及专项指令的作用域、授权与配置边界。
+
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 统一 PR 检查、执行身份、结果有效性与平台限制。
 - [依赖安全](dependency-security.md) — 锁文件完整性、安全扫描及质量门禁。

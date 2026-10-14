@@ -76,7 +76,7 @@ trigger = "manual"
 只要显式写了 `delivery`，其全部字段必须有效，不能用局部默认值掩盖拼写错误。
 现有检查段的格式和必需项保持不变。
 
-TOML 不能授予 GitHub 权限、代替人工合并或正式发布请求，也不能跳过远端完整检查。
+TOML 不能授予 GitHub 权限、PR 合并授权或正式发布授权，也不能跳过远端完整检查。
 版本、SHA、Run / Attempt、Manifest 与 Release Asset 的原有核验继续执行。
 若以后增加操作类型，应先映射到已注册的 Python Handler，不直接执行配置中的 shell。
 

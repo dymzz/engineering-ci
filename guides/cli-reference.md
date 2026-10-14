@@ -20,7 +20,7 @@ GitHub Actions 调用 `engineering_ci.workflow_actions`，不调用这两个用�
 | `release.py status` | 定位交付停点，查询 PR / 本地结果 / 已确认 Run / Release 并输出继续命令 | 否；只读 |
 | `release.py validate` | 选择单独完整验证，不发布 | 是；恢复已有 Run 时除外 |
 | `release.py verify` | 查询指定 Run 的状态与版本 / Manifest / Release 一致性 | 否；只有 GET |
-| `release.py publish` | 功能分支上检查、提交、Push、交付 PR；人工合并后请求完整验证与正式发布 | 仅在确认合并后；恢复已有 Run 或已发布时除外 |
+| `release.py publish` | 功能分支上检查、提交、Push、交付 PR；确认实际合并后，由人请求完整验证与正式发布 | 仅在确认合并后；恢复已有 Run 或已发布时除外 |
 | `download.py` | 选择、等待、恢复已有 Run，下载日志及 Artifact | 否 |
 
 ## 无参数、输出与退出码
@@ -43,7 +43,7 @@ verify --json 的既有 Run 验证结构保持兼容。
 | 操作 | 终端输出 | 本地文件 |
 | --- | --- | --- |
 | Release status | 改动文件、PR / CI、检查结果有效性、已有 Run / Release、完整继续命令 | 不修改 Git / FSM 或结果文件 |
-| Release PR 交付 | 版本、分支、文件、提交、PR URL、CI 状态和人工合并停点 | 原有本地检查 JSON；其目录内的 PR 说明文本 |
+| Release PR 交付 | 版本、分支、文件、提交、PR URL、CI 状态和审查合并停点 | 原有本地检查 JSON；其目录内的 PR 说明文本 |
 | Release 请求 / 恢复 | Run ID、Run URL、Workflow 最终结论、状态文件位置 | 仅 FSM 状态缓存；不下载日志或 Artifact |
 | Release verify | 指定 Run 的真实状态、SHA、验证及发布结果；可选 JSON | 不写 FSM / 结果文件 |
 | 下载已有 Run | Run 身份、下载后端、保存位置、最终结论和状态文件位置 | --out/RUN_ID 下的日志及所选 Artifact |
@@ -58,11 +58,14 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 | 0 | 帮助正常显示，或 Workflow 成功且当前操作完成 |
 | 1 | Workflow 失败 / 取消，验证运行中 / 不可用 / 不一致，或暂停、UNKNOWN、API / 下载错误 |
 | 2 | 参数错误或缺少必需运行环境 |
-| 3 | publish 已交付 PR，等待人工审查合并；本地检查未完整通过也保留其原有 3 和具体原因 |
+| 3 | publish 已交付 PR，等待审查合并；本地检查未完整通过也保留其原有 3 和具体原因 |
 | 130 | 用户中断 |
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-workflow)，操作见
+[审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
+完成实际合并后才能接续，自动合并授权不包含正式发布。
 
 publish 的 `--all` 对应 `git add --all`，包括列出的未跟踪文件；`-m` / `--message` 对应 Git 提交信息。
 有未提交改动时必须同时提供这两个参数。新 PR 标题来自实际提交首行，PR 说明包含完整提交信息；
