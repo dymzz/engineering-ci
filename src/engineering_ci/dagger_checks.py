@@ -152,6 +152,21 @@ def invoke(root, args, run, environ, *, capture=False, timeout=None):
     return result
 
 
+def engine_version(root):
+    """Read the native module pin, retaining legacy consumer compatibility."""
+    manifest = root / "dagger-module.toml"
+    if manifest.is_file():
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        data = json.loads((root / "dagger.json").read_text(encoding="utf-8"))
+    version = data.get("engineVersion")
+    if not isinstance(version, str) or not re.fullmatch(
+        r"v?[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?", version
+    ):
+        raise ValueError("Dagger module must declare a valid engineVersion")
+    return version.removeprefix("v")
+
+
 def prepare(root, names, parameters, run, which, environ):
     """Probe the actual Engine, prepared container and locked tools; no test execution."""
     executable = which("dagger")
@@ -162,9 +177,7 @@ def prepare(root, names, parameters, run, which, environ):
         )
     from .toolchain import dagger_cli_version
 
-    expected = json.loads((root / "dagger.json").read_text(encoding="utf-8"))[
-        "engineVersion"
-    ].removeprefix("v")
+    expected = engine_version(root)
     environ.setdefault(
         "DAGGER_ENGINE", f"image://registry.dagger.io/engine:v{expected}"
     )

@@ -15,6 +15,26 @@ LINUX = {"platform": "Linux", "machine": "x86_64", "configuration_sha256": "a" *
 TOOLS = {"python": {"version": "3.14.8"}}
 
 
+def test_native_module_pin_and_legacy_fallback(tmp_path):
+    (tmp_path / "dagger.json").write_text('{"engineVersion":"v0.21.10"}')
+    assert dagger_checks.engine_version(tmp_path) == "0.21.10"
+    manifest = tmp_path / "dagger-module.toml"
+    manifest.write_text('engineVersion = "v1.0.0-beta.16"\n')
+    assert dagger_checks.engine_version(tmp_path) == "1.0.0-beta.16"
+    manifest.write_text('engineVersion = "latest"\n')
+    with pytest.raises(ValueError, match="valid engineVersion"):
+        dagger_checks.engine_version(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["dagger.toml", "dagger-module.toml"])
+def test_native_configuration_changes_invalidate_check_input(tmp_path, name):
+    path = tmp_path / name
+    path.write_text("# original configuration\n")
+    before = checks.snapshot(tmp_path, "ruff-lint")
+    path.write_text("# changed configuration\n")
+    assert checks.snapshot(tmp_path, "ruff-lint") != before
+
+
 @pytest.fixture
 def source(tmp_path, monkeypatch):
     for prefix in ("", ".dagger/"):

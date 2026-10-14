@@ -71,5 +71,6 @@ Vesryn 的 Python 包不依赖 engineering-ci；它的 CI 消费固定 engineeri
 Dagger 拥有检查执行图、容器调度与缓存；GitHub Actions 拥有远端 Job DAG。
 engineering-ci 提供项目质量策略、证据准入、GitHub 交付和跨 Run 恢复。
 当前容器 PR 路径仍通过 Python 检查循环执行，pipeline.toml 仍是固定检查配置；
-原生配置和 Checks 迁移尚未实施，现有 CLI、报告与失败契约保持不变。
+原生工作区和模块配置使用 dagger.toml / dagger-module.toml；原生 PR Checks
+执行图迁移尚未实施，现有 CLI、报告与失败契约保持不变。
 通用 Harness 的目标边界和技术正文由 [Vesryn 文档](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/README.md) 维护，不在本仓库保留平行实现方案。

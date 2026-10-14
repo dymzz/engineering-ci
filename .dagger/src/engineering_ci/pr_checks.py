@@ -16,7 +16,6 @@ SOURCE_EXCLUDES = [
     ".test-deps",
     ".venv",
     "**/.venv",
-    ".dagger/sdk",
     "**/__pycache__",
     "**/.pytest_cache",
     "**/.ruff_cache",
