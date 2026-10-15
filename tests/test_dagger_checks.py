@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from engineering_ci import checks, checks_container, dagger_checks
 
 LINUX = {"platform": "Linux", "machine": "x86_64", "configuration_sha256": "a" * 64}
@@ -57,10 +56,12 @@ def source(tmp_path, monkeypatch):
     return tmp_path
 
 
-def private_source(root, url="https://github.com/dymzz/vesryn.git", rev="a" * 40):
+def private_source(
+    root, url="https://github.com/dymzz/vesryn.git", rev="a" * 40, name="vesryn"
+):
     with (root / "pyproject.toml").open("a", encoding="utf-8") as stream:
         stream.write(
-            f'\n[tool.uv.sources]\nvesryn = {{ git = "{url}", rev = "{rev}" }}\n'
+            f'\n[tool.uv.sources]\n{name} = {{ git = "{url}", rev = "{rev}" }}\n'
         )
 
 
@@ -595,3 +596,25 @@ def test_empty_dagger_request_is_rejected_before_any_operation(backend):
             [], root=backend.root, run=backend.run, which=backend.which
         )
     assert not backend.exports and backend.probes == 0
+
+
+@pytest.mark.parametrize("rev", ["b" * 40, "main"])
+def test_log_only_private_source_is_validated_before_credential_binding(source, rev):
+    private_source(source, "https://github.com/dymzz/vesryn-log.git", rev, "vesryn-log")
+    environ = {"ENGINEERING_CI_READ_TOKEN": "private-test-credential"}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("The existing credential needs no lookup")
+
+    if rev == "main":
+        with pytest.raises(checks.PreconditionError, match="pinned commit"):
+            dagger_checks.git_secret_options(
+                source, ["pytest"], forbidden, forbidden, environ
+            )
+    else:
+        assert dagger_checks.git_secret_options(
+            source, ["pytest"], forbidden, forbidden, environ
+        ) == [
+            "--git-token",
+            "env:ENGINEERING_CI_READ_TOKEN",
+        ]

@@ -101,3 +101,24 @@ beta.16 的官方 Python runtime SDK 不实现工作区 SDK 所需的 `findClien
 实际注册后 `dagger generate` 失败。因此工作区只注册现有模块 entrypoint，
 SDK 更新继续使用上面的模块代码生成 API；不声明无法运行的 SDK scope。
 观察与版本信息见[上游使用记录](../../.agent/upstream-observations.md)。
+
+
+## 私有 Python Git 依赖
+
+单版本 `python-lint`、`python-format-check`、`python-test`、`python-test-report` 和
+`python-test-artifacts` 接受可选 `git-token: Secret`。它只用于 `uv sync --locked`；
+安装之后移除 Secret，并在探测和测试前断言环境中不存在该凭据。Git helper 仅匹配
+GitHub HTTPS，配置只含环境变量引用，不保存 token。安装失败保留原始失败。
+
+宿主统一检查目前只为清单中固定 SHA 的 `dymzz/vesryn` 与 `dymzz/vesryn-log`
+来源绑定既有只读凭据。私有 Git 包的 uv source 必须在每个消费者中显式声明，
+不会从另一个包的开发配置传递。单版本 API 的新增参数不改变 Matrix 的现有接口。
+
+消费者需要先升级到包含该接口的已推送 engineering-ci 提交，再同步更新 Dagger
+依赖与 reusable Workflow 固定引用；本地模块测试通过不表示远端已部署。
+
+
+Reusable Workflow 的 Dagger 执行 Step 提供已有的 `ENGINEERING_CI_READ_TOKEN`
+环境 Secret。消费者模块可显式用 `dag.secret("env:ENGINEERING_CI_READ_TOKEN")`
+绑定并委托上述方法，原有 `@check` 和单次报告门禁无需替换。Python 依赖安装仅
+获得 Dagger Secret；后续容器测试不会继承宿主环境。

@@ -35,18 +35,24 @@ def git_secret_options(root, names, run, which, environ):
     if "pytest" not in names:
         return []
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    source = project.get("tool", {}).get("uv", {}).get("sources", {}).get("vesryn")
-    if source is None:
+    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
+    approved = {
+        "vesryn": "https://github.com/dymzz/vesryn.git",
+        "vesryn-log": "https://github.com/dymzz/vesryn-log.git",
+    }
+    selected = {name: sources[name] for name in approved if name in sources}
+    if not selected:
         return []
-    if (
-        not isinstance(source, dict)
-        or source.get("git") != "https://github.com/dymzz/vesryn.git"
-        or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
-    ):
-        raise checks.PreconditionError(
-            "environment_error",
-            "Private Harness source must use the approved repository and a pinned commit",
-        )
+    for name, source in selected.items():
+        if (
+            not isinstance(source, dict)
+            or source.get("git") != approved[name]
+            or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
+        ):
+            raise checks.PreconditionError(
+                "environment_error",
+                "Private dependency source must use the approved repository and a pinned commit",
+            )
     if not environ.get(GIT_SECRET_ENV):
         executable = which("gh")
         if not executable:
@@ -65,7 +71,7 @@ def git_secret_options(root, names, run, which, environ):
                 encoding="utf-8",
                 timeout=30,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError, subprocess.TimeoutExpired:
             raise checks.PreconditionError(
                 "environment_error",
                 "Unable to read the existing gh credential for private dependency installation",
@@ -340,7 +346,7 @@ def reusable(entry, now, root):
         return False
     try:
         read_evidence(entry, root)
-    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+    except OSError, ValueError, KeyError, TypeError, StopIteration:
         return False
     return True
 
@@ -422,7 +428,7 @@ def execute(
                 saved = checks.read_report(output)
                 if saved.get("executor", {}).get("backend") == "dagger":
                     previous = {entry["name"]: entry for entry in saved["checks"]}
-            except (OSError, ValueError, KeyError, TypeError):
+            except OSError, ValueError, KeyError, TypeError:
                 print("Local checks: invalid saved report; executing requested checks")
         pending = []
         for entry in report["checks"]:
