@@ -66,7 +66,7 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
-PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#delivery)，操作见
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md)，操作见
 [审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
 完成实际合并后才能接续，自动合并授权不包含正式发布。
 
