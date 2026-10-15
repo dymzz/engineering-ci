@@ -292,16 +292,52 @@ class GitHubStub:
     def __init__(self, mode="normal"):
         self.mode, self.remote, self.remote_head = mode, None, ""
         self.calls = []
+        self.backups = {}
+        self.fetch_head = None
+        self.lost_overwrite = False
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
         if args[:2] == ["git", "ls-remote"]:
-            return subprocess.CompletedProcess(args, 0, self.remote_head, "")
+            ref = args[-1]
+            value = (
+                self.remote_head
+                if ref == "refs/heads/main"
+                else (
+                    self.backups[ref] + "\t" + ref + "\n" if ref in self.backups else ""
+                )
+            )
+            return subprocess.CompletedProcess(args, 0, value, "")
+        if args[:2] == ["git", "fetch"]:
+            self.fetch_head = self.remote_head.split()[0]
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if (
+            args[:2] == ["git", "rev-parse"]
+            and args[-1] == "FETCH_HEAD"
+            and self.fetch_head
+        ):
+            return subprocess.CompletedProcess(args, 0, self.fetch_head, "")
         if args[:2] == ["git", "push"]:
             context = json.loads(
                 (Path(kwargs["cwd"]) / bootstrap.CHECKPOINT).read_text()
             )
+            if any(arg.startswith("--force-with-lease=") for arg in args):
+                sha, ref = args[-1].split(":", 1)
+                if ref != "refs/heads/main":
+                    if self.mode == "backup-fail":
+                        return subprocess.CompletedProcess(args, 1, "", "backup denied")
+                    self.backups[ref] = sha
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if self.mode == "race":
+                    self.remote_head = "c" * 40 + "\trefs/heads/main\n"
+                    return subprocess.CompletedProcess(args, 1, "", "stale info")
+                if self.mode == "protected":
+                    return subprocess.CompletedProcess(args, 1, "", "protected branch")
+                assert args[2].endswith(":" + self.remote_head.split()[0])
             self.remote_head = context["seed_sha"] + "\trefs/heads/main\n"
+            if self.mode == "overwrite-lost" and not self.lost_overwrite:
+                self.lost_overwrite = True
+                return subprocess.CompletedProcess(args, 1, "", "connection reset")
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[0] != "gh":
             return subprocess.run(args, check=kwargs.pop("check", False), **kwargs)
@@ -343,6 +379,19 @@ class GitHubStub:
     @property
     def creates(self):
         return sum(args[:3] == ["gh", "repo", "create"] for args in self.calls)
+
+
+def existing_remote(mode="normal", *, head="a" * 40):
+    runner = GitHubStub(mode)
+    runner.remote = {
+        "id": 99,
+        "full_name": "dymzz/sample-app",
+        "private": True,
+        "permissions": {"push": True},
+        "default_branch": "main",
+    }
+    runner.remote_head = head + "\trefs/heads/main\n" if head else ""
+    return runner
 
 
 def test_github_creates_once_and_pushes_only_readme_seed(destination, capsys):
@@ -422,7 +471,7 @@ def test_lost_create_response_requires_explicit_identity_confirmation(
 def test_unsafe_remote_preconditions_never_create(mode, destination, capsys):
     runner = GitHubStub(mode)
     if mode == "already-exists":
-        runner.remote = {"id": 99, "private": True, "full_name": "dymzz/sample-app"}
+        runner = existing_remote()
     assert invoke(destination, capsys, "--github", run=runner)[0] == 3
     assert runner.creates == 0
 
@@ -431,3 +480,275 @@ def test_http_422_is_explicit_rejection_not_ambiguous_creation(destination, caps
     code, result = invoke(destination, capsys, "--github", run=GitHubStub("reject"))
     assert code == 1 and result["http_status"] == 422
     assert result["context"]["remote_intent"] is False
+
+
+def test_existing_remote_offers_explicit_alternatives_without_writes(
+    destination, capsys
+):
+    runner = existing_remote()
+    code, result = invoke(destination, capsys, "--github", run=runner)
+    assert code == 3 and result["remote_result"] == "existing_requires_selection"
+    assert result["observed_remote"]["main_sha"] == "a" * 40
+    assert runner.creates == 0 and not [
+        a for a in runner.calls if a[:2] == ["git", "push"]
+    ]
+    assert any("--expected-main-sha" in a["argv"] for a in result["next_actions"])
+
+
+@pytest.mark.parametrize("head", [None, "a" * 40])
+def test_connect_preserves_existing_history_and_reports_merge(
+    head, destination, capsys
+):
+    runner = existing_remote(head=head)
+    code, result = invoke(
+        destination, capsys, "--github", "--existing-remote", "connect", run=runner
+    )
+    assert code == 0 and runner.creates == 0
+    assert result["context"]["remote_mode"] == "connect"
+    assert result["context"]["remote_intent"] is False
+    assert result["remote_details"]["requires_history_merge"] == bool(head)
+    if head:
+        assert runner.remote_head.startswith(head)
+        assert result["next_actions"][1]["argv"][:2] == ["git", "merge"]
+        assert not [a for a in runner.calls if a[:2] == ["git", "push"]]
+
+
+@pytest.mark.parametrize("answer", ["q", "1", "2", "confirm-overwrite"])
+def test_existing_interactive_choices_require_specific_overwrite_confirmation(
+    answer, destination, monkeypatch, capsys
+):
+    assert invoke(destination, capsys)[0] == 0
+    runner = existing_remote()
+    monkeypatch.setattr(bootstrap.sys.stdin, "isatty", lambda: True)
+    answers = iter(
+        [
+            "create",
+            "2" if answer == "confirm-overwrite" else answer,
+            "overwrite dymzz/sample-app " + "a" * 12
+            if answer == "confirm-overwrite"
+            else "yes",
+        ]
+    )
+    code = bootstrap.main(
+        ["--resume", str(destination), "--github"],
+        run=runner,
+        reader=lambda _: next(answers),
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and runner.creates == 0
+    if answer in {"q", "2"}:
+        assert result["status"] == "cancelled" and runner.remote_head.startswith(
+            "a" * 40
+        )
+        assert not runner.backups
+    elif answer == "1":
+        assert result["remote_details"]["mode"] == "connect"
+    else:
+        assert result["remote_details"]["backup_sha"] == "a" * 40
+        assert runner.remote_head.startswith(result["context"]["seed_sha"])
+
+
+@pytest.mark.parametrize("expected", [None, "b" * 40])
+def test_overwrite_without_matching_expected_sha_never_pushes(
+    expected, destination, capsys
+):
+    runner = existing_remote()
+    args = ["--github", "--existing-remote", "overwrite"]
+    if expected:
+        args.extend(["--expected-main-sha", expected])
+    assert invoke(destination, capsys, *args, run=runner)[0] == 3
+    assert not [a for a in runner.calls if a[:2] == ["git", "push"]]
+
+
+@pytest.mark.parametrize(
+    "mode", ["normal", "backup-fail", "protected", "race", "overwrite-lost"]
+)
+def test_overwrite_backup_lease_failure_and_resume(mode, destination, capsys):
+    runner = existing_remote(mode)
+    args = [
+        "--github",
+        "--existing-remote",
+        "overwrite",
+        "--expected-main-sha",
+        "a" * 40,
+    ]
+    code, result = invoke(destination, capsys, *args, run=runner)
+    assert code == (0 if mode == "normal" else 1)
+    assert result["context"]["remote_mode"] == "overwrite"
+    assert runner.creates == 0
+    pushes = [a for a in runner.calls if a[:2] == ["git", "push"]]
+    if mode == "backup-fail":
+        assert len(pushes) == 1 and runner.remote_head.startswith("a" * 40)
+        return
+    assert runner.backups[bootstrap.backup_ref("a" * 40)] == "a" * 40
+    assert pushes[-1][2] == "--force-with-lease=refs/heads/main:" + "a" * 40
+    if mode == "protected":
+        assert runner.remote_head.startswith("a" * 40)
+    if mode == "race":
+        assert runner.remote_head.startswith("c" * 40)
+    if mode in {"normal", "overwrite-lost"}:
+        count = len(pushes)
+        assert (
+            bootstrap.main(
+                ["--resume", str(destination), "--github", "--yes"], run=runner
+            )
+            == 0
+        )
+        resumed = json.loads(capsys.readouterr().out)
+        assert resumed["remote_details"]["backup_sha"] == "a" * 40
+        assert len([a for a in runner.calls if a[:2] == ["git", "push"]]) == count
+
+
+def test_legacy_checkpoint_migrates_without_losing_creation_uncertainty(
+    destination, capsys
+):
+    runner = GitHubStub("lost")
+    assert invoke(destination, capsys, "--github", run=runner)[0] == 1
+    marker = destination / bootstrap.CHECKPOINT
+    old = json.loads(marker.read_text())
+    old["schema_version"] = 1
+    del old["remote_mode"], old["overwrite_main_sha"]
+    marker.write_text(json.dumps(old), encoding="utf-8")
+    assert (
+        bootstrap.main(["--resume", str(destination), "--github", "--yes"], run=runner)
+        == 3
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert "No second create" in result["reason"] and runner.creates == 1
+    assert json.loads(marker.read_text())["schema_version"] == 2
+
+
+def test_legacy_unbound_checkpoint_can_connect_existing_remote(destination, capsys):
+    assert invoke(destination, capsys)[0] == 0
+    marker = destination / bootstrap.CHECKPOINT
+    old = json.loads(marker.read_text())
+    old["schema_version"] = 1
+    del old["remote_mode"], old["overwrite_main_sha"]
+    marker.write_text(json.dumps(old), encoding="utf-8")
+    assert (
+        bootstrap.main(
+            [
+                "--resume",
+                str(destination),
+                "--github",
+                "--existing-remote",
+                "connect",
+                "--yes",
+            ],
+            run=existing_remote(),
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["context"]["schema_version"] == 2
+    assert result["context"]["seed_sha"] == old["seed_sha"]
+    assert result["context"]["remote_mode"] == "connect"
+
+
+def test_existing_policy_never_creates_a_missing_repository(destination, capsys):
+    runner = GitHubStub()
+    code, result = invoke(
+        destination, capsys, "--github", "--existing-remote", "connect", run=runner
+    )
+    assert code == 3 and "no create was attempted" in result["reason"]
+    assert runner.creates == 0
+
+
+@pytest.mark.parametrize("saved", ["a" * 40, "b" * 40])
+def test_backup_ref_is_reused_only_if_immutable_identity_matches(
+    saved, destination, capsys
+):
+    runner = existing_remote()
+    runner.backups[bootstrap.backup_ref("a" * 40)] = saved
+    code, _ = invoke(
+        destination,
+        capsys,
+        "--github",
+        "--existing-remote",
+        "overwrite",
+        "--expected-main-sha",
+        "a" * 40,
+        run=runner,
+    )
+    assert code == (0 if saved == "a" * 40 else 3)
+    pushes = [args for args in runner.calls if args[:2] == ["git", "push"]]
+    assert len(pushes) == (1 if saved == "a" * 40 else 0)
+    assert runner.backups[bootstrap.backup_ref("a" * 40)] == saved
+
+
+@pytest.mark.parametrize("property", ["permission", "visibility", "owner"])
+def test_existing_repository_identity_and_permission_are_checked(
+    property, destination, capsys
+):
+    runner = existing_remote()
+    if property == "permission":
+        runner.remote["permissions"]["push"] = False
+    elif property == "visibility":
+        runner.remote["private"] = False
+    else:
+        runner.remote["full_name"] = "other/sample-app"
+    assert (
+        invoke(
+            destination, capsys, "--github", "--existing-remote", "connect", run=runner
+        )[0]
+        == 3
+    )
+    assert not [a for a in runner.calls if a[:2] == ["git", "push"]]
+
+
+@pytest.mark.parametrize("advance_main", [False, True])
+def test_real_git_existing_main_is_backed_up_before_overwrite(
+    advance_main, destination, capsys
+):
+    bare, prior = destination.parent / "remote.git", destination.parent / "prior"
+    prior.mkdir()
+    git(prior, "init", "-b", "main")
+    (prior / "README.md").write_text("existing history\n", encoding="utf-8")
+    git(prior, "add", "README.md")
+    git(prior, "commit", "-m", "existing main")
+    old = git(prior, "rev-parse", "HEAD")
+    git(destination.parent, "init", "--bare", str(bare))
+    git(prior, "push", str(bare), "main", "main:refs/heads/keep-this")
+    (prior / "concurrent.txt").write_text("later remote work\n", encoding="utf-8")
+    git(prior, "add", "concurrent.txt")
+    git(prior, "commit", "-m", "later main")
+    newer = git(prior, "rev-parse", "HEAD")
+    git(prior, "push", str(bare), "HEAD:refs/heads/concurrent")
+
+    class RealGit(GitHubStub):
+        def __call__(self, args, **kwargs):
+            if args[:2] in (["git", "ls-remote"], ["git", "push"], ["git", "fetch"]):
+                self.calls.append(args)
+                if advance_main and args[:3] == [
+                    "git",
+                    "push",
+                    "--force-with-lease=refs/heads/main:" + old,
+                ]:
+                    git(bare, "update-ref", "refs/heads/main", newer, old)
+                args = [
+                    str(bare)
+                    if a in {"origin", "https://github.com/dymzz/sample-app.git"}
+                    else a
+                    for a in args
+                ]
+                return subprocess.run(args, check=kwargs.pop("check", False), **kwargs)
+            return super().__call__(args, **kwargs)
+
+    runner = RealGit()
+    runner.remote = existing_remote().remote
+    code, result = invoke(
+        destination,
+        capsys,
+        "--github",
+        "--existing-remote",
+        "overwrite",
+        "--expected-main-sha",
+        old,
+        run=runner,
+    )
+    assert code == (1 if advance_main else 0)
+    assert git(bare, "rev-parse", "main") == (
+        newer if advance_main else result["context"]["seed_sha"]
+    )
+    assert git(bare, "rev-parse", bootstrap.backup_ref(old)) == old
+    assert git(bare, "rev-parse", "keep-this") == old

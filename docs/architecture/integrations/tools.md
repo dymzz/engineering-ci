@@ -20,12 +20,13 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Used by:** `.dagger/src/engineering_ci/pr_checks.py`, `src/engineering_ci/dagger_checks.py`,
   `src/engineering_ci/release/publishing.py`, `src/engineering_ci/tools/consumer.py` for
   head commit inspection, diff inspection and release tagging;
-  `src/engineering_ci/tools/bootstrap.py` — consumer initialization and seed-only push
+  `src/engineering_ci/tools/bootstrap.py` — consumer initialization, explicit remote connection,
+  seed push and SHA-guarded main replacement with an immutable Git backup ref
 - **Contract:** [local checks](../local-checks.md), [release workflow](../release/workflow.md),
   [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
 - **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`,
   `tests/test_repository_bootstrap.py` (real temporary Git repositories)
-- **Verified:** 2026-10-15 @ `f600eeaebf74`
+- **Verified:** 2026-10-15 @ `b3cc59751446`
 
 ## GitHub CLI (gh)
 
@@ -33,11 +34,12 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Pin:** unpinned — host / runner `gh`
 - **Used by:** `src/engineering_ci/github_cli.py`, `cli/download.py`, `cli/release.py` for
   GitHub REST API access, release asset uploads and workflow artifact downloads;
-  `src/engineering_ci/tools/bootstrap.py` — explicit private consumer creation and identity checks
+  `src/engineering_ci/tools/bootstrap.py` — private consumer creation, existing repository identity
+  and effective permission checks
 - **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md),
   [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
 - **Verify:** `tests/test_ghwf_cli.py`, `tests/test_repository_bootstrap.py` (substituted GitHub calls)
-- **Verified:** 2026-10-15 @ `f600eeaebf74`
+- **Verified:** 2026-10-15 @ `b3cc59751446`
 
 ## aria2c
 

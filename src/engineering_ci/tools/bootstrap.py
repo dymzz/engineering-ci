@@ -55,7 +55,7 @@ def plan(repository, path):
     repository = validate_repository(repository)
     path = destination(path)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "engineering-ci-bootstrap",
         "repository": repository,
         "path": str(path),
@@ -64,6 +64,8 @@ def plan(repository, path):
         "seed_sha": None,
         "remote_intent": False,
         "remote_id": None,
+        "remote_mode": None,
+        "overwrite_main_sha": None,
     }
 
 
@@ -133,6 +135,14 @@ def checkpoint(root):
         raise BootstrapError("Bootstrap checkpoint is oversized")
     value = json.loads(path.read_text(encoding="utf-8"))
     expected = plan(value["repository"], root)
+    if type(value.get("schema_version")) is int and value["schema_version"] == 1:
+        if set(value) != set(expected) - {"remote_mode", "overwrite_main_sha"}:
+            raise BootstrapError("Invalid legacy bootstrap checkpoint")
+        value.update(
+            schema_version=2,
+            remote_mode="create" if value["remote_intent"] else None,
+            overwrite_main_sha=None,
+        )
     if set(value) != set(expected) or any(
         value[key] != expected[key]
         for key in ("schema_version", "kind", "path", "version", "sha")
@@ -143,11 +153,25 @@ def checkpoint(root):
         or type(value["remote_intent"]) is not bool
         or (
             value["remote_id"] is not None
+            and (type(value["remote_id"]) is not int or value["remote_id"] <= 0)
+        )
+        or value["remote_mode"] not in {None, "create", "connect", "overwrite"}
+        or value["remote_intent"] != (value["remote_mode"] == "create")
+        or (value["remote_mode"] is None and value["remote_id"] is not None)
+        or (
+            value["remote_mode"] in {"connect", "overwrite"}
+            and value["remote_id"] is None
+        )
+        or (
+            value["remote_mode"] == "overwrite"
             and (
-                type(value["remote_id"]) is not int
-                or value["remote_id"] <= 0
-                or not value["remote_intent"]
+                not isinstance(value["overwrite_main_sha"], str)
+                or not re.fullmatch(r"[a-f0-9]{40}", value["overwrite_main_sha"])
             )
+        )
+        or (
+            value["remote_mode"] != "overwrite"
+            and value["overwrite_main_sha"] is not None
         )
         or (
             value["seed_sha"] is not None
@@ -285,7 +309,182 @@ def local(context, commands):
     return changed
 
 
-def github(context, commands, *, confirm_remote_id=None):
+def remote_ref(root, commands, remote, ref):
+    """Read one actual Git ref; reject ambiguous or malformed responses."""
+    value = commands.git(root, "ls-remote", remote, ref).split()
+    if not value:
+        return None
+    if (
+        len(value) != 2
+        or value[1] != ref
+        or not re.fullmatch(r"[a-f0-9]{40}", value[0])
+    ):
+        raise BootstrapError("Remote Git ref response is invalid", step=commands.step)
+    return value[0]
+
+
+def validate_remote(context, remote, *, push=False):
+    """Bind private repository identity without copying raw API responses."""
+    if (
+        not remote
+        or remote.get("private") is not True
+        or remote.get("full_name", "").lower() != context["repository"].lower()
+        or type(remote.get("id")) is not int
+        or remote["id"] <= 0
+        or (context["remote_id"] is not None and remote["id"] != context["remote_id"])
+    ):
+        raise BootstrapError("Remote repository identity or visibility changed")
+    if push and remote.get("permissions", {}).get("push") is not True:
+        raise BootstrapError("Existing repository does not grant push permission")
+
+
+def backup_ref(sha):
+    return f"refs/heads/codex/bootstrap-backup/{sha}"
+
+
+def choose_existing(context, remote, commands, policy, expected_sha, reader):
+    """Require a concrete choice before connecting or replacing an existing main."""
+    commands.step = "github_existing"
+    validate_remote(context, remote, push=True)
+    if remote.get("default_branch", "main") != "main":
+        raise BootstrapError(
+            "Existing default branch is not main; inspect before connecting"
+        )
+    root, repo = Path(context["path"]), context["repository"]
+    head = remote_ref(
+        root, commands, f"https://github.com/{repo}.git", "refs/heads/main"
+    )
+    observed = {
+        "id": remote["id"],
+        "full_name": repo,
+        "private": True,
+        "main_sha": head,
+        "seed_sha": context["seed_sha"],
+    }
+    if reader and policy is None:
+        print(
+            f"已有私有仓库: {repo} (ID {remote['id']})\n远端 main: {head or '空'}\n本地 README 初始提交: {context['seed_sha']}",
+            file=sys.stderr,
+        )
+        choices = {
+            "1": "connect",
+            "connect": "connect",
+            "2": "overwrite",
+            "overwrite": "overwrite",
+            "": "cancel",
+            "q": "cancel",
+        }
+        while policy is None:
+            choice = reader(
+                "选择：1 连接并保留历史 / 2 覆盖 main（先备份） / q 取消 [q]: "
+            )
+            policy = choices.get(choice.lower())
+    if policy is None:
+        raise BootstrapError(
+            "Remote repository already exists; select --existing-remote connect or overwrite explicitly",
+            observed=observed,
+        )
+    if policy == "cancel":
+        raise BootstrapError(
+            "Remote action cancelled; local scaffold was preserved",
+            0,
+            observed=observed,
+        )
+    if policy == "overwrite":
+        if head is None:
+            raise BootstrapError(
+                "Remote main is empty; choose connect to initialize it",
+                observed=observed,
+            )
+        if expected_sha is None and reader is None:
+            raise BootstrapError(
+                "Overwrite requires --expected-main-sha matching the observed full SHA",
+                observed=observed,
+            )
+        if expected_sha is not None and expected_sha != head:
+            raise BootstrapError(
+                "Remote main differs from the supplied expected SHA; no overwrite attempted",
+                observed=observed,
+            )
+        expected_sha = head
+        if reader:
+            confirmation = f"overwrite {repo} {head[:12]}"
+            print(
+                f"覆盖仅替换 main：{head} → {context['seed_sha']}（仅 README 的初始提交）。\n先备份旧 main 到 {backup_ref(head)}；后续 CI/业务文件仍需单独提交 PR。",
+                file=sys.stderr,
+            )
+            if reader(f"确认上述覆盖请输入 {confirmation}: ") != confirmation:
+                raise BootstrapError(
+                    "Overwrite cancelled; remote history was preserved",
+                    0,
+                    observed=observed,
+                )
+        if head == context["seed_sha"]:
+            policy, expected_sha = "connect", None
+    context.update(
+        remote_id=remote["id"],
+        remote_mode=policy,
+        remote_intent=False,
+        overwrite_main_sha=expected_sha if policy == "overwrite" else None,
+    )
+    save(root, context)
+
+
+def overwrite_main(context, commands, head):
+    """Back up the exact old main, then replace it using Git's compare-and-swap lease."""
+    root, repo = Path(context["path"]), context["repository"]
+    old, seed = context["overwrite_main_sha"], context["seed_sha"]
+    ref = backup_ref(old)
+    commands.step = "backup_main"
+    remote = commands.api(f"repos/{repo}")
+    validate_remote(context, remote, push=True)
+    saved = remote_ref(root, commands, "origin", ref)
+    if head == seed:
+        if saved != old:
+            raise BootstrapError(
+                "Main matches the seed but its required backup cannot be verified"
+            )
+        return ref
+    if head != old:
+        raise BootstrapError(
+            "Remote main changed since confirmation; no overwrite attempted"
+        )
+    if saved is not None and saved != old:
+        raise BootstrapError(
+            "Backup branch already points to a different commit; refusing to overwrite it"
+        )
+    if saved is None:
+        commands.git(root, "fetch", "--no-tags", "origin", "refs/heads/main")
+        if commands.git(root, "rev-parse", "--verify", "FETCH_HEAD") != old:
+            raise BootstrapError(
+                "Remote main changed while fetching; no overwrite attempted"
+            )
+        commands.git(
+            root, "push", f"--force-with-lease={ref}:", "origin", f"{old}:{ref}"
+        )
+    if remote_ref(root, commands, "origin", ref) != old:
+        raise BootstrapError("Backup could not be verified; main was not overwritten")
+    commands.step = "overwrite_main"
+    validate_remote(context, commands.api(f"repos/{repo}"), push=True)
+    commands.git(
+        root,
+        "push",
+        f"--force-with-lease=refs/heads/main:{old}",
+        "origin",
+        f"{seed}:refs/heads/main",
+    )
+    return ref
+
+
+def github(
+    context,
+    commands,
+    *,
+    confirm_remote_id=None,
+    existing_policy=None,
+    expected_main_sha=None,
+    reader=None,
+):
     """Confirm actual access and pin; create once, then push only the seed main."""
     root, repo = Path(context["path"]), context["repository"]
     commands.step = "github_preflight"
@@ -350,13 +549,35 @@ def github(context, commands, *, confirm_remote_id=None):
             "Remote ID confirmation is only for an unconfirmed creation intent",
             step=commands.step,
         )
-    if context["remote_id"] is None:
-        if remote is not None:
-            raise BootstrapError(
-                "Remote repository already exists; refusing automatic adoption",
-                step=commands.step,
+    if existing_policy and context["remote_mode"] == "create":
+        raise BootstrapError(
+            "Creation recovery cannot be changed into existing-repository adoption"
+        )
+    if existing_policy and remote is None:
+        raise BootstrapError(
+            "Existing-repository policy requested but the remote is absent; no create was attempted"
+        )
+    if (
+        context["remote_mode"] in {"connect", "overwrite"}
+        and existing_policy
+        and (
+            existing_policy != context["remote_mode"]
+            or (
+                expected_main_sha is not None
+                and expected_main_sha != context["overwrite_main_sha"]
             )
+        )
+    ):
+        choose_existing(
+            context, remote, commands, existing_policy, expected_main_sha, reader
+        )
+    if context["remote_id"] is None and remote is not None:
+        choose_existing(
+            context, remote, commands, existing_policy, expected_main_sha, reader
+        )
+    if context["remote_id"] is None:
         context["remote_intent"] = True
+        context["remote_mode"] = "create"
         save(root, context)  # Durable intent before the side-effecting gh operation.
         try:
             commands.execute(["gh", "repo", "create", repo, "--private"], root)
@@ -365,28 +586,16 @@ def github(context, commands, *, confirm_remote_id=None):
                 context["remote_intent"] = (
                     False  # Explicit rejection is not an ambiguous creation.
                 )
+                context["remote_mode"] = None
                 save(root, context)
             raise
         remote = commands.api(f"repos/{repo}")
-        if (
-            remote.get("full_name", "").lower() != repo.lower()
-            or remote.get("private") is not True
-            or type(remote.get("id")) is not int
-        ):
-            raise BootstrapError(
-                "Created repository identity is unconfirmed", step=commands.step
-            )
+        validate_remote(context, remote)
         context["remote_id"] = remote["id"]
         save(root, context)
-    if (
-        not remote
-        or remote.get("id") != context["remote_id"]
-        or remote.get("private") is not True
-        or remote.get("full_name", "").lower() != repo.lower()
-    ):
-        raise BootstrapError(
-            "Remote repository identity or visibility changed", step=commands.step
-        )
+    validate_remote(
+        context, remote, push=context["remote_mode"] in {"connect", "overwrite"}
+    )
     commands.step = "push_seed"
     expected = f"https://github.com/{repo}.git"
     remotes = commands.git(root, "remote").splitlines()
@@ -403,24 +612,63 @@ def github(context, commands, *, confirm_remote_id=None):
         raise BootstrapError(
             "origin differs from the confirmed repository", step=commands.step
         )
-    remote_head = commands.git(root, "ls-remote", "origin", "refs/heads/main")
-    if remote_head:
-        if remote_head.split() != [context["seed_sha"], "refs/heads/main"]:
+    remote_head = remote_ref(root, commands, "origin", "refs/heads/main")
+    backup = None
+    if context["remote_mode"] == "overwrite":
+        backup = overwrite_main(context, commands, remote_head)
+    elif remote_head:
+        if context["remote_mode"] != "connect" and remote_head != context["seed_sha"]:
             raise BootstrapError(
                 "Remote main differs; no force-push will be performed",
                 step=commands.step,
             )
     else:
         commands.git(root, "push", "-u", "origin", "main")
-    confirmed = commands.git(root, "ls-remote", "origin", "refs/heads/main").split()
-    if confirmed != [context["seed_sha"], "refs/heads/main"]:
+    confirmed = remote_ref(root, commands, "origin", "refs/heads/main")
+    if confirmed is None or (
+        context["remote_mode"] != "connect" and confirmed != context["seed_sha"]
+    ):
         raise BootstrapError("Seed push could not be confirmed", step=commands.step)
+    if (
+        backup
+        and remote_ref(root, commands, "origin", backup)
+        != context["overwrite_main_sha"]
+    ):
+        raise BootstrapError(
+            "Main was updated but its backup is unavailable; inspect the recorded recovery ref"
+        )
+    return {
+        "mode": context["remote_mode"],
+        "main_sha": confirmed,
+        "backup_ref": backup,
+        "backup_sha": context["overwrite_main_sha"] if backup else None,
+        "requires_history_merge": context["remote_mode"] == "connect"
+        and confirmed != context["seed_sha"],
+    }
 
 
-def next_actions(context, remote):
+def next_actions(context, remote, details=None):
     """Return usable argv without claiming checks, SDK generation or PR creation."""
     root = context["path"]
     actions = []
+    if details and details["requires_history_merge"]:
+        actions.extend(
+            [
+                {"cwd": root, "argv": ["git", "fetch", "origin", "refs/heads/main"]},
+                {
+                    "cwd": root,
+                    "argv": [
+                        "git",
+                        "merge",
+                        "--allow-unrelated-histories",
+                        "--no-edit",
+                        "FETCH_HEAD",
+                    ],
+                    "manual_review_required": True,
+                    "reason": "Preserve existing main history; resolve any conflicts before checks and the PR",
+                },
+            ]
+        )
     if not remote:
         actions.append(
             {
@@ -491,7 +739,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
     parser.add_argument(
         "--github",
         action="store_true",
-        help="Explicitly create a private remote and push the seed main",
+        help="Create or explicitly connect to a private remote; existing history needs a separate choice",
     )
     parser.add_argument(
         "--yes",
@@ -508,6 +756,15 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
         type=int,
         help="After manual inspection, bind an unconfirmed creation to this exact repository ID",
     )
+    parser.add_argument(
+        "--existing-remote",
+        choices=("connect", "overwrite"),
+        help="Explicit action for an existing private repository",
+    )
+    parser.add_argument(
+        "--expected-main-sha",
+        help="Full observed main SHA required for non-interactive overwrite",
+    )
     args = parser.parse_args(argv)
     if args.resume and (args.repo or args.path):
         parser.error("--resume cannot change --repo or --path")
@@ -516,6 +773,17 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
     ):
         parser.error(
             "--confirm-remote-id requires --resume, --github and a positive ID"
+        )
+    if args.existing_remote and (not args.github or args.confirm_remote_id is not None):
+        parser.error(
+            "--existing-remote requires --github and cannot replace uncertain-creation confirmation"
+        )
+    if args.expected_main_sha is not None and (
+        args.existing_remote != "overwrite"
+        or not re.fullmatch(r"[a-f0-9]{40}", args.expected_main_sha)
+    ):
+        parser.error(
+            "--expected-main-sha requires --existing-remote overwrite and a full lowercase SHA"
         )
     context, commands = None, Commands(run)
     try:
@@ -565,13 +833,13 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             commands.step = "remote_choice"
             args.github = (
                 reader(
-                    "同时创建 GitHub 私有仓库并 Push 初始 main？输入 yes 确认 [默认否]: "
+                    "连接 GitHub 私有仓库（不存在则创建，已存在另行选择）？输入 yes 确认 [默认否]: "
                 )
                 == "yes"
             )
             result["github_requested"] = args.github
         print(
-            f"目标: {context['repository']} → {root}\n基线: {template.VERSION} @ {template.SHA}\n远端创建: {args.github}; SDK/检查/PR 在生成后显式执行。",
+            f"目标: {context['repository']} → {root}\n基线: {template.VERSION} @ {template.SHA}\nGitHub 操作: {args.github}（已有仓库会单独确认）；SDK/检查/PR 在生成后显式执行。",
             file=sys.stderr,
         )
         print(
@@ -597,17 +865,29 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             save(root, context)
         with FileLock(owned(root, ".test-tools/bootstrap.lock"), timeout=0):
             context = checkpoint(root)
+            save(
+                root, context
+            )  # Persist a validated v1 migration under the existing lock.
             commands.step = "local_scaffold"
             preserved = local(context, commands)
+            remote_details = None
             if args.github:
-                github(context, commands, confirm_remote_id=args.confirm_remote_id)
+                remote_details = github(
+                    context,
+                    commands,
+                    confirm_remote_id=args.confirm_remote_id,
+                    existing_policy=args.existing_remote,
+                    expected_main_sha=args.expected_main_sha,
+                    reader=reader if not args.yes and sys.stdin.isatty() else None,
+                )
             result.update(
                 status="generated",
                 context=context,
                 preserved_changes=preserved,
                 remote="confirmed" if args.github else "not_requested",
+                remote_details=remote_details,
                 checkpoint=str(owned(root, CHECKPOINT)),
-                next_actions=next_actions(context, args.github),
+                next_actions=next_actions(context, args.github, remote_details),
             )
         print(
             "骨架已生成，检查尚未运行。按 next_actions 逐项执行；失败时先停下。PR/合并步骤见 guides/new-repository.md。",
@@ -629,7 +909,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             130 if isinstance(error, KeyboardInterrupt) else getattr(error, "code", 3)
         )
         result = {
-            "status": "stopped",
+            "status": "cancelled" if code == 0 else "stopped",
             "exit_code": code,
             "step": getattr(error, "step", None) or commands.step,
             "reason": failure_reason(error, commands.step),
@@ -677,6 +957,47 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
                     ],
                 },
             ]
+            observed = getattr(error, "observed", None)
+            if observed and "main_sha" in observed and context["remote_mode"] is None:
+                result["remote_result"] = "existing_requires_selection"
+                base = [
+                    "uv",
+                    "run",
+                    "--locked",
+                    "python",
+                    "-m",
+                    "engineering_ci.tools.bootstrap",
+                    "--resume",
+                    context["path"],
+                    "--github",
+                    "--existing-remote",
+                ]
+                result["next_actions"].append(
+                    {
+                        "cwd": str(ROOT),
+                        "manual_confirmation_required": True,
+                        "argv": [*base, "connect"],
+                    }
+                )
+                if observed["main_sha"]:
+                    result["next_actions"].append(
+                        {
+                            "cwd": str(ROOT),
+                            "manual_confirmation_required": True,
+                            "argv": [
+                                *base,
+                                "overwrite",
+                                "--expected-main-sha",
+                                observed["main_sha"],
+                            ],
+                        }
+                    )
+            if context["remote_mode"] == "overwrite":
+                result["remote_recovery"] = {
+                    "backup_ref": backup_ref(context["overwrite_main_sha"]),
+                    "original_main_sha": context["overwrite_main_sha"],
+                    "intended_main_sha": context["seed_sha"],
+                }
             if context["remote_intent"] and context["remote_id"] is None:
                 result["remote_result"] = "unconfirmed"
                 result["next_actions"][0]["argv"] = [

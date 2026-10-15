@@ -111,7 +111,9 @@ consumer 默认只读；修改、提交、推送仍需显式参数。
 
 新仓交互建仓使用 `uv run --locked python -m engineering_ci.tools.bootstrap`，不增加第三个
 scripts 入口。`--plan` 只预览，`--repo OWNER/name --path ABSOLUTE_PATH --yes` 可非交互
-生成本地骨架；显式 `--github` 才创建私有远端并 Push README-only main。
+生成本地骨架；显式 `--github` 才处理私有远端，新建远端只 Push README-only main。
+已有远端交互选择连接/覆盖 main/取消；非交互使用 `--existing-remote connect|overwrite`，
+覆盖还需实际完整 SHA 的 `--expected-main-sha`，`--yes` 不隐含覆盖。
 `--resume ABSOLUTE_PATH` 恢复该工具自己的上下文，保留用户修改；远端创建结果不确定时
 必须核对实际仓库 ID，禁止自动再次创建。SDK、检查和 PR 后续动作与退出码见
 [交互式建仓说明](new-repository.md#交互式建仓入口)。

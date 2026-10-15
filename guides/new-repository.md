@@ -19,7 +19,7 @@ uv run --locked python -m engineering_ci.tools.bootstrap
 第一步输入新目录的绝对路径，例如 `D:\workspace\my-python-app` 或
 `D:/workspace/my-python-app`；可以粘贴外层带单/双引号的路径，目录名包含空格也支持。
 第二步输入 GitHub 仓库名 `OWNER/name`，例如 `dymzz/my-python-app`，这里不填本地路径。
-然后选择是否创建 GitHub **私有仓库**。
+然后选择是否连接 GitHub **私有仓库**；不存在时创建，已存在时单独选择处理方式。
 工具显示固定版本、SHA、文件列表和 Git 操作，最后输入 `create` 才执行。
 仓库名使用小写 kebab-case；目标目录必须不存在，父目录必须已经存在。
 交互输入格式不正确时，工具说明原因并留在当前字段重新输入；Ctrl+C 可取消。
@@ -42,12 +42,13 @@ uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-
 uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-app --path D:/workspace/my-python-app --github --yes
 ```
 
-`--yes` 只确认已请求的操作，不隐含 `--github`。工具复用当前 gh 认证，不登录、切换账号
+`--yes` 只确认已请求的操作，不隐含 `--github` 或覆盖已有远端。工具复用当前 gh 认证，不登录、切换账号
 或修改 Workflow 共享权限。请求远端创建时会核对本节下方固定的正式版本、Tag SHA 和私有
 Workflow 共享条件。创建权限或认证失败会停止；不会另选仓库、路径或公开可见性。
 
 成功后，本地 `main` 只有 README 初始提交，当前分支为 `codex/bootstrap-ci`；业务示例和
-CI 文件留作待审查改动。指定 `--github` 时，远端也只收到这一个初始 `main` 提交。
+CI 文件留作待审查改动。新建或空远端只收到这一个初始 `main` 提交；已有远端按下一节明确选择，
+不因文件已生成就自动覆盖历史。
 **不会自动安装 SDK、运行检查、配置 Secret、提交功能代码、创建 PR、合并或发布。**
 继续在新项目执行输出的 `next_actions`，并按第 5～8 节完成 SDK、私有访问、检查和 PR；
 第 6 节核对已经生成的 Workflow 即可。
@@ -78,7 +79,41 @@ Git 身份未配置、当前分支异常、main 已变化或 origin 不符时，
 如果远端创建请求发出但响应丢失，结果为 `remote_result=unconfirmed`，不会再次创建。
 先执行返回的只读 `gh api` 命令，核对仓库名称、私有可见性和实际数字 ID；确认是本次目标
 后，在返回的恢复命令中显式提供 `--confirm-remote-id`。该选项仅用于未确认的创建意图，
-不能用来接管任意已有仓库。Push 失败则在确认同一个仓库后恢复；不会强推覆盖远端 main。
+不能代替已有远端的连接/覆盖选择。Push 失败后保留目录，按同一个仓库身份继续恢复。
+
+### 远端仓库已经存在
+
+直接执行上面的 `--resume ... --github`，交互模式会显示仓库 ID、实际 main SHA 与本地
+README 初始提交，然后提供 `1 连接 / 2 覆盖 main / q 取消`。不会删除重建整个仓库。
+
+- **连接：** 核对私有可见性与 Push 权限，配置 origin。空 main 可以接收本地初始提交；
+  非空 main 保留原有历史。如果与本地初始提交不同，`next_actions` 先给出 fetch/merge，
+  将远端历史合入当前开发分支；检查/解决 README 等冲突后再执行 SDK、检查和 PR 步骤。
+- **覆盖 main：** 显示将被替换的完整 SHA、本地 README-only 初始提交和实际备份 Ref。
+  必须再输入工具显示的 `overwrite OWNER/name SHA前12位` 确认文字。先将旧 main 保存到
+  `codex/bootstrap-backup/完整旧SHA`，读回核对，再用 `--force-with-lease` 替换 main。
+  其他分支不会作为覆盖目标；业务和 CI 文件仍待后续 PR。结果返回实际 `backup_ref` 和
+  `backup_sha` 供人工恢复，工具不自动回滚后续工作。
+- **取消：** 保留已生成的本地文件，不连接或改写远端。
+
+备份失败、备份 Ref 已指向其他提交、仓库身份/权限变化或确认后的 main SHA 变化时停止。
+分支保护拒绝 Push 时保留原始失败码，不修改保护规则。覆盖响应丢失后，恢复会核对同一个
+仓库、main 和备份；已完成的覆盖不再重发，未完成的操作仍受原 SHA 条件约束。
+
+非交互连接已有仓库可显式执行：
+
+```powershell
+uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app --github --existing-remote connect --yes
+```
+
+非交互覆盖还必须显式指定 `--existing-remote overwrite` 与 `--expected-main-sha`，使用
+实际读到的完整 SHA；停止结果的 `observed_remote` 和待人工确认的 `next_actions` 提供
+实际值和完整 argv。`--yes` 本身不会选择覆盖，不能用猜测 SHA。
+
+恢复上下文 Schema 2 在原有字段之外记录 `remote_mode`（create/connect/overwrite）与
+`overwrite_main_sha`。Schema 1 在已确认恢复、取得文件锁后原子迁移；保留 seed SHA、
+创建意图与远端 ID，原先未确认的创建仍禁止再次 POST。它独立于执行 FSM 的状态 Schema。
+暂只支持默认分支 main 的已有私有仓库，其他分支布局需人工处理。
 
 ## 1. 确定版本和环境
 
