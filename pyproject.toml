@@ -8,7 +8,6 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "vesryn-log==0.1.0",
     "transitions==0.9.3",
     "filelock==3.20.3",
     "PyYAML==6.0.3",
@@ -17,6 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "vesryn-log==0.1.0",
     "vesryn[trace,mining,telemetry]==0.1.0",
     "cloudevents==2.2.0",
     "psycopg[binary]==3.3.6",

@@ -26,7 +26,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | pytest | adopted | development, CI | [python](integrations/python.md#pytest) |
 | pytest-cov | adopted | development, CI | [python](integrations/python.md#pytest-cov) |
 | Vesryn | adopted | optional harness dependency | [python](integrations/python.md#vesryn) |
-| vesryn-log | adopted | event recording; optional raw archive | [tracing](integrations/tracing.md#vesryn-log) |
+| vesryn-log | adopted | dev / trace event recording and archive | [tracing](integrations/tracing.md#vesryn-log) |
 | Dagger engine and module | adopted | CI, PR check graph, container execution | [dagger](integrations/dagger.md#dagger-engine-and-module) |
 | Dagger Python SDK and packaging | adopted | CI module runtime | [dagger](integrations/dagger.md#dagger-python-sdk-and-packaging) |
 | Docker | adopted | container runtime | [dagger](integrations/dagger.md#docker) |

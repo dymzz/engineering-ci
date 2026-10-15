@@ -224,6 +224,26 @@ def test_unwritable_log_path_has_independent_diagnostic(
     assert "unavailable" in capsys.readouterr().err
 
 
+def test_missing_optional_logger_preserves_actual_dispatcher_result(
+    tmp_path, monkeypatch, capsys, real_recording
+):
+    from engineering_ci import checks, workflow_actions
+
+    monkeypatch.setattr(observation, "ROOT", tmp_path)
+    original = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "vesryn_log" or name.startswith("vesryn_log."):
+            raise ModuleNotFoundError("Logger not installed", name="vesryn_log")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    monkeypatch.setattr(checks, "main", lambda *args, **kwargs: 7)
+    assert workflow_actions.main(["checks", "pr"]) == 7
+    assert "unavailable" in capsys.readouterr().err
+    assert not (tmp_path / ".log").exists()
+
+
 def test_scope_and_capture_budget(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="inside"):
         observation._inside(tmp_path, tmp_path.parent)

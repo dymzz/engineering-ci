@@ -1,5 +1,6 @@
 """Raw archive entry points call installed vesryn-log without loading the Harness."""
 
+import builtins
 import json
 import os
 import subprocess
@@ -81,6 +82,21 @@ def test_sources_uses_logging_store_and_catalog(monkeypatch, capsys):
     value = json.loads(capsys.readouterr().out)
     assert value["items"] == [] and value["status"] == "passed"
     assert calls == ["engineering_ci_trace", (3, None)]
+
+
+def test_missing_recording_api_reports_installation_without_harness(
+    monkeypatch, capsys
+):
+    original = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "vesryn_log" or name.startswith("vesryn_log."):
+            raise ModuleNotFoundError("Logging not installed", name="vesryn_log")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    assert main(["trace", "sources", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "missing_tool"
 
 
 def test_archive_failure_stays_nonzero_without_credential_text(monkeypatch, capsys):

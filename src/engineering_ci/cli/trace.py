@@ -66,7 +66,25 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
     parser.epilog = "Vesryn analysis commands remain available: project, results, register, export, query, send."
     options = parser.parse_args(args)
-    return archive_command(options)
+    try:
+        return archive_command(options)
+    except ModuleNotFoundError as error:
+        if not (
+            error.name == "vesryn_log" or str(error.name).startswith("vesryn_log.")
+        ):
+            raise
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "operation": "trace." + options.command,
+                    "status": "missing_tool",
+                    "exit_code": 2,
+                    "reason": "Install the logging API with uv sync --locked --extra trace",
+                }
+            )
+        )
+        return 2
 
 
 def archive_command(options):

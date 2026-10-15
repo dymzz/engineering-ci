@@ -8,11 +8,12 @@ Contracts: [tracing configuration](../../configuration/tracing.md),
 
 - **Status:** adopted
 - **Pin:** `vesryn-log==0.1.0`, immutable Git rev `030c5a8edf820588e29f53803b6baaf53b1f6e57`
-  — `pyproject.toml` / `uv.lock`; optional `trace` extra enables archive dependencies.
+  — `pyproject.toml` dev group / `uv.lock`; optional `trace` extra enables archive dependencies.
 - **Used by:** `src/engineering_ci/task_observation.py` uses installed `JsonFileSink` and
   `JsonlSink`; `tracing/config.py`, `store.py`, `catalog.py`, `envelope.py`, `preflight.py`
   and `sources/codex_rollout.py` delegate physical archives directly. `cli/trace.py` retains
-  basic archive command syntax without requiring Vesryn.
+  basic archive command syntax without requiring Vesryn. Missing logging installation reports
+  recording unavailable independently; basic version/lint gates do not require private downloads.
 - **Contract:** [task recording](../cli-boundaries.md#默认任务采集与日志记录),
   [upstream public API](https://github.com/dymzz/vesryn-log/blob/b7fae198303743a327652246cdd9d951ac319a59/docs/python-api.md),
   [upstream integration](https://github.com/dymzz/vesryn-log/blob/b7fae198303743a327652246cdd9d951ac319a59/docs/integration.md).

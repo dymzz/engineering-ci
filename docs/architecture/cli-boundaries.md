@@ -170,7 +170,8 @@ workflow_actions）通过 task_observation.task_entry 包装一次。内部既�
 不触发记录。任务、调用身份及原始退出状态由宿主产生，日志库不补造未知字段。
 
 `task_observation.py` 使用安装后的 vesryn-log `JsonFileSink` / `JsonlSink` 完成物理写入。
-同进程库调用不需要 Dagger；默认日志不再调用 Vesryn observe-task、加载另一仓库源码或
+日志基础包由 dev 或 trace 安装；基础 no-dev 工具不强制下载私有日志依赖，缺包时只报告
+记录 unavailable。同进程库调用不需要 Dagger；默认日志不再调用 Vesryn observe-task、加载另一仓库源码或
 启动额外工具。跨仓的 capture/归档等工具操作仍使用公开 Dagger 接口并经过声明的观测边界；
 这与宿主调用已经安装的记录 API 是两种用途。上游接口见[日志集成](integrations/tracing.md#vesryn-log)。
 

@@ -5,7 +5,8 @@
 v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独立。
 `mine`、`workflow`、`checks --binding` 及 trace 的分析命令使用可选 Vesryn Harness；未安装时明确返回退出码 2。
 trace 的 status/inspect/init/import/replay/sources/snapshots 直接使用 vesryn-log；
-文件日志使用基础包，PostgreSQL 归档需 trace extra，不需要通过 Vesryn 记录。
+开发组安装日志基础包，PostgreSQL 归档需 trace extra；基础 no-dev 环境缺少日志包时只报告
+记录 unavailable，不改变检查结果，也不要求轻量版本检查取得私有日志仓库凭据。
 开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
 原 trace/mining/telemetry extras 保留；trace 同时声明日志 archive SDK 与旧分析接口的依赖。
 通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
