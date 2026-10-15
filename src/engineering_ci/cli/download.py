@@ -11,6 +11,7 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "engineering_ci.cli"
 
+from ..task_observation import task_entry
 from ._execution import (
     add_runtime_arguments,
     dependency_error,
@@ -178,6 +179,9 @@ def existing_run(repository, run_id, workflow=None, ref=None, *, query=None):
     return workflow or str(run["workflow_id"]), run["head_branch"]
 
 
+@task_entry(
+    "Download existing run artifacts", prerequisites=("transitions", "filelock")
+)
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(

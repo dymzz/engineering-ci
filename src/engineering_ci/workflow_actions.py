@@ -7,7 +7,10 @@ import argparse
 import os
 import sys
 
+from .task_observation import task_entry
 
+
+@task_entry("Run GitHub Actions operation")
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)

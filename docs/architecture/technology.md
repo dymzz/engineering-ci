@@ -2,7 +2,7 @@
 
 Technologies engineering-ci uses directly, their adoption status and where each is integrated.
 Source code, dependency manifests and configuration are authoritative; this page records
-relationships only. Maintenance rules: [AGENTS.md](AGENTS.md).
+relationships only. Maintenance rules: [documentation conventions](../conventions.md).
 
 ## Status values
 
@@ -26,6 +26,7 @@ relationships only. Maintenance rules: [AGENTS.md](AGENTS.md).
 | pytest | adopted | development, CI | [python](integrations/python.md#pytest) |
 | pytest-cov | adopted | development, CI | [python](integrations/python.md#pytest-cov) |
 | Vesryn | adopted | optional harness dependency | [python](integrations/python.md#vesryn) |
+| vesryn-log | adopted | event recording; optional raw archive | [tracing](integrations/tracing.md#vesryn-log) |
 | Dagger engine and module | adopted | CI, PR check graph, container execution | [dagger](integrations/dagger.md#dagger-engine-and-module) |
 | Dagger Python SDK and packaging | adopted | CI module runtime | [dagger](integrations/dagger.md#dagger-python-sdk-and-packaging) |
 | Docker | adopted | container runtime | [dagger](integrations/dagger.md#docker) |

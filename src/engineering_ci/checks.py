@@ -21,6 +21,7 @@ from pathlib import Path
 from ._paths import ROOT
 from .check_operations import command as operation_command
 from .pipeline import PIPELINE
+from .task_observation import task_entry
 from .toolchain import PYTHON_VERSION, RUFF_VERSION, UV_VERSION, ruff_command
 
 CI_STEPS = {
@@ -843,6 +844,7 @@ def run_checks(selectors, *, executor=None, **kwargs):
     raise ValueError(f"Unsupported executor: {backend}")
 
 
+@task_entry("Run engineering checks", read_only=("inspect", "toolchain"))
 def main(argv=None, *, executor=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

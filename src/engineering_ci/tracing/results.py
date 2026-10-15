@@ -1,6 +1,13 @@
-"""Compatibility import; implementation is owned by Vesryn."""
+"""Log-owned serialization; projection and mining validation remain in the Harness."""
 
-import sys
-from importlib import import_module
+from vesryn_log.archive.results import *
 
-sys.modules[__name__] = import_module("vesryn.tracing.results")
+from ._compat import archive_errors
+
+
+@archive_errors
+def prepare_result(value, input_digest, *, origin="computed"):
+    """Validate a derived Harness result without delegating physical persistence."""
+    from vesryn.tracing.results import prepare_result as prepare
+
+    return prepare(value, input_digest, origin=origin)

@@ -11,9 +11,11 @@ uv run --locked --extra trace engineering-ci trace status --json
 ```
 
 `trace` 可选依赖当前锁定 CloudEvents 2.2.0、Psycopg Binary 3.3.6、OpenTelemetry SDK 1.45.1
-（其生成语义约定包为 0.66b1）。v0.6.6 将该 extra 委托给固定 Vesryn v0.1.0 提交，
-开发组安装相应 SDK 用于真实领域回归。通用 SDK 单元测试在 Vesryn 仓库维护；
-基础消费者依赖不包含轨迹库。旧配置仍相对 engineering-ci 定位，Vesryn 独立命令相对调用目录定位。
+（其生成语义约定包为 0.66b1）。原始归档直接使用固定 vesryn-log 的 archive API；
+同一 trace extra 保留 Projection 等分析所需的 Vesryn 依赖。基础消费者安装 vesryn-log 基础包
+用于任务文件日志，不因此安装数据库 SDK 或要求 Vesryn。旧配置仍相对 engineering-ci 定位。
+status/inspect/init/import/replay/sources/snapshots 不经过 Vesryn CLI；project/query/send 及
+派生结果解释继续使用可选 Harness，日志存储与分析解释具有不同职责。
 现有 release/download 不读取连接变量或自动初始化数据库。
 
 本机验收使用普通 CPython 3.14.3；Psycopg Binary 3.3.6 未提供 Windows Python 3.14

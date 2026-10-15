@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..check_operations import OPERATIONS
 from ..pipeline import PIPELINE
+from ..tracing._compat import archive_errors
 from ..tracing.results import canonical, digest, result_id
 from ..tracing.store import ArchiveError
 from .candidates import candidates
@@ -37,6 +38,7 @@ def target(pipeline):
     }
 
 
+@archive_errors
 def bind(evidence, candidate_id, *, pipeline=PIPELINE):
     """Select a real candidate; the explicit target is not inferred historical work."""
     result_id(candidate_id)

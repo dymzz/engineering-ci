@@ -160,3 +160,34 @@ workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不�
 跨调用缓存或远端 CI 放行依据。恢复读取实际 Git/PR 状态，再调用原生准备和检查；
 不重复创建已有 PR，不把报告生成视为检查通过。使用与恢复见
 [新仓接入指南](../../guides/new-repository.md#交互式建仓入口)。
+
+## 默认任务采集与日志记录
+
+执行型入口（checks、workflow run/resume/call、release publish/validate、download、
+workflow_actions）通过 task_observation.task_entry 包装一次。内部既有 subprocess 调用保持
+原样；采集范围是当前 Python 进程和 worker thread 的原生命令边界，不覆盖子进程内部、
+其他终端或 os.system，不从 argv 猜测目的或 ToolSpec。help、查询和依赖未满足时的原预检
+不触发记录。任务、调用身份及原始退出状态由宿主产生，日志库不补造未知字段。
+
+`task_observation.py` 使用安装后的 vesryn-log `JsonFileSink` / `JsonlSink` 完成物理写入。
+同进程库调用不需要 Dagger；默认日志不再调用 Vesryn observe-task、加载另一仓库源码或
+启动额外工具。跨仓的 capture/归档等工具操作仍使用公开 Dagger 接口并经过声明的观测边界；
+这与宿主调用已经安装的记录 API 是两种用途。上游接口见[日志集成](integrations/tracing.md#vesryn-log)。
+
+产物位于 `.log/tasks/<UTC 日期>/<task-id>/`：`capture.json` 保存本次安全采集快照，
+`events.jsonl` 保存同一组事件，`delivery.json` 单独记录写入状态和原任务状态/退出码。
+`.log/latest-task.json` 仅在快照与事件文件写入成功后更新。任意写入失败时保留已有文件、
+输出安全诊断，不自动重试或重跑业务，也不覆盖上一条成功指针。缺少 receipt 不应当作写入完成；
+多文件不是事务，部分文件存在不证明完整投递。旧 `.log/pending/`、task-history.md 和分页
+产物保留为历史数据，不自动迁移或再投递；旧 ENGINEERING_CI_OBSERVATION_MODULE / SOURCE
+覆盖项不再读取。
+
+采集先暂存内存，结束时记录；硬终止仍可能丢失当前内存事件，不据此宣称没有发生调用。
+不采集 argv、stdout、环境值或异常正文。源码日志不取代 Runtime 的 ToolResult、CI 结果、
+Release 证据或准入规则；记录成功不能让失败任务通过。
+
+原始归档的兼容配置、来源、Store、Catalog 直接转发到 vesryn-log，既有 trace
+status/inspect/init/import/replay/sources/snapshots 也直接调用这些安装后的 API。
+Projection、Mining、派生查询及工具协调继续由 Vesryn 解释；历史异常在本仓边界归一化为
+日志包的 ArchiveError，避免错误类型迁移使原有失败捕获失效。CI feedback 的 Schema、身份
+和字节规范仍由本仓校验后交给日志存储，不把日志库当作审批工具。

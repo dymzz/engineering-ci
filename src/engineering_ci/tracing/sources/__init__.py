@@ -1,3 +1,3 @@
 """Compatibility package; portable implementation is in Vesryn."""
 
-from vesryn.tracing import *
+from vesryn_log.sources import *

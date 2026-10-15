@@ -231,6 +231,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "pyyaml" },
     { name = "transitions" },
+    { name = "vesryn-log" },
 ]
 
 [package.optional-dependencies]
@@ -245,6 +246,7 @@ telemetry = [
 ]
 trace = [
     { name = "vesryn", extra = ["trace"] },
+    { name = "vesryn-log", extra = ["archive"] },
 ]
 
 [package.dev-dependencies]
@@ -266,6 +268,8 @@ requires-dist = [
     { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
     { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
     { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn-log", git = "https://github.com/dymzz/vesryn-log.git?rev=030c5a8edf820588e29f53803b6baaf53b1f6e57" },
+    { name = "vesryn-log", extras = ["archive"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn-log.git?rev=030c5a8edf820588e29f53803b6baaf53b1f6e57" },
 ]
 provides-extras = ["harness", "trace", "mining", "telemetry"]
 
@@ -788,5 +792,19 @@ telemetry = [
 trace = [
     { name = "cloudevents" },
     { name = "opentelemetry-sdk" },
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[[package]]
+name = "vesryn-log"
+version = "0.1.0"
+source = { git = "https://github.com/dymzz/vesryn-log.git?rev=030c5a8edf820588e29f53803b6baaf53b1f6e57#030c5a8edf820588e29f53803b6baaf53b1f6e57" }
+dependencies = [
+    { name = "filelock" },
+]
+
+[package.optional-dependencies]
+archive = [
+    { name = "cloudevents" },
     { name = "psycopg", extra = ["binary"] },
 ]

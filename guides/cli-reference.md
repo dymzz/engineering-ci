@@ -3,9 +3,11 @@
 两个用户入口、输出、退出码和独立工具的参考。环境准备见[开始使用](getting-started.md)，操作顺序见[常用操作](common-tasks.md)。
 
 v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独立。
-`trace`、`mine`、`workflow` 与 `checks --binding` 使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+`mine`、`workflow`、`checks --binding` 及 trace 的分析命令使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+trace 的 status/inspect/init/import/replay/sources/snapshots 直接使用 vesryn-log；
+文件日志使用基础包，PostgreSQL 归档需 trace extra，不需要通过 Vesryn 记录。
 开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
-原 trace/mining/telemetry extras 保留，转为固定 Vesryn extra。
+原 trace/mining/telemetry extras 保留；trace 同时声明日志 archive SDK 与旧分析接口的依赖。
 通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
 及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/harness-integration/repository-split.md)。
 
@@ -63,7 +65,7 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
-PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-and-delivery)，操作见
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#delivery)，操作见
 [审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
 完成实际合并后才能接续，自动合并授权不包含正式发布。
 
@@ -134,6 +136,25 @@ E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 `version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
 使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
 绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。
+
+## 本地任务日志
+
+执行型入口自动记录现有调用边界，日志不经过 Vesryn observe-task 或另一次 Dagger 调用。
+使用安装的 vesryn-log 写入 `.log/tasks/<UTC 日期>/<task-id>/`；不需要另开日志开关。
+从最新成功指针定位本次记录，在 engineering-ci checkout 执行：
+
+```powershell
+$taskLog = Get-Content .log/latest-task.json -Raw | ConvertFrom-Json
+$taskLogPath = Join-Path .log $taskLog.run_path
+Get-Content (Join-Path $taskLogPath 'delivery.json') -Raw
+Get-Content (Join-Path $taskLogPath 'events.jsonl') -Tail 20
+```
+
+`capture.json` 保留安全快照，`events.jsonl` 是同一组事件；默认不含 argv、工具输出、环境值
+或异常正文。delivery.json 的 task_exit_code 是业务结果，observation_delivery 是记录结果，
+二者分开判断。原命令返回失败时，日志写入成功仍是失败；日志失败只给独立诊断，可能留下
+部分目录，不更新旧成功指针，也不自动重跑。旧 pending/可读分页不自动迁移或重投。
+依赖来源与边界见[日志集成](../docs/architecture/integrations/tracing.md#vesryn-log)。
 
 ## 原始轨迹
 

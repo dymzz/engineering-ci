@@ -77,3 +77,11 @@
 - Reasoning: the nested subprocess auto-detected the outer pyproject.toml because the
   newly chosen fixture directory lived inside that repository. No pytest defect is asserted.
 - Workaround: none in application code; use the project's existing test invocation.
+
+## vesryn / vesryn-log@0.1.0: archive exception identity changes on storage migration
+- Status: likely-local
+- Seen: 2026-10-16 -> 2026-10-16, occurrences: 1
+- Environment: Windows CPython 3.14.3; pinned Vesryn fb984d44f84e and vesryn-log 030c5a8edf82.
+- Evidence: nine feedback pagination/budget regression cases initially raised vesryn.tracing.store.ArchiveError, which is a different type from the new logging package exception expected by host callers. The same suite passed 82 cases after translation at the host interpretation boundary.
+- Reasoning: a consumer migration between independent exception types, not evidence of an upstream defect. Projection/query interpretation remains in the pinned Harness while physical archives move to the logging package.
+- Workaround: tracing/_compat.py translates legacy interpretation errors without changing status or sqlstate; no third-party package is patched or replaced.

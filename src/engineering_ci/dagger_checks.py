@@ -35,18 +35,24 @@ def git_secret_options(root, names, run, which, environ):
     if "pytest" not in names:
         return []
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    source = project.get("tool", {}).get("uv", {}).get("sources", {}).get("vesryn")
-    if source is None:
+    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
+    approved = {
+        "vesryn": "https://github.com/dymzz/vesryn.git",
+        "vesryn-log": "https://github.com/dymzz/vesryn-log.git",
+    }
+    selected = {name: sources[name] for name in approved if name in sources}
+    if not selected:
         return []
-    if (
-        not isinstance(source, dict)
-        or source.get("git") != "https://github.com/dymzz/vesryn.git"
-        or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
-    ):
-        raise checks.PreconditionError(
-            "environment_error",
-            "Private Harness source must use the approved repository and a pinned commit",
-        )
+    for name, source in selected.items():
+        if (
+            not isinstance(source, dict)
+            or source.get("git") != approved[name]
+            or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
+        ):
+            raise checks.PreconditionError(
+                "environment_error",
+                "Private dependency source must use the approved repository and a pinned commit",
+            )
     if not environ.get(GIT_SECRET_ENV):
         executable = which("gh")
         if not executable:

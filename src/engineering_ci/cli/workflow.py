@@ -8,6 +8,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from .._paths import ROOT
+from ..task_observation import task_entry
 from ..workflow_adapters.checks import catalog, recipe
 from ..workflow_core import Runtime, generate, load_generation
 from ..workflow_core.documents import WorkflowError, digest, read, write
@@ -62,6 +63,7 @@ def selected_catalog(options):
     return catalog(ROOT), None
 
 
+@task_entry("Run engineering workflow", operations=("run", "resume", "call"))
 def main(argv=None):
     import sys
 

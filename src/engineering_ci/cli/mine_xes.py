@@ -8,11 +8,11 @@ from pathlib import Path
 
 from vesryn.cli.mine_xes import export_bytes
 from vesryn.cli.mine_xes import main as portable_main
-from vesryn.cli.trace import write_new_file
-from vesryn.tracing.store import ArchiveError
 from vesryn.workflow_core.documents import WorkflowError
 
+from ..tracing.store import ArchiveError
 from .mine_workflow import execution_log, output_path
+from .trace import write_new_file
 
 __all__ = ["export_bytes", "main"]
 

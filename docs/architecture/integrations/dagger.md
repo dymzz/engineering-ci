@@ -58,3 +58,16 @@ Rules: [.dagger/AGENTS.md](../../../.dagger/AGENTS.md). Contracts: [Dagger confi
   evidence in [PR graph validation](../../verification/pr-check-graph.md). Jaeger / Collector
   acceptance is separate and was not rerun by this inventory update.
 - **Verified:** 2026-10-14 @ `e1f649f559f1`
+
+## Vesryn task observation provider
+
+- **Status:** removed
+- **Pin:** none — the previous observe-task binding is no longer used.
+- **Used by:** none. Installed vesryn-log Sinks replace default task log delivery;
+  ordinary logging does not start a Dagger execution. Existing tool calls still cross their
+  declared observation boundary.
+- **Contract:** [task recording](../cli-boundaries.md#默认任务采集与日志记录),
+  [vesryn-log](tracing.md#vesryn-log).
+- **Verify:** `tests/test_task_observation.py` proves real installed file writes and no
+  extra Dagger/Vesryn invocation; no observe-task binding in runtime source.
+- **Verified:** 2026-10-16 @ `742bfc4f833d`
