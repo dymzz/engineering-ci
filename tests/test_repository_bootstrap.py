@@ -62,7 +62,7 @@ def test_interactive_inputs_have_a_final_reviewable_confirmation(
     destination, monkeypatch, capsys
 ):
     monkeypatch.setattr(bootstrap.sys.stdin, "isatty", lambda: True)
-    answers = iter([str(destination), "dymzz/sample-app", "no", "create"])
+    answers = iter([str(destination), "dymzz/sample-app", "no", "create", "q"])
     prompts = []
 
     def reader(prompt):
@@ -71,7 +71,7 @@ def test_interactive_inputs_have_a_final_reviewable_confirmation(
 
     assert bootstrap.main([], reader=reader) == 0
     result = json.loads(capsys.readouterr().out)
-    assert len(prompts) == 4 and result["remote"] == "not_requested"
+    assert len(prompts) == 5 and result["remote"] == "not_requested"
     assert "1/2" in prompts[0] and "路径" in prompts[0]
     assert "2/2" in prompts[1] and "OWNER/name" in prompts[1]
     assert git(destination, "branch", "--show-current") == template.BRANCH
@@ -101,12 +101,14 @@ def test_interactive_validation_retries_only_the_wrong_field(
             "dymzz/sample-app",
             "no",
             "create",
+            "q",
         ]
     )
     prompts = []
 
     def reader(prompt):
-        assert not destination.exists()  # No mutation before final confirmation.
+        if "下一阶段" not in prompt:
+            assert not destination.exists()  # No mutation before final confirmation.
         prompts.append(prompt)
         return next(answers)
 
@@ -527,6 +529,7 @@ def test_existing_interactive_choices_require_specific_overwrite_confirmation(
             "overwrite dymzz/sample-app " + "a" * 12
             if answer == "confirm-overwrite"
             else "yes",
+            "q",
         ]
     )
     code = bootstrap.main(

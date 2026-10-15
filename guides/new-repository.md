@@ -8,7 +8,7 @@
 
 ## 交互式建仓入口
 
-新目录可以使用下面的工具生成第 2～4、6 节的仓库与文件骨架。在 **engineering-ci 的主
+新目录可以使用下面的工具生成骨架，并继续到 SDK、检查和 Draft PR。在 **engineering-ci 的主
 checkout** 执行；新项目使用你输入的绝对路径，不复制本仓的 `.git`、SDK 或虚拟环境：
 
 ```powershell
@@ -26,6 +26,17 @@ uv run --locked python -m engineering_ci.tools.bootstrap
 输入结束时会指出具体停点；最终确认之前不会创建目录或执行 Git/gh。
 已有项目继续按本文的手工接入步骤操作，工具不会自动接管已有目录或远端仓库。
 
+生成后会留在交互流程，要求明确选择下一阶段：
+
+- `1`：连接 GitHub，准备依赖和 SDK，执行 Dagger 检查，再引导到 Draft PR。
+- `2`：只准备依赖和 SDK、执行本地 Dagger 检查。
+- `q`：保存生成结果并退出。
+
+选择 `1` 后，工具显示目标新仓的改动，分别确认 `git add --all`、`git commit`、Push 和
+Draft PR；提交信息在 `git commit -m` 提示中输入。每次确认只授权显示的操作，拒绝即停，
+保留已完成步骤。Draft PR 创建后显示 URL、实际 Head 和查看 CI 的命令，停在人工审查。
+不会合并或发布，也不把本地检查通过当成远端 CI 通过。
+
 先预览、不调用 Git/gh、不创建文件：
 
 ```powershell
@@ -40,24 +51,36 @@ uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-
 
 # 二选一：加 --github 才会创建私有远端并 Push 初始 main。
 uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-app --path D:/workspace/my-python-app --github --yes
+
+# 只准备依赖/SDK 并检查，不连接远端、不 Commit/Push。
+uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app --setup --yes
+
+# 显式请求完整交付；非交互 --yes 确认这些操作，-m 是 Git 提交信息。
+uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app --deliver --yes -m 'ci: 接入共享检查'
 ```
 
-`--yes` 只确认已请求的操作，不隐含 `--github` 或覆盖已有远端。工具复用当前 gh 认证，不登录、切换账号
+`--yes` 只确认已请求的操作，本身不隐含远端、安装依赖、检查或交付；`--deliver` 明确包含
+连接远端、检查和 Draft PR，已有远端仍需选择连接或覆盖。工具复用当前 gh 认证，不登录、切换账号
 或修改 Workflow 共享权限。请求远端创建时会核对本节下方固定的正式版本、Tag SHA 和私有
 Workflow 共享条件。创建权限或认证失败会停止；不会另选仓库、路径或公开可见性。
 
-成功后，本地 `main` 只有 README 初始提交，当前分支为 `codex/bootstrap-ci`；业务示例和
+生成后，本地 `main` 只有 README 初始提交，当前分支为 `codex/bootstrap-ci`；业务示例和
 CI 文件留作待审查改动。新建或空远端只收到这一个初始 `main` 提交；已有远端按下一节明确选择，
 不因文件已生成就自动覆盖历史。
-**不会自动安装 SDK、运行检查、配置 Secret、提交功能代码、创建 PR、合并或发布。**
-继续在新项目执行输出的 `next_actions`，并按第 5～8 节完成 SDK、私有访问、检查和 PR；
-第 6 节核对已经生成的 Workflow 即可。
+生成步骤本身不安装依赖或执行检查。选择后续阶段才调用 `uv lock`、`uv sync --locked`、
+原生 Dagger SDK 生成、模块锁定、检查发现及 `dagger check`。它们在目标新仓运行，
+显示实际命令和原始输出；同一次流程只调用一次 `dagger check`，不另跑 pytest 收集报告。
+工具不配置 Secret 或共享权限；私有源访问的人工准备见第 5 节。手工步骤第 1～9 节仍可
+按实际停点独立使用，不需要在工具完成后重复执行整份教程。
 两份 lockfile 必须由实际 `uv lock` 生成，工具不会编造锁文件或检查通过记录。
 
 执行结果以一份 JSON 写到 stdout，提示和预览写到 stderr；`--help` 使用标准参数帮助。
 `status=generated` 只说明骨架生成完成，
 `checks=not_run`、`pull_request=not_created` 明确保留未执行事实。结果包含目标上下文、
 固定版本/SHA、初始提交 SHA、恢复文件、保留的用户修改以及带 `cwd` 的后续 argv。
+继续执行时，`local_setup.steps` 记录已执行、失败及未执行步骤和原始退出码；
+`operations` 记录 Git/PR 写操作。`status=checked` 表示本次本地检查完成，
+`status=draft_pr` 表示实际读回了 Draft PR，`remote_ci=not_inspected` 保留远端未验收事实。
 退出码 0 表示生成/预览完成或主动取消；缺少工具和参数错误为 2，其他预检/恢复阻碍为 3，
 原生命令失败保留其非零退出码，Ctrl+C 为 130。失败不能按生成成功处理。
 
@@ -71,6 +94,17 @@ uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/m
 # 需要创建/确认远端时再加 --github。
 uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app --github
 ```
+
+第一条会重新显示阶段菜单，选择 `1` 继续到 Draft PR，无需逐项复制 JSON 中的命令。
+显式 `--setup` 或 `--deliver` 可直接选择范围；去掉 `--yes`，仍分别交互确认 Git 写操作。
+缺失工具、检查失败或 Ctrl+C 时保留目标、实际步骤结果和恢复命令。修复原因后恢复同一目录；
+未完成 Merge 则先按原生 Git 解决冲突并 `git merge --continue`。
+
+恢复时重新调用原生准备与检查命令，由 uv/Dagger 自己处理增量与缓存，不把上次 JSON
+中的 passed 无条件复用。检查前后及 Commit/Push/PR 前核对源码、工具版本和相关环境摘要；
+检查期间编辑、Commit Hook 改动源码等会将结果标为 `stale` 并停止交付。生成 SDK 的源文件
+即使被生成器的 ignore 规则忽略，也纳入检查身份并明确暂存，缓存和虚拟环境不随之提交。
+Push 已完成时核对实际远端 Head；PR 创建响应丢失时查询该分支已有 PR，不重复创建。
 
 恢复不会覆盖已经存在的文件；与模板不同的文件在 `preserved_changes` 中列出。
 Git 身份未配置、当前分支异常、main 已变化或 origin 不符时，先按返回的具体原因处理。
@@ -87,8 +121,9 @@ Git 身份未配置、当前分支异常、main 已变化或 origin 不符时，
 README 初始提交，然后提供 `1 连接 / 2 覆盖 main / q 取消`。不会删除重建整个仓库。
 
 - **连接：** 核对私有可见性与 Push 权限，配置 origin。空 main 可以接收本地初始提交；
-  非空 main 保留原有历史。如果与本地初始提交不同，`next_actions` 先给出 fetch/merge，
-  将远端历史合入当前开发分支；检查/解决 README 等冲突后再执行 SDK、检查和 PR 步骤。
+  非空 main 保留原有历史。如果与本地初始提交不同，交付阶段先显示并单独确认原生
+  fetch/merge，将远端历史合入当前开发分支；README 等冲突由人解决，不自动选边。
+  仅生成时，`next_actions` 仍给出手动 fetch/merge 命令。
 - **覆盖 main：** 显示将被替换的完整 SHA、本地 README-only 初始提交和实际备份 Ref。
   必须再输入工具显示的 `overwrite OWNER/name SHA前12位` 确认文字。先将旧 main 保存到
   `codex/bootstrap-backup/完整旧SHA`，读回核对，再用 `--force-with-lease` 替换 main。

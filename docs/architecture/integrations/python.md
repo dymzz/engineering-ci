@@ -19,10 +19,12 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
   `.dagger/pyproject.toml`; uv `0.12.23` — `config/pipeline.toml`,
   `.github/workflows/reusable-python-ci.yml`
 - **Used by:** dependency resolution, lockfiles (`uv.lock`, `.dagger/uv.lock`), wheel builds
-  and virtual environment management
-- **Contract:** [local checks](../local-checks.md)
-- **Verify:** `uv lock --check`, `uv build --wheel`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+  and virtual environment management; `src/engineering_ci/tools/bootstrap_flow.py` explicitly
+  runs native consumer lock/sync steps and records the observed uv version
+- **Contract:** [local checks](../local-checks.md),
+  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
+- **Verify:** `uv lock --check`, `uv build --wheel`, `tests/test_bootstrap_flow.py`
+- **Verified:** 2026-10-15 @ `04388dbdcf7a`
 
 ## transitions
 

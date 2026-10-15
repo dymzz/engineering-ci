@@ -12,19 +12,12 @@ from filelock import FileLock, Timeout
 
 from .._paths import ROOT
 from ..execution.store import atomic_json
-from ..github_cli import ApiError, require_api_success
 from . import bootstrap_templates as template
+from .bootstrap_common import BootstrapError, Commands, owned
+from .bootstrap_flow import continue_project, setup_steps
 
 CHECKPOINT = ".test-tools/bootstrap.json"
 GIT_SELECTORS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
-
-
-class BootstrapError(Exception):
-    def __init__(self, reason, code=3, *, step=None, http_status=None, observed=None):
-        super().__init__(reason)
-        self.code, self.step = code, step
-        self.http_status = http_status
-        self.observed = observed
 
 
 def validate_repository(repository):
@@ -111,18 +104,6 @@ def read_field(prompt, reader, validate):
             )
 
 
-def owned(root, relative):
-    """Reject redirected files before reading or writing the owned scaffold."""
-    path = root / relative
-    if not path.resolve().is_relative_to(root) or any(
-        p.is_symlink()
-        for p in [path, *path.parents]
-        if p != root and p.is_relative_to(root)
-    ):
-        raise BootstrapError("Scaffold path is a symlink or escapes the destination")
-    return path
-
-
 def checkpoint(root):
     """Load only this tool's bounded recovery context, never arbitrary commands."""
     path = owned(root, CHECKPOINT)
@@ -180,68 +161,6 @@ def checkpoint(root):
     ):
         raise BootstrapError("Invalid bootstrap recovery facts")
     return value
-
-
-class Commands:
-    def __init__(self, run=subprocess.run):
-        self.run = run
-        self.step = "preflight"
-
-    def execute(self, args, cwd, *, allowed=(0,)):
-        """Use argv without a shell; retain the native exit and safe diagnostics."""
-        try:
-            result = self.run(
-                args,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                check=False,
-                timeout=120,
-            )
-        except FileNotFoundError:
-            raise BootstrapError(
-                f"Required tool is missing: {args[0]}", 2, step=self.step
-            ) from None
-        except (OSError, subprocess.TimeoutExpired):
-            raise BootstrapError(
-                f"{args[0]} is unavailable or timed out", step=self.step
-            ) from None
-        if result.returncode not in allowed:
-            status = re.search(r"HTTP (\d{3})", result.stderr or "")
-            suffix = f"; HTTP {status[1]}" if status else ""
-            raise BootstrapError(
-                f"{args[0]} failed (exit {result.returncode}{suffix}); raw responses are not saved",
-                result.returncode if result.returncode > 0 else 128 - result.returncode,
-                step=self.step,
-                http_status=int(status[1]) if status else None,
-            )
-        return result
-
-    def git(self, root, *args, allowed=(0,)):
-        return self.execute(["git", *args], root, allowed=allowed).stdout.strip()
-
-    def api(self, path, *, missing=False):
-        result = self.execute(["gh", "api", path], None, allowed=(0, 1))
-        try:
-            require_api_success(result)
-        except ApiError as error:
-            if missing and error.status == 404:
-                return None
-            raise BootstrapError(
-                str(error),
-                result.returncode or 3,
-                step=self.step,
-                http_status=error.status,
-            ) from None
-        if len(result.stdout) > 1024 * 1024:
-            raise BootstrapError("GitHub metadata exceeds limit", step=self.step)
-        value = json.loads(result.stdout)
-        if not isinstance(value, dict):
-            raise BootstrapError(
-                "GitHub did not return repository metadata", step=self.step
-            )
-        return value
 
 
 def save(root, context):
@@ -686,29 +605,7 @@ def next_actions(context, remote, details=None):
                 ],
             }
         )
-    for args in (
-        ["uv", "lock"],
-        ["uv", "sync", "--locked"],
-        [
-            "dagger",
-            "api",
-            "call",
-            "--no-load-module",
-            "module-source",
-            "--ref-string",
-            ".",
-            "generated-context-directory",
-            "directory",
-            "--path",
-            ".dagger",
-            "export",
-            "--path",
-            ".dagger",
-        ],
-        ["uv", "lock", "--project", ".dagger"],
-        ["dagger", "check", "-l", "--format", "cli"],
-        ["dagger", "check"],
-    ):
+    for _, args in setup_steps():
         actions.append({"cwd": root, "argv": args})
     return actions
 
@@ -744,7 +641,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Accept the requested local/--github actions without prompts",
+        help="Confirm explicitly requested operations, including --setup/--deliver, without prompts",
     )
     parser.add_argument(
         "--plan",
@@ -764,6 +661,19 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
     parser.add_argument(
         "--expected-main-sha",
         help="Full observed main SHA required for non-interactive overwrite",
+    )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Install dependencies, generate SDK and run native dagger check",
+    )
+    parser.add_argument(
+        "--deliver",
+        action="store_true",
+        help="Continue through local checks, commit, normal Push and Draft PR; never merge",
+    )
+    parser.add_argument(
+        "-m", "--message", help="git commit -m message for explicit --deliver"
     )
     args = parser.parse_args(argv)
     if args.resume and (args.repo or args.path):
@@ -785,7 +695,19 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
         parser.error(
             "--expected-main-sha requires --existing-remote overwrite and a full lowercase SHA"
         )
+    if args.message is not None and not args.deliver:
+        parser.error("-m/--message requires --deliver")
+    if args.setup and args.deliver:
+        parser.error("Choose --setup or --deliver; --deliver already includes setup")
+    if (
+        (args.setup or args.deliver)
+        and not args.plan
+        and not args.yes
+        and not sys.stdin.isatty()
+    ):
+        parser.error("Non-interactive --setup/--deliver requires explicit --yes")
     context, commands = None, Commands(run)
+    progress = {}
     try:
         if args.resume:
             commands.step = "resume_context"
@@ -822,14 +744,25 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             "exit_code": 0,
             "context": context,
             "files": sorted(template.files(context["repository"])),
-            "github_requested": args.github,
+            "github_requested": args.github or args.deliver,
+            "continuation": "deliver"
+            if args.deliver
+            else "setup"
+            if args.setup
+            else None,
             "checks": "not_run",
             "pull_request": "not_created",
         }
+        progress = result
         if args.plan:
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
-        if not args.yes and not args.github and sys.stdin.isatty():
+        if (
+            not args.yes
+            and not args.github
+            and not (args.setup or args.deliver)
+            and sys.stdin.isatty()
+        ):
             commands.step = "remote_choice"
             args.github = (
                 reader(
@@ -839,7 +772,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             )
             result["github_requested"] = args.github
         print(
-            f"目标: {context['repository']} → {root}\n基线: {template.VERSION} @ {template.SHA}\nGitHub 操作: {args.github}（已有仓库会单独确认）；SDK/检查/PR 在生成后显式执行。",
+            f"目标: {context['repository']} → {root}\n基线: {template.VERSION} @ {template.SHA}\nGitHub 操作: {result['github_requested']}（已有仓库会单独确认）；SDK/检查/PR 范围: {result['continuation'] or '生成后交互选择'}。",
             file=sys.stderr,
         )
         print(
@@ -889,8 +822,68 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
                 checkpoint=str(owned(root, CHECKPOINT)),
                 next_actions=next_actions(context, args.github, remote_details),
             )
+            mode = "deliver" if args.deliver else "setup" if args.setup else None
+            if not mode and not args.yes and sys.stdin.isatty():
+                commands.step = "continuation_choice"
+                print(
+                    "骨架已保存，后续尚未执行。请选择继续范围：\n  1 连接 GitHub → SDK/检查 → 分别确认 Commit、Push、Draft PR\n  2 只准备 SDK 并运行本地 Dagger 检查\n  q 保存当前结果并退出",
+                    file=sys.stderr,
+                )
+                while True:
+                    choice = reader("下一阶段（1/2/q，须明确选择）: ").lower()
+                    if choice in {"1", "2", "q"}:
+                        mode = {"1": "deliver", "2": "setup", "q": None}[choice]
+                        break
+            if mode:
+                result["continuation"] = mode
+
+                def connect():
+                    details = remote_details
+                    if details is None:
+                        details = github(
+                            context,
+                            commands,
+                            reader=reader
+                            if not args.yes and sys.stdin.isatty()
+                            else None,
+                            confirm_remote_id=args.confirm_remote_id,
+                            existing_policy=args.existing_remote,
+                            expected_main_sha=args.expected_main_sha,
+                        )
+                    result.update(
+                        github_requested=True,
+                        remote="confirmed",
+                        remote_details=details,
+                    )
+                    return details
+
+                result["next_actions"] = [
+                    {
+                        "cwd": str(ROOT),
+                        "argv": [
+                            "uv",
+                            "run",
+                            "--locked",
+                            "python",
+                            "-m",
+                            "engineering_ci.tools.bootstrap",
+                            "--resume",
+                            context["path"],
+                            "--" + mode,
+                        ],
+                    }
+                ]
+                continue_project(
+                    context,
+                    commands,
+                    result,
+                    mode,
+                    reader if not args.yes and sys.stdin.isatty() else None,
+                    args.message,
+                    connect,
+                )
         print(
-            "骨架已生成，检查尚未运行。按 next_actions 逐项执行；失败时先停下。PR/合并步骤见 guides/new-repository.md。",
+            f"停点: {result.get('stop', {}).get('code', 'generation_only')}；本地检查: {result['checks']}；PR: {result.get('pr', {}).get('url', result['pull_request'])}\n恢复入口: uv run --locked python -m engineering_ci.tools.bootstrap --resume {context['path']}\n已保存的生成状态不代表检查或远端 CI 通过。",
             file=sys.stderr,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -914,9 +907,26 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             "step": getattr(error, "step", None) or commands.step,
             "reason": failure_reason(error, commands.step),
             "context": context,
-            "checks": "not_run",
-            "pull_request": "not_created",
+            "checks": progress.get("checks", "not_run"),
+            "pull_request": progress.get("pull_request", "not_created"),
         }
+        for key in (
+            "local_setup",
+            "operations",
+            "delivery",
+            "pr",
+            "remote_details",
+            "remote",
+            "github_requested",
+            "checkpoint",
+            "continuation",
+        ):
+            if key in progress:
+                result[key] = progress[key]
+        if "local_setup" in result and result["local_setup"]["status"] == "running":
+            result["local_setup"]["status"] = (
+                "interrupted" if code == 130 else "incomplete"
+            )
         if getattr(error, "http_status", None):
             result["http_status"] = error.http_status
         if getattr(error, "observed", None):
@@ -957,6 +967,8 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
                     ],
                 },
             ]
+            if progress.get("continuation") and progress.get("next_actions"):
+                result["next_actions"][1] = progress["next_actions"][0]
             observed = getattr(error, "observed", None)
             if observed and "main_sha" in observed and context["remote_mode"] is None:
                 result["remote_result"] = "existing_requires_selection"

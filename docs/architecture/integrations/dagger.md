@@ -17,12 +17,15 @@ Rules: [.dagger/AGENTS.md](../../../.dagger/AGENTS.md). Contracts: [Dagger confi
   `src/engineering_ci/dagger_checks.py` binds them to host inputs and admits reuse.
   The existing pytest, quality and matrix modules preserve original failures and one-execution
   reporting. PR branches do not add default fixture Checks or replace GitHub's remote Job DAG.
+  `src/engineering_ci/tools/bootstrap_flow.py` explicitly invokes native consumer SDK generation,
+  check discovery and one `dagger check`; Dagger owns execution and cache reuse.
 - **Contract:** [Dagger configuration](../../configuration/dagger.md),
   [local checks](../local-checks.md), [pytest reporting](../testing/pytest-reporting.md)
 - **Verify:** module / workflow Engine pins agree; `tests/test_pipeline.py`,
   `tests/test_dagger_checks.py`, `tests/test_pr_check_graph.py`; real Engine execution and reuse
   evidence in [PR graph validation](../../verification/pr-check-graph.md).
-- **Verified:** 2026-10-14 @ `e1f649f559f1`
+  `tests/test_bootstrap_flow.py` substitutes the consumer CLI; real consumer setup is a separate acceptance.
+- **Verified:** 2026-10-15 @ `04388dbdcf7a`
 
 ## Dagger Python SDK and packaging
 

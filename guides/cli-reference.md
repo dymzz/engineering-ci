@@ -115,7 +115,12 @@ scripts 入口。`--plan` 只预览，`--repo OWNER/name --path ABSOLUTE_PATH --
 已有远端交互选择连接/覆盖 main/取消；非交互使用 `--existing-remote connect|overwrite`，
 覆盖还需实际完整 SHA 的 `--expected-main-sha`，`--yes` 不隐含覆盖。
 `--resume ABSOLUTE_PATH` 恢复该工具自己的上下文，保留用户修改；远端创建结果不确定时
-必须核对实际仓库 ID，禁止自动再次创建。SDK、检查和 PR 后续动作与退出码见
+  必须核对实际仓库 ID，禁止自动再次创建。
+  生成后交互选择继续到 Draft PR、只做本地准备/检查或保存退出；Commit、Push、Draft
+  分别确认。非交互 `--setup` 请求依赖/SDK/Dagger 检查，`--deliver --yes -m '提交信息'`
+  显式请求检查、Commit、普通 Push 和 Draft PR，停在审查，不合并/发布。
+  `--yes` 本身仍只生成，不隐含这些后续操作。中断后用原目录 `--resume` 继续；
+  原始检查失败、源码变化和 PR 未验收不会转为通过。完整动作与退出码见
 [交互式建仓说明](new-repository.md#交互式建仓入口)。
 
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。

@@ -146,11 +146,17 @@ workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不�
 
 `engineering_ci.tools.bootstrap` 是独立的消费者建仓工具，使用原生 Git/gh 与固定正式
 版本模板；不进入 release/download 的 FSM，不增加 scripts 入口或 Pipeline 调度层。
-交互确认或显式参数确定目标及私有远端操作范围；JSON 返回生成事实和未执行状态。
+交互确认或显式参数确定目标及私有远端操作范围；生成后明确选择继续到 Draft PR、
+仅本地准备/检查或退出。JSON 保留实际执行、失败和未执行状态。
 小型原子恢复上下文只保存本次目标、模板版本/SHA、初始提交和远端身份；原生 Git/API
 核对实际状态。远端创建前保存意图，响应不确定时需要人工确认仓库 ID，不能重发创建。
 已有仓库连接/覆盖需独立选择；覆盖意图绑定原 main SHA，先建立并核对不可覆盖的恢复分支，
-再通过 Git force-with-lease 更新 main。连接不同历史时返回原生 merge 的继续动作。
+再通过 Git force-with-lease 更新 main。连接不同历史时由原生 merge 整合，冲突交给操作者。
 本工具 Schema 2 记录远端模式与获准 SHA，兼容迁移 Schema 1；不复用或修改执行 FSM Schema。
-生成后 SDK、检查、PR 和发布仍走既有消费者流程；使用与恢复见
+`bootstrap_flow.py` 只组织固定的 uv/SDK/Dagger 准备及本次 Git/PR 交付，
+检查执行、依赖调度和缓存由原生 Dagger 负责。Commit、普通 Push 和 Draft PR 单独确认，
+不合并或发布。`bootstrap_common.py` 共享子进程错误和路径边界；不引入通用执行框架。
+本次检查身份绑定实际文件、工具与相关环境，检查后输入变化阻止后续写操作；该事实不作为
+跨调用缓存或远端 CI 放行依据。恢复读取实际 Git/PR 状态，再调用原生准备和检查；
+不重复创建已有 PR，不把报告生成视为检查通过。使用与恢复见
 [新仓接入指南](../../guides/new-repository.md#交互式建仓入口)。
