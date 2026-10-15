@@ -299,6 +299,7 @@ class ChecksAdapter:
 def catalog(root=checks.ROOT, *, runner=None):
     """Register from the original operation set; no duplicate commands or versions."""
     result, adapter = Catalog(), ChecksAdapter(root, runner=runner)
+    result.provider_name = "engineering-ci"
     for name in OPERATIONS:
         output_schema = copy.deepcopy(OUTPUT)
         output_schema["properties"]["name"] = {"const": name, "type": "string"}
@@ -322,6 +323,7 @@ def dagger_catalog(root=checks.ROOT, *, runner=None):
 
     legacy = catalog(root, runner=runner)
     result = Catalog()
+    result.provider_name = "engineering-ci-dagger"
     adapter = ChecksAdapter(root, runner=runner, executor="dagger")
     policy = digest(checks.PIPELINE)
     for name in OPERATIONS:

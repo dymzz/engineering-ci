@@ -234,11 +234,19 @@ def execute(options, catalog, runtime, root, *, operation=None):
         )
     elif options.command == "call":
         if getattr(options, "binding", None):
-            from ..workflow_adapters.binding import call_binding
+            from ..workflow_adapters.binding import (
+                create_bound_execution,
+                resume_binding,
+            )
 
             binding_doc = read(options.binding)
-            called = call_binding(binding_doc, catalog, options.out, root=root)
-            directory = Path(called["execution"])
+            directory = create_bound_execution(
+                binding_doc, catalog, options.out, root=root
+            )
+            operation["execution"] = str(directory)
+            print(f"Execution checkpoint: {directory}", flush=True)
+            print(f'Inspect: engineering-ci workflow status "{directory}"', flush=True)
+            called = resume_binding(directory, catalog)
             operation.update(
                 execution=str(directory),
                 binding=called["binding"],
@@ -252,8 +260,6 @@ def execute(options, catalog, runtime, root, *, operation=None):
                     ["engineering-ci", "workflow", "evidence", str(directory)],
                 ],
             )
-            print(f"Execution checkpoint: {directory}", flush=True)
-            print(f'Inspect: engineering-ci workflow status "{directory}"', flush=True)
             return operation
         if not getattr(options, "name", None):
             raise WorkflowError("Specify either --binding or --name for workflow call")

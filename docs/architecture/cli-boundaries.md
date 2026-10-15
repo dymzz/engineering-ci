@@ -133,3 +133,11 @@ workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不�
 原型 --binding 的兼容处理在 cli/checks_binding.py，只有显式选择该旧参数才加载。
 新调用及 Schema 见[独立生成工作流](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)和
 [操作说明](../../guides/generated-workflows.md)，不改变 scripts 的发布/下载责任。
+
+## 领域工具 Binding 路由
+
+`workflow select --tool` 加载命名的已安装 Provider；`call --binding` 与绑定定义的
+`run` 保留同一选择，`status/resume/evidence` 从冻结 Binding 加载该 Provider。
+旧 Capability 与未绑定 Workflow 继续走原 Catalog。恢复准入在原 Runtime 执行锁内、
+状态写入和工具调用之前完成；检查证据的有效性仍由原 ChecksAdapter 判断。
+详见[统一目录与 Binding](harness-integration/registry.md#持久选择-binding)。

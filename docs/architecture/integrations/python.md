@@ -94,6 +94,8 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Used by:** `src/engineering_ci/workflow_adapters/`, delegating portable Agent Harness
   workflow execution, tracing archive, projection and mining backends
 - **Contract:** [repository split](../harness-integration/repository-split.md),
-  [Harness capabilities](../harness-integration/capabilities.md)
-- **Verify:** `tests/test_harness_boundary.py`, `tests/test_workflow_adapter.py`
-- **Verified:** 2026-10-15 @ `c3e8c74df619`
+  [Harness capabilities](../harness-integration/capabilities.md),
+  [Provider and selection Binding](../harness-integration/registry.md)
+- **Verify:** `tests/test_harness_boundary.py`, `tests/test_workflow_adapter.py`,
+  `tests/test_selection_binding.py`
+- **Verified:** 2026-10-15 @ `8dc51e8c2524`
