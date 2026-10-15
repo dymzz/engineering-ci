@@ -27,13 +27,16 @@ class BootstrapError(Exception):
         self.observed = observed
 
 
-def plan(repository, path):
-    """Accept portable names and an explicit absolute destination."""
+def validate_repository(repository):
+    """Validate GitHub OWNER/name separately from the local project directory."""
     if not re.fullmatch(
         r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[a-z][a-z0-9]*(?:-[a-z0-9]+)*",
         repository,
     ):
-        raise BootstrapError("Use OWNER/lowercase-kebab-name (no URLs or shell text)")
+        raise BootstrapError(
+            "Use GitHub OWNER/lowercase-kebab-name, e.g. dymzz/my-python-app; "
+            "a local filesystem path belongs in the directory prompt"
+        )
     name = repository.split("/")[1]
     if len(name) > 63 or name.upper() in {
         "CON",
@@ -44,6 +47,12 @@ def plan(repository, path):
         *(f"LPT{i}" for i in range(1, 10)),
     }:
         raise BootstrapError("Repository name is not portable across Windows and Linux")
+    return repository
+
+
+def plan(repository, path):
+    """Accept portable names and an explicit absolute destination."""
+    repository = validate_repository(repository)
     path = destination(path)
     return {
         "schema_version": 1,
@@ -60,7 +69,10 @@ def plan(repository, path):
 
 def destination(path):
     """Keep explicit Windows/Linux paths and reject redirected destinations."""
-    path = Path(path).expanduser()
+    value = os.fspath(path).strip()
+    if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+        value = value[1:-1]
+    path = Path(value).expanduser()
     if not path.is_absolute():
         raise BootstrapError(
             "Destination must be an explicit absolute path for this OS"
@@ -68,6 +80,33 @@ def destination(path):
     if any(part.is_symlink() for part in [path, *path.parents]):
         raise BootstrapError("Destination must not be redirected through a symlink")
     return path.resolve()
+
+
+def new_destination(path):
+    """Reject existing projects before asking for GitHub details or creating files."""
+    root = destination(path)
+    if root.exists():
+        raise BootstrapError(
+            "Destination already exists; no files were changed. "
+            "Choose a nonexistent project directory; --resume only accepts this "
+            "tool's .test-tools/bootstrap.json, not an arbitrary existing project"
+        )
+    if not root.parent.is_dir():
+        raise BootstrapError(
+            "Destination parent does not exist; choose or create it explicitly"
+        )
+    return root
+
+
+def read_field(prompt, reader, validate):
+    """Explain invalid interactive input and retry that field without side effects."""
+    while True:
+        try:
+            return validate(reader(prompt))
+        except BootstrapError as error:
+            print(
+                f"输入未通过：{error}\n请重新输入，或按 Ctrl+C 取消。", file=sys.stderr
+            )
 
 
 def owned(root, relative):
@@ -85,6 +124,11 @@ def owned(root, relative):
 def checkpoint(root):
     """Load only this tool's bounded recovery context, never arbitrary commands."""
     path = owned(root, CHECKPOINT)
+    if not path.is_file():
+        raise BootstrapError(
+            "No bootstrap checkpoint at .test-tools/bootstrap.json; "
+            "--resume cannot adopt an existing project"
+        )
     if path.stat().st_size > 8192:
         raise BootstrapError("Bootstrap checkpoint is oversized")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -426,13 +470,24 @@ def ask(prompt):
     return input().strip()
 
 
+def failure_reason(error, step):
+    """Describe the failure category and actual stop point without raw responses."""
+    if isinstance(error, BootstrapError):
+        return str(error)
+    if isinstance(error, EOFError):
+        return f"Interactive input ended at {step}; confirmation was not completed"
+    if isinstance(error, KeyboardInterrupt):
+        return f"Cancelled at {step}; preserve any existing files"
+    if isinstance(error, OSError):
+        return f"Local operation failed at {step} ({type(error).__name__}, errno={error.errno}); preserve the destination"
+    return f"Invalid data or unavailable context at {step} ({type(error).__name__}); preserve the destination"
+
+
 def main(argv=None, *, run=subprocess.run, reader=ask):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="OWNER/lowercase-kebab-name")
-    parser.add_argument("--path", type=Path, help="Explicit absolute new directory")
-    parser.add_argument(
-        "--resume", type=Path, help="Resume only this tool's existing scaffold"
-    )
+    parser.add_argument("--path", help="Explicit absolute new directory")
+    parser.add_argument("--resume", help="Resume only this tool's existing scaffold")
     parser.add_argument(
         "--github",
         action="store_true",
@@ -465,6 +520,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
     context, commands = None, Commands(run)
     try:
         if args.resume:
+            commands.step = "resume_context"
             root = destination(args.resume)
             context = checkpoint(root)
         else:
@@ -472,18 +528,27 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
                 not args.repo or not args.path
             ):
                 parser.error("Non-interactive use requires --repo and --path")
-            repository = args.repo or reader("GitHub 仓库（OWNER/name）: ")
-            target_path = args.path or reader("新仓绝对路径: ")
-            context = plan(repository, target_path)
-            root = Path(context["path"])
-            if root.exists():
-                raise BootstrapError(
-                    "Destination already exists; only explicit --resume of this tool's checkpoint is supported"
+            commands.step = "destination"
+            root = (
+                new_destination(args.path)
+                if args.path is not None
+                else read_field(
+                    "1/2 新仓绝对路径（含新文件夹名，可带引号）: ",
+                    reader,
+                    new_destination,
                 )
-            if not root.parent.is_dir():
-                raise BootstrapError(
-                    "Destination parent does not exist; choose or create it explicitly"
+            )
+            commands.step = "repository_name"
+            repository = (
+                validate_repository(args.repo)
+                if args.repo is not None
+                else read_field(
+                    "2/2 GitHub 仓库名（OWNER/name，例如 dymzz/my-python-app；不是路径）: ",
+                    reader,
+                    validate_repository,
                 )
+            )
+            context = plan(repository, root)
         result = {
             "status": "planned",
             "exit_code": 0,
@@ -497,6 +562,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if not args.yes and not args.github and sys.stdin.isatty():
+            commands.step = "remote_choice"
             args.github = (
                 reader(
                     "同时创建 GitHub 私有仓库并 Push 初始 main？输入 yes 确认 [默认否]: "
@@ -513,12 +579,14 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             + "\n  ".join(result["files"]),
             file=sys.stderr,
         )
+        commands.step = "confirmation"
         if (
             not args.yes
             and reader("确认上述操作请输入 create（其他输入取消）: ") != "create"
         ):
             print(json.dumps({"status": "cancelled", "exit_code": 0}))
             return 0
+        commands.step = "preflight"
         if any(os.environ.get(key) for key in GIT_SELECTORS):
             raise BootstrapError(
                 "Inherited Git repository selectors are set; clear them explicitly first"
@@ -564,9 +632,7 @@ def main(argv=None, *, run=subprocess.run, reader=ask):
             "status": "stopped",
             "exit_code": code,
             "step": getattr(error, "step", None) or commands.step,
-            "reason": str(error)
-            if isinstance(error, BootstrapError)
-            else "Operation interrupted or local context unavailable; preserve the destination",
+            "reason": failure_reason(error, commands.step),
             "context": context,
             "checks": "not_run",
             "pull_request": "not_created",

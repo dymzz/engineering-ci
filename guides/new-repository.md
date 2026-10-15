@@ -16,9 +16,14 @@ Set-Location D:/workspace/engineering-ci
 uv run --locked python -m engineering_ci.tools.bootstrap
 ```
 
-依次输入 `OWNER/name`、新目录的绝对路径，选择是否创建 GitHub **私有仓库**。
+第一步输入新目录的绝对路径，例如 `D:\workspace\my-python-app` 或
+`D:/workspace/my-python-app`；可以粘贴外层带单/双引号的路径，目录名包含空格也支持。
+第二步输入 GitHub 仓库名 `OWNER/name`，例如 `dymzz/my-python-app`，这里不填本地路径。
+然后选择是否创建 GitHub **私有仓库**。
 工具显示固定版本、SHA、文件列表和 Git 操作，最后输入 `create` 才执行。
 仓库名使用小写 kebab-case；目标目录必须不存在，父目录必须已经存在。
+交互输入格式不正确时，工具说明原因并留在当前字段重新输入；Ctrl+C 可取消。
+输入结束时会指出具体停点；最终确认之前不会创建目录或执行 Git/gh。
 已有项目继续按本文的手工接入步骤操作，工具不会自动接管已有目录或远端仓库。
 
 先预览、不调用 Git/gh、不创建文件：

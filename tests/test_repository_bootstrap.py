@@ -62,7 +62,7 @@ def test_interactive_inputs_have_a_final_reviewable_confirmation(
     destination, monkeypatch, capsys
 ):
     monkeypatch.setattr(bootstrap.sys.stdin, "isatty", lambda: True)
-    answers = iter(["dymzz/sample-app", str(destination), "no", "create"])
+    answers = iter([str(destination), "dymzz/sample-app", "no", "create"])
     prompts = []
 
     def reader(prompt):
@@ -72,7 +72,89 @@ def test_interactive_inputs_have_a_final_reviewable_confirmation(
     assert bootstrap.main([], reader=reader) == 0
     result = json.loads(capsys.readouterr().out)
     assert len(prompts) == 4 and result["remote"] == "not_requested"
+    assert "1/2" in prompts[0] and "路径" in prompts[0]
+    assert "2/2" in prompts[1] and "OWNER/name" in prompts[1]
     assert git(destination, "branch", "--show-current") == template.BRANCH
+
+
+@pytest.mark.parametrize("quote", ["", "'", '"'])
+def test_copy_as_path_accepts_quotes_spaces_and_surrounding_whitespace(
+    destination, capsys, quote
+):
+    target = destination.with_name("sample app")
+    value = f"  {quote}{target}{quote}  "
+    code = bootstrap.main(["--repo", "dymzz/sample-app", "--path", value, "--plan"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and Path(result["context"]["path"]) == target.resolve()
+    assert not target.exists()
+
+
+def test_interactive_validation_retries_only_the_wrong_field(
+    destination, monkeypatch, capsys
+):
+    monkeypatch.setattr(bootstrap.sys.stdin, "isatty", lambda: True)
+    answers = iter(
+        [
+            "relative/project",
+            str(destination),
+            str(destination),  # A local path is not a GitHub OWNER/name.
+            "dymzz/sample-app",
+            "no",
+            "create",
+        ]
+    )
+    prompts = []
+
+    def reader(prompt):
+        assert not destination.exists()  # No mutation before final confirmation.
+        prompts.append(prompt)
+        return next(answers)
+
+    assert bootstrap.main([], reader=reader) == 0
+    captured = capsys.readouterr()
+    assert "absolute path" in captured.err and "GitHub OWNER" in captured.err
+    assert ["1/2" in prompt for prompt in prompts[:4]] == [True, True, False, False]
+    assert json.loads(captured.out)["status"] == "generated"
+
+
+@pytest.mark.parametrize(
+    "field", ["destination", "repository_name", "remote_choice", "confirmation"]
+)
+def test_eof_identifies_the_actual_prompt_without_creating_files(
+    destination, monkeypatch, capsys, field
+):
+    monkeypatch.setattr(bootstrap.sys.stdin, "isatty", lambda: True)
+    answers = iter([str(destination), "dymzz/sample-app", "no"])
+
+    def reader(prompt):
+        if (
+            (field == "destination" and "1/2" in prompt)
+            or (field == "repository_name" and "2/2" in prompt)
+            or (field == "remote_choice" and "yes" in prompt)
+            or (field == "confirmation" and "create" in prompt)
+        ):
+            raise EOFError()
+        return next(answers)
+
+    assert bootstrap.main([], reader=reader) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["step"] == field and "Interactive input ended" in result["reason"]
+    assert not destination.exists()
+
+
+def test_quoted_resume_path_uses_original_checkpoint(destination, capsys):
+    assert invoke(destination, capsys)[0] == 0
+    assert bootstrap.main(["--resume", f'"{destination}"', "--yes"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "generated"
+
+
+def test_resume_without_tool_checkpoint_has_actionable_error(destination, capsys):
+    destination.mkdir()
+    assert bootstrap.main(["--resume", str(destination), "--yes"]) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["step"] == "resume_context"
+    assert "No bootstrap checkpoint" in result["reason"]
+    assert not list(destination.iterdir())
 
 
 def test_real_git_scaffold_commits_only_seed_readme(destination, capsys):
