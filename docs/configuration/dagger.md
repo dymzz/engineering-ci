@@ -119,6 +119,14 @@ GitHub HTTPS，配置只含环境变量引用，不保存 token。安装失败�
 
 
 Reusable Workflow 的 Dagger 执行 Step 提供已有的 `ENGINEERING_CI_READ_TOKEN`
-环境 Secret。消费者模块可显式用 `dag.secret("env:ENGINEERING_CI_READ_TOKEN")`
-绑定并委托上述方法，原有 `@check` 和单次报告门禁无需替换。Python 依赖安装仅
-获得 Dagger Secret；后续容器测试不会继承宿主环境。
+环境 Secret。消费者用构造器参数 `git_token: dagger.Secret` 接收凭据，
+并在原生 `dagger.toml` 中配置 `[modules.<name>.settings]` 的
+`gitToken = "env:ENGINEERING_CI_READ_TOKEN"`，由调用方解析地址后注入对象。
+薄适配只把这个 Secret 传给上述方法；`@check` 和单次报告门禁保持原入口。
+
+不要在模块的缓存函数中从 `env:` 创建调用方凭据：beta.16 的真实嵌套调用出现过
+模块环境缺少变量和过期 session client binding。直接的函数 Secret 参数可通过
+CLI `--git-token env:ENGINEERING_CI_READ_TOKEN` 注入。Python 依赖安装仅获得
+Dagger Secret；后续容器测试不会继承宿主环境。
+
+构造器和 settings 的语义见 [Dagger module wiring](https://docs.dagger.io/config/module-wiring/)。
