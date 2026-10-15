@@ -141,3 +141,13 @@ workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不�
 旧 Capability 与未绑定 Workflow 继续走原 Catalog。恢复准入在原 Runtime 执行锁内、
 状态写入和工具调用之前完成；检查证据的有效性仍由原 ChecksAdapter 判断。
 详见[统一目录与 Binding](harness-integration/registry.md#持久选择-binding)。
+
+## 新仓接入工具
+
+`engineering_ci.tools.bootstrap` 是独立的消费者建仓工具，使用原生 Git/gh 与固定正式
+版本模板；不进入 release/download 的 FSM，不增加 scripts 入口或 Pipeline 调度层。
+交互确认或显式参数确定目标及私有远端操作范围；JSON 返回生成事实和未执行状态。
+小型原子恢复上下文只保存本次目标、模板版本/SHA、初始提交和远端身份；原生 Git/API
+核对实际状态。远端创建前保存意图，响应不确定时需要人工确认仓库 ID，不能重发创建。
+生成后 SDK、检查、PR 和发布仍走既有消费者流程；使用与恢复见
+[新仓接入指南](../../guides/new-repository.md#交互式建仓入口)。

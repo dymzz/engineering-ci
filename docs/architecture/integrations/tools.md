@@ -19,20 +19,25 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Pin:** unpinned — host / runner `git`
 - **Used by:** `.dagger/src/engineering_ci/pr_checks.py`, `src/engineering_ci/dagger_checks.py`,
   `src/engineering_ci/release/publishing.py`, `src/engineering_ci/tools/consumer.py` for
-  head commit inspection, diff inspection and release tagging
-- **Contract:** [local checks](../local-checks.md), [release workflow](../release/workflow.md)
-- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+  head commit inspection, diff inspection and release tagging;
+  `src/engineering_ci/tools/bootstrap.py` — consumer initialization and seed-only push
+- **Contract:** [local checks](../local-checks.md), [release workflow](../release/workflow.md),
+  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
+- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`,
+  `tests/test_repository_bootstrap.py` (real temporary Git repositories)
+- **Verified:** 2026-10-15 @ `f600eeaebf74`
 
 ## GitHub CLI (gh)
 
 - **Status:** adopted
 - **Pin:** unpinned — host / runner `gh`
 - **Used by:** `src/engineering_ci/github_cli.py`, `cli/download.py`, `cli/release.py` for
-  GitHub REST API access, release asset uploads and workflow artifact downloads
-- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md)
-- **Verify:** `tests/test_ghwf_cli.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+  GitHub REST API access, release asset uploads and workflow artifact downloads;
+  `src/engineering_ci/tools/bootstrap.py` — explicit private consumer creation and identity checks
+- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md),
+  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
+- **Verify:** `tests/test_ghwf_cli.py`, `tests/test_repository_bootstrap.py` (substituted GitHub calls)
+- **Verified:** 2026-10-15 @ `f600eeaebf74`
 
 ## aria2c
 

@@ -6,6 +6,75 @@
 下面使用 `dymzz/my-python-app` 作为具体示例。执行前把仓库名和路径改成自己的目标；
 这些命令供操作者执行，本说明不会替你创建仓库、修改权限或发布版本。
 
+## 交互式建仓入口
+
+新目录可以使用下面的工具生成第 2～4、6 节的仓库与文件骨架。在 **engineering-ci 的主
+checkout** 执行；新项目使用你输入的绝对路径，不复制本仓的 `.git`、SDK 或虚拟环境：
+
+```powershell
+Set-Location D:/workspace/engineering-ci
+uv run --locked python -m engineering_ci.tools.bootstrap
+```
+
+依次输入 `OWNER/name`、新目录的绝对路径，选择是否创建 GitHub **私有仓库**。
+工具显示固定版本、SHA、文件列表和 Git 操作，最后输入 `create` 才执行。
+仓库名使用小写 kebab-case；目标目录必须不存在，父目录必须已经存在。
+已有项目继续按本文的手工接入步骤操作，工具不会自动接管已有目录或远端仓库。
+
+先预览、不调用 Git/gh、不创建文件：
+
+```powershell
+uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-app --path D:/workspace/my-python-app --plan
+```
+
+Codex 或其他非交互调用可显式确认操作范围：
+
+```powershell
+# 只建立本地仓库和骨架。
+uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-app --path D:/workspace/my-python-app --yes
+
+# 二选一：加 --github 才会创建私有远端并 Push 初始 main。
+uv run --locked python -m engineering_ci.tools.bootstrap --repo dymzz/my-python-app --path D:/workspace/my-python-app --github --yes
+```
+
+`--yes` 只确认已请求的操作，不隐含 `--github`。工具复用当前 gh 认证，不登录、切换账号
+或修改 Workflow 共享权限。请求远端创建时会核对本节下方固定的正式版本、Tag SHA 和私有
+Workflow 共享条件。创建权限或认证失败会停止；不会另选仓库、路径或公开可见性。
+
+成功后，本地 `main` 只有 README 初始提交，当前分支为 `codex/bootstrap-ci`；业务示例和
+CI 文件留作待审查改动。指定 `--github` 时，远端也只收到这一个初始 `main` 提交。
+**不会自动安装 SDK、运行检查、配置 Secret、提交功能代码、创建 PR、合并或发布。**
+继续在新项目执行输出的 `next_actions`，并按第 5～8 节完成 SDK、私有访问、检查和 PR；
+第 6 节核对已经生成的 Workflow 即可。
+两份 lockfile 必须由实际 `uv lock` 生成，工具不会编造锁文件或检查通过记录。
+
+执行结果以一份 JSON 写到 stdout，提示和预览写到 stderr；`--help` 使用标准参数帮助。
+`status=generated` 只说明骨架生成完成，
+`checks=not_run`、`pull_request=not_created` 明确保留未执行事实。结果包含目标上下文、
+固定版本/SHA、初始提交 SHA、恢复文件、保留的用户修改以及带 `cwd` 的后续 argv。
+退出码 0 表示生成/预览完成或主动取消；缺少工具和参数错误为 2，其他预检/恢复阻碍为 3，
+原生命令失败保留其非零退出码，Ctrl+C 为 130。失败不能按生成成功处理。
+
+### 停止后继续
+
+本地上下文原子保存在新项目的 `.test-tools/bootstrap.json`，受文件锁保护，且被 Git 忽略。
+保留该目录，在 engineering-ci checkout 显式恢复，不重复运行新建命令：
+
+```powershell
+uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app
+# 需要创建/确认远端时再加 --github。
+uv run --locked python -m engineering_ci.tools.bootstrap --resume D:/workspace/my-python-app --github
+```
+
+恢复不会覆盖已经存在的文件；与模板不同的文件在 `preserved_changes` 中列出。
+Git 身份未配置、当前分支异常、main 已变化或 origin 不符时，先按返回的具体原因处理。
+工具缺失且目录尚未创建时，输出会保留原来的 `--repo/--path` 新建命令，而非无效恢复命令。
+
+如果远端创建请求发出但响应丢失，结果为 `remote_result=unconfirmed`，不会再次创建。
+先执行返回的只读 `gh api` 命令，核对仓库名称、私有可见性和实际数字 ID；确认是本次目标
+后，在返回的恢复命令中显式提供 `--confirm-remote-id`。该选项仅用于未确认的创建意图，
+不能用来接管任意已有仓库。Push 失败则在确认同一个仓库后恢复；不会强推覆盖远端 main。
+
 ## 1. 确定版本和环境
 
 本例固定已正式发布的 [v0.6.5](https://github.com/dymzz/engineering-ci/releases/tag/v0.6.5)，

@@ -108,6 +108,14 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 Security Workflow 兼容已发布旧 helper 的脚本；默认 ref 和消费者参数不变，
 不在当前 scripts 目录恢复第三个入口，也不会在执行失败后换入口重试。
 consumer 默认只读；修改、提交、推送仍需显式参数。
+
+新仓交互建仓使用 `uv run --locked python -m engineering_ci.tools.bootstrap`，不增加第三个
+scripts 入口。`--plan` 只预览，`--repo OWNER/name --path ABSOLUTE_PATH --yes` 可非交互
+生成本地骨架；显式 `--github` 才创建私有远端并 Push README-only main。
+`--resume ABSOLUTE_PATH` 恢复该工具自己的上下文，保留用户修改；远端创建结果不确定时
+必须核对实际仓库 ID，禁止自动再次创建。SDK、检查和 PR 后续动作与退出码见
+[交互式建仓说明](new-repository.md#交互式建仓入口)。
+
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/architecture/local-checks.md)。
 `checks --executor auto/native/dagger` 选择检查执行环境；默认读取 Pipeline，Windows
