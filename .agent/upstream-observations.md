@@ -45,6 +45,7 @@
 - 场景：本轮 Harness P0 验收，主 checkout 使用 Dagger 1.0.0-beta.16。
 - 实际结果：直接运行 dagger version，未设置 FORCE_DARK_MODE，超过一分钟无输出；已用 Ctrl+C 停止该探测，没有终止正式检查。
 - 当前对照：既有 dagger_checks.prepare 使用 FORCE_DARK_MODE=1 和 30 秒版本探测超时，同一二进制的版本/容器预检及五项 Linux 检查实际通过。
+- 2026-10-15：新的任务观测 Dagger 传输复用现有子进程 FORCE_DARK_MODE=1；该设置仅作用于 Dagger 客户端环境，不修改第三方实现。
 - 2026-10-15 建仓引导：同一终端的 `dagger check --help` 无输出挂起，已核对命令行后仅停止本次探测进程；真实消费者检查未因此认定通过。分类仍为 `unclear`。建仓子进程复用既有 FORCE_DARK_MODE 设置，版本探测限时 30 秒；不改宿主环境或第三方实现。
 - 现有代码已记录 Windows 显示探测风险；本轮没有证明具体根因，也没有改变第三方实现、安装或工作区位置。
 - 未搜索或提交上游 Issue/PR，未扩大为故障调查。
@@ -68,15 +69,11 @@
 
 ## pytest@9.0.3: nested fixture JUnit names inherit the outer repository root
 - Status: likely-local
-- Seen: 2026-10-14 -> 2026-10-14, occurrences: 2
-- Environment: Windows; custom --basetemp under the engineering-ci checkout
-- Evidence: two existing optional-aria2 classification tests returned JUnit names prefixed
-  with .test-deps.registry-delivery.pytest instead of tests.test_optional. Full run:
-  1072 passed, 2 failed, 8 skipped. Re-running the unchanged assertions with the project's
-  ordinary pytest temporary-directory configuration passed both tests.
-- Reasoning: the nested subprocess auto-detected the outer pyproject.toml because the
-  newly chosen fixture directory lived inside that repository. No pytest defect is asserted.
-- Workaround: none in application code; use the project's existing test invocation.
+- Seen: 2026-10-14 -> 2026-10-15, occurrences: 4
+- Environment: Windows; explicit repository-local --basetemp under engineering-ci.
+- Evidence: the earlier full run had 1072 passed, 2 failed and 8 skipped. Two further cases under .test-tools/task-observation/temp inherited the outer pyproject.toml; JUnit test names included the enclosing fixture path instead of tests.test_optional::test_optional. The current full run had 1090 passed, 2 failed, 9 skipped and 103 passed subtests. After the fixture created its own pytest.ini and supplied -c explicitly, both unchanged result assertions passed in 2.26 seconds.
+- Reasoning: local nested-fixture configuration selected the surrounding repository as its root; no pytest defect is asserted.
+- Workaround: none in application or upstream code. The test fixture now declares its own root, preserving the original optional/required-skip assertions and keeping temporary data inside the authorized checkout.
 
 ## vesryn / vesryn-log@0.1.0: archive exception identity changes on storage migration
 - Status: likely-local
@@ -85,6 +82,7 @@
 - Evidence: nine feedback pagination/budget regression cases initially raised vesryn.tracing.store.ArchiveError, which is a different type from the new logging package exception expected by host callers. The same suite passed 82 cases after translation at the host interpretation boundary.
 - Reasoning: a consumer migration between independent exception types, not evidence of an upstream defect. Projection/query interpretation remains in the pinned Harness while physical archives move to the logging package.
 - Workaround: tracing/_compat.py translates legacy interpretation errors without changing status or sqlstate; no third-party package is patched or replaced.
+
 
 ## OSV-Scanner@2.6.0: uv Git entries retain a PyPI output ecosystem
 - Status: observed

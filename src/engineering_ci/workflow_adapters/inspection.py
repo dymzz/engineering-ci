@@ -2,10 +2,11 @@
 
 from uuid import uuid4
 
+from vesryn_tool_runtime import ToolResult, ToolSpec
+from vesryn_tool_runtime.documents import WorkflowError, write
+from vesryn_tool_runtime.schemas import object_schema
+
 from .. import checks
-from ..workflow_core import ToolResult, ToolSpec
-from ..workflow_core.documents import WorkflowError, write
-from ..workflow_core.schemas import object_schema
 from .checks import RESOURCE, ChecksAdapter
 
 SPEC = ToolSpec(

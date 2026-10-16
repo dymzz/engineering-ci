@@ -12,8 +12,8 @@
 完整容器 CI 使用 Dagger；远端 Job 编排使用共享 Workflow；只复用执行状态和恢复时可直接安装 Python 包。
 本仓库 `checks pr` / `release publish` 需要完整 checkout，不应在消费者中复制这套本仓库操作。
 
-下面的安装命令固定已发布基线 `v0.6.5`；`v0.6.7` 的新接口在正式 Release 完成前属于候选，
-只能用经过验证的固定 Commit 验收。通过 PR、构建 wheel 或存在同名元数据都不代表已经发布。
+下面保留已发布基线 `v0.6.5` 的安装示例；单版本私有依赖 Secret 接口已随 `v0.6.7` 发布。
+消费 `v0.6.8` 前应先核验对应正式 Release 和 Manifest。通过 PR、构建 wheel 或存在同名元数据都不代表已经发布。
 不要消费浮动 main。私有仓库需要当前 Git/gh 身份具备 Contents 读取权限；失败时先修复权限，
 不要切换账号、复制源码或把 Token 放进 URL。
 
@@ -27,6 +27,18 @@ python -c "from engineering_ci.execution import ExecutionFSM, StateStore; print(
 Python 包要求 3.14，不自动安装 dev/可选 Harness 或启动数据库。
 已安装的下载入口使用 `python -m engineering_ci.cli download --help`；它只能查询和下载已有 Run。
 完整 Python 状态示例见[执行 API](../docs/architecture/execution/state-and-recovery.md#python-组件消费)。
+
+从 v0.6.8 起，基础 Python 包使用独立的 Tool Runtime 与日志契约包。直接安装时同时提供固定
+依赖来源；Git 包内部的 `tool.uv.sources` 不能替代消费者的顶层来源配置。先核验正式 v0.6.8 Release 后执行：
+
+```powershell
+uv pip install 'git+https://github.com/dymzz/vesryn-log.git@030c5a8edf820588e29f53803b6baaf53b1f6e57' 'git+https://github.com/dymzz/vesryn-tool-runtime.git@b3079be2331a19b9168fa7c8f26607bafc059cec' 'git+https://github.com/dymzz/engineering-ci.git@v0.6.8'
+python -c "from engineering_ci.execution import ExecutionFSM, StateStore; import importlib.util as u; assert u.find_spec('vesryn') is None; print(ExecutionFSM.__name__, StateStore.__name__)"
+```
+
+也可安装经过校验的固定 wheelhouse。完整 checkout 使用仓库自带的三个不可变 `uv sources`
+与 `uv sync --locked --no-default-groups`。认证需要读取 engineering-ci、vesryn-tool-runtime
+和 vesryn-log；启用 Harness 时还需读取 Vesryn。Token 保留在现有认证机制中，不写入依赖 URL。
 
 Dagger 消费者按本文原有步骤安装固定模块并生成 SDK；已有项目直接从第 3 节配置开始。
 Workflow 的 `uses: ...@TAG` 与模块引用应采用同一个已发布版本，原生 `dagger.lock` 一起审查。

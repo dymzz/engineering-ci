@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.7"
+version = "0.6.8"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "vesryn-tool-runtime==0.1.0",
     "transitions==0.9.3",
     "filelock==3.20.3",
     "PyYAML==6.0.3",
@@ -49,8 +50,9 @@ telemetry = [
 ]
 
 [tool.uv.sources]
+vesryn-tool-runtime = { git = "https://github.com/dymzz/vesryn-tool-runtime.git", rev = "b3079be2331a19b9168fa7c8f26607bafc059cec" }
 vesryn-log = { git = "https://github.com/dymzz/vesryn-log.git", rev = "030c5a8edf820588e29f53803b6baaf53b1f6e57" }
-vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "fb984d44f84e1b4674ccb391746da14818de2bd4" }
+vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "26a918f4112e1306e7f7298416ed8dc8c5b0b254" }
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

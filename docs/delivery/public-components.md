@@ -24,8 +24,9 @@ Engineering CI 的公共交付包含以下已有接口。Public 表示本项目�
 Python 包要求普通 CPython >=3.14；Dagger 消费者使用固定 Engine/CLI 1.0.0-beta.16，
 单版本与 Matrix 支持范围以[Matrix 契约](../architecture/testing/python-matrix.md)为准。
 消费者自身 Python 版本由其项目声明，不能把宿主包的 Python 要求误认为所有容器都必须 3.14。
-基础 Python API 不要求安装 Harness、日志 SDK、PostgreSQL 或挖掘库。
-可选 extras 的私有 Git 源需要通过 checkout 中明确的 uv sources 安装，不承诺 PyPI 分发。
+基础 Python API 使用 vesryn-tool-runtime 和 vesryn-log 的轻量公共契约；不要求可选 Harness、
+OpenTelemetry SDK、PostgreSQL 或挖掘库。v0.6.8 起基础依赖也包含私有 Git 组件，
+应使用 checkout 中明确的 uv sources，或按安装说明同时提供固定组件包；不承诺 PyPI 分发。
 
 每个结果仍以其原始执行状态为准。报告、ZIP 下载或 Artifact 上传成功，不表示检查成功。
 未执行、跳过、取消、不可用和 incomplete 不能用于代替必需的通过结果。
@@ -47,3 +48,10 @@ Git 安全策略是显式启用的已知 Commit 漏洞查询，不是私有源�
 
 后续拆分只能从这些已核验的公开契约出发；本次不搬迁 Release、Manifest 或执行实现。
 本轮候选身份、实际消费验证与 C1–C8 结论保存在 PR 交付记录，缺少证据的路径明确记为 NOT VERIFIED。
+
+### v0.6.8 Tool Runtime 集成
+
+通用工具类型、Catalog、Provider 身份、Selection Binding Schema 1 校验与批量调用
+委托给 vesryn-tool-runtime 0.1.0。工程域工作流关联、ChecksAdapter、证据与发布策略保持原有归属。
+旧导入返回相同的权威类型；已有工具描述哈希保持兼容。生产清单的三个私有 Git 来源均使用完整
+Commit，并受现有精确来源与漏洞查询策略约束；没有相邻开发目录依赖。

@@ -11,9 +11,16 @@ from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
-from vesryn.workflow_core import Catalog, Invocation, ToolResult, ToolSpec
-from vesryn.workflow_core.documents import WorkflowError, read
-from vesryn.workflow_core.schemas import RESULT, validate
+from vesryn_tool_runtime import (
+    Catalog,
+    DiscoveryScope,
+    Invocation,
+    ToolResult,
+    ToolRuntime,
+    ToolSpec,
+)
+from vesryn_tool_runtime.documents import WorkflowError, read
+from vesryn_tool_runtime.schemas import RESULT, validate
 
 
 class ProviderAdapter:
@@ -179,10 +186,14 @@ def main(argv=None):
                 execution_id=value["context"]["execution_id"], run_dir=directory
             )
             with redirect_stdout(sys.stderr):
-                results = adapter.invoke(tuple(calls), context)
-            value = {
-                "results": {name: item.document() for name, item in results.items()}
-            }
+                receipt = ToolRuntime(
+                    tools,
+                    scope=DiscoveryScope(
+                        environment="dagger", permissions=frozenset({"check"})
+                    ),
+                ).dispatch(tuple(calls), context)
+                results = receipt.results
+            value = {"results": results}
         print(json.dumps(value))
         return 0
     except (WorkflowError, KeyError, TypeError, OSError):

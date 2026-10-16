@@ -29,20 +29,23 @@ def test_standalone_security_helper_retains_workflow_python_compatibility():
         )
 
 
-def test_core_policy_covers_actual_locked_git_sources():
+def test_core_policy_covers_every_immutable_git_source():
     import tomllib
 
     from engineering_ci import dependency_security as security
 
     root = Path(__file__).resolve().parents[1]
     approved, _ = security.git_policy(root / "config/dependency-security.toml")
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     _, unsupported, _, selected = security.lock_inventory(
-        tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")),
+        project,
         (root / "uv.lock").read_text(encoding="utf-8"),
         ["https://mirrors.aliyun.com/pypi/simple"],
         approved,
     )
+    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
     assert not unsupported
+    assert set(sources) == set(approved)
     assert {item["package"] for item in selected} == set(approved)
 
 

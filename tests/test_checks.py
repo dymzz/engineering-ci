@@ -751,6 +751,8 @@ def test_skipped_tests_do_not_claim_complete_parity(checkout, monkeypatch):
 def test_real_pytest_only_explicit_optional_aria2_skips_do_not_block_core(
     checkout, monkeypatch, required_skip
 ):
+    configuration = checkout / "pytest.ini"
+    configuration.write_text("[pytest]\n", encoding="utf-8")
     sample = checkout / "tests/test_optional.py"
     sample.write_text(
         "import pytest\n"
@@ -773,6 +775,8 @@ def test_real_pytest_only_explicit_optional_aria2_skips_do_not_block_core(
             "-m",
             "pytest",
             "-q",
+            "-c",
+            str(configuration),
             str(sample),
             "--junitxml=core-junit.xml",
         ],

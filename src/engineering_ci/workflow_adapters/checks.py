@@ -6,13 +6,14 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+from vesryn_tool_runtime import Catalog, ToolResult, ToolSpec
+from vesryn_tool_runtime.documents import WorkflowError
+from vesryn_tool_runtime.documents import read as read_document
+from vesryn_tool_runtime.documents import write as write_document
+from vesryn_tool_runtime.schemas import HASH, object_schema
+
 from .. import checks
 from ..check_operations import OPERATIONS
-from ..workflow_core import Catalog, ToolResult, ToolSpec
-from ..workflow_core.documents import WorkflowError
-from ..workflow_core.documents import read as read_document
-from ..workflow_core.documents import write as write_document
-from ..workflow_core.schemas import HASH, object_schema
 
 
 def tool_id(name):
@@ -319,7 +320,7 @@ def dagger_catalog(root=checks.ROOT, *, runner=None):
     """Domain-only Provider; shared tool definitions remain exclusively in Vesryn."""
     from dataclasses import replace
 
-    from vesryn.workflow_core.documents import digest
+    from vesryn_tool_runtime.documents import digest
 
     legacy = catalog(root, runner=runner)
     result = Catalog()

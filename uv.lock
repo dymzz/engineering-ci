@@ -224,13 +224,14 @@ wheels = [
 
 [[package]]
 name = "engineering-ci"
-version = "0.6.7"
+version = "0.6.8"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
     { name = "jsonschema" },
     { name = "pyyaml" },
     { name = "transitions" },
+    { name = "vesryn-tool-runtime" },
 ]
 
 [package.optional-dependencies]
@@ -264,11 +265,12 @@ requires-dist = [
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "transitions", specifier = "==0.9.3" },
-    { name = "vesryn", marker = "extra == 'harness'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
-    { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
-    { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
-    { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn", marker = "extra == 'harness'", git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254" },
+    { name = "vesryn", extras = ["mining"], marker = "extra == 'mining'", git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254" },
+    { name = "vesryn", extras = ["telemetry"], marker = "extra == 'telemetry'", git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254" },
+    { name = "vesryn", extras = ["trace"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254" },
     { name = "vesryn-log", extras = ["archive"], marker = "extra == 'trace'", git = "https://github.com/dymzz/vesryn-log.git?rev=030c5a8edf820588e29f53803b6baaf53b1f6e57" },
+    { name = "vesryn-tool-runtime", git = "https://github.com/dymzz/vesryn-tool-runtime.git?rev=b3079be2331a19b9168fa7c8f26607bafc059cec" },
 ]
 provides-extras = ["harness", "trace", "mining", "telemetry"]
 
@@ -278,7 +280,7 @@ dev = [
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.6" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
-    { name = "vesryn", extras = ["trace", "mining", "telemetry"], git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4" },
+    { name = "vesryn", extras = ["trace", "mining", "telemetry"], git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254" },
     { name = "vesryn-log", git = "https://github.com/dymzz/vesryn-log.git?rev=030c5a8edf820588e29f53803b6baaf53b1f6e57" },
 ]
 
@@ -775,11 +777,13 @@ wheels = [
 [[package]]
 name = "vesryn"
 version = "0.1.0"
-source = { git = "https://github.com/dymzz/vesryn.git?rev=fb984d44f84e1b4674ccb391746da14818de2bd4#fb984d44f84e1b4674ccb391746da14818de2bd4" }
+source = { git = "https://github.com/dymzz/vesryn.git?rev=26a918f4112e1306e7f7298416ed8dc8c5b0b254#26a918f4112e1306e7f7298416ed8dc8c5b0b254" }
 dependencies = [
     { name = "filelock" },
     { name = "jsonschema" },
     { name = "transitions" },
+    { name = "vesryn-log" },
+    { name = "vesryn-tool-runtime" },
 ]
 
 [package.optional-dependencies]
@@ -790,9 +794,8 @@ telemetry = [
     { name = "opentelemetry-exporter-otlp-proto-http" },
 ]
 trace = [
-    { name = "cloudevents" },
     { name = "opentelemetry-sdk" },
-    { name = "psycopg", extra = ["binary"] },
+    { name = "vesryn-log", extra = ["archive"] },
 ]
 
 [[package]]
@@ -807,4 +810,13 @@ dependencies = [
 archive = [
     { name = "cloudevents" },
     { name = "psycopg", extra = ["binary"] },
+]
+
+[[package]]
+name = "vesryn-tool-runtime"
+version = "0.1.0"
+source = { git = "https://github.com/dymzz/vesryn-tool-runtime.git?rev=b3079be2331a19b9168fa7c8f26607bafc059cec#b3079be2331a19b9168fa7c8f26607bafc059cec" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "vesryn-log" },
 ]
