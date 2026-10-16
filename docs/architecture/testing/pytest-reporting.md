@@ -44,12 +44,12 @@ def pytest_results(
     )
 ```
 
-Configure the reusable workflow (example for the forthcoming reviewed release):
+Configure the reusable workflow using the same published version as the module:
 
 ```yaml
 jobs:
   ci:
-    uses: dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@v0.4.3
+    uses: dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@v0.6.5
     with:
       pytest_report_function: pytest-results
       pytest_check: engineering-ci-smoke:test
@@ -135,8 +135,9 @@ Engineering CI uses the opt-in path for its positive fixture. Manual
 without committing intentionally failing tests. Their failed execution/report
 steps still publish summaries and upload available evidence.
 
-Prepare version v0.4.3 in this feature PR using the existing release tool.
-Human review and merge are required before publishing. The existing Release
-Workflow publishes only after successful main CI. Published-version Smoke
-verification and its separate reviewed consumer PR follow the release; no
-consumer PR is merged automatically.
+The original v0.4.3 implementation and fixture evidence are historical.
+Current manual Release validation, original gates and publication rules are
+defined in [the release contract](../release/workflow.md); public delivery
+readiness is defined in [Release Readiness](../../delivery/release-readiness.md).
+PR success alone is not full release validation. Consumer updates use fixed
+published versions; an exported report never grants merge or release permission.

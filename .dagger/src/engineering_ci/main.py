@@ -10,6 +10,7 @@ import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
 from . import pr_checks
+from .python_dependency_auth import prepare_private_git, sync_dependencies as sync_python_dependencies
 
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -89,6 +90,7 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str,
         sync_dependencies: bool = True,
+        git_token: dagger.Secret | None = None,
     ) -> dagger.Container:
         """Create an isolated uv environment for a Python project."""
 
@@ -105,10 +107,11 @@ class EngineeringCi:
             f"python{python_version}-trixie-slim"
         )
 
+        base = dag.container().from_(image)
+        if git_token is not None:
+            base = prepare_private_git(base)
         container = (
-            dag.container()
-            .from_(image)
-            .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
+            base.with_env_variable("UV_NO_MANAGED_PYTHON", "1")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
             .with_mounted_cache(
                 "/root/.cache/engineering-ci-uv",
@@ -133,7 +136,7 @@ class EngineeringCi:
             )
             .with_workdir("/workspace")
         )
-        return (container.with_exec(["python", "/tmp/engineering-ci-uv-sync.py", python_version])
+        return (sync_python_dependencies(container, python_version, git_token)
                 if sync_dependencies else container)
 
     @function
@@ -142,11 +145,12 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str,
         lint_path: str = "src",
+        git_token: dagger.Secret | None = None,
     ) -> str:
         """Run Ruff against a uv-managed Python project."""
 
         return await (
-            self._uv_container(source, python_version)
+            self._uv_container(source, python_version, git_token=git_token)
             .with_exec([
                 "uv", "run", "--no-sync",
                 "ruff", "check", lint_path,
@@ -160,11 +164,12 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str,
         format_path: str = "src",
+        git_token: dagger.Secret | None = None,
     ) -> str:
         """Check Ruff formatting without modifying consumer source files."""
 
         return await (
-            self._uv_container(source, python_version)
+            self._uv_container(source, python_version, git_token=git_token)
             .with_exec([
                 "uv", "run", "--no-sync",
                 "ruff", "format", "--check", format_path,
@@ -183,13 +188,14 @@ class EngineeringCi:
         min_coverage: str = "",
         _prepared_container: dagger.Container | None = None,
         _matrix_runtime: bool = False,
+        git_token: dagger.Secret | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
         if not 1 <= max_failures <= 50:
             raise ValueError("max_failures must be between 1 and 50")
         policy = test_policy(test_path, markers, coverage_source, min_coverage)
-        prepared = _prepared_container if _prepared_container is not None else self._uv_container(source, python_version)
+        prepared = _prepared_container if _prepared_container is not None else self._uv_container(source, python_version, git_token=git_token)
         arguments = pytest_arguments(policy, report_path)
         if _matrix_runtime:
             prepared = prepared.with_new_file("/tmp/engineering-ci-matrix-runtime.py",
@@ -267,6 +273,7 @@ class EngineeringCi:
         self, source: dagger.Directory, python_version: str,
         test_path: str = "tests", max_failures: int = 10,
         markers: str = "", coverage_source: str = "", min_coverage: str = "",
+        git_token: dagger.Secret | None = None,
     ) -> dagger.Directory:
         """Run pytest once; export original status, JSON, XML and summary even on failure.
 
@@ -274,7 +281,7 @@ class EngineeringCi:
         Do not also call python_test on this source.
         """
         execution = await self._run_pytest(source, python_version, test_path, max_failures,
-                                          markers, coverage_source, min_coverage)
+                                          markers, coverage_source, min_coverage, git_token=git_token)
         return self._pytest_bundle(execution)
 
     @function
@@ -286,11 +293,12 @@ class EngineeringCi:
         markers: str = "",
         coverage_source: str = "",
         min_coverage: str = "",
+        git_token: dagger.Secret | None = None,
     ) -> str:
         """Run pytest; fail CI with a bounded JUnit-based failure summary."""
         execution = await self._run_pytest(source, python_version, test_path,
                                           markers=markers, coverage_source=coverage_source,
-                                          min_coverage=min_coverage)
+                                          min_coverage=min_coverage, git_token=git_token)
         return self._require_pytest_success(execution)
 
     @function
@@ -303,6 +311,7 @@ class EngineeringCi:
         markers: str = "",
         coverage_source: str = "",
         min_coverage: str = "",
+        git_token: dagger.Secret | None = None,
     ) -> str:
         """Return JSON summary for both passing and failing pytest runs.
 
@@ -312,7 +321,7 @@ class EngineeringCi:
         """
         execution = await self._run_pytest(
             source, python_version, test_path, max_failures=max_failures,
-            markers=markers, coverage_source=coverage_source, min_coverage=min_coverage,
+            markers=markers, coverage_source=coverage_source, min_coverage=min_coverage, git_token=git_token,
         )
         return json.dumps(execution.report, ensure_ascii=False, sort_keys=True)
 

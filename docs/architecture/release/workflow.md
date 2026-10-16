@@ -2,9 +2,11 @@
 
 当前定位为个人开发：本地获得完整反馈，GitHub 提供快速 PR 检查，
 正式版本由人主动发起完整验收。无需团队审批环境、常驻服务或额外调度器。
-功能 PR 的合并授权与阶段备份遵循[Agent 指令](../../../AGENTS.md#development-and-delivery)；
+功能 PR 的合并授权与阶段备份遵循[Agent 指令](../../../AGENTS.md)；
 人或已授权 Agent 完成审查与合并，本地通过不能替代正式发布验收。
 本文解释发布机制；用户命令、执行顺序和迁移方式统一维护在[使用说明](../../../guides/README.md)。
+正式发布准备还需评估[Release Readiness](../../delivery/release-readiness.md)。
+它定义公共交付验收，不新增 CI Job，不替代以下实际检查、证据或发布授权。
 
 | 触发 | 实际执行 | 发布 |
 |---|---|---|
@@ -172,8 +174,8 @@ GitHub 无法原子绑定 main 比较与 Release 创建。验证完成、创建 
 Smoke / OBridge 的共享 workflow 调用与 Dagger API 不变。
 新增可选 verify_module_lock 默认 false，仅主仓库发布启用。
 安全 helper 默认保留已发布 v0.4.7，本仓库发布显式使用候选 SHA。
-Renovate 仍检测正式 Tag。本轮不新增 Consumer Contract、跨仓库候选检查、
-业务代码修改或额外发布框架；Release 入口本身不执行 PR 合并。
+Renovate 仍检测正式 Tag。公共接口范围和独立消费验收见[交付要求](../../delivery/README.md)；
+Release 入口本身不执行 PR 合并，不由 Readiness 重建另一套发布门禁。
 
 PR 保留 sync-tool-tests、version-metadata、python-ci / checks 三个真实状态名。
 python-ci / dependency-security 移到手动发布；

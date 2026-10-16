@@ -2,16 +2,16 @@
 
 import datetime as dt
 import json
-from pathlib import Path
 import subprocess
 import tomllib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from engineering_ci import dependency_security as security
 
-NOW = dt.datetime(2026, 10, 10, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 10, 10, tzinfo=dt.UTC)
 LOCK = """version = 1
 [[package]]
 name = "sample"
@@ -333,7 +333,7 @@ def test_bundle_keeps_full_result_and_sanitized_diagnostics(project, tmp_path):
     report, raw, _ = run(project, FakeRunner(native("CVE-2026-12345"), code=1))
     output = tmp_path / "bundle"
     security.write_bundle(output, report, raw)
-    assert set(p.name for p in output.iterdir()) == {
+    assert {p.name for p in output.iterdir()} == {
         "report.json",
         "summary.md",
         "scanner.json",

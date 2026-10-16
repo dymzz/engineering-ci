@@ -53,6 +53,11 @@ on:
         type: string
         required: false
         default: ''
+      dependency_security_git_policy:
+        description: 'Repository-relative exact Git repository/commit advisory scan policy; empty rejects Git sources'
+        type: string
+        required: false
+        default: ''
       dependency_security_source_ref:
         description: 'Pinned engineering-ci helper ref; candidate SHA for pre-release validation'
         type: string
@@ -168,6 +173,7 @@ jobs:
         shell: bash
         env:
           DAGGER_ENGINE: container://dagger-engine
+          ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
           PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
@@ -407,6 +413,7 @@ jobs:
           SECURITY_PROJECT: ${{ inputs.dependency_security_project }}
           SECURITY_PUBLIC_INDEXES: ${{ inputs.dependency_security_public_indexes }}
           SECURITY_EXCEPTIONS: ${{ inputs.dependency_security_exceptions }}
+          SECURITY_GIT_POLICY: ${{ inputs.dependency_security_git_policy }}
         run: |
           set -euo pipefail
           mv -- .engineering-ci-security "$RUNNER_TEMP/engineering-ci-security"
@@ -417,6 +424,9 @@ jobs:
                 --workspace-root "$GITHUB_WORKSPACE")
           if [[ -n "$SECURITY_EXCEPTIONS" ]]; then
             args+=(--exceptions "$GITHUB_WORKSPACE/$SECURITY_EXCEPTIONS")
+          fi
+          if [[ -n "$SECURITY_GIT_POLICY" ]]; then
+            args+=(--git-policy "$GITHUB_WORKSPACE/$SECURITY_GIT_POLICY")
           fi
           while IFS= read -r index; do
             if [[ -n "$index" ]]; then

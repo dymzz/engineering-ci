@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dymzz/engineering-ci/blob/main/docs/release-manifest.schema.json",
+  "$id": "https://github.com/dymzz/engineering-ci/blob/main/docs/architecture/release/manifest.schema.json",
   "title": "Engineering CI release evidence v1",
   "type": "object",
   "additionalProperties": false,

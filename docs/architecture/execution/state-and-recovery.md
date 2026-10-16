@@ -43,6 +43,45 @@ aria2 中断时的精确已完成字节数为 `None`，进度交给原生 `.aria
 native 报告实际流式写入的字节数，但未完成文件下次从头下载；已校验文件不重复下载。
 Git、Git LFS、Docker / Dagger 将来可按此边界扩展；本轮没有空壳适配器。
 
+## Python 组件消费
+
+普通 Python >=3.14 环境可以安装固定版本包，直接导入 `engineering_ci.execution`
+公开的四个组件；安装方式见[消费者接入](../../../guides/new-repository.md#选择公共组件与固定版本)。
+模型位于 `engineering_ci.execution.models`，不依赖工作区配置、Vesryn 或 PostgreSQL。
+
+```python
+from pathlib import Path
+from engineering_ci.execution import ExecutionFSM, StateStore
+from engineering_ci.execution.models import (
+    CollectionIdentity, DispatchIdentity, TaskRecord,
+)
+
+record = TaskRecord(
+    DispatchIdentity.create("example/consumer", "ci.yml", "main", {}),
+    CollectionIdentity.create(Path("outputs"), no_artifacts=True),
+)
+record = ExecutionFSM().advance(record, "attach_run", run_id=42)
+store = StateStore(Path(".artifacts/execution.json"))
+with store.lock():
+    store.save(record)
+    restored = store.load()
+assert restored.run_id == 42
+```
+
+这里 42 是离线状态示例，不执行 API 或声称真实 Run 存在。
+`advance(record, event, **updates)` 返回新 TaskRecord，非法事件或字段抛 `InvalidTransition`。
+`StateStore(path, lock_timeout=0)` 的 load/save 读写 JSON，调用方须用 lock 包住整个读改写；
+锁冲突或无效文件抛 `ExecutionError`，不会自动另建任务或覆盖损坏状态。
+
+`ExecutionCoordinator(store, client, collector, identity, collection, inputs, *, timeout=2700, interval=10)`
+协调既有协议；`execute(resume=None, new_run=False, restart_finished=False, legacy_paths=())`
+返回 `ExecutionResult`（record、exit_code），有真实 Dispatch/查询/文件收集副作用。
+client 提供校验、单次 Dispatch、Run 查询/等待，collector 提供 intact/collect；
+使用现有 GitHubActionsClient/ArtifactCollector 时需要 gh 认证、HTTP 网络及明确输出目录。
+自定义协议替身须保持同一失败与恢复契约，不由 Coordinator 再实现传输。
+UNKNOWN 不自动 POST；远端 failure 即使收集完成仍返回非零。
+这些 API 的文件格式和合法状态见下文；未列出的 CLI/Release 内部助手不是安装包稳定 API。
+
 ## FSM 转换与不变量
 
 `transitions.Machine(auto_transitions=False)` 禁止 `to_STATE` 和未定义事件。

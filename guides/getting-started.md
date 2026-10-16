@@ -37,7 +37,7 @@ uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json
 
 完整开发测试需要私有 Vesryn 依赖时，执行器读取现有 gh 登录凭据（或已设置的
 `ENGINEERING_CI_READ_TOKEN`），通过 Dagger Secret 仅传给 `gh auth setup-git` / `uv sync`。
-只接受配置中固定 Commit 的 `dymzz/vesryn` 来源；安装完成后用 SDK 移除 Secret，并在容器中
+只接受配置中固定 Commit 的 `dymzz/vesryn` 与 `dymzz/vesryn-log` 来源；安装完成后用 SDK 移除 Secret，并在容器中
 确认凭据变量不存在，再执行预检与测试。Token 不进入命令参数值、文件或结果 JSON。
 Actions 对应使用已配置的同名 Secret，仅供依赖安装步骤。
 

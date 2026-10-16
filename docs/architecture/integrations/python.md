@@ -53,7 +53,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Pin:** `PyYAML==6.0.3` — `pyproject.toml` (`dependencies`)
 - **Used by:** `src/engineering_ci/workflow_consistency.py` — customized `yaml.SafeLoader`
   preventing automatic boolean type coercion
-- **Contract:** [.github/AGENTS.md](../../../.github/AGENTS.md)
+- **Contract:** [Workflow contracts](../release/workflow.md)
 - **Verify:** `tests/test_workflow_consistency.py`
 - **Verified:** 2026-10-14 @ `963d809a295f`
 
