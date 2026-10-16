@@ -43,7 +43,7 @@ Job DAG、权限、条件继续由 YAML 声明，不由 TOML 动态调度。
 只有本项目四处一致的版本值变化时，保留同环境的 Ruff / pytest 结果，重新核验版本和锁文件。
 缺少当前版本证据、源码 / 依赖已变化或结果不完整时仍阻断准入；远程门禁继续绑定实际提交。
 
-完整检查需 Docker 与 Dagger CLI 1.0.0-beta.16（匹配 dagger.json 和 Workflow Engine）。
+完整检查需 Docker 与 Dagger CLI 1.0.0-beta.16（匹配 dagger-module.toml 和 Workflow Engine）。
 安装及 SDK 生成方式见 [Dagger 配置](../../configuration/dagger.md)。
 Release Workflow 的 `dagger check` 已包含 quality 和 matrix fixture。
 
@@ -55,11 +55,14 @@ Python 3.12、3.13、3.14 及既有负向场景。它们验证模块能力，不
 真实项目安全检查独立于锁一致性：
 
 ```sh
-uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --out .test-tools/security --cache .test-tools/security-bin
+uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --git-policy config/dependency-security.toml --out .test-tools/security --cache .test-tools/security-bin
 ```
 
 发布扫描真实根 uv.lock 的公共 PyPI 锁定依赖（含 dev / 传递依赖），
-不使用 dependency-security fixture。Aliyun 显式声明为公共 PyPI 镜像。
+并按 config/dependency-security.toml 查询明确批准的 Git 仓库与完整 Commit；
+未批准来源、身份不一致或查询覆盖缺失仍阻断发布。来源完整性与已知漏洞查询的区别见
+[依赖安全契约](../dependency-security.md)。不使用 dependency-security fixture。
+Aliyun 显式声明为公共 PyPI 镜像。
 enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不自动增加豁免或改锁。
 本轮真实扫描发现 pytest 8.4.2 的 tmpdir 漏洞，因此将根测试依赖升级到
 最小修复版本 9.0.3。

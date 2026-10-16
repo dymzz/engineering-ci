@@ -349,12 +349,14 @@ uv run --locked python -m engineering_ci.tools.workflow_e2e --allow-dispatch --r
        --workflow build.yml --ref main --new-run --save-log
 ```
 
-待人工核对：实际 gh 认证、仓库 Actions 权限、官方 Dispatch 返回 Run ID、日志 ZIP
-的 attempt 地址、真实 Artifact Digest、企业代理 / TLS、当前消费者输出目录及参数。
+真实验收须核对 gh 认证、仓库 Actions 权限、官方 Dispatch 返回 Run ID、日志 ZIP
+的 attempt 地址、实际 Artifact Digest 及消费者输出目录。独立安装包下载已有失败 Run
+的验证只证明该查询与收集路径，不能替代 Dispatch、企业代理 / TLS 等其他路径验收。
+当前候选的实际消费证据与未验证范围保存在对应 PR 交付记录；初次实现的历史结果见上文。
 
 ## 限制与后续事项
 
-- 本轮没有真实 GitHub E2E，运行机器未配置 gh。模拟测试不能替代真实认证和 API 行为验收。
+- 初次实现时未运行真实 GitHub E2E，该历史结果不代表当前环境。模拟测试仍不能替代真实认证和 API 行为验收。
 - 仅支持 github.com，与原 origin 规则一致；GHES 主机 / 自定义 gh host 尚未实现。
 - Dispatch 本身没有可依赖的幂等键。UNKNOWN 必须人工核验；--new-run 的明确覆盖可能产生重复 Run。
 - `--show-state` 可以创建锁和迁移文件，仍不产生远端请求。
