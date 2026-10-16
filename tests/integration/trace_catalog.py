@@ -226,17 +226,23 @@ def test_existing_files_register_without_projection_or_analysis_execution(
 def test_committed_registration_with_simulated_lost_confirmation_is_queryable(
     archive, tmp_path, monkeypatch, capsys
 ):
+    # Projection still runs through Vesryn; inject at its actual persistence boundary.
+    from vesryn.tracing.catalog import TraceCatalog as AnalysisCatalog
+    from vesryn.tracing.store import ArchiveError as AnalysisArchiveError
+
     _, captured, _ = projected(archive, tmp_path)
     flags = config_file(archive, tmp_path)
-    save = TraceCatalog.save
+    save = AnalysisCatalog.save
 
     def lost_confirmation(self, record, **kwargs):
         save(
             self, record, **kwargs
         )  # Actual PostgreSQL commit, simulated client error.
-        raise ArchiveError("network_error", "Registration acknowledgement unavailable")
+        raise AnalysisArchiveError(
+            "network_error", "Registration acknowledgement unavailable"
+        )
 
-    monkeypatch.setattr(TraceCatalog, "save", lost_confirmation)
+    monkeypatch.setattr(AnalysisCatalog, "save", lost_confirmation)
     output = tmp_path / "not-exported.json"
     assert (
         trace.main(

@@ -353,3 +353,30 @@ finally 仅移除本轮创建的探针；恢复原正向输入后，原 pr-check
 本轮绑定使用候选的完整元数据及 actual projection/model 核验，不使用上述宽松结果作为执行准入，
 不调用 comparison，也不将它的等价结论作为检查通过。上述问题保留为后续输入契约加固事项，
 不记成 Rust4PM/OTel 的上游问题或已完成修复。
+
+## v0.6.7：vesryn-log 迁移后的真实 PostgreSQL 验收
+
+2026-10-16 在原 checkout、普通 CPython 3.14.3 和宿主 PostgreSQL 17.9 上验收。
+连接仅继承 `VESRYN_DATABASE`，未保存连接值；只读预检确认 fsync 与
+synchronous_commit 为 on。使用已安装的 vesryn-log 0.1.0，固定提交
+`030c5a8edf820588e29f53803b6baaf53b1f6e57`。
+
+```powershell
+uv run --locked pytest -q tests/integration/trace_store.py tests/integration/trace_catalog.py tests/integration/trace_logging.py tests/integration/workflow_feedback.py tests/integration/workflow_feedback_query.py tests/integration/workflow_feedback_summary.py tests/integration/workflow_feedback_review.py --junitxml=.test-tools/vesryn-log-postgres/postgres-final-junit.xml
+```
+
+最终 **41 passed，0 skipped**。各测试创建独立随机 schema，清理前检查组件归属；
+不升级或修改正式 `engineering_ci_trace` 归档，不修改服务器或账号配置。
+
+- 实际数据库事务覆盖初始化幂等、原字节与 CloudEvents、重复/并发导入、游标冲突、
+  截断后续写、不可变快照、损坏拒绝、提交前后强杀及反馈读回。
+- 独立子进程禁止导入 `vesryn`，实际调用基础 trace CLI 完成 status、init、inspect、
+  import、sources、snapshots、回放及拒绝覆盖；回放与选定的合成协议样本逐字节一致。
+  不读取或导入新的用户会话记录。
+- 首轮为 39 passed、1 failed：旧响应丢失测试错误地注入新的日志 Catalog，未命中
+  仍由 Vesryn 处理的 Projection 路径。改为实际分析存储边界后，真实提交成功、
+  模拟响应丢失，入口仍返回非零、保留 unconfirmed，随后查询可恢复；原断言未放宽。
+  响应丢失为故障注入，不声称真实网络曾中断。
+
+本地原始 JUnit 与脱敏验收记录保存在 `.test-tools/vesryn-log-postgres/`。
+该验收不替代当前提交的 PR CI 或正式 Release 全量门禁，也未验证服务器掉电和备份恢复。
