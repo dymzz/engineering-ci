@@ -3,11 +3,46 @@
 import copy
 from pathlib import Path
 
-from vesryn.workflow_core import DiscoveryScope, Runtime, generate
+from vesryn.workflow_core import DiscoveryScope, Runtime, generate, load_generation
 from vesryn.workflow_core.documents import WorkflowError, digest, read, write
 from vesryn.workflow_core.schemas import validate
 
 from .contracts import SELECTION_BINDING
+
+HOST_SCOPE = DiscoveryScope(
+    repository="engineering-ci", environment="dagger", permissions=frozenset({"check"})
+)
+
+
+def binding_catalog(provider, root):
+    """Load the explicit installed Provider through Vesryn's existing registry."""
+    from vesryn.registry import provider as load_provider
+
+    tools = load_provider(provider, root)
+    tools.provider_name = provider
+    return tools
+
+
+def binding_document(path):
+    """Reject altered metadata before loading its named Provider."""
+    binding = read(path)
+    _verify_document(binding)
+    return binding
+
+
+def _verify_document(binding):
+    validate(binding, SELECTION_BINDING, label="selection binding")
+    if binding["binding_id"] != digest(canonical_binding(binding)):
+        raise WorkflowError(
+            "Selection binding integrity check failed (tampered binding)"
+        )
+
+
+def _provider_matches(provider, catalog):
+    if provider != getattr(catalog, "provider_name", None):
+        raise WorkflowError(
+            "Selection binding Provider does not match the loaded catalog"
+        )
 
 
 def canonical_binding(binding):
@@ -26,16 +61,14 @@ def create_binding(
     root=None,
 ):
     """Freeze an explicit tool selection from Registry into an immutable binding document."""
+    root = Path(root).resolve() if root is not None else None
     parameters = {} if parameters is None else copy.deepcopy(parameters)
-    effective_scope = scope or DiscoveryScope(
-        repository="engineering-ci",
-        environment="dagger",
-        permissions=frozenset(["check"]),
-    )
+    effective_scope = scope or HOST_SCOPE
+    _provider_matches(provider, catalog)
     spec, _ = catalog.resolve(tool_id, scope=effective_scope)
     validate(parameters, spec.input_schema, label="tool parameters")
 
-    out_dir = Path(out_dir or ".test-tools/workflow-bindings").resolve()
+    out_dir = _path(out_dir or ".test-tools/workflow-bindings", root)
     step_id = tool_id.split(".")[-1]
     recipe = {
         "schema_version": 1,
@@ -83,36 +116,16 @@ def create_binding(
 
 def verify_binding(binding, catalog, *, current_scope=None):
     """Verify selection binding integrity and reject stale or altered contracts."""
-    validate(binding, SELECTION_BINDING, label="selection binding")
-    expected_id = digest(canonical_binding(binding))
-    if binding["binding_id"] != expected_id:
-        raise WorkflowError(
-            "Selection binding integrity check failed (tampered binding)"
-        )
-
-    if current_scope is not None:
-        if (
-            current_scope.repository
-            and binding["scope"]["repository"]
-            and binding["scope"]["repository"] != current_scope.repository
-        ):
-            raise WorkflowError(
-                f"Selection binding repository scope mismatch: expected {current_scope.repository}, got {binding['scope']['repository']}"
-            )
-        if (
-            current_scope.environment
-            and binding["scope"]["environment"]
-            and binding["scope"]["environment"] != current_scope.environment
-        ):
-            raise WorkflowError(
-                f"Selection binding environment scope mismatch: expected {current_scope.environment}, got {binding['scope']['environment']}"
-            )
-        if current_scope.permissions is not None:
-            bound_perms = set(binding["scope"]["permissions"])
-            if not bound_perms.issubset(current_scope.permissions):
-                raise WorkflowError(
-                    f"Selection binding permission scope mismatch: {bound_perms} not in {current_scope.permissions}"
-                )
+    _verify_document(binding)
+    current_scope = current_scope or HOST_SCOPE
+    for key in ("repository", "environment"):
+        current = getattr(current_scope, key)
+        if current and binding["scope"][key] != current:
+            raise WorkflowError(f"Selection binding {key} scope mismatch")
+    if current_scope.permissions is not None:
+        bound_perms = set(binding["scope"]["permissions"])
+        if not bound_perms.issubset(current_scope.permissions):
+            raise WorkflowError("Selection binding permission scope mismatch")
 
     spec, adapter = catalog.resolve(binding["tool_id"], scope=current_scope)
 
@@ -127,32 +140,92 @@ def verify_binding(binding, catalog, *, current_scope=None):
             "Tool contract sha256 changed; refuse to use stale binding; do not auto-select latest"
         )
 
+    _provider_matches(binding["provider"], catalog)
+    bound_scope = DiscoveryScope(
+        repository=binding["scope"]["repository"],
+        environment=binding["scope"]["environment"],
+        permissions=frozenset(binding["scope"]["permissions"]),
+    )
+    catalog.resolve(binding["tool_id"], scope=bound_scope)
+    summary = binding["contract_summary"]
+    if any(
+        summary[key] != spec.summary()[key]
+        for key in ("tool_id", "effect", "contract_version", "contract_sha256")
+    ):
+        raise WorkflowError("Selection binding contract summary differs from its tool")
     validate(binding["parameters"], spec.input_schema, label="tool parameters")
     return spec, adapter
 
 
-def call_binding(binding, catalog, runs_dir, *, reuse_from=None, root=None):
-    """Execute bound tool through Dagger execution graph and correlate raw evidence."""
-    verify_binding(binding, catalog)
+def _path(path, root=None):
+    path = Path(path)
+    if root:
+        from .capabilities import inside
 
-    workflow_path = binding["workflow"]["workflow_path"]
-    resolved_workflow = (
-        (Path(root) / workflow_path).resolve()
-        if root and not Path(workflow_path).is_absolute()
-        else Path(workflow_path).resolve()
+        return inside(path, root)
+    return path.resolve()
+
+
+def verify_workflow(binding, catalog, path=None, *, root=None, current_scope=None):
+    """Admit the actual generation, including its sole tool and literal parameters."""
+    verify_binding(binding, catalog, current_scope=current_scope)
+    path = _path(path or binding["workflow"]["workflow_path"], root)
+    value, _, _ = load_generation(path, catalog)
+    if any(
+        value[key] != binding["workflow"][key]
+        for key in ("definition_id", "generation_id")
+    ):
+        raise WorkflowError("Workflow identity differs from the selection binding")
+    expected = {
+        "id": binding["tool_id"].split(".")[-1],
+        "tool": binding["tool_id"],
+        "inputs": binding["parameters"],
+        "contract_version": binding["version"],
+        "contract_sha256": binding["contract_sha256"],
+        "needs": [],
+        "when": "success",
+        "required": True,
+    }
+    if value["steps"] != [expected]:
+        raise WorkflowError(
+            "Workflow steps differ from the selected tool and parameters"
+        )
+    return path
+
+
+class BindingRuntime(Runtime):
+    """Use Runtime's existing execution lock and recheck admission before mutation."""
+
+    def __init__(self, catalog, *, current_scope=None):
+        super().__init__(catalog)
+        self.current_scope = current_scope
+
+    def status(self, directory):
+        directory = Path(directory).resolve()
+        binding = binding_document(directory / "binding.json")
+        verify_workflow(
+            binding,
+            self.catalog,
+            directory / "workflow.json",
+            current_scope=self.current_scope,
+        )
+        state = super().status(directory)
+        if binding.get("execution_id") != state["execution_id"]:
+            raise WorkflowError("Execution ID mismatch between state and binding")
+        return state
+
+
+def create_bound_execution(
+    binding, catalog, runs_dir, *, reuse_from=None, root=None, current_scope=None
+):
+    """Freeze an admitted selection; no tool executes while creating the checkpoint."""
+    workflow = verify_workflow(binding, catalog, root=root, current_scope=current_scope)
+    runtime = BindingRuntime(catalog, current_scope=current_scope)
+    execution_dir = runtime.create(
+        workflow,
+        _path(runs_dir, root),
+        reuse_from=_path(reuse_from, root) if reuse_from else None,
     )
-
-    runs_dir = Path(runs_dir).resolve()
-    reuse_dir = (
-        (Path(root) / reuse_from).resolve()
-        if root and reuse_from and not Path(reuse_from).is_absolute()
-        else Path(reuse_from).resolve()
-        if reuse_from
-        else None
-    )
-
-    runtime = Runtime(catalog)
-    execution_dir = runtime.create(resolved_workflow, runs_dir, reuse_from=reuse_dir)
 
     frozen_binding = copy.deepcopy(binding)
     frozen_binding["execution_id"] = execution_dir.name
@@ -160,56 +233,18 @@ def call_binding(binding, catalog, runs_dir, *, reuse_from=None, root=None):
     validate(frozen_binding, SELECTION_BINDING, label="selection binding")
     write(execution_dir / "binding.json", frozen_binding)
 
-    state = runtime.resume(execution_dir)
-
-    step_results = {}
-    for step_id, step_info in state["steps"].items():
-        res = step_info.get("result", {})
-        outputs = res.get("outputs", {})
-        step_results[step_id] = {
-            "status": step_info["status"],
-            "exit_code": res.get("exit_code"),
-            "executed": res.get("executed", False),
-            "reused": res.get("reused", False),
-            "report": outputs.get("report"),
-            "evidence": outputs.get("evidence", []),
-        }
-
-    return {
-        "execution": str(execution_dir.resolve()),
-        "execution_id": execution_dir.name,
-        "binding": frozen_binding,
-        "state": state,
-        "status": state["status"],
-        "exit_code": state["exit_code"],
-        "step_results": step_results,
-    }
+    return execution_dir
 
 
 def restore_binding(execution_dir, catalog, *, current_scope=None):
     """Restore execution checkpoint and verify bound tool contract explicitly."""
     execution_dir = Path(execution_dir).resolve()
-    binding_path = execution_dir / "binding.json"
-    if not binding_path.is_file():
-        raise WorkflowError("Execution directory does not contain selection binding")
+    state = BindingRuntime(catalog, current_scope=current_scope).status(execution_dir)
+    return _result(execution_dir, state)
 
-    binding = read(binding_path)
-    verify_binding(binding, catalog, current_scope=current_scope)
 
-    state_path = execution_dir / "state.json"
-    if not state_path.is_file():
-        raise WorkflowError("Execution state is unavailable")
-    state = read(state_path)
-
-    if (
-        binding.get("execution_id")
-        and state.get("execution_id")
-        and state["execution_id"] != binding["execution_id"]
-    ):
-        raise WorkflowError("Execution ID mismatch between state and binding")
-    if state.get("definition_id") != binding["workflow"]["definition_id"]:
-        raise WorkflowError("Workflow definition ID mismatch between state and binding")
-
+def _result(execution_dir, state):
+    binding = binding_document(execution_dir / "binding.json")
     step_results = {}
     for step_id, step_info in state["steps"].items():
         res = step_info.get("result", {})
@@ -236,24 +271,22 @@ def restore_binding(execution_dir, catalog, *, current_scope=None):
 
 def resume_binding(execution_dir, catalog, *, current_scope=None):
     """Resume execution after verification; preserves failure and reuse without duplicating pytest."""
-    restored = restore_binding(execution_dir, catalog, current_scope=current_scope)
-    runtime = Runtime(catalog)
+    execution_dir = Path(execution_dir).resolve()
+    runtime = BindingRuntime(catalog, current_scope=current_scope)
     state = runtime.resume(execution_dir)
-    restored["state"] = state
-    restored["status"] = state["status"]
-    restored["exit_code"] = state["exit_code"]
+    return _result(execution_dir, state)
 
-    step_results = {}
-    for step_id, step_info in state["steps"].items():
-        res = step_info.get("result", {})
-        outputs = res.get("outputs", {})
-        step_results[step_id] = {
-            "status": step_info["status"],
-            "exit_code": res.get("exit_code"),
-            "executed": res.get("executed", False),
-            "reused": res.get("reused", False),
-            "report": outputs.get("report"),
-            "evidence": outputs.get("evidence", []),
-        }
-    restored["step_results"] = step_results
-    return restored
+
+def call_binding(
+    binding, catalog, runs_dir, *, reuse_from=None, root=None, current_scope=None
+):
+    """Execute only the admitted selection, retaining the original result and evidence."""
+    directory = create_bound_execution(
+        binding,
+        catalog,
+        runs_dir,
+        reuse_from=reuse_from,
+        root=root,
+        current_scope=current_scope,
+    )
+    return resume_binding(directory, catalog, current_scope=current_scope)

@@ -24,7 +24,8 @@ Dagger、GitHub Actions 和本地 CLI 调用。主要职责是可靠执行检查
 | 可复用容器 CI | `.dagger/src/engineering_ci/` | pytest / 质量 / Matrix 能力、单次执行报告与容器检查；不持有完整开发生命周期 |
 | GitHub 远端编排 | `.github/workflows/` | PR CI、复用 Workflow 与手动 Release 的 DAG / 权限 / 门禁 |
 | CI Harness 适配与领域准入 | `src/engineering_ci/workflow_adapters/` | 注册检查工具、复用证据、批准 / 反馈 / 再审查策略 |
-| 既有 Harness 路径兼容 | `workflow_core/`、`tracing/`、通用 `mining/` 与部分 CLI | 委托固定 Vesryn；不是第二份通用核心实现。CI 绑定仍由宿主维护 |
+| 既有 Harness 路径兼容 | `workflow_core/`、Projection、通用 `mining/` 与部分 CLI | 委托固定 Vesryn；CI 绑定仍由宿主维护 |
+| 事件记录与原始归档 | `task_observation.py`、`tracing/` 的 Store/配置/来源/Catalog | 物理写入委托 vesryn-log；原执行事实与领域准入由宿主维护 |
 
 版本一致性和锁文件完整性、已知漏洞扫描是不同检查。锁定私有 Git Commit 不代表当前安全扫描器
 已覆盖该来源；现有漏洞扫描缺口不会因分仓、生成报告或修改 Agent 指令而成为通过。
@@ -36,6 +37,9 @@ Dagger、GitHub Actions 和本地 CLI 调用。主要职责是可靠执行检查
   Release 交付入口停在审查合并；已授权 Agent 可另行使用 gh 合并。正式 Release 仍由人主动请求。
   Download 只选择 / 恢复 / 收集已有 Run，不 Dispatch。操作见[常用指南](../../guides/common-tasks.md)。
 - GitHub Actions 使用 `python -m engineering_ci.workflow_actions`，不把内部业务助手放进 `scripts/`。
+- 执行型任务入口默认包装现有 subprocess 边界，使用安装后的 vesryn-log API 记录事实，
+  不再经由 Vesryn/Dagger 投递默认日志。跨仓工具仍遵守 Dagger 与观测边界。
+  范围与读取方式见[任务采集](cli-boundaries.md#默认任务采集与日志记录)。
 - `config/pipeline.toml` 声明已有注册检查的参数、工具链、范围、Profile 与交付绑定；
   YAML 继续决定同一次 Workflow 的静态 Job DAG。不能靠 TOML 授权或绕过发布条件。
 - 下载后端和本机环境设置见[配置入口](../configuration/README.md)。机器专用配置不提交。

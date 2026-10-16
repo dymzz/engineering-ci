@@ -2,6 +2,9 @@
 
 安装本地环境并查看两个用户入口。实际操作见[常用操作](common-tasks.md)，命令与输出见[CLI 参考](cli-reference.md)。
 
+如果是在另一个新 Python 仓库使用共享 CI，直接从[新仓库接入](new-repository.md)
+开始；本页下面的安装和 `checks pr` 面向 engineering-ci 自身的主 checkout。
+
 ## 环境与目录
 
 在 `D:\workspace\engineering-ci` 使用当前分支开发，不需要额外 worktree。

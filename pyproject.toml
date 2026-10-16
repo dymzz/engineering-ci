@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.6"
+version = "0.6.7"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -16,6 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "vesryn-log==0.1.0",
     "vesryn[trace,mining,telemetry]==0.1.0",
     "cloudevents==2.2.0",
     "psycopg[binary]==3.3.6",
@@ -37,6 +38,7 @@ engineering-ci-dagger = "engineering_ci.workflow_adapters.provider:catalog"
 [project.optional-dependencies]
 harness = ["vesryn==0.1.0"]
 trace = [
+    "vesryn-log[archive]==0.1.0",
     "vesryn[trace]==0.1.0",
 ]
 mining = [
@@ -47,6 +49,7 @@ telemetry = [
 ]
 
 [tool.uv.sources]
+vesryn-log = { git = "https://github.com/dymzz/vesryn-log.git", rev = "030c5a8edf820588e29f53803b6baaf53b1f6e57" }
 vesryn = { git = "https://github.com/dymzz/vesryn.git", rev = "fb984d44f84e1b4674ccb391746da14818de2bd4" }
 
 [build-system]

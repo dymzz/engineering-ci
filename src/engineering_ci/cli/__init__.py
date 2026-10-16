@@ -43,10 +43,14 @@ def main(argv=None):
         return 0
     namespace = parser.parse_args(argv[:1])
     args = argv[1:]
-    needs_harness = namespace.command in {"trace", "mine", "workflow"} or (
+    needs_harness = namespace.command in {"mine", "workflow"} or (
         namespace.command == "checks"
         and any(arg == "--binding" or arg.startswith("--binding=") for arg in args)
     )
+    if namespace.command == "trace":
+        from .trace import needs_harness as trace_needs_harness
+
+        needs_harness = trace_needs_harness(args)
     if needs_harness and not require_harness():
         return 2
     if namespace.command == "checks":

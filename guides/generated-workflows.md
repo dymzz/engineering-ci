@@ -39,6 +39,37 @@ Schema、契约摘要、副作用、恢复方式和支持的环境。原命令�
 Windows 的 `auto` 使用原 Dagger/Linux 执行器；Linux 使用原 native 执行器。
 Dagger 仍需匹配 `dagger.json` 的版本，环境缺失或版本不一致会明确失败。
 
+## 选择并调用一个领域工具
+
+下面通过真实安装的 `engineering-ci-dagger` Provider 选择一次 Ruff 检查。
+选择不会执行检查，每次产生独立的 Binding 与 Workflow 文件。
+
+```powershell
+uv run --locked engineering-ci workflow select --tool python.ruff-lint --provider engineering-ci-dagger --out .test-tools/workflow-bindings --json .test-tools/selection.json
+if ($LASTEXITCODE -ne 0) { throw '选择失败，查看 Provider 和契约诊断' }
+$selection = Get-Content .test-tools/selection.json -Raw | ConvertFrom-Json
+Get-Content $selection.binding_file
+
+uv run --locked engineering-ci workflow call --binding $selection.binding_file --out .test-tools/workflow-runs --json .test-tools/bound-call.json
+$callExit = $LASTEXITCODE
+$call = Get-Content .test-tools/bound-call.json -Raw | ConvertFrom-Json
+if (-not $call.execution) { throw $call.reason }
+$execution = $call.execution
+uv run --locked engineering-ci workflow status $execution
+# 检查失败仍是非零退出；JSON 保存成功不改变 $callExit。
+```
+
+进程中断或工具失败后，保留打印的执行目录，再恢复同一次执行：
+
+```powershell
+uv run --locked engineering-ci workflow resume $execution --json .test-tools/bound-resume.json
+```
+
+恢复重新校验冻结的 Binding、Scope、Provider 和实际 Workflow；检查层决定是否可复用
+已有证据。契约变化或文件关联不一致会拒绝执行，需要审查后重新 `select`，不自动升级
+旧记录。直接对带 Binding 的定义执行 `workflow run` 也保留这些准入条件。
+完整契约见[统一目录与 Binding](../docs/architecture/harness-integration/registry.md#持久选择-binding)。
+
 ## 完整 PR 检查：生成、审查、运行
 
 ```powershell

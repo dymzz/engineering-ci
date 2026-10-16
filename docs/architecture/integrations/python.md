@@ -19,10 +19,12 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
   `.dagger/pyproject.toml`; uv `0.12.23` — `config/pipeline.toml`,
   `.github/workflows/reusable-python-ci.yml`
 - **Used by:** dependency resolution, lockfiles (`uv.lock`, `.dagger/uv.lock`), wheel builds
-  and virtual environment management
-- **Contract:** [local checks](../local-checks.md)
-- **Verify:** `uv lock --check`, `uv build --wheel`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+  and virtual environment management; `src/engineering_ci/tools/bootstrap_flow.py` explicitly
+  runs native consumer lock/sync steps and records the observed uv version
+- **Contract:** [local checks](../local-checks.md),
+  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
+- **Verify:** `uv lock --check`, `uv build --wheel`, `tests/test_bootstrap_flow.py`
+- **Verified:** 2026-10-15 @ `04388dbdcf7a`
 
 ## transitions
 
@@ -94,6 +96,8 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Used by:** `src/engineering_ci/workflow_adapters/`, delegating portable Agent Harness
   workflow execution, tracing archive, projection and mining backends
 - **Contract:** [repository split](../harness-integration/repository-split.md),
-  [Harness capabilities](../harness-integration/capabilities.md)
-- **Verify:** `tests/test_harness_boundary.py`, `tests/test_workflow_adapter.py`
-- **Verified:** 2026-10-15 @ `c3e8c74df619`
+  [Harness capabilities](../harness-integration/capabilities.md),
+  [Provider and selection Binding](../harness-integration/registry.md)
+- **Verify:** `tests/test_harness_boundary.py`, `tests/test_workflow_adapter.py`,
+  `tests/test_selection_binding.py`
+- **Verified:** 2026-10-15 @ `8dc51e8c2524`

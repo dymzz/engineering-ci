@@ -13,6 +13,7 @@ from dagger import dag
 SOURCE_EXCLUDES = [
     ".git",
     ".test-tools",
+    ".log",
     ".test-deps",
     ".venv",
     "**/.venv",

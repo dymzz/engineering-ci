@@ -103,6 +103,7 @@ def catalog(root):
             "Domain Provider requires its explicit primary source checkout"
         )
     result, adapter = Catalog(), ProviderAdapter(root, {})
+    result.provider_name = "engineering-ci-dagger"
     value = adapter.request("tools")
     if (
         value.get("schema_version") != 1

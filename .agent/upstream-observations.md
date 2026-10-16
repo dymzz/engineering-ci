@@ -45,6 +45,7 @@
 - 场景：本轮 Harness P0 验收，主 checkout 使用 Dagger 1.0.0-beta.16。
 - 实际结果：直接运行 dagger version，未设置 FORCE_DARK_MODE，超过一分钟无输出；已用 Ctrl+C 停止该探测，没有终止正式检查。
 - 当前对照：既有 dagger_checks.prepare 使用 FORCE_DARK_MODE=1 和 30 秒版本探测超时，同一二进制的版本/容器预检及五项 Linux 检查实际通过。
+- 2026-10-15 建仓引导：同一终端的 `dagger check --help` 无输出挂起，已核对命令行后仅停止本次探测进程；真实消费者检查未因此认定通过。分类仍为 `unclear`。建仓子进程复用既有 FORCE_DARK_MODE 设置，版本探测限时 30 秒；不改宿主环境或第三方实现。
 - 现有代码已记录 Windows 显示探测风险；本轮没有证明具体根因，也没有改变第三方实现、安装或工作区位置。
 - 未搜索或提交上游 Issue/PR，未扩大为故障调查。
 
@@ -76,3 +77,11 @@
 - Reasoning: the nested subprocess auto-detected the outer pyproject.toml because the
   newly chosen fixture directory lived inside that repository. No pytest defect is asserted.
 - Workaround: none in application code; use the project's existing test invocation.
+
+## vesryn / vesryn-log@0.1.0: archive exception identity changes on storage migration
+- Status: likely-local
+- Seen: 2026-10-16 -> 2026-10-16, occurrences: 1
+- Environment: Windows CPython 3.14.3; pinned Vesryn fb984d44f84e and vesryn-log 030c5a8edf82.
+- Evidence: nine feedback pagination/budget regression cases initially raised vesryn.tracing.store.ArchiveError, which is a different type from the new logging package exception expected by host callers. The same suite passed 82 cases after translation at the host interpretation boundary.
+- Reasoning: a consumer migration between independent exception types, not evidence of an upstream defect. Projection/query interpretation remains in the pinned Harness while physical archives move to the logging package.
+- Workaround: tracing/_compat.py translates legacy interpretation errors without changing status or sqlstate; no third-party package is patched or replaced.

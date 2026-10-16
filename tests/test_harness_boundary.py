@@ -16,9 +16,9 @@ from engineering_ci.workflow_core.schemas import validate
 
 
 def test_compatibility_imports_are_the_same_portable_types():
-    from vesryn.tracing.sources.codex_rollout import RolloutSource as NewSource
     from vesryn.workflow_core import Runtime as NewRuntime
     from vesryn.workflow_core.documents import WorkflowError as NewError
+    from vesryn_log.sources.codex_rollout import RolloutSource as NewSource
 
     from engineering_ci.tracing.sources.codex_rollout import RolloutSource
     from engineering_ci.workflow_core import Runtime
@@ -59,18 +59,24 @@ def test_legacy_feedback_remains_byte_identical_and_unknown_scope_is_rejected():
 
 
 def test_host_archive_supplies_validation_before_portable_persistence(monkeypatch):
-    from vesryn.tracing.store import ArchiveStore as PortableStore
+    from vesryn_log.archive.store import ArchiveStore as PortableStore
 
     from engineering_ci.tracing.store import ArchiveStore
 
     calls = []
 
-    def persist(self, value, *, validator):
-        validator(value)
+    def persist(self, identity, approval, document):
+        from engineering_ci.workflow_core.documents import canonical
+
+        assert document == canonical(value)
+        assert (
+            identity == value["feedback_id"]
+            and approval == value["capability"]["approval_id"]
+        )
         calls.append(value)
         return {"status": "registered"}
 
-    monkeypatch.setattr(PortableStore, "register_feedback", persist)
+    monkeypatch.setattr(PortableStore, "store_feedback", persist)
     archive = object.__new__(ArchiveStore)
     from test_workflow_feedback_query import recorded
 

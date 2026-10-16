@@ -8,6 +8,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from .._paths import ROOT
+from ..task_observation import task_entry
 from ..workflow_adapters.checks import catalog, recipe
 from ..workflow_core import Runtime, generate, load_generation
 from ..workflow_core.documents import WorkflowError, digest, read, write
@@ -43,6 +44,26 @@ def result_path(path, root):
     return path
 
 
+def selected_catalog(options):
+    """Load a binding's actual installed Provider; retain the legacy route otherwise."""
+    from ..workflow_adapters.binding import binding_catalog, binding_document
+
+    if options.command == "select" and options.tool:
+        return binding_catalog(options.provider, ROOT), None
+    path = getattr(options, "binding", None)
+    if not path and getattr(options, "execution", None):
+        path = options.execution / "binding.json"
+    if not path and getattr(options, "workflow", None):
+        path = options.workflow.parent / "binding.json"
+    if path and (getattr(options, "binding", None) or path.exists()):
+        from ..workflow_adapters.capabilities import inside
+
+        binding = binding_document(inside(path, ROOT))
+        return binding_catalog(binding["provider"], ROOT), binding
+    return catalog(ROOT), None
+
+
+@task_entry("Run engineering workflow", operations=("run", "resume", "call"))
 def main(argv=None):
     import sys
 
@@ -162,6 +183,7 @@ def main(argv=None):
                     "analysis",
                     "projection",
                     "comparison_report",
+                    "binding",
                 )
             ]
             if options.json in {Path(path).resolve() for path in source_paths if path}:
@@ -196,8 +218,15 @@ def main(argv=None):
                         "Operation JSON must stay outside the capability store"
                     )
             result_destination = options.json
-        tools = catalog(ROOT)
-        runtime = Runtime(tools)
+        if getattr(options, "execution", None):
+            operation["execution"] = str(options.execution.resolve())
+        tools, selection = selected_catalog(options)
+        if selection:
+            from ..workflow_adapters.binding import BindingRuntime
+
+            runtime = BindingRuntime(tools)
+        else:
+            runtime = Runtime(tools)
         if options.command in COMMANDS:
             from .workflow_capability import execute
 
@@ -347,6 +376,10 @@ def main(argv=None):
             from ..workflow_adapters.candidates import verify_target
 
             value, provenance, plan = load_generation(options.workflow, tools)
+            if selection:
+                from ..workflow_adapters.binding import verify_workflow
+
+                verify_workflow(selection, tools, options.workflow, root=ROOT)
             target_admission = verify_target(value, provenance)
             operation.update(
                 status="valid",
@@ -362,6 +395,8 @@ def main(argv=None):
             from ..workflow_adapters.evidence import evidence
 
             operation["execution"] = str(options.execution.resolve())
+            if selection:
+                runtime.status(options.execution)
             operation = evidence(
                 options.execution,
                 tools,
@@ -403,9 +438,20 @@ def main(argv=None):
             if options.command == "run":
                 value, provenance, _ = load_generation(options.workflow, tools)
                 verify_target(value, provenance)
-                directory = runtime.create(
-                    options.workflow, options.out, reuse_from=options.reuse_from
-                )
+                if selection:
+                    from ..workflow_adapters.binding import create_bound_execution
+
+                    directory = create_bound_execution(
+                        selection,
+                        tools,
+                        options.out,
+                        reuse_from=options.reuse_from,
+                        root=ROOT,
+                    )
+                else:
+                    directory = runtime.create(
+                        options.workflow, options.out, reuse_from=options.reuse_from
+                    )
             else:
                 directory = options.execution.resolve()
             operation["execution"] = str(directory)

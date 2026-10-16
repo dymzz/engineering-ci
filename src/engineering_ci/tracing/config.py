@@ -1,7 +1,7 @@
 """Compatibility configuration anchored to the original engineering-ci checkout."""
 
-from vesryn.tracing.config import *
-from vesryn.tracing.config import load_config as portable_config
+from vesryn_log.archive.config import *
+from vesryn_log.archive.config import load_config as portable_config
 
 from .._paths import ROOT
 

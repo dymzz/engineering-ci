@@ -3,9 +3,12 @@
 两个用户入口、输出、退出码和独立工具的参考。环境准备见[开始使用](getting-started.md)，操作顺序见[常用操作](common-tasks.md)。
 
 v0.6.6 的 `checks`、`version`、`release`、`download` 基础实现保持独立。
-`trace`、`mine`、`workflow` 与 `checks --binding` 使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+`mine`、`workflow`、`checks --binding` 及 trace 的分析命令使用可选 Vesryn Harness；未安装时明确返回退出码 2。
+trace 的 status/inspect/init/import/replay/sources/snapshots 直接使用 vesryn-log；
+开发组安装日志基础包，PostgreSQL 归档需 trace extra；基础 no-dev 环境缺少日志包时只报告
+记录 unavailable，不改变检查结果，也不要求轻量版本检查取得私有日志仓库凭据。
 开发组安装它用于领域回归；基础环境可使用 `uv sync --locked --no-dev`，需要 Harness 时加 `--extra harness`。
-原 trace/mining/telemetry extras 保留，转为固定 Vesryn extra。
+原 trace/mining/telemetry extras 保留；trace 同时声明日志 archive SDK 与旧分析接口的依赖。
 通用命令另有 `vesryn` CLI，CI 专用 `mine bind`、`mine workflow`、`export-xes --execution`
 及能力批准/再审查继续通过 engineering-ci。详见[分仓契约](../docs/architecture/harness-integration/repository-split.md)。
 
@@ -63,7 +66,7 @@ FSM 缓存仍位于现有 gh-workflow-artifacts 用户缓存目录，不在项�
 
 PowerShell 用 $LASTEXITCODE，Linux 用 $? 查看脚本退出码。报告或下载成功不能覆盖 Workflow 的失败。
 status 返回 0 只表示查询完成，不表示 CI 或正式发布成功；输出中显示实际结果。
-PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md#development-and-delivery)，操作见
+PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md)，操作见
 [审查与合并](common-tasks.md#审查与合并)。入口仍返回 REVIEW.waiting；人或已授权 Agent 使用 gh
 完成实际合并后才能接续，自动合并授权不包含正式发布。
 
@@ -108,6 +111,21 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 Security Workflow 兼容已发布旧 helper 的脚本；默认 ref 和消费者参数不变，
 不在当前 scripts 目录恢复第三个入口，也不会在执行失败后换入口重试。
 consumer 默认只读；修改、提交、推送仍需显式参数。
+
+新仓交互建仓使用 `uv run --locked python -m engineering_ci.tools.bootstrap`，不增加第三个
+scripts 入口。`--plan` 只预览，`--repo OWNER/name --path ABSOLUTE_PATH --yes` 可非交互
+生成本地骨架；显式 `--github` 才处理私有远端，新建远端只 Push README-only main。
+已有远端交互选择连接/覆盖 main/取消；非交互使用 `--existing-remote connect|overwrite`，
+覆盖还需实际完整 SHA 的 `--expected-main-sha`，`--yes` 不隐含覆盖。
+`--resume ABSOLUTE_PATH` 恢复该工具自己的上下文，保留用户修改；远端创建结果不确定时
+  必须核对实际仓库 ID，禁止自动再次创建。
+  生成后交互选择继续到 Draft PR、只做本地准备/检查或保存退出；Commit、Push、Draft
+  分别确认。非交互 `--setup` 请求依赖/SDK/Dagger 检查，`--deliver --yes -m '提交信息'`
+  显式请求检查、Commit、普通 Push 和 Draft PR，停在审查，不合并/发布。
+  `--yes` 本身仍只生成，不隐含这些后续操作。中断后用原目录 `--resume` 继续；
+  原始检查失败、源码变化和 PR 未验收不会转为通过。完整动作与退出码见
+[交互式建仓说明](new-repository.md#交互式建仓入口)。
+
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/architecture/local-checks.md)。
 `checks --executor auto/native/dagger` 选择检查执行环境；默认读取 Pipeline，Windows
@@ -119,6 +137,25 @@ E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 `version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
 使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
 绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。
+
+## 本地任务日志
+
+执行型入口自动记录现有调用边界，日志不经过 Vesryn observe-task 或另一次 Dagger 调用。
+使用安装的 vesryn-log 写入 `.log/tasks/<UTC 日期>/<task-id>/`；不需要另开日志开关。
+从最新成功指针定位本次记录，在 engineering-ci checkout 执行：
+
+```powershell
+$taskLog = Get-Content .log/latest-task.json -Raw | ConvertFrom-Json
+$taskLogPath = Join-Path .log $taskLog.run_path
+Get-Content (Join-Path $taskLogPath 'delivery.json') -Raw
+Get-Content (Join-Path $taskLogPath 'events.jsonl') -Tail 20
+```
+
+`capture.json` 保留安全快照，`events.jsonl` 是同一组事件；默认不含 argv、工具输出、环境值
+或异常正文。delivery.json 的 task_exit_code 是业务结果，observation_delivery 是记录结果，
+二者分开判断。原命令返回失败时，日志写入成功仍是失败；日志失败只给独立诊断，可能留下
+部分目录，不更新旧成功指针，也不自动重跑。旧 pending/可读分页不自动迁移或重投。
+依赖来源与边界见[日志集成](../docs/architecture/integrations/tracing.md#vesryn-log)。
 
 ## 原始轨迹
 
