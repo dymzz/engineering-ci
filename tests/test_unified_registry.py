@@ -112,7 +112,9 @@ def test_provider_cli_keeps_failed_result_separate_from_json_delivery(
                 call.step_id: ToolResult("failed", 13, executed=True) for call in calls
             }
 
-    spec = ToolSpec("domain.check", object_schema({}), object_schema({}))
+    spec = ToolSpec(
+        "domain.check", object_schema({}), object_schema({}), environments=("dagger",)
+    )
     tools = Catalog()
     tools.register(spec, FailedAdapter())
     monkeypatch.setattr(adapter_module, "dagger_catalog", lambda *args, **kwargs: tools)

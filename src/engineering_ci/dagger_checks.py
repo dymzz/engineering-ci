@@ -39,6 +39,7 @@ def git_secret_options(root, names, run, which, environ):
     approved = {
         "vesryn": "https://github.com/dymzz/vesryn.git",
         "vesryn-log": "https://github.com/dymzz/vesryn-log.git",
+        "vesryn-tool-runtime": "https://github.com/dymzz/vesryn-tool-runtime.git",
     }
     selected = {name: sources[name] for name in approved if name in sources}
     if not selected:

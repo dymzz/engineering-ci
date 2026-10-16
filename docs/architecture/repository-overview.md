@@ -90,3 +90,8 @@ Provider 提供原有工程检查的契约/绑定。该 Provider 固定调用现
 正式 CI Gate、检查策略和原始证据解释仍由本仓库负责。仓库名不是工具白名单。
 旧 Tool ID 和兼容入口保留，基础 CI/CD 不强制依赖 Vesryn；没有循环 Python 或
 Dagger 模块依赖。正文见[统一目录](harness-integration/registry.md)。
+
+## Tool Runtime extraction
+
+Generic tool contracts, Catalog, discovery, Selection Binding Schema 1 verification, batch dispatch and result validation are now owned by `vesryn-tool-runtime==0.1.0`.
+Existing public consumer imports are compatibility exports. Workflow generation, checkpoints, recovery and domain execution remain here. Development uv source overrides explicitly select the current Tool Runtime checkout; engineering-ci also selects the integrated Vesryn checkout. Replace these overrides with accepted immutable references before consumer publication.

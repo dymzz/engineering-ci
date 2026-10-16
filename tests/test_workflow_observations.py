@@ -91,12 +91,14 @@ def test_complete_attempt_history_is_safe_and_tied_to_original_failure(tmp_path)
 
 
 def test_observation_write_failure_does_not_change_original_exit(tmp_path, monkeypatch):
-    from engineering_ci.workflow_core import observations
+    original_link = os.link
 
-    def unavailable(*args, **kwargs):
-        raise OSError("Token SECRET cannot write")
+    def unavailable(source, destination, *args, **kwargs):
+        if "observations" in Path(destination).parts:
+            raise OSError("Token SECRET cannot write")
+        return original_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(observations, "write", unavailable)
+    monkeypatch.setattr(os, "link", unavailable)
     runtime, directory, _ = execution(tmp_path, Arithmetic(fail=True))
     state = runtime.resume(directory)
     assert state["exit_code"] == 7 and runtime.observation_errors > 0

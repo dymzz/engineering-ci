@@ -2,7 +2,7 @@
 
 Engineering CI provides reusable Python CI/CD capabilities through Dagger and GitHub Actions, including checks, delivery, release evidence, workflow artifacts and engineering-domain Providers.
 
-Vesryn provides the optional Agent Harness, shared tool registration, discovery and generic invocation coordination.
+Vesryn provides the optional Agent Harness. vesryn-tool-runtime owns shared tool contracts, registration, discovery, binding and generic invocation coordination.
 
 ## Project Navigation
 
@@ -17,7 +17,7 @@ Consult relevant documentation and interfaces when working across module boundar
 ## Architecture and Ownership
 
 - engineering-ci owns CI/CD execution, quality policy, domain Providers, approval/feedback rules and release delivery.
-- Vesryn owns portable Harness capabilities and shared tool registration, discovery and invocation coordination.
+- Vesryn owns portable Harness capabilities; vesryn-tool-runtime owns shared tool registration, discovery, binding and invocation coordination.
 - Basic CI/CD must operate independently of the optional Vesryn integration.
 - `config/pipeline.toml` defines registered local check settings.
 - Dagger manages internal execution graphs, containers and caching.

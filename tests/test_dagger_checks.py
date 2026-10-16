@@ -600,8 +600,11 @@ def test_empty_dagger_request_is_rejected_before_any_operation(backend):
 
 
 @pytest.mark.parametrize("rev", ["b" * 40, "main"])
-def test_log_only_private_source_is_validated_before_credential_binding(source, rev):
-    private_source(source, "https://github.com/dymzz/vesryn-log.git", rev, "vesryn-log")
+@pytest.mark.parametrize("name", ["vesryn-log", "vesryn-tool-runtime"])
+def test_component_private_source_is_validated_before_credential_binding(
+    source, rev, name
+):
+    private_source(source, f"https://github.com/dymzz/{name}.git", rev, name)
     environ = {"ENGINEERING_CI_READ_TOKEN": "private-test-credential"}
 
     def forbidden(*args, **kwargs):

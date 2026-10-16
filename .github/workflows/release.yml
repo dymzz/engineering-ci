@@ -46,6 +46,12 @@ jobs:
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
           python-version: ${{ steps.check_toolchain.outputs.python_version }}
+      - name: Install pinned private runtime dependencies
+        env:
+          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
+        run: |
+          gh auth setup-git --hostname github.com
+          uv sync --locked --no-default-groups
       - name: Validate manual release request
         id: prepare
         env:
@@ -156,6 +162,12 @@ jobs:
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
           python-version: ${{ steps.check_toolchain.outputs.python_version }}
+      - name: Install pinned private runtime dependencies
+        env:
+          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
+        run: |
+          gh auth setup-git --hostname github.com
+          uv sync --locked --no-default-groups
       - name: Require every validation job and exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,6 +212,12 @@ jobs:
         with:
           version: ${{ steps.check_toolchain.outputs.uv_version }}
           python-version: ${{ steps.check_toolchain.outputs.python_version }}
+      - name: Install pinned private runtime dependencies
+        env:
+          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
+        run: |
+          gh auth setup-git --hostname github.com
+          uv sync --locked --no-default-groups
       - name: Recheck main and publish immutable tag and evidenced GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
