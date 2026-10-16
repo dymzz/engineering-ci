@@ -1,0 +1,12 @@
+# Exact Git identities opt into native OSV commit advisory queries, never exclusion.
+schema_version = 1
+
+[[git_sources]]
+package = "vesryn"
+repository = "https://github.com/dymzz/vesryn.git"
+commit = "fb984d44f84e1b4674ccb391746da14818de2bd4"
+
+[[git_sources]]
+package = "vesryn-log"
+repository = "https://github.com/dymzz/vesryn-log.git"
+commit = "030c5a8edf820588e29f53803b6baaf53b1f6e57"

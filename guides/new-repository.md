@@ -6,6 +6,38 @@
 下面使用 `dymzz/my-python-app` 作为具体示例。执行前把仓库名和路径改成自己的目标；
 这些命令供操作者执行，本说明不会替你创建仓库、修改权限或发布版本。
 
+## 选择公共组件与固定版本
+
+先按[公共组件支持范围](../docs/delivery/public-components.md)选择接口。
+完整容器 CI 使用 Dagger；远端 Job 编排使用共享 Workflow；只复用执行状态和恢复时可直接安装 Python 包。
+本仓库 `checks pr` / `release publish` 需要完整 checkout，不应在消费者中复制这套本仓库操作。
+
+下面的安装命令固定已发布基线 `v0.6.5`；`v0.6.7` 的新接口在正式 Release 完成前属于候选，
+只能用经过验证的固定 Commit 验收。通过 PR、构建 wheel 或存在同名元数据都不代表已经发布。
+不要消费浮动 main。私有仓库需要当前 Git/gh 身份具备 Contents 读取权限；失败时先修复权限，
+不要切换账号、复制源码或把 Token 放进 URL。
+
+仅安装 Python 公共执行组件，在消费者自己的环境中运行：
+
+```powershell
+uv pip install 'git+https://github.com/dymzz/engineering-ci.git@v0.6.5'
+python -c "from engineering_ci.execution import ExecutionFSM, StateStore; print(ExecutionFSM.__name__, StateStore.__name__)"
+```
+
+Python 包要求 3.14，不自动安装 dev/可选 Harness 或启动数据库。
+已安装的下载入口使用 `python -m engineering_ci.cli download --help`；它只能查询和下载已有 Run。
+完整 Python 状态示例见[执行 API](../docs/architecture/execution/state-and-recovery.md#python-组件消费)。
+
+Dagger 消费者按本文原有步骤安装固定模块并生成 SDK；已有项目直接从第 3 节配置开始。
+Workflow 的 `uses: ...@TAG` 与模块引用应采用同一个已发布版本，原生 `dagger.lock` 一起审查。
+输入、Secret、输出和失败语义见[Dagger 公共函数](../docs/configuration/dagger.md#公共函数与凭据)。
+报告模式用一次 `python_test_artifacts` 替换指定的 pytest check，不再调用第二次 pytest 获取 JSON。
+使用 `git_token` 的单版本接口从 v0.6.7 提供；旧版及 Matrix 不声明该参数。
+
+升级时先确认目标正式 Release 及 Manifest 的 Tag/SHA，再同步 Workflow 与模块固定引用，
+生成 SDK/锁文件并在消费者 PR 中执行检查。保留业务测试；失败退出、报告和下载分别判断。
+失败恢复见[常用操作](common-tasks.md)，本项目发布准备要求见[Release Readiness](../docs/delivery/release-readiness.md)。
+
 ## 交互式建仓入口
 
 新目录可以使用下面的工具生成骨架，并继续到 SDK、检查和 Draft PR。在 **engineering-ci 的主

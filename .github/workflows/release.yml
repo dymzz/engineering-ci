@@ -74,6 +74,7 @@ jobs:
       dependency_security_mode: enforce
       dependency_security_project: .
       dependency_security_public_indexes: https://mirrors.aliyun.com/pypi/simple
+      dependency_security_git_policy: config/dependency-security.toml
       dependency_security_source_ref: ${{ github.sha }}
       verify_module_lock: true
 

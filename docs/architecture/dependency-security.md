@@ -35,12 +35,12 @@ errors, even if the process exits 0.
 
 ## Workflow usage
 
-After v0.4.6 is published, explicitly enable the optional lightweight job:
+Explicitly enable the optional lightweight job with a fixed published version:
 
 ```yaml
 jobs:
   python-ci:
-    uses: dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@v0.4.6
+    uses: dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@v0.6.5
     with:
       dependency_security_mode: enforce
       dependency_security_project: .
@@ -51,7 +51,7 @@ jobs:
 ```
 
 The independent security job does not start a Dagger Engine. It checks out the
-helper matching `dependency_security_source_ref` (default `v0.4.6`).
+helper matching `dependency_security_source_ref` (default `v0.4.7`).
 Candidate validation must set this input to the candidate SHA. Since v0.4.8,
 ordinary core PR CI does not scan; manual release uses its tested SHA and
 enforce mode on the real root project lock. The previous fixture measurements
@@ -93,10 +93,55 @@ not automatic detection of whether a registry is public. The accepted URLs
 are recorded in public_registry_policy. Never declare private registries as
 public. Credentials, query tokens, wildcards and insecure URLs are rejected.
 
-Undeclared/custom private sources, VCS, direct URLs and third-party local
-dependencies produce a coverage gap. No OSV query is sent for that lockfile;
-enforce fails closed. Public package names/versions are sent only after the
-explicit source policy is satisfied.
+Undeclared/custom private sources, unapproved VCS, direct URLs and third-party
+local dependencies produce a coverage gap. No OSV query is sent for that
+lockfile; enforce fails closed. Public package names/versions are sent only
+after the explicit source policy is satisfied.
+
+### Approved immutable Git sources
+
+v0.6.7 adds opt-in `--git-policy FILE` and the reusable Workflow input
+`dependency_security_git_policy` (repository-relative, default empty).
+Use a helper/module version containing this interface; older published helpers
+do not accept the new argument. The core manual Release uses
+[config/dependency-security.toml](../../config/dependency-security.toml).
+
+The policy accepts schema_version=1 and `[[git_sources]]` entries containing
+only package, repository and commit. Each repository is a credential-free
+HTTPS Git URL; each commit is a full lowercase 40-character SHA. Package names
+are unique. A changed lock repository/SHA, floating ref, unexpected query,
+unsupported URL or contradictory root uv source declaration remains a coverage
+gap. Policy paths stay within the Workflow workspace. The policy is hashed,
+and inputs/policy are checked again after scanning. Nothing is excluded or
+matched to a public PyPI package solely because it shares a name/version.
+
+Source integrity here means consistency of the explicit policy, immutable lock
+identity and any root declaration; it does not authenticate the author or
+audit repository code. Dependency installation still verifies its actual source
+through the existing Git/uv path and requires separate Contents read permission.
+
+Only approved Git entries are moved from an ephemeral uv-lock copy to the
+official native [Custom Lockfile](https://google.github.io/osv-scanner/supported-languages-and-lockfiles/#custom-lockfiles)
+format. The pinned OSV-Scanner processes both inputs in one invocation:
+public PyPI name/version queries plus Git Commit queries. The original uv.lock
+is unchanged, finite advisory exceptions still use the native scanner, and
+`--all-packages` output must cover every expected registry and Git identity.
+Missing Git results, wrong commits, API failure, malformed results and exit/data
+disagreement block enforce. No package-ignore or broad exemption is added.
+
+The scan scope becomes `public_pypi_and_approved_git_commits`; additive
+`git_sources` facts distinguish `source_integrity` from `advisory_query`.
+The latter starts `not_executed`, is `unavailable` when an attempted query could
+not be validated, and becomes `complete` only after native coverage validation.
+Approved source identifiers/commits can be sent to the OSV service; credentials,
+private source bytes and environment values are never supplied. Empty advisory
+results mean no known matching records were returned, not that OSV has complete
+advisory coverage for private code or that the source is safe.
+
+```sh
+python -m engineering_ci.tools.security --project . --mode enforce \
+  --git-policy config/dependency-security.toml --out .test-tools/security
+```
 
 The native extractor excludes the project's own virtual node. For its own
 editable root node, an ephemeral copy marks only that node virtual. The original

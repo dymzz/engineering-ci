@@ -360,6 +360,10 @@ def test_schema_registry_enums_and_required_contract_do_not_drift():
         )
     )
     fields = schema["properties"]
+    assert (
+        schema["$id"]
+        == "https://github.com/dymzz/engineering-ci/blob/main/docs/architecture/release/manifest.schema.json"
+    )
     assert set(fields["checks"]["required"]) == set(evidence.CHECKS) | set(
         evidence.DAGGER_POLICY_CHECKS
     ) | {

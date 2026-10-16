@@ -19,6 +19,11 @@ def main(argv=None):
     parser.add_argument("--max-findings", type=int, default=100)
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--public-index", action="append", default=[])
+    parser.add_argument(
+        "--git-policy",
+        type=Path,
+        help="Explicit exact Git repository/commit scan policy",
+    )
     args = parser.parse_args(argv)
     report, native = scan(
         args.project,
@@ -31,6 +36,7 @@ def main(argv=None):
         max_findings=args.max_findings,
         workspace_root=args.workspace_root,
         public_indexes=args.public_index,
+        git_policy_path=args.git_policy,
     )
     write_bundle(args.out, report, native)
     print(

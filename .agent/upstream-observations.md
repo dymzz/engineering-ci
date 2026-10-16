@@ -85,3 +85,11 @@
 - Evidence: nine feedback pagination/budget regression cases initially raised vesryn.tracing.store.ArchiveError, which is a different type from the new logging package exception expected by host callers. The same suite passed 82 cases after translation at the host interpretation boundary.
 - Reasoning: a consumer migration between independent exception types, not evidence of an upstream defect. Projection/query interpretation remains in the pinned Harness while physical archives move to the logging package.
 - Workaround: tracing/_compat.py translates legacy interpretation errors without changing status or sqlstate; no third-party package is patched or replaced.
+
+## OSV-Scanner@2.6.0: uv Git entries retain a PyPI output ecosystem
+- Status: observed
+- Seen: 2026-10-16 -> 2026-10-16, occurrences: 1
+- Environment: official checksum-verified Windows amd64 scanner; osv-scalibr 0.5.2.
+- Evidence: synthetic uv.lock with one Git source produced an all-packages record containing both ecosystem=PyPI and its full commit. The equivalent official custom-lockfile input produced ecosystem=GIT and the same commit. Actual outputs are .test-tools/public-delivery/native-uv-git-probe.json and git-scanner-probe.json.
+- Reasoning: confirmed output-label mismatch for consumer source classification; no claim that upstream queried the wrong advisory records.
+- Workaround: retain native uv extraction for public registry entries and send explicitly approved Git identities through the official custom-lockfile interface in the same scanner invocation. No upstream source is modified.

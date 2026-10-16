@@ -6,15 +6,15 @@ import datetime as dt
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import subprocess
 import tempfile
 import time
 import tomllib
-import urllib.request
 import urllib.parse
+import urllib.request
+from pathlib import Path
 
 SCANNER_VERSION = "2.6.0"
 SCANNER_ASSETS = {
@@ -140,10 +140,10 @@ def exceptions_policy(path, now):
             if expiry.tzinfo is None:
                 raise SecurityError("exceptions_invalid")
         elif isinstance(expiry, dt.date):
-            expiry = dt.datetime.combine(expiry, dt.time(), tzinfo=dt.timezone.utc)
+            expiry = dt.datetime.combine(expiry, dt.time(), tzinfo=dt.UTC)
         else:
             raise SecurityError("exceptions_invalid")
-        expiry = expiry.astimezone(dt.timezone.utc)
+        expiry = expiry.astimezone(dt.UTC)
         active = expiry > now
         validated.append(
             {
@@ -186,7 +186,74 @@ def public_registry_policy(additional=()):
     return accepted
 
 
-def lock_inventory(project, lock_text, public_indexes=()):
+def git_policy(path):
+    """Approve exact HTTPS repository/commit identities, never package exclusions."""
+    if path is None:
+        return {}, None
+    raw = _read(path, 65536)
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+        if (
+            set(data) != {"schema_version", "git_sources"}
+            or type(data["schema_version"]) is not int
+            or data["schema_version"] != 1
+        ):
+            raise ValueError
+        entries = data["git_sources"]
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 100:
+            raise ValueError
+        result = {}
+        for item in entries:
+            if set(item) != {"package", "repository", "commit"}:
+                raise ValueError
+            name = _name(item["package"])
+            repository, commit = item["repository"], item["commit"]
+            if (
+                name in result
+                or not isinstance(repository, str)
+                or not re.fullmatch(
+                    r"https://[a-z0-9.-]+/[A-Za-z0-9_./-]+\.git", repository
+                )
+            ):
+                raise ValueError
+            if (
+                "/../" in repository
+                or not isinstance(commit, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            ):
+                raise ValueError
+            result[name] = {"repository": repository, "commit": commit}
+        return result, hashlib.sha256(raw).hexdigest()
+    except (ValueError, KeyError, TypeError):
+        raise SecurityError("git_policy_invalid") from None
+
+
+def approved_git(name, source, project, policy):
+    """Match the actual lock identity and any root declaration to the explicit pin."""
+    if (
+        set(source) != {"git"}
+        or name not in policy
+        or not isinstance(source["git"], str)
+    ):
+        return False
+    expected = policy[name]
+    parsed = urllib.parse.urlsplit(source["git"])
+    repository = urllib.parse.urlunsplit(parsed._replace(query="", fragment=""))
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if (
+        repository != expected["repository"]
+        or parsed.fragment != expected["commit"]
+        or query not in ({}, {"rev": [expected["commit"]]})
+    ):
+        return False
+    declared = project.get("tool", {}).get("uv", {}).get("sources", {}).get(name)
+    return declared is None or declared == {
+        "git": repository,
+        "rev": expected["commit"],
+    }
+
+
+def lock_inventory(project, lock_text, public_indexes=(), git_sources=None):
     """Inventory public lock entries; never resolve dependencies or match advisories."""
     try:
         parsed = tomllib.loads(lock_text)
@@ -200,6 +267,7 @@ def lock_inventory(project, lock_text, public_indexes=()):
     project_name = _name(project["project"]["name"])
     accepted_indexes = public_registry_policy(public_indexes)
     expected, unsupported, root_editable = set(), [], False
+    git_sources, selected_git = git_sources or {}, []
     for package in packages:
         name, version = _name(package["name"]), package.get("version")
         source = package.get("source", {})
@@ -219,6 +287,10 @@ def lock_inventory(project, lock_text, public_indexes=()):
             and set(source) == {"registry"}
         ):
             expected.add((name, version))
+        elif approved_git(name, source, project, git_sources):
+            selected_git.append(
+                {"package": name, "version": version, **git_sources[name]}
+            )
         else:
             unsupported.append(
                 {
@@ -252,7 +324,24 @@ def lock_inventory(project, lock_text, public_indexes=()):
                 package["source"] = {"virtual": "."}
         if tomllib.loads(lock_text) != parsed:
             raise SecurityError("local_project_exclusion_unavailable")
-    return expected, unsupported, lock_text
+    if selected_git:
+        # Native uv output labels Git entries PyPI; use explicit Git identities.
+        # Move only approved Git entries to the native custom-lockfile input.
+        names = {item["package"] for item in selected_git}
+        parsed = tomllib.loads(lock_text)
+        blocks = lock_text.split("[[package]]")
+        lock_text = blocks[0] + "".join(
+            "[[package]]" + block
+            for block in blocks[1:]
+            if _name(tomllib.loads("[[package]]" + block)["package"][0]["name"])
+            not in names
+        )
+        parsed["package"] = [
+            item for item in parsed["package"] if _name(item["name"]) not in names
+        ]
+        if tomllib.loads(lock_text) != parsed:
+            raise SecurityError("git_scan_input_invalid")
+    return expected, unsupported, lock_text, selected_git
 
 
 def _json(data):
@@ -275,7 +364,7 @@ def _json(data):
         raise SecurityError("scanner_response_invalid") from None
 
 
-def scanner_result(raw, expected, exit_code, max_findings):
+def scanner_result(raw, expected, exit_code, max_findings, git_sources=()):
     """Interpret the pinned all-packages contract, not terminal output."""
     if exit_code not in (0, 1):
         raise SecurityError(
@@ -292,20 +381,29 @@ def scanner_result(raw, expected, exit_code, max_findings):
         or data.get("experimental_generic_findings")
     ):
         raise SecurityError("scanner_response_invalid")
-    actual, findings = set(), {}
+    actual, findings, actual_git = set(), {}, set()
+    expected_git = {(item["repository"], item["commit"]) for item in git_sources}
     for source in data["results"]:
         if not isinstance(source, dict) or not isinstance(source.get("packages"), list):
             raise SecurityError("scanner_response_invalid")
         source["source"] = {"path": "uv.lock", "type": "lockfile"}
         for item in source["packages"]:
             package = item["package"]
-            name, version = (
-                _name(package["name"], "scanner_response_invalid"),
-                package["version"],
-            )
-            if package.get("ecosystem") != "PyPI" or not isinstance(version, str):
-                raise SecurityError("scanner_response_invalid")
-            actual.add((name, version))
+            is_git = package.get("ecosystem") == "GIT"
+            if is_git:
+                identity = (package.get("name"), package.get("commit"))
+                if identity not in expected_git or package.get("version", "") != "":
+                    raise SecurityError("scan_coverage_gap")
+                actual_git.add(identity)
+                name, version = identity
+            else:
+                name, version = (
+                    _name(package["name"], "scanner_response_invalid"),
+                    package["version"],
+                )
+                if package.get("ecosystem") != "PyPI" or not isinstance(version, str):
+                    raise SecurityError("scanner_response_invalid")
+                actual.add((name, version))
             vulnerabilities = item.get("vulnerabilities", [])
             if not isinstance(vulnerabilities, list):
                 raise SecurityError("scanner_response_invalid")
@@ -345,14 +443,18 @@ def scanner_result(raw, expected, exit_code, max_findings):
                     "fixed_versions": sorted(fixed),
                     "triggers_gate": True,
                 }
-    if actual != expected:
+                if is_git:
+                    findings[(name, version, identifier)].update(
+                        ecosystem="GIT", repository=name, commit=version
+                    )
+    if actual != expected or actual_git != expected_git:
         raise SecurityError("scan_coverage_gap")
     if bool(findings) != (exit_code == 1):
         raise SecurityError("scanner_exit_result_disagreement")
     findings = [findings[key] for key in sorted(findings)]
     return {
         "status": "failed" if findings else "passed",
-        "dependencies_scanned": len(actual),
+        "dependencies_scanned": len(actual) + len(actual_git),
         "vulnerabilities": findings[:max_findings],
         "vulnerability_records": len(findings),
         "omitted_findings": max(0, len(findings) - max_findings),
@@ -373,10 +475,11 @@ def scan(
     now=None,
     workspace_root=None,
     public_indexes=(),
+    git_policy_path=None,
 ):
     started = time.perf_counter()
     fixed_now = now
-    now = now or dt.datetime.now(dt.timezone.utc)
+    now = now or dt.datetime.now(dt.UTC)
     report = {
         "schema_version": 1,
         "status": "not_applicable",
@@ -433,6 +536,13 @@ def scan(
                     exceptions
                 ).resolve().is_relative_to(workspace):
                     raise SecurityError("exceptions_outside_workspace")
+                if git_policy_path is not None and not Path(
+                    git_policy_path
+                ).resolve().is_relative_to(workspace):
+                    raise SecurityError("git_policy_outside_workspace")
+            policy, policy_digest = git_policy(git_policy_path)
+            if policy:
+                report["git_policy_sha256"] = policy_digest
             phase = "lockfile"
             stage = time.perf_counter()
             if not (project / "pyproject.toml").is_file():
@@ -445,9 +555,22 @@ def scan(
                 metadata = tomllib.loads(metadata_bytes.decode("utf-8"))
             except (ValueError, UnicodeError):
                 raise SecurityError("project_format_invalid") from None
-            expected, unsupported, scanner_lock = lock_inventory(
-                metadata, lock_bytes.decode("utf-8"), public_indexes
+            expected, unsupported, scanner_lock, git_sources = lock_inventory(
+                metadata, lock_bytes.decode("utf-8"), public_indexes, policy
             )
+            if git_sources:
+                report["scan_scope"] = "public_pypi_and_approved_git_commits"
+                report["git_sources"] = [
+                    {
+                        **item,
+                        "source_integrity": "passed",
+                        "advisory_query": "not_executed",
+                    }
+                    for item in git_sources
+                ]
+                report["scope_note"] += (
+                    " Git queries match known commit advisories; they are not source-code audits or proof of advisory availability for a private repository."
+                )
             report["unsupported_dependencies"] = unsupported[:100]
             report["unsupported_dependency_count"] = len(unsupported)
             report["omitted_unsupported_dependencies"] = max(0, len(unsupported) - 100)
@@ -477,7 +600,7 @@ def scan(
             ):
                 raise SecurityError("project_changed_during_check")
             report["exceptions"], native_config = exceptions_policy(exceptions, now)
-            if not expected:
+            if not expected and not git_sources:
                 report["dependencies_scanned"] = 0
                 report["diagnostics"].append("no_third_party_dependencies")
             else:
@@ -515,14 +638,46 @@ def scan(
                     (temp / "osv-scanner.toml").write_text(
                         native_config, encoding="utf-8"
                     )
+                    lockfiles = (
+                        ["--lockfile=" + str(temp / "uv.lock")] if expected else []
+                    )
+                    if git_sources:
+                        native_git = {
+                            "results": [
+                                {
+                                    "packages": [
+                                        {
+                                            "package": {
+                                                "name": repository,
+                                                "commit": commit,
+                                            }
+                                        }
+                                        for repository, commit in sorted(
+                                            {
+                                                (item["repository"], item["commit"])
+                                                for item in git_sources
+                                            }
+                                        )
+                                    ]
+                                }
+                            ]
+                        }
+                        (temp / "osv-scanner.json").write_text(
+                            json.dumps(native_git), encoding="utf-8"
+                        )
+                        lockfiles.append(
+                            "--lockfile=osv-scanner:" + str(temp / "osv-scanner.json")
+                        )
                     stage = time.perf_counter()
                     phase = "vulnerability_query"
+                    for item in report.get("git_sources", []):
+                        item["advisory_query"] = "unavailable"
                     result = runner(
                         [
                             str(scanner),
                             "scan",
                             "source",
-                            "--lockfile=" + str(temp / "uv.lock"),
+                            *lockfiles,
                             "--config=" + str(temp / "osv-scanner.toml"),
                             "--format=json",
                             "--all-packages",
@@ -537,7 +692,9 @@ def scan(
                     report["scanner"]["exit_code"] = result.returncode
                     # Preserve error classification before considering any JSON.
                     if result.returncode not in (0, 1):
-                        scanner_result(b"", expected, result.returncode, max_findings)
+                        scanner_result(
+                            b"", expected, result.returncode, max_findings, git_sources
+                        )
                     if not (temp / "scanner.json").is_file():
                         raise SecurityError("scanner_response_missing")
                     parsed, raw_result = scanner_result(
@@ -545,18 +702,30 @@ def scan(
                         expected,
                         result.returncode,
                         max_findings,
+                        git_sources,
                     )
                     report.update(parsed)
                     report["scanner"]["status"] = "complete"
-                current = fixed_now or dt.datetime.now(dt.timezone.utc)
+                    for item in report.get("git_sources", []):
+                        item["advisory_query"] = "complete"
+                current = fixed_now or dt.datetime.now(dt.UTC)
                 if any(
                     item["active"]
                     and dt.datetime.fromisoformat(item["expires_at"]) <= current
                     for item in report["exceptions"]
                 ):
                     raise SecurityError("exception_expired_during_scan")
-                if _read(project / "uv.lock", MAX_LOCK_BYTES) != lock_bytes:
+                if (
+                    _read(project / "uv.lock", MAX_LOCK_BYTES) != lock_bytes
+                    or _read(project / "pyproject.toml", 1024 * 1024) != metadata_bytes
+                ):
                     raise SecurityError("project_changed_during_scan")
+                if (
+                    git_policy_path is not None
+                    and hashlib.sha256(_read(git_policy_path, 65536)).hexdigest()
+                    != policy_digest
+                ):
+                    raise SecurityError("git_policy_changed_during_scan")
     except SecurityError as error:
         report["status"] = "error"
         report["diagnostics"].append(error.category)

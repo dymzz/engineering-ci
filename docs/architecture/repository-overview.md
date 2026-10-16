@@ -28,7 +28,8 @@ Dagger、GitHub Actions 和本地 CLI 调用。主要职责是可靠执行检查
 | 事件记录与原始归档 | `task_observation.py`、`tracing/` 的 Store/配置/来源/Catalog | 物理写入委托 vesryn-log；原执行事实与领域准入由宿主维护 |
 
 版本一致性和锁文件完整性、已知漏洞扫描是不同检查。锁定私有 Git Commit 不代表当前安全扫描器
-已覆盖该来源；现有漏洞扫描缺口不会因分仓、生成报告或修改 Agent 指令而成为通过。
+已覆盖该来源。显式 Git 策略可启用固定 Commit 的原生已知漏洞查询；未配置、不一致或
+扫描缺失仍失败，不能因分仓、生成报告或修改 Agent 指令而成为通过。
 定义见[依赖安全](dependency-security.md)。
 
 ## 入口与配置
