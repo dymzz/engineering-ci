@@ -41,7 +41,9 @@ def probe_run(seen, calls=None):
         if calls is not None:
             calls.append((args, kwargs))
         if "version" in args:
-            return subprocess.CompletedProcess(args, 0, f"dagger v{ENGINE} 1111111\n", "")
+            return subprocess.CompletedProcess(
+                args, 0, f"dagger v{ENGINE} 1111111\n", ""
+            )
         if args[0] == "git":
             return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(args, 0, environment_json(), "")
@@ -100,9 +102,7 @@ def separation(tmp_path, monkeypatch):
     # The Provider supplies the report parser; the consumer does not carry a copy.
     parser = provider_root / ".dagger/src/engineering_ci/pytest_report.py"
     parser.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(
-        checks.ROOT / ".dagger/src/engineering_ci/pytest_report.py", parser
-    )
+    shutil.copyfile(checks.ROOT / ".dagger/src/engineering_ci/pytest_report.py", parser)
     return provider_root, target, owner
 
 
@@ -229,7 +229,9 @@ def test_provider_owned_checks_refuse_a_foreign_target(separation):
     assert "Provider-owned paths" in entry["reason"]
 
 
-def test_a_consumer_copy_of_the_provider_policy_is_not_required_or_consulted(separation):
+def test_a_consumer_copy_of_the_provider_policy_is_not_required_or_consulted(
+    separation,
+):
     """Copying the Provider's configuration is explicitly not the mechanism."""
     provider_root, target, owner = separation
     (target / "config").mkdir()
@@ -267,12 +269,16 @@ def test_dagger_failure_detail_survives_into_the_report(separation, tmp_path):
 
     def run(args, **kwargs):
         if "version" in args:
-            return subprocess.CompletedProcess(args, 0, f"dagger v{ENGINE} 1111111\n", "")
+            return subprocess.CompletedProcess(
+                args, 0, f"dagger v{ENGINE} 1111111\n", ""
+            )
         if args[0] == "git":
             return subprocess.CompletedProcess(args, 0, "", "")
         if kwargs.get("capture_output"):
             return subprocess.CompletedProcess(args, 0, environment_json(sources), "")
-        kwargs["stderr"].write("Error: failed to solve: config/pipeline.toml not found\n")
+        kwargs["stderr"].write(
+            "Error: failed to solve: config/pipeline.toml not found\n"
+        )
         kwargs["stderr"].flush()
         return subprocess.CompletedProcess(args, 1, "", "")
 
