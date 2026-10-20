@@ -62,3 +62,12 @@ def test_installation_failure_is_not_converted_to_a_successful_probe():
     with pytest.raises(RuntimeError, match="original synchronization failure"):
         auth.sync_dependencies(container, "3.14", object())
     assert len([entry for entry in container.calls if entry[0] == "exec"]) == 1
+
+
+def test_local_packages_do_not_bind_or_extract_git_credentials():
+    container = auth.sync_dependencies(Container(), "3.14", dependency_packages=True)
+    assert not container.secrets
+    assert len(container.calls) == 1
+    assert container.calls[0][1][-1] == "/tmp/engineering-ci-dependency-packages"
+    with pytest.raises(ValueError, match="do not accept Git credentials"):
+        auth.sync_dependencies(Container(), "3.14", object(), dependency_packages=True)

@@ -4,6 +4,8 @@ Engineering CI 提供可复用的 Python CI 能力，结合 Dagger、GitHub Acti
 通过可选 Vesryn Harness 提供 Agent 轨迹归档、标准投影、离线流程分析及独立工具工作流。
 基础 CI/CD 独立运行；领域检查策略和发布门禁保留在本仓库。
 
+Agent 本地工程调用与 GitHub 认证排查见[常用操作](guides/common-tasks.md#github-认证与工程调用入口)；复用当前执行账号的既有登录，并按调用位置区分凭据边界。
+
 ## 文档入口
 
 - [用户指南](guides/README.md) — 首次使用、常用操作、命令和输出参考。

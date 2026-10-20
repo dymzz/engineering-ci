@@ -1,5 +1,7 @@
 # Engineering CI — Agent Instructions
 
+所有访问其他目录的行为都需要手动批准
+
 Engineering CI provides reusable Python CI/CD capabilities through Dagger and GitHub Actions, including checks, delivery, release evidence, workflow artifacts and engineering-domain Providers.
 
 Vesryn provides the optional Agent Harness. vesryn-tool-runtime owns shared tool contracts, registration, discovery, binding and generic invocation coordination.

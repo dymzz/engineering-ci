@@ -37,12 +37,17 @@ def prepare_private_git(container):
     )
 
 
-def sync_dependencies(container, python_version, git_token=None):
+def sync_dependencies(
+    container, python_version, git_token=None, *, dependency_packages=False
+):
+    if dependency_packages and git_token is not None:
+        raise ValueError("Local dependency packages do not accept Git credentials")
     if git_token is not None:
         container = container.with_secret_variable(TOKEN_VARIABLE, git_token)
-    container = container.with_exec(
-        ["python", "/tmp/engineering-ci-uv-sync.py", python_version]
-    )
+    command = ["python", "/tmp/engineering-ci-uv-sync.py", python_version]
+    if dependency_packages:
+        command.append("/tmp/engineering-ci-dependency-packages")
+    container = container.with_exec(command)
     if git_token is not None:
         container = container.without_secret_variable(TOKEN_VARIABLE).with_exec(
             [

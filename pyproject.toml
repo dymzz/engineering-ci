@@ -17,7 +17,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "vesryn-log==0.1.0",
+    "vesryn-log>=0.1.0,<0.2.0",
     "vesryn[trace,mining,telemetry]==0.1.0",
     "cloudevents==2.2.0",
     "psycopg[binary]==3.3.6",
@@ -39,7 +39,7 @@ engineering-ci-dagger = "engineering_ci.workflow_adapters.provider:catalog"
 [project.optional-dependencies]
 harness = ["vesryn==0.1.0"]
 trace = [
-    "vesryn-log[archive]==0.1.0",
+    "vesryn-log[archive]>=0.1.0,<0.2.0",
     "vesryn[trace]==0.1.0",
 ]
 mining = [

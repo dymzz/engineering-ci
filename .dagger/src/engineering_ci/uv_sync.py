@@ -25,9 +25,18 @@ def cache_environment(python_version, lockfile=Path("uv.lock"), *, environment=N
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
-        raise ValueError("Expected one validated Python version")
+    if len(args) not in (1, 2):
+        raise ValueError(
+            "Expected Python version and optional explicit wheel directory"
+        )
     version = args[0]
+    if len(args) == 2:
+        from python_dependency_packages import sync_local_dependencies
+
+        sync_local_dependencies(
+            version, args[1], environment=cache_environment(version)
+        )
+        return
     # Replace this process so uv's exit code/signals remain execution facts.
     # Refresh metadata, including dynamic local builds, when source changed but
     # Dagger imports retained the same filesystem timestamps. Native uv still
