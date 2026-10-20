@@ -39,6 +39,7 @@ class _PytestExecution:
     policy: dict | None = None
     coverage: dict | None = None
     runtime: dict | None = None
+    dependency_packages: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,20 +54,31 @@ class EngineeringCi:
     @function
     async def repository_check_environment(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        capability: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
         git_token: dagger.Secret | None = None,
     ) -> str:
-        """Inspect actual Linux tools and inputs without executing repository checks."""
-        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
+        """Inspect actual Linux tools and inputs without executing repository checks.
+
+        source is the tree to check; capability is this module's own checkout, which
+        supplies the Pipeline policy and the check code. They may be the same directory.
+        """
+        return await pr_checks.environment(source, capability.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     async def repository_check_artifacts(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        capability: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
         git_token: dagger.Secret | None = None,
     ) -> dagger.Directory:
-        """Export one repository check execution, including failures and original exits."""
-        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
+        """Export one repository check execution, including failures and original exits.
+
+        source is the consumer tree to check; capability is this module's own checkout,
+        which supplies the Pipeline policy and the check code. The target never has to
+        carry a copy of the Provider's configuration.
+        """
+        return await pr_checks.artifacts(source, capability.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     def container_echo(self, string_arg: str) -> dagger.Container:
@@ -91,6 +103,7 @@ class EngineeringCi:
         python_version: str,
         sync_dependencies: bool = True,
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> dagger.Container:
         """Create an isolated uv environment for a Python project."""
 
@@ -107,6 +120,8 @@ class EngineeringCi:
             f"python{python_version}-trixie-slim"
         )
 
+        if dependency_packages is not None and git_token is not None:
+            raise ValueError("Local dependency packages do not accept Git credentials")
         base = dag.container().from_(image)
         if git_token is not None:
             base = prepare_private_git(base)
@@ -136,7 +151,13 @@ class EngineeringCi:
             )
             .with_workdir("/workspace")
         )
-        return (sync_python_dependencies(container, python_version, git_token)
+        if dependency_packages is not None:
+            container = (container
+                .with_directory("/tmp/engineering-ci-dependency-packages", dependency_packages)
+                .with_new_file("/tmp/python_dependency_packages.py",
+                    Path(__file__).with_name("python_dependency_packages.py").read_text(encoding="utf-8")))
+        return (sync_python_dependencies(container, python_version, git_token,
+                    dependency_packages=dependency_packages is not None)
                 if sync_dependencies else container)
 
     @function
@@ -146,11 +167,12 @@ class EngineeringCi:
         python_version: str,
         lint_path: str = "src",
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> str:
         """Run Ruff against a uv-managed Python project."""
 
         return await (
-            self._uv_container(source, python_version, git_token=git_token)
+            self._uv_container(source, python_version, git_token=git_token, dependency_packages=dependency_packages)
             .with_exec([
                 "uv", "run", "--no-sync",
                 "ruff", "check", lint_path,
@@ -165,11 +187,12 @@ class EngineeringCi:
         python_version: str,
         format_path: str = "src",
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> str:
         """Check Ruff formatting without modifying consumer source files."""
 
         return await (
-            self._uv_container(source, python_version, git_token=git_token)
+            self._uv_container(source, python_version, git_token=git_token, dependency_packages=dependency_packages)
             .with_exec([
                 "uv", "run", "--no-sync",
                 "ruff", "format", "--check", format_path,
@@ -189,13 +212,14 @@ class EngineeringCi:
         _prepared_container: dagger.Container | None = None,
         _matrix_runtime: bool = False,
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
         if not 1 <= max_failures <= 50:
             raise ValueError("max_failures must be between 1 and 50")
         policy = test_policy(test_path, markers, coverage_source, min_coverage)
-        prepared = _prepared_container if _prepared_container is not None else self._uv_container(source, python_version, git_token=git_token)
+        prepared = _prepared_container if _prepared_container is not None else self._uv_container(source, python_version, git_token=git_token, dependency_packages=dependency_packages)
         arguments = pytest_arguments(policy, report_path)
         if _matrix_runtime:
             prepared = prepared.with_new_file("/tmp/engineering-ci-matrix-runtime.py",
@@ -238,8 +262,14 @@ class EngineeringCi:
                 "python", "/tmp/engineering-ci-pytest-ci.py", "read-runtime",
                 "/tmp/engineering-ci-pytest-runtime.json",
             ]).stdout())
+        packages_receipt = (await container.file("/tmp/engineering-ci-dependency-packages.json").contents()
+                            if dependency_packages is not None else None)
+        if packages_receipt is not None:
+            receipt = json.loads(packages_receipt)
+            receipt["source_digest"] = await source.digest()
+            packages_receipt = json.dumps(receipt, sort_keys=True)
         return _PytestExecution(exit_code, report, output, xml, container,
-                                policy if markers or coverage_source else None, coverage, runtime)
+                                policy if markers or coverage_source else None, coverage, runtime, packages_receipt)
 
     def _require_pytest_success(self, execution: _PytestExecution) -> str:
         if execution.exit_code != 0:
@@ -257,6 +287,8 @@ class EngineeringCi:
             .with_new_file("report.json", json.dumps(execution.report, ensure_ascii=False, sort_keys=True))
             .with_new_file("summary.md", markdown_summary(execution.report))
             .with_new_file("ci.py", Path(__file__).with_name("pytest_ci.py").read_text(encoding="utf-8")))
+        if execution.dependency_packages is not None:
+            directory = directory.with_new_file("dependency-packages.json", execution.dependency_packages)
         if execution.xml:
             directory = directory.with_new_file("junit.xml", execution.xml)
         if execution.policy:
@@ -274,6 +306,7 @@ class EngineeringCi:
         test_path: str = "tests", max_failures: int = 10,
         markers: str = "", coverage_source: str = "", min_coverage: str = "",
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> dagger.Directory:
         """Run pytest once; export original status, JSON, XML and summary even on failure.
 
@@ -281,7 +314,7 @@ class EngineeringCi:
         Do not also call python_test on this source.
         """
         execution = await self._run_pytest(source, python_version, test_path, max_failures,
-                                          markers, coverage_source, min_coverage, git_token=git_token)
+                                          markers, coverage_source, min_coverage, git_token=git_token, dependency_packages=dependency_packages)
         return self._pytest_bundle(execution)
 
     @function
@@ -294,11 +327,12 @@ class EngineeringCi:
         coverage_source: str = "",
         min_coverage: str = "",
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> str:
         """Run pytest; fail CI with a bounded JUnit-based failure summary."""
         execution = await self._run_pytest(source, python_version, test_path,
                                           markers=markers, coverage_source=coverage_source,
-                                          min_coverage=min_coverage, git_token=git_token)
+                                          min_coverage=min_coverage, git_token=git_token, dependency_packages=dependency_packages)
         return self._require_pytest_success(execution)
 
     @function
@@ -312,6 +346,7 @@ class EngineeringCi:
         coverage_source: str = "",
         min_coverage: str = "",
         git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
     ) -> str:
         """Return JSON summary for both passing and failing pytest runs.
 
@@ -321,7 +356,7 @@ class EngineeringCi:
         """
         execution = await self._run_pytest(
             source, python_version, test_path, max_failures=max_failures,
-            markers=markers, coverage_source=coverage_source, min_coverage=min_coverage, git_token=git_token,
+            markers=markers, coverage_source=coverage_source, min_coverage=min_coverage, git_token=git_token, dependency_packages=dependency_packages,
         )
         return json.dumps(execution.report, ensure_ascii=False, sort_keys=True)
 

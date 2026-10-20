@@ -70,6 +70,35 @@ uv run --locked engineering-ci workflow resume $execution --json .test-tools/bou
 旧记录。直接对带 Binding 的定义执行 `workflow run` 也保留这些准入条件。
 完整契约见[统一目录与 Binding](../docs/architecture/harness-integration/registry.md#持久选择-binding)。
 
+## 检查另一个仓库而不是本 checkout
+
+省略这两个选项时，Provider 来源、检查目标和输出归属都是当前 checkout。
+显式给出时，engineering-ci 提供策略与执行实现，被检查的是消费者目录，
+结果与日志写入调用方批准的目录，不会写回 Provider 源仓。
+
+```powershell
+$consumer = 'D:/workspace/consumer'
+$evidence = Join-Path $consumer '.test-tools'
+
+uv run --locked engineering-ci checks pytest `
+  --check-target $consumer --output-root $evidence `
+  --json (Join-Path $evidence 'checks.json') --executor dagger
+$checkExit = $LASTEXITCODE
+
+uv run --locked engineering-ci workflow select --tool python.pytest `
+  --provider engineering-ci-dagger `
+  --check-target $consumer --output-root $evidence `
+  --out .test-tools/workflow-bindings --json .test-tools/selection.json
+```
+
+消费者不需要携带任何 Provider 配置：策略与检查实现由 Provider 覆盖叠加到被检查树上，
+策略决定仍在本仓库。分离执行只适用于 `pytest` 与 `lock`——`ruff-lint`、
+`ruff-format`、`version` 检查的是本仓自身的文件，对外部 target 没有答案，
+会以 `environment_error` 明确拒绝。
+报告的 `identity.root` 是被检查的消费者目录，`identity.provider` 记录提供策略的
+Provider 与策略摘要。`workflow run/resume` 的 `--out` 须位于 `--output-root` 内。
+细节见[Provider 来源、检查目标与输出归属](../docs/architecture/harness-integration/registry.md#provider-来源检查目标与输出归属)。
+
 ## 完整 PR 检查：生成、审查、运行
 
 ```powershell

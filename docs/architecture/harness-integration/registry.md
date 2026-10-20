@@ -24,6 +24,69 @@ Vesryn 通过 Provider 加载 ToolSpec 和绑定，经原 ChecksAdapter 调用 D
 原 Pipeline、检查结果、报告和领域质量策略继续在本仓库解释。该 Provider 拒绝 native
 请求；原 `engineering-ci` entry point 和原 checks/release 的行为保持兼容。
 
+## Provider 来源、检查目标与输出归属
+
+ECI-002 之后同一目录不再同时承担三个角色。它们是三个独立值，默认全部相同，
+所以现有调用方、既有 Binding 和既有契约摘要完全不变。
+
+| 角色 | 参数 | 含义 |
+| --- | --- | --- |
+| Provider 来源 | `root` | 提供 Pipeline 策略、检查实现与 Dagger 模块的 engineering-ci checkout |
+| 检查目标 | `target` | 实际被指纹化并执行的消费者源码目录 |
+| 输出归属 | `output_root` | 本次结果、报告与日志的落盘位置，由调用方批准 |
+
+公开签名（均为关键字参数，默认 `None`，`None` 表示沿用 `root`）：
+
+```python
+engineering_ci.workflow_adapters.provider.catalog(root, *, target=None, output_root=None)
+engineering_ci.workflow_adapters.provider.ProviderAdapter(root, specs, *, target=None, output_root=None)
+engineering_ci.workflow_adapters.checks.ChecksAdapter(root, *, runner=None, executor=None, target=None, output_root=None)
+engineering_ci.workflow_adapters.checks.dagger_catalog(root=checks.ROOT, *, runner=None, target=None, output_root=None)
+engineering_ci.checks.execute(selectors, *, root=ROOT, target=None, output_root=None, ...)
+engineering_ci.dagger_checks.execute(selectors, *, root=checks.ROOT, target=None, output_root=None, ...)
+engineering_ci.workflow_adapters.binding.binding_catalog(provider, root, *, target=None, output_root=None)
+```
+
+`registry.provider(name, root)` 仍只传递 `root`，因此既有 Vesryn 调用不变。
+`binding_catalog` 在给定 target/output_root 时把它们绑定到已加载的适配器，
+再由 Provider 传输带进子进程；契约摘要不变。
+
+执行身份记录三者的关系：未分离时 identity 只有 `root`；分离后 `root` 是被检查的
+`target`，并新增 `provider.root` 与 `provider.policy_sha256`。因此报告可以直接证明
+被检查的是消费者文件，而策略仍由 Provider 解释。Junit 写入 `target`，报告与
+证据写入 `output_root`；结果不会写回 Provider 源仓。
+
+Dagger 侧沿用既有语义：模块仍从工作目录（即 Provider checkout）加载，
+函数参数 `--source` 才是被挂载并检查的目录。当 target 与 Provider 不同时，
+`--source` 取消费者的绝对路径；未分离时仍为 `.`。
+
+消费者不需要携带任何 Provider 配置。`repository-check-*` 另有 `capability`
+参数（默认 `/`，即模块自身 checkout），容器把 Provider 的 `config/pipeline.toml`
+与 `src/engineering_ci` 覆盖叠加到被检查树上：消费者的文件优先，策略与实现来自
+Provider。策略决定仍在本仓库，不下放到 Vesryn。宿主对 Dagger 调用同时传
+`--source <target>` 与 `--capability .`；JUnit 解析器同样从 Provider 读取，
+消费者无需携带副本。
+
+分离执行只适用于 `TARGET_PORTABLE`（`pytest`、`lock`）——这两个只依赖被检查树
+自身的项目文件。`ruff-lint`、`ruff-format`、`version` 的 scope 写的是本仓自身的
+文件，对外部 target 没有答案，因此分离执行时以 `environment_error` 明确拒绝，
+不产出看似有效的结果。
+
+CLI 入口新增 `--check-target` 与 `--output-root`：
+
+```powershell
+engineering-ci checks pytest --check-target D:/workspace/consumer --output-root D:/workspace/consumer/.test-tools --json D:/workspace/consumer/.test-tools/checks.json --executor native
+engineering-ci workflow select --tool python.pytest --provider engineering-ci-dagger --check-target D:/workspace/consumer --output-root D:/workspace/consumer/.test-tools
+```
+
+`workflow run/resume/evidence` 的执行目录仍由 `--out` 显式给出，
+并须位于 `--output-root` 之内，否则以“approved output root”拒绝。
+`checks inspect` 直接读取报告内记录的 roots，重新核验同一次分离。
+
+`ToolResult.outputs` 新增 `check_target`，指向本次结果描述的目录；
+`report` 与 `evidence` 的 `path` 相对 `output_root`，不再相对 Provider 源仓。
+这是领域工具输出契约的新增字段，旧 Binding 需要显式重新选择，不能冒充既有契约。
+
 旧 `python.*`、`uv.lock-check` 等 Tool ID 是项目检查/证据契约，不是裸 CLI 注册。
 保留它们及历史 Workflow 身份；统一目录标明 engineering 领域，不批量改写旧记录。
 Vesryn 与本仓库均沿用同一 ToolSpec、ToolAdapter、Catalog，不新增平行类型。

@@ -24,8 +24,20 @@ from vesryn_tool_runtime.schemas import RESULT, validate
 
 
 class ProviderAdapter:
-    def __init__(self, root, specs):
-        self.root, self.specs = Path(root).resolve(), specs
+    """Reach the domain Provider from one checkout while checking another.
+
+    root is the Provider source that supplies the contract; target is the consumer
+    tree that is checked; output_root owns this run's evidence. A caller that supplies
+    only root keeps the historical single-directory behaviour exactly.
+    """
+
+    def __init__(self, root, specs, *, target=None, output_root=None):
+        self.root = Path(root).resolve()
+        self.target = Path(target).resolve() if target is not None else self.root
+        self.output_root = (
+            Path(output_root).resolve() if output_root is not None else self.target
+        )
+        self.specs = specs
 
     def request(self, action, value=None, run_dir=None):
         environment = os.environ.copy()
@@ -37,10 +49,14 @@ class ProviderAdapter:
             action,
             "--root",
             str(self.root),
+            "--target",
+            str(self.target),
+            "--output-root",
+            str(self.output_root),
         ]
         try:
             with tempfile.TemporaryDirectory(
-                prefix=".domain-provider-", dir=run_dir or self.root
+                prefix=".domain-provider-", dir=run_dir or self.output_root
             ) as directory:
                 output = Path(directory) / "response.json"
                 if value is not None:
@@ -103,14 +119,15 @@ class ProviderAdapter:
             }
 
 
-def catalog(root):
+def catalog(root, *, target=None, output_root=None):
     root = Path(root).resolve()
     if not (root / "src/engineering_ci/workflow_adapters/provider.py").is_file():
         raise WorkflowError(
             "Domain Provider requires its explicit primary source checkout"
         )
-    result, adapter = Catalog(), ProviderAdapter(root, {})
+    result = Catalog()
     result.provider_name = "engineering-ci-dagger"
+    adapter = ProviderAdapter(root, {}, target=target, output_root=output_root)
     value = adapter.request("tools")
     if (
         value.get("schema_version") != 1
@@ -135,6 +152,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("tools", "invoke"))
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument(
+        "--target",
+        type=Path,
+        help="Consumer source directory to check; defaults to the Provider checkout",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        help="Consumer-approved directory owning this run's evidence",
+    )
     parser.add_argument("--request", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -146,21 +173,30 @@ def main(argv=None):
                 kwargs["stdout"] = sys.stderr
             return subprocess.run(command, check=kwargs.pop("check", False), **kwargs)
 
+        root = args.root.resolve()
+        target = args.target.resolve() if args.target else root
+        owner = args.output_root.resolve() if args.output_root else target
         tools = dagger_catalog(
-            args.root, runner=partial(checks.run_checks, run=original_process)
+            root,
+            runner=partial(checks.run_checks, run=original_process),
+            target=target,
+            output_root=owner,
         )
         if args.action == "tools":
             value = {
                 "schema_version": 1,
                 "kind": "domain-provider-catalog",
+                "provider_source": str(root),
+                "check_target": str(target),
+                "output_root": str(owner),
                 "tools": tools.documents(),
             }
         else:
             value = read(args.request)
             directory = Path(value["context"]["run_dir"]).resolve()
-            if not directory.is_relative_to(args.root.resolve()):
+            if not directory.is_relative_to(owner):
                 raise WorkflowError(
-                    "Domain evidence must stay inside the selected root"
+                    "Domain evidence must stay inside the approved output root"
                 )
             calls, adapter = [], None
             for entry in value["calls"]:

@@ -42,6 +42,9 @@ SCOPES = {
     for name, spec in PIPELINE["checks"].items()
 }
 COMMON_INPUTS = tuple(PIPELINE["inputs"]["common"])
+# Only these checks answer a question about the checked tree alone. Ruff, format and
+# version name engineering-ci's own files in their scope, so they stay Provider-owned.
+TARGET_PORTABLE = frozenset({"pytest", "lock"})
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".venv", ".git"}
 VERSION = re.compile(r"\b\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9.+-]*)")
 
@@ -388,7 +391,8 @@ def preflight(name, root, run, which, environ):
     return tools
 
 
-def identity(root, name, parameters, tools, environ):
+def identity(root, name, parameters, tools, environ, *, provider=None):
+    """Bind the tree that was actually executed, not the directory that owns the code."""
     inputs, observations = snapshot(root, name)
     value = {
         "root": str(root),
@@ -400,14 +404,36 @@ def identity(root, name, parameters, tools, environ):
         "scope": list(dict.fromkeys((*COMMON_INPUTS, *SCOPES[name]))),
         "environment": environment_identity(environ),
     }
+    if provider is not None and Path(provider).resolve() != Path(root).resolve():
+        # The Provider checkout only supplies the policy and the check code. Keep both
+        # identities so the report proves which files were checked and which contract
+        # selected them, instead of leaving one directory serving both roles.
+        value["provider"] = {
+            "root": str(Path(provider).resolve()),
+            "policy_sha256": digest(PIPELINE),
+        }
     value["sha256"] = digest(value)
     return value, observations
 
 
-def pytest_counts(root, junit, exit_code):
-    """Read the existing JUnit through the existing report parser, without rerunning pytest."""
+def absent_inputs(name, target):
+    """Declared check inputs an explicitly selected target does not provide."""
+    return sorted(
+        scope
+        for scope in dict.fromkeys((*COMMON_INPUTS, *SCOPES[name]))
+        if not (target / scope).exists()
+    )
+
+
+def pytest_counts(root, junit, exit_code, capability=None):
+    """Read the existing JUnit through the existing report parser, without rerunning pytest.
+
+    The parser is Provider implementation code, so it is read from the Provider
+    checkout; a consumer target never has to carry a copy of it.
+    """
     spec = importlib.util.spec_from_file_location(
-        "checks_pytest_report", root / ".dagger/src/engineering_ci/pytest_report.py"
+        "checks_pytest_report",
+        Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -498,6 +524,8 @@ def execute(
     selectors,
     *,
     root=ROOT,
+    target=None,
+    output_root=None,
     coverage=False,
     junit="core-junit.xml",
     output=None,
@@ -506,13 +534,20 @@ def execute(
     environ=None,
     reuse=False,
 ):
+    # root is the Provider checkout: it supplies the Pipeline policy and the check
+    # code. target is the tree that is actually checked. They are one directory
+    # unless a caller explicitly separates them, so existing entry points keep
+    # their current behaviour and their current identity documents.
     root = root.resolve()
-    junit_path = report_path(root / junit, root)
+    target = Path(target).resolve() if target is not None else root
+    provider = root if target != root else None
+    owner = Path(output_root).resolve() if output_root is not None else target
+    junit_path = report_path(target / junit, target)
     if output:
-        output = report_path(output, root)
+        output = report_path(output, owner)
         if output == junit_path or output in {
-            root / "core-coverage.xml",
-            root / "core-coverage.json",
+            target / "core-coverage.xml",
+            target / "core-coverage.json",
         }:
             raise ValueError("Local JSON must not overwrite JUnit or Coverage evidence")
     environ = execution_environment(root, environ)
@@ -561,10 +596,20 @@ def execute(
         name = entry["name"]
         launching = False
         try:
+            if provider is not None and name not in TARGET_PORTABLE:
+                # Ruff, format and version answer questions about the Provider's own
+                # files. Refusing keeps a foreign target from producing a meaningless
+                # result instead of an honest "this check has no answer here".
+                raise PreconditionError(
+                    "environment_error",
+                    f"{name} inspects Provider-owned paths; run it against the Provider checkout",
+                )
             # Observe inputs before preparation as well as before the real check.
-            initial, initial_observations = snapshot(root, name)
-            tools = preflight(name, root, run, which, environ)
-            before, observations = identity(root, name, parameters, tools, environ)
+            initial, initial_observations = snapshot(target, name)
+            tools = preflight(name, target, run, which, environ)
+            before, observations = identity(
+                target, name, parameters, tools, environ, provider=provider
+            )
             if initial != before["inputs"] or initial_observations != observations:
                 raise PreconditionError(
                     "stale", "Inputs changed while preparing the check"
@@ -605,7 +650,7 @@ def execute(
                     f"[{name}] executing: saved result does not match this input, tool/environment or request",
                     flush=True,
                 )
-            junit_path = root / junit
+            junit_path = target / junit
             old_xml = (
                 junit_path.stat() if name == "pytest" and junit_path.exists() else None
             )
@@ -613,15 +658,15 @@ def execute(
             entry["executed"] = True
             entry["executed_this_invocation"] = True
             launching = True
-            result = run(before["command"], cwd=root, env=environ, check=False)
+            result = run(before["command"], cwd=target, env=environ, check=False)
             launching = False
             entry["exit_code"] = result.returncode
             code = _process_exit_code(result.returncode)
             entry["execution_status"] = "passed" if code == 0 else "failed"
             entry["status"] = "passed" if code == 0 else "failed"
-            after_tools = preflight(name, root, run, which, environ)
+            after_tools = preflight(name, target, run, which, environ)
             after, after_observations = identity(
-                root, name, parameters, after_tools, environ
+                target, name, parameters, after_tools, environ, provider=provider
             )
             stable = before == after and observations == after_observations
             entry["input_stable"] = stable
@@ -640,7 +685,7 @@ def execute(
                     raise PreconditionError(
                         "report_unavailable", "pytest did not replace its JUnit report"
                     )
-                counts = pytest_counts(root, junit, result.returncode)
+                counts = pytest_counts(target, junit, result.returncode, provider)
                 if (
                     counts is None
                     or not counts["tests"]
@@ -655,7 +700,7 @@ def execute(
                 entry["counts"] = counts
                 entry["completeness"] = "complete"
                 if counts["skipped"]:
-                    optional = optional_pytest_skips(root, junit)
+                    optional = optional_pytest_skips(target, junit)
                     if optional:
                         entry["optional_tests"] = {
                             "aria2": {"status": "not_enabled", "tests": optional}
@@ -713,9 +758,9 @@ def execute(
         if entry["name"] not in completed_observations:
             continue
         try:
-            tools = preflight(entry["name"], root, run, which, environ)
+            tools = preflight(entry["name"], target, run, which, environ)
             current, observations = identity(
-                root, entry["name"], parameters, tools, environ
+                target, entry["name"], parameters, tools, environ, provider=provider
             )
             fresh = (
                 current == entry["identity"]
@@ -864,6 +909,16 @@ def main(argv=None, *, executor=None):
         help="Override the configured check environment",
     )
     parser.add_argument(
+        "--check-target",
+        type=Path,
+        help="Consumer source directory to check instead of this checkout",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        help="Consumer-approved directory owning this run's report and logs",
+    )
+    parser.add_argument(
         "--json", type=Path, help="Atomically write local results, including failures"
     )
     parser.add_argument(
@@ -876,8 +931,10 @@ def main(argv=None, *, executor=None):
     )
     args = parser.parse_args(argv)
     try:
+        target = args.check_target.resolve() if args.check_target else ROOT
+        owner = args.output_root.resolve() if args.output_root else target
         if args.json:
-            args.json = report_path(args.json, ROOT)
+            args.json = report_path(args.json, owner)
         if args.checks == ["toolchain"]:
             versions = {
                 "uv_version": UV_VERSION,
@@ -898,7 +955,7 @@ def main(argv=None, *, executor=None):
                 raise ValueError("inspect requires one report path")
             if args.json and args.json.resolve() == Path(args.checks[1]).resolve():
                 raise ValueError("Inspection must not overwrite the original report")
-            result, code = inspect(Path(args.checks[1]))
+            result, code = inspect(Path(args.checks[1]), root=target)
             print(json.dumps(result, indent=2, sort_keys=True))
             if args.json:
                 atomic_json(args.json, result)
@@ -911,6 +968,8 @@ def main(argv=None, *, executor=None):
         _, code = run_checks(
             args.checks,
             executor=executor or args.executor,
+            target=args.check_target,
+            output_root=args.output_root,
             coverage=args.coverage,
             junit=args.junit,
             output=args.json,

@@ -37,9 +37,21 @@ SOURCE_EXCLUDES = [
 ]
 
 
-async def container(source, executable_paths, git_token=None):
+def compose(source, capability):
+    """Overlay the Provider's own capability onto the consumer tree.
+
+    The checked tree is the consumer's. The Pipeline policy and the check
+    implementation come from the Provider, which owns them; the consumer never has to
+    carry a copy of the Provider's configuration. When both arguments are the same
+    directory the overlay is a no-op, so the single-directory behaviour is unchanged.
+    """
+    return capability.with_directory("/", source, exclude=SOURCE_EXCLUDES)
+
+
+async def container(source, capability, executable_paths, git_token=None):
     """Prepare pinned uv/Python plus the native process dependencies used by core tests."""
-    data = tomllib.loads(await source.file("config/pipeline.toml").contents())
+    workspace = compose(source, capability)
+    data = tomllib.loads(await workspace.file("config/pipeline.toml").contents())
     uv, python = data["toolchain"]["uv"], data["toolchain"]["python"]
     if not re.fullmatch(r"\d+\.\d+\.\d+", uv) or not re.fullmatch(r"3\.\d+", python):
         raise ValueError("Invalid container toolchain")
@@ -47,7 +59,7 @@ async def container(source, executable_paths, git_token=None):
     # Validate through the shared standard-library entrypoint before installing tools.
     # Evaluate this branch, then keep the tool layer independent of source changes.
     plan = json.loads(
-        await image.with_directory("/workspace", source, exclude=SOURCE_EXCLUDES)
+        await image.with_directory("/workspace", workspace, exclude=SOURCE_EXCLUDES)
         .with_workdir("/workspace")
         .with_env_variable("PYTHONPATH", "/workspace/src")
         .with_env_variable("PYTHONDONTWRITEBYTECODE", "1")
@@ -93,7 +105,7 @@ async def container(source, executable_paths, git_token=None):
         ).hexdigest(),
     }
     result = base.with_directory(
-        "/workspace", source, exclude=SOURCE_EXCLUDES
+        "/workspace", workspace, exclude=SOURCE_EXCLUDES
     ).with_workdir("/workspace")
     paths = json.loads(executable_paths)
     if not isinstance(paths, list) or any(
@@ -125,8 +137,8 @@ async def container(source, executable_paths, git_token=None):
     return result, json.dumps(runtime, sort_keys=True)
 
 
-async def environment(source, request, executable_paths, git_token=None):
-    prepared, runtime = await container(source, executable_paths, git_token)
+async def environment(source, capability, request, executable_paths, git_token=None):
+    prepared, runtime = await container(source, capability, executable_paths, git_token)
     result = prepared.with_exec(
         [
             "python",
@@ -144,9 +156,9 @@ async def environment(source, request, executable_paths, git_token=None):
     return await result.file("/evidence/environment.json").contents()
 
 
-async def artifacts(source, request, executable_paths, git_token=None):
+async def artifacts(source, capability, request, executable_paths, git_token=None):
     """Build independent check branches; Dagger resolves their shared dependencies."""
-    prepared, runtime = await container(source, executable_paths, git_token)
+    prepared, runtime = await container(source, capability, executable_paths, git_token)
     plan = json.loads(
         await prepared.with_exec(
             [

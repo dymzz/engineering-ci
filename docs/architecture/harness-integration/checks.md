@@ -5,6 +5,13 @@
 后续将检查执行图交给原生 Dagger Checks；本次只迁移文档，不改变执行行为。
 现有 Tool ID、生成定义、结果和失败/恢复语义继续有效。
 
+Provider 来源（提供 Pipeline 策略与检查实现）、检查目标（实际被执行的消费者目录）
+和输出归属（本次结果与日志的落盘位置）是三个独立值，默认相同。
+被检查的树不再由 Provider 所在 checkout 推导，详见
+[Provider 来源、检查目标与输出归属](registry.md#provider-来源检查目标与输出归属)。
+策略仍由 engineering-ci 解释：消费者不携带策略副本，Provider 的策略与实现
+覆盖叠加到被检查树，消费者的文件优先。
+
 ## 现有系统与新能力的关系
 
 已有[CLI 边界](../cli-boundaries.md)、[本地检查](../local-checks.md)、

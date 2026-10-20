@@ -127,6 +127,87 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 当前 Python 容器使用 minor 版本镜像标签，未按镜像 digest 固定；锁文件与 Engine 固定
 不等于整套环境逐字节重现。验收记录实际版本与结果，不承诺未来标签内容不变。
 
+### 模块来源与被检查目录
+
+`dagger api call` 的 `--source` 绑定函数的 source Directory 参数，模块本身从工作目录
+（或 `--no-load-module module-source --ref-string <ref>`）解析。两者因此可以不同：
+宿主用工作目录提供 engineering-ci 的 Dagger 模块，用 `--source` 指向消费者目录。
+
+`repository-check-environment` 与 `repository-check-artifacts` 的 source 参数默认值
+`DefaultPath("/")` 就是模块根目录，即未分离时的原有行为。两者另有一个 `capability`
+参数，同为 `DefaultPath("/")`，表示模块自身的 checkout——它提供 Pipeline 策略与
+检查实现。消费者不需要携带这两者的副本：`--capability` 指向的目录会被覆盖叠加到
+`--source` 指定的被检查树上，消费者的文件优先。两者都是本模块根目录时，叠加是
+恒等操作，既有行为不变。
+
+分离后的调用形态为：
+
+```bash
+dagger api call repository-check-artifacts \
+  --source /abs/path/to/consumer --capability . --dagger-lock dagger.lock \
+  --request '{"selectors":["pytest"],"coverage":false,"junit":"core-junit.xml"}' \
+  --executable-paths '[]' export --path /abs/output/bundle
+```
+
+被挂载并检查的是 `--source` 指定的目录；`--executable-paths` 的 Git 模式也随之取自
+该目录。容器执行的 stderr 会同时写入宿主侧 `transport-stderr.log` 并进入证据包，
+失败时原文进入报告的 `reason`，不只保留退出码。
+宿主侧由 `dagger_checks` 负责这套区分，见
+[Provider 来源、检查目标与输出归属](../architecture/harness-integration/registry.md#provider-来源检查目标与输出归属)。
+
+### 按执行位置选择 GitHub 认证入口
+
+engineering-ci 提供工程检查、CI/CD 策略和结果证据；认证由实际执行位置和调用方配置决定。
+开始排查时先记录入口、目标仓库、执行账号、Dagger 阶段及原始退出，不能只报“缺 token”。
+
+| 调用环节 | 使用的身份/凭据 | 不代表什么 |
+| --- | --- | --- |
+| 宿主 gh、使用 gh 的 host 工具 | 当前执行账号的既有 gh 登录、目标仓访问和宿主许可 | 另一个终端登录成功不证明本进程能读配置或 keyring |
+| Dagger 拉取私有模块源 | 调用方 Dagger/Git 对模块/ref 的访问 | 容器 Python git-token 不能证明模块加载已认证 |
+| 容器安装私有 Python Git 依赖 | 既有 git-token: Secret，只附加到依赖同步阶段 | 不作为后续业务 GitHub 工具的默认身份 |
+| 显式本地 wheel | 所选私有 Python 包不从 Git 下载 | 公共包/镜像仍可能需要网络，其他认证路径并未因此验证 |
+| 容器业务 GitHub API | 具体工具声明的身份、Secret 与操作权限 | 不自动继承宿主登录或依赖安装 Secret |
+| GitHub Actions | 调用方 Workflow 的 Secret/permissions 与仓库/组织访问规则 | 变量存在不证明可访问全部私有仓 |
+
+在**实际调用的同一执行上下文**先做不显示秘密的只读诊断：
+
+```powershell
+gh auth status --active --hostname github.com
+$authExit = $LASTEXITCODE
+if ($authExit -ne 0) { exit $authExit }
+gh repo view dymzz/engineering-ci --json nameWithOwner --jq .nameWithOwner
+$repositoryExit = $LASTEXITCODE
+exit $repositoryExit
+```
+
+配置文件/凭据存储的 Access is denied 属于执行上下文访问被拒，尚不能认定账号无效。
+使用宿主正常审批取得该次只读访问后再检查；不修改 ACL、沙箱、账号或重新登录来绕过。
+网络被拒、目标仓无权、账号缺失/失效和 Secret 未绑定分别定位；只有确认账号缺失/失效时
+才由用户选择正常登录。不要用 --show-token 或 auth token 将令牌打印给 Agent/用户。
+
+本仓已配置的固定检查入口为：
+
+```powershell
+uv run --locked engineering-ci checks tests --executor dagger --json .test-tools/checks/tests.json
+$checkExit = $LASTEXITCODE
+exit $checkExit
+```
+
+此入口在包含 pytest 的检查路径复用 dagger_checks.git_secret_options：仅为批准的固定
+Git 来源使用已有 ENGINEERING_CI_READ_TOKEN，或由内部桥受控读取当前 gh 登录到子进程环境，
+再以 env: 地址交给 Dagger Secret。令牌不作为普通参数、报告或文件输出；消费者不 import
+这个私有 helper。检查未包含 pytest 时，不推断该桥已为其他调用配置认证。
+
+直接调用 Dagger 单版本函数或消费者的 dagger check 不会自动经过这个宿主 CLI 桥。
+它们按公开 git-token 参数或调用方 dagger.toml settings 接收既有 Secret 绑定；缺绑定时
+报告具体入口/地址/阶段。不要要求用户把令牌粘进对话，也不把 Secret 塞进 ToolSpec inputs。
+本地工作树验证使用明确的 dependency-packages 输入；不为解决认证问题切换到旧远端代码。
+
+官方依据：[gh auth status](https://cli.github.com/manual/gh_auth_status)、
+[gh auth login](https://cli.github.com/manual/gh_auth_login)、
+[Git credential helper](https://cli.github.com/manual/gh_auth_setup-git)。
+以下私有 Python 安装契约与后面的本地 wheel 契约分别适用，不互相代替验收。
+
 ### 私有 Python Git 依赖
 
 单版本 `python-lint`、`python-format-check`、`python-test`、`python-test-report` 和
@@ -134,7 +215,7 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 安装之后移除 Secret，并在探测和测试前断言环境中不存在该凭据。Git helper 仅匹配
 GitHub HTTPS，配置只含环境变量引用，不保存 token。安装失败保留原始失败。
 
-宿主统一检查目前只为清单中固定 SHA 的 `dymzz/vesryn` 与 `dymzz/vesryn-log`
+宿主统一检查目前只为清单中固定 SHA 的 `dymzz/vesryn`、`dymzz/vesryn-log` 与 `dymzz/vesryn-tool-runtime`
 来源绑定既有只读凭据。私有 Git 包的 uv source 必须在每个消费者中显式声明，
 不会从另一个包的开发配置传递。单版本 API 的新增参数不改变 Matrix 的现有接口。
 
@@ -154,3 +235,19 @@ CLI `--git-token env:ENGINEERING_CI_READ_TOKEN` 注入。Python 依赖安装仅�
 Dagger Secret；后续容器测试不会继承宿主环境。
 
 构造器和 settings 的语义见 [Dagger module wiring](https://docs.dagger.io/config/module-wiring/)。
+
+## 显式本地组件制品
+
+既有 `python-lint`、`python-format-check`、`python-test`、`python-test-report` 和
+`python-test-artifacts` 接受可选 `dependency-packages: Directory`，其内容是明确选择的
+wheel。未提供时继续使用原有锁定同步/Secret 接口；本地模式不同时接受 git-token。
+
+本地模式保留锁内公共依赖，排除已提供的 Git 包，再用 `uv pip install --no-sources` 正常解析
+wheel、当前消费者及其默认开发依赖组，最后执行 `uv pip check`。不使用 `--no-deps`，
+不获取宿主令牌；未提供的 Git 依赖、重复身份、消费者自身 wheel 或版本冲突在检查前失败。
+本地调用方传入当前工作树的过滤快照；排除各层虚拟环境、VCS、测试数据、凭据及生成 SDK。
+路径绑定不是读取、执行或修改权限。
+
+`python-test-artifacts` 仍只执行一次 pytest。原有 exit-code.txt/report.json/junit.xml
+含义不变；本地模式另附 dependency-packages.json，列出实际安装版本、wheel SHA-256、
+消费者清单/锁摘要及 Dagger source_digest。报告导出成功不表示测试通过，调用方必须消费原退出码。

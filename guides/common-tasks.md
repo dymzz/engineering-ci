@@ -156,6 +156,16 @@ git switch -c $newDevelopmentBranch $backup
 
 这保留了已验收的提交。恢复前先检查当前未提交改动；备份不代表已发布版本，正式发布门禁保持独立。
 
+## GitHub 认证与工程调用入口
+
+engineering-ci 提供工程检查、CI/CD 和发布策略；GitHub 认证需要按实际调用环境核对。
+先确认当前账号可读取配置/keyring并访问目标仓，再区分宿主 gh、Dagger 模块源、容器
+Python 私有依赖和业务 API。具体只读诊断、已有 gh 桥和固定/本地模式见
+[认证入口](../docs/configuration/dagger.md#按执行位置选择-github-认证入口)。
+
+遇到配置/凭据存储 Access is denied，先用正常审批确认执行上下文，不要求重新登录或提供令牌。
+已有本地 wheel 入口不需要为所选私有 Python 包配置 Git 下载凭据；不要因此切到旧远端代码。
+
 ## 按需独立调用
 
 这些诊断操作不提交、Push、合并或发布：
