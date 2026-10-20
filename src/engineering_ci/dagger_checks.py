@@ -130,7 +130,7 @@ def source_modes(root, run, environ):
     return sorted(paths)
 
 
-def invoke(root, args, run, environ, *, capture=False, timeout=None):
+def invoke(root, args, run, environ, *, capture=False, timeout=None, stderr=None):
     try:
         result = run(
             args,
@@ -143,6 +143,7 @@ def invoke(root, args, run, environ, *, capture=False, timeout=None):
                 if capture
                 else {}
             ),
+            **({"stderr": stderr} if stderr is not None else {}),
         )
     except subprocess.TimeoutExpired:
         raise checks.PreconditionError(
@@ -150,13 +151,21 @@ def invoke(root, args, run, environ, *, capture=False, timeout=None):
             "Dagger tool probe timed out; inspect the CLI environment",
         ) from None
     if result.returncode:
+        detail = ""
         if capture and result.stderr:
             print(result.stderr, file=sys.stderr, end="")
+            detail = f": {failure_detail(result.stderr)}"
         raise checks.PreconditionError(
             "environment_error",
-            f"Dagger operation failed (exit {checks._process_exit_code(result.returncode)}); inspect the execution output",
+            f"Dagger operation failed (exit {checks._process_exit_code(result.returncode)}); inspect the execution output{detail}",
         )
     return result
+
+
+def failure_detail(text, limit=400):
+    """Keep the real Dagger failure text; a bare exit code is not a diagnosable cause."""
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    return " | ".join(lines[-3:])[:limit] or "no diagnostic text was reported"
 
 
 def engine_version(root):
@@ -174,8 +183,13 @@ def engine_version(root):
     return version.removeprefix("v")
 
 
-def prepare(root, names, parameters, run, which, environ):
-    """Probe the actual Engine, prepared container and locked tools; no test execution."""
+def prepare(root, target, names, parameters, run, which, environ):
+    """Probe the actual Engine, prepared container and locked tools; no test execution.
+
+    root is the Provider checkout that loads the Dagger module; target is the tree the
+    module mounts and checks. The CWD stays the Provider so the module resolves, while
+    the function's source argument carries the consumer directory.
+    """
     executable = which("dagger")
     if not executable or not Path(executable).is_file():
         raise checks.PreconditionError(
@@ -204,9 +218,13 @@ def prepare(root, names, parameters, run, which, environ):
             "environment_error",
             f"Container parity requires Dagger {expected}; found {cli['version']} at {executable}. Update this terminal's PATH to the installed version",
         )
-    modes = source_modes(root, run, environ)
+    modes = source_modes(target, run, environ)
     options = [
         "--source",
+        "." if target == root else str(target),
+        # The module's own checkout stays the CWD, so it also supplies the Pipeline
+        # policy and the check code. The consumer never carries a copy of them.
+        "--capability",
         ".",
         "--dagger-lock",
         "dagger.lock",
@@ -214,7 +232,7 @@ def prepare(root, names, parameters, run, which, environ):
         json.dumps(request(names, **parameters)),
         "--executable-paths",
         json.dumps(modes),
-        *git_secret_options(root, names, run, which, environ),
+        *git_secret_options(target, names, run, which, environ),
     ]
     result = invoke(
         root,
@@ -247,9 +265,9 @@ def prepare(root, names, parameters, run, which, environ):
     return executable, options, executor, remote
 
 
-def identity(root, name, parameters, executor, remote):
-    inputs, observations = checks.snapshot(root, name, omit=OMITTED_INPUTS)
-    portable = checks.snapshot(root, name, portable=True, omit=OMITTED_INPUTS)[0]
+def identity(target, name, parameters, executor, remote, *, provider=None):
+    inputs, observations = checks.snapshot(target, name, omit=OMITTED_INPUTS)
+    portable = checks.snapshot(target, name, portable=True, omit=OMITTED_INPUTS)[0]
     if portable != remote["source_inputs"][name]:
         local_files = {item[0]: item[2:] for item in portable["files"]}
         remote_files = {
@@ -266,7 +284,7 @@ def identity(root, name, parameters, executor, remote):
             + ", ".join(changed[:5]),
         )
     value = {
-        "root": str(root),
+        "root": str(target),
         "name": name,
         "command": checks.command(name, **parameters),
         "parameters": parameters,
@@ -276,11 +294,18 @@ def identity(root, name, parameters, executor, remote):
         "environment": remote["environment"],
         "executor": executor,
     }
+    if provider is not None and Path(provider).resolve() != Path(target).resolve():
+        # The container mounted the consumer target; keep the Provider that supplied
+        # the module and policy explicit instead of collapsing both into one root.
+        value["provider"] = {
+            "root": str(Path(provider).resolve()),
+            "policy_sha256": checks.digest(checks.PIPELINE),
+        }
     value["sha256"] = checks.digest(value)
     return value, observations
 
 
-def evidence_file(path, root):
+def evidence_file(path, owner):
     if (
         path.is_symlink()
         or not path.is_file()
@@ -288,26 +313,29 @@ def evidence_file(path, root):
     ):
         raise ValueError("Invalid exported evidence file")
     return {
-        "path": path.relative_to(root).as_posix(),
+        "path": path.relative_to(owner).as_posix(),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
 
-def read_evidence(entry, root):
+def read_evidence(entry, owner, capability=None):
     """Validate immutable exported facts and reports before admitting a receipt."""
     evidence = entry["evidence"]
     for item in evidence.values():
-        path = root / item["path"]
-        if not path.resolve().is_relative_to(root) or evidence_file(path, root) != item:
+        path = owner / item["path"]
+        if (
+            not path.resolve().is_relative_to(owner)
+            or evidence_file(path, owner) != item
+        ):
             raise ValueError("Missing or changed Dagger evidence")
-    raw = checks.read_report(root / evidence["container-report.json"]["path"])
+    raw = checks.read_report(owner / evidence["container-report.json"]["path"])
     native = next(item for item in raw["checks"] if item["name"] == entry["name"])
     if any(native.get(key) != entry.get(key) for key in FACT_FIELDS):
         raise ValueError("Local receipt differs from original container execution")
     if native["identity"] != entry["container_identity"]:
         raise ValueError("Container identity was changed")
     remote = json.loads(
-        (root / evidence["environment.json"]["path"]).read_text(encoding="utf-8")
+        (owner / evidence["environment.json"]["path"]).read_text(encoding="utf-8")
     )
     if native["identity"]["tools"] != remote["tools"][entry["name"]]:
         raise ValueError("Container tools do not match their execution evidence")
@@ -317,7 +345,7 @@ def read_evidence(entry, root):
         raise ValueError("Container checks did not execute on Linux")
     if entry["name"] == "pytest" and entry["exit_code"] == 0:
         junit = evidence["core-junit.xml"]["path"]
-        if checks.pytest_counts(root, junit, 0) != entry.get("counts"):
+        if checks.pytest_counts(owner, junit, 0, capability) != entry.get("counts"):
             raise ValueError("JUnit does not match the container execution counts")
     if (
         entry["identity"]["parameters"]["coverage"]
@@ -328,7 +356,7 @@ def read_evidence(entry, root):
         raise ValueError("Requested Coverage evidence is missing")
 
 
-def reusable(entry, now, root):
+def reusable(entry, now, owner, capability=None):
     if (
         not entry
         or entry.get("identity") != now
@@ -346,7 +374,7 @@ def reusable(entry, now, root):
     ):
         return False
     try:
-        read_evidence(entry, root)
+        read_evidence(entry, owner, capability)
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         return False
     return True
@@ -356,6 +384,8 @@ def execute(
     selectors,
     *,
     root=checks.ROOT,
+    target=None,
+    output_root=None,
     coverage=False,
     junit="core-junit.xml",
     output=None,
@@ -364,17 +394,22 @@ def execute(
     environ=None,
     reuse=False,
 ):
+    # root loads the Provider module; target is mounted and checked; owner receives
+    # every artifact this run produces. One directory unless a caller separates them.
     root = root.resolve()
+    target = Path(target).resolve() if target is not None else root
+    provider = root if target != root else None
+    owner = Path(output_root).resolve() if output_root is not None else target
     names = checks.selected(selectors)
     parameters = {"coverage": coverage, "junit": junit}
     request(selectors, **parameters)
-    checks.report_path(root / junit, root)
+    checks.report_path(target / junit, target)
     if output:
-        output = checks.report_path(output, root)
+        output = checks.report_path(output, owner)
         if output.resolve() in {
-            root / junit,
-            root / "core-coverage.xml",
-            root / "core-coverage.json",
+            target / junit,
+            target / "core-coverage.xml",
+            target / "core-coverage.json",
         }:
             raise ValueError("Local JSON must not overwrite JUnit or Coverage evidence")
     environ = checks.execution_environment(root, environ)
@@ -407,14 +442,17 @@ def execute(
             flush=True,
         )
         initial = {
-            name: checks.snapshot(root, name, omit=OMITTED_INPUTS) for name in names
+            name: checks.snapshot(target, name, omit=OMITTED_INPUTS) for name in names
         }
         executable, _, executor, remote = prepare(
-            root, names, parameters, run, which, environ
+            root, target, names, parameters, run, which, environ
         )
         report.update(executor=executor, environment=remote["environment"])
         identities = {
-            name: identity(root, name, parameters, executor, remote) for name in names
+            name: identity(
+                target, name, parameters, executor, remote, provider=provider
+            )
+            for name in names
         }
         if any(
             initial[name] != (identities[name][0]["inputs"], identities[name][1])
@@ -435,7 +473,7 @@ def execute(
         for entry in report["checks"]:
             name = entry["name"]
             now = identities[name][0]
-            if reusable(previous.get(name), now, root):
+            if reusable(previous.get(name), now, owner, provider or root):
                 entry.update(
                     copy.deepcopy(previous[name]),
                     reused=True,
@@ -450,13 +488,13 @@ def execute(
                 pending.append(name)
         print("Check executor: Dagger / Linux; shared Pipeline commands", flush=True)
         if pending:
-            base = root / ".test-tools/checks/dagger"
-            if not base.resolve().is_relative_to(root):
+            base = owner / ".test-tools/checks/dagger"
+            if not base.resolve().is_relative_to(owner):
                 raise ValueError(
-                    "Evidence directory must stay in the original checkout"
+                    "Evidence directory must stay in the approved output root"
                 )
             base.mkdir(parents=True, exist_ok=True)
-            modes = source_modes(root, run, environ)
+            modes = source_modes(target, run, environ)
             if checks.digest(modes) != executor["source_modes_sha256"]:
                 raise checks.PreconditionError(
                     "stale", "Git input modes changed during preparation"
@@ -469,19 +507,30 @@ def execute(
                     "call",
                     "repository-check-artifacts",
                     "--source",
-                    ".",
+                    "." if target == root else str(target),
                     "--dagger-lock",
                     "dagger.lock",
                     "--request",
                     json.dumps(request(pending, **parameters)),
                     "--executable-paths",
                     json.dumps(modes),
-                    *git_secret_options(root, pending, run, which, environ),
+                    *git_secret_options(target, pending, run, which, environ),
                     "export",
                     "--path",
                     str(exported),
                 ]
-                invoke(root, args, run, environ)
+                transport = exported / "transport-stderr.log"
+                with transport.open("w", encoding="utf-8") as stream:
+                    try:
+                        invoke(root, args, run, environ, stderr=stream)
+                    except checks.PreconditionError as error:
+                        # Keep the real Dagger failure text: a bare exit code is not a
+                        # diagnosable cause, and this run's evidence must carry it.
+                        raise checks.PreconditionError(
+                            error.status,
+                            f"{error.reason}; Dagger reported: "
+                            f"{failure_detail(transport.read_text(encoding='utf-8', errors='replace'))}",
+                        ) from None
                 actual = json.loads(
                     (exported / "environment.json").read_text(encoding="utf-8")
                 )
@@ -511,9 +560,12 @@ def execute(
                     "core-coverage.json",
                     "stdout.log",
                     "stderr.log",
+                    # The host-side transport text, so a failed export still carries
+                    # the real Dagger diagnostic instead of only an exit code.
+                    "transport-stderr.log",
                 )
                 exported_files = {
-                    filename: evidence_file(exported / filename, root)["sha256"]
+                    filename: evidence_file(exported / filename, owner)["sha256"]
                     for filename in filenames
                     if (exported / filename).is_file()
                 }
@@ -523,10 +575,10 @@ def execute(
                 for filename in filenames:
                     source = exported / filename
                     if source.is_file():
-                        evidence_file(source, root)
+                        evidence_file(source, owner)
                         destination = bundle / filename
                         shutil.copyfile(source, destination)
-                        evidence[filename] = evidence_file(destination, root)
+                        evidence[filename] = evidence_file(destination, owner)
                 for filename, stream in (
                     ("stdout.log", sys.stdout),
                     ("stderr.log", sys.stderr),
@@ -553,7 +605,7 @@ def execute(
                         container_identity=child["identity"],
                         evidence=evidence,
                     )
-                    read_evidence(entry, root)
+                    read_evidence(entry, owner, provider or root)
                     if (
                         actual["source_inputs"][entry["name"]]
                         != remote["source_inputs"][entry["name"]]
@@ -562,19 +614,19 @@ def execute(
                             "stale", "Container inputs changed before execution"
                         )
                 for filename, destination in (
-                    ("core-junit.xml", root / junit),
-                    ("core-coverage.xml", root / "core-coverage.xml"),
-                    ("core-coverage.json", root / "core-coverage.json"),
+                    ("core-junit.xml", target / junit),
+                    ("core-coverage.xml", target / "core-coverage.xml"),
+                    ("core-coverage.json", target / "core-coverage.json"),
                 ):
                     if filename in evidence:
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(bundle / filename, destination)
         for entry in report["checks"]:
             name = entry["name"]
-            stable = checks.snapshot(root, name, omit=OMITTED_INPUTS) == initial[name]
+            stable = checks.snapshot(target, name, omit=OMITTED_INPUTS) == initial[name]
             stable = (
                 stable
-                and checks.digest(source_modes(root, run, environ))
+                and checks.digest(source_modes(target, run, environ))
                 == executor["source_modes_sha256"]
             )
             if not stable:
@@ -651,9 +703,24 @@ def execute(
 
 
 def inspect(
-    saved, *, root=checks.ROOT, run=subprocess.run, which=shutil.which, environ=None
+    saved,
+    *,
+    root=checks.ROOT,
+    target=None,
+    output_root=None,
+    run=subprocess.run,
+    which=shutil.which,
+    environ=None,
 ):
     root = root.resolve()
+    # A saved report records the exact tree it checked and the Provider that selected
+    # the policy. Reuse those roots so an inspection re-verifies the same separation
+    # instead of silently assuming this checkout was the target.
+    recorded = saved["checks"][0].get("identity") or {} if saved["checks"] else {}
+    target = Path(target or recorded.get("root") or root).resolve()
+    provider = Path(recorded.get("provider", {}).get("root") or root).resolve()
+    provider = provider if provider != target else None
+    owner = Path(output_root).resolve() if output_root is not None else target
     environ = checks.execution_environment(root, environ)
     result = {
         "schema_version": 1,
@@ -667,6 +734,7 @@ def inspect(
         parameters = saved["checks"][0]["identity"]["parameters"]
         _, _, executor, remote = prepare(
             root,
+            target,
             [entry["name"] for entry in saved["checks"]],
             parameters,
             run,
@@ -705,22 +773,23 @@ def inspect(
         if remote and entry.get("identity"):
             try:
                 now, observations = identity(
-                    root,
+                    target,
                     entry["name"],
                     entry["identity"]["parameters"],
                     executor,
                     remote,
+                    provider=provider,
                 )
-                read_evidence(entry, root)
+                read_evidence(entry, owner, provider or root)
                 stable = (
-                    checks.snapshot(root, entry["name"], omit=OMITTED_INPUTS)[1]
+                    checks.snapshot(target, entry["name"], omit=OMITTED_INPUTS)[1]
                     == observations
                 )
                 current["freshness"] = (
                     "current" if now == entry["identity"] and stable else "stale"
                 )
                 current["passed_for_current_input"] = (
-                    reusable(entry, now, root)
+                    reusable(entry, now, owner, provider or root)
                     and entry["status"] == "passed"
                     and stable
                 )

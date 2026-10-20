@@ -54,20 +54,31 @@ class EngineeringCi:
     @function
     async def repository_check_environment(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        capability: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
         git_token: dagger.Secret | None = None,
     ) -> str:
-        """Inspect actual Linux tools and inputs without executing repository checks."""
-        return await pr_checks.environment(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
+        """Inspect actual Linux tools and inputs without executing repository checks.
+
+        source is the tree to check; capability is this module's own checkout, which
+        supplies the Pipeline policy and the check code. They may be the same directory.
+        """
+        return await pr_checks.environment(source, capability.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     async def repository_check_artifacts(
         self, source: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
+        capability: Annotated[dagger.Directory, DefaultPath("/"), Ignore(pr_checks.SOURCE_EXCLUDES)],
         request: str, dagger_lock: Annotated[dagger.File, DefaultPath("/dagger.lock")], executable_paths: str = "[]",
         git_token: dagger.Secret | None = None,
     ) -> dagger.Directory:
-        """Export one repository check execution, including failures and original exits."""
-        return await pr_checks.artifacts(source.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
+        """Export one repository check execution, including failures and original exits.
+
+        source is the consumer tree to check; capability is this module's own checkout,
+        which supplies the Pipeline policy and the check code. The target never has to
+        carry a copy of the Provider's configuration.
+        """
+        return await pr_checks.artifacts(source, capability.with_file("dagger.lock", dagger_lock), request, executable_paths, git_token)
 
     @function
     def container_echo(self, string_arg: str) -> dagger.Container:

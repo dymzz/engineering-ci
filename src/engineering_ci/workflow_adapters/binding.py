@@ -26,12 +26,28 @@ HOST_SCOPE = DiscoveryScope(
 )
 
 
-def binding_catalog(provider, root):
-    """Load the explicit installed Provider through Vesryn's existing registry."""
+def binding_catalog(provider, root, *, target=None, output_root=None):
+    """Load the explicit installed Provider through Vesryn's existing registry.
+
+    The registry only forwards the Provider root, so a caller that also names a
+    consumer tree binds it onto the returned adapter. The adapter carries both roots
+    into the Provider subprocess, which keeps the contract hash identical while the
+    executed tree and its evidence ownership follow the caller.
+    """
     from vesryn_tool_runtime.registry import provider as load_provider
+
+    from .checks import ChecksAdapter
 
     tools = load_provider(provider, root)
     tools.provider_name = provider
+    if target is not None or output_root is not None:
+        bound = ChecksAdapter(
+            root, target=target, output_root=output_root, executor="dagger"
+        )
+        for document in tools.documents():
+            _, adapter = tools.resolve(document["tool_id"])
+            if isinstance(adapter, ChecksAdapter):
+                adapter.target, adapter.output_root = bound.target, bound.output_root
     return tools
 
 

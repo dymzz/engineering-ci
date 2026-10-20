@@ -127,6 +127,34 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 当前 Python 容器使用 minor 版本镜像标签，未按镜像 digest 固定；锁文件与 Engine 固定
 不等于整套环境逐字节重现。验收记录实际版本与结果，不承诺未来标签内容不变。
 
+### 模块来源与被检查目录
+
+`dagger api call` 的 `--source` 绑定函数的 source Directory 参数，模块本身从工作目录
+（或 `--no-load-module module-source --ref-string <ref>`）解析。两者因此可以不同：
+宿主用工作目录提供 engineering-ci 的 Dagger 模块，用 `--source` 指向消费者目录。
+
+`repository-check-environment` 与 `repository-check-artifacts` 的 source 参数默认值
+`DefaultPath("/")` 就是模块根目录，即未分离时的原有行为。两者另有一个 `capability`
+参数，同为 `DefaultPath("/")`，表示模块自身的 checkout——它提供 Pipeline 策略与
+检查实现。消费者不需要携带这两者的副本：`--capability` 指向的目录会被覆盖叠加到
+`--source` 指定的被检查树上，消费者的文件优先。两者都是本模块根目录时，叠加是
+恒等操作，既有行为不变。
+
+分离后的调用形态为：
+
+```bash
+dagger api call repository-check-artifacts \
+  --source /abs/path/to/consumer --capability . --dagger-lock dagger.lock \
+  --request '{"selectors":["pytest"],"coverage":false,"junit":"core-junit.xml"}' \
+  --executable-paths '[]' export --path /abs/output/bundle
+```
+
+被挂载并检查的是 `--source` 指定的目录；`--executable-paths` 的 Git 模式也随之取自
+该目录。容器执行的 stderr 会同时写入宿主侧 `transport-stderr.log` 并进入证据包，
+失败时原文进入报告的 `reason`，不只保留退出码。
+宿主侧由 `dagger_checks` 负责这套区分，见
+[Provider 来源、检查目标与输出归属](../architecture/harness-integration/registry.md#provider-来源检查目标与输出归属)。
+
 ### 按执行位置选择 GitHub 认证入口
 
 engineering-ci 提供工程检查、CI/CD 策略和结果证据；认证由实际执行位置和调用方配置决定。

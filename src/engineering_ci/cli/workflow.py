@@ -48,8 +48,17 @@ def selected_catalog(options):
     """Load a binding's actual installed Provider; retain the legacy route otherwise."""
     from ..workflow_adapters.binding import binding_catalog, binding_document
 
+    # A caller may check a consumer tree from this checkout. The Provider root stays
+    # the local engineering-ci source; only the checked tree and its evidence owner move.
+    target = getattr(options, "check_target", None)
+    output_root = getattr(options, "output_root", None)
     if options.command == "select" and options.tool:
-        return binding_catalog(options.provider, ROOT), None
+        return (
+            binding_catalog(
+                options.provider, ROOT, target=target, output_root=output_root
+            ),
+            None,
+        )
     path = getattr(options, "binding", None)
     if not path and getattr(options, "execution", None):
         path = options.execution / "binding.json"
@@ -59,7 +68,12 @@ def selected_catalog(options):
         from ..workflow_adapters.capabilities import inside
 
         binding = binding_document(inside(path, ROOT))
-        return binding_catalog(binding["provider"], ROOT), binding
+        return (
+            binding_catalog(
+                binding["provider"], ROOT, target=target, output_root=output_root
+            ),
+            binding,
+        )
     return catalog(ROOT), None
 
 
@@ -160,6 +174,16 @@ def main(argv=None):
             "--json",
             type=Path,
             help="Save the operation JSON separately from original tool output",
+        )
+        action.add_argument(
+            "--check-target",
+            type=Path,
+            help="Consumer source directory the Provider checks instead of this checkout",
+        )
+        action.add_argument(
+            "--output-root",
+            type=Path,
+            help="Consumer-approved directory owning this run's Provider evidence",
         )
     options = parser.parse_args(argv)
     if options.command in {"feedback-query", "feedback-summary", "feedback-review"}:

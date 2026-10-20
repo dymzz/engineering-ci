@@ -40,7 +40,9 @@ OUTPUT = object_schema(
         "report": RESOURCE,
         "check_status": {"type": "string"},
         "evidence": {"type": "array", "items": RESOURCE},
-    }
+        "check_target": {"type": "string"},
+    },
+    ["name", "report", "check_status", "evidence"],
 )
 
 
@@ -61,8 +63,17 @@ def recipe(selectors, *, executor="auto", coverage=False, junit="core-junit.xml"
 
 
 class ChecksAdapter:
-    def __init__(self, root, *, runner=None, executor=None):
+    def __init__(
+        self, root, *, runner=None, executor=None, target=None, output_root=None
+    ):
+        # The Provider checkout supplies the contract; the target is what gets checked
+        # and the output root owns this run's evidence. They collapse to one directory
+        # unless a caller separates them, so existing callers are unaffected.
         self.root = Path(root).resolve()
+        self.target = Path(target).resolve() if target is not None else self.root
+        self.output_root = (
+            Path(output_root).resolve() if output_root is not None else self.target
+        )
         self.runner = runner or checks.run_checks
         self.executor = executor
         self.names = {tool_id(name): name for name in OPERATIONS}
@@ -71,14 +82,17 @@ class ChecksAdapter:
         path = Path(path)
         if (
             path.is_symlink()
-            or not path.resolve().is_relative_to(self.root)
+            or not path.resolve().is_relative_to(self.output_root)
             or not path.is_file()
             or path.stat().st_size > 20 * 1024 * 1024
         ):
-            raise WorkflowError("Check evidence must stay in the primary checkout")
+            raise WorkflowError("Check evidence must stay in the approved output root")
         with path.open("rb") as stream:
             sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
-        return {"path": path.relative_to(self.root).as_posix(), "sha256": sha256}
+        return {
+            "path": path.relative_to(self.output_root).as_posix(),
+            "sha256": sha256,
+        }
 
     def verified_previous(self, invocation):
         """Verify immutable references; original checks still decide current identity."""
@@ -87,12 +101,12 @@ class ChecksAdapter:
         outputs = invocation.previous.get("outputs", {})
         try:
             for resource in [outputs["report"], *outputs["evidence"]]:
-                if self.resource(self.root / resource["path"]) != resource:
+                if self.resource(self.output_root / resource["path"]) != resource:
                     return None
             name = self.names[invocation.tool_id]
             if outputs["name"] != name:
                 return None
-            report = checks.read_report(self.root / outputs["report"]["path"])
+            report = checks.read_report(self.output_root / outputs["report"]["path"])
             return next(item for item in report["checks"] if item["name"] == name)
         except (OSError, ValueError, KeyError, TypeError, StopIteration):
             return None
@@ -121,7 +135,7 @@ class ChecksAdapter:
                     if recovered:
                         return recovered, receipt["outputs"]["evidence"]
                     continue
-                report_path = self.root / intent["report"]
+                report_path = self.output_root / intent["report"]
                 self.resource(report_path)
                 report = checks.read_report(report_path)
                 entry = next(
@@ -140,8 +154,10 @@ class ChecksAdapter:
     def invoke(self, calls, context):
         """Group identical environment/parameters; keep each tool's real child result."""
         directory = context.run_dir / "tool-results"
-        if not directory.resolve().is_relative_to(self.root):
-            raise WorkflowError("Check run outputs must stay in the primary checkout")
+        if not directory.resolve().is_relative_to(self.output_root):
+            raise WorkflowError(
+                "Check run outputs must stay in the approved output root"
+            )
         results = {}
         grouped = {}
         for call in calls:
@@ -159,7 +175,7 @@ class ChecksAdapter:
                 "junit": "core-junit.xml",
                 **call.inputs,
             }
-            checks.report_path(self.root / params["junit"], self.root)
+            checks.report_path(self.target / params["junit"], self.target)
             grouped.setdefault(tuple(params.items()), []).append(call)
         for key, group in grouped.items():
             params = dict(key)
@@ -188,7 +204,7 @@ class ChecksAdapter:
                         "tool_id": call.tool_id,
                         "attempt": call.attempt,
                         "parameters": params,
-                        "report": output.relative_to(self.root).as_posix(),
+                        "report": output.relative_to(self.output_root).as_posix(),
                     },
                 )
             if any(prior.values()):
@@ -215,7 +231,13 @@ class ChecksAdapter:
                     },
                 )
             report, code = self.runner(
-                names, root=self.root, output=output, reuse=True, **params
+                names,
+                root=self.root,
+                target=self.target,
+                output_root=self.output_root,
+                output=output,
+                reuse=True,
+                **params,
             )
             entries = {entry["name"]: entry for entry in report["checks"]}
             try:
@@ -249,11 +271,11 @@ class ChecksAdapter:
                 ):
                     # Native JUnit is mutable at its requested output; freeze it for this execution.
                     for path in (
-                        self.root / params["junit"],
+                        self.target / params["junit"],
                         *(
                             [
-                                self.root / "core-coverage.xml",
-                                self.root / "core-coverage.json",
+                                self.target / "core-coverage.xml",
+                                self.target / "core-coverage.json",
                             ]
                             if params["coverage"]
                             else []
@@ -275,6 +297,9 @@ class ChecksAdapter:
                         "report": resource,
                         "check_status": status,
                         "evidence": evidence,
+                        # Name the tree this result describes; resource paths are
+                        # relative to the approved output root, not the Provider.
+                        "check_target": str(self.target),
                     },
                     executed=entry.get("executed") is True,
                     complete=status in {"passed", "failed"}
@@ -297,9 +322,12 @@ class ChecksAdapter:
         return results
 
 
-def catalog(root=checks.ROOT, *, runner=None):
+def catalog(root=checks.ROOT, *, runner=None, target=None, output_root=None):
     """Register from the original operation set; no duplicate commands or versions."""
-    result, adapter = Catalog(), ChecksAdapter(root, runner=runner)
+    result, adapter = (
+        Catalog(),
+        ChecksAdapter(root, runner=runner, target=target, output_root=output_root),
+    )
     result.provider_name = "engineering-ci"
     for name in OPERATIONS:
         output_schema = copy.deepcopy(OUTPUT)
@@ -316,7 +344,7 @@ def catalog(root=checks.ROOT, *, runner=None):
     return result
 
 
-def dagger_catalog(root=checks.ROOT, *, runner=None):
+def dagger_catalog(root=checks.ROOT, *, runner=None, target=None, output_root=None):
     """Domain-only Provider; shared tool definitions remain exclusively in Vesryn."""
     from dataclasses import replace
 
@@ -325,7 +353,9 @@ def dagger_catalog(root=checks.ROOT, *, runner=None):
     legacy = catalog(root, runner=runner)
     result = Catalog()
     result.provider_name = "engineering-ci-dagger"
-    adapter = ChecksAdapter(root, runner=runner, executor="dagger")
+    adapter = ChecksAdapter(
+        root, runner=runner, executor="dagger", target=target, output_root=output_root
+    )
     policy = digest(checks.PIPELINE)
     for name in OPERATIONS:
         identifier = tool_id(name)
