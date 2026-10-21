@@ -44,7 +44,12 @@ class ProviderAdapter:
         # Only a source checkout carries the package in-tree. An installed Provider is
         # already importable, and prepending a path that does not exist would only
         # make the child depend on a development layout.
-        if (self.root / "src/engineering_ci/workflow_adapters/provider.py").is_file():
+        if (
+            not (self.root / "provider-assets.json").is_file()
+            and (
+                self.root / "src/engineering_ci/workflow_adapters/provider.py"
+            ).is_file()
+        ):
             environment["PYTHONPATH"] = str(self.root / "src")
         command = [
             sys.executable,

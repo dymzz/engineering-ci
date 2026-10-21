@@ -20,7 +20,10 @@ MODULE = (
     ".dagger/pyproject.toml",
     ".dagger/uv.lock",
 )
-ASSETS = POLICY + MODULE
+# The container protocol imports this package from the delivered capability tree.
+# The host still imports its installed wheel, never this asset copy via PYTHONPATH.
+CONTAINER_PACKAGE = ("src/engineering_ci",)
+ASSETS = POLICY + MODULE + CONTAINER_PACKAGE
 MANIFEST = "provider-assets.json"
 EXCLUDED = {"__pycache__", ".venv", ".ruff_cache", ".pytest_cache"}
 
@@ -45,7 +48,7 @@ def _files(root, relative):
         if any(part in EXCLUDED for part in rel_dir.parts):
             continue
         for name in files:
-            if name.endswith((".pyc", ".pyo")):
+            if name.endswith((".pyc", ".pyo")) or name == "AGENTS.md":
                 continue
             found.append(Path(directory, name).relative_to(root).as_posix())
     if not found:
@@ -99,6 +102,7 @@ def manifest(root, files=None):
         },
         "policy": list(POLICY),
         "module": list(MODULE),
+        "container_package": list(CONTAINER_PACKAGE),
         "files": records,
         "sha256": total,
     }

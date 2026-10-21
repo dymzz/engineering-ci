@@ -91,3 +91,11 @@
 - Evidence: synthetic uv.lock with one Git source produced an all-packages record containing both ecosystem=PyPI and its full commit. The equivalent official custom-lockfile input produced ecosystem=GIT and the same commit. Actual outputs are .test-tools/public-delivery/native-uv-git-probe.json and git-scanner-probe.json.
 - Reasoning: confirmed output-label mismatch for consumer source classification; no claim that upstream queried the wrong advisory records.
 - Workaround: retain native uv extraction for public registry entries and send explicitly approved Git identities through the official custom-lockfile interface in the same scanner invocation. No upstream source is modified.
+
+## Dagger@1.0.0-beta.16: ignored module sources produce a misleading initialization error
+- Status: observed integration limitation; no upstream patch.
+- Seen: 2026-10-21, ECI-003 installed Provider acceptance on Windows.
+- Evidence: moduleSource.configExists=true, but contextDirectory.entries was empty for an asset bundle beneath the parent Git repository's ignored .test-tools directory. The Python runtime reported "no source to trust" and recommended generation. The same original bundle loaded outside that Git boundary using --load-module, without regenerating SDK files.
+- Source: sdk/python/runtime/discovery.go and core/schema/modulesource.go at upstream tag v1.0.0-beta.16; local raw traces under .test-tools/eci003/final/.
+- Assessment: upstream could distinguish filtered/missing source files from uninitialized generated bindings. Cache/bytecode filtering does not resolve the parent Git ignore boundary.
+- Integration: use an explicitly approved, readable asset installation directory, retain native trust and committed SDK files, and explicitly select the module when there is no Git workspace discovery.

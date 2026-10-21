@@ -271,9 +271,19 @@ def bind(root=None) -> dict | None:
         if PIPELINE is None:
             PIPELINE = found
         else:
-            PIPELINE.clear()
-            PIPELINE.update(found)
+            _publish(PIPELINE, found)
     return PIPELINE
+
+
+def _publish(current, found):
+    """Refresh nested policy values without invalidating imported table references."""
+    for key in current.keys() - found.keys():
+        del current[key]
+    for key, value in found.items():
+        if isinstance(value, dict) and isinstance(current.get(key), dict):
+            _publish(current[key], value)
+        else:
+            current[key] = value
 
 
 # Declared before the first bind(): an installed package has no policy beside it, and

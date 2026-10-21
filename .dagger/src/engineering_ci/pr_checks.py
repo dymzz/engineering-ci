@@ -48,10 +48,25 @@ def compose(source, capability):
     return capability.with_directory("/", source, exclude=SOURCE_EXCLUDES)
 
 
+def mount_sources(container, source, capability, installed):
+    """Keep installed Provider code outside the checked consumer inputs."""
+    container = container.with_directory(
+        "/workspace", source, exclude=SOURCE_EXCLUDES
+    ).with_workdir("/workspace")
+    return (
+        container.with_directory("/provider", capability, exclude=SOURCE_EXCLUDES)
+        if installed
+        else container
+    )
+
+
 async def container(source, capability, executable_paths, git_token=None):
     """Prepare pinned uv/Python plus the native process dependencies used by core tests."""
-    workspace = compose(source, capability)
-    data = tomllib.loads(await workspace.file("config/pipeline.toml").contents())
+    installed = "provider-assets.json" in await capability.entries()
+    workspace = source if installed else compose(source, capability)
+    policy_source = capability if installed else workspace
+    code_root = "/provider" if installed else "/workspace"
+    data = tomllib.loads(await policy_source.file("config/pipeline.toml").contents())
     uv, python = data["toolchain"]["uv"], data["toolchain"]["python"]
     if not re.fullmatch(r"\d+\.\d+\.\d+", uv) or not re.fullmatch(r"3\.\d+", python):
         raise ValueError("Invalid container toolchain")
@@ -59,9 +74,8 @@ async def container(source, capability, executable_paths, git_token=None):
     # Validate through the shared standard-library entrypoint before installing tools.
     # Evaluate this branch, then keep the tool layer independent of source changes.
     plan = json.loads(
-        await image.with_directory("/workspace", workspace, exclude=SOURCE_EXCLUDES)
-        .with_workdir("/workspace")
-        .with_env_variable("PYTHONPATH", "/workspace/src")
+        await mount_sources(image, workspace, capability, installed)
+        .with_env_variable("PYTHONPATH", f"{code_root}/src")
         .with_env_variable("PYTHONDONTWRITEBYTECODE", "1")
         .with_exec(
             ["python", "-m", "engineering_ci.checks_container", "plan"],
@@ -90,7 +104,7 @@ async def container(source, capability, executable_paths, git_token=None):
         )
         .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
         .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
-        .with_env_variable("PYTHONPATH", "/workspace/src")
+        .with_env_variable("PYTHONPATH", f"{code_root}/src")
         .with_env_variable("UV_CACHE_DIR", "/root/.cache/engineering-ci-pr-uv")
         .with_mounted_cache(
             "/root/.cache/engineering-ci-pr-uv",
@@ -104,9 +118,7 @@ async def container(source, capability, executable_paths, git_token=None):
             (await base.rootfs().digest()).encode()
         ).hexdigest(),
     }
-    result = base.with_directory(
-        "/workspace", workspace, exclude=SOURCE_EXCLUDES
-    ).with_workdir("/workspace")
+    result = mount_sources(base, workspace, capability, installed)
     paths = json.loads(executable_paths)
     if not isinstance(paths, list) or any(
         not isinstance(path, str) or path.startswith("/") or ".." in path.split("/")
@@ -145,6 +157,8 @@ async def environment(source, capability, request, executable_paths, git_token=N
             "-m",
             "engineering_ci.checks_container",
             "prepare",
+            "--check-target",
+            "/workspace",
             "--request",
             request,
             "--runtime",
@@ -166,6 +180,8 @@ async def artifacts(source, capability, request, executable_paths, git_token=Non
                 "-m",
                 "engineering_ci.checks_container",
                 "select",
+                "--check-target",
+                "/workspace",
                 "--request",
                 request,
             ],
@@ -182,6 +198,8 @@ async def artifacts(source, capability, request, executable_paths, git_token=Non
                 "-m",
                 "engineering_ci.checks_container",
                 "execute",
+                "--check-target",
+                "/workspace",
                 "--request",
                 json.dumps(child_request),
                 "--runtime",
@@ -202,6 +220,8 @@ async def artifacts(source, capability, request, executable_paths, git_token=Non
                 "-m",
                 "engineering_ci.checks_container",
                 "aggregate",
+                "--check-target",
+                "/workspace",
                 "--request",
                 request,
                 "--runtime",

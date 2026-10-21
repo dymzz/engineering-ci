@@ -13,8 +13,9 @@ PYTHON_VERSION: str | None = None
 
 def publish(policy):
     """Publish the pinned toolchain for one validated Pipeline, or clear it."""
-    global UV_VERSION, RUFF_VERSION, PYTHON_VERSION
+    global PIPELINE, UV_VERSION, RUFF_VERSION, PYTHON_VERSION
 
+    PIPELINE = policy
     if policy is None:
         values = (None, None, None)
     else:

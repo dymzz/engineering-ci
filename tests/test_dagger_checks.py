@@ -195,6 +195,7 @@ class Dagger:
                 args, 0, json.dumps(self.environment(names)), ""
             )
         assert "repository-check-artifacts" in args
+        assert args[args.index("--capability") + 1] == "."
         self.exports.append(names)
         if self.fail_export:
             return subprocess.CompletedProcess(args, 1)

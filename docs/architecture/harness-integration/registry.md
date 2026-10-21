@@ -61,9 +61,9 @@ Dagger 侧沿用既有语义：模块仍从工作目录（即 Provider checkout�
 `--source` 取消费者的绝对路径；未分离时仍为 `.`。
 
 消费者不需要携带任何 Provider 配置。`repository-check-*` 另有 `capability`
-参数（默认 `/`，即模块自身 checkout），容器把 Provider 的 `config/pipeline.toml`
-与 `src/engineering_ci` 覆盖叠加到被检查树上：消费者的文件优先，策略与实现来自
-Provider。策略决定仍在本仓库，不下放到 Vesryn。宿主对 Dagger 调用同时传
+参数（默认 `/`，即模块自身 checkout）。源码 checkout 保留原有叠加路径；独立资产
+安装时将 Provider 挂载到 `/provider`、消费者挂载到 `/workspace`，不把 Provider 代码
+计入消费者输入。策略决定仍在本仓库，不下放到 Vesryn。宿主对 Dagger 调用同时传
 `--source <target>` 与 `--capability .`；JUnit 解析器同样从 Provider 读取，
 消费者无需携带副本。
 
@@ -109,8 +109,8 @@ SciPy Bootstrap/River/Optuna 及自动策略更新仍是后续任务。
 
 | 模块 | 改动 |
 | --- | --- |
-| `pipeline.py` | 移除导入期加载；新增 `load_root()` / `bind()`；`PIPELINE` 初始为 `None` |
-| `toolchain.py` | 工具链版本随 policy 发布，不再导入期求值 |
+| `pipeline.py` | checkout 可加载自身配置；安装位置没有配置时保持 `None`，由 `bind(root)` 选择显式资产 |
+| `toolchain.py` | 工具链版本随绑定的 policy 更新；嵌套配置引用不因重复绑定失效 |
 | `checks.py` | 新增 `publish()` / `bind()` / `require_policy()` |
 
 检查表仍然写进模块 globals（`report_path()` 等函数读的是裸全局名，PEP 562 的
@@ -129,8 +129,6 @@ SciPy Bootstrap/River/Optuna 及自动策略更新仍是后续任务。
 ### 导出 Provider 资产
 
 ```powershell
-uv run --locked engineering-ci workflow-adapter-export --out ./provider-assets
-# 等价于：
 uv run --locked python -m engineering_ci.workflow_adapters.provider export --root . --out ./provider-assets
 ```
 
@@ -140,6 +138,7 @@ uv run --locked python -m engineering_ci.workflow_adapters.provider export --roo
 config/pipeline.toml
 dagger-module.toml  dagger.lock  dagger.toml
 .dagger/src/**  .dagger/sdk/**  .dagger/pyproject.toml  .dagger/uv.lock
+src/engineering_ci/**
 provider-assets.json
 ```
 
@@ -149,6 +148,52 @@ provider-assets.json
 
 消费方解包后把该目录作为 Provider root 传入；安装位置本身既不是检查目标，
 也不是默认日志 root。
+
+`src/engineering_ci` 是容器内的检查协议实现；宿主仍使用安装后的 wheel。
+资产清单用于区分安装形态，不因资产内也有 Python 文件就设置 `PYTHONPATH`。
+包和资产必须来自同一候选构建，消费前核对清单内的逐文件 hash。
+
+Dagger beta.16 会过滤 Git 忽略的目录。资产不能放在另一个仓库忽略的 `.test-tools/`
+内，否则模块得到空源码并报 `no source to trust`。不要求资产或消费者建立 Git 仓库，
+不通过关闭 trust 或重生成 SDK 掩盖过滤问题。安装形态显式以 `--load-module .`
+选择自身模块；非 Git 消费者没有 Git execute-bit 覆盖，Git 访问失败仍会拒绝。
+
+### 安装后调用
+
+独立环境安装候选 wheel 及其显式锁定依赖，解包资产到独立目录。CLI：
+
+```powershell
+engineering-ci checks pytest --provider-root D:/ci/provider-assets `
+  --check-target D:/work/consumer --output-root D:/work/evidence `
+  --executor dagger --json D:/work/evidence/checks.json
+```
+
+公共 entry point 仍为 `vesryn.adapters` 的 `engineering-ci-dagger`。
+装配参数为 `catalog(root, *, target=None, output_root=None)`：
+
+```python
+from importlib.metadata import entry_points
+from pathlib import Path
+from vesryn_tool_runtime import DiscoveryScope, Invocation, ToolRuntime
+from vesryn_tool_runtime.contracts import ExecutionContext
+
+entry = next(e for e in entry_points(group="vesryn.adapters")
+             if e.name == "engineering-ci-dagger")
+owner = Path("evidence").resolve()
+run = owner / "call-1"
+run.mkdir(parents=True, exist_ok=True)
+catalog = entry.load()(Path("provider-assets"), target=Path("consumer"), output_root=owner)
+runtime = ToolRuntime(catalog, scope=DiscoveryScope(
+    environment="dagger", permissions=frozenset({"check"})))
+receipt = runtime.invoke(Invocation("pytest", "python.pytest", {"executor": "dagger"}, 1),
+                         ExecutionContext("consumer-1", "", "", run, {}))
+result = receipt.results["pytest"]
+assert result["status"] == "passed" and result["exit_code"] == 0
+```
+
+发现和 Scope 不授予宿主权限；目标、输出及 Dagger 执行仍须先获授权。
+`report`、`evidence` 路径相对 output_root，原始 executed/exit_code 与交付分别核对。
+验收范围见[独立 Provider 验证](../../verification/installed-provider.md)。
 
 ## 持久选择 Binding
 
