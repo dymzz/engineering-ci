@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deliver a development PR and, after human merge, validate and publish its version."""
+"""Request, inspect or wait for the Release Workflow; use native Git/gh for PRs."""
 
 import sys
 from pathlib import Path

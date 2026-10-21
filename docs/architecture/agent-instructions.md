@@ -8,12 +8,9 @@ TOML / YAML 等配置定义，当前任务进度与证据保留在任务或 PR �
 | 位置 | 负责 | 内容边界 |
 | --- | --- | --- |
 | 用户全局 `~/.codex/AGENTS.md` | 跨项目开发约定 | 授权范围、Git/验证纪律、大阶段备份和上游观察；不写项目版本、临时状态或业务架构 |
-| [仓库根 AGENTS.md](../../AGENTS.md) | 本项目目标、依赖边界和开发入口 | engineering-ci 与 Vesryn 的职责、当前仓库操作授权、验证/发布边界和专项指令导航 |
+| [仓库根 AGENTS.md](../../AGENTS.md) | 本项目目标、依赖边界和开发入口 | CI/CD 职责与外部边界、当前仓库操作授权、验证/发布边界和专项指令导航 |
 | `.github/AGENTS.md`（如存在） | Actions 文件的专项约束 | 远端 DAG、权限、复用接口、证据关联与 Secret 传递；不复写全部 Job/Step 定义 |
 | [.dagger/AGENTS.md](../../.dagger/AGENTS.md) | Dagger 文件的专项约束 | 容器执行、SDK/Engine、原始失败与单次 pytest、Secret 生命周期；不负责开发生命周期 |
-
-Vesryn 的根指令按同样方式说明自身边界。它的独立构建/测试不能依赖本机全局文件、
-engineering-ci 的源码目录或另一仓库未发布的当前分支。
 
 ## 加载与冲突
 
@@ -30,8 +27,8 @@ Codex CLI 官方说明按全局、仓库根到当前工作目录逐层发现并�
 ## 操作与执行的区分
 
 Agent 获得当前任务的 PR 自动合并授权后，可以通过 Git/gh 执行实际操作；
-`release.py` 自身仍停在 REVIEW.waiting，不新增合并调度器。正式 Release 保持人工主动请求，
+`release.py` 只请求、查询与等待 Release Workflow；Git/PR 使用原生命令。正式 Release 保持人工主动请求，
 未覆盖的私有 Git 来源仍由安全门禁阻断，不因修改 AGENTS.md 自动获得豁免。
 备份操作见[阶段分支备份](../../guides/common-tasks.md#大阶段分支备份)。
 
-本轮没有实现新的 optimization 模块、自动优化 Loop 或 Bandit。目录图中的规划不能被记录为已实现能力。
+文档中的规划不能被记录为已实现能力。

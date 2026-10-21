@@ -5,56 +5,24 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 ## Ruff
 
 - **Status:** adopted
-- **Pin:** `0.16.10` — `config/pipeline.toml` (`[toolchain]`), `.dagger/pyproject.toml` (`dev`
-  group); target `py311` — `config/pipeline.toml` (`[arguments]`)
-- **Used by:** `src/engineering_ci/checks.py`, `check_operations.py`,
-  `.dagger/src/engineering_ci/main.py` — lint and format checks in local PR flow and CI
-- **Contract:** [local checks](../local-checks.md), [Pipeline configuration](../../configuration/pipeline.md)
-- **Verify:** `tests/test_checks.py`, `tests/test_dagger_checks.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+- **Pin:** `ruff==0.16.10` in root dev dependencies and `uv.lock`; standard settings in `pyproject.toml`.
+- **Used by:** native Dagger `lint` and `format-check`, and public consumer functions.
+- **Contract:** [local checks](../local-checks.md).
+- **Verify:** `dagger check --engineering-ci --check=lint --check=format-check`.
 
 ## Git CLI
 
-- **Status:** adopted
-- **Pin:** unpinned — host / runner `git`
-- **Used by:** `.dagger/src/engineering_ci/pr_checks.py`, `src/engineering_ci/dagger_checks.py`,
-  `src/engineering_ci/release/publishing.py`, `src/engineering_ci/tools/consumer.py` for
-  head commit inspection, diff inspection and release tagging;
-  `src/engineering_ci/tools/bootstrap.py` — consumer initialization, explicit remote connection,
-  seed push and SHA-guarded main replacement with an immutable Git backup ref;
-  `src/engineering_ci/tools/bootstrap_flow.py` — confirmed native history merge, staging,
-  commit and normal feature-branch Push after consumer checks
-- **Contract:** [local checks](../local-checks.md), [release workflow](../release/workflow.md),
-  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
-- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`,
-  `tests/test_repository_bootstrap.py`, `tests/test_bootstrap_flow.py` (real temporary Git repositories)
-- **Verified:** 2026-10-15 @ `04388dbdcf7a`
+- **Status:** adopted; host / runner Git is not separately pinned.
+- **Used by:** `release/` and `tools/consumer.py` for source inspection and release tagging; operators use native Git/gh for PR delivery.
+- **Contract:** [release workflow](../release/workflow.md), [consumer usage](../../../guides/new-repository.md).
+- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`.
 
 ## GitHub CLI (gh)
 
-- **Status:** adopted
-- **Pin:** unpinned — host / runner `gh`
-- **Used by:** `src/engineering_ci/github_cli.py`, `cli/download.py`, `cli/release.py` for
-  GitHub REST API access, release asset uploads and workflow artifact downloads;
-  `src/engineering_ci/tools/bootstrap.py` — private consumer creation, existing repository identity
-  and effective permission checks; `bootstrap_flow.py` — query/recover the exact feature PR,
-  explicitly create a Draft and read back its actual head/base, without merging
-- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md),
-  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
-- **Verify:** `tests/test_ghwf_cli.py`, `tests/test_repository_bootstrap.py`,
-  `tests/test_bootstrap_flow.py` (substituted GitHub calls)
-- **Verified:** 2026-10-15 @ `04388dbdcf7a`
-
-## aria2c
-
-- **Status:** adopted
-- **Pin:** unpinned — optional host executable configured via `config/ghwf.local.toml` or
-  `GHWF_ARIA2C_PATH`
-- **Used by:** `src/engineering_ci/execution/download.py`, `cli/_execution.py` — optional
-  multi-connection HTTP download backend with Range resume
-- **Contract:** [download configuration](../../configuration/downloads.md)
-- **Verify:** `tests/test_download_backends.py`, `tests/test_http_download.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+- **Status:** adopted; host / runner gh is not separately pinned.
+- **Used by:** `github_cli.py`, `cli/download.py`, `cli/release.py` for API access, workflow requests and artifacts.
+- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md).
+- **Verify:** `tests/test_github_runs.py`, `tests/test_release_verification.py` and `tests/test_release_transport.py`; mock dispatch never creates a real Workflow.
 
 ## OSV-Scanner
 

@@ -1,8 +1,5 @@
 """The release checks, tool scopes and native Artifact contract."""
 
-from ..checks import CI_STEPS
-from ..pipeline import PIPELINE
-
 STATES = {
     "success": "passed",
     "failure": "failed",
@@ -17,10 +14,6 @@ STATES = {
 
 # Minimum direct inputs used by release guards, not a second Workflow DAG.
 RELEASE_DEPENDENCIES = {
-    "candidate": frozenset(),
-    "core-tests": frozenset({"candidate"}),
-    "complete-ci": frozenset({"candidate"}),
-    "evidence": frozenset({"candidate", "core-tests", "complete-ci"}),
     "verified": frozenset({"candidate", "core-tests", "complete-ci", "evidence"}),
     "publish": frozenset({"candidate", "verified"}),
 }
@@ -28,20 +21,20 @@ RELEASE_DEPENDENCIES = {
 CHECKS = {
     "candidate": ("candidate", "Validate manual release request"),
     "ruff_lint": (
-        "core-tests / " + PIPELINE["checks"]["ruff-lint"]["ci_job"],
-        CI_STEPS["ruff-lint"],
+        "core-tests / python-ci / checks",
+        "Ruff Lint",
     ),
     "ruff_format": (
-        "core-tests / " + PIPELINE["checks"]["ruff-format"]["ci_job"],
-        CI_STEPS["ruff-format"],
+        "core-tests / python-ci / checks",
+        "Ruff Format Check",
     ),
     "core_tests": (
-        "core-tests / " + PIPELINE["checks"]["pytest"]["ci_job"],
-        CI_STEPS["pytest"],
+        "core-tests / sync-tool-tests",
+        "Run all core unit and process tests",
     ),
     "version_integrity": (
-        "core-tests / " + PIPELINE["checks"]["version"]["ci_job"],
-        CI_STEPS["version"],
+        "core-tests / version-metadata",
+        "Validate release metadata and root lock consistency",
     ),
     "dependency_security": (
         "complete-ci / dependency-security",
@@ -57,8 +50,8 @@ CHECKS = {
 }
 
 DAGGER_POLICY_CHECKS = {
-    "coverage": "engineering-ci:fixture-quality-gates",
-    "python_matrix": "engineering-ci:fixture-python-matrix",
+    "coverage": "validation:fixture-quality-gates",
+    "python_matrix": "validation:fixture-python-matrix",
 }
 
 TOOLS = {"python", "uv", "pytest", "pytest-cov", "ruff", "dagger", "osv-scanner"}

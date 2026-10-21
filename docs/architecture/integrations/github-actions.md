@@ -2,7 +2,7 @@
 
 Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 Rules: [Workflow contracts](../release/workflow.md). Contracts: [Release workflow](../release/workflow.md),
-[Pipeline bindings](../../configuration/pipeline.md).
+[native Checks](../local-checks.md).
 
 ## GitHub Actions
 
@@ -15,7 +15,7 @@ Rules: [Workflow contracts](../release/workflow.md). Contracts: [Release workflo
   `.github/workflows/reusable-python-ci.yml` (reusable check orchestrator)
 - **Contract:** [Workflow contracts](../release/workflow.md),
   [Release workflow](../release/workflow.md)
-- **Verify:** `tests/test_workflow_consistency.py`
+- **Verify:** actual native Check execution and release Manifest tests
 - **Verified:** 2026-10-14 @ `963d809a295f`
 
 ## Reusable Workflow public contract
@@ -46,8 +46,7 @@ The optional Secret `ENGINEERING_CI_READ_TOKEN` permits reading the private
 module/helper and caller-approved Git dependencies. Configure minimal Contents
 read access to the required repositories; it does not grant platform permission
 to reuse a private Workflow. Enable the appropriate GitHub Actions access for
-the caller separately. No database or optional Harness is required for ordinary
-consumer checks. Dagger Secret forwarding remains explicit in the caller module;
+the caller separately. Dagger Secret forwarding remains explicit in the caller module;
 merely defining a host variable does not pass it to test containers.
 
 Outputs `pytest_artifact_id` and `security_artifact_id` are native uploaded

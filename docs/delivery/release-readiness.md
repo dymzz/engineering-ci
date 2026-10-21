@@ -70,7 +70,7 @@ These scopes do not introduce a new release state machine.
 - Verification uses public interfaces and checks expected results or artifacts.
 - Changes affecting public interfaces receive corresponding compatibility verification.
 - Internal unit tests alone do not establish independent consumer compatibility.
-- Provider-side installation checks and downstream integration tests are identified separately.
+- Component installation checks and downstream integration tests are identified separately.
 
 ### C8. Compatibility & Evolution
 

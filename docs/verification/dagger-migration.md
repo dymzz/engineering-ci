@@ -6,7 +6,7 @@
 原地将 `dagger.json` 转为 `dagger-module.toml`，工作区 `dagger.toml`
 安装相同模块作为 entrypoint；保留 `.dagger/src`、公开函数与检查执行契约。
 生成 SDK 随原生模块交付，两个 TOML 和 SDK 纳入证据输入。
-这一步没有迁移 PR 检查循环、Release FSM 或 GitHub Job DAG。
+当时未迁移 PR 检查执行或 GitHub Job DAG；当前检查实现以[原生 Checks](../architecture/local-checks.md)为准。
 
 ## 已执行结果
 

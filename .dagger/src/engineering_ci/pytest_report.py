@@ -7,8 +7,8 @@ signals: missing/malformed XML is never reported as a successful test run.
 
 from __future__ import annotations
 
-import re
 import html
+import re
 from xml.etree import ElementTree as ET
 
 EXIT_REASONS = {
@@ -89,7 +89,11 @@ def summarize_pytest(
             for key in ("tests", "failures", "errors", "skipped"):
                 counts[key] = sum(int(suite.get(key, "0")) for suite in suites)
             counts["passed"] = max(
-                0, counts["tests"] - counts["failures"] - counts["errors"] - counts["skipped"]
+                0,
+                counts["tests"]
+                - counts["failures"]
+                - counts["errors"]
+                - counts["skipped"],
             )
             failures = []
             for case in cases:
@@ -103,16 +107,21 @@ def summarize_pytest(
                 message = issue.get("message", "")
                 detail = issue.text or ""
                 node = "::".join(
-                    part for part in (case.get("classname", ""), case.get("name", ""))
+                    part
+                    for part in (case.get("classname", ""), case.get("name", ""))
                     if part
                 )
-                failures.append({
-                    "test": _bounded(node, 300),
-                    "kind": kind,
-                    "category": _diagnosis(kind, message, detail, issue.get("type", "")),
-                    "message": _bounded(message, 400),
-                    "trace_excerpt": _bounded(detail, 1600),
-                })
+                failures.append(
+                    {
+                        "test": _bounded(node, 300),
+                        "kind": kind,
+                        "category": _diagnosis(
+                            kind, message, detail, issue.get("type", "")
+                        ),
+                        "message": _bounded(message, 400),
+                        "trace_excerpt": _bounded(detail, 1600),
+                    }
+                )
             result["report_available"] = True
             result["counts"] = counts
             result["failures"] = failures[:max_failures]
@@ -138,19 +147,17 @@ def failure_summary(report: dict) -> str:
         headline = report.get("diagnostic", "JUnit report unavailable")
     else:
         headline = (
-            f'{counts["tests"]} tests; {counts["passed"]} passed, '
-            f'{counts["failures"]} failed, {counts["errors"]} errors, '
-            f'{counts["skipped"]} skipped'
+            f"{counts['tests']} tests; {counts['passed']} passed, "
+            f"{counts['failures']} failed, {counts['errors']} errors, "
+            f"{counts['skipped']} skipped"
         )
-    lines = [
-        f'pytest exit {report["exit_code"]} ({report["reason"]}): {headline}'
-    ]
+    lines = [f"pytest exit {report['exit_code']} ({report['reason']}): {headline}"]
     for item in report["failures"]:
-        lines.append(f'- {item["test"]} [{item["category"]}]: {item["message"]}')
+        lines.append(f"- {item['test']} [{item['category']}]: {item['message']}")
         if item["trace_excerpt"]:
             lines.append(item["trace_excerpt"])
     if report["omitted_failures"]:
-        lines.append(f'{report["omitted_failures"]} additional failures omitted')
+        lines.append(f"{report['omitted_failures']} additional failures omitted")
     if not report["failures"] and report.get("console_tail"):
         lines.append(report["console_tail"])
     return "\n".join(lines)
@@ -158,44 +165,82 @@ def failure_summary(report: dict) -> str:
 
 def markdown_summary(report: dict) -> str:
     """Bounded presentation of the recorded outcome; never decides execution."""
+
     def cell(value, limit=400):
         text = " ".join(str(value).split())[:limit]
-        return (html.escape(text, quote=True).replace("\\", "&#92;")
-                .replace("|", "&#124;").replace("`", "&#96;"))
+        return (
+            html.escape(text, quote=True)
+            .replace("\\", "&#92;")
+            .replace("|", "&#124;")
+            .replace("`", "&#96;")
+        )
 
-    execution_status = "PASSED" if report["exit_code"] == 0 else "FAILED" if report["exit_code"] == 1 else "ERROR"
-    lines = [f'## Pytest Results — {cell(report["status"].upper())}', "",
-             f'Test execution: **{execution_status}**; report status: **{cell(report["status"].upper())}**',
-             f'Original pytest exit code: **{report["exit_code"]}** ({cell(report["reason"])})',
-             f'JUnit report available: **{str(report["report_available"]).lower()}**', ""]
+    execution_status = (
+        "PASSED"
+        if report["exit_code"] == 0
+        else "FAILED"
+        if report["exit_code"] == 1
+        else "ERROR"
+    )
+    lines = [
+        f"## Pytest Results — {cell(report['status'].upper())}",
+        "",
+        f"Test execution: **{execution_status}**; report status: **{cell(report['status'].upper())}**",
+        f"Original pytest exit code: **{report['exit_code']}** ({cell(report['reason'])})",
+        f"JUnit report available: **{str(report['report_available']).lower()}**",
+        "",
+    ]
     quality = report.get("quality")
     if quality:
         selection, coverage = quality["selection"], quality["coverage"]
-        lines += ["| Test policy / quality | Result |", "| --- | --- |",
-                  f'| Test path | {cell(selection["test_path"], 300)} |',
-                  f'| Selected markers | {cell(selection["markers"] or "all in configured path", 300)} |',
-                  f'| Coverage source | {cell(coverage["source"] or "disabled", 300)} |']
-        percent = f'{coverage["line_percent"]:.2f}%' if coverage["available"] else "unavailable" if coverage["enabled"] else "disabled"
-        lines += [f'| Line coverage | {percent} |',
-                  f'| Required coverage | {cell(coverage["required_percent"] or "not configured")} |',
-                  f'| Coverage gate | {cell(coverage["status"].upper())} |',
-                  f'| Overall test quality gate | **{cell(quality["gate"]["status"].upper())}** |', ""]
+        lines += [
+            "| Test policy / quality | Result |",
+            "| --- | --- |",
+            f"| Test path | {cell(selection['test_path'], 300)} |",
+            f"| Selected markers | {cell(selection['markers'] or 'all in configured path', 300)} |",
+            f"| Coverage source | {cell(coverage['source'] or 'disabled', 300)} |",
+        ]
+        percent = (
+            f"{coverage['line_percent']:.2f}%"
+            if coverage["available"]
+            else "unavailable"
+            if coverage["enabled"]
+            else "disabled"
+        )
+        lines += [
+            f"| Line coverage | {percent} |",
+            f"| Required coverage | {cell(coverage['required_percent'] or 'not configured')} |",
+            f"| Coverage gate | {cell(coverage['status'].upper())} |",
+            f"| Overall test quality gate | **{cell(quality['gate']['status'].upper())}** |",
+            "",
+        ]
         if coverage.get("diagnostic"):
             lines += ["Coverage diagnostic: " + cell(coverage["diagnostic"]), ""]
     counts = report["counts"]
     if counts is not None:
         lines += ["| Metric | Count |", "| --- | ---: |"]
-        for label, key in (("Total", "tests"), ("Passed", "passed"), ("Failed", "failures"),
-                           ("Errors", "errors"), ("Skipped", "skipped")):
+        for label, key in (
+            ("Total", "tests"),
+            ("Passed", "passed"),
+            ("Failed", "failures"),
+            ("Errors", "errors"),
+            ("Skipped", "skipped"),
+        ):
             lines.append(f"| {label} | {counts[key]} |")
     if report.get("diagnostic"):
         lines += ["", "Report diagnostic: " + cell(report["diagnostic"])]
     failures = report["failures"]
     if failures:
-        lines += ["", "### Failures", "", "| Test | Category | Message |", "| --- | --- | --- |"]
+        lines += [
+            "",
+            "### Failures",
+            "",
+            "| Test | Category | Message |",
+            "| --- | --- | --- |",
+        ]
         shown = 0
         for item in failures:
-            row = f'| {cell(item["test"], 300)} | {cell(item["category"], 100)} | {cell(item["message"])} |'
+            row = f"| {cell(item['test'], 300)} | {cell(item['category'], 100)} | {cell(item['message'])} |"
             if len(("\n".join(lines) + row).encode("utf-8")) > 23000:
                 break
             lines.append(row)
@@ -203,5 +248,9 @@ def markdown_summary(report: dict) -> str:
         omitted = report["omitted_failures"] + len(failures) - shown
         if omitted:
             lines += ["", f"{omitted} additional failures omitted from this summary."]
-    lines += ["", "Detailed evidence: download this job's pytest report artifact (`report.json`, optional `junit.xml`).", ""]
+    lines += [
+        "",
+        "Detailed evidence: download this job's pytest report artifact (`report.json`, optional `junit.xml`).",
+        "",
+    ]
     return "\n".join(lines)

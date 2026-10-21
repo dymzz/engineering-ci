@@ -1,194 +1,52 @@
 # CLI 与 Workflow 调用边界
 
-用户入口与 Workflow 内部操作分开。scripts 只保留 release.py 和 download.py，
-当前用户命令与旧路径迁移见[使用说明](../../guides/README.md)。
+## 职责
 
 ```text
-scripts/release.py publish → release/delivery.py（检查/提交/Push/PR/审查合并停点）→ execution Coordinator → release.yml
-scripts/release.py status → 当前 Git/PR、本地结果与已有 execution checkpoint → GitHub GET
-scripts/release.py validate → execution Coordinator（独立完整验证请求/等待）→ release.yml
-scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
-scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
-engineering-ci checks/version → checks.py / release/version.py
-engineering-ci trace → cli/trace.py（配置兼容）→ Vesryn tracing（明确文件、宿主归档及只读回放）
-engineering-ci mine → cli/mine.py → Vesryn mining；CI Handler 绑定与执行证据读取留在宿主
-engineering-ci checks --binding → cli/checks_binding.py（兼容桥）→ 原完整 pr
-engineering-ci workflow → cli/workflow.py（组装 Catalog）→ Vesryn workflow_core → workflow_adapters → 原检查/查询
-GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
-专项工具 → python -m engineering_ci.tools.<name>
+scripts/release.py → cli/release.py → Release 身份与证据核验 / gh API / gh run watch
+scripts/download.py → cli/download.py → gh run view / gh run download
+GitHub Actions → workflow_actions.py → Release / Manifest / Security 内部操作
+dagger check → 原生 Checks → Dagger 执行图、容器与缓存
 ```
 
-发布的 job 依赖、Coverage、Matrix、Security 与证据收集仍由 YAML 定义。
-检查版本、范围、参数与依赖集中在[独立 Pipeline 配置](../configuration/pipeline.md)，
-checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名称。
-本地交付层次化 FSM 管阶段准入，已有 execution FSM 管 Dispatch、等待和恢复；
-两者不替代 Actions 的远端 DAG。
+用户 CLI 为 `engineering-ci version / release / download`；两个脚本只是对应入口。
+Git add、commit、push、PR 创建、审查与合并由原生 Git / gh 完成。
+不维护本地交付 FSM、通用 Coordinator、StateStore、阶段收据或第二套检查调度。
+GitHub Actions 定义发布 Job DAG、权限和门禁；内部 Actions 操作不是用户发布请求。
 
-当前 `checks --binding` 为证据绑定原型的兼容桥。独立生成及工具编排由单独调用层组装，
-原 checks/Release/Download 不反向依赖生成核心；实际入口和依赖方向见
-[独立生成与编排](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)。
+## Release 请求与查询
 
-## 公开调用契约
+`publish` 请求 main 上的正式发布 Workflow；`validate` 在显式 ref 上请求非发布验证。
+请求前读取远端实际 SHA，核对四处版本与 Tag 冲突。获得 Run ID 后再核对该 Run 的
+Workflow、仓库、版本与提交；不按最新 Run 推测请求结果。
 
-操作步骤、参数示例和退出码统一维护在[使用说明](../../guides/README.md)。
-安装后的 `engineering-ci` 和两个脚本调用相同实现；模块运行使用
-`python -m engineering_ci.cli`，需要已安装项目或设置 PYTHONPATH。
+`status` / `verify` 对显式 Run 只读，`wait` 使用 `gh run watch --exit-status` 后核验同一 Run。
+等待前后 SHA 或 attempt 变化时拒绝沿用结果。权限不足时报告失败，不换认证，不另建轮询引擎。
+验证成功与发布成功分别报告：只有实际 Release、Tag、Manifest 和原始 Actions 证据一致，才是 `published`。
+原始 Manifest 发布准入保持在[发布机制](release/workflow.md)，CLI 不复制它。
 
-Release 交付模块读取当前 checkout 和 PR 事实，复用检查定义与结果身份校验，调用原生 Git/gh 完成提交和 PR 交付。
-实际合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。PR 合并授权遵循根
-AGENTS.md；人或已授权 Agent 通过 gh 完成合并。正式发布仍须人主动请求，再交给已有 Coordinator 请求、等待。
-status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 Run 来自原 execution checkpoint。
-本地阶段不新增状态文件，恢复时读取原生 Git / PR 证据；不建立任务注册表。
-公开 verify 必须指定实际 Run，只读取远端状态与证据，不调用 Coordinator 或写 FSM。
-GitHub Actions 负责完整检查和发布决定，JSON 生成或文件收集不能覆盖原始失败。
-Release 不初始化下载后端或读取下载配置；只有 download 负责收集日志及 Artifact。
-轨迹的来源与归档游标不进入 ExecutionContext 或发布门禁，归档回放不推进业务 FSM。
-`trace status/inspect` 为只读；`init/import` 明确修改专用数据库对象；
-`replay` 明确输出原始快照文件。详细契约见[轨迹架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
+## 一次性 Dispatch 保护
 
-## 操作结果与恢复视图
+`release/request.py` 只保存一项具体请求的意图：仓库、版本、Tag、SHA、ref、模式、场景、Run ID。
+文件位于调用目录的 `.test-tools/release-{mode}-v{version}.json`；排他创建先于唯一一次 POST。
+明确 4xx 拒绝（408 除外）移除该意图，允许修正；204、响应丢失、格式错误、5xx 或中断均保留未决意图并停止。
+有效 200 响应的 Run ID 立即原子保存。已知 Run 复用该 ID；身份不同、文件损坏或结果未知均不重发。
+这不是任务历史库，不读取或迁移旧 execution 状态。跨目录、跨机器不能依靠它防止重复请求。
+不保存 Token、原始 HTTP 响应或签名 URL。
 
-`release/results.py` 的 `OperationResult` 是当前调用的只读结果视图。
-它引用 FSM / Pipeline 使用的同一个 `ExecutionContext`，不增加持久化状态，不参与准入判断。
-`status`、`validate`、`publish` 的最终文字摘要与 `--json` 使用同一视图。
-原有进度和工具输出继续保留；JSON 模式把这些输出送到 stderr，stdout 只输出一个 JSON 对象。
-子进程的未捕获输出也显式送到 stderr；用于工具探测的捕获输出保持原用途。
+## 结果与文件边界
 
-Schema 版本为 1，其顶层字段如下：
+Release JSON 包含 `operation / repository / version / result / publication / exit_code / next_commands`，
+已知 Run 时包含 ID、URL 及已确认的 SHA、attempt、状态和结论。未知结果给出意图位置与按 SHA 检索的命令，
+候选必须由操作者确认，不能自动选取。工具失败保持非零；请求受理的 0 不能作为已发布证明。
 
-| 字段 | 定义 |
-| --- | --- |
-| `operation`、`repository`、`version`、`tag` | 本次显式请求身份；version 不含 v，tag 包含 v |
-| `status`、`exit_code` | 调用完成、停止、失败或中断，以及原始 CLI 退出码；不是正式发布资格 |
-| `delivery` | 当前 FSM 阶段、checkout / 分支 / SHA / 未提交文件 / PR 身份及已经形成的阶段证据 |
-| `local_checks` | 既有检查报告的投影，包括是否当前通过、逐项有效性、执行/复用情况和报告位置；不复制环境变量或日志 |
-| `review` | 实际 PR head、必需 CI 结果与可合并状态；未查询时为 null |
-| `executions` | 原 execution checkpoint 的阶段、Run、恢复阶段和脱敏 Dispatch 诊断；服务器提供时包含 Run Attempt / SHA |
-| `publication` | 未确认、Draft 或经过既有 Manifest 校验的正式 Release 及其原始验证 Run / Attempt |
-| `operations` | 本次实际调用的检查、Commit、Push、PR 更新和 Workflow executor；调用 executor 不表示一定发出了 POST |
-| `stop` | 停止原因代码及安全说明；没有停止原因为 null |
-| `next_actions` | 动作种类、独立 argv 参数数组、人工操作标志及前置条件；空 argv 表示需要人工决定，不能执行 |
+Download 仅操作显式指定或菜单选定的已有 Run，无 POST 路径。日志固定 attempt，
+Artifact 使用 gh 原生 Run 范围（API 不提供 attempt 过滤），结果明确标注 `artifact_scope=run`。
+一般下载不能替代发布 Manifest 的精确 Artifact ID / attempt 核验。
 
-`status=completed` 只表示当前操作成功完成。例如 status 查询成功时 exit_code 为 0，
-publication 仍可为 unconfirmed，stop 可为 human_review 或 pr_ci。
-publish 等待审查与本地 incomplete 都可能退出 3，调用方必须同时查看 stop.code、review 和 local_checks。
-环境缺失、失败、中断保留原有 2、非零工具退出码和 130，JSON 生成不覆盖它们。
+文件位于 `--out/RUN_ID/`；日志通过临时文件成功后创建 `run.log`，拒绝覆盖已有日志；
+Artifact 的网络传输、解压和原生覆盖规则交给 `gh run download`。不再管理 ZIP 下载、分段、
+Backend、资源收据或字节续传。失败后按明确资源重新下载；选择新的输出目录避免混入上次部分文件。
+日志先保存，Artifact 下载失败不删除已经成功取得的日志。
 
-checkpoint 的 binding 为 matched（远端 Run 满足已提供的版本 / 分支及 SHA 约束）、
-historical（已确认不对应本次身份）或 unverified（尚未完成远端身份核对）。
-binding 本身不是当前交付准入；status 只有 FSM 已确认 PUBLICATION_ready 才给出 publication Run 的恢复命令。
-UNKNOWN 候选只列为候选，不能成为已确认 Run 或可执行的 resume 动作。
-checkpoint 的 remote_conclusion 来自原执行记录，live_conclusion / status / run_attempt 来自本次远端查询，
-不将重跑后的最新结果覆盖成原记录。FINISHED 的继续动作先核验同一 Run，不提示盲目重新 Dispatch。
-历史 Run 不产生当前恢复建议；已经合并却仍有未交付文件时，需要人工决定后续 PR。
-任何后续查询异常或中断都保留已完成阶段证据，并移除先前的合并建议，优先给出只读 status。
-重新尝试必须先解决所报告的错误，并继续接受原有门禁校验。
-
-next_actions 是提示，执行前仍经过原有身份核对和门禁，不能直接成为放行依据。
-本次未执行或未查询的信息保持 not_run / not_inspected / null；旧检查是否有效仍由 checks.inspect 判定。
-不读取终端文字来推断结果，不复制原始 API 响应、PR body、认证信息或旧状态中的任意错误字符串。
-公开 `verify --json` 继续使用原有 Run 验证结构；本视图不合并本地检查 JSON 或 Release Manifest 的 Schema。
-
-## 交互与非交互下载
-
-显式 --interactive 后依次选择 Workflow、最近 30 个 Run 与未过期 Artifact 名称。0 收集所有名称，q
-取消；不自动挑选默认值。已完成且无 Artifact 时收集日志，未完成时等待并收集最终输出。
-同名 Artifact 保持原名称过滤语义，不按最大 ID 猜测最新 attempt。
-
-Codex 使用 --run RUN_ID；ID 必须为实际正整数。真实 API 提供 Workflow ID 与 ref，
---workflow / --ref 仅作约束。无法确认身份时拒绝调用 Coordinator。
---resume RUN_ID 是别名；下载入口拒绝 --input、--new-run 和无 ID 的 --resume。
-原生进度恢复、auto/aria2/native、Digest、ZIP 校验与输出目录沿用原有实现。
-
-首次使用安装 gh 并完成认证。省略 repo 时按当前目录 origin 与缓存识别仓库。
-交互需要终端；两种模式都只查询/恢复已有 Run。
-
-## Workflow 内部调用
-
-```sh
-python3 -m engineering_ci.workflow_actions checks ruff-lint
-python3 -m engineering_ci.workflow_actions checks tests --coverage
-python3 -m engineering_ci.workflow_actions release prepare
-python3 -m engineering_ci.workflow_actions manifest facts --directory .release-evidence --output release-facts/facts.json
-```
-
-Actions 设置 PYTHONPATH 为实际 checkout 的 src。内部 release prepare/verify/publish
-读取 Actions 上下文、真实 SHA、Run Attempt 和必需证据，不用于本地请求发布。
-这些操作不会触发另一轮 pytest 或 Dagger。内部 release verify 生成和校验 Manifest；
-公开 release verify 只读已有 Run，不能将两者混作触发命令。
-
-Security 默认 helper ref 仍为已发布的 v0.4.7，调用参数与消费者保持兼容。
-匹配的新 helper 使用 workflow_actions security；旧 helper 继续调用其已发布的脚本。
-入口只按文件是否存在选择；执行失败直接传播，不切换到另一入口重试。
-
-普通 Workflow 的底层 Dispatch 参数保留在 engineering_ci.execution.cli，可非交互调用；
-有真实 POST 副作用。旧 PowerShell 函数迁移与专项工具调用见[使用说明](../../guides/README.md)。
-
-trace send 通过官方 OTLP/HTTP exporter 显式发送已有脱敏投影，不采集原始内容或推进业务 FSM；定义见 [P1 架构](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/archive.md)。
-mine candidates 复用已有分析和实际投影，仅产生候选与审查依据；不重跑分析、调用模型或执行候选。
-调用与停止后的继续方式见 [候选审查](../../guides/cli-reference.md#工作流候选与人工审查)。
-
-workflow 由 CLI 组装宿主 Catalog，调用独立 workflow_core。生成文件实际声明工具及步骤，
-workflow_adapters 正向调用原 checks / Dagger / 报告检查。原模块不反向依赖 mining 或核心。
-原型 --binding 的兼容处理在 cli/checks_binding.py，只有显式选择该旧参数才加载。
-新调用及 Schema 见[独立生成工作流](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/architecture/harness/workflow.md)和
-[操作说明](../../guides/generated-workflows.md)，不改变 scripts 的发布/下载责任。
-
-## 领域工具 Binding 路由
-
-`workflow select --tool` 加载命名的已安装 Provider；`call --binding` 与绑定定义的
-`run` 保留同一选择，`status/resume/evidence` 从冻结 Binding 加载该 Provider。
-旧 Capability 与未绑定 Workflow 继续走原 Catalog。恢复准入在原 Runtime 执行锁内、
-状态写入和工具调用之前完成；检查证据的有效性仍由原 ChecksAdapter 判断。
-详见[统一目录与 Binding](harness-integration/registry.md#持久选择-binding)。
-
-## 新仓接入工具
-
-`engineering_ci.tools.bootstrap` 是独立的消费者建仓工具，使用原生 Git/gh 与固定正式
-版本模板；不进入 release/download 的 FSM，不增加 scripts 入口或 Pipeline 调度层。
-交互确认或显式参数确定目标及私有远端操作范围；生成后明确选择继续到 Draft PR、
-仅本地准备/检查或退出。JSON 保留实际执行、失败和未执行状态。
-小型原子恢复上下文只保存本次目标、模板版本/SHA、初始提交和远端身份；原生 Git/API
-核对实际状态。远端创建前保存意图，响应不确定时需要人工确认仓库 ID，不能重发创建。
-已有仓库连接/覆盖需独立选择；覆盖意图绑定原 main SHA，先建立并核对不可覆盖的恢复分支，
-再通过 Git force-with-lease 更新 main。连接不同历史时由原生 merge 整合，冲突交给操作者。
-本工具 Schema 2 记录远端模式与获准 SHA，兼容迁移 Schema 1；不复用或修改执行 FSM Schema。
-`bootstrap_flow.py` 只组织固定的 uv/SDK/Dagger 准备及本次 Git/PR 交付，
-检查执行、依赖调度和缓存由原生 Dagger 负责。Commit、普通 Push 和 Draft PR 单独确认，
-不合并或发布。`bootstrap_common.py` 共享子进程错误和路径边界；不引入通用执行框架。
-本次检查身份绑定实际文件、工具与相关环境，检查后输入变化阻止后续写操作；该事实不作为
-跨调用缓存或远端 CI 放行依据。恢复读取实际 Git/PR 状态，再调用原生准备和检查；
-不重复创建已有 PR，不把报告生成视为检查通过。使用与恢复见
-[新仓接入指南](../../guides/new-repository.md#交互式建仓入口)。
-
-## 默认任务采集与日志记录
-
-执行型入口（checks、workflow run/resume/call、release publish/validate、download、
-workflow_actions）通过 task_observation.task_entry 包装一次。内部既有 subprocess 调用保持
-原样；采集范围是当前 Python 进程和 worker thread 的原生命令边界，不覆盖子进程内部、
-其他终端或 os.system，不从 argv 猜测目的或 ToolSpec。help、查询和依赖未满足时的原预检
-不触发记录。任务、调用身份及原始退出状态由宿主产生，日志库不补造未知字段。
-
-`task_observation.py` 使用安装后的 vesryn-log `JsonFileSink` / `JsonlSink` 完成物理写入。
-日志基础包由 dev 或 trace 安装；基础 no-dev 工具不强制下载私有日志依赖，缺包时只报告
-记录 unavailable。同进程库调用不需要 Dagger；默认日志不再调用 Vesryn observe-task、加载另一仓库源码或
-启动额外工具。跨仓的 capture/归档等工具操作仍使用公开 Dagger 接口并经过声明的观测边界；
-这与宿主调用已经安装的记录 API 是两种用途。上游接口见[日志集成](integrations/tracing.md#vesryn-log)。
-
-产物位于 `.log/tasks/<UTC 日期>/<task-id>/`：`capture.json` 保存本次安全采集快照，
-`events.jsonl` 保存同一组事件，`delivery.json` 单独记录写入状态和原任务状态/退出码。
-`.log/latest-task.json` 仅在快照与事件文件写入成功后更新。任意写入失败时保留已有文件、
-输出安全诊断，不自动重试或重跑业务，也不覆盖上一条成功指针。缺少 receipt 不应当作写入完成；
-多文件不是事务，部分文件存在不证明完整投递。旧 `.log/pending/`、task-history.md 和分页
-产物保留为历史数据，不自动迁移或再投递；旧 ENGINEERING_CI_OBSERVATION_MODULE / SOURCE
-覆盖项不再读取。
-
-采集先暂存内存，结束时记录；硬终止仍可能丢失当前内存事件，不据此宣称没有发生调用。
-不采集 argv、stdout、环境值或异常正文。源码日志不取代 Runtime 的 ToolResult、CI 结果、
-Release 证据或准入规则；记录成功不能让失败任务通过。
-
-原始归档的兼容配置、来源、Store、Catalog 直接转发到 vesryn-log，既有 trace
-status/inspect/init/import/replay/sources/snapshots 也直接调用这些安装后的 API。
-Projection、Mining、派生查询及工具协调继续由 Vesryn 解释；历史异常在本仓边界归一化为
-日志包的 ArchiveError，避免错误类型迁移使原有失败捕获失效。CI feedback 的 Schema、身份
-和字节规范仍由本仓校验后交给日志存储，不把日志库当作审批工具。
+用户参数、退出码和操作顺序分别见[CLI 参考](../../guides/cli-reference.md)及[常用操作](../../guides/common-tasks.md)。

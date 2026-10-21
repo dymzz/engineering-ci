@@ -1,5 +1,4 @@
 import pytest
-
 from quality_sample import classify, twice
 
 

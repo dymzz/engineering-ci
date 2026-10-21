@@ -2,38 +2,33 @@
 
 所有访问其他目录的行为都需要手动批准
 
-Engineering CI provides reusable Python CI/CD capabilities through Dagger and GitHub Actions, including checks, delivery, release evidence, workflow artifacts and engineering-domain Providers.
-
-Vesryn provides the optional Agent Harness. vesryn-tool-runtime owns shared tool contracts, registration, discovery, binding and generic invocation coordination.
+Engineering CI provides reusable Python CI/CD capabilities through Dagger and GitHub Actions, including checks, delivery, release evidence and workflow artifacts.
 
 ## Project Navigation
 
 - [Documentation index](docs/README.md): technical documentation and maintenance conventions.
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
-- [Generated workflows](guides/generated-workflows.md): Harness capability usage and commands.
 - [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures.
 
 Consult relevant documentation and interfaces when working across module boundaries.
 
 ## Architecture and Ownership
 
-- engineering-ci owns CI/CD execution, quality policy, domain Providers, approval/feedback rules and release delivery.
-- Vesryn owns portable Harness capabilities; vesryn-tool-runtime owns shared tool registration, discovery, binding and invocation coordination.
-- Basic CI/CD must operate independently of the optional Vesryn integration.
-- `config/pipeline.toml` defines registered local check settings.
+- engineering-ci owns CI/CD quality policy, release evidence and delivery.
+- Agent Harness, mining and generic Workflow execution are outside this repository. Do not add forwarding or compatibility layers for them.
+- Native Dagger Checks define repository checks; standard Ruff settings and locked tools live in pyproject.toml. Do not recreate a host scheduler, input-hash receipt or check registry.
 - Dagger manages internal execution graphs, containers and caching.
 - GitHub Actions manages remote workflow orchestration, permissions and release gates.
-
-## Harness Integration
-
-- Discover existing capabilities with `engineering-ci workflow capabilities`.
-- Use `workflow select` to check activation and admission before `workflow call`.
-- Prefer applicable registered capabilities over reconstructing their execution sequences.
-- Capability approval and activation require explicit authorization.
-- Provider source, check target and output ownership are separate values; pass
-  `--check-target` and `--output-root` to check a consumer tree from this checkout.
-  Results never return to the Provider source.
+- Release CLI requests, inspects and waits for that Workflow; Git/PR operations use native Git/gh. Downloads use native gh for explicitly selected Runs.
+- Do not recreate a generic execution FSM, StateStore, download backend or host delivery lifecycle. Preserve only concrete dispatch uncertainty and release evidence safeguards.
+- engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.
+- engineering-ci must not depend directly or transitively on vesryn or vesryn-workflow, including through Log or Tool Runtime.
+- Keep any CI instrumentation minimal; generic log storage, archiving and querying belong to the logging component.
+- Vesryn and Workflow may consume engineering-ci capabilities;
+  reverse dependencies are forbidden.
+- If a forbidden dependency appears necessary, reassess ownership
+  and component boundaries instead of adding compatibility layers.
 
 ## Delivery
 

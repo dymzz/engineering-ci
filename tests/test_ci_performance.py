@@ -116,11 +116,13 @@ class PerformanceTests(unittest.TestCase):
 FAKE = r"""
 import json,os,shutil,subprocess,sys
 from pathlib import Path
-args=sys.argv[1:]
+raw_args=sys.argv[1:]
+args=raw_args[:]
+if args[:1]==["--env"]: args=args[2:]
 if args[:2]==["--progress","plain"]: args=args[2:]
 if args[:2]==["api","call"]: args=args[1:]
 with open(os.environ["PERF_EVENTS"],"a",encoding="utf-8") as stream:
-    stream.write(json.dumps({"args":args})+"\n")
+    stream.write(json.dumps({"args":args,"raw_args":raw_args})+"\n")
 if args[0]=="version": raise SystemExit(0)
 if args[0]=="call":
     out=Path(args[args.index("--path")+1])
@@ -138,6 +140,7 @@ if args[0]=="call":
 if args[0]=="check":
     if "-l" in args:
         if os.environ["PERF_FAIL_LIST"]=="1": raise SystemExit(3)
+        if os.environ["PERF_FAIL_LIST"]=="2": raise SystemExit(0)
         print("--sample --check=format # Format\n--sample --check=lint # Lint\n--sample --check=test # Tests")
     else:
         assert "sample:test" not in args[1:] and "dag+check://?module=sample&check=test" not in args[1:]
@@ -165,6 +168,9 @@ class WorkflowExecutionTests(unittest.TestCase):
         replacement="sample:test",
         fail_list=0,
         report=True,
+        dagger_environment="",
+        dagger_module="",
+        dagger_checks="",
     ):
         workflow = (ROOT / ".github/workflows/reusable-python-ci.yml").read_text(
             encoding="utf-8"
@@ -217,6 +223,9 @@ class WorkflowExecutionTests(unittest.TestCase):
                 "PYTEST_REPORT_FUNCTION": "pytest-results" if report else "",
                 "PYTEST_CHECK": replacement if report else "",
                 "PYTEST_REPORT_SCENARIO": "",
+                "DAGGER_ENVIRONMENT": dagger_environment,
+                "DAGGER_MODULE": dagger_module,
+                "DAGGER_CHECKS": dagger_checks,
             }
         )
         result = subprocess.run(
@@ -298,3 +307,36 @@ class WorkflowExecutionTests(unittest.TestCase):
                         for e in entries
                     )
                 )
+
+    def test_empty_native_selection_never_becomes_a_pass(self):
+        for report in (False, True):
+            with self.subTest(report=report), tempfile.TemporaryDirectory() as tmp:
+                result, entries = self.execute(tmp, report=report, fail_list=2)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(
+                    any(
+                        e["args"][0] == "check" and "-l" not in e["args"]
+                        for e in entries
+                    )
+                )
+
+    def test_native_environment_module_and_exact_checks_are_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, entries = self.execute(
+                tmp,
+                dagger_environment="fixtures",
+                dagger_module="sample",
+                dagger_checks="format\nlint\ntest\n",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            listing = next(
+                e["raw_args"]
+                for e in entries
+                if e["args"][0] == "check" and "-l" in e["args"]
+            )
+            self.assertEqual(listing[:2], ["--env", "fixtures"])
+            self.assertIn("--module", listing)
+            self.assertEqual(listing[listing.index("--module") + 1], "sample")
+            self.assertTrue(
+                {"--check=format", "--check=lint", "--check=test"}.issubset(listing)
+            )

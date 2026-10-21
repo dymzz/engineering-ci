@@ -1,4 +1,5 @@
 """Small stdlib helpers shipped with one pytest result bundle, not a runner."""
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,10 @@ def read_xml(path: Path) -> dict:
             return {"xml": "", "diagnostic": "JUnit XML exceeds the 2 MiB report limit"}
         return {"xml": body.decode("utf-8"), "diagnostic": None}
     except (OSError, UnicodeError) as exc:
-        return {"xml": "", "diagnostic": f"Cannot read JUnit XML ({type(exc).__name__})"}
+        return {
+            "xml": "",
+            "diagnostic": f"Cannot read JUnit XML ({type(exc).__name__})",
+        }
 
 
 def discovered_checks(listing: str) -> dict[str, str]:
@@ -52,7 +56,9 @@ def discovered_checks(listing: str) -> dict[str, str]:
 def remaining_checks(listing: str, replaced: str) -> list[str]:
     names = discovered_checks(listing)
     if replaced not in names:
-        raise ValueError(f"Configured pytest check is not in dagger check -l: {replaced}")
+        raise ValueError(
+            f"Configured pytest check is not in dagger check -l: {replaced}"
+        )
     return [name for name in names if name != replaced]
 
 
@@ -70,13 +76,23 @@ def publish_summary(directory: Path, destination: Path) -> None:
         verified = verify_bundle(directory)
         presentation = read_json(directory / "matrix.json", MAX_JSON_BYTES)
         # Presentation cannot hide a failing version or change its original exit.
-        fields = ("requested_python", "actual_python", "status", "failure_category", "pytest_exit_code")
-        if (presentation.get("kind") != verified["kind"] or
-                presentation.get("schema_version") != 1 or
-                presentation.get("overall_status") != verified["overall_status"] or
-                [[r.get(f) for f in fields] for r in presentation["versions"]] !=
-                [[r.get(f) for f in fields] for r in verified["versions"]]):
-            raise ValueError("Matrix presentation differs from original execution facts")
+        fields = (
+            "requested_python",
+            "actual_python",
+            "status",
+            "failure_category",
+            "pytest_exit_code",
+        )
+        if (
+            presentation.get("kind") != verified["kind"]
+            or presentation.get("schema_version") != 1
+            or presentation.get("overall_status") != verified["overall_status"]
+            or [[r.get(f) for f in fields] for r in presentation["versions"]]
+            != [[r.get(f) for f in fields] for r in verified["versions"]]
+        ):
+            raise ValueError(
+                "Matrix presentation differs from original execution facts"
+            )
         summary = matrix_summary(verified)
         if len(summary.encode("utf-8")) > MAX_SUMMARY_BYTES:
             raise ValueError("Matrix summary exceeds delivery limit")
@@ -84,7 +100,10 @@ def publish_summary(directory: Path, destination: Path) -> None:
             stream.write(summary + "\n")
         return
     report_path, summary_path = directory / "report.json", directory / "summary.md"
-    if report_path.stat().st_size > MAX_JSON_BYTES or summary_path.stat().st_size > MAX_SUMMARY_BYTES:
+    if (
+        report_path.stat().st_size > MAX_JSON_BYTES
+        or summary_path.stat().st_size > MAX_SUMMARY_BYTES
+    ):
         raise ValueError("Pytest report exceeds delivery limits")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     code = execution_exit_code(directory)
@@ -93,7 +112,9 @@ def publish_summary(directory: Path, destination: Path) -> None:
     with destination.open("a", encoding="utf-8") as stream:
         stream.write(summary_path.read_text(encoding="utf-8") + "\n")
     if not report.get("report_available"):
-        raise ValueError("Pytest report unavailable; see the summary diagnostic and original exit code")
+        raise ValueError(
+            "Pytest report unavailable; see the summary diagnostic and original exit code"
+        )
 
 
 def main(argv=None) -> int:
@@ -132,14 +153,19 @@ def main(argv=None) -> int:
             print(json.dumps(evidence))
         elif args.command == "read-coverage":
             from pytest_quality import read_coverage
+
             print(json.dumps(read_coverage(args.xml, args.json), ensure_ascii=False))
         elif args.command == "plan":
             listing = args.listing.read_text(encoding="utf-8")
             names = remaining_checks(listing, args.replaced)
-            args.output.write_text("".join(name + "\n" for name in names), encoding="utf-8")
+            args.output.write_text(
+                "".join(name + "\n" for name in names), encoding="utf-8"
+            )
             if args.selectors:
                 selectors = discovered_checks(listing)
-                args.selectors.write_text("".join(selectors[name] + "\n" for name in names), encoding="utf-8")
+                args.selectors.write_text(
+                    "".join(selectors[name] + "\n" for name in names), encoding="utf-8"
+                )
         elif args.command == "summary":
             publish_summary(args.directory, args.destination)
         elif args.command == "gate":
@@ -150,21 +176,31 @@ def main(argv=None) -> int:
                 if result["overall_status"] != "passed":
                     for row in result["versions"]:
                         if row["status"] != "passed":
-                            print(f"Python {row['requested_python']}: {row['failure_category']}; "
-                                  f"pytest exit {row['pytest_exit_code']}", file=sys.stderr)
+                            print(
+                                f"Python {row['requested_python']}: {row['failure_category']}; "
+                                f"pytest exit {row['pytest_exit_code']}",
+                                file=sys.stderr,
+                            )
                     return 1
                 return 0
             code = execution_exit_code(args.directory)
             print(f"Original pytest exit code: {code}")
             policy_path = args.directory / "quality-policy.json"
             if policy_path.exists():
-                from pytest_quality import evaluate_quality, quality_summary, read_coverage
+                from pytest_quality import (
+                    evaluate_quality,
+                    quality_summary,
+                    read_coverage,
+                )
+
                 if policy_path.stat().st_size > 4096:
                     raise ValueError("Quality policy exceeds delivery limits")
                 policy = json.loads(policy_path.read_text(encoding="utf-8"))
                 if policy.get("schema_version") != 1:
                     raise ValueError("Unsupported quality policy schema")
-                evidence = read_coverage(args.directory / "coverage.xml", args.directory / "coverage.json")
+                evidence = read_coverage(
+                    args.directory / "coverage.xml", args.directory / "coverage.json"
+                )
                 quality = evaluate_quality(policy, code, evidence)
                 print(quality_summary(quality))
                 # Recompute from raw coverage counts and explicit policy, never report.json.

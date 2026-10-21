@@ -15,8 +15,13 @@ def pytest_sessionstart(session):
 def pytest_sessionfinish(session, exitstatus):
     if not hasattr(session, "matrix_started"):
         return
-    Path("/tmp/engineering-ci-fixture-timing.json").write_text(json.dumps({
-        "actual_python": platform.python_version(), "tests_collected": session.testscollected,
-        "pytest_session_seconds": time.perf_counter() - session.matrix_started,
-        "exit_code": int(exitstatus),
-    }))
+    Path("/tmp/engineering-ci-fixture-timing.json").write_text(
+        json.dumps(
+            {
+                "actual_python": platform.python_version(),
+                "tests_collected": session.testscollected,
+                "pytest_session_seconds": time.perf_counter() - session.matrix_started,
+                "exit_code": int(exitstatus),
+            }
+        )
+    )

@@ -44,9 +44,14 @@ def sync_dependencies(
         raise ValueError("Local dependency packages do not accept Git credentials")
     if git_token is not None:
         container = container.with_secret_variable(TOKEN_VARIABLE, git_token)
-    command = ["python", "/tmp/engineering-ci-uv-sync.py", python_version]
+    command = ["uv", "sync", "--locked", "--refresh", "--python", python_version]
     if dependency_packages:
-        command.append("/tmp/engineering-ci-dependency-packages")
+        command = [
+            "python",
+            "/tmp/python_dependency_packages.py",
+            python_version,
+            "/tmp/engineering-ci-dependency-packages",
+        ]
     container = container.with_exec(command)
     if git_token is not None:
         container = container.without_secret_variable(TOKEN_VARIABLE).with_exec(

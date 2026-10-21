@@ -13,6 +13,18 @@ on:
         type: boolean
         required: false
         default: false
+      dagger_environment:
+        description: 'Optional native Dagger environment'
+        type: string
+        default: ''
+      dagger_module:
+        description: 'Optional native Dagger module selector'
+        type: string
+        default: ''
+      dagger_checks:
+        description: 'Optional native Dagger check names, one exact name per line'
+        type: string
+        default: ''
       pytest_report_function:
         description: 'Opt-in Dagger function returning a python-test-artifacts Directory'
         type: string
@@ -174,6 +186,9 @@ jobs:
         env:
           DAGGER_ENGINE: container://dagger-engine
           ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
+          DAGGER_ENVIRONMENT: ${{ inputs.dagger_environment }}
+          DAGGER_MODULE: ${{ inputs.dagger_module }}
+          DAGGER_CHECKS: ${{ inputs.dagger_checks }}
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
           PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
@@ -199,13 +214,33 @@ jobs:
           raise SystemExit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
           TIMED_COMMAND
           }
+          dagger_options=()
+          check_options=()
+          if [[ -n "${DAGGER_ENVIRONMENT:-}" ]]; then
+            [[ "$DAGGER_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            dagger_options+=(--env "$DAGGER_ENVIRONMENT")
+          fi
+          if [[ -n "${DAGGER_MODULE:-}" ]]; then
+            [[ "$DAGGER_MODULE" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            check_options+=(--module "$DAGGER_MODULE")
+          fi
+          while IFS= read -r check_name; do
+            [[ -n "$check_name" ]] || continue
+            [[ "$check_name" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            check_options+=(--check="$check_name")
+          done <<< "${DAGGER_CHECKS:-}"
           if [[ -z "$PYTEST_REPORT_FUNCTION" ]]; then
             if [[ -n "$PYTEST_CHECK" || -n "$PYTEST_REPORT_SCENARIO" ]]; then
               echo "::error::pytest report settings require pytest_report_function"
               exit 1
             fi
-            timed check-list dagger check -l --format cli
-            timed all-checks dagger check
+            timed check-list dagger "${dagger_options[@]}" check "${check_options[@]}" -l --format cli > "$RUNNER_TEMP/dagger-checks.txt"
+            cat "$RUNNER_TEMP/dagger-checks.txt"
+            if [[ ! -s "$RUNNER_TEMP/dagger-checks.txt" ]]; then
+              echo "::error::No native Dagger Checks matched the requested selectors"
+              exit 1
+            fi
+            timed all-checks dagger "${dagger_options[@]}" check "${check_options[@]}"
           else
             if [[ ! "$PYTEST_REPORT_FUNCTION" =~ ^[a-z][a-z0-9-]*$ || -z "$PYTEST_CHECK" ]]; then
               echo "::error::Opt-in reporting requires a function and exact pytest_check name"
@@ -215,8 +250,8 @@ jobs:
             if [[ -n "$PYTEST_REPORT_SCENARIO" ]]; then
               report_args+=(--scenario "$PYTEST_REPORT_SCENARIO")
             fi
-            timed report-export dagger "${report_args[@]}" export --path "$RUNNER_TEMP/pytest-report"
-            timed check-list dagger check -l --format cli > "$RUNNER_TEMP/dagger-checks.txt"
+            timed report-export dagger "${dagger_options[@]}" "${report_args[@]}" export --path "$RUNNER_TEMP/pytest-report"
+            timed check-list dagger "${dagger_options[@]}" check "${check_options[@]}" -l --format cli > "$RUNNER_TEMP/dagger-checks.txt"
             cat "$RUNNER_TEMP/dagger-checks.txt"
             python3 "$RUNNER_TEMP/pytest-report/ci.py" plan \
               "$RUNNER_TEMP/dagger-checks.txt" "$PYTEST_CHECK" "$RUNNER_TEMP/remaining-checks.txt" \
@@ -227,7 +262,7 @@ jobs:
                 "$RUNNER_TEMP/remaining-checks.txt" "$RUNNER_TEMP/pytest-report/"
             fi
             if [[ "${#remaining[@]}" -gt 0 ]]; then
-              timed remaining-checks dagger check "${remaining[@]}"
+              timed remaining-checks dagger "${dagger_options[@]}" check "${remaining[@]}"
             fi
           fi
 

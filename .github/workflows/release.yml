@@ -39,19 +39,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
-          python-version: ${{ steps.check_toolchain.outputs.python_version }}
-      - name: Install pinned private runtime dependencies
-        env:
-          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
-        run: |
-          gh auth setup-git --hostname github.com
-          uv sync --locked --no-default-groups
+          version: '0.12.23'
+          python-version: '3.14'
+      - name: Install runtime dependencies
+        run: uv sync --locked --no-default-groups
       - name: Validate manual release request
         id: prepare
         env:
@@ -66,21 +59,25 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       coverage: true
-    secrets:
-      ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
 
   complete-ci:
     needs: candidate
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       # One report execution replaces only this exact check; all other checks run.
+      dagger_environment: fixtures
+      dagger_module: validation
+      dagger_checks: |
+        fixture-test
+        fixture-failure-report
+        fixture-quality-gates
+        fixture-python-matrix
       pytest_report_function: fixture-pytest-artifacts
-      pytest_check: engineering-ci:fixture-test
+      pytest_check: validation:fixture-test
       pytest_report_scenario: ${{ inputs.pytest_scenario }}
       dependency_security_mode: enforce
       dependency_security_project: .
       dependency_security_public_indexes: https://mirrors.aliyun.com/pypi/simple
-      dependency_security_git_policy: config/dependency-security.toml
       dependency_security_source_ref: ${{ github.sha }}
       verify_module_lock: true
 
@@ -155,19 +152,12 @@ jobs:
         with:
           artifact-ids: ${{ needs.evidence.outputs.facts_artifact_id }}
           path: release-facts
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
-          python-version: ${{ steps.check_toolchain.outputs.python_version }}
-      - name: Install pinned private runtime dependencies
-        env:
-          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
-        run: |
-          gh auth setup-git --hostname github.com
-          uv sync --locked --no-default-groups
+          version: '0.12.23'
+          python-version: '3.14'
+      - name: Install runtime dependencies
+        run: uv sync --locked --no-default-groups
       - name: Require every validation job and exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -205,19 +195,12 @@ jobs:
         with:
           artifact-ids: ${{ needs.verified.outputs.manifest_artifact_id }}
           path: release-evidence
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v7
         with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
-          python-version: ${{ steps.check_toolchain.outputs.python_version }}
-      - name: Install pinned private runtime dependencies
-        env:
-          GH_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
-        run: |
-          gh auth setup-git --hostname github.com
-          uv sync --locked --no-default-groups
+          version: '0.12.23'
+          python-version: '3.14'
+      - name: Install runtime dependencies
+        run: uv sync --locked --no-default-groups
       - name: Recheck main and publish immutable tag and evidenced GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

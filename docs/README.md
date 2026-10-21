@@ -4,11 +4,8 @@
 
 - [文档约定](conventions.md) — 目录层级、命名、导航、定义归属与修改范围。
 - [架构](architecture/README.md) — CLI、检查、执行、测试和发布的职责及契约。
-- [配置](configuration/README.md) — 下载后端、环境设置与共享检查 Pipeline。
+- [配置](configuration/README.md) — 原生 Dagger 与环境设置。
 - [验证记录](verification/README.md) — 执行验证、发布审查及性能测量证据。
 - [交付要求](delivery/README.md) — 公共组件支持范围与 Release Readiness。
 
 上级入口：[项目入口](../README.md)。
-
-Tool contracts and invocation now use [vesryn-tool-runtime](https://github.com/dymzz/vesryn-tool-runtime/blob/main/docs/README.md).
-The consumer retains workflow/domain state and recovery. Release metadata pins the common runtime to a full accepted Git commit; adjacent development paths are not release dependencies.

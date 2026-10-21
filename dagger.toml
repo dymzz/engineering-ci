@@ -1,3 +1,16 @@
 [modules.engineering-ci]
 source = "."
 entrypoint = true
+
+[modules.engineering-ci.check]
+skip = ["fixture-test", "fixture-failure-report", "fixture-quality-gates", "fixture-python-matrix"]
+
+[env.release]
+
+[env.release.modules.engineering-ci.settings]
+repositoryCoverage = true
+
+[env.fixtures]
+
+[env.fixtures.modules.validation]
+source = "."

@@ -42,48 +42,15 @@ dagger version
 
 ## 现有模块的兼容调用
 
-Windows 本地完整 PR 验证由统一入口调用 Dagger Linux 容器：
+Windows 和 Linux 在原 checkout 直接运行 `dagger check`，详细命令与报告语义见
+[本地检查](../architecture/local-checks.md)。`dagger.toml` 安装本仓模块作为 entrypoint，
+`dagger-module.toml` 固定 Engine 与 `.dagger` 源码。默认检查针对实际根仓，不是 fixture。
+`release` 环境显式开启根仓 Coverage，`fixtures` 环境安装发布验证用的 validation 模块别名。
+Engine 由 Dagger 原生启动，不再在宿主探测、计算身份或持久化成功收据。
+机器上 CLI 与模块固定的版本应一致；Windows 若无终端主题探测阻塞，可在当前进程
+设置 `$env:FORCE_DARK_MODE='1'` 后重试，不修改全局环境。
 
-```powershell
-uv run --locked engineering-ci checks pr --executor dagger --json .test-tools/checks/pr.json --reuse
-uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json
-```
-
-Pipeline 的 `execution.backend=auto` 已在 Windows 选择该路径，`release.py publish`
-同样使用此配置。容器安装真实 Git、gh、Bash 和 aria2；测试使用本地 GitHub HTTP
-替身，不需要宿主 token。安装及镜像首次准备需要网络，之后复用 Dagger / uv 缓存。
-容器接口 `repository-check-artifacts` 导出原始执行报告，即使检查失败也可取回；
-统一入口从报告传播实际非零状态。`repository-check-environment` 只探测环境和源码。
-这些接口不注册为默认 fixture checks，避免 Release 重复执行核心 pytest。
-检查入口未设置 `DAGGER_ENGINE` 时，按 `dagger-module.toml` 固定版本选择 Engine 镜像；
-显式覆盖仍需通过实际版本核验。旧 `_EXPERIMENTAL_DAGGER_RUNNER_HOST` 不决定该默认值。
-Dagger 1.0 的目录导入省略 `dagger.lock`，接口将它作为显式 File 输入传入；
-容器与宿主仍对锁文件内容做绑定校验。
-当前 beta 在部分 Windows 无终端宿主中会阻塞于背景色自动探测；适配器只给 CLI
-子进程提供固定主题兜底，不改变全局环境或容器输入。版本探测超时返回环境错误，
-不将未执行的检查记为通过。
-证据有效性和出口定义见[本地检查](../architecture/local-checks.md)。
-
-工作区 `dagger.toml` 安装本仓库模块作为 entrypoint；模块清单
-`dagger-module.toml` 声明名称、Engine、Python runtime 和 `.dagger` 源码。
-使用实际 beta.16 的 `dagger module migrate .` 原地生成模块清单，保留 `.dagger/src`。
-两个 TOML 和生成 SDK 均纳入检查输入，修改后旧证据失效。消费者已有 `dagger.json`
-读取兼容仍保留；不自动迁移消费者仓库。原生模块运行时要求生成的 SDK 随源码交付，`.dagger/sdk` 由 Engine 生成，
-不再由 `.dagger/.gitignore` 排除；不手写或格式化这些生成文件。
-不运行会移动源码的 workspace 自动迁移。参见[官方迁移说明](https://docs.dagger.io/config/migrate-dagger-json/)。
-
-```sh
-dagger check
-dagger check -l --format cli
-dagger api call fixture-pytest-artifacts --scenario pass export --path .test-tools/pytest-report
-```
-
-`@check` fixture 返回 `None`，通过异常保留失败判定；诊断写到执行输出。
-普通 `python_test` 和报告函数的返回契约保持不变。
-报告模式通过真实检查列表生成原生选择器，只替代明确指定的 pytest 检查。
-`remaining-checks.txt` 保留原有模块限定检查身份用于发布证据，原生选择器用于执行。
-
-生成现有目录中的 SDK，并检查模块锁文件：
+SDK 生成与模块锁文件校验：
 
 ```sh
 dagger api call --no-load-module module-source --ref-string . \
@@ -91,9 +58,7 @@ dagger api call --no-load-module module-source --ref-string . \
 uv lock --project .dagger --check
 ```
 
-SDK 必须由实际 Engine 生成，不能只检查旧 SDK 的锁文件而声称完成升级。
-版本输出读取兼容 0.x 单行和 1.0 多行格式，Manifest 只保存校验后的版本值。
-发布门禁和证据关联仍由[发布机制](../architecture/release/workflow.md)定义。
+保留生成的 SDK；不手写、格式化生成文件。消费者接口与凭据规则如下。
 
 ## Python 工作区生成限制
 
@@ -127,33 +92,10 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 当前 Python 容器使用 minor 版本镜像标签，未按镜像 digest 固定；锁文件与 Engine 固定
 不等于整套环境逐字节重现。验收记录实际版本与结果，不承诺未来标签内容不变。
 
-### 模块来源与被检查目录
+### 本仓检查与消费者检查
 
-`dagger api call` 的 `--source` 绑定函数的 source Directory 参数，模块本身从工作目录
-（或 `--no-load-module module-source --ref-string <ref>`）解析。两者因此可以不同：
-宿主用工作目录提供 engineering-ci 的 Dagger 模块，用 `--source` 指向消费者目录。
-
-`repository-check-environment` 与 `repository-check-artifacts` 的 source 参数默认值
-`DefaultPath("/")` 就是模块根目录，即未分离时的原有行为。两者另有一个 `capability`
-参数，同为 `DefaultPath("/")`，表示模块自身的 checkout——它提供 Pipeline 策略与
-检查实现。消费者不需要携带这两者的副本：`--capability` 指向的目录会被覆盖叠加到
-`--source` 指定的被检查树上，消费者的文件优先。两者都是本模块根目录时，叠加是
-恒等操作，既有行为不变。
-
-分离后的调用形态为：
-
-```bash
-dagger api call repository-check-artifacts \
-  --source /abs/path/to/consumer --capability . --dagger-lock dagger.lock \
-  --request '{"selectors":["pytest"],"coverage":false,"junit":"core-junit.xml"}' \
-  --executable-paths '[]' export --path /abs/output/bundle
-```
-
-被挂载并检查的是 `--source` 指定的目录；`--executable-paths` 的 Git 模式也随之取自
-该目录。容器执行的 stderr 会同时写入宿主侧 `transport-stderr.log` 并进入证据包，
-失败时原文进入报告的 `reason`，不只保留退出码。
-宿主侧由 `dagger_checks` 负责这套区分，见
-[Provider 来源、检查目标与输出归属](../architecture/harness-integration/registry.md#provider-来源检查目标与输出归属)。
+本仓默认五项 Checks 检查根仓源码；消费者组合既有 `python-*` Functions，
+按自己的源码、范围与策略声明原生 Checks，见[接入示例](../../guides/new-repository.md)。
 
 ### 按执行位置选择 GitHub 认证入口
 
@@ -185,23 +127,9 @@ exit $repositoryExit
 网络被拒、目标仓无权、账号缺失/失效和 Secret 未绑定分别定位；只有确认账号缺失/失效时
 才由用户选择正常登录。不要用 --show-token 或 auth token 将令牌打印给 Agent/用户。
 
-本仓已配置的固定检查入口为：
-
-```powershell
-uv run --locked engineering-ci checks tests --executor dagger --json .test-tools/checks/tests.json
-$checkExit = $LASTEXITCODE
-exit $checkExit
-```
-
-此入口在包含 pytest 的检查路径复用 dagger_checks.git_secret_options：仅为批准的固定
-Git 来源使用已有 ENGINEERING_CI_READ_TOKEN，或由内部桥受控读取当前 gh 登录到子进程环境，
-再以 env: 地址交给 Dagger Secret。令牌不作为普通参数、报告或文件输出；消费者不 import
-这个私有 helper。检查未包含 pytest 时，不推断该桥已为其他调用配置认证。
-
-直接调用 Dagger 单版本函数或消费者的 dagger check 不会自动经过这个宿主 CLI 桥。
-它们按公开 git-token 参数或调用方 dagger.toml settings 接收既有 Secret 绑定；缺绑定时
-报告具体入口/地址/阶段。不要要求用户把令牌粘进对话，也不把 Secret 塞进 ToolSpec inputs。
-本地工作树验证使用明确的 dependency-packages 输入；不为解决认证问题切换到旧远端代码。
+本仓核心检查只安装锁定的公共依赖，不读取或转发宿主 gh Token。
+消费者调用公共单版本函数时，通过公开 `git-token` 参数或调用方的
+`dagger.toml` settings 显式提供 Secret；其作用域限于依赖安装。
 
 官方依据：[gh auth status](https://cli.github.com/manual/gh_auth_status)、
 [gh auth login](https://cli.github.com/manual/gh_auth_login)、
@@ -215,13 +143,7 @@ Git 来源使用已有 ENGINEERING_CI_READ_TOKEN，或由内部桥受控读取�
 安装之后移除 Secret，并在探测和测试前断言环境中不存在该凭据。Git helper 仅匹配
 GitHub HTTPS，配置只含环境变量引用，不保存 token。安装失败保留原始失败。
 
-宿主统一检查目前只为清单中固定 SHA 的 `dymzz/vesryn`、`dymzz/vesryn-log` 与 `dymzz/vesryn-tool-runtime`
-来源绑定既有只读凭据。私有 Git 包的 uv source 必须在每个消费者中显式声明，
-不会从另一个包的开发配置传递。单版本 API 的新增参数不改变 Matrix 的现有接口。
-
-消费者需要先升级到包含该接口的已推送 engineering-ci 提交，再同步更新 Dagger
-依赖与 reusable Workflow 固定引用；本地模块测试通过不表示远端已部署。
-
+私有 Git 包的 uv source 必须由消费者显式声明；单版本 Secret 参数不改变 Matrix 接口。
 
 Reusable Workflow 的 Dagger 执行 Step 提供已有的 `ENGINEERING_CI_READ_TOKEN`
 环境 Secret。消费者用构造器参数 `git_token: dagger.Secret` 接收凭据，

@@ -35,7 +35,7 @@
 - 后续用户证据：Propel v0.3.1；pgAdmin4 使用 sslmode=prefer 可以登录，Propel 的 disable 尝试未解决问题。用户确认本次来源的 2026-10-13 15:56:39 CST 服务端日志仅为客户端强制断开；其他用户名/密码失败记录不作为该连接的归因依据。connection limit=-1 本身是正常的不限额设置。
 - 源码观察：v0.3.1 的 Cargo.lock 锁定 dbcon 0.4.1 / SQLx PostgreSQL 0.9.0；官方 crate 仅在内存读取，SHA256=e8a30c7fecab2cccb75a38cf2fe1a75ab8e203f70277d086740881a92893b3ca 与锁文件一致。lib.rs 201–205、350–353 行在 on_a_runtime 中创建 PgPool，812–828 行的局部 Runtime 随临时线程退出，979–980 行发现表时另建 Runtime 使用原池。
 - 待验证假设：原 Runtime 销毁后使用池内 I/O 的生命周期风险，与断开/池超时相符；Tokio 官方文档明确旧 Runtime 的未结束 I/O 无法继续使用。尚未执行相同版本最小复现，不把静态风险或 pgAdmin 登录成功当作已确认上游 Bug。
-- 当前处理：[连接排障说明](../guides/propel-postgresql.md)提供 Source 别名语义与当前已验证的 prefer 配置，记录源码风险及直接 SQLx/dbcon 对照的下一步。不再推荐 disable 作为本例修复；是否调整消息语言由管理员决定。Propel 连接成功仍未验收。
+- 当前处理：当时的连接排障说明（原 guides/propel-postgresql.md，已随非 CI 职责删除，可查 Git 历史）提供 Source 别名语义与当前已验证的 prefer 配置，记录源码风险及直接 SQLx/dbcon 对照的下一步。不再推荐 disable 作为本例修复；是否调整消息语言由管理员决定。Propel 连接成功仍未验收。
 - 未搜索或提交上游 Issue/PR，未扩大为第三方库修复。
 - 用户已决定停止本次 Propel 排障，跳过该可选 UI；不继续开展复现、上游修复或 Issue 调查。上述源码风险仍保留未独立复现状态，不因用户判断而伪造验证完成。
 
@@ -99,3 +99,11 @@
 - Source: sdk/python/runtime/discovery.go and core/schema/modulesource.go at upstream tag v1.0.0-beta.16; local raw traces under .test-tools/eci003/final/.
 - Assessment: upstream could distinguish filtered/missing source files from uninitialized generated bindings. Cache/bytecode filtering does not resolve the parent Git ignore boundary.
 - Integration: use an explicitly approved, readable asset installation directory, retain native trust and committed SDK files, and explicitly select the module when there is no Git workspace discovery.
+
+
+## Dagger@1.0.0-beta.16: native environment configuration limits
+- Status: observed integration behavior; no upstream patch.
+- Seen: 2026-10-21, ECI-SLIM-02.
+- Evidence: environment module settings and local module aliases work; environment `check.skip` is rejected as an unknown field. A base module's skipped Checks remain excluded even when explicitly selected.
+- Integration: keep root fixture exclusions on engineering-ci, use a native fixtures environment with a validation alias, `--module validation` and repeated exact `--check=NAME` flags. Wildcard and comma-separated name strings returned no matches in beta.16; an unscoped filter targets the entrypoint instead of the alias. `workspace config` array values use comma-separated strings; JSON array text is treated as invalid filter text.
+- Assessment: version-specific CLI/configuration constraints; use actual beta.16 discovery instead of assuming current documentation's newer syntax.
