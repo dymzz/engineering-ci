@@ -32,7 +32,7 @@ class Container:
 
     def with_exec(self, args):
         self.calls.append(("exec", args, set(self.secrets)))
-        if "engineering-ci-uv-sync.py" in args[1]:
+        if args[0] == "uv" or args[1] == "/tmp/python_dependency_packages.py":
             if self.fail:
                 raise RuntimeError("original synchronization failure")
         else:

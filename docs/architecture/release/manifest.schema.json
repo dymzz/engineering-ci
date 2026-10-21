@@ -233,7 +233,7 @@
               "const": "Run Dagger Checks"
             },
             "dagger_check": {
-              "const": "engineering-ci:fixture-quality-gates"
+              "const": "validation:fixture-quality-gates"
             }
           }
         },
@@ -247,7 +247,7 @@
               "const": "Run Dagger Checks"
             },
             "dagger_check": {
-              "const": "engineering-ci:fixture-python-matrix"
+              "const": "validation:fixture-python-matrix"
             }
           }
         },
@@ -800,8 +800,8 @@
         },
         "dagger_check": {
           "enum": [
-            "engineering-ci:fixture-quality-gates",
-            "engineering-ci:fixture-python-matrix"
+            "validation:fixture-quality-gates",
+            "validation:fixture-python-matrix"
           ]
         }
       },

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
 
-from .. import checks
 from .._paths import ROOT
-from ..pipeline import PIPELINE
+from . import PR_CI_JOBS, RELEASE_CONFIG
 from .context import ExecutionContext, ReviewEvidence
 from .pipeline import DeliveryPipeline, current_checks
 from .pipeline import EvidenceError as DeliveryError
@@ -137,8 +135,7 @@ class Checkout:
         )
         if (
             info["nameWithOwner"] != self.repository
-            or info["defaultBranchRef"]["name"]
-            != PIPELINE["delivery"]["release"]["branch"]
+            or info["defaultBranchRef"]["name"] != RELEASE_CONFIG["branch"]
         ):
             raise DeliveryError(
                 "Repository or default branch differs from the Release Workflow"
@@ -168,14 +165,14 @@ class Checkout:
         files.discard("")
         prs = (
             []
-            if branch == PIPELINE["delivery"]["release"]["branch"]
+            if branch == RELEASE_CONFIG["branch"]
             else self.gh(
                 "pr",
                 "list",
                 "--head",
                 branch,
                 "--base",
-                PIPELINE["delivery"]["release"]["branch"],
+                RELEASE_CONFIG["branch"],
                 "--state",
                 "all",
                 "--limit",
@@ -200,24 +197,6 @@ class Checkout:
             raise DeliveryError(
                 "The PR for this commit is closed; decide whether to reopen it"
             )
-        contents = []
-        for name in sorted(files):
-            path = self.root / name
-            if path.is_symlink():
-                raise DeliveryError(
-                    "Changed symlinks require manual review before delivery"
-                )
-            before = path.stat() if path.exists() else None
-            digest = hashlib.sha256(path.read_bytes()).hexdigest() if before else None
-            if before:
-                after = path.stat()
-                fields = ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_mode")
-                # Reading may update access time; that is not a content mutation.
-                if any(getattr(before, key) != getattr(after, key) for key in fields):
-                    raise DeliveryError(
-                        f"Input {name} changed while reading delivery context"
-                    )
-            contents.append((name, digest))
         return {
             "repository": self.repository,
             "version": version,
@@ -225,7 +204,6 @@ class Checkout:
             "head": head,
             "files": sorted(files),
             "pr": pr,
-            "working_digest": checks.digest(contents),
             "local_version": local_version,
             "conflicts": conflicts,
             "permission": info["viewerPermission"],
@@ -287,7 +265,7 @@ class Checkout:
         value = self.command(
             "gh",
             "api",
-            f"repos/{self.repository}/commits/{PIPELINE['delivery']['release']['branch']}",
+            f"repos/{self.repository}/commits/{RELEASE_CONFIG['branch']}",
             json_result=True,
         )
         head = value.get("sha")
@@ -296,16 +274,16 @@ class Checkout:
         return head
 
 
-def pr_body(checkout, context, message, path):
+def pr_body(checkout, context, message):
     """Generate factual review context and preserve the human-written PR body."""
-    base = "origin/" + PIPELINE["delivery"]["release"]["branch"]
+    base = "origin/" + RELEASE_CONFIG["branch"]
     commits = checkout.command("git", "log", "--format=%h %s", f"{base}..HEAD")
     changed = checkout.command("git", "diff", "--stat", f"{base}...HEAD")
     section = (
         f"{START}\n## Delivery context\n\n"
         f"{message}\n\nVersion: `v{context['version']}`\n\n"
         f"Head: `{context['head']}`\n\n"
-        f"Local PR checks: passed for the current inputs (`{path.name}`). "
+        f"Local PR checks: completed using native Dagger Checks. "
         "The actual PR Workflow and human review remain required.\n\n"
         f"Commits:\n```text\n{commits}\n```\n\n"
         f"Changed files:\n```text\n{changed}\n```\n{END}"
@@ -362,7 +340,7 @@ def handoff(checkout, context, *, require_head=True, execution=None):
         or item.get("status")
         for item in entries
     }
-    required = [conclusions.get(name) for name in checks.PR_CI_JOBS]
+    required = [conclusions.get(name) for name in PR_CI_JOBS]
     passed = all(value == "SUCCESS" for value in required)
     failed = any(
         value
@@ -379,7 +357,7 @@ def handoff(checkout, context, *, require_head=True, execution=None):
             "merge_state": state["mergeStateStatus"],
             "checks": [
                 {"name": name, "status": conclusions.get(name, "unavailable")}
-                for name in checks.PR_CI_JOBS
+                for name in PR_CI_JOBS
             ],
         }
         result.stopped(
@@ -493,7 +471,6 @@ def prepare(
     *,
     message=None,
     include_all=False,
-    report=None,
     checkout=None,
     result=None,
 ):
@@ -503,7 +480,7 @@ def prepare(
     checkout = checkout or Checkout(repository)
     context = ExecutionContext(checkout.root, checkout.context(version), result=result)
     lifecycle = ReleaseLifecycle(context)
-    pipeline = DeliveryPipeline(context, checkout, report)
+    pipeline = DeliveryPipeline(context, checkout)
     checkout.execution_context, checkout.lifecycle = context, lifecycle
     if result:
         result.context, result.lifecycle = context, lifecycle
@@ -540,17 +517,15 @@ def prepare(
     lifecycle.advance("start_checks")
     code = pipeline.checked()
     if code:
-        print(f"Stopped at local checks (exit {code}); report: {pipeline.report}")
+        print(f"Stopped at dagger check (exit {code})")
         print(
-            "No commit or push was performed. Resolve the reported result; matching evidence is retained on the next publish."
+            "No commit or push was performed. Resolve the reported Dagger failure and repeat publish."
         )
         return code
     lifecycle.advance("checks_passed")
-    print(f"Completed: local PR checks; report: {pipeline.report}")
+    print("Completed: native Dagger Checks")
     # Refresh PR diff context; leave the user's checkout intact.
-    checkout.command(
-        "git", "fetch", "origin", PIPELINE["delivery"]["release"]["branch"]
-    )
+    checkout.command("git", "fetch", "origin", RELEASE_CONFIG["branch"])
     if checkout.context(version) != facts:
         raise DeliveryError(
             "Checkout or PR changed during checking; inspect the current context"
@@ -577,8 +552,9 @@ def prepare(
     print(f"Completed: push {facts['branch']}")
     message = checkout.command("git", "log", "-1", "--format=%B")
     subject = checkout.command("git", "log", "-1", "--format=%s")
-    body = pr_body(checkout, facts, message, pipeline.report)
-    body_file = pipeline.report.parent / "pr-body.md"
+    body = pr_body(checkout, facts, message)
+    body_file = pipeline.pr_body_path
+    body_file.parent.mkdir(parents=True, exist_ok=True)
     body_file.write_text(body, encoding="utf-8", newline="\n")
     pr = facts["pr"]
     if pr:
@@ -588,7 +564,7 @@ def prepare(
             "pr",
             "create",
             "--base",
-            PIPELINE["delivery"]["release"]["branch"],
+            RELEASE_CONFIG["branch"],
             "--head",
             facts["branch"],
             "--draft",

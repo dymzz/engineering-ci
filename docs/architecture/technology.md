@@ -21,7 +21,6 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | uv and uv_build | adopted | build, development, CI | [python](integrations/python.md#uv-and-uv_build) |
 | transitions | adopted | runtime | [python](integrations/python.md#transitions) |
 | filelock | adopted | runtime | [python](integrations/python.md#filelock) |
-| PyYAML | adopted | runtime | [python](integrations/python.md#pyyaml) |
 | pytest | adopted | development, CI | [python](integrations/python.md#pytest) |
 | pytest-cov | adopted | development, CI | [python](integrations/python.md#pytest-cov) |
 | Dagger engine and module | adopted | CI, PR check graph, container execution | [dagger](integrations/dagger.md#dagger-engine-and-module) |
@@ -35,10 +34,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | aria2c | adopted | optional download backend | [tools](integrations/tools.md#aria2c) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
 
-## Discrepancies
+## Verification notes
 
-Open findings from targeted verification. Resolve them in a task that owns the change.
-
-- **Ruff** — pinned in `config/pipeline.toml` (`[toolchain] ruff = "0.16.10"`) and
-  `.dagger/pyproject.toml` (`dev` group), but not declared in root `pyproject.toml` dependency
-  groups. Local PR check execution invokes `uvx` or ambient `ruff`. (2026-10-14 @ `963d809a295f`)
+Ruff is locked in root dev dependencies and configured in standard `pyproject.toml`.
+The removed host Runner, input receipt cache and YAML mirror validator are not integration layers.

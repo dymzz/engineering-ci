@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import checks
 from engineering_ci.cli import release as cli
 from engineering_ci.execution.models import (
     CollectionIdentity,
@@ -15,7 +14,7 @@ from engineering_ci.execution.models import (
     TaskRecord,
 )
 from engineering_ci.execution.store import StateStore
-from engineering_ci.release import delivery
+from engineering_ci.release import PR_CI_JOBS, delivery
 
 REPOSITORY = "dymzz/engineering-ci"
 VERSION = "0.4.11"
@@ -88,6 +87,8 @@ class Repository:
         if args[0] == "git":
             kwargs.pop("check", None)
             return subprocess.run(args, check=False, **kwargs)
+        if args[0] == "dagger":
+            return subprocess.CompletedProcess(args, 0, "", "")
         assert args[0] == "gh"
         if args[1:3] == ["repo", "view"]:
             assert args[3] == REPOSITORY and "--repo" not in args
@@ -144,48 +145,6 @@ def repository(tmp_path, monkeypatch):
     return repo
 
 
-@pytest.fixture
-def passing_checks(monkeypatch):
-    calls = []
-
-    def execute(selectors, *, root, output, reuse=False, run=None):
-        if (
-            reuse
-            and output.is_file()
-            and [entry["name"] for entry in json.loads(output.read_text())["checks"]]
-            == list(checks.PR_CHECKS)
-        ):
-            return {}, 0
-        calls.append(selectors)
-        checks.atomic_json(
-            output,
-            {
-                "checks": [
-                    {"name": name, "identity": {"sha256": "f" * 64}}
-                    for name in checks.PR_CHECKS
-                ]
-            },
-        )
-        return {}, 0
-
-    monkeypatch.setattr(checks, "run_checks", execute)
-    monkeypatch.setattr(
-        checks,
-        "inspect",
-        lambda *args, **kwargs: (
-            {
-                "overall_status": "passed",
-                "checks": [
-                    {"name": name, "passed_for_current_input": True}
-                    for name in checks.PR_CHECKS
-                ],
-            },
-            0,
-        ),
-    )
-    return calls
-
-
 def invoke(repo, **options):
     return delivery.prepare(
         REPOSITORY,
@@ -202,7 +161,7 @@ def test_delivery_checks_commits_pushes_and_creates_draft_with_real_git(
 ):
     repo = repository
     assert invoke(repo, include_all=True, message="Unify delivery") == 3
-    assert passing_checks == [["pr"]]
+    assert passing_checks == [["dagger", "check"], ["dagger", "check"]]
     assert repo.git("status", "--porcelain") == ""
     assert repo.pr["headRefOid"] == repo.git("rev-parse", "HEAD")
     assert "Unified delivery" in (repo.root / "README.md").read_text()
@@ -225,7 +184,7 @@ def test_repeating_before_human_merge_does_not_execute_checks_or_push(
     invoke(repository, include_all=True, message="Unify delivery")
     repository.calls.clear()
     assert invoke(repository) == 3
-    assert passing_checks == [["pr"]]
+    assert passing_checks == [["dagger", "check"], ["dagger", "check"]]
     assert not any(
         call[:2] in (["git", "push"], ["git", "commit"], ["git", "add"])
         for call in repository.calls
@@ -261,9 +220,6 @@ def test_json_status_is_a_read_only_query_not_a_publication_pass(
 ):
     repository.existing_pr()
     repository.pr["body"] = "SECRET github_pat_sensitive"
-    monkeypatch.setattr(
-        checks, "run_checks", lambda *args, **kwargs: pytest.fail("Read only")
-    )
     assert cli.main(json_args("status")) == 0
     output = capsys.readouterr()
     value = json.loads(output.out)
@@ -282,7 +238,7 @@ def test_json_status_is_a_read_only_query_not_a_publication_pass(
     )
 
 
-def test_json_publish_retains_receipts_and_repeated_review_has_no_mutations(
+def test_json_publish_records_native_exit_and_repeated_review_has_no_mutations(
     repository,
     json_cli,
     passing_checks,
@@ -295,8 +251,9 @@ def test_json_publish_retains_receipts_and_repeated_review_has_no_mutations(
     assert value["delivery"]["phase"] == "REVIEW_waiting"
     assert value["stop"]["code"] == "pr_ci"
     assert [item["name"] for item in value["operations"]] == [
-        "checks",
+        "dagger check",
         "commit",
+        "dagger check",
         "push",
         "pr_create",
     ]
@@ -305,7 +262,8 @@ def test_json_publish_retains_receipts_and_repeated_review_has_no_mutations(
     repository.calls.clear()
     assert cli.main(args) == 3
     repeated = json.loads(capsys.readouterr().out)
-    assert repeated["operations"] == [] and passing_checks == [["pr"]]
+    assert repeated["operations"] == []
+    assert not any(call[0] == "dagger" for call in repository.calls)
     assert repeated["publication"]["status"] == "unconfirmed"
     assert not any(
         call[:2] in (["git", "add"], ["git", "commit"], ["git", "push"])
@@ -332,7 +290,7 @@ def test_json_review_actions_require_current_ci_and_human_approval(
         if args[:3] == ["gh", "pr", "view"]:
             state = json.loads(result.stdout)
             state["statusCheckRollup"] = [
-                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+                {"name": name, "conclusion": conclusion} for name in PR_CI_JOBS
             ]
             result.stdout = json.dumps(state)
         return result
@@ -350,38 +308,6 @@ def test_json_review_actions_require_current_ci_and_human_approval(
         assert "--match-head-commit" in actions["merge"]["argv"]
         assert repository.pr["headRefOid"] in actions["merge"]["argv"]
         assert actions["publish"]["prerequisite"]
-
-
-@pytest.mark.parametrize(
-    "code,status", [(1, "failed"), (3, "missing_tool"), (7, "failed")]
-)
-def test_json_local_check_failure_is_not_a_review_handoff(
-    repository,
-    json_cli,
-    monkeypatch,
-    capsys,
-    code,
-    status,
-):
-    def execute(*args, **kwargs):
-        print("tool progress")
-        return {
-            "checks": [{"name": "pytest", "status": status, "exit_code": code}]
-        }, code
-
-    monkeypatch.setattr(checks, "run_checks", execute)
-    assert cli.main(json_args("publish", "--all", "-m", "Change")) == code
-    output = capsys.readouterr()
-    value = json.loads(output.out)
-    assert value["exit_code"] == code and value["stop"]["code"] == "local_checks"
-    assert value["delivery"]["phase"] == "DELIVERY_checking"
-    assert value["local_checks"]["checks"][0]["status"] == status
-    assert value["local_checks"]["status"] == "not_current_pass"
-    assert "tool progress" in output.err
-    assert not any(item["kind"] == "merge" for item in value["next_actions"])
-    assert not any(
-        call[:2] in (["git", "add"], ["git", "push"]) for call in repository.calls
-    )
 
 
 def test_json_partial_push_failure_keeps_commit_and_safe_diagnostic(
@@ -464,38 +390,6 @@ def test_json_missing_environment_retains_exit_two(monkeypatch, capsys):
     assert value["operations"] == []
 
 
-def test_json_checks_stream_real_child_output_to_stderr(tmp_path):
-    """A real child process must not contaminate the CLI's JSON stdout."""
-    script = """
-import subprocess, sys
-from pathlib import Path
-from engineering_ci.release import pipeline
-from engineering_ci.release.results import OperationResult
-from types import SimpleNamespace
-view = OperationResult("publish", "dymzz/engineering-ci", "0.5.3", output_stream=sys.stderr)
-def checks(selectors, **kwargs):
-    kwargs["run"]([sys.executable, "-c", "print('child stdout'); import sys; print('child stderr', file=sys.stderr)"])
-    probe = kwargs["run"]([sys.executable, "-c", "print('captured')"], capture_output=True, text=True)
-    assert probe.stdout.strip() == "captured"
-    return {"checks": []}, 7
-pipeline.checks.run_checks = checks
-checkout = SimpleNamespace(root=Path.cwd(), execution_context=SimpleNamespace(result=view))
-from contextlib import redirect_stdout
-with redirect_stdout(sys.stderr):
-    code = pipeline.current_checks(checkout, Path("absent.json"))
-view.finish(code)
-import json
-print(json.dumps(view.to_dict()))
-sys.exit(code)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=False
-    )
-    assert result.returncode == 7
-    assert json.loads(result.stdout)["exit_code"] == 7
-    assert "child stdout" in result.stderr and "child stderr" in result.stderr
-
-
 def test_json_status_unknown_candidates_never_become_resume_actions(
     repository,
     json_cli,
@@ -532,48 +426,6 @@ def test_json_status_unknown_candidates_never_become_resume_actions(
     assert checkpoint["error"]["reason"] == "network_timeout"
     assert not any(action["kind"] == "resume" for action in value["next_actions"])
     assert store.path.read_bytes() == before and not api.writes
-
-
-@pytest.mark.parametrize(
-    "complete,current", [(True, True), (True, False), (False, True)]
-)
-def test_json_status_projects_freshness_without_claiming_a_new_execution(
-    json_cli,
-    monkeypatch,
-    capsys,
-    complete,
-    current,
-):
-    path = json_cli.root / ".test-tools/checks/pr.json"
-    checks.atomic_json(path, {})
-    names = checks.PR_CHECKS if complete else checks.PR_CHECKS[:1]
-    report = {
-        "checks": [
-            {
-                "name": name,
-                "status": "passed",
-                "freshness": "current" if current else "stale",
-                "passed_for_current_input": current,
-                "executed_this_invocation": True,
-                "environment": {"platform": "linux", "TOKEN": "SECRET"},
-                "identity": {"sha256": "f" * 64, "credentials": "SECRET"},
-            }
-            for name in names
-        ]
-    }
-    monkeypatch.setattr(
-        checks, "inspect", lambda *args, **kwargs: (report, 0 if current else 3)
-    )
-    assert cli.main(json_args("status")) == 0
-    value = json.loads(capsys.readouterr().out)
-    assert value["local_checks"]["status"] == (
-        "passed" if current and complete else "not_current_pass"
-    )
-    assert value["local_checks"]["profile_complete"] == complete
-    assert all(
-        not item["executed_this_invocation"] for item in value["local_checks"]["checks"]
-    )
-    assert "SECRET" not in json.dumps(value)
 
 
 def test_json_unmerged_input_cannot_resume_a_publication_checkpoint(
@@ -776,7 +628,7 @@ def test_retry_reads_committed_message_instead_of_replacing_it(
         invoke(repository, include_all=True, message=message)
     repository.failure = None
     assert invoke(repository, message="Different retry text") == 3
-    assert passing_checks == [["pr"]]
+    assert passing_checks == [["dagger", "check"]] * 4
     assert repository.pr["title"] == "Unify delivery"
     assert message in repository.pr["body"]
     assert "Different retry text" not in repository.pr["body"]
@@ -796,10 +648,10 @@ def test_unrelated_changes_require_explicit_scope_before_commit(repository):
 def test_failed_checks_stop_before_staging_and_print_report(
     repository, monkeypatch, capsys
 ):
-    monkeypatch.setattr(checks, "run_checks", lambda *args, **kwargs: ({}, 7))
-    assert invoke(repository, include_all=True, message="Unify delivery") == 7
+    repository.failure = ["dagger", "check"]
+    assert invoke(repository, include_all=True, message="Unify delivery") == 1
     assert not any(call[:2] == ["git", "add"] for call in repository.calls)
-    assert "Stopped at local checks (exit 7)" in capsys.readouterr().out
+    assert "Stopped at dagger check (exit 1)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("failure", [["git", "push"], ["gh", "pr", "create"]])
@@ -863,7 +715,7 @@ def test_handoff_recommends_merge_only_for_current_successful_ci(
         if args[:3] == ["gh", "pr", "view"]:
             value = json.loads(result.stdout)
             value["statusCheckRollup"] = [
-                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+                {"name": name, "conclusion": conclusion} for name in PR_CI_JOBS
             ]
             result.stdout = json.dumps(value)
         return result
@@ -913,43 +765,6 @@ def test_merged_pr_missing_from_main_is_refused(repository):
     repository.compare = "diverged"
     with pytest.raises(delivery.DeliveryError, match="does not include"):
         invoke(repository)
-
-
-def test_changed_inputs_during_checks_cannot_be_committed(
-    repository, passing_checks, monkeypatch
-):
-    original = checks.run_checks
-
-    def execute(*args, **kwargs):
-        result = original(*args, **kwargs)
-        (repository.root / "README.md").write_text("Concurrent edit\n")
-        return result
-
-    monkeypatch.setattr(checks, "run_checks", execute)
-    with pytest.raises(delivery.DeliveryError, match="changed during checking"):
-        invoke(repository, include_all=True, message="Unify delivery")
-    assert not any(call[:2] == ["git", "add"] for call in repository.calls)
-
-
-def test_commit_cannot_pass_a_replaced_check_receipt_to_push(
-    repository, passing_checks
-):
-    original = repository.run
-
-    def run(args, **kwargs):
-        result = original(args, **kwargs)
-        if args[:2] == ["git", "commit"]:
-            path = repository.root / ".test-tools/checks/pr.json"
-            saved = json.loads(path.read_text())
-            saved["changed_after_check"] = True
-            checks.atomic_json(path, saved)
-        return result
-
-    repository.run = run
-    with pytest.raises(delivery.DeliveryError, match="receipt changed"):
-        invoke(repository, include_all=True, message="Unify delivery")
-    assert not any(call[:2] == ["git", "push"] for call in repository.calls)
-    assert repository.git("log", "-1", "--format=%s") == "Unify delivery"
 
 
 @pytest.mark.parametrize("matching", [True, False])
@@ -1052,73 +867,6 @@ def test_printed_continuation_executes_with_literal_arguments(capsys):
     assert values[:3] == ["run", "--locked", "python"]
 
 
-@pytest.mark.parametrize("profile", ["pr", "reader-probe"])
-def test_delivery_delegates_configured_profile_and_per_check_reuse(
-    repository, monkeypatch, profile
-):
-    path = repository.root / ".test-tools/checks/pr.json"
-    calls = []
-
-    def execute(selectors, **kwargs):
-        calls.append((selectors, kwargs))
-        return {}, 3
-
-    monkeypatch.setattr(checks, "run_checks", execute)
-    # Substitute the reader input only; the TOML loader still restricts public targets.
-    monkeypatch.setitem(delivery.PIPELINE["delivery"], "checks_profile", profile)
-    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
-    assert delivery.current_checks(checkout, path) == 3
-    assert calls == [
-        ([profile], {"root": repository.root, "output": path, "reuse": True})
-    ]
-
-
-def test_delivery_retains_existing_report_outputs_without_weakening_the_profile(
-    repository, monkeypatch
-):
-    path = repository.root / ".test-tools/checks/pr.json"
-    parameters = {"coverage": True, "junit": "diagnostics/junit.xml"}
-    checks.atomic_json(
-        path,
-        {
-            "schema_version": 1,
-            "profile": "pr",
-            "selectors": ["pr"],
-            "checks": [
-                {"name": name, "identity": {"parameters": parameters}}
-                for name in checks.PR_CHECKS
-            ],
-        },
-    )
-    calls = []
-    monkeypatch.setattr(
-        checks,
-        "run_checks",
-        lambda selectors, **kwargs: calls.append((selectors, kwargs)) or ({}, 3),
-    )
-    assert (
-        delivery.current_checks(
-            delivery.Checkout(REPOSITORY, root=repository.root), path
-        )
-        == 3
-    )
-    assert calls == [
-        (["pr"], {"root": repository.root, "output": path, "reuse": True, **parameters})
-    ]
-
-
-def test_partial_report_does_not_replace_pr_profile(repository, passing_checks):
-    path = repository.root / ".test-tools/checks/pr.json"
-    checks.atomic_json(path, {"checks": [{"name": "ruff-lint"}]})
-    assert (
-        delivery.current_checks(
-            delivery.Checkout(REPOSITORY, root=repository.root), path
-        )
-        == 0
-    )
-    assert passing_checks == [["pr"]]
-
-
 def test_waiting_for_review_never_dispatches_a_workflow(monkeypatch, capsys):
     monkeypatch.setattr(cli, "execution_environment", lambda: 0)
     monkeypatch.setattr(cli.verification, "published", lambda *args, **kwargs: None)
@@ -1142,7 +890,7 @@ def test_cli_review_stop_has_no_unconditional_publish_retry(
         if args[:3] == ["gh", "pr", "view"]:
             value = json.loads(result.stdout)
             value["statusCheckRollup"] = [
-                {"name": name, "conclusion": conclusion} for name in checks.PR_CI_JOBS
+                {"name": name, "conclusion": conclusion} for name in PR_CI_JOBS
             ]
             result.stdout = json.dumps(value)
         return result
@@ -1163,7 +911,7 @@ def test_cli_review_stop_has_no_unconditional_publish_retry(
         assert f"--match-head-commit {repository.git('rev-parse', 'HEAD')}" in output
         assert "After merge, continue:" in output
         assert "repeating publish cannot merge it" in output
-    assert passing_checks == [["pr"]]
+    assert passing_checks == [["dagger", "check"], ["dagger", "check"]]
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in repository.calls)
 
 
@@ -1299,11 +1047,6 @@ def test_status_recovers_run_id_and_live_result_without_execution(
     monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
     monkeypatch.setattr(cli, "GitHub", lambda repository: api)
     monkeypatch.setattr(execution_cli, "default_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr(
-        checks,
-        "execute",
-        lambda *args, **kwargs: pytest.fail("Status cannot execute checks"),
-    )
     identity = DispatchIdentity.create(
         REPOSITORY,
         "release.yml",
@@ -1361,74 +1104,6 @@ def test_status_published_release_reports_original_evidence_without_workflow(
     assert cli.show_status(Namespace(repo=REPOSITORY, version=VERSION, diff=False)) == 0
     output = capsys.readouterr().out
     assert "Completed: published v0.4.11" in output and "attempt: 1" in output
-
-
-def test_status_corrupt_local_report_still_shows_actual_pr_stop(
-    repository,
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    from argparse import Namespace
-
-    from engineering_ci.execution import cli as execution_cli
-
-    repository.existing_pr()
-    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
-    monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
-    monkeypatch.setattr(execution_cli, "default_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr(cli.verification, "published", lambda *args: None)
-    path = repository.root / ".test-tools/checks/pr.json"
-    path.parent.mkdir(parents=True)
-    path.write_text("bad json")
-    assert cli.show_status(Namespace(repo=REPOSITORY, version=VERSION, diff=False)) == 0
-    output = capsys.readouterr().out
-    assert "report unavailable or invalid" in output and "Stopped at delivery" in output
-    assert repository.pr["url"] in output
-
-
-def test_status_shows_missing_tool_without_inventing_commit_message(
-    repository, monkeypatch, capsys
-):
-    from argparse import Namespace
-
-    repository.existing_pr()
-    checkout = delivery.Checkout(REPOSITORY, root=repository.root, run=repository.run)
-    monkeypatch.setattr(delivery, "Checkout", lambda repository: checkout)
-    monkeypatch.setattr(cli.verification, "published", lambda *args: None)
-    monkeypatch.setattr(cli, "execution_checkpoint", lambda *args, **kwargs: False)
-    path = repository.root / ".test-tools/checks/pr.json"
-    checks.atomic_json(path, {})
-    monkeypatch.setattr(
-        checks,
-        "inspect",
-        lambda *args, **kwargs: (
-            {
-                "checks": [
-                    {
-                        "name": "pytest",
-                        "status": "missing_tool",
-                        "reason": "uv is required",
-                        "freshness": "not_run",
-                    }
-                ]
-            },
-            3,
-        ),
-    )
-    assert cli.show_status(Namespace(repo=REPOSITORY, version=VERSION, diff=False)) == 0
-    output = capsys.readouterr().out
-    assert "Local check pytest [unknown]: missing_tool" in output
-    assert "uv is required" in output
-    assert "your git commit -m message" in output
-    commands = [line for line in output.splitlines() if line.startswith("Continue:")]
-    assert commands and all(
-        "Existing change" not in line and " -m " not in line for line in commands
-    )
-    assert not any(
-        call[:2] in (["git", "add"], ["git", "commit"], ["git", "push"])
-        for call in repository.calls
-    )
 
 
 @pytest.fixture
@@ -1523,3 +1198,54 @@ def test_merged_pr_status_prioritizes_undelivered_files_over_old_run(
         call[:2] in (["git", "push"], ["git", "commit"], ["git", "add"])
         for call in repository.calls
     )
+
+
+@pytest.fixture
+def passing_checks(repository):
+    calls = []
+    original = repository.run
+
+    def run(args, **kwargs):
+        if args[0] == "dagger":
+            calls.append(args)
+        return original(args, **kwargs)
+
+    repository.run = run
+    return calls
+
+
+def test_failed_native_check_after_commit_stops_before_push(repository):
+    original = repository.run
+    checks = 0
+
+    def run(args, **kwargs):
+        nonlocal checks
+        if args[0] == "dagger":
+            checks += 1
+            if checks == 2:
+                return subprocess.CompletedProcess(args, 7)
+        return original(args, **kwargs)
+
+    repository.run = run
+    with pytest.raises(ValueError, match="stopped before push"):
+        invoke(repository, include_all=True, message="Native checks")
+    assert not any(call[:2] == ["git", "push"] for call in repository.calls)
+    assert repository.git("log", "-1", "--format=%s") == "Native checks"
+
+
+def test_edit_during_native_check_stops_before_push(repository):
+    original = repository.run
+    count = 0
+
+    def run(args, **kwargs):
+        nonlocal count
+        if args[0] == "dagger":
+            count += 1
+            if count == 2:
+                (repository.root / "README.md").write_text("Changed while checking")
+        return original(args, **kwargs)
+
+    repository.run = run
+    with pytest.raises(ValueError, match="Checkout changed"):
+        invoke(repository, include_all=True, message="Native checks")
+    assert not any(call[:2] == ["git", "push"] for call in repository.calls)

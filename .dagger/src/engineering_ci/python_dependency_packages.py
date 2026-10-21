@@ -2,11 +2,12 @@
 
 import hashlib
 import json
-from email.parser import BytesParser
-from pathlib import Path
+import os
 import re
 import subprocess
 import tomllib
+from email.parser import BytesParser
+from pathlib import Path
 from zipfile import ZipFile
 
 
@@ -139,3 +140,9 @@ def sync_local_dependencies(python_version, directory, *, environment):
     Path("/tmp/engineering-ci-dependency-packages.json").write_text(
         json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+
+if __name__ == "__main__":
+    import sys
+
+    sync_local_dependencies(sys.argv[1], sys.argv[2], environment=dict(os.environ))

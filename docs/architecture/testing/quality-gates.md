@@ -135,16 +135,29 @@ test quality gate **FAILED**. It never claims two tests failed.
 Keep the same explicit policy in the check and export hook:
 
 ```python
-POLICY = {"test_path": "tests", "markers": "", "coverage_source": "app", "min_coverage": "80"}
+POLICY = {
+    "test_path": "tests",
+    "markers": "",
+    "coverage_source": "app",
+    "min_coverage": "80",
+}
+
 
 @function
 @check
 async def test(self, source: Annotated[dagger.Directory, DefaultPath("/")]) -> str:
-    return await dag.engineering_ci().python_test(source=source, python_version="3.12", **POLICY)
+    return await dag.engineering_ci().python_test(
+        source=source, python_version="3.12", **POLICY
+    )
+
 
 @function
-async def pytest_results(self, source: Annotated[dagger.Directory, DefaultPath("/")]) -> dagger.Directory:
-    return await dag.engineering_ci().python_test_artifacts(source=source, python_version="3.12", **POLICY)
+async def pytest_results(
+    self, source: Annotated[dagger.Directory, DefaultPath("/")]
+) -> dagger.Directory:
+    return await dag.engineering_ci().python_test_artifacts(
+        source=source, python_version="3.12", **POLICY
+    )
 ```
 
 ```yaml

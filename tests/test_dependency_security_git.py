@@ -35,7 +35,9 @@ def test_core_policy_covers_every_immutable_git_source():
     from engineering_ci import dependency_security as security
 
     root = Path(__file__).resolve().parents[1]
-    approved, _ = security.git_policy(root / "config/dependency-security.toml")
+    # The core no longer has Git dependencies or a project Git allowlist.
+    # Generic explicit Git source scanning is exercised by the cases below.
+    approved = {}
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     _, unsupported, _, selected = security.lock_inventory(
         project,

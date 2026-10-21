@@ -6,7 +6,6 @@
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
 - [恢复验收](recovery-validation.md) — v0.5.4 强杀进程、跨阶段恢复及最终 Release SHA 绑定验证。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
-- [PR 检查执行图](pr-check-graph.md) — Dagger 分支、原始失败、Coverage 与证据复用验收。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 
 上级入口：[技术文档](../README.md)。

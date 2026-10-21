@@ -12,7 +12,6 @@ import pytest
 from test_execution_integration import ActionsFake, ArchiveFake
 from test_release_delivery import REPOSITORY, VERSION, Repository
 
-from engineering_ci import checks
 from engineering_ci.execution.collector import ArtifactCollector
 from engineering_ci.execution.coordinator import ExecutionCoordinator
 from engineering_ci.execution.models import (
@@ -236,6 +235,8 @@ def delivery_worker(root, point, counters, ready, hold, outcomes):
     repo.pr = json.loads(remote_record.read_text()) if remote_record.is_file() else None
 
     def run(args, **kwargs):
+        if args[0] == "dagger":
+            increment(counters, 3)
         result = repo.run(args, **kwargs)
         operation = (
             ("PR", 2)
@@ -246,42 +247,17 @@ def delivery_worker(root, point, counters, ready, hold, outcomes):
             }.get(tuple(args[:2]))
         )
         if args[:3] == ["gh", "pr", "create"]:
-            checks.atomic_json(remote_record, repo.pr)
+            remote_record.parent.mkdir(parents=True, exist_ok=True)
+            remote_record.write_text(json.dumps(repo.pr), encoding="utf-8")
         if operation and result.returncode == 0:
             increment(counters, operation[1])
             if point == operation[0]:
                 stop_at(ready, hold)
         return result
 
-    def run_checks(selectors, *, root, output, reuse=False, **kwargs):
-        # Check execution is simulated here; identity/freshness tests run separately.
-        if not output.is_file():
-            increment(counters, 3)
-            checks.atomic_json(
-                output,
-                {
-                    "checks": [
-                        {"name": name, "identity": {"sha256": "f" * 64}}
-                        for name in checks.PR_CHECKS
-                    ]
-                },
-            )
-        return {}, 0
-
-    def inspect(*args, **kwargs):
-        return {
-            "overall_status": "passed",
-            "checks": [
-                {"name": name, "passed_for_current_input": True}
-                for name in checks.PR_CHECKS
-            ],
-        }, 0
-
     try:
         with (
             patch.object(delivery, "checked_version", return_value=VERSION),
-            patch.object(checks, "run_checks", run_checks),
-            patch.object(checks, "inspect", inspect),
         ):
             code = delivery.prepare(
                 REPOSITORY,
@@ -336,7 +312,10 @@ def test_hard_kill_recovers_delivery_from_native_facts(tmp_path, point):
         )
         pr = json.loads((repo.root / ".test-tools/fake-gh.json").read_text())
         assert pr["headRefOid"] == committed and pr["state"] == "OPEN"
-        assert counters[0] == 1 and counters[2] == 1 and counters[3] == 1
+        assert counters[0] == 1 and counters[2] == 1
+        assert (
+            counters[3] >= 2
+        )  # each invocation uses native Dagger, never a pass receipt
         # A native push can repeat as up-to-date; it must keep the exact same SHA.
         assert (
             repo.git("ls-remote", "origin", "refs/heads/codex/delivery").split()[0]

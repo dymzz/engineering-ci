@@ -33,25 +33,25 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 
 | 能力 | 代码位置 | 职责 |
 | --- | --- | --- |
-| 本仓检查与结果有效性 | `checks.py`、`check_operations.py`、`dagger_checks.py` | 当前本地 / PR 调用桥及结果核验 |
+| 本仓原生检查 | `.dagger/src/engineering_ci/main.py`、`repository.py` | 实际源码上的五项 Dagger Checks，原生 DAG 与缓存 |
 | 可复用容器检查 | `.dagger/src/engineering_ci/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
 | GitHub 执行与下载 | `src/engineering_ci/execution/` | 已有 Dispatch、等待、恢复、HTTP 下载与安全解压 |
 | 交付及发布证据 | `src/engineering_ci/release/` | Git / PR 交付、版本、Manifest 与发布操作 |
 | 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |
 
-当前宿主检查桥和执行恢复层仍存在，不能把删除非 CI 能力描述为已经完成全部 Dagger 原生化。
+宿主检查 Runner、Profile 配置、输入散列及 passed 收据已删除。GitHub 执行恢复层仍保留，后续按 #41 收敛。
 基础检查定义见[本地检查](local-checks.md)，公共消费者接口见[支持范围](../delivery/public-components.md)。
 
 ## 入口与配置
 
-- 用户 CLI：`engineering-ci checks / version / release / download`。
+- 用户 CLI：`engineering-ci version / release / download`。
 - 两个脚本：`scripts/release.py` 与 `scripts/download.py`；使用方式见[用户指南](../../guides/README.md)。
 - Actions 内部操作：`python -m engineering_ci.workflow_actions`。
 - Dagger 模块：`dagger.toml`、`dagger-module.toml` 与生成的 SDK / 锁文件。
-- 当前检查参数与交付绑定：`config/pipeline.toml`；它不声明另一套远端 Job DAG。
+- 标准 Ruff 设置和锁定开发工具：根 `pyproject.toml`、`uv.lock`；原生 Check 与容器定义在 Dagger 模块中。
 - 下载设置：见[配置入口](../configuration/README.md)，机器专用配置不提交。
 
-Python 包使用 Python >=3.14、transitions、filelock 和 PyYAML；开发测试使用 pytest / pytest-cov。
+Python 包使用 Python >=3.14、transitions 和 filelock；开发测试使用 pytest / pytest-cov / Ruff / Ruff。
 Dagger 模块有独立 SDK 依赖。aria2c 是可选下载后端；GitHub 操作使用现有 Git / gh 认证。
 私有消费者依赖的 Secret 由调用方显式提供，基础开发环境不再需要 Vesryn 仓库的读取凭据。
 

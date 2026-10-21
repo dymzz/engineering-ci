@@ -6,7 +6,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 
 - **Status:** adopted
 - **Pin:** `>=3.14` — `pyproject.toml`, `.dagger/pyproject.toml`; `3.14` — `.python-version`,
-  `config/pipeline.toml` (`[toolchain]`), `.github/workflows/ci.yml`
+  the Dagger repository container and release Workflow
 - **Used by:** the entire project codebase in `src/` and `.dagger/src/`
 - **Contract:** [repository overview](../repository-overview.md)
 - **Verify:** version declarations match across manifests and configuration
@@ -16,7 +16,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 
 - **Status:** adopted
 - **Pin:** `uv_build>=0.12.23,<0.13.0` — `pyproject.toml`; `uv_build>=0.8.4,<0.9.0` —
-  `.dagger/pyproject.toml`; uv `0.12.23` — `config/pipeline.toml`,
+  `.dagger/pyproject.toml`; uv `0.12.23` — release Workflow setup; native check image is declared in `repository.py`,
   `.github/workflows/reusable-python-ci.yml`
 - **Used by:** dependency resolution, lockfiles (`uv.lock`, `.dagger/uv.lock`), wheel builds
   and virtual environment management
@@ -45,16 +45,6 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Verify:** `tests/test_execution_state.py`
 - **Verified:** 2026-10-14 @ `963d809a295f`
 
-## PyYAML
-
-- **Status:** adopted
-- **Pin:** `PyYAML==6.0.3` — `pyproject.toml` (`dependencies`)
-- **Used by:** `src/engineering_ci/workflow_consistency.py` — customized `yaml.SafeLoader`
-  preventing automatic boolean type coercion
-- **Contract:** [Workflow contracts](../release/workflow.md)
-- **Verify:** `tests/test_workflow_consistency.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
-
 ## pytest
 
 - **Status:** adopted
@@ -62,7 +52,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
   `.dagger/pyproject.toml` (`dev` group)
 - **Used by:** running unit, process, and integration test suites
 - **Contract:** [testing](../testing/README.md), [pytest reporting](../testing/pytest-reporting.md)
-- **Verify:** `uv run --locked pytest -q`
+- **Verify:** `dagger check --engineering-ci --check=tests`
 - **Verified:** 2026-10-14 @ `963d809a295f`
 
 ## pytest-cov

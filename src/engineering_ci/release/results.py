@@ -78,41 +78,6 @@ class OperationResult:
             else "failed"
         )
 
-    def checks_view(self, report, path, *, current=None, inspection=False):
-        """Project existing check reports without copying logs or environment values."""
-        fields = (
-            "name",
-            "status",
-            "exit_code",
-            "freshness",
-            "executed",
-            "executed_this_invocation",
-            "reused",
-            "passed_for_current_input",
-            "counts",
-        )
-        self.local_checks = {
-            "status": "passed"
-            if current is True
-            else "not_current_pass"
-            if current is False
-            else "recorded",
-            "report": str(path),
-            "checks": [
-                {
-                    **{key: entry[key] for key in fields if key in entry},
-                    "platform": (entry.get("environment") or {}).get("platform"),
-                    "identity_sha256": (entry.get("identity") or {}).get("sha256"),
-                    **(
-                        {"executed_this_invocation": False, "reused": False}
-                        if inspection
-                        else {}
-                    ),
-                }
-                for entry in report.get("checks", [])
-            ],
-        }
-
     def published(self, receipt):
         """Expose only verified Release identity and the original evidence attempt."""
         self.publication = {
@@ -167,8 +132,6 @@ class OperationResult:
                 receipt = getattr(self.context, name)
                 if receipt:
                     value = asdict(receipt)
-                    if name == "checks":
-                        value["report"] = str(value["report"])
                     delivery["evidence"][name] = value
         return {
             "schema_version": 1,

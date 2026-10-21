@@ -7,7 +7,7 @@ from transitions import MachineError
 from transitions.extensions import HierarchicalMachine
 
 from ..execution.fsm import InvalidTransition
-from ..pipeline import PIPELINE
+from . import RELEASE_CONFIG
 from .context import ExecutionContext, PushEvidence, ReviewEvidence
 
 STATES = [
@@ -54,7 +54,7 @@ class ReleaseLifecycle:
                 "INSPECTING",
                 "BLOCKED_main",
                 lambda: (
-                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
+                    self.facts["branch"] == RELEASE_CONFIG["branch"]
                     and bool(self.facts["files"])
                 ),
             ),
@@ -62,9 +62,7 @@ class ReleaseLifecycle:
                 "observe",
                 "INSPECTING",
                 "REVIEW_merged",
-                lambda: (
-                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
-                ),
+                lambda: self.facts["branch"] == RELEASE_CONFIG["branch"],
             ),
             ("observe", "INSPECTING", "REVIEW_waiting", self._reviewed_push),
             ("observe", "INSPECTING", "DELIVERY_pending", lambda: True),
@@ -127,17 +125,7 @@ class ReleaseLifecycle:
         return bool(self.facts["pr"] and self.facts["pr"]["state"] == "MERGED")
 
     def _checked(self):
-        evidence = self.context.checks
-        return bool(
-            evidence
-            and evidence.working_digest == self.facts["working_digest"]
-            and len(evidence.identities)
-            == len(PIPELINE["profiles"][PIPELINE["delivery"]["checks_profile"]])
-            and all(
-                re.fullmatch(r"[0-9a-f]{64}", value)
-                for value in (evidence.sha256, *evidence.identities)
-            )
-        )
+        return self.context.checks is not None and self.context.checks.exit_code == 0
 
     def _committed(self):
         evidence = self.context.commit
@@ -147,7 +135,6 @@ class ReleaseLifecycle:
             and checks
             and not self.facts["files"]
             and evidence.head == self.facts["head"]
-            and evidence.checks_sha256 == checks.sha256
         )
 
     def _pushed(self):
@@ -198,7 +185,7 @@ class ReleaseLifecycle:
             and evidence.reviewed_head == self.facts["head"]
             and (
                 (
-                    self.facts["branch"] == PIPELINE["delivery"]["release"]["branch"]
+                    self.facts["branch"] == RELEASE_CONFIG["branch"]
                     and evidence.main_commit == self.facts["head"]
                 )
                 or (
@@ -216,7 +203,7 @@ class ReleaseLifecycle:
         if (
             identity["commit_sha"] != self.context.merge.main_commit
             or identity["version"] != self.facts["version"]
-            or identity["ref"] != PIPELINE["delivery"]["release"]["branch"]
+            or identity["ref"] != RELEASE_CONFIG["branch"]
         ):
             raise InvalidTransition(
                 "Publication identity differs from the merge evidence"

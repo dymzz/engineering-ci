@@ -20,34 +20,32 @@ on:
 permissions:
   contents: read
 
-env:
-  PYTHONPATH: ${{ github.workspace }}/src
-
 jobs:
   python-ci:
-    # Keep the former reusable Dagger status name for PR review.
     name: python-ci / checks
     outputs:
       artifact_id: ${{ steps.ruff_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
+      - name: Install pinned Dagger CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Ruff Lint
-        run: python3 -m engineering_ci.workflow_actions checks ruff-lint
+        run: dagger check --engineering-ci --check=lint
       - name: Ruff Format Check
-        run: python3 -m engineering_ci.workflow_actions checks ruff-format
+        run: dagger check --engineering-ci --check=format-check
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
-        run: python3 -m engineering_ci.workflow_actions manifest tools --scope ruff --output release-tools/tool-versions.json
+        run: dagger api call repository-ruff-tools export --path release-tools/tool-versions.json
       - uses: actions/upload-artifact@v7.0.2
         id: ruff_artifact
         if: ${{ inputs.coverage }}
@@ -61,29 +59,31 @@ jobs:
     outputs:
       artifact_id: ${{ steps.core_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
-          python-version: ${{ steps.check_toolchain.outputs.python_version }}
-      - name: Install existing HTTP integration test dependency
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq aria2
-      - name: Install core test dependencies
-        run: uv sync --locked --group dev
+      - name: Install pinned Dagger CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Run all core unit and process tests
         env:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
-        run: python3 -m engineering_ci.workflow_actions checks tests --coverage-from-env
-      - name: Record core release tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          options=()
+          if [[ "$EXPORT_COVERAGE" == 'true' ]]; then options+=(--env release); fi
+          dagger "${options[@]}" check --engineering-ci --check=tests
+      - name: Export the original core execution evidence
         if: ${{ always() && !cancelled() && inputs.coverage }}
-        run: uv run --no-sync --group dev python -m engineering_ci.workflow_actions manifest tools --scope core --output tool-versions.json
+        run: dagger --env release api call repository-test-artifacts export --path core-evidence
       - name: Upload core release evidence
         id: core_artifact
         if: ${{ always() && inputs.coverage }}
@@ -91,28 +91,27 @@ jobs:
         with:
           name: core-tests
           path: |
-            core-junit.xml
-            core-coverage.xml
-            core-coverage.json
-            tool-versions.json
+            core-evidence/core-junit.xml
+            core-evidence/core-coverage.xml
+            core-evidence/core-coverage.json
+            core-evidence/tool-versions.json
           if-no-files-found: error
           retention-days: 7
 
   version-metadata:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: Read unified toolchain
-        id: check_toolchain
-        run: python3 -m engineering_ci.workflow_actions checks toolchain --github-output "$GITHUB_OUTPUT"
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: ${{ steps.check_toolchain.outputs.uv_version }}
-          python-version: ${{ steps.check_toolchain.outputs.python_version }}
-      - name: Install runtime dependencies
-        run: uv sync --locked --no-default-groups
+      - name: Install pinned Dagger CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Validate release metadata and root lock consistency
-        run: python3 -m engineering_ci.workflow_actions checks version lock
+        run: dagger check --engineering-ci --check=version --check=lock

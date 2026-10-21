@@ -99,3 +99,11 @@
 - Source: sdk/python/runtime/discovery.go and core/schema/modulesource.go at upstream tag v1.0.0-beta.16; local raw traces under .test-tools/eci003/final/.
 - Assessment: upstream could distinguish filtered/missing source files from uninitialized generated bindings. Cache/bytecode filtering does not resolve the parent Git ignore boundary.
 - Integration: use an explicitly approved, readable asset installation directory, retain native trust and committed SDK files, and explicitly select the module when there is no Git workspace discovery.
+
+
+## Dagger@1.0.0-beta.16: native environment configuration limits
+- Status: observed integration behavior; no upstream patch.
+- Seen: 2026-10-21, ECI-SLIM-02.
+- Evidence: environment module settings and local module aliases work; environment `check.skip` is rejected as an unknown field. A base module's skipped Checks remain excluded even when explicitly selected.
+- Integration: keep root fixture exclusions on engineering-ci, use a native fixtures environment with a validation alias and explicit fixture filter. `workspace config` array values use comma-separated strings; JSON array text is treated as invalid filter text.
+- Assessment: version-specific CLI/configuration constraints; use actual beta.16 discovery instead of assuming current documentation's newer syntax.

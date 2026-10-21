@@ -13,7 +13,7 @@ Engineering CI 的公共交付包含以下已有接口。Public 表示本项目�
 | Dagger `python_test_matrix`、`python_test_matrix_report`、`python_test_matrix_artifacts` | 公共多版本 pytest；输入版本列表和显式策略，逐版本保留实际结果 | [Python Matrix](../architecture/testing/python-matrix.md) |
 | `.github/workflows/reusable-python-ci.yml` | 公共 `workflow_call`；固定同一 Engineering CI 版本的 Dagger 模块和 Workflow，原始检查决定 Job 结果 | [消费者接入](../../guides/new-repository.md)、[报告模式](../architecture/testing/pytest-reporting.md#opt-in-reusable-workflow)、[依赖安全](../architecture/dependency-security.md) |
 | 安装包的 `engineering-ci download` | 公共已有 Run 查询/下载；gh 认证、HTTP 后端和安全解压，禁止 Dispatch | [CLI 参考](../../guides/cli-reference.md)、[下载配置](../configuration/downloads.md) |
-| `engineering-ci checks/version/release` 与两个 `scripts/` 入口 | 本仓库操作接口；需要完整 engineering-ci checkout、配置和锁文件，不是对任意消费者目录的通用检查或发布 API | [常用操作](../../guides/common-tasks.md) |
+| `engineering-ci version/release/download` 与两个 `scripts/` 入口 | 本仓库操作接口；需要完整 engineering-ci checkout、配置和锁文件，不是对任意消费者目录的通用检查或发布 API | [常用操作](../../guides/common-tasks.md) |
 | `workflow_actions`、Release prepare/verify/publish 助手与注册信息 | 内部 Actions 接口；由已发布 Workflow 调用，不是新的用户 CLI 或跨项目发布框架 | [CLI 边界](../architecture/cli-boundaries.md) |
 | Dagger `fixture_*`、`container_echo`、`grep_dir`、`repository_check_*` | 自测/示例或本仓库适配接口，不作为通用消费者稳定契约。消费者不依赖 fixture 名称或内部文件布局 | [本地验证](../architecture/local-checks.md) |
 

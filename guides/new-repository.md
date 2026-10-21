@@ -96,11 +96,20 @@ from dagger import DefaultPath, Ignore, check, dag, function, object_type
 Source = Annotated[
     dagger.Directory,
     DefaultPath("/"),
-    Ignore([
-        ".git", ".venv", ".dagger", ".test-tools", "dist",
-        "**/__pycache__", "**/.pytest_cache", "**/.ruff_cache",
-        ".env", ".env.*",
-    ]),
+    Ignore(
+        [
+            ".git",
+            ".venv",
+            ".dagger",
+            ".test-tools",
+            "dist",
+            "**/__pycache__",
+            "**/.pytest_cache",
+            "**/.ruff_cache",
+            ".env",
+            ".env.*",
+        ]
+    ),
 ]
 PYTHON = "3.14"
 TEST_POLICY = {"test_path": "tests"}

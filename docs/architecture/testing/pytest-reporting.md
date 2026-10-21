@@ -40,7 +40,9 @@ def pytest_results(
     source: Annotated[dagger.Directory, DefaultPath("/")],
 ) -> dagger.Directory:
     return dag.engineering_ci().python_test_artifacts(
-        source=source, python_version="3.14", test_path="tests",
+        source=source,
+        python_version="3.14",
+        test_path="tests",
     )
 ```
 

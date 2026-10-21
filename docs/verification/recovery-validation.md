@@ -53,7 +53,7 @@ pytest 临时目录只构造最小 Git 测试仓库和本地 bare remote，不�
 
 ```powershell
 uv run --locked pytest -q tests/test_release_recovery.py tests/test_release_verification.py --junitxml=.test-tools/recovery-acceptance/recovery-junit.xml
-uv run --locked engineering-ci checks ruff version lock --executor native --json .test-tools/recovery-acceptance/native-checks.json
+dagger check --engineering-ci --check=lint --check=format-check --check=version --check=lock
 ```
 
 整体回归在上述两个测试模块外，覆盖 test_release_delivery、test_release_lifecycle、

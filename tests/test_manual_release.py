@@ -500,8 +500,8 @@ class ManualReleaseTests(unittest.TestCase):
             {
                 "tools": saved["tools"],
                 "dagger_checks": [
-                    "engineering-ci:fixture-quality-gates",
-                    "engineering-ci:fixture-python-matrix",
+                    "validation:fixture-quality-gates",
+                    "validation:fixture-python-matrix",
                 ],
             },
             ids=IDS,
@@ -594,7 +594,7 @@ class ManualReleaseTests(unittest.TestCase):
         self.assertNotIn("workflow_dispatch:", ci)
         self.assertNotIn("dagger call", ci)
         self.assertNotIn("docker pull", ci)
-        self.assertIn("engineering_ci.workflow_actions checks tests", ci)
+        self.assertIn("check --engineering-ci --check=tests", ci)
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertIn("default: false", workflow)
         self.assertIn("dependency_security_project: .\n", workflow)

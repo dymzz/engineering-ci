@@ -14,7 +14,7 @@ import pytest
 
 from engineering_ci import workflow_actions
 from engineering_ci.cli import download, main, release
-from engineering_ci.release import manifest, publishing
+from engineering_ci.release import publishing
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,7 +59,6 @@ def mock_release_request_metadata(monkeypatch):
 @pytest.mark.parametrize(
     "command,module",
     [
-        ("checks", "engineering_ci.checks"),
         ("release", "engineering_ci.cli.release"),
         ("download", "engineering_ci.cli.download"),
         ("version", "engineering_ci.release.version"),
@@ -75,7 +74,7 @@ def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
     assert main([command, "parameter"]) == 7 and calls == [["parameter"]]
 
 
-@pytest.mark.parametrize("command", ["trace", "mine", "workflow"])
+@pytest.mark.parametrize("command", ["trace", "mine", "workflow", "checks"])
 def test_removed_harness_commands_are_rejected(command):
     with pytest.raises(SystemExit) as error:
         main([command, "--help"])
@@ -87,15 +86,6 @@ def test_ci_locked_dependency_closure_does_not_include_harness(lockfile):
     data = tomllib.loads((ROOT / lockfile).read_text(encoding="utf-8"))
     packages = {item["name"].lower().replace("_", "-") for item in data["package"]}
     assert packages.isdisjoint({"vesryn", "vesryn-workflow"})
-
-
-@pytest.mark.parametrize(
-    "option", ["--binding", "--provider-root", "--check-target", "--output-root"]
-)
-def test_checks_rejects_removed_provider_options(option):
-    with pytest.raises(SystemExit) as error:
-        main(["checks", "pr", option, "retired-provider"])
-    assert error.value.code == 2
 
 
 def test_menu_chooses_existing_run_and_artifact_without_post():
@@ -217,38 +207,6 @@ def test_download_requires_explicit_mode_before_network(monkeypatch):
     assert error.value.code == 2
 
 
-def test_workflows_call_modules_and_preserve_release_step_names():
-    from engineering_ci import checks
-
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()
-    release = (ROOT / ".github/workflows/release.yml").read_text()
-    assert (
-        "scripts/checks.py" not in ci
-        and "uvx ruff" not in ci
-        and "uv run --locked --group dev pytest" not in ci
-    )
-    assert "engineering_ci.workflow_actions checks ruff-lint" in ci
-    assert "engineering_ci.workflow_actions checks ruff-format" in ci
-    assert "engineering_ci.workflow_actions checks tests" in ci
-    assert "engineering_ci.workflow_actions checks version lock" in ci
-    assert "scripts/manual_release.py" not in release
-    assert "engineering_ci.workflow_actions release publish" in release
-    assert all(f"name: {name}" in ci for name in checks.CI_STEPS.values())
-    for key, step in (
-        ("ruff_lint", "ruff-lint"),
-        ("ruff_format", "ruff-format"),
-        ("core_tests", "pytest"),
-        ("version_integrity", "version"),
-    ):
-        assert manifest.CHECKS[key][1] == checks.CI_STEPS[step]
-    assert "artifact-ids:" in release and "workflow_dispatch:" in release
-    assert (
-        "core-coverage.xml" in ci
-        and "core-coverage.json" in ci
-        and "core-junit.xml" in ci
-    )
-
-
 def test_api_error_does_not_echo_sensitive_response(monkeypatch):
     monkeypatch.setattr(
         subprocess,
@@ -300,7 +258,6 @@ def test_empty_artifact_list_does_not_disable_future_run_outputs(status, logs_on
 @pytest.mark.parametrize(
     "operation,module",
     [
-        ("checks", "engineering_ci.checks"),
         ("release", "engineering_ci.release.publishing"),
         ("manifest", "engineering_ci.release.manifest"),
         ("security", "engineering_ci.tools.security"),
@@ -316,68 +273,7 @@ def test_actions_dispatcher_preserves_original_result(operation, module, monkeyp
         lambda args, **kwargs: calls.append((args, kwargs)) or 7,
     )
     assert workflow_actions.main([operation, "argument"]) == 7
-    assert calls == [
-        (["argument"], {"executor": "native"} if operation == "checks" else {})
-    ]
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("true", ["tests", "--coverage"]),
-        ("false", ["tests"]),
-        ("", ["tests"]),
-        (None, ["tests"]),
-    ],
-)
-def test_actions_coverage_input_uses_one_check_execution_and_preserves_exit(
-    monkeypatch, value, expected
-):
-    from engineering_ci import checks
-
-    if value is None:
-        monkeypatch.delenv("EXPORT_COVERAGE", raising=False)
-    else:
-        monkeypatch.setenv("EXPORT_COVERAGE", value)
-    calls = []
-    monkeypatch.setattr(
-        checks, "main", lambda args, **kwargs: calls.append((args, kwargs)) or 7
-    )
-    assert workflow_actions.main(["checks", "tests", "--coverage-from-env"]) == 7
-    assert calls == [(expected, {"executor": "native"})]
-
-
-@pytest.mark.parametrize("value", ["yes", "True", "SECRET", "1"])
-def test_actions_invalid_coverage_input_fails_before_execution(
-    monkeypatch, capsys, value
-):
-    from engineering_ci import checks
-
-    monkeypatch.setenv("EXPORT_COVERAGE", value)
-    monkeypatch.setattr(
-        checks, "main", lambda *args, **kwargs: pytest.fail("No check execution")
-    )
-    with pytest.raises(SystemExit) as error:
-        workflow_actions.main(["checks", "tests", "--coverage-from-env"])
-    assert error.value.code == 2
-    assert "SECRET" not in capsys.readouterr().err
-
-
-def test_actions_coverage_source_is_explicit_and_not_ambient(monkeypatch):
-    from engineering_ci import checks
-
-    monkeypatch.setenv("EXPORT_COVERAGE", "true")
-    calls = []
-    monkeypatch.setattr(checks, "main", lambda args, **kwargs: calls.append(args) or 0)
-    assert workflow_actions.main(["checks", "tests"]) == 0
-    assert calls == [["tests"]]
-    for flags in (
-        ["--coverage", "--coverage-from-env"],
-        ["--coverage-from-env", "--coverage-from-env"],
-    ):
-        with pytest.raises(SystemExit):
-            workflow_actions.main(["checks", "tests", *flags])
-    assert calls == [["tests"]]
+    assert calls == [(["argument"], {})]
 
 
 def run_metadata(**updates):
@@ -490,43 +386,6 @@ def test_release_requests_existing_pipeline_with_explicit_publication(
     ]
     assert not args.new_run and not args.save_log
     assert args.timeout == 90 and args.download_backend is None
-
-
-def test_configured_workflow_reaches_coordinator_and_saved_dispatch_identity(
-    tmp_path, monkeypatch
-):
-    from engineering_ci.execution import cli
-
-    posts = []
-    workflow = "reader-probe.yml"
-    # Inject a reader input to detect hard-coded routing; not a supported TOML target.
-    monkeypatch.setitem(release.RELEASE_CONFIG, "workflow", workflow)
-
-    class Client:
-        def validate(self, identity):
-            assert identity.workflow == workflow
-
-        def dispatch(self, identity, inputs):
-            posts.append(identity)
-            return 45
-
-        def get_run(self, identity, run_id):
-            assert identity.workflow == workflow and run_id == 45
-
-        def wait(self, identity, run_id, timeout, interval):
-            assert identity.workflow == workflow and run_id == 45
-            return {"conclusion": "success"}
-
-    monkeypatch.setattr(cli, "default_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/mock/gh")
-    monkeypatch.setattr(cli, "GitHubActionsClient", Client)
-    args = ["validate", "--version", "1.2.3", "--ref", "feature"]
-    assert release.main(args) == 0
-    assert release.main([*args, "--resume", "45"]) == 0
-    assert len(posts) == 1
-    state = json.loads(next((tmp_path / "cache/runs").glob("*.json")).read_text())
-    assert state["dispatch"]["workflow"] == workflow
-    assert state["run_id"] == 45 and state["phase"] == "FINISHED"
 
 
 @pytest.mark.parametrize(

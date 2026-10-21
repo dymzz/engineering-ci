@@ -2,7 +2,7 @@
 
 Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 Rules: [Workflow contracts](../release/workflow.md). Contracts: [Release workflow](../release/workflow.md),
-[Pipeline bindings](../../configuration/pipeline.md).
+[native Checks](../local-checks.md).
 
 ## GitHub Actions
 
@@ -15,7 +15,7 @@ Rules: [Workflow contracts](../release/workflow.md). Contracts: [Release workflo
   `.github/workflows/reusable-python-ci.yml` (reusable check orchestrator)
 - **Contract:** [Workflow contracts](../release/workflow.md),
   [Release workflow](../release/workflow.md)
-- **Verify:** `tests/test_workflow_consistency.py`
+- **Verify:** actual native Check execution and release Manifest tests
 - **Verified:** 2026-10-14 @ `963d809a295f`
 
 ## Reusable Workflow public contract

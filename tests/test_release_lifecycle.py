@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import checks
 from engineering_ci.execution.fsm import InvalidTransition
 from engineering_ci.release.context import (
     CheckEvidence,
@@ -32,7 +31,6 @@ def context(tmp_path, *, branch="codex/fix", files=None, pr=None, remote=None):
             "head": HEAD,
             "remote_head": remote,
             "files": files or [],
-            "working_digest": "input",
             "pr": pr,
             "conflicts": "",
         },
@@ -50,9 +48,7 @@ def pr(state="OPEN"):
 
 
 def check_evidence(tmp_path):
-    return CheckEvidence(
-        tmp_path / "checks.json", "f" * 64, ("e" * 64,) * len(checks.PR_CHECKS), "input"
-    )
+    return CheckEvidence(0)
 
 
 def test_hierarchical_delivery_requires_each_predecessor(tmp_path):
@@ -70,7 +66,7 @@ def test_hierarchical_delivery_requires_each_predecessor(tmp_path):
     with pytest.raises(InvalidTransition):
         fsm.advance("committed")
     execution.facts["files"] = []
-    execution.commit = CommitEvidence(HEAD, execution.checks.sha256)
+    execution.commit = CommitEvidence(HEAD)
     fsm.advance("committed")
     fsm.advance("start_push")
     execution.push = PushEvidence(HEAD)
@@ -96,14 +92,14 @@ def test_old_or_missing_stage_evidence_cannot_advance(tmp_path, stage):
     fsm.advance("start_checks")
     execution.checks = check_evidence(tmp_path)
     if stage == "checks":
-        execution.facts["working_digest"] = "changed"
+        execution.checks = CheckEvidence(1)
         event = "checks_passed"
     else:
         fsm.advance("checks_passed")
         fsm.advance("start_commit")
-        execution.commit = CommitEvidence(HEAD, execution.checks.sha256)
+        execution.commit = CommitEvidence(HEAD)
         if stage == "commit":
-            execution.commit = CommitEvidence(HEAD, "0" * 64)
+            execution.commit = CommitEvidence(MERGE)
             event = "committed"
         else:
             fsm.advance("committed")

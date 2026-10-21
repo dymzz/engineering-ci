@@ -14,8 +14,7 @@ if not __package__:
     __package__ = "engineering_ci.cli"
 
 from ..github_cli import GitHub
-from ..pipeline import PIPELINE
-from ..release import verification
+from ..release import RELEASE_CONFIG, verification
 from ..release.results import OperationResult, command_text
 from ..release.version import checked_version, normalize
 from ._execution import (
@@ -24,8 +23,6 @@ from ._execution import (
     invoke_execution,
     runtime_arguments,
 )
-
-RELEASE_CONFIG = PIPELINE["delivery"]["release"]
 
 
 def result_view(options):
@@ -259,43 +256,10 @@ def show_status(options):
     view.context, view.lifecycle = execution, lifecycle
     checkout.show(context, diff=options.diff)
     print(f"Delivery phase: {lifecycle.phase}")
-    path = checkout.root / ".test-tools/checks/pr.json"
-    if path.is_file():
-        from .. import checks
-
-        try:
-            result, code = checks.inspect(path, root=checkout.root)
-            complete = [entry["name"] for entry in result["checks"]] == PIPELINE[
-                "profiles"
-            ][PIPELINE["delivery"]["checks_profile"]]
-            current = code == 0 and complete
-            view.checks_view(result, path, current=current, inspection=True)
-            view.local_checks["profile_complete"] = complete
-            print(
-                f"Local checks: {'passed for current input' if current else 'not a current pass'}; {path}"
-            )
-            for entry in result["checks"]:
-                platform = (entry.get("environment") or {}).get("platform", "unknown")
-                print(
-                    f"Local check {entry['name']} [{platform}]: {entry['status']}; "
-                    f"freshness: {entry['freshness']}; tool exit: {entry.get('exit_code')}"
-                )
-                if entry.get("counts"):
-                    print(
-                        f"  Recorded JUnit counts: {json.dumps(entry['counts'], sort_keys=True)}"
-                    )
-                if entry.get("reason"):
-                    print(f"  {entry['reason']}")
-                if entry.get("invalidation_reason"):
-                    print(f"  {entry['invalidation_reason']}")
-        except (OSError, ValueError, KeyError, TypeError):
-            view.local_checks = {"status": "unavailable", "report": str(path)}
-            print(
-                f"Local checks: saved report unavailable or invalid; {path}; not a pass"
-            )
-    else:
-        view.local_checks = {"status": "not_run", "report": str(path)}
-        print("Local checks: no saved PR report")
+    view.local_checks = {"status": "not_run"}
+    print(
+        "Local checks: status does not execute Dagger or reuse historical JSON; use dagger check"
+    )
     pr = context["pr"]
     pending_delivery = False
     publication_head = None
@@ -499,7 +463,6 @@ def prepare_publication(options):
             options.version,
             message=options.message,
             include_all=options.include_all,
-            report=options.checks_report,
             checkout=checkout,
             result=result_view(options),
         )
@@ -556,11 +519,6 @@ def main(argv=None):
                 dest="include_all",
                 action="store_true",
                 help="git add --all: stage the listed tracked and untracked changes",
-            )
-            command.add_argument(
-                "--checks-report",
-                type=Path,
-                help="Reuse a complete current PR result, otherwise run the same PR profile",
             )
         if name == "status":
             command.add_argument(

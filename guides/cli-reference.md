@@ -65,7 +65,6 @@ PR 合并权限与大阶段备份遵循[Agent 指令](../AGENTS.md)，操作见
 publish 的 `--all` 对应 `git add --all`，包括列出的未跟踪文件；`-m` / `--message` 对应 Git 提交信息。
 有未提交改动时必须同时提供这两个参数。新 PR 标题来自实际提交首行，PR 说明包含完整提交信息；
 已有 PR 保留人工标题和说明。正式 Release Notes 沿用 GitHub 对已合并 PR 的自动生成，无需另填发布信息。
---checks-report 可指定完整 PR JSON，默认 .test-tools/checks/pr.json；复用前校验当前输入与工具身份。
 逐项复用匹配结果，不因其他检查失败而重跑已完成检查；相同输入的失败和 incomplete 保留原状态。
 只有四处一致的本项目版本值变化时，Ruff / pytest 证据可以延续，版本和锁文件结果需对应当前元数据。
 status --diff 显示已跟踪文件补丁；不执行检查、Commit、Push、合并、Dispatch 或下载。
@@ -90,7 +89,7 @@ uv run --locked python 或项目 .venv，返回 2；不自动向系统 Python �
 
 | 原脚本 | 当前调用 |
 | --- | --- |
-| checks.py | `uv run --locked engineering-ci checks pr`，支持 ruff/tests/version/lock/inspect |
+| 原生 Dagger Checks | `dagger check`；选择、报告与缓存见[本地检查](../docs/architecture/local-checks.md) |
 | release_version.py | `uv run --locked engineering-ci version check` / show / set v0.6.8 |
 | manual_release.py | Workflow 内部 `python -m engineering_ci.workflow_actions release ...` |
 | release_manifest.py | Workflow 内部 `python -m engineering_ci.workflow_actions manifest ...` |
@@ -106,12 +105,6 @@ consumer 默认只读；修改、提交、推送仍需显式参数。
 
 E2E 默认要求已有 Run；只有显式 --allow-dispatch 才允许新 POST。
 本地结果有效性、平台限制和 JSON 退出状态见[检查说明](../docs/architecture/local-checks.md)。
-`checks --executor auto/native/dagger` 选择检查执行环境；默认读取 Pipeline，Windows
-自动使用 Dagger Linux 容器，Linux CI 保留原生执行。`--json` 保存失败或成功证据，
-`--reuse` 核验后逐项复用；`inspect REPORT` 查询时不重跑 pytest。
-发布交付使用同一配置，无需手工复制容器 JSON 或更换 checkout。
-检查和 Profile 必须显式选择；空请求拒绝，不记为通过。修改 TOML 后启动新命令即可生效，
-字段、已注册操作和 Dagger 环境准备的对应关系见[Pipeline 配置](../docs/configuration/pipeline.md#操作契约与编排边界)。
-`version check` 除四处版本元数据外，还校验既有 Pipeline / Workflow 绑定；
-使用 `uv run --locked` 安装锁定的 YAML 解析依赖，配置不一致返回非零。
-绑定约束见[配置说明](../docs/configuration/pipeline.md#github-actions-一致性)。
+原生 Dagger 负责检查的选择、执行图和缓存；标准工具配置见
+[本地检查](../docs/architecture/local-checks.md)。`version check` 只检查四处版本元数据，
+不再复制 Workflow YAML 的结构与普通 Step 实现。

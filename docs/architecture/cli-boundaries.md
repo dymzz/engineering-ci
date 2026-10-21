@@ -9,14 +9,14 @@ scripts/release.py status → 当前 Git/PR、本地结果与已有 execution ch
 scripts/release.py validate → execution Coordinator（独立完整验证请求/等待）→ release.yml
 scripts/release.py verify → release/verification.py → GitHub GET（已有 Run 与证据）
 scripts/download.py → cli/download.py → execution Coordinator（已有 Run）→ ArtifactCollector
-engineering-ci checks/version → checks.py / release/version.py
-GitHub Actions → workflow_actions.py → checks.py / release/ / tools/security.py
+dagger check → 原生 @check Functions
+engineering-ci version → release/version.py
+GitHub Actions → workflow_actions.py → release/ / tools/security.py
 专项工具 → python -m engineering_ci.tools.<name>
 ```
 
 发布的 job 依赖、Coverage、Matrix、Security 与证据收集仍由 YAML 定义。
-检查版本、范围、参数与依赖集中在[独立 Pipeline 配置](../configuration/pipeline.md)，
-checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名称。
+本地与 CI 直接调用相同[原生 Checks](local-checks.md)；Release Manifest 保留实际 CI Step 引用。
 本地交付层次化 FSM 管阶段准入，已有 execution FSM 管 Dispatch、等待和恢复；
 两者不替代 Actions 的远端 DAG。
 
@@ -26,7 +26,7 @@ checks.py 负责调用既有工具；Release Manifest 引用相同 CI step 名�
 安装后的 `engineering-ci` 和两个脚本调用相同实现；模块运行使用
 `python -m engineering_ci.cli`，需要已安装项目或设置 PYTHONPATH。
 
-Release 交付模块读取当前 checkout 和 PR 事实，复用检查定义与结果身份校验，调用原生 Git/gh 完成提交和 PR 交付。
+Release 交付模块读取当前 checkout 和 PR 事实，执行原生 Dagger Checks，调用原生 Git/gh 完成提交和 PR 交付。
 实际合并前输出停点、链接、SHA 和继续命令，不执行 Release Dispatch。PR 合并授权遵循根
 AGENTS.md；人或已授权 Agent 通过 gh 完成合并。正式发布仍须人主动请求，再交给已有 Coordinator 请求、等待。
 status 使用相同层次化 FSM 从实际 Git / PR 事实识别停点；已有 Run 来自原 execution checkpoint。
@@ -49,7 +49,7 @@ Schema 版本为 1，其顶层字段如下：
 | `operation`、`repository`、`version`、`tag` | 本次显式请求身份；version 不含 v，tag 包含 v |
 | `status`、`exit_code` | 调用完成、停止、失败或中断，以及原始 CLI 退出码；不是正式发布资格 |
 | `delivery` | 当前 FSM 阶段、checkout / 分支 / SHA / 未提交文件 / PR 身份及已经形成的阶段证据 |
-| `local_checks` | 既有检查报告的投影，包括是否当前通过、逐项有效性、执行/复用情况和报告位置；不复制环境变量或日志 |
+| `local_checks` | 本次 Dagger Check 的原始退出状态；status 查询为 not_run，不读取历史检查收据 |
 | `review` | 实际 PR head、必需 CI 结果与可合并状态；未查询时为 null |
 | `executions` | 原 execution checkpoint 的阶段、Run、恢复阶段和脱敏 Dispatch 诊断；服务器提供时包含 Run Attempt / SHA |
 | `publication` | 未确认、Draft 或经过既有 Manifest 校验的正式 Release 及其原始验证 Run / Attempt |
@@ -73,7 +73,7 @@ checkpoint 的 remote_conclusion 来自原执行记录，live_conclusion / statu
 重新尝试必须先解决所报告的错误，并继续接受原有门禁校验。
 
 next_actions 是提示，执行前仍经过原有身份核对和门禁，不能直接成为放行依据。
-本次未执行或未查询的信息保持 not_run / not_inspected / null；旧检查是否有效仍由 checks.inspect 判定。
+本次未执行或未查询的信息保持 not_run / not_inspected / null；历史本地检查 JSON 不参与准入。
 不读取终端文字来推断结果，不复制原始 API 响应、PR body、认证信息或旧状态中的任意错误字符串。
 公开 `verify --json` 继续使用原有 Run 验证结构；本视图不合并本地检查 JSON 或 Release Manifest 的 Schema。
 
@@ -94,8 +94,8 @@ Codex 使用 --run RUN_ID；ID 必须为实际正整数。真实 API 提供 Work
 ## Workflow 内部调用
 
 ```sh
-python3 -m engineering_ci.workflow_actions checks ruff-lint
-python3 -m engineering_ci.workflow_actions checks tests --coverage
+dagger check --engineering-ci --check=lint
+dagger --env release check --engineering-ci --check=tests
 python3 -m engineering_ci.workflow_actions release prepare
 python3 -m engineering_ci.workflow_actions manifest facts --directory .release-evidence --output release-facts/facts.json
 ```

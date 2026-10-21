@@ -1,14 +1,6 @@
-"""Produce stage receipts for the context used by the release lifecycle."""
+"""Git/PR handoffs around native Dagger Checks; no saved execution receipts."""
 
-from __future__ import annotations
-
-import hashlib
-import json
-import subprocess
-from pathlib import Path
-
-from .. import checks
-from ..pipeline import PIPELINE
+from . import RELEASE_CONFIG
 from .context import (
     CheckEvidence,
     CommitEvidence,
@@ -22,132 +14,60 @@ class EvidenceError(ValueError):
     pass
 
 
-def current_checks(checkout, path):
-    """Reuse each matching execution; refresh only missing or invalidated checks."""
-    print(f"Local PR checks: checking per-check evidence in {path}")
-    output_options = {}
+def current_checks(checkout):
+    """Run the native check command and preserve its actual exit status."""
     view = getattr(getattr(checkout, "execution_context", None), "result", None)
+    options = {"cwd": checkout.root, "check": False}
     if view and view.output_stream is not None:
-        # Python stdout redirection does not redirect child process handles.
-        # Only uncaptured calls are routed; preflight probes keep their output.
-        def streamed_run(args, **kwargs):
-            if not kwargs.get("capture_output"):
-                kwargs.setdefault("stdout", view.output_stream)
-                kwargs.setdefault("stderr", view.output_stream)
-            return subprocess.run(args, check=kwargs.pop("check", False), **kwargs)
-
-        output_options["run"] = streamed_run
-    try:
-        saved = checks.read_report(path)
-        parameters = [entry["identity"]["parameters"] for entry in saved["checks"]]
-        # These are output options, not selectors or a weaker test policy.
-        if parameters and all(value == parameters[0] for value in parameters):
-            value = parameters[0]
-            if (
-                set(value) == {"coverage", "junit"}
-                and type(value["coverage"]) is bool
-                and isinstance(value["junit"], str)
-            ):
-                if value["coverage"]:
-                    output_options["coverage"] = True
-                if value["junit"] != "core-junit.xml":
-                    output_options["junit"] = value["junit"]
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    report, code = checks.run_checks(
-        [PIPELINE["delivery"]["checks_profile"]],
-        root=checkout.root,
-        output=path,
-        reuse=True,
-        **output_options,
-    )
-    result = getattr(getattr(checkout, "execution_context", None), "result", None)
-    if result:
-        result.checks_view(report, path, current=code == 0)
-        result.operations.append({"name": "checks", "exit_code": code})
+        options.update(stdout=view.output_stream, stderr=view.output_stream)
+    result = checkout.run(["dagger", "check"], **options)
+    code = result.returncode if result.returncode >= 0 else 128 - result.returncode
+    if view:
+        view.local_checks = {
+            "status": "passed" if code == 0 else "failed",
+            "exit_code": code,
+        }
+        view.operations.append({"name": "dagger check", "exit_code": code})
         if code:
-            result.stopped(
-                "local_checks", "Local checks did not pass for the current input"
-            )
+            view.stopped("local_checks", "Native Dagger Checks failed")
     return code
 
 
-def check_receipt(checkout, path):
-    """Do not push if commits or hooks changed the inputs after validation."""
-    result, code = checks.inspect(path, root=checkout.root)
-    if code or result["overall_status"] != "passed":
-        raise EvidenceError(
-            "Inputs changed after checking; delivery stopped before push"
-        )
-    return result
-
-
 class DeliveryPipeline:
-    def __init__(self, context, checkout, report=None):
+    def __init__(self, context, checkout):
         self.context, self.checkout = context, checkout
         if (
             context.root != checkout.root
             or context.facts["repository"] != checkout.repository
         ):
-            raise EvidenceError("Pipeline and FSM must use the same checkout identity")
-        path = Path(report) if report else checkout.root / ".test-tools/checks/pr.json"
-        self.report = checks.report_path(
-            path if path.is_absolute() else checkout.root / path, checkout.root
-        )
+            raise EvidenceError("Delivery must use the same checkout identity")
+        # This directory holds PR prose only; no check receipt is written or read.
+        self.pr_body_path = checkout.root / ".test-tools/delivery/pr-body.md"
 
     def checked(self):
-        """Save only complete, currently valid check identities, without rerunning a pass."""
-        code = current_checks(self.checkout, self.report)
-        if code:
-            return code
-        raw = self.report.read_bytes()
-        current = check_receipt(self.checkout, self.report)
-        if self.report.read_bytes() != raw:
-            raise EvidenceError(
-                "Check receipt changed while reading admission evidence"
-            )
-        saved = json.loads(raw)
-        names = PIPELINE["profiles"][PIPELINE["delivery"]["checks_profile"]]
-        if (
-            [entry["name"] for entry in saved["checks"]] != names
-            or [entry["name"] for entry in current["checks"]] != names
-            or not all(entry["passed_for_current_input"] for entry in current["checks"])
-        ):
-            raise EvidenceError("A partial profile cannot admit delivery")
-        identities = tuple(entry["identity"]["sha256"] for entry in saved["checks"])
-        if not all(isinstance(value, str) and len(value) == 64 for value in identities):
-            raise EvidenceError("Check identities are missing")
-        self.context.checks = CheckEvidence(
-            self.report,
-            hashlib.sha256(raw).hexdigest(),
-            identities,
-            self.context.facts["working_digest"],
-        )
-        if self.context.result:
-            # Inspection adds freshness; the saved report retains this call's
-            # actual execution/reuse flags and tool identity.
-            saved_checks = {entry["name"]: entry for entry in saved["checks"]}
-            observed = {
-                "checks": [
-                    {**saved_checks[entry["name"]], **entry}
-                    for entry in current["checks"]
-                ]
-            }
-            self.context.result.checks_view(observed, self.report, current=True)
-        return 0
+        code = current_checks(self.checkout)
+        self.context.checks = CheckEvidence(code)
+        return code
 
     def committed(self, facts):
-        """Bind the current check receipt to the exact clean committed inputs."""
-        evidence = self.context.checks
-        if not evidence or facts["files"]:
+        """Re-evaluate committed source through Dagger's own cache before push."""
+        if not self.context.checks or self.context.checks.exit_code or facts["files"]:
             raise EvidenceError(
-                "Commit requires a complete check receipt and clean inputs"
+                "Commit requires successful native checks and a clean tree"
             )
-        check_receipt(self.checkout, evidence.report)
-        if hashlib.sha256(evidence.report.read_bytes()).hexdigest() != evidence.sha256:
-            raise EvidenceError("Check receipt changed after admission")
         self.context.facts = facts
-        self.context.commit = CommitEvidence(facts["head"], evidence.sha256)
+        code = current_checks(self.checkout)
+        if code:
+            raise EvidenceError(
+                "Native checks failed after commit; stopped before push"
+            )
+        current = self.checkout.context(facts["version"])
+        if current["files"] or current["head"] != facts["head"]:
+            raise EvidenceError(
+                "Checkout changed during native checks; stopped before push"
+            )
+        self.context.facts = current
+        self.context.commit = CommitEvidence(facts["head"])
 
     def pushed(self, facts):
         """Confirm the actual remote ref, rather than assuming push success."""
@@ -184,7 +104,7 @@ class DeliveryPipeline:
         if facts["files"]:
             raise EvidenceError("Undelivered local changes cannot enter publication")
         pr = facts["pr"]
-        if facts["branch"] == PIPELINE["delivery"]["release"]["branch"]:
+        if facts["branch"] == RELEASE_CONFIG["branch"]:
             main = self.checkout.main_commit()
             if main != facts["head"]:
                 raise EvidenceError(

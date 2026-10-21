@@ -1,4 +1,5 @@
 """The fixture is also collectable by the repository's independent pytest run."""
+
 import sys
 from pathlib import Path
 

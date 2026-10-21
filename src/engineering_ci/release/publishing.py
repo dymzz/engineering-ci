@@ -14,13 +14,12 @@ from pathlib import Path
 
 from ..github_cli import ApiError, GitHub
 from ..github_cli import require_api_success as _require_api_success
-from ..pipeline import PIPELINE
+from . import RELEASE_CONFIG
 from .version import ROOT, checked_version, normalize
 
 require_api_success = _require_api_success
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
-RELEASE_CONFIG = PIPELINE["delivery"]["release"]
 
 
 def optional(api, path):
@@ -349,9 +348,6 @@ def main(argv=None):
                 "PASS: original exits, JUnit, coverage and security evidence available"
             )
             return 0
-        from ..workflow_consistency import validate
-
-        validate(environment=os.environ)
         head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True, encoding="ascii"
         ).strip()

@@ -17,7 +17,7 @@ Consult relevant documentation and interfaces when working across module boundar
 
 - engineering-ci owns CI/CD quality policy, release evidence and delivery.
 - Agent Harness, mining and generic Workflow execution are outside this repository. Do not add forwarding or compatibility layers for them.
-- `config/pipeline.toml` defines registered local check settings.
+- Native Dagger Checks define repository checks; standard Ruff settings and locked tools live in pyproject.toml. Do not recreate a host scheduler, input-hash receipt or check registry.
 - Dagger manages internal execution graphs, containers and caching.
 - GitHub Actions manages remote workflow orchestration, permissions and release gates.
 - engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.

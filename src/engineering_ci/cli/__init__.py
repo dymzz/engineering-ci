@@ -9,12 +9,11 @@ import sys
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
-        description="Engineering CI: local checks, Release Workflow and Run downloads"
+        description="Engineering CI: Release Workflow, version metadata and Run downloads; checks use dagger check"
     )
     parser.add_argument(
         "command",
         choices=(
-            "checks",
             "release",
             "download",
             "version",
@@ -25,9 +24,7 @@ def main(argv=None):
         return 0
     namespace = parser.parse_args(argv[:1])
     args = argv[1:]
-    if namespace.command == "checks":
-        from ..checks import main as invoke
-    elif namespace.command == "release":
+    if namespace.command == "release":
         from .release import main as invoke
     elif namespace.command == "version":
         from ..release.version import main as invoke

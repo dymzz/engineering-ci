@@ -12,16 +12,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CheckEvidence:
-    report: Path
-    sha256: str
-    identities: tuple[str, ...]
-    working_digest: str
+    exit_code: int
 
 
 @dataclass(frozen=True)
 class CommitEvidence:
     head: str
-    checks_sha256: str
 
 
 @dataclass(frozen=True)

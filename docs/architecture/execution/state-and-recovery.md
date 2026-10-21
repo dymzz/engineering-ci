@@ -53,7 +53,9 @@ Git、Git LFS、Docker / Dagger 将来可按此边界扩展；本轮没有空壳
 from pathlib import Path
 from engineering_ci.execution import ExecutionFSM, StateStore
 from engineering_ci.execution.models import (
-    CollectionIdentity, DispatchIdentity, TaskRecord,
+    CollectionIdentity,
+    DispatchIdentity,
+    TaskRecord,
 )
 
 record = TaskRecord(

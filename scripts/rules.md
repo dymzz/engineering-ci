@@ -5,7 +5,7 @@
 - 用户说明见指南入口，文档组织与维护遵循[文档约定](../docs/conventions.md)。参数或行为变化须同步受影响的指南及 PR 描述，不在入口索引重写操作流程。
 - 两个脚本无参数只显示帮助；交互下载显式使用 --interactive。帮助不依赖已安装的运行依赖。
 - GitHub Actions 的内部调用集中在 engineering_ci.workflow_actions；YAML 是发布 DAG 的唯一来源。
-- 检查定义集中在 config/pipeline.toml，checks.py 执行工具，toolchain.py 提供兼容版本接口；发布策略和证据位于 release/，专项工具位于 tools/。
+- 本地与 CI 直接调用原生 Dagger Checks；Ruff 使用标准 pyproject.toml 配置，发布策略和证据位于 release/，专项工具位于 tools/。
 - CLI、Workflow dispatcher 或注册表不得重新实现业务逻辑。
 - 修改入口、参数或位置时同步维护受影响的指南和 Workflow 调用；scripts/README.md 仅维护入口索引。
 - 本地交付 FSM 与 Pipeline 必须共享同一 ExecutionContext，使用前一阶段产生且身份匹配的证据作为下一阶段准入；远端 DAG 继续由 Workflow 定义，不在配置中复制。

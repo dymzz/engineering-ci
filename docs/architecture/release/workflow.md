@@ -22,54 +22,13 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 
 ## 检查定义与执行环境
 
-用户检查命令见[使用说明](../../../guides/common-tasks.md#本地检查与开发-pr)。
-
-GitHub PR CI 调用 `python -m engineering_ci.workflow_actions checks ...`，与上述用户命令
-使用同一套 Python 实现。工具版本、范围、参数及依赖由 `config/pipeline.toml` 集中定义；
-`toolchain.py` 保留调用接口，`checks.py` 执行工具并产生真实结果。
-既有版本 Step 还校验 Pipeline 与 YAML 的对应关系；Release 操作在 Git / GitHub
-请求前执行相同校验。绑定范围和配置升级规则统一见
-[GitHub Actions 一致性](../../configuration/pipeline.md#github-actions-一致性)。
-Job DAG、权限、条件继续由 YAML 声明，不由 TOML 动态调度。
-一致性校验保护跨层契约和发布不变量，允许普通 Step 及只读 Job 演进；
-最小关键依赖及新增 `needs` 的实际成功要求见上述配置契约，不复制完整 Workflow。
-直接调用 uv、pytest、Ruff 仍可用于诊断，不限制工具的正常使用。
-
-原生 Windows 的 Bash 测试无法完整执行时，pytest 原始退出码和 skipped 数量
-保留在结果中，入口返回 3，不能将此记录作为完整 PR 通过。缺少 Git、gh
-时明确报告工具缺失。完整 Linux 验证可在 WSL2 中使用相同入口。
-详细环境准备、JSON 状态与历史结果校验见 [本地验证](../local-checks.md)。
-交付 Pipeline 分别持有代码检查和当前版本证据。版本准备不会无差别丢弃代码检查：
-只有本项目四处一致的版本值变化时，保留同环境的 Ruff / pytest 结果，重新核验版本和锁文件。
-缺少当前版本证据、源码 / 依赖已变化或结果不完整时仍阻断准入；远程门禁继续绑定实际提交。
-
-完整检查需 Docker 与 Dagger CLI 1.0.0-beta.16（匹配 dagger-module.toml 和 Workflow Engine）。
-安装及 SDK 生成方式见 [Dagger 配置](../../configuration/dagger.md)。
-Release Workflow 的 `dagger check` 已包含 quality 和 matrix fixture。
-
-quality fixture 验证既有显式阈值与失败传播；matrix fixture 实际运行
-Python 3.12、3.13、3.14 及既有负向场景。它们验证模块能力，不能解释成根项目
-（requires-python >=3.14）支持 Python 3.12。核心 pytest 使用 3.14。
-不新增或降低阈值；根项目 Coverage 输出是证据，不增加百分比门禁。
-
-真实项目安全检查独立于锁一致性：
-
-```sh
-uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --out .test-tools/security --cache .test-tools/security-bin
-```
-
-发布扫描真实根 uv.lock 的公共 PyPI 锁定依赖（含 dev / 传递依赖），
-不再安装或扫描已移除的 Vesryn 系列 Git 依赖；
-未批准来源、身份不一致或查询覆盖缺失仍阻断发布。来源完整性与已知漏洞查询的区别见
-[依赖安全契约](../dependency-security.md)。不使用 dependency-security fixture。
-Aliyun 显式声明为公共 PyPI 镜像。
-enforce 阻断所有未豁免漏洞、网络/扫描错误和扫描缺口；不自动增加豁免或改锁。
-本轮真实扫描发现 pytest 8.4.2 的 tmpdir 漏洞，因此将根测试依赖升级到
-最小修复版本 9.0.3。
-上游记录：[GHSA-6w46-j5rx-g56g](https://osv.dev/vulnerability/GHSA-6w46-j5rx-g56g)。
-.dagger/uv.lock 含本地生成 SDK，现有扫描器无法完整扫描该来源；
-本轮只对该锁文件执行一致性校验，不能宣称完成其漏洞扫描。
-这是发布安全范围的明确限制。消费者默认安全策略 off 不变。
+本地与 `ci.yml` 使用同一组[原生 Dagger Checks](../local-checks.md)。
+标准 Ruff 配置和锁定开发工具在根 `pyproject.toml` / `uv.lock`；没有宿主 Profile、
+输入散列收据或另一套 Workflow YAML 校验器。三个既有 PR Job 名称保持不变。
+根仓 Coverage 由原生 `release` 环境开启，严格检查与报告引用相同 pytest 节点。
+发布 fixture 通过 `fixtures` 环境及 `fixture-*` 原生筛选显式执行；
+`validation:fixture-test` 由一次报告执行替代，质量/Matrix Check 仍实际执行。
+GitHub Actions 继续拥有 Job DAG、权限、Artifact 上传和发布条件。
 
 ## 发布 Run 的身份与执行范围
 
@@ -211,24 +170,24 @@ cli/release.py
 ```
 
 Pipeline 与交付 FSM 由 `delivery.prepare()` 协调，不能解释为 Pipeline 调用 FSM 再调用
-Coordinator 的串行调度链。配置的具体读取位置见[Pipeline 配置](../../configuration/pipeline.md#实际调用接入)。
+Coordinator 的串行调度链。检查图只由 Dagger 定义，发布目标使用既有 Release 业务策略。
 
 | 阶段输出 | 下一阶段必需输入与准入 |
 | --- | --- |
-| 本地检查 | 完整当前 PR profile、每项执行身份、报告 SHA256 与工作区指纹；准入提交 |
-| Commit | 精确 Commit SHA 绑定检查报告指纹，提交后重新比对相关输入；准入 Push |
+| 本地检查 | 本次原生 dagger check 成功；准入提交 |
+| Commit | 实际 Commit SHA，提交后再次请求 Dagger 原生检查；准入 Push |
 | Push | 实际远端 ref 与已准入 Commit SHA 相同；准入创建或更新 PR |
 | PR | OPEN PR 的 head 与本地及远端提交一致；进入等待审查 |
 | Merge | 人或已授权 Agent 完成合并；实际 Merge SHA、被审查 head、远端 main 的祖先关系准入发布目标 |
 | 发布目标 | main SHA、版本和已有 Merge 证据一致；交给原 execution FSM 请求同一 Release Workflow |
 | Run 完成 | 最终 Tag / Manifest 必须绑定本次已准入的发布 SHA；另一 SHA 的有效 Release 证据不能作为本次成功 |
 
-输入过期、PR head 改变、报告替换或证据缺失均不能越过准入；已合并 PR 留有本地改动进入
+输入过期、PR head 改变、必要执行或远端证据缺失均不能越过准入；已合并 PR 留有本地改动进入
 BLOCKED.merged，不能被旧 Run 或原 PR 的绿色检查覆盖。错误输出包含当前阶段和接续命令。
 重启时从原生事实重新识别阶段，已确认的 OPEN PR 可以恢复 REVIEW.waiting，不伪造本地检查记录。
 Git/PR 修改失败保留已产生的真实提交；远端 UNKNOWN 仍禁止自动再次 POST。
 PR 交付完成与 CI 通过分别记录。handoff 读取当前 head 的真实检查状态：必需结果失败、跳过或
-尚未完成时停在 PR CI，不建议 Ready / 合并；只有配置中全部必需 Job 实际成功且可合并时，
+尚未完成时停在 PR CI，不建议 Ready / 合并；只有实际发布策略中的全部必需 Job 实际成功且可合并时，
 才给出可合并提示。缺失状态不能当作通过。
 
 Workflow 的 bootstrap 检查只需要标准库。下载配置类型与执行依赖分开，读取可选工具配置不会

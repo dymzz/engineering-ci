@@ -5,13 +5,10 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 ## Ruff
 
 - **Status:** adopted
-- **Pin:** `0.16.10` — `config/pipeline.toml` (`[toolchain]`), `.dagger/pyproject.toml` (`dev`
-  group); target `py311` — `config/pipeline.toml` (`[arguments]`)
-- **Used by:** `src/engineering_ci/checks.py`, `check_operations.py`,
-  `.dagger/src/engineering_ci/main.py` — lint and format checks in local PR flow and CI
-- **Contract:** [local checks](../local-checks.md), [Pipeline configuration](../../configuration/pipeline.md)
-- **Verify:** `tests/test_checks.py`, `tests/test_dagger_checks.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+- **Pin:** `ruff==0.16.10` in root dev dependencies and `uv.lock`; standard settings in `pyproject.toml`.
+- **Used by:** native Dagger `lint` and `format-check`, and public consumer functions.
+- **Contract:** [local checks](../local-checks.md).
+- **Verify:** `dagger check --engineering-ci --check=lint --check=format-check`.
 
 ## Git CLI
 

@@ -171,12 +171,10 @@ Python 私有依赖和业务 API。具体只读诊断、已有 gh 桥和固定/�
 
 | 操作 | 命令 |
 | --- | --- |
-| 完整本地 PR 检查 | `uv run --locked engineering-ci checks pr --json .test-tools/checks/pr.json` |
-| Ruff | `uv run --locked engineering-ci checks ruff` |
-| Pytest 与 Coverage | `uv run --locked engineering-ci checks tests --coverage` |
-| 版本和锁文件 | `uv run --locked engineering-ci checks version lock` |
-| 查询本地结果 | `uv run --locked engineering-ci checks inspect .test-tools/checks/pr.json` |
-| 复用并补全当前检查 | `uv run --locked engineering-ci checks pr --reuse --json .test-tools/checks/pr.json` |
+| 完整本地 PR 检查 | `dagger check` |
+| Ruff | `dagger check --engineering-ci --check=lint --check=format-check` |
+| Pytest 与 Coverage | `dagger --env release check --engineering-ci --check=tests` |
+| 版本和锁文件 | `dagger check --engineering-ci --check=version --check=lock` |
 
 本地与 PR CI 复用同一份定义。原生 Windows 无法执行的 Bash 测试记为 skipped，完整 profile
 返回 3（incomplete），不能视为完整 PR 通过。环境、JSON 和有效性规则见

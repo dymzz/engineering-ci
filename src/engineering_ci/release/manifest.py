@@ -10,8 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..pipeline import PIPELINE
-from ..toolchain import dagger_cli_version, ruff_command
+from . import RELEASE_CONFIG
 from .registry import (
     ARTIFACT_NAMES,
     ARTIFACT_OUTPUTS,
@@ -28,6 +27,27 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TOOL_VERSION = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9.+-]*)$")
 # These are the actual v0.4.8 release jobs/steps, not a new execution plan.
+
+
+def dagger_cli_version(output):
+    """Read only the version from legacy or 1.0 CLI output."""
+    version = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?"
+    legacy = re.fullmatch(rf"dagger v({version})(?: [^\r\n]*)?", output.strip())
+    if legacy:
+        return legacy[1]
+    fields = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip().startswith("version:")
+    ]
+    match = (
+        re.fullmatch(rf"version:[ \t]+v({version})", fields[0])
+        if len(fields) == 1
+        else None
+    )
+    if not match:
+        raise ValueError("Dagger CLI version unavailable")
+    return match[1]
 
 
 def artifact_ids(needs):
@@ -103,7 +123,11 @@ def tools(scope):
                 }
             )
     for name in ("uv",) if scope == "core" else ("uv", "ruff"):
-        command = ["uv", "--version"] if name == "uv" else ruff_command("--version")
+        command = (
+            ["uv", "--version"]
+            if name == "uv"
+            else ["uv", "run", "--no-sync", "ruff", "--version"]
+        )
         output = subprocess.check_output(
             command, text=True, encoding="utf-8", timeout=60
         )
@@ -199,11 +223,8 @@ def run_context(api, repository, head, run_id, attempt, *, publication=False):
         or run["repository"]["full_name"] != repository
         or run["html_url"] != expected_url
         or run["path"].split("@")[0]
-        != f".github/workflows/{PIPELINE['delivery']['release']['workflow']}"
-        or (
-            publication
-            and run.get("head_branch") != PIPELINE["delivery"]["release"]["branch"]
-        )
+        != f".github/workflows/{RELEASE_CONFIG['workflow']}"
+        or (publication and run.get("head_branch") != RELEASE_CONFIG["branch"])
     ):
         raise ValueError("Workflow does not match verified release identity")
     return {
@@ -211,7 +232,7 @@ def run_context(api, repository, head, run_id, attempt, *, publication=False):
         "run_attempt": attempt,
         "run_url": expected_url,
         "event": "workflow_dispatch",
-        "path": f".github/workflows/{PIPELINE['delivery']['release']['workflow']}",
+        "path": f".github/workflows/{RELEASE_CONFIG['workflow']}",
     }
 
 
@@ -359,8 +380,7 @@ def validate(value, repository, tag, head, *, published=False):
         or workflow["run_url"]
         != f"https://github.com/{repository}/actions/runs/{workflow['run_id']}"
         or workflow["event"] != "workflow_dispatch"
-        or workflow["path"]
-        != f".github/workflows/{PIPELINE['delivery']['release']['workflow']}"
+        or workflow["path"] != f".github/workflows/{RELEASE_CONFIG['workflow']}"
         or value["mode"] not in {"validation", "publication"}
     ):
         raise ValueError("Manifest workflow identity mismatch")
