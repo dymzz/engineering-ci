@@ -66,7 +66,12 @@ jobs:
     with:
       # One report execution replaces only this exact check; all other checks run.
       dagger_environment: fixtures
-      dagger_check_filter: fixture-*
+      dagger_module: validation
+      dagger_checks: |
+        fixture-test
+        fixture-failure-report
+        fixture-quality-gates
+        fixture-python-matrix
       pytest_report_function: fixture-pytest-artifacts
       pytest_check: validation:fixture-test
       pytest_report_scenario: ${{ inputs.pytest_scenario }}

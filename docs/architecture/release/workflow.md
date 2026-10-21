@@ -26,7 +26,7 @@ PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
 标准 Ruff 配置和锁定开发工具在根 `pyproject.toml` / `uv.lock`；没有宿主 Profile、
 输入散列收据或另一套 Workflow YAML 校验器。三个既有 PR Job 名称保持不变。
 根仓 Coverage 由原生 `release` 环境开启，严格检查与报告引用相同 pytest 节点。
-发布 fixture 通过 `fixtures` 环境及 `fixture-*` 原生筛选显式执行；
+发布 fixture 通过 `fixtures` 环境、`validation` 模块及四个明确的 fixture 检查名显式执行；
 `validation:fixture-test` 由一次报告执行替代，质量/Matrix Check 仍实际执行。
 GitHub Actions 继续拥有 Job DAG、权限、Artifact 上传和发布条件。
 

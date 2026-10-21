@@ -17,8 +17,12 @@ on:
         description: 'Optional native Dagger environment'
         type: string
         default: ''
-      dagger_check_filter:
-        description: 'Optional native Dagger check name filter'
+      dagger_module:
+        description: 'Optional native Dagger module selector'
+        type: string
+        default: ''
+      dagger_checks:
+        description: 'Optional native Dagger check names, one exact name per line'
         type: string
         default: ''
       pytest_report_function:
@@ -183,7 +187,8 @@ jobs:
           DAGGER_ENGINE: container://dagger-engine
           ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
           DAGGER_ENVIRONMENT: ${{ inputs.dagger_environment }}
-          DAGGER_CHECK_FILTER: ${{ inputs.dagger_check_filter }}
+          DAGGER_MODULE: ${{ inputs.dagger_module }}
+          DAGGER_CHECKS: ${{ inputs.dagger_checks }}
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
           PYTEST_REPORT_SCENARIO: ${{ inputs.pytest_report_scenario }}
@@ -215,16 +220,26 @@ jobs:
             [[ "$DAGGER_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
             dagger_options+=(--env "$DAGGER_ENVIRONMENT")
           fi
-          if [[ -n "${DAGGER_CHECK_FILTER:-}" ]]; then
-            [[ "$DAGGER_CHECK_FILTER" =~ ^[a-z0-9*-]+$ ]] || exit 1
-            check_options+=(--check="$DAGGER_CHECK_FILTER")
+          if [[ -n "${DAGGER_MODULE:-}" ]]; then
+            [[ "$DAGGER_MODULE" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            check_options+=(--module "$DAGGER_MODULE")
           fi
+          while IFS= read -r check_name; do
+            [[ -n "$check_name" ]] || continue
+            [[ "$check_name" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            check_options+=(--check="$check_name")
+          done <<< "${DAGGER_CHECKS:-}"
           if [[ -z "$PYTEST_REPORT_FUNCTION" ]]; then
             if [[ -n "$PYTEST_CHECK" || -n "$PYTEST_REPORT_SCENARIO" ]]; then
               echo "::error::pytest report settings require pytest_report_function"
               exit 1
             fi
-            timed check-list dagger "${dagger_options[@]}" check "${check_options[@]}" -l --format cli
+            timed check-list dagger "${dagger_options[@]}" check "${check_options[@]}" -l --format cli > "$RUNNER_TEMP/dagger-checks.txt"
+            cat "$RUNNER_TEMP/dagger-checks.txt"
+            if [[ ! -s "$RUNNER_TEMP/dagger-checks.txt" ]]; then
+              echo "::error::No native Dagger Checks matched the requested selectors"
+              exit 1
+            fi
             timed all-checks dagger "${dagger_options[@]}" check "${check_options[@]}"
           else
             if [[ ! "$PYTEST_REPORT_FUNCTION" =~ ^[a-z][a-z0-9-]*$ || -z "$PYTEST_CHECK" ]]; then

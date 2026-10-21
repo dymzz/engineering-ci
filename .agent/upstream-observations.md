@@ -105,5 +105,5 @@
 - Status: observed integration behavior; no upstream patch.
 - Seen: 2026-10-21, ECI-SLIM-02.
 - Evidence: environment module settings and local module aliases work; environment `check.skip` is rejected as an unknown field. A base module's skipped Checks remain excluded even when explicitly selected.
-- Integration: keep root fixture exclusions on engineering-ci, use a native fixtures environment with a validation alias and explicit fixture filter. `workspace config` array values use comma-separated strings; JSON array text is treated as invalid filter text.
+- Integration: keep root fixture exclusions on engineering-ci, use a native fixtures environment with a validation alias, `--module validation` and repeated exact `--check=NAME` flags. Wildcard and comma-separated name strings returned no matches in beta.16; an unscoped filter targets the entrypoint instead of the alias. `workspace config` array values use comma-separated strings; JSON array text is treated as invalid filter text.
 - Assessment: version-specific CLI/configuration constraints; use actual beta.16 discovery instead of assuming current documentation's newer syntax.
