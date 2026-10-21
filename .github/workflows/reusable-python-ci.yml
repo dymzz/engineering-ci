@@ -154,10 +154,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker pull "registry.dagger.io/engine:v$DAGGER_VERSION"
           docker volume create dagger-engine-data
 
-          docker run -d \
+          docker run --pull=missing -d \
             --name dagger-engine \
             --privileged \
             -v dagger-engine-data:/var/lib/dagger \
