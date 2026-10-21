@@ -17,8 +17,8 @@ from ..release.request import (
 from ..release.version import normalize
 
 
-def continuation(repo, version, run_id):
-    return f"uv run --locked python scripts/release.py wait --repo {repo} --version v{version} --run {run_id}"
+def continuation(repo, version, run_id, command="wait"):
+    return f"uv run --locked python scripts/release.py {command} --repo {repo} --version v{version} --run {run_id}"
 
 
 def inspect(api, repo, version, run_id):
@@ -111,7 +111,9 @@ def main(argv=None):
             "id": args.run,
             "url": f"https://github.com/{repo}/actions/runs/{args.run}",
         }
-        value["next_commands"] = [continuation(repo, args.version, args.run)]
+        value["next_commands"] = [
+            f"gh run view {args.run} --repo {repo} --json databaseId,headSha,status,conclusion,url"
+        ]
         # Never watch or associate a Run until version/workflow/SHA identity is verified.
         identity_run = verification.run_target(
             api, repo, args.run, args.version, args.ref
@@ -128,6 +130,7 @@ def main(argv=None):
             status=live["status"],
             conclusion=live.get("conclusion"),
         )
+        value["next_commands"] = [continuation(repo, args.version, args.run)]
         if args.command == "wait" or args.wait:
             watch_code = api.watch(args.run, timeout=args.timeout)
             try:
@@ -153,6 +156,9 @@ def main(argv=None):
                 value.update(
                     result="failed",
                     reason="gh_run_watch_failed; use the same Run API if checks scope is unavailable",
+                    next_commands=[
+                        continuation(repo, args.version, args.run, "status")
+                    ],
                 )
                 code = watch_code
             else:

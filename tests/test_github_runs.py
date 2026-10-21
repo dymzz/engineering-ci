@@ -331,6 +331,7 @@ def test_wrong_requested_sha_is_rejected_before_watch(monkeypatch, capsys):
     )
     value = json.loads(capsys.readouterr().out)
     assert "differs from requested commit" in value["reason"]
+    assert value["next_commands"][0].startswith("gh run view 123 --repo ")
 
 
 @pytest.mark.parametrize("module", [release, download])
@@ -350,6 +351,8 @@ def test_watch_error_survives_failed_followup_api(module, monkeypatch, capsys):
     assert module.main(args) == 17
     value = json.loads(capsys.readouterr().out)
     assert "123" in str(value["next_commands"]) and "SENSITIVE" not in str(value)
+    if module is release:
+        assert "release.py status" in value["next_commands"][0]
 
 
 def test_attempt_change_during_wait_cannot_be_validated(monkeypatch, capsys):
