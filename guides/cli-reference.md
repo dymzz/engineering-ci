@@ -20,7 +20,7 @@
 
 ## Release 参数与结果
 
-所有操作必须给出 `--version`，接受 `0.6.8` 或 `v0.6.8`，不推测版本。
+所有操作必须给出 `--version`，接受 `0.7.0` 或 `v0.7.0`，不推测版本。
 `--repo OWNER/REPO` 可选；省略时由 `gh repo view` 使用当前仓库上下文识别，没有自建缓存。
 `status / verify / wait` 必须显式给出 `--run`；`publish / validate --run` 只附着该已有 Run，不再 POST。
 `validate` 必须给 `--ref`；`publish` 只接受 main 和 pass 场景。
@@ -69,7 +69,7 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 | 功能 | 调用 |
 | --- | --- |
 | 原生检查 | `dagger check`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
-| 版本 | `uv run --locked engineering-ci version show` / `check` / `set v0.6.8` |
+| 版本 | `uv run --locked engineering-ci version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |
 | 依赖安全 | `uv run --locked python -m engineering_ci.tools.security ...` |
 | 性能采样 | `uv run --locked python -m engineering_ci.tools.performance ...` |

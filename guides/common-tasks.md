@@ -6,14 +6,14 @@
 ## 开发、审查与合并
 
 先确认当前分支、未提交内容与版本；版本必须与功能代码进入同一 PR。
-例如准备 v0.6.8：
+例如准备 v0.7.0：
 
 ```powershell
 git status --short --branch
 git diff
 uv run --locked engineering-ci version show
 # 仅在本轮需要准备该版本时执行。
-uv run --locked engineering-ci version set v0.6.8
+uv run --locked engineering-ci version set v0.7.0
 dagger check
 ```
 
@@ -64,7 +64,7 @@ main 已包含相应版本且完成 Release Readiness 后，由获授权的操�
 下面命令会触发真正的 Release Workflow；它不提交、不 Push、不创建或合并 PR：
 
 ```powershell
-uv run --locked python scripts/release.py publish --repo dymzz/engineering-ci --version v0.6.8 --wait
+uv run --locked python scripts/release.py publish --repo dymzz/engineering-ci --version v0.7.0 --wait
 ```
 
 GitHub 在同一 Run 完成完整验收、生成 Manifest、准备 Draft、读回验证 Asset，再正式发布。
@@ -81,7 +81,7 @@ GitHub 在同一 Run 完成完整验收、生成 Manifest、准备 Draft、读�
 只有需要单独验证候选分支时使用；BRANCH 必须替换为确实包含该版本的远端分支：
 
 ```sh
-uv run --locked python scripts/release.py validate --repo dymzz/engineering-ci --version v0.6.8 --ref BRANCH --wait
+uv run --locked python scripts/release.py validate --repo dymzz/engineering-ci --version v0.7.0 --ref BRANCH --wait
 ```
 
 它只运行非发布模式；`validated` 与 `published` 分别表示验证通过和正式发布通过。

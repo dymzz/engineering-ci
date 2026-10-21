@@ -1,6 +1,6 @@
 [project]
 name = "engineering-ci"
-version = "0.6.8"
+version = "0.7.0"
 description = "Reusable Python CI/CD checks and release tooling"
 readme = "README.md"
 authors = [

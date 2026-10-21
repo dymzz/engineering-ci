@@ -42,6 +42,6 @@ Matrix 当前没有这个新增参数，不能暗示已经支持同样的私有�
 Git 安全策略是显式启用的已知 Commit 漏洞查询，不是私有源码审计。
 固定版本及 Dagger beta 本身的已知限制见[配置](../configuration/dagger.md)。
 
-旧 execution Python API、下载 Backend 和本地 Git/PR 自动交付接口已删除，不提供兼容层。
+v0.7.0 删除旧 execution Python API、下载 Backend 和本地 Git/PR 自动交付接口，不提供兼容层。
 一般下载使用原生 gh；跨 Run 的版本、Tag、SHA、attempt 与 Manifest 证据核验继续由发布层负责。
 本轮候选身份、实际消费验证与 C1–C8 结论保存在 PR 交付记录，缺少证据的路径明确记为 NOT VERIFIED。
