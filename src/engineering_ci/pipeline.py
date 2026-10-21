@@ -242,28 +242,13 @@ def load(path: Path | None = None) -> dict:
 
 
 def load_root(root=None) -> dict | None:
-    """Load the policy for one Provider root, or None when that root has none.
-
-    An installed package has no config/pipeline.toml beside it, so import must not
-    require a checkout. Missing configuration is a state, not an error: the Provider
-    binds a root before any check resolves the policy.
-    """
+    """Read checkout configuration when available; package import needs no checkout."""
     path = (ROOT if root is None else Path(root)) / "config/pipeline.toml"
     return load(path) if path.is_file() else None
 
 
 def bind(root=None) -> dict | None:
-    """Publish this Provider root's policy when it provides one.
-
-    A root without config/pipeline.toml keeps the current binding rather than clearing
-    it: `execute(root=...)` also names a synthetic tree in tests and in local runs, and
-    that must not erase the checkout policy. Binding is per process; the domain
-    Provider runs one root per invocation and the local CLI runs one checkout.
-
-    Updates the existing PIPELINE object in place so early-bound references stay
-    valid (release.RELEASE_CONFIG = PIPELINE["delivery"]["release"]; is identity matters
-    inside the existing release pipeline).
-    """
+    """Refresh checkout settings while preserving imported table references."""
     global PIPELINE
 
     found = load_root(root)

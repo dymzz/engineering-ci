@@ -6,25 +6,10 @@ import argparse
 import sys
 
 
-def require_harness():
-    """Report optional Harness installation before importing any of its commands."""
-    try:
-        import vesryn  # noqa: F401
-    except ModuleNotFoundError as error:
-        if error.name != "vesryn":
-            raise
-        print(
-            "Harness is unavailable; install it with uv sync --locked --extra harness",
-            file=sys.stderr,
-        )
-        return False
-    return True
-
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
-        description="Engineering CI: local checks, Release Workflow, Run downloads, trace archive and offline mining"
+        description="Engineering CI: local checks, Release Workflow and Run downloads"
     )
     parser.add_argument(
         "command",
@@ -33,9 +18,6 @@ def main(argv=None):
             "release",
             "download",
             "version",
-            "trace",
-            "mine",
-            "workflow",
         ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -43,31 +25,12 @@ def main(argv=None):
         return 0
     namespace = parser.parse_args(argv[:1])
     args = argv[1:]
-    needs_harness = namespace.command in {"mine", "workflow"} or (
-        namespace.command == "checks"
-        and any(arg == "--binding" or arg.startswith("--binding=") for arg in args)
-    )
-    if namespace.command == "trace":
-        from .trace import needs_harness as trace_needs_harness
-
-        needs_harness = trace_needs_harness(args)
-    if needs_harness and not require_harness():
-        return 2
     if namespace.command == "checks":
-        if any(arg == "--binding" or arg.startswith("--binding=") for arg in args):
-            from .checks_binding import main as invoke
-        else:
-            from ..checks import main as invoke
+        from ..checks import main as invoke
     elif namespace.command == "release":
         from .release import main as invoke
     elif namespace.command == "version":
         from ..release.version import main as invoke
-    elif namespace.command == "trace":
-        from .trace import main as invoke
-    elif namespace.command == "mine":
-        from .mine import main as invoke
-    elif namespace.command == "workflow":
-        from .workflow import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

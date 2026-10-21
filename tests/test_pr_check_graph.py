@@ -8,12 +8,8 @@ import pytest
 from engineering_ci import checks, checks_container
 
 
-def test_environment_probe_uses_provider_imports_and_consumer_inputs(
-    tmp_path, monkeypatch
-):
-    provider = tmp_path / "provider"
-    consumer = tmp_path / "consumer"
-    monkeypatch.setattr(checks, "ROOT", provider)
+def test_environment_probe_uses_checkout_inputs(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
     seen = []
     monkeypatch.setattr(
         checks, "execution_environment", lambda root, env: seen.append(root) or {}
@@ -25,10 +21,10 @@ def test_environment_probe_uses_provider_imports_and_consumer_inputs(
     monkeypatch.setattr(
         checks, "snapshot", lambda root, *args, **kwargs: ({"target": str(root)}, None)
     )
-    result = checks_container.prepare(consumer, ["pytest"], {})
-    assert seen == [provider]
-    assert result["source_inputs"]["pytest"] == {"target": str(consumer)}
-    assert result["tools"]["pytest"] == {"target": str(consumer)}
+    result = checks_container.prepare(checkout, ["pytest"], {})
+    assert seen == [checkout]
+    assert result["source_inputs"]["pytest"] == {"target": str(checkout)}
+    assert result["tools"]["pytest"] == {"target": str(checkout)}
 
 
 @pytest.fixture

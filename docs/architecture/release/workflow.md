@@ -55,11 +55,11 @@ Python 3.12、3.13、3.14 及既有负向场景。它们验证模块能力，不
 真实项目安全检查独立于锁一致性：
 
 ```sh
-uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --git-policy config/dependency-security.toml --out .test-tools/security --cache .test-tools/security-bin
+uv run --locked python -m engineering_ci.tools.security --project . --mode enforce --public-index https://mirrors.aliyun.com/pypi/simple --out .test-tools/security --cache .test-tools/security-bin
 ```
 
 发布扫描真实根 uv.lock 的公共 PyPI 锁定依赖（含 dev / 传递依赖），
-并按 config/dependency-security.toml 查询明确批准的 Git 仓库与完整 Commit；
+不再安装或扫描已移除的 Vesryn 系列 Git 依赖；
 未批准来源、身份不一致或查询覆盖缺失仍阻断发布。来源完整性与已知漏洞查询的区别见
 [依赖安全契约](../dependency-security.md)。不使用 dependency-security fixture。
 Aliyun 显式声明为公共 PyPI 镜像。

@@ -15,35 +15,17 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 
 ## Git CLI
 
-- **Status:** adopted
-- **Pin:** unpinned — host / runner `git`
-- **Used by:** `.dagger/src/engineering_ci/pr_checks.py`, `src/engineering_ci/dagger_checks.py`,
-  `src/engineering_ci/release/publishing.py`, `src/engineering_ci/tools/consumer.py` for
-  head commit inspection, diff inspection and release tagging;
-  `src/engineering_ci/tools/bootstrap.py` — consumer initialization, explicit remote connection,
-  seed push and SHA-guarded main replacement with an immutable Git backup ref;
-  `src/engineering_ci/tools/bootstrap_flow.py` — confirmed native history merge, staging,
-  commit and normal feature-branch Push after consumer checks
-- **Contract:** [local checks](../local-checks.md), [release workflow](../release/workflow.md),
-  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
-- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`,
-  `tests/test_repository_bootstrap.py`, `tests/test_bootstrap_flow.py` (real temporary Git repositories)
-- **Verified:** 2026-10-15 @ `04388dbdcf7a`
+- **Status:** adopted; host / runner Git is not separately pinned.
+- **Used by:** `release/` and `tools/consumer.py` for commit/PR delivery, source inspection and release tagging.
+- **Contract:** [release workflow](../release/workflow.md), [consumer usage](../../../guides/new-repository.md).
+- **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`.
 
 ## GitHub CLI (gh)
 
-- **Status:** adopted
-- **Pin:** unpinned — host / runner `gh`
-- **Used by:** `src/engineering_ci/github_cli.py`, `cli/download.py`, `cli/release.py` for
-  GitHub REST API access, release asset uploads and workflow artifact downloads;
-  `src/engineering_ci/tools/bootstrap.py` — private consumer creation, existing repository identity
-  and effective permission checks; `bootstrap_flow.py` — query/recover the exact feature PR,
-  explicitly create a Draft and read back its actual head/base, without merging
-- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md),
-  [consumer bootstrap](../../../guides/new-repository.md#交互式建仓入口)
-- **Verify:** `tests/test_ghwf_cli.py`, `tests/test_repository_bootstrap.py`,
-  `tests/test_bootstrap_flow.py` (substituted GitHub calls)
-- **Verified:** 2026-10-15 @ `04388dbdcf7a`
+- **Status:** adopted; host / runner gh is not separately pinned.
+- **Used by:** `github_cli.py`, `cli/download.py`, `cli/release.py` for API access, workflow requests and artifacts.
+- **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md).
+- **Verify:** `tests/test_ghwf_cli.py`, `tests/test_unified_cli.py` use substituted GitHub calls.
 
 ## aria2c
 

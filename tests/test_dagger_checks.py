@@ -57,91 +57,6 @@ def source(tmp_path, monkeypatch):
     return tmp_path
 
 
-def private_source(
-    root, url="https://github.com/dymzz/vesryn.git", rev="a" * 40, name="vesryn"
-):
-    with (root / "pyproject.toml").open("a", encoding="utf-8") as stream:
-        stream.write(
-            f'\n[tool.uv.sources]\n{name} = {{ git = "{url}", rev = "{rev}" }}\n'
-        )
-
-
-def test_private_install_uses_secret_reference_without_serializing_credential(source):
-    private_source(source)
-    environ = {}
-    calls = []
-
-    def run(args, **kwargs):
-        calls.append(args)
-        assert kwargs["capture_output"] and kwargs["timeout"] == 30
-        return subprocess.CompletedProcess(args, 0, "private-test-credential\n", "")
-
-    options = dagger_checks.git_secret_options(
-        source, ["pytest"], run, lambda name: "gh", environ
-    )
-    assert calls == [["gh", "auth", "token", "--hostname", "github.com"]]
-    assert options == ["--git-token", "env:ENGINEERING_CI_READ_TOKEN"]
-    assert environ["ENGINEERING_CI_READ_TOKEN"] == "private-test-credential"
-    assert "private-test-credential" not in json.dumps(options)
-    assert checks.environment_identity(environ) == checks.environment_identity({})
-    assert (
-        dagger_checks.git_secret_options(
-            source, ["pytest"], run, lambda name: "gh", environ
-        )
-        == options
-    )
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize(
-    "url,rev",
-    [
-        ("https://example.com/vesryn.git", "a" * 40),
-        ("https://github.com/dymzz/vesryn.git", "main"),
-    ],
-)
-def test_private_install_refuses_unapproved_or_unpinned_source(source, url, rev):
-    private_source(source, url, rev)
-    with pytest.raises(checks.PreconditionError, match="approved repository"):
-        dagger_checks.git_secret_options(
-            source,
-            ["pytest"],
-            lambda *args: pytest.fail("No credential lookup"),
-            lambda name: "gh",
-            {},
-        )
-
-
-def test_non_test_profile_does_not_read_or_forward_credentials(source):
-    private_source(source)
-    assert (
-        dagger_checks.git_secret_options(
-            source,
-            ["version"],
-            lambda *args: pytest.fail("No credential lookup"),
-            lambda name: "gh",
-            {"ENGINEERING_CI_READ_TOKEN": "private-test-credential"},
-        )
-        == []
-    )
-
-
-def test_credential_failure_does_not_expose_auth_output(source, capsys):
-    private_source(source)
-
-    def run(args, **kwargs):
-        return subprocess.CompletedProcess(
-            args, 1, "sensitive-output", "sensitive-error"
-        )
-
-    with pytest.raises(
-        checks.PreconditionError, match="Existing gh authentication"
-    ) as error:
-        dagger_checks.git_secret_options(source, ["pytest"], run, lambda name: "gh", {})
-    assert "sensitive" not in str(error.value)
-    assert "sensitive" not in str(capsys.readouterr())
-
-
 class Dagger:
     def __init__(self, root, monkeypatch):
         self.root, self.monkeypatch = root, monkeypatch
@@ -195,7 +110,6 @@ class Dagger:
                 args, 0, json.dumps(self.environment(names)), ""
             )
         assert "repository-check-artifacts" in args
-        assert args[args.index("--capability") + 1] == "."
         self.exports.append(names)
         if self.fail_export:
             return subprocess.CompletedProcess(args, 1)
@@ -598,28 +512,3 @@ def test_empty_dagger_request_is_rejected_before_any_operation(backend):
             [], root=backend.root, run=backend.run, which=backend.which
         )
     assert not backend.exports and backend.probes == 0
-
-
-@pytest.mark.parametrize("rev", ["b" * 40, "main"])
-@pytest.mark.parametrize("name", ["vesryn-log", "vesryn-tool-runtime"])
-def test_component_private_source_is_validated_before_credential_binding(
-    source, rev, name
-):
-    private_source(source, f"https://github.com/dymzz/{name}.git", rev, name)
-    environ = {"ENGINEERING_CI_READ_TOKEN": "private-test-credential"}
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("The existing credential needs no lookup")
-
-    if rev == "main":
-        with pytest.raises(checks.PreconditionError, match="pinned commit"):
-            dagger_checks.git_secret_options(
-                source, ["pytest"], forbidden, forbidden, environ
-            )
-    else:
-        assert dagger_checks.git_secret_options(
-            source, ["pytest"], forbidden, forbidden, environ
-        ) == [
-            "--git-token",
-            "env:ENGINEERING_CI_READ_TOKEN",
-        ]

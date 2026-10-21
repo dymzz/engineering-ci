@@ -44,18 +44,24 @@ def test_current_workflows_and_yaml_boolean_rules(workflows):
     mod.validate(root=workflows)
 
 
-def test_release_forwards_private_install_secret_and_keeps_base_operations_independent(
+def test_core_ci_and_release_do_not_require_retired_private_package_credentials(
     workflows,
 ):
     ci = mod._workflow(workflows / ".github/workflows/ci.yml")
     release = mod._workflow(workflows / ".github/workflows/release.yml")
+    assert "secrets" not in ci["on"]["workflow_call"]
+    assert "secrets" not in release["jobs"]["core-tests"]
     assert (
-        ci["on"]["workflow_call"]["secrets"]["ENGINEERING_CI_READ_TOKEN"]["required"]
-        is True
+        "dependency_security_git_policy" not in release["jobs"]["complete-ci"]["with"]
     )
-    assert release["jobs"]["core-tests"]["secrets"] == {
-        "ENGINEERING_CI_READ_TOKEN": "${{ secrets.ENGINEERING_CI_READ_TOKEN }}"
-    }
+    assert (
+        release["jobs"]["complete-ci"]["with"]["dependency_security_mode"] == "enforce"
+    )
+    for workflow in (ci, release):
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                assert "ENGINEERING_CI_READ_TOKEN" not in step.get("env", {})
+                assert "auth setup-git" not in step.get("run", "")
     for job in ("candidate", "verified", "publish"):
         invocation = next(
             step["run"]

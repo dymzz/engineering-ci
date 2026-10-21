@@ -46,7 +46,7 @@ Git、Git LFS、Docker / Dagger 将来可按此边界扩展；本轮没有空壳
 ## Python 组件消费
 
 普通 Python >=3.14 环境可以安装固定版本包，直接导入 `engineering_ci.execution`
-公开的四个组件；安装方式见[消费者接入](../../../guides/new-repository.md#选择公共组件与固定版本)。
+公开的四个组件；安装方式见[消费者接入](../../../guides/new-repository.md#环境与固定引用)。
 模型位于 `engineering_ci.execution.models`，不依赖工作区配置、Vesryn 或 PostgreSQL。
 
 ```python

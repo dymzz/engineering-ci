@@ -46,8 +46,7 @@ The optional Secret `ENGINEERING_CI_READ_TOKEN` permits reading the private
 module/helper and caller-approved Git dependencies. Configure minimal Contents
 read access to the required repositories; it does not grant platform permission
 to reuse a private Workflow. Enable the appropriate GitHub Actions access for
-the caller separately. No database or optional Harness is required for ordinary
-consumer checks. Dagger Secret forwarding remains explicit in the caller module;
+the caller separately. Dagger Secret forwarding remains explicit in the caller module;
 merely defining a host variable does not pass it to test containers.
 
 Outputs `pytest_artifact_id` and `security_artifact_id` are native uploaded

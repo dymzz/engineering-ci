@@ -27,65 +27,6 @@ FACT_FIELDS = (
     "optional_tests",
 )
 
-GIT_SECRET_ENV = "ENGINEERING_CI_READ_TOKEN"
-
-
-def git_secret_options(root, names, run, which, environ):
-    """Supply an in-memory credential only for the pinned, approved private source."""
-    if "pytest" not in names:
-        return []
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
-    approved = {
-        "vesryn": "https://github.com/dymzz/vesryn.git",
-        "vesryn-log": "https://github.com/dymzz/vesryn-log.git",
-        "vesryn-tool-runtime": "https://github.com/dymzz/vesryn-tool-runtime.git",
-    }
-    selected = {name: sources[name] for name in approved if name in sources}
-    if not selected:
-        return []
-    for name, source in selected.items():
-        if (
-            not isinstance(source, dict)
-            or source.get("git") != approved[name]
-            or not re.fullmatch(r"[0-9a-f]{40}", str(source.get("rev", "")))
-        ):
-            raise checks.PreconditionError(
-                "environment_error",
-                "Private dependency source must use the approved repository and a pinned commit",
-            )
-    if not environ.get(GIT_SECRET_ENV):
-        executable = which("gh")
-        if not executable:
-            raise checks.PreconditionError(
-                "missing_tool",
-                "Private dependency installation requires gh or ENGINEERING_CI_READ_TOKEN",
-            )
-        try:
-            result = run(
-                [executable, "auth", "token", "--hostname", "github.com"],
-                cwd=root,
-                env=environ,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            raise checks.PreconditionError(
-                "environment_error",
-                "Unable to read the existing gh credential for private dependency installation",
-            ) from None
-        token = result.stdout.strip() if result.returncode == 0 else ""
-        if not token or any(character.isspace() for character in token):
-            raise checks.PreconditionError(
-                "environment_error",
-                "Existing gh authentication cannot supply the private dependency credential",
-            )
-        environ[GIT_SECRET_ENV] = token
-    return ["--git-token", f"env:{GIT_SECRET_ENV}"]
-
 
 def request(selectors, coverage, junit):
     checks.selected(selectors)
@@ -190,12 +131,7 @@ def engine_version(root):
 
 
 def prepare(root, target, names, parameters, run, which, environ):
-    """Probe the actual Engine, prepared container and locked tools; no test execution.
-
-    root is the Provider checkout that loads the Dagger module; target is the tree the
-    module mounts and checks. The CWD stays the Provider so the module resolves, while
-    the function's source argument carries the consumer directory.
-    """
+    """Probe this checkout's Engine, container and locked tools without running tests."""
     executable = which("dagger")
     if not executable or not Path(executable).is_file():
         raise checks.PreconditionError(
@@ -228,17 +164,12 @@ def prepare(root, target, names, parameters, run, which, environ):
     options = [
         "--source",
         "." if target == root else str(target),
-        # The module's own checkout stays the CWD, so it also supplies the Pipeline
-        # policy and the check code. The consumer never carries a copy of them.
-        "--capability",
-        ".",
         "--dagger-lock",
         "dagger.lock",
         "--request",
         json.dumps(request(names, **parameters)),
         "--executable-paths",
         json.dumps(modes),
-        *git_secret_options(target, names, run, which, environ),
     ]
     result = invoke(
         root,
@@ -246,7 +177,6 @@ def prepare(root, target, names, parameters, run, which, environ):
             executable,
             "api",
             "call",
-            *module_selection(root),
             "repository-check-environment",
             *options,
         ],
@@ -278,12 +208,7 @@ def prepare(root, target, names, parameters, run, which, environ):
     return executable, options, executor, remote
 
 
-def module_selection(root):
-    """An installed bundle has no Git workspace to discover its entrypoint."""
-    return ["--load-module", "."] if (root / "provider-assets.json").is_file() else []
-
-
-def identity(target, name, parameters, executor, remote, *, provider=None):
+def identity(target, name, parameters, executor, remote):
     inputs, observations = checks.snapshot(target, name, omit=OMITTED_INPUTS)
     portable = checks.snapshot(target, name, portable=True, omit=OMITTED_INPUTS)[0]
     if portable != remote["source_inputs"][name]:
@@ -312,13 +237,6 @@ def identity(target, name, parameters, executor, remote, *, provider=None):
         "environment": remote["environment"],
         "executor": executor,
     }
-    if provider is not None and Path(provider).resolve() != Path(target).resolve():
-        # The container mounted the consumer target; keep the Provider that supplied
-        # the module and policy explicit instead of collapsing both into one root.
-        value["provider"] = {
-            "root": str(Path(provider).resolve()),
-            "policy_sha256": checks.digest(checks.PIPELINE),
-        }
     value["sha256"] = checks.digest(value)
     return value, observations
 
@@ -336,7 +254,7 @@ def evidence_file(path, owner):
     }
 
 
-def read_evidence(entry, owner, capability=None):
+def read_evidence(entry, owner, parser_root=None):
     """Validate immutable exported facts and reports before admitting a receipt."""
     evidence = entry["evidence"]
     for item in evidence.values():
@@ -363,7 +281,7 @@ def read_evidence(entry, owner, capability=None):
         raise ValueError("Container checks did not execute on Linux")
     if entry["name"] == "pytest" and entry["exit_code"] == 0:
         junit = evidence["core-junit.xml"]["path"]
-        if checks.pytest_counts(owner, junit, 0, capability) != entry.get("counts"):
+        if checks.pytest_counts(owner, junit, 0, parser_root) != entry.get("counts"):
             raise ValueError("JUnit does not match the container execution counts")
     if (
         entry["identity"]["parameters"]["coverage"]
@@ -374,7 +292,7 @@ def read_evidence(entry, owner, capability=None):
         raise ValueError("Requested Coverage evidence is missing")
 
 
-def reusable(entry, now, owner, capability=None):
+def reusable(entry, now, owner, parser_root=None):
     if (
         not entry
         or entry.get("identity") != now
@@ -392,7 +310,7 @@ def reusable(entry, now, owner, capability=None):
     ):
         return False
     try:
-        read_evidence(entry, owner, capability)
+        read_evidence(entry, owner, parser_root)
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         return False
     return True
@@ -402,7 +320,6 @@ def execute(
     selectors,
     *,
     root=checks.ROOT,
-    target=None,
     output_root=None,
     coverage=False,
     junit="core-junit.xml",
@@ -412,12 +329,9 @@ def execute(
     environ=None,
     reuse=False,
 ):
-    # root loads the Provider module; target is mounted and checked; owner receives
-    # every artifact this run produces. One directory unless a caller separates them.
     root = root.resolve()
     checks.require_policy()
-    target = Path(target).resolve() if target is not None else root
-    provider = root if target != root else None
+    target = root
     owner = Path(output_root).resolve() if output_root is not None else target
     names = checks.selected(selectors)
     parameters = {"coverage": coverage, "junit": junit}
@@ -468,10 +382,7 @@ def execute(
         )
         report.update(executor=executor, environment=remote["environment"])
         identities = {
-            name: identity(
-                target, name, parameters, executor, remote, provider=provider
-            )
-            for name in names
+            name: identity(target, name, parameters, executor, remote) for name in names
         }
         if any(
             initial[name] != (identities[name][0]["inputs"], identities[name][1])
@@ -492,7 +403,7 @@ def execute(
         for entry in report["checks"]:
             name = entry["name"]
             now = identities[name][0]
-            if reusable(previous.get(name), now, owner, provider or root):
+            if reusable(previous.get(name), now, owner, root):
                 entry.update(
                     copy.deepcopy(previous[name]),
                     reused=True,
@@ -524,19 +435,15 @@ def execute(
                     executable,
                     "api",
                     "call",
-                    *module_selection(root),
                     "repository-check-artifacts",
                     "--source",
                     "." if target == root else str(target),
-                    "--capability",
-                    ".",
                     "--dagger-lock",
                     "dagger.lock",
                     "--request",
                     json.dumps(request(pending, **parameters)),
                     "--executable-paths",
                     json.dumps(modes),
-                    *git_secret_options(target, pending, run, which, environ),
                     "export",
                     "--path",
                     str(exported),
@@ -627,7 +534,7 @@ def execute(
                         container_identity=child["identity"],
                         evidence=evidence,
                     )
-                    read_evidence(entry, owner, provider or root)
+                    read_evidence(entry, owner, root)
                     if (
                         actual["source_inputs"][entry["name"]]
                         != remote["source_inputs"][entry["name"]]
@@ -728,20 +635,13 @@ def inspect(
     saved,
     *,
     root=checks.ROOT,
-    target=None,
     output_root=None,
     run=subprocess.run,
     which=shutil.which,
     environ=None,
 ):
     root = root.resolve()
-    # A saved report records the exact tree it checked and the Provider that selected
-    # the policy. Reuse those roots so an inspection re-verifies the same separation
-    # instead of silently assuming this checkout was the target.
-    recorded = saved["checks"][0].get("identity") or {} if saved["checks"] else {}
-    target = Path(target or recorded.get("root") or root).resolve()
-    provider = Path(recorded.get("provider", {}).get("root") or root).resolve()
-    provider = provider if provider != target else None
+    target = root
     owner = Path(output_root).resolve() if output_root is not None else target
     environ = checks.execution_environment(root, environ)
     result = {
@@ -800,9 +700,8 @@ def inspect(
                     entry["identity"]["parameters"],
                     executor,
                     remote,
-                    provider=provider,
                 )
-                read_evidence(entry, owner, provider or root)
+                read_evidence(entry, owner, root)
                 stable = (
                     checks.snapshot(target, entry["name"], omit=OMITTED_INPUTS)[1]
                     == observations
@@ -811,7 +710,7 @@ def inspect(
                     "current" if now == entry["identity"] and stable else "stale"
                 )
                 current["passed_for_current_input"] = (
-                    reusable(entry, now, owner, provider or root)
+                    reusable(entry, now, owner, root)
                     and entry["status"] == "passed"
                     and stable
                 )

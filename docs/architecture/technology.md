@@ -22,29 +22,18 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | transitions | adopted | runtime | [python](integrations/python.md#transitions) |
 | filelock | adopted | runtime | [python](integrations/python.md#filelock) |
 | PyYAML | adopted | runtime | [python](integrations/python.md#pyyaml) |
-| jsonschema | adopted | runtime | [python](integrations/python.md#jsonschema) |
 | pytest | adopted | development, CI | [python](integrations/python.md#pytest) |
 | pytest-cov | adopted | development, CI | [python](integrations/python.md#pytest-cov) |
-| Vesryn | adopted | optional harness dependency | [python](integrations/python.md#vesryn) |
-| vesryn-log | adopted | dev / trace event recording and archive | [tracing](integrations/tracing.md#vesryn-log) |
 | Dagger engine and module | adopted | CI, PR check graph, container execution | [dagger](integrations/dagger.md#dagger-engine-and-module) |
 | Dagger Python SDK and packaging | adopted | CI module runtime | [dagger](integrations/dagger.md#dagger-python-sdk-and-packaging) |
 | Docker | adopted | container runtime | [dagger](integrations/dagger.md#docker) |
 | GitHub Actions | adopted | CI, release workflow | [github-actions](integrations/github-actions.md#github-actions) |
 | Reusable Python CI Workflow | adopted | CI orchestrator | [github-actions](integrations/github-actions.md#reusable-python-ci-workflow) |
-| PostgreSQL | adopted | external service | [tracing](integrations/tracing.md#postgresql) |
-| Psycopg 3 | adopted | dev / trace extra | [tracing](integrations/tracing.md#psycopg-3) |
-| CloudEvents SDK | adopted | dev / trace extra | [tracing](integrations/tracing.md#cloudevents-sdk) |
-| OpenTelemetry SDK and OTLP Exporter | adopted | dev / trace / telemetry | [tracing](integrations/tracing.md#opentelemetry-sdk-and-otlp-exporter) |
-| Jaeger and OTel Collector | adopted | telemetry integration test | [tracing](integrations/tracing.md#jaeger-and-otel-collector) |
-| PM4Py | removed | — | [tracing](integrations/tracing.md#pm4py) |
-| Propel | removed | — | [tracing](integrations/tracing.md#propel) |
 | Ruff | adopted | development, CI | [tools](integrations/tools.md#ruff) |
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
 | aria2c | adopted | optional download backend | [tools](integrations/tools.md#aria2c) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
-| Contextual Bandit / optimization loop | planned | — | [repository overview](repository-overview.md) — future task scope |
 
 ## Discrepancies
 

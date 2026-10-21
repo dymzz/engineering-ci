@@ -21,7 +21,6 @@ from pathlib import Path
 from . import pipeline, toolchain
 from ._paths import ROOT
 from .check_operations import command as operation_command
-from .task_observation import task_entry
 
 
 def _tables(value):
@@ -91,33 +90,20 @@ def publish(value):
 
 
 def bind(root=None):
-    """Point this process at one Provider root and publish that root's policy.
-
-    Importing this module never requires a checkout: with no policy beside the
-    installed package the tables stay empty until a Provider root is bound. Every
-    public name keeps working, because the values are published into this module's
-    own globals rather than resolved per access.
-    """
+    """Load the selected engineering-ci checkout configuration."""
     return publish(pipeline.bind(root))
 
 
 def require_policy():
-    """Refuse to run a check while no Provider policy is bound.
-
-    Without this the empty tables would look like an unsupported check rather than a
-    missing Provider root, which is the real problem.
-    """
+    """Require the checkout check configuration before execution."""
     if PIPELINE is None:
         raise ValueError(
-            "No Provider root is bound; select one that provides config/pipeline.toml"
+            "Checks require an engineering-ci checkout with config/pipeline.toml"
         )
 
 
 bind()
 
-# Only these checks answer a question about the checked tree alone. Ruff, format and
-# version name engineering-ci's own files in their scope, so they stay Provider-owned.
-TARGET_PORTABLE = frozenset({"pytest", "lock"})
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".venv", ".git"}
 VERSION = re.compile(r"\b\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9.+-]*)")
 
@@ -464,7 +450,7 @@ def preflight(name, root, run, which, environ):
     return tools
 
 
-def identity(root, name, parameters, tools, environ, *, provider=None):
+def identity(root, name, parameters, tools, environ):
     """Bind the tree that was actually executed, not the directory that owns the code."""
     inputs, observations = snapshot(root, name)
     value = {
@@ -477,36 +463,14 @@ def identity(root, name, parameters, tools, environ, *, provider=None):
         "scope": list(dict.fromkeys((*COMMON_INPUTS, *SCOPES[name]))),
         "environment": environment_identity(environ),
     }
-    if provider is not None and Path(provider).resolve() != Path(root).resolve():
-        # The Provider checkout only supplies the policy and the check code. Keep both
-        # identities so the report proves which files were checked and which contract
-        # selected them, instead of leaving one directory serving both roles.
-        value["provider"] = {
-            "root": str(Path(provider).resolve()),
-            "policy_sha256": digest(PIPELINE),
-        }
     value["sha256"] = digest(value)
     return value, observations
 
 
-def absent_inputs(name, target):
-    """Declared check inputs an explicitly selected target does not provide."""
-    return sorted(
-        scope
-        for scope in dict.fromkeys((*COMMON_INPUTS, *SCOPES[name]))
-        if not (target / scope).exists()
-    )
-
-
-def pytest_counts(root, junit, exit_code, capability=None):
-    """Read the existing JUnit through the existing report parser, without rerunning pytest.
-
-    The parser is Provider implementation code, so it is read from the Provider
-    checkout; a consumer target never has to carry a copy of it.
-    """
-    # run_path reads the existing parser without writing a .pyc into Provider assets.
+def pytest_counts(root, junit, exit_code, parser_root=None):
+    """Read existing JUnit without rerunning pytest."""
     parser = runpy.run_path(
-        str(Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py")
+        str(Path(parser_root or ROOT) / ".dagger/src/engineering_ci/pytest_report.py")
     )
     path = root / junit
     if path.stat().st_size > 2 * 1024 * 1024:
@@ -595,7 +559,6 @@ def execute(
     selectors,
     *,
     root=ROOT,
-    target=None,
     output_root=None,
     coverage=False,
     junit="core-junit.xml",
@@ -605,16 +568,9 @@ def execute(
     environ=None,
     reuse=False,
 ):
-    # root is the Provider checkout: it supplies the Pipeline policy and the check
-    # code. target is the tree that is actually checked. They are one directory
-    # unless a caller explicitly separates them, so existing entry points keep
-    # their current behaviour and their current identity documents.
     root = root.resolve()
-    # Binding is the assembly layer's decision, not this library's: a caller may pass
-    # a tree whose configuration is unrelated to the selected Provider policy.
     require_policy()
-    target = Path(target).resolve() if target is not None else root
-    provider = root if target != root else None
+    target = root
     owner = Path(output_root).resolve() if output_root is not None else target
     junit_path = report_path(target / junit, target)
     if output:
@@ -670,20 +626,10 @@ def execute(
         name = entry["name"]
         launching = False
         try:
-            if provider is not None and name not in TARGET_PORTABLE:
-                # Ruff, format and version answer questions about the Provider's own
-                # files. Refusing keeps a foreign target from producing a meaningless
-                # result instead of an honest "this check has no answer here".
-                raise PreconditionError(
-                    "environment_error",
-                    f"{name} inspects Provider-owned paths; run it against the Provider checkout",
-                )
             # Observe inputs before preparation as well as before the real check.
             initial, initial_observations = snapshot(target, name)
             tools = preflight(name, target, run, which, environ)
-            before, observations = identity(
-                target, name, parameters, tools, environ, provider=provider
-            )
+            before, observations = identity(target, name, parameters, tools, environ)
             if initial != before["inputs"] or initial_observations != observations:
                 raise PreconditionError(
                     "stale", "Inputs changed while preparing the check"
@@ -740,7 +686,7 @@ def execute(
             entry["status"] = "passed" if code == 0 else "failed"
             after_tools = preflight(name, target, run, which, environ)
             after, after_observations = identity(
-                target, name, parameters, after_tools, environ, provider=provider
+                target, name, parameters, after_tools, environ
             )
             stable = before == after and observations == after_observations
             entry["input_stable"] = stable
@@ -759,7 +705,7 @@ def execute(
                     raise PreconditionError(
                         "report_unavailable", "pytest did not replace its JUnit report"
                     )
-                counts = pytest_counts(target, junit, result.returncode, provider)
+                counts = pytest_counts(target, junit, result.returncode, root)
                 if (
                     counts is None
                     or not counts["tests"]
@@ -834,7 +780,7 @@ def execute(
         try:
             tools = preflight(entry["name"], target, run, which, environ)
             current, observations = identity(
-                target, entry["name"], parameters, tools, environ, provider=provider
+                target, entry["name"], parameters, tools, environ
             )
             fresh = (
                 current == entry["identity"]
@@ -963,7 +909,6 @@ def run_checks(selectors, *, executor=None, **kwargs):
     raise ValueError(f"Unsupported executor: {backend}")
 
 
-@task_entry("Run engineering checks", read_only=("inspect", "toolchain"))
 def main(argv=None, *, executor=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -983,21 +928,6 @@ def main(argv=None, *, executor=None):
         help="Override the configured check environment",
     )
     parser.add_argument(
-        "--provider-root",
-        type=Path,
-        help="Provider root providing config/pipeline.toml and the Dagger module",
-    )
-    parser.add_argument(
-        "--check-target",
-        type=Path,
-        help="Consumer source directory to check instead of this checkout",
-    )
-    parser.add_argument(
-        "--output-root",
-        type=Path,
-        help="Consumer-approved directory owning this run's report and logs",
-    )
-    parser.add_argument(
         "--json", type=Path, help="Atomically write local results, including failures"
     )
     parser.add_argument(
@@ -1010,11 +940,8 @@ def main(argv=None, *, executor=None):
     )
     args = parser.parse_args(argv)
     try:
-        # An installed package has no policy beside it; the Provider root supplies it.
-        provider_root = args.provider_root.resolve() if args.provider_root else ROOT
-        bind(provider_root)
-        target = args.check_target.resolve() if args.check_target else provider_root
-        owner = args.output_root.resolve() if args.output_root else target
+        bind(ROOT)
+        target = owner = ROOT
         if args.json:
             args.json = report_path(args.json, owner)
         if args.checks == ["toolchain"]:
@@ -1050,9 +977,7 @@ def main(argv=None, *, executor=None):
         _, code = run_checks(
             args.checks,
             executor=executor or args.executor,
-            root=provider_root,
-            target=args.check_target,
-            output_root=args.output_root,
+            root=ROOT,
             coverage=args.coverage,
             junit=args.junit,
             output=args.json,

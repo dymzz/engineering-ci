@@ -2,7 +2,7 @@
 
 Engineering CI 的公共交付包含以下已有接口。Public 表示本项目承诺维护的调用边界，
 不表示仓库已公开、包已上传 PyPI，或所有可导入的内部模块都成为稳定 API。
-安装及固定引用见[消费者接入](../../guides/new-repository.md#选择公共组件与固定版本)。
+安装及固定引用见[消费者接入](../../guides/new-repository.md#环境与固定引用)。
 正式版本的版本、Tag、SHA 和验证 Run 由[发布机制](../architecture/release/workflow.md)关联。
 
 | 接口 | 定位与消费方式 | 契约归属 |
@@ -14,8 +14,6 @@ Engineering CI 的公共交付包含以下已有接口。Public 表示本项目�
 | `.github/workflows/reusable-python-ci.yml` | 公共 `workflow_call`；固定同一 Engineering CI 版本的 Dagger 模块和 Workflow，原始检查决定 Job 结果 | [消费者接入](../../guides/new-repository.md)、[报告模式](../architecture/testing/pytest-reporting.md#opt-in-reusable-workflow)、[依赖安全](../architecture/dependency-security.md) |
 | 安装包的 `engineering-ci download` | 公共已有 Run 查询/下载；gh 认证、HTTP 后端和安全解压，禁止 Dispatch | [CLI 参考](../../guides/cli-reference.md)、[下载配置](../configuration/downloads.md) |
 | `engineering-ci checks/version/release` 与两个 `scripts/` 入口 | 本仓库操作接口；需要完整 engineering-ci checkout、配置和锁文件，不是对任意消费者目录的通用检查或发布 API | [常用操作](../../guides/common-tasks.md) |
-| `engineering-ci`、`engineering-ci-dagger` Providers，Binding/Capability | 可选 Harness 集成；依赖固定 Vesryn，批准与调用受实际 Scope 和证据准入约束 | [目录与 Binding](../architecture/harness-integration/registry.md)、[能力与反馈](../architecture/harness-integration/capabilities.md) |
-| `workflow_core/`、通用 `tracing/` / `mining/` 旧导入路径 | 兼容层；portable 实现分别由 Vesryn / vesryn-log 维护，不据此承诺另一套独立 Harness | [分仓契约](../architecture/harness-integration/repository-split.md)、[日志边界](../architecture/cli-boundaries.md#默认任务采集与日志记录) |
 | `workflow_actions`、Release prepare/verify/publish 助手与注册信息 | 内部 Actions 接口；由已发布 Workflow 调用，不是新的用户 CLI 或跨项目发布框架 | [CLI 边界](../architecture/cli-boundaries.md) |
 | Dagger `fixture_*`、`container_echo`、`grep_dir`、`repository_check_*` | 自测/示例或本仓库适配接口，不作为通用消费者稳定契约。消费者不依赖 fixture 名称或内部文件布局 | [本地验证](../architecture/local-checks.md) |
 
@@ -24,9 +22,8 @@ Engineering CI 的公共交付包含以下已有接口。Public 表示本项目�
 Python 包要求普通 CPython >=3.14；Dagger 消费者使用固定 Engine/CLI 1.0.0-beta.16，
 单版本与 Matrix 支持范围以[Matrix 契约](../architecture/testing/python-matrix.md)为准。
 消费者自身 Python 版本由其项目声明，不能把宿主包的 Python 要求误认为所有容器都必须 3.14。
-基础 Python API 使用 vesryn-tool-runtime 和 vesryn-log 的轻量公共契约；不要求可选 Harness、
-OpenTelemetry SDK、PostgreSQL 或挖掘库。v0.6.8 起基础依赖也包含私有 Git 组件，
-应使用 checkout 中明确的 uv sources，或按安装说明同时提供固定组件包；不承诺 PyPI 分发。
+基础 Python 包只安装其清单声明的 CI 依赖，不依赖 Harness、日志归档或工具运行时组件。
+Dagger SDK 使用独立模块环境；消费者私有源码的读取权限由调用方配置。
 
 每个结果仍以其原始执行状态为准。报告、ZIP 下载或 Artifact 上传成功，不表示检查成功。
 未执行、跳过、取消、不可用和 incomplete 不能用于代替必需的通过结果。
@@ -48,10 +45,3 @@ Git 安全策略是显式启用的已知 Commit 漏洞查询，不是私有源�
 
 后续拆分只能从这些已核验的公开契约出发；本次不搬迁 Release、Manifest 或执行实现。
 本轮候选身份、实际消费验证与 C1–C8 结论保存在 PR 交付记录，缺少证据的路径明确记为 NOT VERIFIED。
-
-### v0.6.8 Tool Runtime 集成
-
-通用工具类型、Catalog、Provider 身份、Selection Binding Schema 1 校验与批量调用
-委托给 vesryn-tool-runtime 0.1.0。工程域工作流关联、ChecksAdapter、证据与发布策略保持原有归属。
-旧导入返回相同的权威类型；已有工具描述哈希保持兼容。生产清单的三个私有 Git 来源均使用完整
-Commit，并受现有精确来源与漏洞查询策略约束；没有相邻开发目录依赖。

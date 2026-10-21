@@ -9,6 +9,3 @@
 - [交付要求](delivery/README.md) — 公共组件支持范围与 Release Readiness。
 
 上级入口：[项目入口](../README.md)。
-
-Tool contracts and invocation now use [vesryn-tool-runtime](https://github.com/dymzz/vesryn-tool-runtime/blob/main/docs/README.md).
-The consumer retains workflow/domain state and recovery. Release metadata pins the common runtime to a full accepted Git commit; adjacent development paths are not release dependencies.

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -62,8 +63,6 @@ def mock_release_request_metadata(monkeypatch):
         ("release", "engineering_ci.cli.release"),
         ("download", "engineering_ci.cli.download"),
         ("version", "engineering_ci.release.version"),
-        ("trace", "engineering_ci.cli.trace"),
-        ("mine", "engineering_ci.cli.mine"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
@@ -74,6 +73,29 @@ def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
         importlib.import_module(module), "main", lambda args: calls.append(args) or 7
     )
     assert main([command, "parameter"]) == 7 and calls == [["parameter"]]
+
+
+@pytest.mark.parametrize("command", ["trace", "mine", "workflow"])
+def test_removed_harness_commands_are_rejected(command):
+    with pytest.raises(SystemExit) as error:
+        main([command, "--help"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("lockfile", ["uv.lock", ".dagger/uv.lock"])
+def test_ci_locked_dependency_closure_does_not_include_harness(lockfile):
+    data = tomllib.loads((ROOT / lockfile).read_text(encoding="utf-8"))
+    packages = {item["name"].lower().replace("_", "-") for item in data["package"]}
+    assert packages.isdisjoint({"vesryn", "vesryn-workflow"})
+
+
+@pytest.mark.parametrize(
+    "option", ["--binding", "--provider-root", "--check-target", "--output-root"]
+)
+def test_checks_rejects_removed_provider_options(option):
+    with pytest.raises(SystemExit) as error:
+        main(["checks", "pr", option, "retired-provider"])
+    assert error.value.code == 2
 
 
 def test_menu_chooses_existing_run_and_artifact_without_post():

@@ -107,8 +107,7 @@ def aggregate(root, names, request, runtime, branches, out):
 
 def prepare(root, names, runtime):
     """Describe actual tools and source inputs without running a check."""
-    # Match execute(): import the Provider protocol while probing the target's tools.
-    environment = checks.execution_environment(checks.ROOT, os.environ)
+    environment = checks.execution_environment(root, os.environ)
     result = {
         "schema_version": 1,
         "runtime": runtime,
@@ -133,7 +132,6 @@ def main(argv=None, *, output=None, branches=None):
     )
     parser.add_argument("--request")
     parser.add_argument("--runtime")
-    parser.add_argument("--check-target", type=Path)
     args = parser.parse_args(argv)
     if args.operation == "plan":
         if args.request is not None or args.runtime is not None:
@@ -153,7 +151,7 @@ def main(argv=None, *, output=None, branches=None):
         return 0
     if args.request is None or args.runtime is None:
         parser.error("prepare and execute require --request and --runtime")
-    root = args.check_target.resolve() if args.check_target else checks.ROOT
+    root = checks.ROOT
     out = Path(output) if output else Path("/evidence")
     out.mkdir(parents=True, exist_ok=True)
     try:
@@ -177,8 +175,7 @@ def main(argv=None, *, output=None, branches=None):
             return 0
         report, code = checks.execute(
             request["selectors"],
-            root=checks.ROOT,
-            target=root if root != checks.ROOT else None,
+            root=root,
             output_root=out,
             coverage=request["coverage"],
             junit=request["junit"],

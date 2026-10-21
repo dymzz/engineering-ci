@@ -17,14 +17,11 @@ Rules: [.dagger/AGENTS.md](../../../.dagger/AGENTS.md). Contracts: [Dagger confi
   `src/engineering_ci/dagger_checks.py` binds them to host inputs and admits reuse.
   The existing pytest, quality and matrix modules preserve original failures and one-execution
   reporting. PR branches do not add default fixture Checks or replace GitHub's remote Job DAG.
-  `src/engineering_ci/tools/bootstrap_flow.py` explicitly invokes native consumer SDK generation,
-  check discovery and one `dagger check`; Dagger owns execution and cache reuse.
 - **Contract:** [Dagger configuration](../../configuration/dagger.md),
   [local checks](../local-checks.md), [pytest reporting](../testing/pytest-reporting.md)
 - **Verify:** module / workflow Engine pins agree; `tests/test_pipeline.py`,
   `tests/test_dagger_checks.py`, `tests/test_pr_check_graph.py`; real Engine execution and reuse
   evidence in [PR graph validation](../../verification/pr-check-graph.md).
-  `tests/test_bootstrap_flow.py` substitutes the consumer CLI; real consumer setup is a separate acceptance.
 - **Verified:** 2026-10-15 @ `04388dbdcf7a`
 
 ## Dagger Python SDK and packaging
@@ -52,22 +49,7 @@ Rules: [.dagger/AGENTS.md](../../../.dagger/AGENTS.md). Contracts: [Dagger confi
 - **Used by:** `.github/workflows/reusable-python-ci.yml` pulls and starts the Engine;
   `src/engineering_ci/dagger_checks.py` selects / probes the local Engine through Dagger CLI.
   `.dagger/src/engineering_ci/pr_checks.py` defines the Linux check containers.
-  `tests/integration/trace_jaeger.py` invokes Docker for opt-in Jaeger / Collector fixtures.
 - **Contract:** [local checks](../local-checks.md), [Dagger configuration](../../configuration/dagger.md)
 - **Verify:** Docker invocations / runner bindings in the paths above and actual Dagger/Linux
-  evidence in [PR graph validation](../../verification/pr-check-graph.md). Jaeger / Collector
-  acceptance is separate and was not rerun by this inventory update.
+  evidence in [PR graph validation](../../verification/pr-check-graph.md).
 - **Verified:** 2026-10-14 @ `e1f649f559f1`
-
-## Vesryn task observation provider
-
-- **Status:** removed
-- **Pin:** none — the previous observe-task binding is no longer used.
-- **Used by:** none. Installed vesryn-log Sinks replace default task log delivery;
-  ordinary logging does not start a Dagger execution. Existing tool calls still cross their
-  declared observation boundary.
-- **Contract:** [task recording](../cli-boundaries.md#默认任务采集与日志记录),
-  [vesryn-log](tracing.md#vesryn-log).
-- **Verify:** `tests/test_task_observation.py` proves real installed file writes and no
-  extra Dagger/Vesryn invocation; no observe-task binding in runtime source.
-- **Verified:** 2026-10-16 @ `742bfc4f833d`

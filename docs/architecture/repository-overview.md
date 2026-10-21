@@ -1,97 +1,67 @@
 # Engineering CI 仓库介绍
 
-本页维护项目事实，作为根 [AGENTS.md](../../AGENTS.md) 的初稿与维护依据。
-项目边界或入口改变时同步更新；当前任务进度、分支、PR 状态和测试结果放在交付记录。
-具体技术契约与执行配置仍以本页链接的文档、源码和 TOML / YAML 为准。
+本页维护项目职责与实际入口，作为根 [AGENTS.md](../../AGENTS.md) 的维护依据。
+当前任务进度与测试证据放在对应 Issue / PR。
 
 ## 目标与职责
 
-engineering-ci 提供可复用的 Python 工程验证与交付能力，供本仓库及消费者通过
-Dagger、GitHub Actions 和本地 CLI 调用。主要职责是可靠执行检查、保留原始失败、
-识别当前输入的有效证据，并把真实提交、PR、Run 与 Release 关联起来。
+engineering-ci 提供 Python 工程验证与交付能力，供本仓库及消费者通过 Dagger、
+GitHub Actions 和本地 CLI 调用。质量门禁保留原始失败；JSON、Summary 与 Artifact
+只是执行结果的表现形式，不决定测试是否通过。
 
-它保留 CI/CD 领域策略，不承担通用 Agent 优化机制。可选 Harness 由独立的 Vesryn 提供；
-基础检查、版本、发布与下载路径不要求安装它。库实现和当前依赖见
-[pyproject.toml](../../pyproject.toml)。
-
-## 已有能力与代码位置
-
-| 能力 | 当前实现位置 | 边界 |
-| --- | --- | --- |
-| 本地 / PR 统一检查与证据复用 | `src/engineering_ci/checks.py`、`check_operations.py`、`dagger_checks.py` | 复用必须匹配实际输入、工具、参数和环境；报告不替代退出状态 |
-| 下载、等待与网络恢复 | `src/engineering_ci/execution/` | 集中 FSM、原子状态和协议后端；不重新实现远端 Job 调度 |
-| 开发交付与 Release 证据 | `src/engineering_ci/release/` | 本地交付上下文、版本 / SHA 校验、Manifest、发布操作与恢复 |
-| 可复用容器 CI | `.dagger/src/engineering_ci/` | pytest / 质量 / Matrix 能力、单次执行报告与容器检查；不持有完整开发生命周期 |
-| GitHub 远端编排 | `.github/workflows/` | PR CI、复用 Workflow 与手动 Release 的 DAG / 权限 / 门禁 |
-| CI Harness 适配与领域准入 | `src/engineering_ci/workflow_adapters/` | 注册检查工具、复用证据、批准 / 反馈 / 再审查策略 |
-| 既有 Harness 路径兼容 | `workflow_core/`、Projection、通用 `mining/` 与部分 CLI | 委托固定 Vesryn；CI 绑定仍由宿主维护 |
-| 事件记录与原始归档 | `task_observation.py`、`tracing/` 的 Store/配置/来源/Catalog | 物理写入委托 vesryn-log；原执行事实与领域准入由宿主维护 |
-
-版本一致性和锁文件完整性、已知漏洞扫描是不同检查。锁定私有 Git Commit 不代表当前安全扫描器
-已覆盖该来源。显式 Git 策略可启用固定 Commit 的原生已知漏洞查询；未配置、不一致或
-扫描缺失仍失败，不能因分仓、生成报告或修改 Agent 指令而成为通过。
-定义见[依赖安全](dependency-security.md)。
-
-## 入口与配置
-
-- 用户入口是 `engineering-ci` CLI，以及 `scripts/release.py`、`scripts/download.py` 两个薄入口。
-  Release 交付入口停在审查合并；已授权 Agent 可另行使用 gh 合并。正式 Release 仍由人主动请求。
-  Download 只选择 / 恢复 / 收集已有 Run，不 Dispatch。操作见[常用指南](../../guides/common-tasks.md)。
-- GitHub Actions 使用 `python -m engineering_ci.workflow_actions`，不把内部业务助手放进 `scripts/`。
-- 执行型任务入口默认包装现有 subprocess 边界，使用安装后的 vesryn-log API 记录事实，
-  不再经由 Vesryn/Dagger 投递默认日志。跨仓工具仍遵守 Dagger 与观测边界。
-  范围与读取方式见[任务采集](cli-boundaries.md#默认任务采集与日志记录)。
-- `config/pipeline.toml` 声明已有注册检查的参数、工具链、范围、Profile 与交付绑定；
-  YAML 继续决定同一次 Workflow 的静态 Job DAG。不能靠 TOML 授权或绕过发布条件。
-- 下载后端和本机环境设置见[配置入口](../configuration/README.md)。机器专用配置不提交。
-
-CLI / FSM / 配置职责分别见[调用边界](cli-boundaries.md)、
-[执行与恢复](execution/README.md)、[发布契约](release/README.md)。本页不复制状态表或 Workflow Step。
+Dagger 负责容器、执行图、并发与缓存；GitHub Actions 负责远端 Job DAG、权限与发布条件。
+Agent Harness、Mining、通用 Workflow 和日志存储、归档、查询由外部项目维护。
+本仓库不提供其兼容转发或旧 Python Provider / Catalog。
 
 ## 依赖与跨仓库关系
 
-Python 运行时需要 Python 3.14 及项目锁定依赖；本地 / CI 使用既有 uv、pytest、Ruff、Dagger、
-Git 和 gh。HTTP 的 aria2 是可选后端，缺少时 auto 使用原生 HTTP，而非把基础下载判为不可用。
+engineering-ci 不得直接或间接依赖 `vesryn`、`vesryn-workflow`。两者可以消费本仓
+公开的 Dagger / Workflow CI 能力；CI 的构建、验证和发布不依赖被验证的 Harness 或
+Workflow Runtime，从而避免反向依赖和引导循环。
 
-Vesryn 通过固定版本与不可变 Git Commit 显式安装，开发组安装其可选 SDK 用于兼容测试。
-Vesryn 的 Python 包不依赖 engineering-ci；它的 CI 消费固定 engineering-ci Workflow / Dagger 版本。
-这区分运行时依赖和 CI 使用关系，避免两个未发布开发分支互相构建。
-固定引用与旧身份兼容见[分仓契约](harness-integration/repository-split.md)。
+实际 CI 工具契约与调用可以直接使用 `vesryn-tool-runtime`；需要工程事件观测时，
+本仓只负责最小插桩，由 `vesryn-log` 负责写入和通用日志能力。这两个依赖的传递闭包
+同样不能引入 Harness 或通用 Workflow。确需跨越边界时先调整职责或提取公共组件，
+不能恢复兼容层来绕过依赖方向。
 
-## 验证、维护与 Agent 初稿
+当前消费者使用公共 Dagger Functions，共享 Workflow 调用这些原生接口；基础 CLI
+使用本仓检查、Git/gh 和发布模块，不消费旧 Catalog 或默认任务日志。
+因此当前不声明 Log / Tool Runtime 依赖，删除旧采集包装而保留工具原始输出及 Dagger
+原生执行轨迹。以后出现实际 CI 调用需求时可以直接采用这两个组件，无需重建 Provider。
 
-共享检查入口见[本地检查](local-checks.md)；指南给出单项 / 完整 Profile 的实际命令。
-测试包括单元、真实子进程、HTTP / 下载故障与显式 PostgreSQL 专项；跳过、失败、不可用和通过
-分别记录。具体证据由[验证记录](../verification/README.md)承载，不把历史测试数量写成永久规则。
+## 当前实现
 
-从本页生成 AGENTS 初稿时提取项目目标、职责边界、入口导航和关键不变量；
-共享开发纪律来自全局指令，Actions / Dagger 的专项约束放进对应子树文件。
-不要把模块清单、完整安装步骤、Pipeline 定义或当前阶段进度复制到 AGENTS。
-层级说明见[Agent 指令](agent-instructions.md)，共享文档约定见[维护约定](../conventions.md)。
+| 能力 | 代码位置 | 职责 |
+| --- | --- | --- |
+| 本仓检查与结果有效性 | `checks.py`、`check_operations.py`、`dagger_checks.py` | 当前本地 / PR 调用桥及结果核验 |
+| 可复用容器检查 | `.dagger/src/engineering_ci/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
+| GitHub 执行与下载 | `src/engineering_ci/execution/` | 已有 Dispatch、等待、恢复、HTTP 下载与安全解压 |
+| 交付及发布证据 | `src/engineering_ci/release/` | Git / PR 交付、版本、Manifest 与发布操作 |
+| 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |
 
-自动优化 Loop、Bandit、通用任务平台或新 Agent 工作流并非这份 CI/CD 实现的已有能力。
+当前宿主检查桥和执行恢复层仍存在，不能把删除非 CI 能力描述为已经完成全部 Dagger 原生化。
+基础检查定义见[本地检查](local-checks.md)，公共消费者接口见[支持范围](../delivery/public-components.md)。
 
-## Dagger 优先的迁移方向
+## 入口与配置
 
-Dagger 拥有检查执行图、容器调度与缓存；GitHub Actions 拥有远端 Job DAG。
-engineering-ci 提供项目质量策略、证据准入、GitHub 交付和跨 Run 恢复。
-容器 PR 路径由 Dagger 为所选检查构建独立分支，共享准备并在依赖完成后聚合证据；
-Python 保留单项检查及证据准入，pipeline.toml 仍是固定检查配置，不声明另一套 DAG。
-原生工作区和模块配置使用 dagger.toml / dagger-module.toml；
-现有 CLI、报告、单次 pytest 与失败契约保持不变。
-通用 Harness 的目标边界和技术正文由 [Vesryn 文档](https://github.com/dymzz/vesryn/blob/7ac74b83c4a206446b9c8b52cc88c906a13ad2f5/docs/README.md) 维护，不在本仓库保留平行实现方案。
+- 用户 CLI：`engineering-ci checks / version / release / download`。
+- 两个脚本：`scripts/release.py` 与 `scripts/download.py`；使用方式见[用户指南](../../guides/README.md)。
+- Actions 内部操作：`python -m engineering_ci.workflow_actions`。
+- Dagger 模块：`dagger.toml`、`dagger-module.toml` 与生成的 SDK / 锁文件。
+- 当前检查参数与交付绑定：`config/pipeline.toml`；它不声明另一套远端 Job DAG。
+- 下载设置：见[配置入口](../configuration/README.md)，机器专用配置不提交。
 
+Python 包使用 Python >=3.14、transitions、filelock 和 PyYAML；开发测试使用 pytest / pytest-cov。
+Dagger 模块有独立 SDK 依赖。aria2c 是可选下载后端；GitHub 操作使用现有 Git / gh 认证。
+私有消费者依赖的 Secret 由调用方显式提供，基础开发环境不再需要 Vesryn 仓库的读取凭据。
 
-## 共享工具目录与领域 Provider
+## 维护边界
 
-Vesryn 统一维护共享注册、分层发现、确定性匹配和通用调用协调。
-engineering-ci 通过可选 `workflow registry` 消费它，并以显式 `engineering-ci-dagger`
-Provider 提供原有工程检查的契约/绑定。该 Provider 固定调用现有 Dagger 执行器；
-正式 CI Gate、检查策略和原始证据解释仍由本仓库负责。仓库名不是工具白名单。
-旧 Tool ID 和兼容入口保留，基础 CI/CD 不强制依赖 Vesryn；没有循环 Python 或
-Dagger 模块依赖。正文见[统一目录](harness-integration/registry.md)。
+版本与 Lockfile 一致性、已知漏洞扫描是不同检查，见[依赖安全](dependency-security.md)。
+发布与质量门禁不接受 skipped、incomplete 或报告生成成功替代必需执行通过。
 
-## Tool Runtime extraction
+现有检查和发布契约分别见[调用边界](cli-boundaries.md)、[执行恢复](execution/README.md)
+及[发布](release/README.md)。消费者直接组合公共 Dagger Functions 和共享 Workflow，
+本仓库不维护通用建仓或 Git 仓库生命周期程序。
 
-Generic tool contracts, Catalog, discovery, Selection Binding Schema 1 verification, batch dispatch and result validation are now owned by `vesryn-tool-runtime==0.1.0`.
-Existing public consumer imports are compatibility exports. Workflow generation, checkpoints, recovery and domain execution remain here. Development uv source overrides explicitly select the current Tool Runtime checkout; engineering-ci also selects the integrated Vesryn checkout. Replace these overrides with accepted immutable references before consumer publication.
+文档维护遵循[约定](../conventions.md)；Agent 指令的作用域见[说明](agent-instructions.md)。

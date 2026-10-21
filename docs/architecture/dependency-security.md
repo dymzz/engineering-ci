@@ -103,8 +103,9 @@ after the explicit source policy is satisfied.
 v0.6.7 adds opt-in `--git-policy FILE` and the reusable Workflow input
 `dependency_security_git_policy` (repository-relative, default empty).
 Use a helper/module version containing this interface; older published helpers
-do not accept the new argument. The core manual Release uses
-[config/dependency-security.toml](../../config/dependency-security.toml).
+do not accept the new argument. The core manual Release scans its public
+registry dependencies without a Git policy. Consumers with Git dependencies
+must explicitly supply their own exact-source policy.
 
 The policy accepts schema_version=1 and `[[git_sources]]` entries containing
 only package, repository and commit. Each repository is a credential-free
@@ -138,9 +139,11 @@ private source bytes and environment values are never supplied. Empty advisory
 results mean no known matching records were returned, not that OSV has complete
 advisory coverage for private code or that the source is safe.
 
+After creating the explicit consumer policy, run:
+
 ```sh
 python -m engineering_ci.tools.security --project . --mode enforce \
-  --git-policy config/dependency-security.toml --out .test-tools/security
+  --git-policy .test-tools/security/git-policy.toml --out .test-tools/security
 ```
 
 The native extractor excludes the project's own virtual node. For its own

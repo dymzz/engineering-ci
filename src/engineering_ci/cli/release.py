@@ -18,7 +18,6 @@ from ..pipeline import PIPELINE
 from ..release import verification
 from ..release.results import OperationResult, command_text
 from ..release.version import checked_version, normalize
-from ..task_observation import task_entry
 from ._execution import (
     add_wait_arguments,
     execution_environment,
@@ -519,11 +518,6 @@ def repository(raw):
     return raw
 
 
-@task_entry(
-    "Run release operation",
-    operations=("publish", "validate"),
-    prerequisites=("transitions", "filelock"),
-)
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)

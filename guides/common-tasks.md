@@ -2,8 +2,7 @@
 
 本地检查、开发 PR、发布以及已有 Run 的下载步骤。命令语义与退出码见[CLI 参考](cli-reference.md)。
 
-本页示例使用当前准备版本 v0.6.0。开发时先在功能分支对齐四处元数据；对应 PR 合并后，该版本才能成为正式发布目标。
-v0.6.0 的能力范围与限制见[版本依据](../docs/verification/harness-development.md#v060-交付范围与既有证据)。
+本页示例使用当前准备版本 v0.6.8。开发时先在功能分支对齐四处元数据；对应 PR 合并后，该版本才能成为正式发布目标。
 版本元数据和本地/PR 检查通过都不表示已经正式发布；PR 实际合并后仍需人主动请求既有全量 Release Run。
 
 ## 本地检查与开发 PR
@@ -11,13 +10,13 @@ v0.6.0 的能力范围与限制见[版本依据](../docs/verification/harness-de
 在当前功能分支完成改动。目标版本已经准备好时无需再次修改；需要对齐四处元数据时使用：
 
 ```powershell
-uv run --locked engineering-ci version set v0.6.0
+uv run --locked engineering-ci version set v0.6.8
 ```
 
 查看当前交付上下文，不需要手工寻找分支、PR 或 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.6.0
+uv run --locked python scripts/release.py status --version v0.6.8
 ```
 
 `status` 只查询，显示 checkout、分支与提交、未提交文件、对应 PR 和实际 CI 状态、本地检查
@@ -29,7 +28,7 @@ uv run --locked python scripts/release.py status --version v0.6.0
 用同一个 `publish` 入口贯穿交付与发布，沿用 Git 的参数词汇：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.6.0 --all -m "准备 v0.6.0：轨迹归档、非 LLM 分析与候选审查"
+uv run --locked python scripts/release.py publish --version v0.6.8 --all -m "准备 v0.6.8：工程检查与发布改动"
 ```
 
 `--all` 对应 `git add --all`，将当前 checkout 中列出的全部改动暂存，包括未跟踪文件；
@@ -49,7 +48,7 @@ uv run --locked python scripts/release.py publish --version v0.6.0 --all -m "准
 4. 输出 PR URL、待审查 SHA、真实 CI 状态和继续命令，入口停在 **待审查合并**，返回 3。
 
 在输出的 PR 页面审查改动和真实 CI；Draft 就绪后转为 Ready。按当前
-[Agent 授权](../AGENTS.md#development-and-delivery)，Agent 可在本轮验收、代码审查和当前 PR head
+[Agent 授权](../AGENTS.md#delivery)，Agent 可在本轮验收、代码审查和当前 PR head
 的必需 CI 完成后执行合并，不必再次请求逐次合并许可。
 必需 CI 失败、跳过或尚未完成时，入口明确停在 PR CI，不给出当前可合并的提示。
 CI 失败或有冲突时，修复当前功能分支后用同一入口更新 PR。
@@ -67,7 +66,7 @@ Ready / Merge 命令；Merge 用 --match-head-commit 绑定当前已检查的 PR
 实际合并后从同一个 checkout 接续，不要求切换分支或查找合并 SHA：
 
 ```powershell
-uv run --locked python scripts/release.py publish --version v0.6.0
+uv run --locked python scripts/release.py publish --version v0.6.8
 ```
 
 入口确认该 PR 的实际合并提交已包含在远端 main，再请求一次正式 Release Run。
@@ -82,7 +81,7 @@ uv run --locked python scripts/release.py publish --version v0.6.0
 统一先使用：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.6.0
+uv run --locked python scripts/release.py status --version v0.6.8
 ```
 
 不需要猜选 checks、validate 或 verify，也不需要从历史终端输出寻找 ID。
@@ -92,8 +91,8 @@ uv run --locked python scripts/release.py status --version v0.6.0
 Agent 或脚本需要结构化停点时，在相同命令上加 `--json`：
 
 ```powershell
-uv run --locked python scripts/release.py status --version v0.6.0 --json
-uv run --locked python scripts/release.py publish --version v0.6.0 --json
+uv run --locked python scripts/release.py status --version v0.6.8 --json
+uv run --locked python scripts/release.py publish --version v0.6.8 --json
 ```
 
 第一条只查询。第二条仍执行原有 publish 行为；有未提交改动时仍需审核文件，并显式提供 `--all -m`。
@@ -186,7 +185,7 @@ Python 私有依赖和业务 API。具体只读诊断、已有 gh 桥和固定/�
 `validate` 只用于主动选择一次独立全量验证，不发布。候选分支和版本显式指定：
 
 ```powershell
-uv run --locked python scripts/release.py validate --version v0.6.0 --ref codex/prepare-release-v0.6.0
+uv run --locked python scripts/release.py validate --version v0.6.8 --ref codex/prepare-release-v0.6.8
 ```
 
 `verify --run` 保留为指定 Run 的只读证据核验；日常停点定位用 `status`。
