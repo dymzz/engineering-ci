@@ -20,6 +20,8 @@
 - 容器环境预检原来从消费者路径构造 PYTHONPATH，执行阶段则使用 Provider 路径，
   两份环境身份不同。现在两者使用相同 Provider 导入环境，同时仍在消费者目录探测工具、
   计算输入摘要；未放宽聚合校验或把不同环境当作一致。
+- 宿主动态导入 JUnit 解析器时曾向资产写入 `.pyc`。现使用标准库 `runpy.run_path`
+  读取原解析器，保留既有分类逻辑，并核对整个 Provider 目录树不产生新增或修改。
 
 ## 验证边界
 
@@ -34,9 +36,10 @@
 | 验证 | 当前证据 |
 | --- | --- |
 | Pipeline、分离、Dagger 及检查图回归 | 186 passed；JUnit 位于 `.test-tools/eci003/final/targeted-final-junit.xml` |
+| 只读解析修复与 checks 回归 | 96 passed；JUnit 位于 `.test-tools/eci003/final/read-only-junit.xml` |
 | 独立安装和公开 entry point 发现 | wheel 安装、无 Vesryn、无 PYTHONPATH 注入已核对 |
 | 独立正常 Dagger 检查 | 实际消费者 pytest：1 passed，原始退出码 0；executed/complete/current 均为 true，reused=false |
-| Provider 只读与输出归属 | 清单内文件逐项 hash 未变；报告、JUnit 和工具日志均位于消费者批准的输出目录 |
+| Provider 只读与输出归属 | 整个目录树无新增或修改，逐文件 hash 未变；报告、JUnit 和工具日志均位于消费者批准的输出目录 |
 | 原仓基础 CI | Ruff、版本和锁文件本地通过；当前 Head 的三个 PR Job 结果在 PR #38 维护 |
 
 原始失败与后续执行保存在 `.test-tools/eci003/final/` 及获批消费者的 evidence 目录。
@@ -46,24 +49,24 @@
 
 本次独立调用使用 `vesryn.adapters/engineering-ci-dagger`，实际导入位置是
 `D:/workspace/eci003-acceptance/env/Lib/site-packages/engineering_ci`。
-Provider 为 `assets-v4`，检查目标为 `consumer`，输出为 `evidence-v4`；三者相互独立。
+Provider 为 `assets-v5`，检查目标为 `consumer`，输出为 `evidence-v5`；三者相互独立。
 `ToolRuntime.invoke()` 返回的 `DispatchReceipt.results["pytest"]` 保留实际领域结果。
 
 | 交付项 | SHA-256 |
 | --- | --- |
-| `engineering_ci-0.6.8-py3-none-any.whl` | `11cdb1e1d100b6f5ae91c5c1bddb26c6b018e50c78cc39c8df4305e383ea27db` |
-| Provider 清单内文件集合 | `ef68917b01c21f2658c7d26fca7e24626d966ee68b4316d76cfd3fc6fd1160e6` |
-| `engineering-ci-0.6.8-provider-assets.zip` | `535eb12b2be88db5454852f679dc9f4d4dfbb6a1d1b68148a0a68d93aa166d6b` |
-| `eci003-installed-provider-evidence.zip` | `c8a436b382d4ec0375936f72e383cdeaecd4202badb85c66e3e4725ceb617a97` |
+| `engineering_ci-0.6.8-py3-none-any.whl` | `48b9f9cbb89e1d4690327ec5102e656a55c7d259eeb3fe0c8b12b7edb3d6eb61` |
+| Provider 清单内文件集合 | `f34345e00e0f24f854a7cb25903c556f37c9e3b6f3ce6f7e7a30444c3bd06ded` |
+| `engineering-ci-0.6.8-provider-assets.zip` | `457a4aead3596ca4f9e592622f04379525b802f7d1619a0fae48dc03e646234a` |
+| `eci003-installed-provider-evidence.zip` | `b606b0d14e9d5bc58bcf57ca780a36cbf79a2550cbc1f4bbee57706a7c5af26f` |
 | `python.pytest` ToolSpec | `fd9c63f600f5804ab174ffb5734fb5111e2afe1a11e3f81771eb1a754180687f` |
 
-wheel 位于 `.test-tools/eci003/final/dist/`，完整验收记录为
-`D:/workspace/eci003-acceptance/evidence-v4/acceptance.json`。
+wheel 位于 `.test-tools/eci003/final/dist-v5/`，完整验收记录为
+`D:/workspace/eci003-acceptance/evidence-v5/acceptance.json`。
 记录包含报告路径/hash、原始 pytest 退出码、当前输入证据、工具版本和容器身份。
 两个 ZIP 同在该 dist 目录：资产包含清单及 181 份原文件，证据包含验收记录、原报告、
 JUnit 和日志。交付前已核对全部资产字节与本 PR 源码一致。
 实际容器为 Linux Python 3.14.8，镜像摘要是
-`python:3.14-slim@sha256:29e1fe7a54021a1d8990f59223f1246a4239b106895363680b23aa1265f73cb3`。
+`python:3.14-slim@sha256:00ebdcac87ebf7fd62576d8bbe8f8f1e94198befcc4e38c4db9671e61e0dfcfe`。
 该摘要是本次实际观测，不表示已将可变的基础镜像 tag 改为固定 digest。
 Dagger CLI 使用本仓已安装的 beta.16 可执行程序；没有从开发 checkout 加载 Python 代码、
 策略或 Dagger 模块，也没有向消费者复制 Provider。
@@ -75,13 +78,13 @@ Dagger CLI 使用本仓已安装的 beta.16 可执行程序；没有从开发 ch
 
 ```powershell
 # 在本 PR checkout 构建。只导出运行时依赖，不安装可选 Harness。
-uv build --wheel --out-dir .test-tools/eci003/final/dist
+uv build --wheel --out-dir .test-tools/eci003/final/dist-v5
 uv export --locked --no-dev --no-emit-project --no-hashes --no-annotate `
   --format requirements-txt --output-file .test-tools/eci003/final/runtime-requirements.txt
 uv venv --python 3.14.3 D:/workspace/eci003-acceptance/env
 uv pip install --python D:/workspace/eci003-acceptance/env/Scripts/python.exe `
   -r .test-tools/eci003/final/runtime-requirements.txt `
-  .test-tools/eci003/final/dist/engineering_ci-0.6.8-py3-none-any.whl
+  .test-tools/eci003/final/dist-v5/engineering_ci-0.6.8-py3-none-any.whl
 
 # 用安装后的包显式导出同一候选的模块、策略及容器代码。
 & D:/workspace/eci003-acceptance/env/Scripts/python.exe -I `

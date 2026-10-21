@@ -148,6 +148,28 @@ def test_check_target_receives_the_command_and_the_provider_only_supplies_policy
     assert identity["inputs"] != checks.snapshot(provider_root, "pytest")[0]
 
 
+def test_report_parsing_does_not_write_bytecode_or_results_into_provider(
+    separation, monkeypatch
+):
+    import sys
+
+    provider_root, target, _ = separation
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+
+    def files():
+        return {
+            path.relative_to(provider_root): path.read_bytes()
+            for path in provider_root.rglob("*")
+            if path.is_file()
+        }
+
+    before = files()
+    (target / "core-junit.xml").write_text(JUNIT, encoding="utf-8")
+    counts = checks.pytest_counts(target, "core-junit.xml", 0, provider_root)
+    assert counts["passed"] == 1 and counts["failures"] == 0
+    assert files() == before
+
+
 def test_results_belong_to_the_consumer_and_never_reach_the_provider_source(separation):
     provider_root, target, owner = separation
     process, _ = recorder()

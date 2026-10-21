@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -504,16 +504,14 @@ def pytest_counts(root, junit, exit_code, capability=None):
     The parser is Provider implementation code, so it is read from the Provider
     checkout; a consumer target never has to carry a copy of it.
     """
-    spec = importlib.util.spec_from_file_location(
-        "checks_pytest_report",
-        Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py",
+    # run_path reads the existing parser without writing a .pyc into Provider assets.
+    parser = runpy.run_path(
+        str(Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py")
     )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     path = root / junit
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("JUnit exceeds the existing report reader limit")
-    return module.summarize_pytest(path.read_text(encoding="utf-8"), exit_code, "")[
+    return parser["summarize_pytest"](path.read_text(encoding="utf-8"), exit_code, "")[
         "counts"
     ]
 
