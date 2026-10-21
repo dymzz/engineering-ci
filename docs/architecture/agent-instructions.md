@@ -27,7 +27,7 @@ Codex CLI 官方说明按全局、仓库根到当前工作目录逐层发现并�
 ## 操作与执行的区分
 
 Agent 获得当前任务的 PR 自动合并授权后，可以通过 Git/gh 执行实际操作；
-`release.py` 自身仍停在 REVIEW.waiting，不新增合并调度器。正式 Release 保持人工主动请求，
+`release.py` 只请求、查询与等待 Release Workflow；Git/PR 使用原生命令。正式 Release 保持人工主动请求，
 未覆盖的私有 Git 来源仍由安全门禁阻断，不因修改 AGENTS.md 自动获得豁免。
 备份操作见[阶段分支备份](../../guides/common-tasks.md#大阶段分支备份)。
 

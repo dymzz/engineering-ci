@@ -21,9 +21,8 @@ uv run --locked python scripts/download.py --help
 开发组安装本仓 pytest、Coverage 与 Ruff 测试工具。基础操作可使用
 `uv sync --locked --no-dev`，并通过同一环境的 Python 调用入口。
 
-Linux 使用相同的 uv 命令。aria2c 可选，auto 缺失时使用标准库 HTTP；
-具体配置见[下载配置](../docs/configuration/downloads.md)。
-输出 --out 相对于调用者目录；机器配置相对于 engineering-ci checkout。
+Linux 使用相同的 uv 命令。Run 等待、日志和 Artifact 下载使用原生 gh，无额外下载器。
+`--out` 和具体请求意图路径相对于调用目录，命令见[CLI 参考](cli-reference.md)。
 
 Windows 的完整本地 PR 检查默认在 Dagger Linux 容器内执行，需要 Docker Linux
 Engine 和固定版本的 Dagger，安装见[Dagger 配置](../docs/configuration/dagger.md)。

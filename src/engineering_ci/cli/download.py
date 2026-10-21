@@ -1,38 +1,18 @@
-"""Download an existing Run; this entry point cannot dispatch a Workflow."""
-
-from __future__ import annotations
+"""Query and download an explicitly selected existing Run with native gh."""
 
 import argparse
+import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-# Also support IDE/direct-file execution without losing the package context.
-if not __package__:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    __package__ = "engineering_ci.cli"
-
-from ._execution import (
-    add_runtime_arguments,
-    dependency_error,
-    invoke_execution,
-    runtime_arguments,
-)
+from ..github_cli import ApiError, GitHub, positive_id, repository
 
 
-def entrypoint(args):
-    return invoke_execution(args)
-
-
-def resolve_repo(**kwargs):
-    from ..execution.repository import resolve_repo as resolve
-
-    return resolve(**kwargs)
-
-
-def api(repository, path):
-    from ..github_cli import GitHub
-
-    return GitHub(repository)(path)
+def api(repo, path):
+    return GitHub(repo)(path)
 
 
 def pages(repository, path, key, query=api):
@@ -70,185 +50,147 @@ def choose(values, title, label, ask=input, write=print, *, all_option=False):
         write("Enter one of the listed numbers, or q.")
 
 
-def interactive(
-    repository,
-    out,
-    *,
-    backend=None,
-    runtime=(),
-    query=api,
-    ask=input,
-    write=print,
-    invoke=None,
-):
-    from ..execution.repository import REPO_PATTERN, resolve_repo
-
-    repository = repository or resolve_repo()[0]
-    if not REPO_PATTERN.fullmatch(repository):
-        raise ValueError("Repository must be OWNER/REPO")
+def interactive(repo, *, ask=input):
     workflow = choose(
-        pages(repository, "actions/workflows", "workflows", query),
+        pages(repo, "actions/workflows", "workflows"),
         "Workflows",
-        lambda value: f"{value['name']} ({value['path']}, {value['id']})",
+        lambda w: f"{w['name']} ({w['id']})",
         ask,
-        write,
     )
-    workflow_id = str(workflow["id"])
-    runs = query(repository, f"actions/workflows/{workflow_id}/runs?per_page=30")[
+    runs = api(repo, f"actions/workflows/{workflow['id']}/runs?per_page=30")[
         "workflow_runs"
     ]
-    run = choose(
+    return choose(
         runs,
-        "Latest 30 runs",
-        lambda value: (
-            f"#{value['run_number']} {value.get('display_title', '')} | {value['head_branch']} | {value['status']}/{value.get('conclusion')} | {value['id']}"
-        ),
+        "Runs",
+        lambda r: f"{r['id']} {r['head_branch']} {r['status']}/{r.get('conclusion')}",
         ask,
-        write,
-    )
-    if run["workflow_id"] != workflow["id"] or not run.get("head_branch"):
-        raise ValueError("Selected Run does not match workflow or branch")
-    artifacts = pages(
-        repository, f"actions/runs/{run['id']}/artifacts", "artifacts", query
-    )
-    names = sorted({value["name"] for value in artifacts if not value.get("expired")})
-    artifact = (
-        choose(names, "Artifact names", str, ask, write, all_option=True)
-        if names
-        else None
-    )
-    logs_only = not names and run["status"] == "completed"
-    if logs_only:
-        write("No unexpired artifacts; collecting logs only.")
-    elif not names:
-        write("Run is not complete; wait for it and collect its artifacts and logs.")
-    args = [
-        "--repo",
-        repository,
-        "--workflow",
-        workflow_id,
-        "--ref",
-        run["head_branch"],
-        "--resume",
-        str(run["id"]),
-        "--out",
-        out,
-        "--save-log",
-    ]
-    if artifact:
-        args += ["--artifact", artifact]
-    elif logs_only:
-        args += ["--no-artifacts"]
-    if backend:
-        args += ["--download-backend", backend]
-    args += list(runtime)
-    write(f"Resume existing Run {run['id']}; output: {out}")
-    if invoke is None:
-        from ..execution.cli import entrypoint as invoke
-    return invoke(args)
-
-
-def existing_run(repository, run_id, workflow=None, ref=None, *, query=None):
-    """Resolve identity from the actual Run, rejecting conflicting caller constraints."""
-    run = (query or api)(repository, f"actions/runs/{run_id}")
-    if (
-        not isinstance(run, dict)
-        or type(run.get("id")) is not int
-        or run["id"] != run_id
-        or type(run.get("workflow_id")) is not int
-        or run["workflow_id"] <= 0
-        or not isinstance(run.get("head_branch"), str)
-        or not run["head_branch"]
-    ):
-        raise ValueError("GitHub returned an invalid Run identity")
-    remote = run.get("repository")
-    remote_repo = remote.get("full_name") if isinstance(remote, dict) else None
-    if not isinstance(remote_repo, str) or remote_repo.lower() != repository.lower():
-        raise ValueError("Run does not belong to the requested repository")
-    if ref is not None and ref != run["head_branch"]:
-        raise ValueError("Run does not belong to the requested ref")
-    if workflow is not None:
-        remote_path = run.get("path")
-        path = remote_path.split("@", 1)[0] if isinstance(remote_path, str) else ""
-        if workflow != str(run["workflow_id"]) and workflow not in (
-            path,
-            path.rsplit("/", 1)[-1],
-        ):
-            raise ValueError("Run does not belong to the requested workflow")
-    return workflow or str(run["workflow_id"]), run["head_branch"]
+    )["id"]
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        epilog="Examples: download.py --interactive --repo OWNER/REPO; "
-        "download.py --run RUN_ID --save-log --out workflow-artifacts.",
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--run", "--resume", dest="run", metavar="RUN_ID")
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--run", type=positive_id)
     group.add_argument("--interactive", action="store_true")
-    parser.add_argument("--repo", help="OWNER/REPO; infer from current Git origin")
-    parser.add_argument("--workflow", help="Optional constraint on the selected Run")
-    parser.add_argument("--ref", help="Optional constraint on the selected Run")
-    add_runtime_arguments(parser)
-    if not argv:
+    parser.add_argument("--repo")
+    parser.add_argument("--out", type=Path, default=Path("workflow-artifacts"))
+    parser.add_argument("--artifact", action="append", default=[])
+    parser.add_argument("--save-log", action="store_true")
+    parser.add_argument("--no-artifacts", action="store_true")
+    parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--timeout", type=positive_id, default=2700)
+    parser.add_argument("--json", action="store_true")
+    if argv == [] or argv is None and len(sys.argv) == 1:
         parser.print_help()
         return 0
     options = parser.parse_args(argv)
-    if options.run is None:
-        if not options.interactive:
-            parser.error("Choose --interactive or --run RUN_ID")
-        if not sys.stdin.isatty():
-            parser.error(
-                "Interactive mode requires a terminal; supply --run RUN_ID for an agent"
-            )
-        if options.workflow is not None or options.ref is not None:
-            parser.error("--workflow and --ref require --run RUN_ID")
-        if options.artifact is not None or options.no_artifacts:
-            parser.error(
-                "Select artifacts in the menu, or use --run with --artifact/--no-artifacts"
-            )
-    elif not options.run.isdecimal() or int(options.run) <= 0:
-        parser.error("--run/--resume requires a positive Run ID")
+    if options.interactive and (not sys.stdin.isatty() or options.json):
+        parser.error("Interactive selection requires a terminal; agents use --run")
+    if options.no_artifacts and options.artifact:
+        parser.error("--artifact conflicts with --no-artifacts")
+    result = {
+        "operation": "download",
+        "repository": options.repo,
+        "run_id": options.run,
+        "result": "unavailable",
+        "artifact_scope": "run",
+        "next_commands": [],
+    }
+    code = 1
     try:
-        from ..execution.repository import REPO_PATTERN
-    except ModuleNotFoundError as error:
-        return dependency_error(error)
-    if options.repo and not REPO_PATTERN.fullmatch(options.repo):
-        parser.error("--repo must be OWNER/REPO")
-    try:
-        if options.run is None:
-            return interactive(
-                options.repo, options.out, runtime=runtime_arguments(options)
-            )
-        repository = options.repo or resolve_repo(refresh=options.refresh_repo)[0]
-        workflow, ref = existing_run(
-            repository, int(options.run), options.workflow, options.ref
+        repo = repository(options.repo)
+        result["repository"] = repo
+        client = GitHub(repo)
+        run_id = options.run or interactive(repo)
+        result.update(
+            run_id=run_id, run_url=f"https://github.com/{repo}/actions/runs/{run_id}"
         )
-        return entrypoint(
-            [
-                "--repo",
-                repository,
-                "--workflow",
-                workflow,
-                "--ref",
-                ref,
-                "--resume",
-                options.run,
-                *runtime_arguments(options),
-            ]
+        run = client.run_info(run_id)
+        result.update(
+            attempt=run["run_attempt"],
+            commit_sha=run["head_sha"],
+            conclusion=run.get("conclusion"),
         )
+        watch_code = (
+            client.watch(run_id, timeout=options.timeout) if options.wait else 0
+        )
+        try:
+            current = client.run_info(run_id) if options.wait else run
+        except (ApiError, OSError, ValueError, KeyError, TypeError):
+            if watch_code:
+                raise ApiError(exit_code=watch_code) from None
+            raise
+        if (
+            current["head_sha"] != run["head_sha"]
+            or current["run_attempt"] != run["run_attempt"]
+        ):
+            raise ValueError("Run changed attempt or commit during collection")
+        if current["status"] != "completed":
+            result["reason"] = "Run is not complete; use --wait for this Run"
+            code = watch_code or 3
+        else:
+            directory = options.out / str(run_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            result["output"] = str(directory)
+            if options.save_log:
+                target = directory / "run.log"
+                if target.exists():
+                    raise ValueError("run.log exists; choose an empty --out directory")
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
+                    partial = Path(stream.name)
+                    try:
+                        client.run_log(run_id, run["run_attempt"], stream)
+                    except BaseException:
+                        stream.close()
+                        partial.unlink(missing_ok=True)
+                        raise
+                try:
+                    os.link(partial, target)  # atomic creation; never overwrite a log
+                finally:
+                    partial.unlink(missing_ok=True)
+                result["log"] = str(target)
+            if not options.no_artifacts:
+                client.run_download(run_id, directory / "artifacts", options.artifact)
+            result.update(result="downloaded", conclusion=current.get("conclusion"))
+            code = watch_code
+    except ApiError as error:
+        result.update(reason=str(error), http_status=error.status)
+        code = error.exit_code
     except KeyboardInterrupt:
-        print(
-            "Cancelled; inspect the existing ghwf state before resuming.",
-            file=sys.stderr,
+        result["reason"] = "Interrupted; query/download the same Run"
+        code = 130
+    except subprocess.TimeoutExpired:
+        result["reason"] = "Native gh timed out"
+        code = 124
+    except OSError as error:
+        result["reason"] = (
+            "Native tool or file unavailable (" + type(error).__name__ + ")"
         )
-        return 130
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
-        print(f"download: {error}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        code = 2
+    except (ValueError, KeyError, TypeError) as error:
+        result["reason"] = (
+            str(error) if isinstance(error, ValueError) else "Invalid GitHub metadata"
+        )
+        code = 1
+    result["exit_code"] = code
+    if code and result.get("run_url"):
+        command = f'uv run --locked python scripts/download.py --repo {result["repository"]} --run {result["run_id"]} --out "{options.out}"'
+        if options.save_log and not result.get("log"):
+            command += " --save-log"
+        if options.no_artifacts:
+            command += " --no-artifacts"
+        for name in options.artifact:
+            command += " --artifact " + json.dumps(name)
+        result["next_commands"] = [command]
+    if options.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        print(
+            f"Run {result['run_id']}: {result['result']}; {result.get('run_url', '')}; conclusion: {result.get('conclusion') or '-'}"
+        )
+        if result.get("reason"):
+            print(result["reason"])
+        for command in result["next_commands"]:
+            print("Continue: " + command)
+    return code

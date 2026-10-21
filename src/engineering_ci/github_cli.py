@@ -3,22 +3,24 @@
 import json
 import re
 import subprocess
+import sys
 
 
 class ApiError(RuntimeError):
-    def __init__(self, status=None):
+    def __init__(self, status=None, *, exit_code=1):
         self.status = status
+        self.exit_code = exit_code if exit_code >= 0 else 128 - exit_code
         super().__init__(f"GitHub request failed (HTTP {status or 'unavailable'})")
 
 
 def require_api_success(result):
     if result.returncode:
-        stderr = result.stderr
+        stderr = result.stderr or ""
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         match = re.search(r"HTTP (\d{3})", stderr)
         # Never print or persist raw HTTP responses or command stderr.
-        raise ApiError(int(match[1]) if match else None)
+        raise ApiError(int(match[1]) if match else None, exit_code=result.returncode)
 
 
 class GitHub:
@@ -89,3 +91,102 @@ class GitHub:
         if not 0 < len(result.stdout) <= 2 * 1024 * 1024:
             raise ValueError("Validation Manifest archive exceeds limit or is empty")
         return result.stdout
+
+    def run_info(self, run_id):
+        """Read one exact Run; an API read works without gh watch's checks scope."""
+        value = self(f"actions/runs/{run_id}")
+        if not isinstance(value, dict):
+            raise ValueError("Run metadata is not an object")  # noqa: TRY004 - public metadata validation
+        remote = value.get("repository")
+        repo = remote.get("full_name") if isinstance(remote, dict) else None
+        if (
+            type(value.get("id")) is not int
+            or value["id"] != run_id
+            or not isinstance(repo, str)
+            or repo.lower() != self.repository.lower()
+            or type(value.get("run_attempt")) is not int
+            or value["run_attempt"] < 1
+            or not isinstance(value.get("head_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", value["head_sha"])
+        ):
+            raise ValueError("Run identity does not match repository/ID/SHA/attempt")
+        return value
+
+    def watch(self, run_id, *, timeout=2700):
+        result = subprocess.run(
+            [
+                "gh",
+                "run",
+                "watch",
+                str(run_id),
+                "--repo",
+                self.repository,
+                "--exit-status",
+            ],
+            check=False,
+            timeout=timeout,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
+        return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+    def run_download(self, run_id, directory, names):
+        args = [
+            "gh",
+            "run",
+            "download",
+            str(run_id),
+            "--repo",
+            self.repository,
+            "--dir",
+            str(directory),
+        ]
+        for name in names:
+            args += ["--name", name]
+        result = subprocess.run(args, capture_output=True, check=False, timeout=1800)
+        require_api_success(result)
+
+    def run_log(self, run_id, attempt, stream):
+        result = subprocess.run(
+            [
+                "gh",
+                "run",
+                "view",
+                str(run_id),
+                "--repo",
+                self.repository,
+                "--attempt",
+                str(attempt),
+                "--log",
+            ],
+            stdout=stream,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=1800,
+        )
+        require_api_success(result)
+
+
+def repository(raw=None):
+    """Use native gh origin resolution; do not maintain a repository cache."""
+    if raw is None:
+        result = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+        require_api_success(result)
+        raw = json.loads(result.stdout)["nameWithOwner"]
+    GitHub(raw)  # validate before any command or local path construction
+    return raw
+
+
+def positive_id(raw):
+    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+        import argparse
+
+        raise argparse.ArgumentTypeError("Expected a positive integer")
+    return int(raw)

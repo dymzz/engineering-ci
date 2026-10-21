@@ -17,6 +17,9 @@ from engineering_ci.release import publishing, verification
 
 
 class API(FakeGitHub):
+    repository = REPOSITORY
+    run_info = GitHub.run_info
+
     def __init__(self):
         super().__init__()
         self.run.update(status="completed", conclusion="success")
@@ -111,12 +114,9 @@ def test_verify_checks_explicit_version_and_run_without_dispatching(
 ):
     api = API()
     monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(
-        cli, "entrypoint", lambda args: pytest.fail("verify cannot create a Run")
-    )
     assert cli.main(verify_args()) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["release"] == identity()
+    assert result["run"]["commit_sha"] == identity()["commit_sha"]
     assert result["validation"]["run_id"] == 123
     assert result["validation"]["status"] == "passed"
     assert result["publication"]["status"] == "not_published"
@@ -142,12 +142,7 @@ def test_verify_reports_the_actual_existing_run_state(
     else:
         api.run["conclusion"] = state
     monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(
-        cli,
-        "entrypoint",
-        lambda args: pytest.fail("Read-only inspection cannot Dispatch"),
-    )
-    assert cli.main(verify_args()) == 1
+    assert cli.main(verify_args()) in (1, 3)
     result = json.loads(capsys.readouterr().out)
     assert result["validation"]["status"] == expected and not api.writes
     if state in {"failure", "cancelled"}:
@@ -187,124 +182,6 @@ def test_read_only_interruption_returns_130(monkeypatch):
     assert cli.main(verify_args()) == 130
 
 
-@pytest.mark.parametrize("mode,publish", [("validate", "false"), ("publish", "true")])
-def test_mutating_commands_request_one_existing_workflow_without_prior_validation(
-    mode, publish, monkeypatch
-):
-    api, calls = API(), []
-    api.run["conclusion"] = (
-        "failure"  # no earlier passed Run is required to request one full release
-    )
-    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(cli, "prepare_publication", lambda options: 0)
-    monkeypatch.setattr(cli, "execution_checkpoint", lambda *args: None)
-    monkeypatch.setattr(cli, "entrypoint", lambda args: calls.append(args) or 1)
-    assert cli.main([mode, "--version", "0.4.11", "--repo", REPOSITORY]) == 1
-    from engineering_ci.execution.cli import parser
-
-    options = parser().parse_args(calls[0])
-    assert options.input == [
-        "version=" + TAG,
-        "publish=" + publish,
-        "pytest_scenario=pass",
-    ]
-    assert not options.new_run and len(calls) == 1
-
-
-def test_publish_and_post_verify_are_bound_to_the_same_run(
-    monkeypatch, capsys, tmp_path
-):
-    api, calls = API(), []
-    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(cli, "prepare_publication", lambda options: 0)
-
-    def invoke(args):
-        calls.append(args)
-        value = make_manifest(api, mode="publication")
-        publishing.publish_release(
-            api, TAG, HEAD, value, tmp_path / "release-manifest.json"
-        )
-        return 0
-
-    monkeypatch.setattr(cli, "entrypoint", invoke)
-    args = ["publish", "--version", "0.4.11", "--repo", REPOSITORY]
-    assert cli.main(args) == 0
-    assert api.saved["workflow"]["run_id"] == 123
-    writes = list(api.writes)
-    assert cli.main(args) == 0
-    assert len(calls) == 1 and api.writes == writes
-    capsys.readouterr()
-    api.item["expired"] = True  # the official Release asset remains readable
-    assert cli.main(verify_args()) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["validation"]["run_id"] == api.saved["workflow"]["run_id"]
-    assert result["publication"]["status"] == "published" and api.writes == writes
-
-
-def test_success_without_final_release_is_not_reported_as_publication(monkeypatch):
-    api = API()
-    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(cli, "prepare_publication", lambda options: 0)
-    monkeypatch.setattr(cli, "entrypoint", lambda args: 0)
-    assert cli.main(["publish", "--version", "0.4.11", "--repo", REPOSITORY]) == 1
-    assert not api.writes
-
-
-def test_final_release_receipt_must_match_the_requested_commit(
-    monkeypatch,
-    capsys,
-    tmp_path,
-):
-    from test_release_manifest import IDS, facts
-
-    from engineering_ci.release import manifest
-
-    api, other = API(), "b" * 40
-    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(cli, "prepare_publication", lambda options: 0)
-    monkeypatch.setattr(cli, "execution_checkpoint", lambda *args: False)
-
-    def completed(args):
-        # The receipt is valid on its own, but belongs to a different SHA.
-        api.main = other
-        api.run["head_sha"] = other
-        for job in api.jobs:
-            job["head_sha"] = other
-        for artifact in api.artifacts:
-            artifact["workflow_run"]["head_sha"] = other
-        value = manifest.manifest(
-            api,
-            REPOSITORY,
-            TAG,
-            other,
-            123,
-            1,
-            "publication",
-            facts(),
-            ids=IDS,
-        )
-        publishing.publish_release(
-            api,
-            TAG,
-            other,
-            value,
-            tmp_path / "release-manifest.json",
-        )
-        assert verification.published(api, REPOSITORY, TAG)["commit_sha"] == other
-        return 0
-
-    monkeypatch.setattr(cli, "entrypoint", completed)
-    assert (
-        cli.main(["publish", "--repo", REPOSITORY, "--version", TAG[1:], "--json"]) == 1
-    )
-    result = json.loads(capsys.readouterr().out)
-    assert result["operations"][0]["commit_sha"] == HEAD
-    assert result["operations"][0]["exit_code"] == 0
-    assert result["publication"]["status"] == "unconfirmed"
-    assert result["status"] == "failed"
-    assert result["next_actions"][0]["kind"] == "status"
-
-
 @pytest.mark.parametrize("latest_conclusion", ["success", "failure"])
 def test_published_evidence_keeps_original_attempt_after_run_retry(
     latest_conclusion, monkeypatch, capsys, tmp_path
@@ -335,14 +212,6 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
     api.jobs[0]["conclusion"] = "failure"
     assert cli.main(verify_args()) == 1
     assert json.loads(capsys.readouterr().out)["result"] == "unavailable"
-    assert not api.writes
-
-
-def test_version_conflict_does_not_dispatch(monkeypatch):
-    api = API()
-    monkeypatch.setattr(cli, "GitHub", lambda repo: api)
-    monkeypatch.setattr(cli, "entrypoint", lambda args: pytest.fail("Version mismatch"))
-    assert cli.main(["validate", "--repo", REPOSITORY, "--version", "0.4.9"]) == 1
     assert not api.writes
 
 

@@ -20,6 +20,8 @@ Consult relevant documentation and interfaces when working across module boundar
 - Native Dagger Checks define repository checks; standard Ruff settings and locked tools live in pyproject.toml. Do not recreate a host scheduler, input-hash receipt or check registry.
 - Dagger manages internal execution graphs, containers and caching.
 - GitHub Actions manages remote workflow orchestration, permissions and release gates.
+- Release CLI requests, inspects and waits for that Workflow; Git/PR operations use native Git/gh. Downloads use native gh for explicitly selected Runs.
+- Do not recreate a generic execution FSM, StateStore, download backend or host delivery lifecycle. Preserve only concrete dispatch uncertainty and release evidence safeguards.
 - engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.
 - engineering-ci must not depend directly or transitively on vesryn or vesryn-workflow, including through Log or Tool Runtime.
 - Keep any CI instrumentation minimal; generic log storage, archiving and querying belong to the logging component.

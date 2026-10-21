@@ -35,11 +35,12 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 | --- | --- | --- |
 | 本仓原生检查 | `.dagger/src/engineering_ci/main.py`、`repository.py` | 实际源码上的五项 Dagger Checks，原生 DAG 与缓存 |
 | 可复用容器检查 | `.dagger/src/engineering_ci/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
-| GitHub 执行与下载 | `src/engineering_ci/execution/` | 已有 Dispatch、等待、恢复、HTTP 下载与安全解压 |
-| 交付及发布证据 | `src/engineering_ci/release/` | Git / PR 交付、版本、Manifest 与发布操作 |
+| GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
+| 发布请求及证据 | `src/engineering_ci/release/` | 具体 Dispatch 意图、版本、Manifest、身份核验与发布操作 |
 | 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |
 
-宿主检查 Runner、Profile 配置、输入散列及 passed 收据已删除。GitHub 执行恢复层仍保留，后续按 #41 收敛。
+宿主检查 Runner、Profile、输入散列和 passed 收据、通用执行 FSM / Store / Backend 以及本地 Git/PR 交付生命周期均已删除。
+Git/PR 由原生工具操作；仅具体 Dispatch 保留防重复请求的未决意图，不实现通用任务持久化。
 基础检查定义见[本地检查](local-checks.md)，公共消费者接口见[支持范围](../delivery/public-components.md)。
 
 ## 入口与配置
@@ -49,10 +50,10 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 - Actions 内部操作：`python -m engineering_ci.workflow_actions`。
 - Dagger 模块：`dagger.toml`、`dagger-module.toml` 与生成的 SDK / 锁文件。
 - 标准 Ruff 设置和锁定开发工具：根 `pyproject.toml`、`uv.lock`；原生 Check 与容器定义在 Dagger 模块中。
-- 下载设置：见[配置入口](../configuration/README.md)，机器专用配置不提交。
+- Run 下载：原生 gh 参数，由两个用户入口显式传入；没有另一个下载配置来源。
 
-Python 包使用 Python >=3.14、transitions 和 filelock；开发测试使用 pytest / pytest-cov / Ruff / Ruff。
-Dagger 模块有独立 SDK 依赖。aria2c 是可选下载后端；GitHub 操作使用现有 Git / gh 认证。
+Python 包使用 Python >=3.14 标准库，无第三方运行时依赖；开发工具为 pytest / pytest-cov / Ruff。
+Dagger 模块有独立 SDK 环境；GitHub 操作使用现有 Git / gh 认证，不额外配置下载后端。
 私有消费者依赖的 Secret 由调用方显式提供，基础开发环境不再需要 Vesryn 仓库的读取凭据。
 
 ## 维护边界
@@ -60,8 +61,7 @@ Dagger 模块有独立 SDK 依赖。aria2c 是可选下载后端；GitHub 操作
 版本与 Lockfile 一致性、已知漏洞扫描是不同检查，见[依赖安全](dependency-security.md)。
 发布与质量门禁不接受 skipped、incomplete 或报告生成成功替代必需执行通过。
 
-现有检查和发布契约分别见[调用边界](cli-boundaries.md)、[执行恢复](execution/README.md)
-及[发布](release/README.md)。消费者直接组合公共 Dagger Functions 和共享 Workflow，
+现有检查和发布契约分别见[调用边界](cli-boundaries.md)及[发布](release/README.md)。消费者直接组合公共 Dagger Functions 和共享 Workflow，
 本仓库不维护通用建仓或 Git 仓库生命周期程序。
 
 文档维护遵循[约定](../conventions.md)；Agent 指令的作用域见[说明](agent-instructions.md)。

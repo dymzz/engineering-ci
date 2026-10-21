@@ -24,27 +24,6 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Verify:** `uv lock --check`, `uv build --wheel`
 - **Verified:** 2026-10-15 @ `04388dbdcf7a`
 
-## transitions
-
-- **Status:** adopted
-- **Pin:** `transitions==0.9.3` — `pyproject.toml` (`dependencies`)
-- **Used by:** `src/engineering_ci/execution/fsm.py` (download and execution FSM),
-  `src/engineering_ci/release/lifecycle.py` (release lifecycle FSM)
-- **Contract:** [execution state and recovery](../execution/state-and-recovery.md),
-  [release workflow](../release/workflow.md)
-- **Verify:** `tests/test_execution_state.py`, `tests/test_release_lifecycle.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
-
-## filelock
-
-- **Status:** adopted
-- **Pin:** `filelock==3.20.3` — `pyproject.toml` (`dependencies`)
-- **Used by:** `src/engineering_ci/execution/store.py`, `execution/collector.py`,
-  for atomic state persistence
-- **Contract:** [execution state and recovery](../execution/state-and-recovery.md)
-- **Verify:** `tests/test_execution_state.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
-
 ## pytest
 
 - **Status:** adopted

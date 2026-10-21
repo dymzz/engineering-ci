@@ -27,8 +27,8 @@ Dagger 自行管理依赖图、并发、目录输入和执行缓存，不在宿�
 
 根 `pyproject.toml` 保存标准 Ruff 配置和锁定开发依赖。先复制清单与 uv.lock、准备依赖，
 再加入源码；`.git`、虚拟环境、机器下载配置、认证目录和本地输出不进入检查容器。
-只有 pytest 分支安装 Git、gh 和 aria2，它们用于本地 Git / 模拟 HTTP 与 Range 集成测试；其他分支不安装 GitHub CLI 或下载工具。
-aria2 是可选下载后端；容器安装它用于真实 Range 集成测试，核心实现不强制宿主安装。
+只有 pytest 分支安装 Git 与 gh，用于原生命令及本地模拟 Release API 测试；
+测试不会触发真实 Workflow。其他检查分支不安装这些工具，下载不再依赖 aria2。
 
 ## 原始退出与报告
 

@@ -10,15 +10,12 @@
 
 | 触发 | 实际执行 | 发布 |
 |---|---|---|
-| PR / push 到 main | 既有 Ruff fixture + 发布脚本 Lint/Format、全部核心 pytest、四处版本检查、根项目 uv lock --check | 不发布 |
+| PR / push 到 main | 原生 Lint/Format、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
 | 手动 Release，publish=false | 上述检查加 Coverage 证据、完整 Dagger checks、既有质量与 Matrix fixture、真实根项目安全 enforce、报告下载核验 | 不创建 Tag/Release |
 | 手动 Release，publish=true | 同一完整验收；main SHA 与版本检查通过后才发布 | 精确提交 |
 
-PR Ruff 保留原有 tests/fixtures/python-app 范围，并覆盖发布脚本和测试；
-不是全仓库格式化迁移。全部 tests/ pytest 仍执行，包括真实 pytest 子进程、
-下载与恢复测试；Linux 安装 aria2 执行既有 HTTP 集成测试。
-PR 不启动 Dagger，不做漏洞扫描或完整 Matrix。
-30–60 秒是目标；排队、解释器安装、apt 更新会影响实际耗时，不以删测试达到目标。
+PR 的五项原生 Dagger Checks 通过三个既有 Job 执行，不运行安全扫描或完整 Matrix。
+这些额外发布策略仍在手动 Release 中显式执行。
 
 ## 检查定义与执行环境
 
@@ -147,60 +144,15 @@ python-ci / dependency-security 移到手动发布；
 不能宣称服务器已经阻断失败合并；实际权限及限制仍以本次 GitHub 操作结果为准。
 
 
-## 交付阶段与证据准入
+## 本地请求与调用职责
 
-`release/lifecycle.py` 使用 transitions 的 HierarchicalMachine，auto_transitions=False。
-主阶段是 DELIVERY、REVIEW、PUBLICATION、BLOCKED；DELIVERY 内部依次执行
-pending → checking → checked → committing → committed → pushing → pushed。
-pytest、CI Job、Artifact 的具体结果作为证据保存，不组合成 FSM 的平面状态。
-
-FSM 与 `release/pipeline.py` 的 DeliveryPipeline 持有同一个 ExecutionContext 对象。
-上下文包含仓库、版本、checkout、实际 Git / PR 事实和不可变阶段证据。
-业务操作产生证据，FSM 只按事件和准入条件改变阶段；后续步骤不能仅凭前一阶段名称认为完成。
-
-实际调用关系为：
-
-```text
-cli/release.py
-  ├─ delivery.prepare()
-  │    ├─ DeliveryPipeline：执行操作、产出及核验阶段证据
-  │    └─ ReleaseLifecycle：共享 ExecutionContext，按证据准入转换阶段
-  └─ 交付获准后调用既有 execution 入口
-       └─ ExecutionCoordinator → GitHub Actions
-```
-
-Pipeline 与交付 FSM 由 `delivery.prepare()` 协调，不能解释为 Pipeline 调用 FSM 再调用
-Coordinator 的串行调度链。检查图只由 Dagger 定义，发布目标使用既有 Release 业务策略。
-
-| 阶段输出 | 下一阶段必需输入与准入 |
-| --- | --- |
-| 本地检查 | 本次原生 dagger check 成功；准入提交 |
-| Commit | 实际 Commit SHA，提交后再次请求 Dagger 原生检查；准入 Push |
-| Push | 实际远端 ref 与已准入 Commit SHA 相同；准入创建或更新 PR |
-| PR | OPEN PR 的 head 与本地及远端提交一致；进入等待审查 |
-| Merge | 人或已授权 Agent 完成合并；实际 Merge SHA、被审查 head、远端 main 的祖先关系准入发布目标 |
-| 发布目标 | main SHA、版本和已有 Merge 证据一致；交给原 execution FSM 请求同一 Release Workflow |
-| Run 完成 | 最终 Tag / Manifest 必须绑定本次已准入的发布 SHA；另一 SHA 的有效 Release 证据不能作为本次成功 |
-
-输入过期、PR head 改变、必要执行或远端证据缺失均不能越过准入；已合并 PR 留有本地改动进入
-BLOCKED.merged，不能被旧 Run 或原 PR 的绿色检查覆盖。错误输出包含当前阶段和接续命令。
-重启时从原生事实重新识别阶段，已确认的 OPEN PR 可以恢复 REVIEW.waiting，不伪造本地检查记录。
-Git/PR 修改失败保留已产生的真实提交；远端 UNKNOWN 仍禁止自动再次 POST。
-PR 交付完成与 CI 通过分别记录。handoff 读取当前 head 的真实检查状态：必需结果失败、跳过或
-尚未完成时停在 PR CI，不建议 Ready / 合并；只有实际发布策略中的全部必需 Job 实际成功且可合并时，
-才给出可合并提示。缺失状态不能当作通过。
-
-Workflow 的 bootstrap 检查只需要标准库。下载配置类型与执行依赖分开，读取可选工具配置不会
-提前导入 transitions / filelock；实际执行能力仍由锁定项目环境加载，不降低其依赖要求。
-
-## 调用职责
+Git/PR 使用原生工具完成；用户 `publish` 只请求 main 上已有的 Release Workflow。
+具体 Dispatch 在 POST 前排他保存意图；未知响应停止并报告人工核验命令，绝不再次 POST。
+`status / verify` 只读显式 Run，`wait` 使用原生 gh 等待后核验；不读取旧 FSM 或阶段收据。
+一般 Artifact 下载交给 `gh run download`，日志交给 `gh run view --log`。
+具体约束与结果见[CLI 边界](../cli-boundaries.md)。
 
 Actions 通过 `engineering_ci.workflow_actions` 调用 `release prepare/verify/publish` 与
-`manifest facts/tools`；GitHub Actions 继续定义并执行发布 DAG。
-这些内部动作处理 Actions 上下文及发布门禁，不是用户请求 Workflow 的命令。
-
-Release 业务模块位于 `src/engineering_ci/release/`；用户脚本是 `scripts/release.py` 和
-`scripts/download.py`。`release/delivery.py` 协调共享上下文、FSM 与阶段操作，串接检查、提交、Push 和审查合并停点，
-不承担远端 DAG 调度。请求和等待复用既有 execution FSM；只读停点查询与核验不创建执行状态，
-产物下载仍交给既有收集器。发布 Manifest Schema 与原有发布准入语义保持不变。
-模块调用关系见[CLI 与 Workflow 调用边界](../cli-boundaries.md)，命令及恢复方式见[使用说明](../../../guides/README.md)。
+`manifest facts/tools`。内部动作核验真实 Actions 上下文和发布准入，不是用户请求的另一个入口。
+原始 Manifest Schema、检查/工具定义与发布冲突检查保留；不重建本地交付 FSM 或远端 DAG 镜像。
+操作与继续方式见[使用说明](../../../guides/common-tasks.md)。

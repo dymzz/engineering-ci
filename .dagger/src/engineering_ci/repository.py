@@ -27,7 +27,7 @@ SOURCE_EXCLUDES = [
     ".codex",
     ".claude",
     ".agents",
-    "config/ghwf.local.toml",
+    "**/*.local.toml",
     "get_vesryn-log_docs.ps1",
     "guides",
     "docs/**/*.md",
@@ -50,7 +50,6 @@ def environment(source: dagger.Directory, *, tests: bool = False) -> dagger.Cont
                 "-qq",
                 "--no-install-recommends",
                 "git",
-                "aria2",
                 "gh",
             ]
         )

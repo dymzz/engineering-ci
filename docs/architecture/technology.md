@@ -19,8 +19,6 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | --- | --- | --- | --- |
 | Python | adopted | runtime | [python](integrations/python.md#python) |
 | uv and uv_build | adopted | build, development, CI | [python](integrations/python.md#uv-and-uv_build) |
-| transitions | adopted | runtime | [python](integrations/python.md#transitions) |
-| filelock | adopted | runtime | [python](integrations/python.md#filelock) |
 | pytest | adopted | development, CI | [python](integrations/python.md#pytest) |
 | pytest-cov | adopted | development, CI | [python](integrations/python.md#pytest-cov) |
 | Dagger engine and module | adopted | CI, PR check graph, container execution | [dagger](integrations/dagger.md#dagger-engine-and-module) |
@@ -31,7 +29,6 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | Ruff | adopted | development, CI | [tools](integrations/tools.md#ruff) |
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
-| aria2c | adopted | optional download backend | [tools](integrations/tools.md#aria2c) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
 
 ## Verification notes

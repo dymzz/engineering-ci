@@ -13,7 +13,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 ## Git CLI
 
 - **Status:** adopted; host / runner Git is not separately pinned.
-- **Used by:** `release/` and `tools/consumer.py` for commit/PR delivery, source inspection and release tagging.
+- **Used by:** `release/` and `tools/consumer.py` for source inspection and release tagging; operators use native Git/gh for PR delivery.
 - **Contract:** [release workflow](../release/workflow.md), [consumer usage](../../../guides/new-repository.md).
 - **Verify:** `tests/test_manual_release.py`, `tests/test_sync_consumer.py`.
 
@@ -22,18 +22,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Status:** adopted; host / runner gh is not separately pinned.
 - **Used by:** `github_cli.py`, `cli/download.py`, `cli/release.py` for API access, workflow requests and artifacts.
 - **Contract:** [CLI boundaries](../cli-boundaries.md), [release workflow](../release/workflow.md).
-- **Verify:** `tests/test_ghwf_cli.py`, `tests/test_unified_cli.py` use substituted GitHub calls.
-
-## aria2c
-
-- **Status:** adopted
-- **Pin:** unpinned — optional host executable configured via `config/ghwf.local.toml` or
-  `GHWF_ARIA2C_PATH`
-- **Used by:** `src/engineering_ci/execution/download.py`, `cli/_execution.py` — optional
-  multi-connection HTTP download backend with Range resume
-- **Contract:** [download configuration](../../configuration/downloads.md)
-- **Verify:** `tests/test_download_backends.py`, `tests/test_http_download.py`
-- **Verified:** 2026-10-14 @ `963d809a295f`
+- **Verify:** `tests/test_github_runs.py`, `tests/test_release_verification.py` and `tests/test_release_transport.py`; mock dispatch never creates a real Workflow.
 
 ## OSV-Scanner
 
