@@ -2,8 +2,11 @@
 
 本轮使用 **v1.0.0-beta.16**：`dagger-module.toml` 固定模块 Engine 版本，
 共享 Workflow 的 `DAGGER_VERSION` 同时固定 CLI 和 Engine 镜像。
-版本一致性测试防止两处出现偏差。不使用浮动 `latest`。
+调用前核对 CLI 与固定 Engine 版本一致。不使用浮动 `latest`。
 安装方式来自 [Dagger 官方文档](https://docs.dagger.io/getting-started/install/)。
+
+共享 Workflow 用 Docker 原生 `--pull=missing` 启动 Engine：先使用本地固定 Tag 的镜像，
+仅在缺失时拉取；拉取失败仍使任务失败。宿主与不同 GitHub Hosted Job 不共享 Docker 镜像缓存。
 
 Windows PowerShell 7：
 

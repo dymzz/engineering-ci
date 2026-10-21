@@ -107,3 +107,10 @@
 - Evidence: environment module settings and local module aliases work; environment `check.skip` is rejected as an unknown field. A base module's skipped Checks remain excluded even when explicitly selected.
 - Integration: keep root fixture exclusions on engineering-ci, use a native fixtures environment with a validation alias, `--module validation` and repeated exact `--check=NAME` flags. Wildcard and comma-separated name strings returned no matches in beta.16; an unscoped filter targets the entrypoint instead of the alias. `workspace config` array values use comma-separated strings; JSON array text is treated as invalid filter text.
 - Assessment: version-specific CLI/configuration constraints; use actual beta.16 discovery instead of assuming current documentation's newer syntax.
+
+## Dagger@1.0.0-beta.16: module-source environment and Check filters are distinct
+- Status: confirmed local integration error, not an upstream defect.
+- Seen: 2026-10-21, v0.7.0 Release Run 39608531178, complete-ci/checks job 119251153135.
+- Evidence: exporting DAGGER_MODULE=validation made native Dagger resolve the nonexistent local source path validation before report export. The exact failure was reproduced with local `dagger --env fixtures check --module validation -l --format cli`; removing only that environment variable restored the configured validation alias.
+- Integration: keep the public workflow input dagger_module as a Check filter, map it to the namespaced ECI_CHECK_MODULE shell variable, and pass `check --module` explicitly. Do not use Dagger's native source-selection environment variable for a different purpose.
+- Regression: the existing Workflow subprocess test reads the actual environment binding from YAML; its Dagger substitute rejects a leaked native DAGGER_MODULE, while preserving all check and report failure assertions. Linux CI exercises that shell contract; native discovery provides separate real-Dagger evidence.

@@ -124,6 +124,7 @@ if args[:2]==["api","call"]: args=args[1:]
 with open(os.environ["PERF_EVENTS"],"a",encoding="utf-8") as stream:
     stream.write(json.dumps({"args":args,"raw_args":raw_args})+"\n")
 if args[0]=="version": raise SystemExit(0)
+assert not os.environ.get("DAGGER_MODULE"), "Native DAGGER_MODULE overrides module source"
 if args[0]=="call":
     out=Path(args[args.index("--path")+1])
     out.mkdir(parents=True,exist_ok=True)
@@ -178,6 +179,11 @@ class WorkflowExecutionTests(unittest.TestCase):
         text = workflow.split("      - name: Run Dagger Checks\n", 1)[1].split(
             "\n      - name:", 1
         )[0]
+        module_env = next(
+            line.strip().split(":", 1)[0]
+            for line in text.splitlines()
+            if "inputs.dagger_module" in line
+        )
         code = text.split("        run: |\n", 1)[1]
         code = "\n".join(line[10:] for line in code.splitlines()) + "\n"
         directory = Path(directory)
@@ -224,7 +230,7 @@ class WorkflowExecutionTests(unittest.TestCase):
                 "PYTEST_CHECK": replacement if report else "",
                 "PYTEST_REPORT_SCENARIO": "",
                 "DAGGER_ENVIRONMENT": dagger_environment,
-                "DAGGER_MODULE": dagger_module,
+                module_env: dagger_module,
                 "DAGGER_CHECKS": dagger_checks,
             }
         )
