@@ -44,8 +44,9 @@ def delivery_config(data):
     return {"checks_profile": profile, "release": dict(release)}
 
 
-def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
+def load(path: Path | None = None) -> dict:
     """Reject missing or contradictory definitions before executing any check."""
+    path = ROOT / "config/pipeline.toml" if path is None else path
     try:
         with path.open("rb") as stream:
             data = tomllib.load(stream)
@@ -240,4 +241,42 @@ def load(path: Path = ROOT / "config/pipeline.toml") -> dict:
         raise ValueError(f"Invalid pipeline configuration {path}: {error}") from error
 
 
-PIPELINE = load()
+def load_root(root=None) -> dict | None:
+    """Load the policy for one Provider root, or None when that root has none.
+
+    An installed package has no config/pipeline.toml beside it, so import must not
+    require a checkout. Missing configuration is a state, not an error: the Provider
+    binds a root before any check resolves the policy.
+    """
+    path = (ROOT if root is None else Path(root)) / "config/pipeline.toml"
+    return load(path) if path.is_file() else None
+
+
+def bind(root=None) -> dict | None:
+    """Publish this Provider root's policy when it provides one.
+
+    A root without config/pipeline.toml keeps the current binding rather than clearing
+    it: `execute(root=...)` also names a synthetic tree in tests and in local runs, and
+    that must not erase the checkout policy. Binding is per process; the domain
+    Provider runs one root per invocation and the local CLI runs one checkout.
+
+    Updates the existing PIPELINE object in place so early-bound references stay
+    valid (release.RELEASE_CONFIG = PIPELINE["delivery"]["release"]; is identity matters
+    inside the existing release pipeline).
+    """
+    global PIPELINE
+
+    found = load_root(root)
+    if found is not None:
+        if PIPELINE is None:
+            PIPELINE = found
+        else:
+            PIPELINE.clear()
+            PIPELINE.update(found)
+    return PIPELINE
+
+
+# Declared before the first bind(): an installed package has no policy beside it, and
+# bind() keeps the current value rather than assigning, so the name must already exist.
+PIPELINE = None
+PIPELINE = bind()

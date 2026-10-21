@@ -397,6 +397,7 @@ def execute(
     # root loads the Provider module; target is mounted and checked; owner receives
     # every artifact this run produces. One directory unless a caller separates them.
     root = root.resolve()
+    checks.require_policy()
     target = Path(target).resolve() if target is not None else root
     provider = root if target != root else None
     owner = Path(output_root).resolve() if output_root is not None else target

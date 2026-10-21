@@ -5,9 +5,25 @@ import re
 from .check_operations import ruff_command as registered_ruff_command
 from .pipeline import PIPELINE
 
-UV_VERSION = PIPELINE["toolchain"]["uv"]
-RUFF_VERSION = PIPELINE["toolchain"]["ruff"]
-PYTHON_VERSION = PIPELINE["toolchain"]["python"]
+# Overwritten by publish(); declared so the names exist before a policy is bound.
+UV_VERSION: str | None = None
+RUFF_VERSION: str | None = None
+PYTHON_VERSION: str | None = None
+
+
+def publish(policy):
+    """Publish the pinned toolchain for one validated Pipeline, or clear it."""
+    global UV_VERSION, RUFF_VERSION, PYTHON_VERSION
+
+    if policy is None:
+        values = (None, None, None)
+    else:
+        toolchain = policy["toolchain"]
+        values = (toolchain["uv"], toolchain["ruff"], toolchain["python"])
+    UV_VERSION, RUFF_VERSION, PYTHON_VERSION = values
+
+
+publish(PIPELINE)
 
 
 def ruff_command(*arguments):

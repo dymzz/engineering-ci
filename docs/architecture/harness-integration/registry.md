@@ -99,6 +99,57 @@ Scope 的 repository/task 只传递上下文；环境、实际工具可用性、
 Dagger 模块不互相导入；调用结果和 JSON 交付仍是独立事实。
 SciPy Bootstrap/River/Optuna 及自动策略更新仍是后续任务。
 
+## 独立安装：Provider 资产入口
+
+安装后的包不再需要开发者的 checkout。原先 `pipeline.py` 在导入期就读取
+`ROOT/config/pipeline.toml`，而安装位置旁边没有该文件，`import engineering_ci.checks`
+会直接失败——本地一直用的是 editable 安装，所以这条路径从未被验证过。
+
+现在策略改为**从显式的 Provider root 解析**：
+
+| 模块 | 改动 |
+| --- | --- |
+| `pipeline.py` | 移除导入期加载；新增 `load_root()` / `bind()`；`PIPELINE` 初始为 `None` |
+| `toolchain.py` | 工具链版本随 policy 发布，不再导入期求值 |
+| `checks.py` | 新增 `publish()` / `bind()` / `require_policy()` |
+
+检查表仍然写进模块 globals（`report_path()` 等函数读的是裸全局名，PEP 562 的
+`__getattr__` 不覆盖这种查找）。`bind(root)` 的语义是"**有就用，没有就保留当前**"，
+因此把一个无关的合成目录作为 `root` 传入不会清掉已有策略。
+绑定只发生在装配层（`provider.catalog` / `provider.main`），检查库自己不绑定。
+
+`provider_root()` 同时接受两种形态：
+
+- **源码 checkout**：`src/engineering_ci/workflow_adapters/provider.py` 存在
+- **解包后的资产目录**：`config/pipeline.toml` 与 `dagger-module.toml` 存在
+
+`ProviderAdapter.request` 只在 checkout 形态下设置 `PYTHONPATH`；安装形态下包本身
+即可导入，不再人为插入路径。
+
+### 导出 Provider 资产
+
+```powershell
+uv run --locked engineering-ci workflow-adapter-export --out ./provider-assets
+# 等价于：
+uv run --locked python -m engineering_ci.workflow_adapters.provider export --root . --out ./provider-assets
+```
+
+导出内容是 Provider 自己拥有的东西——Pipeline 策略与 Dagger 模块：
+
+```
+config/pipeline.toml
+dagger-module.toml  dagger.lock  dagger.toml
+.dagger/src/**  .dagger/sdk/**  .dagger/pyproject.toml  .dagger/uv.lock
+provider-assets.json
+```
+
+不含 `.git`、`.venv`、测试夹具或任何开发状态。`provider-assets.json` 记录包版本、
+两个 `vesryn.adapters` entry point、逐文件 SHA-256 和整体摘要，供消费方核验
+解包内容未变。目标目录必须为空或不存在，避免覆盖已有内容。
+
+消费方解包后把该目录作为 Provider root 传入；安装位置本身既不是检查目标，
+也不是默认日志 root。
+
 ## 持久选择 Binding
 
 `workflow select --tool` 通过 Vesryn 的 `vesryn.adapters` 注册加载显式 Provider；

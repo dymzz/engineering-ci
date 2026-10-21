@@ -14,6 +14,8 @@ from vesryn_tool_runtime.documents import WorkflowError
 from engineering_ci import checks, dagger_checks
 from engineering_ci.checks_container import OMITTED_INPUTS
 from engineering_ci.workflow_adapters import provider
+from engineering_ci.workflow_adapters.assets import export as assets_export
+from engineering_ci.workflow_adapters.assets import manifest as asset_manifest
 from engineering_ci.workflow_adapters.checks import ChecksAdapter, dagger_catalog
 
 TOOLS = {"python": {"version": "3.14.8"}}
@@ -483,5 +485,69 @@ def test_provider_transport_follows_the_approved_root_not_the_provider(tmp_path)
 
 
 def test_provider_catalog_rejects_a_directory_without_its_own_source(tmp_path):
-    with pytest.raises(WorkflowError, match="explicit primary source checkout"):
+    with pytest.raises(
+        WorkflowError, match="primary source checkout or an unpacked asset directory"
+    ):
         provider.catalog(tmp_path)
+
+
+def asset_source(root):
+    """A minimal Provider asset directory: the policy plus the Dagger module."""
+    (root / ".dagger/src/engineering_ci").mkdir(parents=True, exist_ok=True)
+    (root / ".dagger/src/engineering_ci/main.py").write_text("VALUE = 1\n")
+    (root / ".dagger/src/engineering_ci/pr_checks.py").write_text("# module\n")
+    (root / ".dagger/sdk/src").mkdir(parents=True, exist_ok=True)
+    (root / ".dagger/sdk/src/client.py").write_text("# generated sdk\n")
+    (root / ".dagger/pyproject.toml").write_text("# module project\n")
+    (root / ".dagger/uv.lock").write_text("# module lock\n")
+    (root / "config").mkdir(exist_ok=True)
+    (root / "config/pipeline.toml").write_text("# policy\n")
+    for name in ("dagger-module.toml", "dagger.lock", "dagger.toml"):
+        (root / name).write_text(f"# {name}\n")
+    return root
+
+
+def test_provider_catalog_accepts_an_unpacked_asset_directory(tmp_path):
+    """A consumer supplies assets, not a developer's checkout."""
+    assets = tmp_path / "provider-assets"
+    document = assets_export(checks.ROOT, assets)
+
+    assert (assets / "config/pipeline.toml").is_file()
+    assert (assets / "dagger-module.toml").is_file()
+    assert (assets / ".dagger/src/engineering_ci/main.py").is_file()
+    # An install location carries no development state.
+    assert not (assets / ".git").exists()
+    assert not (assets / "tests").exists()
+    assert not (assets / ".venv").exists()
+    assert not (assets / ".dagger/.venv").exists()
+    assert document["sha256"]
+    assert document["files"]["config/pipeline.toml"]
+    assert (
+        document["entry_points"]["vesryn.adapters"]["engineering-ci-dagger"]
+        == "engineering_ci.workflow_adapters.provider:catalog"
+    )
+    # The unpacked location satisfies the Provider root contract on its own.
+    assert provider.provider_root(assets) == assets.resolve()
+
+
+def test_asset_manifest_detects_changed_bytes(tmp_path):
+    source = asset_source(tmp_path / "source")
+    before = asset_manifest(source)
+    (source / "config/pipeline.toml").write_text("# policy changed\n")
+
+    after = asset_manifest(source)
+
+    assert (
+        after["files"]["config/pipeline.toml"]
+        != before["files"]["config/pipeline.toml"]
+    )
+    assert after["sha256"] != before["sha256"]
+
+
+def test_export_refuses_a_destination_that_already_has_content(tmp_path):
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "existing.txt").write_text("do not overwrite\n")
+
+    with pytest.raises(Exception, match="new or empty directory"):
+        assets_export(asset_source(tmp_path / "source"), used)
