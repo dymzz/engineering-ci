@@ -1052,7 +1052,7 @@ def main(argv=None, *, executor=None):
         _, code = run_checks(
             args.checks,
             executor=executor or args.executor,
-            root=provider,
+            root=provider_root,
             target=args.check_target,
             output_root=args.output_root,
             coverage=args.coverage,
