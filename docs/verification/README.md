@@ -12,6 +12,7 @@
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
 - [PR 检查执行图](pr-check-graph.md) — Dagger 分支、原始失败、Coverage 与证据复用验收。
 - [Binding 准入与恢复](selection-binding.md) — Provider、实际 Workflow 关联、执行前拒绝及真实 Dagger 强杀恢复。
+- [独立 Provider 安装](installed-provider.md) — 无开发 checkout 的 wheel/资产、真实消费者执行及 ECI-003 收尾。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 
 上级入口：[技术文档](../README.md)。

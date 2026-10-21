@@ -41,7 +41,16 @@ class ProviderAdapter:
 
     def request(self, action, value=None, run_dir=None):
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(self.root / "src")
+        # Only a source checkout carries the package in-tree. An installed Provider is
+        # already importable, and prepending a path that does not exist would only
+        # make the child depend on a development layout.
+        if (
+            not (self.root / "provider-assets.json").is_file()
+            and (
+                self.root / "src/engineering_ci/workflow_adapters/provider.py"
+            ).is_file()
+        ):
+            environment["PYTHONPATH"] = str(self.root / "src")
         command = [
             sys.executable,
             "-m",
@@ -119,12 +128,33 @@ class ProviderAdapter:
             }
 
 
-def catalog(root, *, target=None, output_root=None):
-    root = Path(root).resolve()
-    if not (root / "src/engineering_ci/workflow_adapters/provider.py").is_file():
+def provider_root(path):
+    """Accept either a source checkout or an unpacked Provider asset directory.
+
+    A checkout carries the Python package in-tree. An installed Provider supplies the
+    package itself and only needs the assets it ships: the Pipeline policy and the
+    Dagger module. Neither is a developer's checkout.
+    """
+    root = Path(path).resolve()
+    checkout = (root / "src/engineering_ci/workflow_adapters/provider.py").is_file()
+    assets = (root / "config/pipeline.toml").is_file() and (
+        root / "dagger-module.toml"
+    ).is_file()
+    if not (checkout or assets):
         raise WorkflowError(
-            "Domain Provider requires its explicit primary source checkout"
+            "Domain Provider requires either its primary source checkout or an "
+            "unpacked asset directory providing config/pipeline.toml and "
+            "dagger-module.toml"
         )
+    return root
+
+
+def catalog(root, *, target=None, output_root=None):
+    from .. import checks
+
+    root = provider_root(root)
+    # This root is the Provider's own source; publish its policy before any tool runs.
+    checks.bind(root)
     result = Catalog()
     result.provider_name = "engineering-ci-dagger"
     adapter = ProviderAdapter(root, {}, target=target, output_root=output_root)
@@ -150,8 +180,13 @@ def catalog(root, *, target=None, output_root=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("tools", "invoke"))
+    parser.add_argument("action", choices=("tools", "invoke", "export"))
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="export only: new directory to write the Provider assets into",
+    )
     parser.add_argument(
         "--target",
         type=Path,
@@ -168,6 +203,19 @@ def main(argv=None):
         from .. import checks
         from .checks import dagger_catalog
 
+        if args.action == "export":
+            if args.out is None:
+                raise WorkflowError("export requires --out")
+            from .assets import AssetError, export
+
+            root = provider_root(args.root)
+            try:
+                document = export(root, args.out)
+            except AssetError as error:
+                raise WorkflowError(str(error)) from None
+            print(json.dumps(document, indent=2, sort_keys=True))
+            return 0
+
         def original_process(command, **kwargs):
             if not kwargs.get("capture_output") and "stdout" not in kwargs:
                 kwargs["stdout"] = sys.stderr
@@ -176,6 +224,7 @@ def main(argv=None):
         root = args.root.resolve()
         target = args.target.resolve() if args.target else root
         owner = args.output_root.resolve() if args.output_root else target
+        checks.bind(root)
         tools = dagger_catalog(
             root,
             runner=partial(checks.run_checks, run=original_process),

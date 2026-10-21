@@ -8,6 +8,29 @@ import pytest
 from engineering_ci import checks, checks_container
 
 
+def test_environment_probe_uses_provider_imports_and_consumer_inputs(
+    tmp_path, monkeypatch
+):
+    provider = tmp_path / "provider"
+    consumer = tmp_path / "consumer"
+    monkeypatch.setattr(checks, "ROOT", provider)
+    seen = []
+    monkeypatch.setattr(
+        checks, "execution_environment", lambda root, env: seen.append(root) or {}
+    )
+    monkeypatch.setattr(checks, "environment_identity", lambda env: {})
+    monkeypatch.setattr(
+        checks, "preflight", lambda name, root, *args: {"target": str(root)}
+    )
+    monkeypatch.setattr(
+        checks, "snapshot", lambda root, *args, **kwargs: ({"target": str(root)}, None)
+    )
+    result = checks_container.prepare(consumer, ["pytest"], {})
+    assert seen == [provider]
+    assert result["source_inputs"]["pytest"] == {"target": str(consumer)}
+    assert result["tools"]["pytest"] == {"target": str(consumer)}
+
+
 @pytest.fixture
 def branches(tmp_path, monkeypatch):
     names = ["ruff-lint", "pytest", "version"]

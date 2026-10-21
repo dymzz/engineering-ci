@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -18,30 +18,103 @@ import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from . import pipeline, toolchain
 from ._paths import ROOT
 from .check_operations import command as operation_command
-from .pipeline import PIPELINE
 from .task_observation import task_entry
-from .toolchain import PYTHON_VERSION, RUFF_VERSION, UV_VERSION, ruff_command
 
-CI_STEPS = {
-    name: spec["ci_step"]
-    for name, spec in PIPELINE["checks"].items()
-    if "ci_step" in spec
-}
-RUFF_SCOPE = tuple(PIPELINE["scopes"][PIPELINE["checks"]["ruff-lint"]["scope"]])
-PR_CI_JOBS = tuple(
-    dict.fromkeys(
-        spec["ci_job"] for spec in PIPELINE["checks"].values() if "ci_job" in spec
+
+def _tables(value):
+    """Derive the check tables from one validated Pipeline document."""
+    if value is None:
+        # No policy is bound yet: an installed package carries no configuration
+        # beside it. bind() republishes these before any check may use them.
+        return {
+            "PIPELINE": None,
+            "CI_STEPS": {},
+            "RUFF_SCOPE": (),
+            "PR_CI_JOBS": (),
+            "PR_CHECKS": (),
+            "GROUPS": {},
+            "SCOPES": {},
+            "COMMON_INPUTS": (),
+        }
+    return {
+        "PIPELINE": value,
+        "CI_STEPS": {
+            name: spec["ci_step"]
+            for name, spec in value["checks"].items()
+            if "ci_step" in spec
+        },
+        "RUFF_SCOPE": tuple(value["scopes"][value["checks"]["ruff-lint"]["scope"]]),
+        "PR_CI_JOBS": tuple(
+            dict.fromkeys(
+                spec["ci_job"] for spec in value["checks"].values() if "ci_job" in spec
+            )
+        ),
+        "PR_CHECKS": tuple(value["profiles"]["pr"]),
+        "GROUPS": {name: tuple(items) for name, items in value["profiles"].items()},
+        "SCOPES": {
+            name: tuple(value["scopes"][spec["scope"]])
+            for name, spec in value["checks"].items()
+        },
+        "COMMON_INPUTS": tuple(value["inputs"]["common"]),
+    }
+
+
+# Declared here so the names exist before publish() overwrites them. They are read as
+# bare globals throughout this module, so they cannot be resolved per access.
+PIPELINE = None
+CI_STEPS: dict = {}
+RUFF_SCOPE: tuple = ()
+PR_CI_JOBS: tuple = ()
+PR_CHECKS: tuple = ()
+GROUPS: dict = {}
+SCOPES: dict = {}
+COMMON_INPUTS: tuple = ()
+PYTHON_VERSION: str | None = None
+RUFF_VERSION: str | None = None
+UV_VERSION: str | None = None
+
+
+def publish(value):
+    """Publish every check table for one validated Pipeline document."""
+    globals().update(_tables(value))
+    toolchain.publish(value)
+    # Re-publish the pinned toolchain here too; these names are re-exported by this
+    # module and are read as bare globals throughout it.
+    globals().update(
+        PYTHON_VERSION=toolchain.PYTHON_VERSION,
+        RUFF_VERSION=toolchain.RUFF_VERSION,
+        UV_VERSION=toolchain.UV_VERSION,
     )
-)
-PR_CHECKS = tuple(PIPELINE["profiles"]["pr"])
-GROUPS = {name: tuple(values) for name, values in PIPELINE["profiles"].items()}
-SCOPES = {
-    name: tuple(PIPELINE["scopes"][spec["scope"]])
-    for name, spec in PIPELINE["checks"].items()
-}
-COMMON_INPUTS = tuple(PIPELINE["inputs"]["common"])
+
+
+def bind(root=None):
+    """Point this process at one Provider root and publish that root's policy.
+
+    Importing this module never requires a checkout: with no policy beside the
+    installed package the tables stay empty until a Provider root is bound. Every
+    public name keeps working, because the values are published into this module's
+    own globals rather than resolved per access.
+    """
+    return publish(pipeline.bind(root))
+
+
+def require_policy():
+    """Refuse to run a check while no Provider policy is bound.
+
+    Without this the empty tables would look like an unsupported check rather than a
+    missing Provider root, which is the real problem.
+    """
+    if PIPELINE is None:
+        raise ValueError(
+            "No Provider root is bound; select one that provides config/pipeline.toml"
+        )
+
+
+bind()
+
 # Only these checks answer a question about the checked tree alone. Ruff, format and
 # version name engineering-ci's own files in their scope, so they stay Provider-owned.
 TARGET_PORTABLE = frozenset({"pytest", "lock"})
@@ -341,7 +414,7 @@ def preflight(name, root, run, which, environ):
         )
     if name.startswith("ruff-"):
         uvx = tools["uvx"]["executable"]
-        args = ruff_command("--version")
+        args = toolchain.ruff_command("--version")
         args[0] = uvx
         text = probe(args, root, run, environ)
         if not re.fullmatch(rf"ruff {re.escape(RUFF_VERSION)}\s*", text):
@@ -431,16 +504,14 @@ def pytest_counts(root, junit, exit_code, capability=None):
     The parser is Provider implementation code, so it is read from the Provider
     checkout; a consumer target never has to carry a copy of it.
     """
-    spec = importlib.util.spec_from_file_location(
-        "checks_pytest_report",
-        Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py",
+    # run_path reads the existing parser without writing a .pyc into Provider assets.
+    parser = runpy.run_path(
+        str(Path(capability or ROOT) / ".dagger/src/engineering_ci/pytest_report.py")
     )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     path = root / junit
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("JUnit exceeds the existing report reader limit")
-    return module.summarize_pytest(path.read_text(encoding="utf-8"), exit_code, "")[
+    return parser["summarize_pytest"](path.read_text(encoding="utf-8"), exit_code, "")[
         "counts"
     ]
 
@@ -539,6 +610,9 @@ def execute(
     # unless a caller explicitly separates them, so existing entry points keep
     # their current behaviour and their current identity documents.
     root = root.resolve()
+    # Binding is the assembly layer's decision, not this library's: a caller may pass
+    # a tree whose configuration is unrelated to the selected Provider policy.
+    require_policy()
     target = Path(target).resolve() if target is not None else root
     provider = root if target != root else None
     owner = Path(output_root).resolve() if output_root is not None else target
@@ -909,6 +983,11 @@ def main(argv=None, *, executor=None):
         help="Override the configured check environment",
     )
     parser.add_argument(
+        "--provider-root",
+        type=Path,
+        help="Provider root providing config/pipeline.toml and the Dagger module",
+    )
+    parser.add_argument(
         "--check-target",
         type=Path,
         help="Consumer source directory to check instead of this checkout",
@@ -931,7 +1010,10 @@ def main(argv=None, *, executor=None):
     )
     args = parser.parse_args(argv)
     try:
-        target = args.check_target.resolve() if args.check_target else ROOT
+        # An installed package has no policy beside it; the Provider root supplies it.
+        provider_root = args.provider_root.resolve() if args.provider_root else ROOT
+        bind(provider_root)
+        target = args.check_target.resolve() if args.check_target else provider_root
         owner = args.output_root.resolve() if args.output_root else target
         if args.json:
             args.json = report_path(args.json, owner)
@@ -968,6 +1050,7 @@ def main(argv=None, *, executor=None):
         _, code = run_checks(
             args.checks,
             executor=executor or args.executor,
+            root=provider_root,
             target=args.check_target,
             output_root=args.output_root,
             coverage=args.coverage,

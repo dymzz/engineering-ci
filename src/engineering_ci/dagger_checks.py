@@ -107,6 +107,12 @@ def source_modes(root, run, environ):
         check=False,
     )
     if result.returncode:
+        if (
+            result.returncode == 128
+            and (result.stderr or "").startswith("fatal: not a git repository")
+            and not any(environ.get(key) for key in ("GIT_DIR", "GIT_WORK_TREE"))
+        ):
+            return []
         raise checks.PreconditionError(
             "environment_error", "Unable to inspect Git input modes in this checkout"
         )
@@ -236,7 +242,14 @@ def prepare(root, target, names, parameters, run, which, environ):
     ]
     result = invoke(
         root,
-        [executable, "api", "call", "repository-check-environment", *options],
+        [
+            executable,
+            "api",
+            "call",
+            *module_selection(root),
+            "repository-check-environment",
+            *options,
+        ],
         run,
         environ,
         capture=True,
@@ -263,6 +276,11 @@ def prepare(root, target, names, parameters, run, which, environ):
         "source_modes_sha256": checks.digest(modes),
     }
     return executable, options, executor, remote
+
+
+def module_selection(root):
+    """An installed bundle has no Git workspace to discover its entrypoint."""
+    return ["--load-module", "."] if (root / "provider-assets.json").is_file() else []
 
 
 def identity(target, name, parameters, executor, remote, *, provider=None):
@@ -397,6 +415,7 @@ def execute(
     # root loads the Provider module; target is mounted and checked; owner receives
     # every artifact this run produces. One directory unless a caller separates them.
     root = root.resolve()
+    checks.require_policy()
     target = Path(target).resolve() if target is not None else root
     provider = root if target != root else None
     owner = Path(output_root).resolve() if output_root is not None else target
@@ -505,9 +524,12 @@ def execute(
                     executable,
                     "api",
                     "call",
+                    *module_selection(root),
                     "repository-check-artifacts",
                     "--source",
                     "." if target == root else str(target),
+                    "--capability",
+                    ".",
                     "--dagger-lock",
                     "dagger.lock",
                     "--request",

@@ -218,6 +218,21 @@ def test_delivery_settings_are_loaded_without_changing_existing_operations():
     )
 
 
+def test_rebinding_preserves_release_references_and_refreshes_toolchain(monkeypatch):
+    from engineering_ci.cli import release
+
+    original = pipeline.PIPELINE
+    delivery = original["delivery"]
+    expected = copy.deepcopy(original)
+    monkeypatch.setattr(pipeline, "load_root", lambda root: copy.deepcopy(expected))
+    checks.bind(checks.ROOT)
+    checks.bind(checks.ROOT)
+    assert pipeline.PIPELINE is checks.PIPELINE is toolchain.PIPELINE is original
+    assert original["delivery"] is delivery
+    assert delivery["release"] is release.RELEASE_CONFIG
+    assert original == expected
+
+
 def test_schema_one_without_delivery_keeps_legacy_behavior(tmp_path, monkeypatch):
     data = copy.deepcopy(pipeline.PIPELINE)
     data.pop("delivery")

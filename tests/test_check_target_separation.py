@@ -5,7 +5,6 @@ import json
 import shutil
 import subprocess
 from inspect import Parameter, signature
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +13,8 @@ from vesryn_tool_runtime.documents import WorkflowError
 from engineering_ci import checks, dagger_checks
 from engineering_ci.checks_container import OMITTED_INPUTS
 from engineering_ci.workflow_adapters import provider
+from engineering_ci.workflow_adapters.assets import export as assets_export
+from engineering_ci.workflow_adapters.assets import manifest as asset_manifest
 from engineering_ci.workflow_adapters.checks import ChecksAdapter, dagger_catalog
 
 TOOLS = {"python": {"version": "3.14.8"}}
@@ -145,6 +146,28 @@ def test_check_target_receives_the_command_and_the_provider_only_supplies_policy
     assert seen and all(kwargs["cwd"] == target.resolve() for _, kwargs in seen)
     assert identity["inputs"] == checks.snapshot(target, "pytest")[0]
     assert identity["inputs"] != checks.snapshot(provider_root, "pytest")[0]
+
+
+def test_report_parsing_does_not_write_bytecode_or_results_into_provider(
+    separation, monkeypatch
+):
+    import sys
+
+    provider_root, target, _ = separation
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+
+    def files():
+        return {
+            path.relative_to(provider_root): path.read_bytes()
+            for path in provider_root.rglob("*")
+            if path.is_file()
+        }
+
+    before = files()
+    (target / "core-junit.xml").write_text(JUNIT, encoding="utf-8")
+    counts = checks.pytest_counts(target, "core-junit.xml", 0, provider_root)
+    assert counts["passed"] == 1 and counts["failures"] == 0
+    assert files() == before
 
 
 def test_results_belong_to_the_consumer_and_never_reach_the_provider_source(separation):
@@ -318,17 +341,82 @@ def test_dagger_names_the_capability_argument_not_the_target(separation, tmp_pat
     assert options[options.index("--capability") + 1] == "."
 
 
-def test_capability_overlay_is_not_host_testable_but_is_named_on_the_wire(
-    separation, tmp_path
-):
-    """pr_checks.compose needs the Dagger SDK, so only the host contract is asserted here.
+def test_non_git_consumer_has_no_git_execute_overrides(tmp_path):
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 128, "", "fatal: not a git repository (or any parent): .git"
+        )
 
-    The overlay itself (consumer tree wins, Provider policy and code land beside it)
-    runs inside the container and is confirmed by CI, not by this host.
-    """
-    source = Path(".dagger/src/engineering_ci/pr_checks.py").read_text(encoding="utf-8")
-    assert 'capability.with_directory("/", source' in source
-    assert 'await workspace.file("config/pipeline.toml")' in source
+    assert dagger_checks.source_modes(tmp_path, run, {}) == []
+    with pytest.raises(checks.PreconditionError, match="Git input modes"):
+        dagger_checks.source_modes(tmp_path, run, {"GIT_DIR": "missing"})
+
+
+def test_git_access_failure_is_not_treated_as_a_non_git_consumer(tmp_path):
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 128, "", "fatal: access denied")
+
+    with pytest.raises(checks.PreconditionError, match="Git input modes"):
+        dagger_checks.source_modes(tmp_path, run, {})
+
+
+def test_dagger_explicitly_loads_an_installed_module_without_a_git_workspace(
+    separation,
+    tmp_path,
+):
+    root, target, _ = separation
+    module(root)
+    (root / "provider-assets.json").write_text("{}", encoding="utf-8")
+    seen = []
+    run, _ = probe_run(seen)
+    dagger_checks.prepare(
+        root,
+        target,
+        ["pytest"],
+        {"coverage": False, "junit": "core-junit.xml"},
+        run,
+        dagger_executable(tmp_path),
+        {},
+    )
+    command = next(args for args in seen if "api" in args)
+    assert command[command.index("--load-module") + 1] == "."
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_installed_mounts_keep_provider_code_out_of_consumer_inputs(
+    monkeypatch, installed
+):
+    """Exercise the real mount helper without starting an Engine."""
+    import importlib.util
+    import sys
+
+    monkeypatch.setitem(sys.modules, "dagger", SimpleNamespace(dag=None))
+    spec = importlib.util.spec_from_file_location(
+        "provider_mount_test", checks.ROOT / ".dagger/src/engineering_ci/pr_checks.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Container:
+        def __init__(self):
+            self.mounts = {}
+
+        def with_directory(self, path, directory, **kwargs):
+            self.mounts[path] = directory
+            return self
+
+        def with_workdir(self, path):
+            self.workdir = path
+            return self
+
+    consumer, capability = object(), object()
+    result = module.mount_sources(Container(), consumer, capability, installed)
+    assert result.mounts["/workspace"] is consumer
+    assert result.workdir == "/workspace"
+    if installed:
+        assert result.mounts["/provider"] is capability
+    else:
+        assert "/provider" not in result.mounts
 
 
 def test_dagger_loads_the_module_from_the_provider_but_mounts_the_consumer(
@@ -482,6 +570,98 @@ def test_provider_transport_follows_the_approved_root_not_the_provider(tmp_path)
     assert adapter.output_root == (tmp_path / "approved").resolve()
 
 
+def test_installed_transport_uses_the_wheel_not_the_container_asset_copy(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "assets"
+    marker = root / "src/engineering_ci/workflow_adapters/provider.py"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("# container-only code\n")
+    (root / "provider-assets.json").write_text("{}")
+    owner = tmp_path / "evidence"
+    owner.mkdir()
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    def run(command, **kwargs):
+        assert "PYTHONPATH" not in kwargs["env"]
+        assert kwargs["cwd"] == root
+        kwargs["stdout"].write(b'{"schema_version":1}')
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(provider.subprocess, "run", run)
+    adapter = provider.ProviderAdapter(root, {}, output_root=owner)
+    assert adapter.request("tools") == {"schema_version": 1}
+
+
 def test_provider_catalog_rejects_a_directory_without_its_own_source(tmp_path):
-    with pytest.raises(WorkflowError, match="explicit primary source checkout"):
+    with pytest.raises(
+        WorkflowError, match="primary source checkout or an unpacked asset directory"
+    ):
         provider.catalog(tmp_path)
+
+
+def asset_source(root):
+    """A minimal Provider asset directory: the policy plus the Dagger module."""
+    (root / ".dagger/src/engineering_ci").mkdir(parents=True, exist_ok=True)
+    (root / ".dagger/src/engineering_ci/main.py").write_text("VALUE = 1\n")
+    (root / ".dagger/src/engineering_ci/pr_checks.py").write_text("# module\n")
+    (root / ".dagger/sdk/src").mkdir(parents=True, exist_ok=True)
+    (root / ".dagger/sdk/src/client.py").write_text("# generated sdk\n")
+    (root / ".dagger/pyproject.toml").write_text("# module project\n")
+    (root / ".dagger/uv.lock").write_text("# module lock\n")
+    (root / "config").mkdir(exist_ok=True)
+    (root / "config/pipeline.toml").write_text("# policy\n")
+    (root / "src/engineering_ci").mkdir(parents=True)
+    (root / "src/engineering_ci/checks_container.py").write_text("# container runner\n")
+    for name in ("dagger-module.toml", "dagger.lock", "dagger.toml"):
+        (root / name).write_text(f"# {name}\n")
+    return root
+
+
+def test_provider_catalog_accepts_an_unpacked_asset_directory(tmp_path):
+    """A consumer supplies assets, not a developer's checkout."""
+    assets = tmp_path / "provider-assets"
+    document = assets_export(checks.ROOT, assets)
+
+    assert (assets / "config/pipeline.toml").is_file()
+    assert (assets / "dagger-module.toml").is_file()
+    assert (assets / ".dagger/src/engineering_ci/main.py").is_file()
+    assert (assets / "src/engineering_ci/checks_container.py").read_bytes() == (
+        checks.ROOT / "src/engineering_ci/checks_container.py"
+    ).read_bytes()
+    # An install location carries no development state.
+    assert not (assets / ".git").exists()
+    assert not (assets / "tests").exists()
+    assert not (assets / ".venv").exists()
+    assert not (assets / ".dagger/.venv").exists()
+    assert document["sha256"]
+    assert document["files"]["config/pipeline.toml"]
+    assert (
+        document["entry_points"]["vesryn.adapters"]["engineering-ci-dagger"]
+        == "engineering_ci.workflow_adapters.provider:catalog"
+    )
+    # The unpacked location satisfies the Provider root contract on its own.
+    assert provider.provider_root(assets) == assets.resolve()
+
+
+def test_asset_manifest_detects_changed_bytes(tmp_path):
+    source = asset_source(tmp_path / "source")
+    before = asset_manifest(source)
+    (source / "config/pipeline.toml").write_text("# policy changed\n")
+
+    after = asset_manifest(source)
+
+    assert (
+        after["files"]["config/pipeline.toml"]
+        != before["files"]["config/pipeline.toml"]
+    )
+    assert after["sha256"] != before["sha256"]
+
+
+def test_export_refuses_a_destination_that_already_has_content(tmp_path):
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "existing.txt").write_text("do not overwrite\n")
+
+    with pytest.raises(Exception, match="new or empty directory"):
+        assets_export(asset_source(tmp_path / "source"), used)
