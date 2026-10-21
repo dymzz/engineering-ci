@@ -18,7 +18,7 @@ on:
         type: string
         default: ''
       dagger_module:
-        description: 'Optional native Dagger module selector'
+        description: 'Optional Dagger Check module filter (not a module source)'
         type: string
         default: ''
       dagger_checks:
@@ -187,7 +187,7 @@ jobs:
           DAGGER_ENGINE: container://dagger-engine
           ENGINEERING_CI_READ_TOKEN: ${{ secrets.ENGINEERING_CI_READ_TOKEN }}
           DAGGER_ENVIRONMENT: ${{ inputs.dagger_environment }}
-          DAGGER_MODULE: ${{ inputs.dagger_module }}
+          ECI_CHECK_MODULE: ${{ inputs.dagger_module }}
           DAGGER_CHECKS: ${{ inputs.dagger_checks }}
           PYTEST_REPORT_FUNCTION: ${{ inputs.pytest_report_function }}
           PYTEST_CHECK: ${{ inputs.pytest_check }}
@@ -220,9 +220,9 @@ jobs:
             [[ "$DAGGER_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
             dagger_options+=(--env "$DAGGER_ENVIRONMENT")
           fi
-          if [[ -n "${DAGGER_MODULE:-}" ]]; then
-            [[ "$DAGGER_MODULE" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
-            check_options+=(--module "$DAGGER_MODULE")
+          if [[ -n "${ECI_CHECK_MODULE:-}" ]]; then
+            [[ "$ECI_CHECK_MODULE" =~ ^[a-z][a-z0-9-]*$ ]] || exit 1
+            check_options+=(--module "$ECI_CHECK_MODULE")
           fi
           while IFS= read -r check_name; do
             [[ -n "$check_name" ]] || continue
