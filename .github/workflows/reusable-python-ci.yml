@@ -80,6 +80,39 @@ on:
         type: string
         required: false
         default: dependency-security
+      powershell_mode:
+        description: 'Explicit PowerShell analysis mode: off, report, enforce'
+        type: string
+        required: false
+        default: 'off'
+      powershell_paths:
+        description: 'Repository-relative .ps1/.psm1 paths or directories to analyse'
+        type: string
+        required: false
+        default: '.'
+      powershell_settings:
+        description: 'Repository-relative native PSScriptAnalyzer Settings file'
+        type: string
+        required: false
+        default: ''
+      powershell_severity:
+        description: 'Optional native severity filter'
+        type: string
+        required: false
+        default: ''
+      powershell_source_ref:
+        description: 'Pinned engineering-ci helper ref providing the pinned analyzer'
+        type: string
+        required: false
+        default: 'v0.4.7'
+      powershell_artifact_name:
+        description: 'Unique PowerShell evidence artifact name'
+        type: string
+        required: false
+        default: powershell-analysis
+    outputs:
+      powershell_artifact_id:
+        value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -497,5 +530,82 @@ jobs:
             ${{ runner.temp }}/dependency-security/scanner.json
             ${{ runner.temp }}/dependency-security/diagnostics.json
             ${{ runner.temp }}/dependency-security/summary.md
+          if-no-files-found: warn
+          retention-days: 7
+
+  # PSScriptAnalyzer runs here rather than inside the Linux Dagger container:
+  # its rules and the environment they depend on are PowerShell-specific, and a
+  # Windows runner is the only place reporting them as analysed would be honest.
+  powershell-analysis:
+    outputs:
+      artifact_id: ${{ steps.powershell_artifact.outputs.artifact-id }}
+    if: ${{ inputs.powershell_mode != 'off' }}
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PowerShell analysis target
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Checkout matching analysis helper
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: dymzz/engineering-ci
+          ref: ${{ inputs.powershell_source_ref }}
+          path: .engineering-ci-powershell
+          token: ${{ secrets.ENGINEERING_CI_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Analyse PowerShell scripts
+        shell: pwsh
+        env:
+          POWERSHELL_MODE: ${{ inputs.powershell_mode }}
+          POWERSHELL_PATHS: ${{ inputs.powershell_paths }}
+          POWERSHELL_SETTINGS: ${{ inputs.powershell_settings }}
+          POWERSHELL_SEVERITY: ${{ inputs.powershell_severity }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Move the helper checkout out of the workspace so the consumer's own
+          # scripts are the only thing the analysis can reach.
+          $helper = Join-Path $env:RUNNER_TEMP 'engineering-ci-powershell'
+          Move-Item -LiteralPath (Resolve-Path '.engineering-ci-powershell').Path -Destination $helper
+          $env:PYTHONPATH = Join-Path $helper 'src'
+          $arguments = @(
+            'powershell',
+            '--workspace', $env:GITHUB_WORKSPACE,
+            '--helper-root', $helper,
+            '--paths', $env:POWERSHELL_PATHS,
+            '--mode', $env:POWERSHELL_MODE,
+            '--out', (Join-Path $env:RUNNER_TEMP 'powershell-analysis')
+          )
+          if ($env:POWERSHELL_SETTINGS) { $arguments += @('--settings', $env:POWERSHELL_SETTINGS) }
+          if ($env:POWERSHELL_SEVERITY) { $arguments += @('--severity', $env:POWERSHELL_SEVERITY) }
+          uv run --python 3.14 --no-project python -m engineering_ci.workflow_actions @arguments
+      - name: Publish PowerShell Analysis Summary
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $summary = Join-Path $env:RUNNER_TEMP 'powershell-analysis/summary.md'
+          if (Test-Path $summary) {
+            Get-Content -LiteralPath $summary -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            '## PowerShell Analysis Summary' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            'Evidence unavailable; see the failed setup or execution step. No pass is established.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+      - name: Upload PowerShell evidence
+        id: powershell_artifact
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: ${{ inputs.powershell_artifact_name }}
+          path: |
+            ${{ runner.temp }}/powershell-analysis/report.json
+            ${{ runner.temp }}/powershell-analysis/summary.md
           if-no-files-found: warn
           retention-days: 7
