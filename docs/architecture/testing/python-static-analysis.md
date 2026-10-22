@@ -49,13 +49,11 @@ distribution downloads on first use.
 
 A non-zero status is a finding only where the tool's own semantics say so.
 
-Vulture and Pyright were executed against their pinned versions and every code
-below was observed directly. deptry and Pylint were also executed locally: both
-produced the finding and clean outcomes the tables describe, but those runs
-recorded only success or failure rather than the exact integer, so their codes
-rest on the documented category semantics and `fixture_static_analysis` asserts
-the integers in CI. Every table fails closed, so a code path that did not
-behave as documented becomes a `failure` and never a pass.
+All four tools were executed against their pinned versions and every code below
+was observed directly rather than taken from documentation. Each table also
+fails closed, so a code path that did not behave as documented becomes a
+`failure` and never a pass. `fixture_static_analysis` re-asserts the same
+outcomes and integers in CI.
 
 | Tool | Exit | Meaning | `outcome` |
 | --- | --- | --- | --- |
@@ -76,11 +74,14 @@ behave as documented becomes a `failure` and never a pass.
 | pylint | `4`/`8`/`16` bits | warning, refactor or convention messages | `findings` |
 | pylint | `1`/`2`/`32` bits | fatal, error or usage failure | `failure` |
 
-Two consequences are load-bearing:
+Three consequences are load-bearing:
 
 - deptry and pylint also exit non-zero from an uncaught failure. Only their own
   structured report proves the run reached the point where issues are
   collected, so a missing report is a `failure` and never `findings`.
+- Pylint reports a duplicate group as exactly one R0801 message naming both
+  members inside its text, not one finding per file. Counting findings
+  understates the scope; read the message for the participating files.
 - Pyright's default exclude contains `**/.*`, so a scope under a dot-directory
   is analysed as zero files and exits `0`. That is reported as `not_executed`,
   not `clean`.

@@ -11,15 +11,17 @@ turn into a pass.
 
 Verification status of the tables below:
 
-- Vulture and Pyright were executed against the pinned versions locally; every
-  listed code was observed directly.
-- deptry and Pylint were also executed locally and behaved as the tables
-  describe: deptry reported DEP002 with a non-zero status and exited cleanly
-  once the rule was ignored, and Pylint emitted an R0801 `refactor` JSON report
-  for the duplicated pair against an empty array for the clean one. Those runs
-  captured success/failure rather than the exact integer, so the codes below
-  rest on the tools' documented category semantics; `fixture_static_analysis`
-  asserts the integers in CI.
+All four tools were executed against their pinned versions, and every code in
+these tables was observed directly rather than taken from documentation:
+
+- vulture: 0 clean, 3 dead code, 1 unparsable file or missing path.
+- pyright: 0 clean, 1 type errors, 3 unparsable config, 4 missing path, and a
+  `filesAnalyzed` of 0 under the tool's own exclude rules.
+- deptry: 0 clean, 1 with a structured report, 2 invalid input. deptry also
+  exits 1 from an uncaught exception, which is why the report is required.
+- pylint: 0 clean, 8 for the R0801 refactor message, with 1/2/32 reserved for
+  fatal, error and usage failures. A duplicate group yields exactly one R0801
+  that names both members inside its message.
 
 Every table also fails closed: a code path that did not behave as described
 becomes a `failure`, never a pass, so an unconfirmed reading cannot let a broken
