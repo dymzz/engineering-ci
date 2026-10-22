@@ -1620,9 +1620,16 @@ def pytest_sessionfinish(session, exitstatus):
             f"{reports['deptry-unused-dependency']['findings']}",
         )
         duplicated = reports["pylint-duplicate"]
+        # pylint emits one R0801 per duplicate group and names both members
+        # inside that single message, so the count stays at one.
+        duplicate_text = " ".join(
+            f"{item['message']} {item.get('symbol') or ''}"
+            for item in duplicated["findings"]
+        )
         require(
             "R0801" in {item["rule"] for item in duplicated["findings"]}
-            and len(duplicated["findings"]) >= 2,
+            and "duplicate_a" in duplicate_text
+            and "duplicate_b" in duplicate_text,
             f"Cross-file duplication was not detected: {duplicated['findings']}",
         )
         # One execution per scenario already carried both the gate decision and
