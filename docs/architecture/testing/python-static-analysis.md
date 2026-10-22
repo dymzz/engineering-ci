@@ -50,9 +50,12 @@ distribution downloads on first use.
 A non-zero status is a finding only where the tool's own semantics say so.
 
 Vulture and Pyright were executed against their pinned versions and every code
-below was observed. deptry and Pylint follow their documented semantics and are
-executed by `fixture_static_analysis`; both tables fail closed, so a code path
-that did not behave as documented becomes a `failure` and never a pass.
+below was observed directly. deptry and Pylint were also executed locally: both
+produced the finding and clean outcomes the tables describe, but those runs
+recorded only success or failure rather than the exact integer, so their codes
+rest on the documented category semantics and `fixture_static_analysis` asserts
+the integers in CI. Every table fails closed, so a code path that did not
+behave as documented becomes a `failure` and never a pass.
 
 | Tool | Exit | Meaning | `outcome` |
 | --- | --- | --- | --- |

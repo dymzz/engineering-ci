@@ -12,11 +12,18 @@ turn into a pass.
 Verification status of the tables below:
 
 - Vulture and Pyright were executed against the pinned versions locally; every
-  listed code was observed.
-- deptry and Pylint follow the tools' documented semantics and are executed by
-  `fixture_static_analysis`. Both tables fail closed: an unverified code path
-  becomes a `failure`, never a pass, so an unconfirmed reading cannot let a
-  broken scanner through.
+  listed code was observed directly.
+- deptry and Pylint were also executed locally and behaved as the tables
+  describe: deptry reported DEP002 with a non-zero status and exited cleanly
+  once the rule was ignored, and Pylint emitted an R0801 `refactor` JSON report
+  for the duplicated pair against an empty array for the clean one. Those runs
+  captured success/failure rather than the exact integer, so the codes below
+  rest on the tools' documented category semantics; `fixture_static_analysis`
+  asserts the integers in CI.
+
+Every table also fails closed: a code path that did not behave as described
+becomes a `failure`, never a pass, so an unconfirmed reading cannot let a broken
+scanner through.
 """
 
 from __future__ import annotations
