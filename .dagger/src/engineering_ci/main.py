@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 import tomllib
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
+from . import python_static as static
 from . import repository
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -47,6 +49,19 @@ class _MatrixExecution:
     plan: dict
     report: dict
     rows: list
+
+
+# Where _uv_container leaves the consumer's own locked environment. Pyright
+# reads it for import resolution while its own packages stay isolated.
+_PROJECT_ENVIRONMENT = "/workspace/.venv/bin/python"
+_DEPTRY_JSON = "/tmp/engineering-ci-deptry.json"
+# Reads a file the scan already wrote. A missing file yields empty output,
+# which the classifier turns into an explicit failure rather than a pass.
+_READ_OPTIONAL = (
+    "import pathlib,sys;"
+    "target=pathlib.Path(sys.argv[1]);"
+    "sys.stdout.write(target.read_text(encoding='utf-8') if target.is_file() else '')"
+)
 
 
 @object_type
@@ -338,6 +353,162 @@ class EngineeringCi:
             )
             .stdout()
         )
+
+    async def _run_static(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        policy: dict,
+        native_output: str = "",
+        git_token: dagger.Secret | None = None,
+        dependency_packages: dagger.Directory | None = None,
+    ) -> dict:
+        """Execute one pinned scanner once and classify what it already produced.
+
+        uvx builds the scanner environment on its own, so the consumer's own
+        dependencies, pyproject.toml and uv.lock stay untouched. The optional
+        second exec only reads a file the scan already wrote; it never scans.
+        """
+        tool = policy["tool"]
+        container = self._uv_container(
+            source,
+            python_version,
+            git_token=git_token,
+            dependency_packages=dependency_packages,
+        )
+        if tool == "pyright":
+            # The published Pyright distribution downloads a Node runtime on
+            # first use; caching it keeps that off every later run.
+            container = container.with_mounted_cache(
+                "/root/.cache/pyright-python",
+                dag.cache_volume("engineering-ci-pyright-node"),
+            )
+        result = container.with_exec(
+            static.runner_prefix(tool, policy["pinned_version"])
+            + static.ARGUMENTS[tool](policy, native_output),
+            expect=dagger.ReturnType.ANY,
+        )
+        native_raw = ""
+        if native_output:
+            native_raw = await result.with_exec(
+                ["python", "-c", _READ_OPTIONAL, native_output],
+                expect=dagger.ReturnType.ANY,
+            ).stdout()
+        return static.static_report(
+            policy,
+            await result.exit_code(),
+            await result.stdout(),
+            await result.stderr(),
+            native_raw,
+        )
+
+    @function
+    async def python_vulture(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        scan_path: str = ".",
+        min_confidence: int = 0,
+        exclude: str = "",
+        whitelist_path: str = "",
+        git_token: dagger.Secret | None = None,
+    ) -> str:
+        """Report Vulture dead-code findings as JSON without gating CI.
+
+        outcome is clean, findings, not_executed or failure, and reason carries
+        the native exit-code semantics. Callers enforce by raising on findings.
+        """
+        report = await self._run_static(
+            source,
+            python_version,
+            static.vulture_policy(scan_path, min_confidence, exclude, whitelist_path),
+            git_token=git_token,
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def python_pyright(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        scan_path: str = ".",
+        config: str = "",
+        level: str = "",
+        target_python_version: str = "",
+        use_project_environment: bool = True,
+        git_token: dagger.Secret | None = None,
+    ) -> str:
+        """Type-check with Pyright in its own environment, reading consumer config.
+
+        The scanner itself runs isolated from the consumer's dependencies, while
+        import resolution defaults to the environment this check already synced.
+        Unresolved imports are kept as diagnostics and reported as an explicit
+        limitation; an incomplete type pass is never presented as a clean one.
+        """
+        report = await self._run_static(
+            source,
+            python_version,
+            static.pyright_policy(
+                scan_path,
+                config,
+                level,
+                _PROJECT_ENVIRONMENT if use_project_environment else "",
+                target_python_version,
+            ),
+            git_token=git_token,
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def python_deptry(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        scan_path: str = "src",
+        config: str = "",
+        extend_exclude: str = "",
+        per_rule_ignores: str = "",
+        git_token: dagger.Secret | None = None,
+    ) -> str:
+        """Compare declared dependencies with imported modules using native deptry.
+
+        The structured report and the exit code come from one execution; an
+        exception exit stays a failure instead of masquerading as a finding.
+        """
+        report = await self._run_static(
+            source,
+            python_version,
+            static.deptry_policy(scan_path, config, extend_exclude, per_rule_ignores),
+            native_output=_DEPTRY_JSON,
+            git_token=git_token,
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def python_pylint(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        scan_paths: list[str] | None = None,
+        min_similarity_lines: int = 4,
+        rcfile: str = "",
+        ignore_paths: list[str] | None = None,
+        git_token: dagger.Secret | None = None,
+    ) -> str:
+        """Detect R0801 duplicate code across files; Ruff keeps covering the rest.
+
+        Only duplicate-code is enabled so this does not repeat rules Ruff
+        already enforces for the same sources.
+        """
+        report = await self._run_static(
+            source,
+            python_version,
+            static.pylint_policy(
+                scan_paths, min_similarity_lines, rcfile, ignore_paths
+            ),
+            git_token=git_token,
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     async def _run_pytest(
         self,
@@ -1335,3 +1506,130 @@ def pytest_sessionfinish(session, exitstatus):
         else:
             raise RuntimeError("Invalid threshold was accepted")
         print(json.dumps(results, sort_keys=True))
+
+    async def _static_fixture_versions(self, source, python_version):
+        """Confirm uvx resolved each pinned version instead of trusting it."""
+        container = self._uv_container(source, python_version)
+        observed = {}
+        for tool, pinned in static.SCANNER_VERSIONS.items():
+            result = container.with_exec(
+                static.runner_prefix(tool, pinned) + ["--version"],
+                expect=dagger.ReturnType.ANY,
+            )
+            text = (await result.stdout()) + (await result.stderr())
+            if not re.search(rf"(?<![\d.]){re.escape(pinned)}(?![\d.])", text):
+                raise RuntimeError(
+                    f"{tool} did not report the pinned version {pinned}: {text[:300]}"
+                )
+            observed[tool] = pinned
+        return observed
+
+    @function
+    @check
+    async def fixture_static_analysis(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/tests/fixtures/static-app")],
+    ) -> None:
+        """Run each pinned scanner against real findings and real clean sources.
+
+        Every negative case must surface as findings with the tool's own exit
+        code, and every positive case as a clean run. A scanner that cannot
+        finish fails the check instead of being recorded as a pass.
+        """
+        versions = await self._static_fixture_versions(source, "3.14")
+        scenarios = {
+            "vulture-clean": (static.vulture_policy("src/clean.py"), "clean", 0),
+            "vulture-dead": (static.vulture_policy("src/dead_code.py"), "findings", 3),
+            "pyright-clean": (static.pyright_policy("src/clean.py"), "clean", 0),
+            "pyright-type-error": (
+                static.pyright_policy("src/type_error.py"),
+                "findings",
+                1,
+            ),
+            # The same file passes only because the consumer's own
+            # configuration was honoured, which proves it was read.
+            "pyright-consumer-config": (
+                static.pyright_policy("src/type_error.py", config="pyright-off.json"),
+                "clean",
+                0,
+            ),
+            "pyright-unresolved-import": (
+                static.pyright_policy("probes/unresolved_import.py"),
+                "findings",
+                1,
+            ),
+            "deptry-unused-dependency": (static.deptry_policy("src"), "findings", 1),
+            "deptry-ignored": (
+                static.deptry_policy("src", per_rule_ignores="DEP002=requests"),
+                "clean",
+                0,
+            ),
+            "pylint-clean": (static.pylint_policy(["src/clean.py"]), "clean", 0),
+            "pylint-duplicate": (
+                static.pylint_policy(["src/duplicate_a.py", "src/duplicate_b.py"]),
+                "findings",
+                8,
+            ),
+        }
+        reports = {}
+        for name, (policy, outcome, exit_code) in scenarios.items():
+            report = await self._run_static(
+                source,
+                "3.14",
+                policy,
+                native_output=_DEPTRY_JSON if policy["tool"] == "deptry" else "",
+            )
+            if report["outcome"] != outcome or report["exit_code"] != exit_code:
+                raise RuntimeError(
+                    f"{name}: expected {outcome} with native exit {exit_code}, got "
+                    f"{report['outcome']} with exit {report['exit_code']}: "
+                    f"{static.findings_summary(report)}"
+                )
+            reports[name] = report
+
+        def require(condition, message):
+            if not condition:
+                raise RuntimeError(message)
+
+        require(
+            any(
+                "never_called_anywhere" in item["message"]
+                for item in reports["vulture-dead"]["findings"]
+            ),
+            f"Vulture lost the dead-code diagnostic: {reports['vulture-dead']['findings']}",
+        )
+        require(
+            reports["pyright-type-error"]["observed_version"]
+            == static.SCANNER_VERSIONS["pyright"],
+            "Pyright did not report its own version alongside the diagnostics",
+        )
+        require(
+            any(
+                "did not resolve" in item
+                for item in reports["pyright-unresolved-import"]["limitations"]
+            ),
+            "Unresolved imports were presented without a limitation: "
+            f"{reports['pyright-unresolved-import']}",
+        )
+        require(
+            any(
+                item["rule"].startswith("DEP") and item.get("module") == "requests"
+                for item in reports["deptry-unused-dependency"]["findings"]
+            ),
+            "deptry lost the unused dependency: "
+            f"{reports['deptry-unused-dependency']['findings']}",
+        )
+        duplicated = reports["pylint-duplicate"]
+        require(
+            "R0801" in {item["rule"] for item in duplicated["findings"]}
+            and len(duplicated["findings"]) >= 2,
+            f"Cross-file duplication was not detected: {duplicated['findings']}",
+        )
+        # One execution per scenario already carried both the gate decision and
+        # the structured result; re-running here would prove nothing extra.
+        print(
+            "PASS: pinned "
+            + ", ".join(f"{tool} {value}" for tool, value in versions.items())
+            + "; findings, clean runs, consumer config and stated limits verified: "
+            + ", ".join(sorted(reports))
+        )
