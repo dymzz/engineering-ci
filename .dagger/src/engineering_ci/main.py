@@ -1430,7 +1430,7 @@ def pytest_sessionfinish(session, exitstatus):
         source: Annotated[
             dagger.Directory, DefaultPath("/tests/fixtures/workflow-app")
         ],
-    ) -> str:
+    ) -> None:
         """Run the pinned actionlint against committed clean and broken Workflows.
 
         This is what turns the documented actionlint assumptions into observed
@@ -1480,13 +1480,4 @@ def pytest_sessionfinish(session, exitstatus):
             f"PASS: actionlint {script.ACTIONLINT_VERSION}; clean exit 0, "
             f"broken exit {broken['exit_code']} with {broken['finding_count']} "
             "diagnostic(s) preserved"
-        )
-        return json.dumps(
-            {
-                "clean": results["clean"]["outcome"],
-                "broken": results["broken"]["outcome"],
-                "broken_exit_code": broken["exit_code"],
-                "broken_findings": broken["finding_count"],
-            },
-            sort_keys=True,
         )

@@ -6,6 +6,9 @@
 # line is one diagnostic. A single JSON document would collapse a one-element
 # diagnostic array, so the records stay independent and Python reads them line
 # by line.
+#
+# -ModuleRoot is the directory that directly contains PSScriptAnalyzer.psd1,
+# resolved by the caller rather than through PSModulePath.
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +49,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 # Import from the explicit directory rather than PSModulePath so the resolved
 # module cannot depend on whatever else the image happens to ship.
 try {
-    $manifest = Join-Path $moduleRoot "PSScriptAnalyzer/$version/PSScriptAnalyzer.psd1"
+    $manifest = Join-Path $moduleRoot 'PSScriptAnalyzer.psd1'
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
         throw "PSScriptAnalyzer $version is not present under $moduleRoot"
     }

@@ -148,30 +148,53 @@ def _run_powershell(
         raise AnalysisError(f"PowerShell timed out after {timeout}s") from exc
 
 
-def prepare_module(module_root: Path, timeout: int) -> Path:
-    """Materialise the pinned analyzer module before any script is analysed.
+def _installed_module(timeout: int) -> Path | None:
+    """Use an already-installed analyzer when its version matches the pin.
 
-    Kept outside the consumer's checkout so analysis never writes into the
-    tree it is inspecting. Separated from the scan so a missing module or a
-    failed download stays distinguishable from a rule violation.
+    PowerShell performs its own discovery here, so this respects the platform
+    rather than re-implementing a module search. A different installed version
+    is ignored, because the pin is what the evidence refers to.
     """
-    manifest = module_root / f"PSScriptAnalyzer/{PSSCRIPTANALYZER_VERSION}"
-    if (manifest / "PSScriptAnalyzer.psd1").is_file():
-        return module_root
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"$m = Get-Module -ListAvailable PSScriptAnalyzer | "
+        f"Where-Object {{ $_.Version -eq '{PSSCRIPTANALYZER_VERSION}' }} | "
+        "Select-Object -First 1; if ($m) { $m.ModuleBase }"
+    )
+    result = _run_powershell(["-Command", command], Path.cwd(), timeout)
+    candidate = result.stdout.strip()
+    if result.returncode == 0 and candidate and Path(candidate).is_dir():
+        return Path(candidate)
+    return None
+
+
+def prepare_module(module_root: Path, timeout: int) -> tuple[Path, str]:
+    """Resolve the pinned analyzer, downloading only when it is absent.
+
+    Kept outside the consumer's checkout so analysis never writes into the tree
+    it is inspecting. Returns the module directory and how it was obtained, so
+    the evidence records whether anything was fetched at all.
+    """
+    installed = _installed_module(timeout)
+    if installed is not None:
+        return installed, "preinstalled"
+    downloaded = module_root / f"PSScriptAnalyzer/{PSSCRIPTANALYZER_VERSION}"
+    if (downloaded / "PSScriptAnalyzer.psd1").is_file():
+        return downloaded, "cached"
     module_root.mkdir(parents=True, exist_ok=True)
     command = (
         "$ErrorActionPreference='Stop';"
-        f"Save-Module -Name PSScriptAnalyzer "
+        "Save-Module -Name PSScriptAnalyzer "
         f"-RequiredVersion {PSSCRIPTANALYZER_VERSION} "
         f"-Path '{module_root}' -Force"
     )
     result = _run_powershell(["-Command", command], module_root.parent, timeout)
-    if result.returncode != 0 or not (manifest / "PSScriptAnalyzer.psd1").is_file():
+    if result.returncode != 0 or not (downloaded / "PSScriptAnalyzer.psd1").is_file():
         raise AnalysisError(
             f"PSScriptAnalyzer {PSSCRIPTANALYZER_VERSION} could not be prepared: "
             f"{_bounded(result.stderr.strip() or result.stdout.strip(), 400)}"
         )
-    return module_root
+    return downloaded, "downloaded"
 
 
 def _records(raw: str) -> tuple[dict, list[dict]]:
@@ -222,7 +245,7 @@ def analyse(
                 )
             ],
         }
-    module_root = prepare_module(
+    module_root, module_source = prepare_module(
         Path(tempfile.gettempdir()) / "engineering-ci-pssa", timeout
     )
     arguments = [
@@ -266,6 +289,7 @@ def analyse(
         "tool": "psscriptanalyzer",
         "pinned_version": policy["pinned_version"],
         "observed_version": envelope.get("psscriptanalyzer_version"),
+        "module_source": module_source,
         "policy": {
             key: value
             for key, value in policy.items()
@@ -296,6 +320,11 @@ def summary(report: dict, mode: str) -> str:
         + (
             f" (observed {cell(report['observed_version'])})"
             if report.get("observed_version")
+            else ""
+        )
+        + (
+            f", module source: {cell(report['module_source'])}"
+            if report.get("module_source")
             else ""
         ),
         "",

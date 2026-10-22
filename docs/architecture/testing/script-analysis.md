@@ -66,9 +66,25 @@ as passing.
 `enforce` blocks on anything that is not a clean analysis, which deliberately
 includes an empty script set: an unanalysed scope is not a pass.
 
-Scripts are parsed, never executed and never automatically fixed. The analyzer
-module is materialised into a temporary directory outside the consumer's
-checkout, so analysis never writes into the tree it inspects.
+Scripts are parsed, never executed and never automatically fixed.
+
+## Optional, and not a dependency of this repository
+
+PowerShell analysis is opt-in and nothing in this repository turns it on:
+`powershell_mode` defaults to `off`, the job is skipped entirely in that case,
+and this repository's own Workflow does not enable it.
+
+The analyzer is resolved rather than assumed. PowerShell's own discovery runs
+first, and an installed module whose version equals the pin is used as-is.
+Only when no matching module is present is one fetched from the PowerShell
+Gallery into a temporary directory outside the consumer's checkout, so analysis
+never writes into the tree it inspects. `module_source` in the report and the
+Job Summary records which of `preinstalled`, `cached` or `downloaded` was
+actually used, so the evidence shows whether anything was fetched at all.
+
+There is no PyPI distribution of PSScriptAnalyzer, so it cannot share the uvx
+route the Python scanners and actionlint use. actionlint itself does use it:
+`uvx --from actionlint-py==...` fetches from PyPI through uv.
 
 The Windows job checks out the consumer repository and a pinned engineering-ci
 helper, moves the helper out of the workspace so only the consumer's own
