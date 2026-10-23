@@ -110,9 +110,6 @@ on:
         type: string
         required: false
         default: powershell-analysis
-    outputs:
-      powershell_artifact_id:
-        value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -121,6 +118,8 @@ on:
         value: ${{ jobs.checks.outputs.artifact_id }}
       security_artifact_id:
         value: ${{ jobs.dependency-security.outputs.artifact_id }}
+      powershell_artifact_id:
+        value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
 
 permissions:
   contents: read
