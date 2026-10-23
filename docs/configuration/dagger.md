@@ -86,6 +86,10 @@ SDK 更新继续使用上面的模块代码生成 API；不声明无法运行的
 | `python-test-report` | 同上，max-failures=`10`（1–50） | JSON 字符串；测试失败仍返回其原始 exit_code，准备失败不伪造报告 |
 | `python-test-artifacts` | 同 report | Directory；原始退出码、JSON、JUnit/可用 Coverage、summary。调用者执行导出的 `ci.py gate` |
 | `python-test-matrix*` | source、python-versions 列表、显式测试策略；max-concurrency=`1`（1–3） | [Matrix 的三个接口](../architecture/testing/python-matrix.md#choose-one-execution-interface)，没有 git-token 参数 |
+| `python-vulture` | source、python-version、scan-path=`.`、min-confidence=`0`、exclude/whitelist-path 可选，git-token 可选 | JSON 字符串；报告保留原生退出与结果，不自行门禁 |
+| `python-pyright` | source、python-version、scan-path=`.`、config/level/target-python-version 可选，use-project-environment=`true`，git-token 可选 | JSON 字符串；未解析导入作为显式限制记录 |
+| `python-deptry` | source、python-version、scan-path=`src`、config/extend-exclude/per-rule-ignores 可选，git-token 可选 | JSON 字符串；退出 1 且缺少结构化报告记为失败而非发现 |
+| `python-pylint` | source、python-version、scan-paths=`["src"]`、min-similarity-lines=`4`、rcfile/ignore-paths 可选，git-token 可选 | JSON 字符串；只启用 R0801 重复代码检测 |
 
 source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声明 pytest/Ruff 依赖；
 依赖同步、网络、运行时或接口配置错误不是测试通过。容器测试的 Python minor 支持 3.10–3.14，

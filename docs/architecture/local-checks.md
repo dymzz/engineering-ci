@@ -48,7 +48,9 @@ Coverage 是显式开关，根仓没有额外增加覆盖率阈值。
 
 发布用 fixture 单独放在 `dagger.toml` 的 `fixtures` 环境，通过
 `dagger --env fixtures check --module validation --check=fixture-test` 等明确检查名 选择；默认根仓检查不运行它们。
+静态分析 fixture 使用 `--check=fixture-static-analysis`，其原生退出语义见
+[Python 静态分析](testing/python-static-analysis.md)。
 公共消费者继续调用既有 `python-*` Functions，见[公共接口](../delivery/public-components.md)。
 
 PR CI 的三个现有 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
-依赖安全扫描和 Python Matrix 仍由正式发布的显式策略调用，未在默认检查中暗中增加。
+依赖安全扫描、Python Matrix 和四个静态分析检查仍由正式发布的显式策略调用，未在默认检查中暗中增加。
