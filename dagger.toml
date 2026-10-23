@@ -3,7 +3,7 @@ source = "."
 entrypoint = true
 
 [modules.engineering-ci.check]
-skip = ["fixture-test", "fixture-failure-report", "fixture-quality-gates", "fixture-python-matrix", "fixture-static-analysis"]
+skip = ["fixture-test", "fixture-failure-report", "fixture-quality-gates", "fixture-python-matrix", "fixture-static-analysis", "fixture-workflow-analysis"]
 
 [env.release]
 

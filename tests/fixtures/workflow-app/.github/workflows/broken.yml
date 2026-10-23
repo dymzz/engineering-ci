@@ -1,0 +1,16 @@
+name: Broken Workflow
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      # A step may use an action or run a script, never both.
+      - uses: actions/checkout@v7.0.1
+        run: echo "this step is invalid"
+      # matrix is never declared for this job, so the context is undefined.
+      - name: Report the matrix value
+        run: echo "${{ matrix.os }}"

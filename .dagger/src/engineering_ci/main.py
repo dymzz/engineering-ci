@@ -12,6 +12,7 @@ from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
 from . import python_static as static
 from . import repository
+from . import script_analysis as script
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
     aggregate,
@@ -49,6 +50,11 @@ class _MatrixExecution:
     plan: dict
     report: dict
     rows: list
+
+
+# Only Workflow analysis needs the source tree itself, so it skips the uv sync
+# a Python project would require. A repository can be checked for Workflow
+# correctness without declaring a Python project at all.
 
 
 # Where _uv_container leaves the consumer's own locked environment. Pyright
@@ -352,6 +358,87 @@ class EngineeringCi:
                 ]
             )
             .stdout()
+        )
+
+    async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
+        """Execute the pinned Workflow checker once and classify its result."""
+        container = (
+            dag.container()
+            .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
+            .with_mounted_cache(
+                "/root/.cache/uv", dag.cache_volume("engineering-ci-uv-python3.14")
+            )
+            .with_env_variable("UV_LINK_MODE", "copy")
+            .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
+            .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
+            .with_workdir("/workspace")
+        )
+        result = container.with_exec(
+            script.runner_prefix("actionlint") + script.actionlint_arguments(policy),
+            expect=dagger.ReturnType.ANY,
+        )
+        return script.script_report(
+            policy,
+            await result.exit_code(),
+            await result.stdout(),
+            await result.stderr(),
+        )
+
+    @function
+    async def actionlint_workflows(
+        self,
+        source: dagger.Directory,
+        scan_paths: list[str] | None = None,
+        config: str = "",
+    ) -> str:
+        """Check GitHub Actions Workflows with the pinned actionlint.
+
+        ShellCheck and pyflakes stay explicitly disabled so the checked scope
+        never depends on what happens to be installed. Unchecked inline scripts
+        are never reported as passing. Returns a JSON report without gating.
+        """
+        report = await self._run_actionlint(
+            source, script.actionlint_policy(scan_paths, config)
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def analyze_script_scope(
+        self,
+        source: dagger.Directory,
+        scan_paths: list[str],
+    ) -> str:
+        """Route each explicit path to the tool that can actually check it.
+
+        Selection uses the declared file suffix only. PowerShell is reported as
+        a Windows runner responsibility rather than run here, and anything
+        outside the supported scope is reported as not executed with the
+        reason, never skipped silently.
+        """
+        reports = []
+        for scan_path in script.path_list("scan_paths", scan_paths, []):
+            kind = script.target_kind(scan_path)
+            if kind == "actionlint":
+                report = await self._run_actionlint(
+                    source, script.actionlint_policy([scan_path])
+                )
+            elif kind == "psscriptanalyzer":
+                report = script.deferred_report(
+                    scan_path,
+                    "PowerShell scripts are analysed by the Windows runner in "
+                    "reusable-python-ci.yml, not by this Linux Dagger check",
+                )
+            else:
+                report = script.unsupported_report(
+                    scan_path,
+                    "Shell and other script types are out of scope for this check; "
+                    "only Workflow files and PowerShell modules are analysed",
+                )
+            reports.append(report)
+        return json.dumps(
+            {"schema_version": 1, "reports": reports},
+            ensure_ascii=False,
+            sort_keys=True,
         )
 
     async def _run_static(
@@ -1506,6 +1593,65 @@ def pytest_sessionfinish(session, exitstatus):
         else:
             raise RuntimeError("Invalid threshold was accepted")
         print(json.dumps(results, sort_keys=True))
+
+    @function
+    @check
+    async def fixture_workflow_analysis(
+        self,
+        source: Annotated[
+            dagger.Directory, DefaultPath("/tests/fixtures/workflow-app")
+        ],
+    ) -> None:
+        """Run the pinned actionlint against committed clean and broken Workflows.
+
+        This is what turns the documented actionlint assumptions into observed
+        facts. A mismatch fails the check and prints what the tool actually
+        returned, instead of leaving the assumption in place.
+        """
+        results = {}
+        for name, scan_path, outcome in (
+            ("clean", ".github/workflows/valid.yml", "clean"),
+            ("broken", ".github/workflows/broken.yml", "findings"),
+        ):
+            report = await self._run_actionlint(
+                source, script.actionlint_policy([scan_path])
+            )
+            if report["outcome"] != outcome:
+                raise RuntimeError(
+                    f"actionlint on {name} expected {outcome}, got "
+                    f"{report['outcome']} ({report['reason']}) with exit "
+                    f"{report['exit_code']}: {script.findings_summary(report)}"
+                )
+            results[name] = report
+
+        broken = results["broken"]
+        if not broken["findings"]:
+            raise RuntimeError("actionlint reported no usable diagnostic")
+        if not broken["stdout"].strip():
+            raise RuntimeError("actionlint diagnostics were not preserved")
+        version = await (
+            dag.container()
+            .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
+            .with_mounted_cache(
+                "/root/.cache/uv", dag.cache_volume("engineering-ci-uv-python3.14")
+            )
+            .with_env_variable("UV_LINK_MODE", "copy")
+            .with_exec(
+                script.runner_prefix("actionlint") + ["-version"],
+                expect=dagger.ReturnType.ANY,
+            )
+            .stdout()
+        )
+        if script.ACTIONLINT_VERSION not in version:
+            raise RuntimeError(
+                f"actionlint did not report the pinned version "
+                f"{script.ACTIONLINT_VERSION}: {version[:200]}"
+            )
+        print(
+            f"PASS: actionlint {script.ACTIONLINT_VERSION}; clean exit 0, "
+            f"broken exit {broken['exit_code']} with {broken['finding_count']} "
+            "diagnostic(s) preserved"
+        )
 
     async def _static_fixture_versions(self, source, python_version):
         """Confirm uvx resolved each pinned version instead of trusting it."""
