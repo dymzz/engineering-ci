@@ -10,6 +10,7 @@ Engineering CI 的公共交付包含以下已有接口。Public 表示本项目�
 | Dagger `python_lint`、`python_format_check` | 公共单版本容器检查；输入 Directory、Python minor、检查路径及可选 Secret，返回输出字符串或抛出执行错误 | [Dagger 配置与消费](../configuration/dagger.md#公共函数与凭据) |
 | Dagger `python_test`、`python_test_report`、`python_test_artifacts` | 公共单版本 pytest；分别为严格门禁、信息 JSON、单次执行的证据目录 | [Pytest 报告](../architecture/testing/pytest-reporting.md) |
 | Dagger `python_test_matrix`、`python_test_matrix_report`、`python_test_matrix_artifacts` | 公共多版本 pytest；输入版本列表和显式策略，逐版本保留实际结果 | [Python Matrix](../architecture/testing/python-matrix.md) |
+| Dagger `python_vulture`、`python_pyright`、`python_deptry`、`python_pylint` | 公共静态分析；各自独立入口、显式路径与原生配置，返回保留原生退出与结果、不自行门禁的 JSON 报告 | [Python 静态分析](../architecture/testing/python-static-analysis.md) |
 | `.github/workflows/reusable-python-ci.yml` | 公共 `workflow_call`；固定同一 Engineering CI 版本的 Dagger 模块和 Workflow，原始检查决定 Job 结果 | [消费者接入](../../guides/new-repository.md)、[报告模式](../architecture/testing/pytest-reporting.md#opt-in-reusable-workflow)、[依赖安全](../architecture/dependency-security.md) |
 | 安装包的 `engineering-ci download` | 公共已有 Run 查询/下载；原生 gh，禁止 Dispatch，不承诺字节恢复 | [CLI 参考](../../guides/cli-reference.md) |
 | `engineering-ci version/release/download` 与两个 `scripts/` 入口 | 本仓库操作接口；需要完整 engineering-ci checkout、配置和锁文件，不是对任意消费者目录的通用检查或发布 API | [常用操作](../../guides/common-tasks.md) |
