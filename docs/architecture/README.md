@@ -9,6 +9,7 @@
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 原生 Dagger Checks、失败传播与单次执行报告。
 - [依赖安全](dependency-security.md) — 锁文件完整性、安全扫描及质量门禁。
+- [安全策略快照](security-policy.md) — 可信策略发布/接收、防回退及 Runtime 判定契约。
 - [发布](release/README.md) — Release Workflow 的门禁、证据与异常恢复。
 - [测试](testing/README.md) — Pytest 报告、显式质量策略、Python 兼容性及静态分析检查。
 - [技术清单](technology.md) — 已采用、实验性、计划中与已移除的技术及[集成记录](integrations/README.md)。
