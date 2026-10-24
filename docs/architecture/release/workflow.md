@@ -68,6 +68,19 @@ main 前进、版本不一致、Tag 指向其他 SHA、报告缺失或检查失�
 已有正式版本缺少或冲突的证据时明确失败，不补写、覆盖历史版本。
 祖先提交上的同版本 Tag 不能代替当前提交验证。注解 Tag 比较最终 commit SHA。
 
+## 安全策略发布接入点
+
+可信策略快照与接收契约见[安全策略快照](../security-policy.md)。
+策略文件不是发布证据的替代：`publish` job 仍需先通过现有 Manifest 验证。
+下载的 Manifest 尚无 `release_url`，此时不能直接执行 `policy publish`。
+#53 的接入点在既有 `publish_release` 内：创建或恢复 Draft、准备包含实际 URL 的
+Manifest → `policy publish` 生成 publication → 将策略及 publication 上传到同一
+Draft 并读回 → 执行既有最终 `draft=false` 操作。恢复时保留已上传的 publication，
+不能重新生成不同时间戳的记录冒充同一对象。
+上传失败沿用本文的 Draft/Tag 恢复流程，不发布缺少 publication 的正式版本；
+已发布对象不覆盖，策略内容变化必须提升 revision。本任务只交付该接入点和
+失败恢复说明，未修改 Workflow、未执行正式发布。
+
 ## v0.4.9 发布证据
 
 每次手动验证将 Actions 原始 job / step 结果写入

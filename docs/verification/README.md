@@ -4,6 +4,7 @@
 
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
+- [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 
 上级入口：[技术文档](../README.md)。

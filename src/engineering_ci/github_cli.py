@@ -62,7 +62,8 @@ class GitHub:
         )
         require_api_success(result)
 
-    def download(self, asset_id):
+    def download_bytes(self, asset_id):
+        """Read exact Release Asset bytes through native gh."""
         result = subprocess.run(
             [
                 "gh",
@@ -78,7 +79,10 @@ class GitHub:
         require_api_success(result)
         if len(result.stdout) > 1024 * 1024:
             raise ValueError("Manifest asset exceeds limit")
-        return json.loads(result.stdout)
+        return result.stdout
+
+    def download(self, asset_id):
+        return json.loads(self.download_bytes(asset_id))
 
     def artifact_archive(self, artifact_id):
         result = subprocess.run(
