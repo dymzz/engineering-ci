@@ -3,12 +3,9 @@
 Engineering CI owns the publication and reception contract; Runtime consumes
 the verified snapshot/decision documents without importing this package.
 
-Trust is not established by the policy file. A policy release is trusted only
-when its publication record matches a *published* release manifest that the
-existing release verifier accepts (``release.manifest.validate`` with
-``published=True``), and when the consumer's out-of-band anchor names the same
-repository and release workflow. PR edits, a cached ``enabled`` flag, a
-neighbouring hash or an unreviewed manifest never establish trust.
+Trust requires authenticated acquisition through the existing GitHub Release
+verifier, exact policy/publication assets from that same Release, and a separately
+provisioned publisher anchor. Local Manifest validation only checks structure.
 
 The receiver keeps one accepted revision in a local state document. A policy can
 only advance that revision; an older revision is a rollback, and the same
@@ -30,10 +27,15 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
+from .github_cli import ApiError, GitHub
 from .release import manifest as release_manifest
+from .release import verification as release_verification
 
 POLICY_KIND = "engineering-ci-security-policy"
 PUBLICATION_KIND = "engineering-ci-security-policy-publication"
@@ -398,6 +400,7 @@ def _load_state(raw):
             "revision",
             "policy_sha256",
             "publication_sha256",
+            "snapshot_sha256",
             "accepted_at",
             "release",
         ),
@@ -415,6 +418,7 @@ def _load_state(raw):
         or value["revision"] < 1
         or not HEX64.fullmatch(str(value["policy_sha256"]))
         or not HEX64.fullmatch(str(value["publication_sha256"]))
+        or not HEX64.fullmatch(str(value["snapshot_sha256"]))
         or not isinstance(release, dict)
         or not REPOSITORY.fullmatch(str(release.get("repository")))
         or not VERSION_TAG.fullmatch(str(release.get("tag")))
@@ -430,6 +434,7 @@ def _load_state(raw):
         "revision": value["revision"],
         "policy_sha256": value["policy_sha256"],
         "publication_sha256": value["publication_sha256"],
+        "snapshot_sha256": value["snapshot_sha256"],
         "accepted_at": _format(
             _timestamp(value["accepted_at"], "policy_state_corrupt")
         ),
@@ -447,7 +452,7 @@ def load_state(raw):
 
 
 def _verify_release(manifest):
-    """Reuse the existing publication contract; never trust a bare JSON file."""
+    """Validate structure only; authenticated acquisition is a separate check."""
     try:
         release_manifest.validate(
             manifest,
@@ -475,7 +480,7 @@ def _release_identity(manifest):
 
 
 def publish(policy_raw, manifest, *, now=None):
-    """Build the publication record for a policy and a published release."""
+    """Build a record; this does not authenticate or publish its input files."""
     raw = _bytes(policy_raw)
     document = load_policy(raw)
     _verify_release(manifest)
@@ -500,15 +505,56 @@ def publish(policy_raw, manifest, *, now=None):
     return value
 
 
+@contextmanager
+def _state_lock(path):
+    """Serialize this receiver's state transaction; contention fails closed."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(path.name + ".lock").open("a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+
+            if stream.seek(0, os.SEEK_END) == 0:
+                stream.write(b"\0")
+                stream.flush()
+            stream.seek(0)
+            lock = lambda: msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            unlock = lambda: msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            lock = lambda: fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            unlock = lambda: fcntl.flock(stream, fcntl.LOCK_UN)
+        try:
+            lock()
+        except OSError:
+            raise PolicyError("policy_state_busy") from None
+        try:
+            yield
+        finally:
+            unlock()
+
+
 def _write_state(path, state):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = None
     try:
-        temporary.write_text(encode(state), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=path.name + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(encode(state))
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
-        if temporary.exists():
+        if temporary is not None and temporary.exists():
             try:
                 temporary.unlink()
             except OSError:
@@ -541,6 +587,100 @@ def _snapshot(document, publication, publication_sha256, now, initialized, previ
     }
 
 
+def _snapshot_digest(snapshot):
+    if (
+        not isinstance(snapshot, dict)
+        or set(snapshot)
+        != {
+            "schema_version",
+            "kind",
+            "policy",
+            "publication",
+            "release",
+            "verified_at",
+            "state",
+        }
+        or type(snapshot["schema_version"]) is not int
+        or snapshot["schema_version"] != 1
+        or snapshot["kind"] != SNAPSHOT_KIND
+    ):
+        raise PolicyError("policy_snapshot_invalid")
+    return digest(
+        encode(
+            {
+                key: snapshot[key]
+                for key in (
+                    "schema_version",
+                    "kind",
+                    "policy",
+                    "publication",
+                    "release",
+                )
+            }
+        )
+    )
+
+
+def _authenticate_publication(api, manifest, raw, publication_bytes):
+    """Bind local bytes to actual assets on an authenticated, verified Release."""
+    try:
+        proof = release_verification.published(
+            api,
+            manifest["repository"],
+            manifest["release"]["tag"],
+            head=manifest["release"]["commit_sha"],
+        )
+        if (
+            proof is None
+            or proof["status"] != "published"
+            or proof["manifest"] != manifest
+        ):
+            raise PolicyError("publication_untrusted")
+        release_id = manifest["release"]["release_url"].rsplit("/", 1)[1]
+        names = {
+            "security-policy.json": raw,
+            "security-policy.publication.json": publication_bytes,
+        }
+        assets = []
+        for page in range(1, 21):
+            items = api(f"releases/{release_id}/assets?per_page=100&page={page}")
+            if not isinstance(items, list):
+                raise PolicyError("publication_untrusted")
+            assets.extend(item for item in items if item.get("name") in names)
+            if len(items) < 100:
+                break
+        else:
+            raise PolicyError("publication_untrusted")
+        if len(assets) != 2 or {item["name"] for item in assets} != set(names):
+            raise PolicyError("publication_untrusted")
+        for asset in assets:
+            expected = names[asset["name"]]
+            if (
+                type(asset.get("id")) is not int
+                or asset["id"] <= 0
+                or asset.get("state") != "uploaded"
+                or asset.get("size") != len(expected)
+            ):
+                raise PolicyError("publication_untrusted")
+            if asset.get("digest") is not None and asset[
+                "digest"
+            ] != "sha256:" + digest(expected):
+                raise PolicyError("publication_untrusted")
+            if api.download_bytes(asset["id"]) != expected:
+                raise PolicyError("publication_untrusted")
+    except PolicyError:
+        raise
+    except (
+        ApiError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        subprocess.SubprocessError,
+    ):
+        raise PolicyError("publication_unavailable") from None
+
+
 def receive(
     policy_raw,
     publication_raw,
@@ -550,6 +690,7 @@ def receive(
     *,
     now=None,
     bootstrap=False,
+    api=None,
 ):
     """Verify a publication and atomically advance the accepted policy revision."""
     now = _now(now)
@@ -586,7 +727,17 @@ def receive(
     if document["revision"] < trust["minimum_policy_revision"]:
         raise PolicyError("policy_below_minimum")
 
-    state_file = Path(state_path)
+    _authenticate_publication(
+        api or GitHub(trust["repository"]), manifest, raw, publication_bytes
+    )
+    with _state_lock(state_path):
+        return _accept(
+            document, publication, publication_bytes, Path(state_path), now, bootstrap
+        )
+
+
+def _accept(document, publication, publication_bytes, state_file, now, bootstrap):
+    """Read, compare and replace only while the concrete state lock is held."""
     state = None
     if state_file.exists():
         state = load_state(state_file.read_bytes())
@@ -616,6 +767,9 @@ def receive(
             raise PolicyError("policy_digest_conflict")
         initialized, previous = False, state["revision"]
 
+    snapshot = _snapshot(
+        document, publication, digest(publication_bytes), now, initialized, previous
+    )
     _write_state(
         state_file,
         {
@@ -624,18 +778,12 @@ def receive(
             "revision": document["revision"],
             "policy_sha256": publication["policy"]["sha256"],
             "publication_sha256": digest(publication_bytes),
+            "snapshot_sha256": _snapshot_digest(snapshot),
             "accepted_at": _format(now),
             "release": publication["release"],
         },
     )
-    return _snapshot(
-        document,
-        publication,
-        digest(publication_bytes),
-        now,
-        initialized=initialized,
-        previous=previous,
-    )
+    return snapshot
 
 
 def _asset_input(value):
@@ -667,10 +815,44 @@ def decide(
     snapshot,
     asset,
     *,
+    state_path,
     selection_id,
     selection_policy_revision=None,
     protected_profile=None,
     now=None,
+):
+    """Evaluate only a snapshot bound to the persistent accepted state."""
+    identity = _snapshot_digest(snapshot)
+    state_file = Path(state_path)
+    with _state_lock(state_file):
+        if not state_file.exists():
+            raise PolicyError("policy_state_missing")
+        state = load_state(state_file.read_bytes())
+        if not isinstance(snapshot["policy"], dict):
+            raise PolicyError("policy_snapshot_invalid")
+        superseded = snapshot["policy"].get("revision") != state["revision"]
+        if not superseded and identity != state["snapshot_sha256"]:
+            raise PolicyError("policy_snapshot_invalid")
+        return _decide_snapshot(
+            snapshot,
+            asset,
+            selection_id=selection_id,
+            selection_policy_revision=selection_policy_revision,
+            protected_profile=protected_profile,
+            now=now,
+            superseded=superseded,
+        )
+
+
+def _decide_snapshot(
+    snapshot,
+    asset,
+    *,
+    selection_id,
+    selection_policy_revision=None,
+    protected_profile=None,
+    now=None,
+    superseded=False,
 ):
     """Return a structured decision for one asset against a verified snapshot.
 
@@ -687,7 +869,9 @@ def decide(
         raise PolicyError("policy_snapshot_invalid")
     now = _now(now)
     policy_document = snapshot["policy"]
-    if now > _timestamp(policy_document["expires_at"], "policy_snapshot_invalid"):
+    if superseded:
+        decision, reason, rule_id = "unknown", "policy_superseded", None
+    elif now > _timestamp(policy_document["expires_at"], "policy_snapshot_invalid"):
         decision, reason, rule_id = "unknown", "policy_expired", None
     elif now < _timestamp(policy_document["not_before"], "policy_snapshot_invalid"):
         decision, reason, rule_id = "unknown", "policy_not_yet_valid", None
@@ -759,6 +943,12 @@ def main(argv=None):
     receive_parser.add_argument("--bootstrap", action="store_true")
     decide_parser = commands.add_parser("decide")
     decide_parser.add_argument("--snapshot", type=Path, required=True)
+    decide_parser.add_argument(
+        "--state",
+        type=Path,
+        required=True,
+        help="Persistent protected receiver state, outside clearable caches",
+    )
     decide_parser.add_argument("--asset", type=Path, required=True)
     decide_parser.add_argument("--selection-id", required=True)
     decide_parser.add_argument("--selection-policy-revision")
@@ -773,7 +963,9 @@ def main(argv=None):
         if args.command == "publish":
             value = publish(
                 args.policy.read_bytes(),
-                json.loads(args.release_manifest.read_text(encoding="utf-8")),
+                _load_json(
+                    args.release_manifest.read_bytes(), "release_manifest_invalid"
+                ),
             )
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(encode(value), encoding="utf-8")
@@ -783,7 +975,9 @@ def main(argv=None):
             snapshot = receive(
                 args.policy.read_bytes(),
                 args.publication.read_bytes(),
-                json.loads(args.release_manifest.read_text(encoding="utf-8")),
+                _load_json(
+                    args.release_manifest.read_bytes(), "release_manifest_invalid"
+                ),
                 args.anchor.read_bytes(),
                 args.state,
                 bootstrap=args.bootstrap,
@@ -791,12 +985,17 @@ def main(argv=None):
             _print(snapshot)
             return 0
         if args.command == "decide":
-            snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
-            asset = json.loads(args.asset.read_text(encoding="utf-8"))
+            snapshot = _load_json(
+                args.snapshot.read_bytes(),
+                "policy_snapshot_invalid",
+                MAX_POLICY_BYTES + MAX_DOCUMENT_BYTES,
+            )
+            asset = _load_json(args.asset.read_bytes(), "asset_invalid")
             _print(
                 decide(
                     snapshot,
                     asset,
+                    state_path=args.state,
                     selection_id=args.selection_id,
                     selection_policy_revision=args.selection_policy_revision,
                     protected_profile=args.protected_profile,
@@ -807,6 +1006,8 @@ def main(argv=None):
         return 0
     except PolicyError as error:
         parser.exit(1, f"policy rejected: {error.code}\n")
+    except OSError:
+        parser.exit(1, "policy rejected: policy_input_unavailable\n")
 
 
 if __name__ == "__main__":

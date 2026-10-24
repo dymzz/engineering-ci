@@ -6,8 +6,11 @@ Contract: [security policy snapshots](../architecture/security-policy.md).
 
 No formal Release was performed. Publication is exercised against the existing
 `release-manifest` *contract fixture* used by the release tests, not against a
-real published Release or Tag. That is the required delivery boundary for this
-task; #53/ECI release integration will produce the real Manifest and assets.
+new published policy Release. Positive controlled-API tests now exercise the
+actual existing Release verifier; #53 still owns publishing the real policy
+assets, and #57 owns connecting Runtime/execution admission. A real read-only
+negative check against the existing v0.7.0 Release is recorded below. These
+evidence categories are separate.
 
 ## Real policy input
 
@@ -77,3 +80,62 @@ published record.
 - Clock and local state are ordinary host files; the contract refuses missing or
   corrupt state and requires explicit re-provisioning, but does not claim
   protection from a subject with equal host privileges.
+
+## PR #62 review corrections — 2026-10-24
+
+Reviewed initial head `9949e22dc03e4361bb46540ca5a4d51c1cefd3ae`. Its three green
+PR jobs and 45 local targeted tests did not cover these reproduced defects:
+
+| Defect at that head | Observed result | Correction |
+| --- | --- | --- |
+| Fabricated local Manifest/publication | Accepted and allowed with no network calls | Reception authenticates the real Release through existing verification, and compares exact same-Release policy/publication Asset bytes |
+| Previously accepted allow snapshot after revision 8 revoked it | Saved revision 7 still allowed | Decisions require persistent state and its security snapshot digest; superseded snapshots are unknown/not allowed; modified contents are refused |
+| Concurrent receivers | Revision 9 was overwritten by revision 8 | Native interprocess lock around the full read/compare/replace transaction; contention is explicit; unique flushed temporary files |
+
+Regression tests were first run on the defective implementation: all three
+failed for the corresponding behavior. After the fixes, the targeted policy,
+CLI and native Release Asset transport tests pass: **67 passed, 3.99s** on
+Windows CPython 3.14.3. The expanded affected suite (policy, CLI, native transport,
+Manifest, manual Release, verification and Run behavior) passed **205 tests and
+19 subtests in 5.15s**. Ruff and format checks passed. Final current-head CI is
+recorded on [PR #62](https://github.com/dymzz/engineering-ci/pull/62).
+
+Additional cases cover changed/missing/partially uploaded policy assets, Draft
+Release rejection, unavailable GitHub preserving accepted state, tampered or
+missing-state snapshots, noncanonical raw policy bytes, failed atomic replace,
+tool-cache cleanup preserving an independent persistent baseline, a real
+second-process lock contention, and CLI receive/decide on the same state.
+The Windows CLI fixture preserves raw bytes explicitly; newline translation is
+not allowed to redefine a publication digest.
+
+### Actual GitHub read-only check
+
+The existing [v0.7.0 Release](https://github.com/dymzz/engineering-ci/releases/tag/v0.7.0)
+and its attached Manifest were queried through the production reception path:
+
+- Tag/Manifest commit: `9d03ade4f2af89538c9a0362beae55c9a0835e18`.
+- Release Manifest Run: [39614205390](https://github.com/dymzz/engineering-ci/actions/runs/39614205390), attempt 1.
+- Input: the real example policy, paired with a newly constructed publication
+  naming that genuine Release. The Release does **not** contain those policy assets.
+- Result: `publication_untrusted`; no receiver state was created.
+
+This proves that a genuine Manifest no longer authenticates an unpublished
+policy. It does **not** prove successful production policy publication or
+successful live receipt. No Tag, Release, Asset or Workflow was created or
+modified by this check. The positive path remains controlled-API evidence until
+#53 publishes the assets using the documented existing Draft operation.
+
+### Handoff and acceptance scope
+
+The delivered boundary is policy input/record/snapshot/decision contracts and
+the actual trusted receiver implementation. Runtime imports no ECI package.
+Tool identity semantics await Runtime #27; full execution-time and offline
+admission await #57/Runtime #13. These integration tasks must reuse the same
+contracts and cannot substitute cached enabled flags for current decisions.
+
+State examples now use an explicitly provisioned persistent `protected-policy/`
+location, outside clearable caches. Deliberately deleting that authority is a
+recovery operation requiring its trusted revision floor, not routine bootstrap.
+The release handoff also identifies the real point inside `publish_release`
+after Draft creation and Release URL binding; a downloaded pre-publication
+Manifest alone cannot be passed to `policy publish`.

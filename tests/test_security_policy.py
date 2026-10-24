@@ -1,13 +1,20 @@
 """Trusted policy publication, first receipt, rollback guards and per-asset decisions."""
 
+import copy
 import datetime as dt
+import hashlib
 import json
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
 from test_release_manifest import HEAD, REPOSITORY, TAG, make_manifest
+from test_release_verification import API
 
 from engineering_ci import security_policy as policy
+from engineering_ci.github_cli import ApiError
 from engineering_ci.release import manifest as evidence
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +25,53 @@ NOW = dt.datetime(2026, 10, 24, 12, 0, tzinfo=dt.UTC)
 def published_manifest():
     value = make_manifest()
     value["release"]["release_url"] = (
-        f"https://api.github.com/repos/{REPOSITORY}/releases/9"
+        f"https://api.github.com/repos/{REPOSITORY}/releases/10"
     )
     evidence.validate(value, REPOSITORY, TAG, HEAD, published=True)
     return value
+
+
+class PolicyAPI(API):
+    """Controlled GitHub responses, using the real Release verifier."""
+
+    def __init__(self, raw, envelope, manifest):
+        super().__init__()
+        self.tag = HEAD
+        self.saved = copy.deepcopy(manifest)
+        self.published = {
+            "id": 10,
+            "tag_name": TAG,
+            "draft": False,
+            "prerelease": False,
+            "url": f"https://api.github.com/repos/{REPOSITORY}/releases/10",
+            "html_url": f"https://github.com/{REPOSITORY}/releases/tag/{TAG}",
+        }
+        self.policy_assets = {
+            21: ("security-policy.json", raw),
+            22: (
+                "security-policy.publication.json",
+                policy.encode(envelope).encode("utf-8"),
+            ),
+        }
+
+    def __call__(self, path, method="GET", data=None):
+        result = super().__call__(path, method, data)
+        if path.startswith("releases/10/assets?"):
+            return result + [
+                {
+                    "id": identifier,
+                    "name": name,
+                    "size": len(raw),
+                    "state": "uploaded",
+                    "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                }
+                for identifier, (name, raw) in self.policy_assets.items()
+            ]
+        return result
+
+    def download_bytes(self, asset_id):
+        self.calls.append((f"releases/assets/{asset_id}", "GET", None))
+        return self.policy_assets[asset_id][1]
 
 
 def anchor(**overrides):
@@ -73,6 +123,7 @@ def receive(
         state,
         now=now,
         bootstrap=bootstrap,
+        api=PolicyAPI(raw, envelope, manifest),
     )
 
 
@@ -277,6 +328,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(version="3.0.0"),
+            state_path=tmp_path / "state.json",
             selection_id="selection-1",
             selection_policy_revision="caller-policy-1",
             protected_profile="ci-security",
@@ -291,6 +343,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(),
+            state_path=tmp_path / "state.json",
             selection_id="selection-1",
             selection_policy_revision="caller-policy-1",
             protected_profile="ci-security",
@@ -311,6 +364,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(tool_id="unknown-tool"),
+            state_path=tmp_path / "state.json",
             selection_id="selection-1",
             protected_profile="ci-security",
             now=NOW,
@@ -324,6 +378,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(),
+            state_path=tmp_path / "state.json",
             selection_id="selection-1",
             protected_profile="ci-release",
             now=NOW,
@@ -352,6 +407,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(version="2.5.0"),
+            state_path=tmp_path / "state.json",
             selection_id="selection-2",
             protected_profile="ci-security",
             now=NOW,
@@ -364,6 +420,7 @@ class TestDecision:
         decision = policy.decide(
             snapshot,
             self.asset(),
+            state_path=tmp_path / "state.json",
             selection_id="selection-1",
             protected_profile="ci-security",
             now=dt.datetime(2027, 12, 1, tzinfo=dt.UTC),
@@ -377,3 +434,278 @@ class TestCommandLine:
     def test_digest_command_prints_the_example_digest(self, capsys):
         assert policy.main(["digest", "--policy", str(EXAMPLE)]) == 0
         assert capsys.readouterr().out.strip() == policy.digest(EXAMPLE.read_bytes())
+
+
+def test_unpublished_manifest_does_not_establish_publisher_trust(tmp_path):
+    raw = policy_bytes()
+    manifest = published_manifest()
+    envelope = policy.publish(raw, manifest, now=NOW)
+    with pytest.raises(policy.PolicyError, match="publication_untrusted"):
+        policy.receive(
+            raw,
+            envelope,
+            manifest,
+            anchor(),
+            tmp_path / "state.json",
+            now=NOW,
+            bootstrap=True,
+            api=API(),
+        )
+
+
+def test_old_snapshot_cannot_override_an_accepted_revocation(tmp_path):
+    state = tmp_path / "state.json"
+    old = receive(state=state)
+    revoked = policy_document(8)
+    revoked["rules"][0]["effect"] = "deny"
+    receive(revoked, state=state)
+    decision = policy.decide(
+        old,
+        TestDecision().asset(),
+        state_path=state,
+        selection_id="revoked-selection",
+        protected_profile="ci-security",
+        now=NOW,
+    )
+    assert decision["allowed"] is False
+
+
+def test_concurrent_receive_cannot_lower_the_accepted_revision(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    receive(state=state)
+    higher_waiting, release_higher = threading.Event(), threading.Event()
+    original = policy._write_state
+    failures = []
+
+    def controlled_write(path, value):
+        if value["revision"] == 9:
+            higher_waiting.set()
+            assert release_higher.wait(5)
+        original(path, value)
+
+    def higher():
+        try:
+            receive(policy_document(9), state=state)
+        except policy.PolicyError as error:
+            failures.append(error.code)
+
+    monkeypatch.setattr(policy, "_write_state", controlled_write)
+    thread = threading.Thread(target=higher)
+    thread.start()
+    assert higher_waiting.wait(5)
+    try:
+        with pytest.raises(policy.PolicyError, match="policy_state_busy"):
+            receive(policy_document(8), state=state)
+    finally:
+        release_higher.set()
+        thread.join(3)
+    assert not thread.is_alive()
+    assert json.loads(state.read_text(encoding="utf-8"))["revision"] == 9
+    assert not failures
+    with pytest.raises(policy.PolicyError, match="policy_rollback"):
+        receive(policy_document(8), state=state)
+
+
+def test_modified_snapshot_cannot_reuse_a_saved_policy_digest(tmp_path):
+    state = tmp_path / "state.json"
+    snapshot = receive(state=state)
+    snapshot["policy"]["rules"][1]["effect"] = "allow"
+    with pytest.raises(policy.PolicyError, match="policy_snapshot_invalid"):
+        policy.decide(
+            snapshot,
+            TestDecision().asset(version="3.0.0"),
+            state_path=state,
+            selection_id="modified",
+            now=NOW,
+        )
+
+
+def test_missing_state_cannot_authorize_an_old_snapshot(tmp_path):
+    state = tmp_path / "state.json"
+    snapshot = receive(state=state)
+    state.unlink()
+    with pytest.raises(policy.PolicyError, match="policy_state_missing"):
+        policy.decide(
+            snapshot,
+            TestDecision().asset(),
+            state_path=state,
+            selection_id="lost-state",
+            now=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "changed_bytes", "draft", "wrong_digest", "partial"]
+)
+def test_receive_requires_exact_assets_on_the_verified_release(
+    tmp_path, failure, monkeypatch
+):
+    raw, manifest = policy_bytes(), published_manifest()
+    envelope = policy.publish(raw, manifest, now=NOW)
+    api = PolicyAPI(raw, envelope, manifest)
+    if failure == "missing":
+        del api.policy_assets[21]
+    elif failure == "changed_bytes":
+        monkeypatch.setattr(
+            api,
+            "download_bytes",
+            lambda asset_id: b"x" + api.policy_assets[asset_id][1][1:],
+        )
+    elif failure == "draft":
+        api.published["draft"] = True
+    else:
+        original = api.__class__.__call__
+
+        def changed(self, path, method="GET", data=None):
+            result = original(self, path, method, data)
+            if path.startswith("releases/10/assets?"):
+                result[-1]["digest" if failure == "wrong_digest" else "state"] = (
+                    "sha256:" + "0" * 64 if failure == "wrong_digest" else "starter"
+                )
+            return result
+
+        monkeypatch.setattr(PolicyAPI, "__call__", changed)
+    state = tmp_path / "state.json"
+    with pytest.raises(policy.PolicyError, match="publication_untrusted"):
+        policy.receive(
+            raw, envelope, manifest, anchor(), state, now=NOW, bootstrap=True, api=api
+        )
+    assert not state.exists()
+    assert not api.writes
+
+
+def test_network_unavailable_preserves_the_accepted_state(tmp_path):
+    state = tmp_path / "state.json"
+    receive(state=state)
+    before = state.read_bytes()
+    raw, manifest = policy_bytes(policy_document(8)), published_manifest()
+    envelope = policy.publish(raw, manifest, now=NOW)
+
+    def unavailable(*args, **kwargs):
+        raise ApiError(503)
+
+    with pytest.raises(policy.PolicyError, match="publication_unavailable"):
+        policy.receive(
+            raw, envelope, manifest, anchor(), state, now=NOW, api=unavailable
+        )
+    assert state.read_bytes() == before
+
+
+def test_raw_policy_whitespace_keeps_authenticated_snapshot_identity(tmp_path):
+    raw = json.dumps(policy_document(), separators=(",", ":")).encode()
+    manifest = published_manifest()
+    envelope = policy.publish(raw, manifest, now=NOW)
+    api = PolicyAPI(raw, envelope, manifest)
+    state = tmp_path / "state.json"
+    snapshot = policy.receive(
+        raw, envelope, manifest, anchor(), state, now=NOW, bootstrap=True, api=api
+    )
+    assert snapshot["policy"]["sha256"] == policy.digest(raw)
+    assert policy.decide(
+        snapshot,
+        TestDecision().asset(),
+        state_path=state,
+        selection_id="raw-bytes",
+        now=NOW,
+    )["allowed"]
+    assert api.writes == []
+    assert any(path == "actions/runs/123/attempts/1" for path, _, _ in api.calls)
+    assert any(path == "releases/assets/21" for path, _, _ in api.calls)
+
+
+def test_replace_failure_does_not_modify_the_previous_state(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    receive(state=state)
+    before = state.read_bytes()
+
+    def failed_replace(*args):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(policy.os, "replace", failed_replace)
+    with pytest.raises(OSError, match="injected"):
+        receive(policy_document(8), state=state)
+    assert state.read_bytes() == before
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_clearable_tool_cache_is_not_the_rollback_baseline(tmp_path):
+    state = tmp_path / "protected-policy" / "state.json"
+    receive(policy_document(8), state=state)
+    cached = tmp_path / ".cache" / "tools" / "payload"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"cached tool")
+    cached.unlink()
+    with pytest.raises(policy.PolicyError, match="policy_rollback"):
+        receive(policy_document(7), state=state)
+    assert policy.load_state(state.read_bytes())["revision"] == 8
+
+
+def test_receiver_lock_is_enforced_between_processes(tmp_path):
+    state = tmp_path / "state.json"
+    script = """import sys
+sys.path.insert(0, sys.argv[1])
+from engineering_ci import security_policy as p
+try:
+    with p._state_lock(sys.argv[2]):
+        raise SystemExit('unexpected lock acquisition')
+except p.PolicyError as error:
+    assert error.code == 'policy_state_busy'
+    print(error.code)
+"""
+    with policy._state_lock(state):
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(ROOT / "src"), str(state)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "policy_state_busy"
+
+
+def test_cli_receive_and_decide_use_the_same_protected_state(
+    tmp_path, monkeypatch, capsys
+):
+    raw, manifest = policy_bytes(), published_manifest()
+    envelope = policy.publish(raw, manifest, now=NOW)
+    api = PolicyAPI(raw, envelope, manifest)
+    monkeypatch.setattr(policy, "GitHub", lambda repository: api)
+    monkeypatch.setattr(policy, "_now", lambda value=None: NOW)
+    inputs = {
+        "policy": json.loads(raw),
+        "publication": envelope,
+        "release-manifest": manifest,
+        "anchor": anchor(),
+        "asset": TestDecision().asset(),
+    }
+    paths = {}
+    for name, value in inputs.items():
+        paths[name] = tmp_path / (name + ".json")
+        paths[name].write_bytes(policy.encode(value).encode("utf-8"))
+    state = tmp_path / "protected-policy" / "state.json"
+    args = ["receive", "--state", str(state), "--bootstrap"]
+    for name in ("policy", "publication", "release-manifest", "anchor"):
+        args.extend(["--" + name, str(paths[name])])
+    assert policy.main(args) == 0
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert (
+        policy.main(
+            [
+                "decide",
+                "--snapshot",
+                str(snapshot),
+                "--asset",
+                str(paths["asset"]),
+                "--state",
+                str(state),
+                "--selection-id",
+                "cli-selection",
+                "--protected-profile",
+                "ci-security",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["allowed"] is True

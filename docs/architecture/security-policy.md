@@ -94,10 +94,11 @@ The committed example is [config/security-policy.example.json](../../config/secu
 }
 ```
 
-`publish` reuses the existing release contract: the supplied Manifest must pass
-`release.manifest.validate(..., published=True)`, so it must be a successful
-`publication`-mode manual release for the same tag/commit. The policy publisher
-must name that repository and `.github/workflows/release.yml`.
+`publish` builds the publication record; it does not authenticate files or make
+a Release public. The supplied Manifest must pass the existing structural
+`release.manifest.validate(..., published=True)` checks and contain the actual
+Draft Release URL. This check alone does **not** prove a published Release.
+The policy publisher must name the same repository and release workflow.
 
 ### Anchor and state
 
@@ -115,13 +116,30 @@ policy:
 ```
 
 The state records `revision`, `policy_sha256`, `publication_sha256`,
-`accepted_at` and the release identity. It is written atomically
-(`temp file + os.replace`) and never rewritten on a refused policy.
+`snapshot_sha256`, `accepted_at` and the release identity. The snapshot digest
+binds its security-bearing contents (including rules and release), excluding
+receipt-time/transition metadata. Store this authoritative state in a protected
+persistent location, **outside `.cache/`, tool caches and temporary outputs**.
+The caller provisions the path; there is no implicit cache or default allow.
+
+A native process lock covers read/compare/replace; a competing receiver gets
+`policy_state_busy` and must inspect state before retrying. A unique temporary
+file is flushed and atomically replaced; rejected or failed updates leave the
+previous state intact. An older unreleased state without `snapshot_sha256` is
+refused as corrupt; no historical state or policy is silently reinterpreted.
 
 ## Trust and reception rules
 
-1. **Publisher.** Anchor repository and workflow must equal the verified
-   Manifest's repository and workflow path. A Manifest for another repository,
+1. **Publisher.** Reception uses native `gh` and the existing
+   `release.verification.published` path to read the actual Release, Tag,
+   commit metadata, Manifest, original Run Attempt/checks and Artifacts.
+   The two policy assets must be uploaded on that same Release; their exact
+   bytes, sizes and available GitHub digests must equal the supplied files.
+   Locally fabricated publication/Manifest files or a real Manifest paired with
+   an unpublished policy are `publication_untrusted`. Unavailable GitHub/API
+   evidence is `publication_unavailable`; it cannot update state.
+   Anchor repository and workflow must equal the verified Manifest's publisher.
+   A Manifest for another repository,
    another workflow, a failed result or `validation` mode is refused
    (`release_manifest_invalid`, `publication_publisher_untrusted`).
 2. **Integrity.** Policy SHA-256 and size must equal the publication record and
@@ -147,6 +165,12 @@ The state records `revision`, `policy_sha256`, `publication_sha256`,
    the anchor (raising `minimum_policy_revision` if older revisions must stay
    refused) and an explicit bootstrap. Ordinary cache cleanup is not a trusted
    rollback baseline.
+8. **Decisions.** `decide` requires the same persistent state. A previously
+   received snapshot superseded by a newer accepted revision yields
+   `unknown` / `policy_superseded`. Changed snapshot contents cannot reuse the
+   old policy digest (`policy_snapshot_invalid`); missing/corrupt state refuses
+   decisions. It does not contact GitHub, allowing offline evaluation of a
+   currently accepted snapshot. #57 owns admission immediately before execution.
 
 ### Stable refusal codes
 
@@ -158,7 +182,8 @@ The state records `revision`, `policy_sha256`, `publication_sha256`,
 `policy_not_yet_valid`, `policy_below_minimum`, `policy_state_missing`,
 `policy_state_corrupt`, `policy_rollback`, `policy_digest_conflict`,
 `policy_publication_conflict`, `trust_anchor_invalid`, `clock_invalid`,
-`policy_snapshot_invalid`, `asset_invalid`.
+`policy_snapshot_invalid`, `asset_invalid`, `publication_untrusted`,
+`publication_unavailable`, `policy_state_busy`, `policy_input_unavailable`.
 
 A refusal is a value (`PolicyError.code`); no refusal produces a snapshot,
 state update or allow decision.
@@ -188,7 +213,8 @@ state update or allow decision.
   `allow`; protected callers must treat `unknown` as not permitted. Unprotected
   callers keep their existing explicit authorization behavior.
 - Reasons: `matched_allow`, `matched_deny`, `no_matching_rule`,
-  `policy_expired`, `policy_not_yet_valid`, `protected_profile_not_covered`.
+  `policy_expired`, `policy_not_yet_valid`, `protected_profile_not_covered`,
+  `policy_superseded`.
 - `policy` is the current verified snapshot; `selection` keeps the original
   Runtime selection and its own policy revision. They are never merged or
   rewritten, and the decision never claims the old selection policy is current.
@@ -207,30 +233,44 @@ engineering-ci policy publish --policy security-policy.json \
 engineering-ci policy receive --policy security-policy.json \
   --publication security-policy.publication.json \
   --release-manifest release-manifest.json --anchor policy-anchor.json \
-  --state .cache/policy/state.json --bootstrap
+  --state protected-policy/state.json --bootstrap
 engineering-ci policy decide --snapshot snapshot.json --asset asset.json \
+  --state protected-policy/state.json \
   --selection-id <selection-id> --selection-policy-revision <old-revision> \
   --protected-profile ci-security
 ```
 
-`receive` prints the verified snapshot; `publish` prints the publication record.
+`receive` needs a configured native `gh` account with access to the anchored
+repository and prints the verified snapshot. `publish` only generates the
+publication record. Provision `protected-policy/` persistently outside cache
+cleanup and untrusted PR inputs. Use `--bootstrap` only for deliberate initial
+provisioning; ordinary updates omit it. Losing the protected state requires
+explicit recovery of its revision floor, not repeating bootstrap from a stale
+minimum. Neither reception nor decisions publish a Release or execute tools.
+
+`decide` exits successfully when it produces a decision document, including
+`deny` or `unknown`. That process exit status is not execution permission:
+protected consumers must require `decision == "allow"` and `allowed == true`.
 
 ## Release integration point (not applied here)
 
-The existing `publish` job downloads the verified `release-manifest.json`. The
-policy asset must be attached to the same Draft before the Release becomes
-public:
+The existing `publish` job downloads a Manifest whose `release_url` is still
+null. Calling `policy publish` at that point is invalid, and there is no Draft
+yet. #53 must connect inside the existing `publish_release` operation, after
+Draft creation/resumption and preparation of the actual Release-bound Manifest,
+before its final `draft=false` API call:
 
 1. Generate the publication from the reviewed `config/security-policy.json` and
-   the downloaded Manifest (`engineering-ci policy publish` in
-   `.github/workflows/release.yml`, `publish` job).
+   the Manifest containing the actual Draft URL. The record builder does not
+   require that Draft to be publicly released yet.
 2. Upload `security-policy.json` and `security-policy.publication.json` to the
    Draft Release together with `release-manifest.json`, then run the existing
    final publication step.
 3. On upload failure, keep the Draft/tag recovery behavior described in
    [release workflow](release/workflow.md); do not publish a final Release
-   without a publication record. Rerun the generation step; a new policy must
-   increase `revision` rather than overwrite an already published object.
+   without its policy assets. Recovery reads and preserves already-uploaded
+   records, including `published_at`, instead of regenerating a conflicting
+   record. Changed policy contents require a higher `revision`.
 
 #53 authors the policy and calls the same commands; #57 consumes snapshots and
 decisions. This task does not publish a formal Release or change the Workflow.
