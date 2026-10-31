@@ -4,9 +4,9 @@ Implement the engineering requirements from the supplied frozen Issue input in t
 
 ## Input integrity
 
-1. Read the local `inputs/issue-63.md` (or the provided workspace copy named `issue-63.md`). Its SHA-256 must be `315eb95bd0dbde4223bf93699d969d89b39f52b53cb03820f4d7e95c1b2c43e1`.
-2. If that input is absent or its checksum differs, stop and report the mismatch; do not silently replace it with the live GitHub Issue #63, which has a different, more detailed history.
-3. The target Engineering CI source revision is `c40fb6996548ec1ce2e3a6555771baf2b4d3762c`. Confirm the checkout matches the assigned starting revision.
+1. Read the local `inputs/issue-63.md` (or the provided workspace copy named `issue-63.md`). Its SHA-256 must be `9ea5538829348a26220b34153488c3fae62cf333b9ff273f7a45c62a812db74e`.
+2. If that input is absent or its checksum differs, stop and report the mismatch; do not silently substitute a different Issue revision. The supplied input is the reviewed problem-driven v2 draft, with all four problem areas and Q1–Q13; it is not a verbatim copy of the published GitHub Issue.
+3. The target Engineering CI source revision is `97a6c92fbb485692cc3db9e255c5b8113abab6ae`. Confirm the checkout matches the assigned starting revision.
 
 Treat the frozen Issue as the functional request. Determine the implementation by examining the existing code and actual engineering requirements, rather than treating previous analysis or Issue comments as a prescribed answer.
 
