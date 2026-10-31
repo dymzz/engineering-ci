@@ -1,0 +1,19 @@
+name: Valid Workflow
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report the runner label
+        shell: bash
+        run: echo "${{ runner.os }}"

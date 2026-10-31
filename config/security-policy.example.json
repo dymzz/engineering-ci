@@ -1,0 +1,47 @@
+{
+  "expires_at": "2027-10-24T00:00:00Z",
+  "issued_at": "2026-10-24T00:00:00Z",
+  "kind": "engineering-ci-security-policy",
+  "minimum_revision": 1,
+  "not_before": "2026-10-24T00:00:00Z",
+  "protected_profiles": [
+    "ci-security"
+  ],
+  "publisher": {
+    "repository": "dymzz/engineering-ci",
+    "workflow": ".github/workflows/release.yml"
+  },
+  "revision": 7,
+  "rules": [
+    {
+      "asset": {
+        "access_id": null,
+        "digest": "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108",
+        "platform": {
+          "arch": "x86_64",
+          "os": "linux"
+        },
+        "source": null,
+        "tool_id": "osv-scanner",
+        "version": "2.6.0"
+      },
+      "effect": "allow",
+      "reason": "Reviewed stable OSV scanner payload.",
+      "rule_id": "allow-osv-2.6.0"
+    },
+    {
+      "asset": {
+        "access_id": null,
+        "digest": null,
+        "platform": null,
+        "source": null,
+        "tool_id": "osv-scanner",
+        "version": "3.0.0"
+      },
+      "effect": "deny",
+      "reason": "Version 3 has not been approved.",
+      "rule_id": "deny-osv-3"
+    }
+  ],
+  "schema_version": 1
+}

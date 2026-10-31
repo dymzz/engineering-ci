@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
         ("release", "engineering_ci.cli.release"),
         ("download", "engineering_ci.cli.download"),
         ("version", "engineering_ci.release.version"),
+        ("policy", "engineering_ci.security_policy"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
