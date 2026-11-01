@@ -29,11 +29,25 @@ powershell = load(
 
 
 def actionlint_output():
+    """The real actionlint 1.7.12 output for the committed broken fixture.
+
+    Recorded from an actual run on 2026-10-31, including the source excerpt
+    lines actionlint prints below each diagnostic. The rules are the tool's
+    own; a fabricated rule name would hide a change in what it reports.
+    """
     return (
-        "broken.yml:8:10: both uses and run are specified in the same step "
-        "[step-syntax]\n"
-        "broken.yml:12:32: Undefined named-value: 'matrix'. "
-        "Available names: always, github [expression]\n"
+        "tests/fixtures/workflow-app/.github/workflows/broken.yml:12:9: "
+        'unexpected key "uses" for step to run shell command. expected one of '
+        '"continue-on-error", "env", "id", "if", "name", "run", "shell", '
+        '"timeout-minutes", "working-directory" [syntax-check]\n'
+        "   |\n"
+        "12 |       - uses: actions/checkout@v7.0.1\n"
+        "   |         ^~~~~\n"
+        "tests/fixtures/workflow-app/.github/workflows/broken.yml:16:24: "
+        'property "os" is not defined in object type {} [expression]\n'
+        "   |\n"
+        '16 |         run: echo "${{ matrix.os }}"\n'
+        "   |                        ^~~~~~~~~\n"
     )
 
 
@@ -174,8 +188,13 @@ class ActionlintSemanticsTests(unittest.TestCase):
         found = self.report(1, actionlint_output())
         self.assertEqual(found["outcome"], "findings")
         self.assertEqual(found["finding_count"], 2)
-        self.assertEqual(found["findings"][0]["rule"], "step-syntax")
-        self.assertEqual(found["findings"][0]["line"], 8)
+        # The rules are the ones the real tool emitted.
+        self.assertEqual(found["findings"][0]["rule"], "syntax-check")
+        self.assertEqual(found["findings"][0]["line"], 12)
+        self.assertEqual(found["findings"][1]["rule"], "expression")
+        self.assertEqual(found["findings"][1]["line"], 16)
+        # The source excerpt lines actionlint prints are not diagnostics.
+        self.assertNotIn("uses: actions/checkout", json.dumps(found["findings"]))
 
     def test_one_without_parsed_findings_is_a_failure(self):
         report = self.report(1, "something went wrong\n")
@@ -222,6 +241,108 @@ class PowershellSemanticsTests(unittest.TestCase):
     def test_single_diagnostic_does_not_collapse_into_an_empty_array(self):
         report = self.report(0, envelope() + "\n" + diagnostic() + "\n")
         self.assertEqual(report["finding_count"], 1)
+
+
+class CoverageTests(unittest.TestCase):
+    """A required input set has to be covered, and an empty one is distinct."""
+
+    def workflow_report(self, candidates, analysed=None):
+        return script.script_report(
+            script.actionlint_policy(),
+            0,
+            coverage=script.coverage_record(
+                [".github/workflows"], candidates, analysed
+            ),
+        )
+
+    def powershell_report(self, candidates, scanned, native=None):
+        return script.script_report(
+            script.powershell_policy(["scripts"]),
+            0,
+            native_raw=envelope(files=scanned) if native is None else native,
+            coverage=script.coverage_record(["scripts"], candidates, scanned),
+        )
+
+    def test_an_empty_scope_is_not_applicable_and_never_clean(self):
+        report = self.workflow_report([], 0)
+        self.assertEqual(report["outcome"], "not_applicable")
+        self.assertEqual(report["reason"], "no_applicable_inputs")
+        self.assertNotEqual(report["outcome"], "clean")
+        self.assertEqual(report["coverage"]["candidates"], 0)
+
+    def test_a_scope_that_was_not_analysed_is_a_coverage_failure(self):
+        report = self.powershell_report(["a.ps1", "b.ps1"], 1)
+        self.assertEqual(report["outcome"], "not_executed")
+        self.assertEqual(report["reason"], "incomplete_input_coverage")
+
+    def test_a_fully_covered_scope_may_be_clean(self):
+        report = self.powershell_report(["a.ps1"], 1)
+        self.assertEqual(report["outcome"], "clean")
+        self.assertEqual(report["coverage"]["candidates"], 1)
+        self.assertEqual(report["coverage"]["analysed"], 1)
+
+    def test_the_coverage_record_names_the_declared_scope(self):
+        report = self.workflow_report(["a.yml"], 1)
+        self.assertEqual(report["coverage"]["scope"], [".github/workflows"])
+        self.assertEqual(report["coverage"]["candidates"], 1)
+
+    def test_an_empty_scope_report_states_no_exit_status(self):
+        report = script.empty_scope_report(
+            script.actionlint_policy(), [".github/workflows"]
+        )
+        self.assertEqual(report["outcome"], "not_applicable")
+        self.assertIsNone(report["exit_code"])
+        self.assertEqual(report["coverage"]["candidates"], 0)
+
+
+class EnforcementTests(unittest.TestCase):
+    """One execution produces the report; enforcing only reads that report."""
+
+    def report(self, outcome):
+        return {
+            "tool": "actionlint",
+            "pinned_version": script.ACTIONLINT_VERSION,
+            "outcome": outcome,
+            "reason": "because",
+            "exit_code": 1,
+            "findings": [],
+            "omitted_findings": 0,
+            "limitations": [],
+            "stdout": "",
+            "stderr": "",
+        }
+
+    def test_only_a_clean_result_passes(self):
+        self.assertIn("clean", script.enforce(self.report("clean")))
+
+    def test_every_other_outcome_fails_with_the_recorded_reason(self):
+        for outcome in ("findings", "not_applicable", "not_executed", "failure"):
+            with self.subTest(outcome=outcome):
+                with self.assertRaises(RuntimeError) as raised:
+                    script.enforce(self.report(outcome))
+                self.assertIn(outcome, str(raised.exception))
+
+    def test_the_enforced_report_is_the_one_the_tool_produced(self):
+        report = script.script_report(
+            script.actionlint_policy(), 1, actionlint_output()
+        )
+        with self.assertRaises(RuntimeError) as raised:
+            script.enforce(report)
+        self.assertIn("syntax-check", str(raised.exception))
+        self.assertIn("2", str(raised.exception))
+
+
+class ScopeArgumentTests(unittest.TestCase):
+    def test_enumerated_files_replace_the_declared_scope(self):
+        policy = script.actionlint_policy([".github/workflows"])
+        arguments = script.actionlint_arguments(policy, ["a.yml", "b.yml"])
+        self.assertEqual(arguments[-2:], ["a.yml", "b.yml"])
+        self.assertIn("-shellcheck=", arguments)
+        self.assertIn("-pyflakes=", arguments)
+
+    def test_the_declared_scope_is_used_when_no_files_are_enumerated(self):
+        policy = script.actionlint_policy([".github/workflows"])
+        self.assertEqual(script.actionlint_arguments(policy)[-1], ".github/workflows")
 
 
 class DeferralTests(unittest.TestCase):

@@ -8,25 +8,44 @@ import json
 import platform
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+from ..requirements import digest as requirement_digest
+from ..requirements import digest_records as requirement_digest_records
+from ..requirements import records as requirement_records
 from . import RELEASE_CONFIG
 from .registry import (
     ARTIFACT_NAMES,
     ARTIFACT_OUTPUTS,
     CHECKS,
+    DAGGER_EXECUTION_CHECKS,
     DAGGER_POLICY_CHECKS,
     REQUIRED_TOOLS,
     SCOPES,
     STATES,
     TOOLS,
 )
+from .version import ROOT
 
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TOOL_VERSION = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9.+-]*)$")
 # These are the actual v0.4.8 release jobs/steps, not a new execution plan.
+
+# The fields a recorded check result and a re-derived one share. A recorded
+# Dagger policy check carries one extra field, so the comparison uses the
+# common ones instead of the whole record.
+RESULT_FIELDS = (
+    "required",
+    "status",
+    "job",
+    "job_id",
+    "step",
+    "job_conclusion",
+    "step_conclusion",
+)
 
 
 def dagger_cli_version(output):
@@ -179,17 +198,25 @@ def facts(directory):
             "scope": "root_lock",
         }
     )
-    checks = (
-        (directory / "pytest/remaining-checks.txt")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    )
-    if not set(DAGGER_POLICY_CHECKS.values()).issubset(checks):
+    # The enclosing Job succeeding does not prove that every required native
+    # check ran. The ledger names the set that its success covers, so the
+    # required set is compared against the ledger instead.
+    ledger = dagger_ledger(directory)
+    if ledger["replaced"] not in ledger["discovered"]:
+        raise ValueError("The replaced Dagger check was never discovered")
+    if ledger["ran"] != ledger["expected_ran"]:
+        raise ValueError(
+            "Dagger execution ledger disagrees with the discovered check listing"
+        )
+    executed = set(ledger["ran"]) | {ledger["replaced"]}
+    if not set(DAGGER_EXECUTION_CHECKS) <= executed:
+        raise ValueError("Required Dagger execution evidence missing")
+    if not set(DAGGER_POLICY_CHECKS.values()) <= executed:
         raise ValueError("Existing Dagger policy execution evidence missing")
     records = clean_tools(records)
     if {(item["scope"], item["name"]) for item in records} != REQUIRED_TOOLS:
         raise ValueError("Required tool version evidence missing")
-    return {"tools": records, "dagger_checks": sorted(set(checks))}
+    return {"tools": records, "dagger_checks": sorted(executed)}
 
 
 def pages(api, path, key):
@@ -271,6 +298,78 @@ def check_record(jobs, name, step):
     return result
 
 
+def effective_requirements(value: dict) -> list[dict]:
+    """The requirement set this manifest says it covers.
+
+    A manifest written before the requirement set was recorded still names
+    the job and step of every check it covers, so its own recorded checks
+    remain the identity it was verified against. It simply carries no
+    coverage scope, which a candidate verification cannot accept.
+    """
+    recorded = value.get("requirements")
+    if isinstance(recorded, dict) and isinstance(recorded.get("checks"), list):
+        return recorded["checks"]
+    return [
+        {
+            "key": key,
+            "job": record["job"],
+            "step": record["step"],
+            "scope": "",
+            "dagger_check": record.get("dagger_check", ""),
+        }
+        for key, record in sorted(value.get("checks", {}).items())
+        if isinstance(record, dict) and record.get("required") is True
+    ]
+
+
+def verified_results(jobs, value):
+    """Compare the recorded check results with the original Actions results.
+
+    The manifest's own recorded job and step name the evidence, so this
+    comparison never depends on the requirement set currently in force. A
+    published release therefore stays verifiable after the requirements
+    change, and a candidate is compared against the sources it was actually
+    verified against.
+    """
+    for record in value["checks"].values():
+        if record.get("required") is not True:
+            continue
+        current = check_record(jobs, record["job"], record["step"])
+        if {field: current[field] for field in RESULT_FIELDS} != {
+            field: record[field] for field in RESULT_FIELDS
+        }:
+            raise ValueError("Manifest does not match original Actions results")
+
+
+def dagger_ledger(directory: Path) -> dict:
+    """Read the native Dagger execution ledger the reusable Workflow wrote.
+
+    Three independently produced facts: the checks the module offered, the
+    checks that were left to run, and the one check a report execution
+    replaced. A successful enclosing Job does not prove that the required
+    set was covered; the ledger names the set that its success covers.
+    """
+    helper = str(ROOT / ".dagger/src/engineering_ci")
+    if helper not in sys.path:
+        sys.path.insert(0, helper)
+    from pytest_ci import discovered_checks, remaining_checks
+
+    listing = (directory / "pytest/dagger-checks.txt").read_text(encoding="utf-8")
+    replaced = (
+        (directory / "pytest/replaced-check.txt").read_text(encoding="utf-8").strip()
+    )
+    return {
+        "discovered": list(discovered_checks(listing)),
+        "ran": (
+            (directory / "pytest/remaining-checks.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ),
+        "replaced": replaced,
+        "expected_ran": remaining_checks(listing, replaced),
+    }
+
+
 def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids=None):
     if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
         raise ValueError("Invalid release version")
@@ -325,6 +424,11 @@ def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids
         "workflow": workflow,
         "mode": mode,
         "checks": checks,
+        "requirements": {
+            "schema_version": 1,
+            "digest": requirement_digest(),
+            "checks": requirement_records(),
+        },
         "tools": records,
         "artifacts": sorted(artifacts, key=lambda item: (item["name"], item["id"])),
         "result": "passed"
@@ -353,7 +457,7 @@ def validate(value, repository, tag, head, *, published=False):
         "result",
     }
     if (
-        set(value) != expected
+        set(value) not in (expected, expected | {"requirements"})
         or type(value["schema_version"]) is not int
         or value["schema_version"] != 1
         or value["repository"] != repository
@@ -390,7 +494,33 @@ def validate(value, repository, tag, head, *, published=False):
         url,
     ):
         raise ValueError("Invalid actual Release URL")
-    required = set(CHECKS) | set(DAGGER_POLICY_CHECKS)
+    # The manifest carries the requirement set it was verified against. A
+    # manifest written before that field existed is still valid evidence for
+    # the requirements it names, but it cannot establish coverage of today's
+    # requirements; the currency check belongs to the candidate path.
+    recorded = value.get("requirements")
+    if recorded is not None:
+        items = recorded.get("checks") if isinstance(recorded, dict) else None
+        if (
+            not isinstance(recorded, dict)
+            or set(recorded) != {"schema_version", "digest", "checks"}
+            or recorded["schema_version"] != 1
+            or not isinstance(items, list)
+            or recorded["digest"] != requirement_digest_records(items)
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"key", "job", "step", "scope", "dagger_check"}
+                or not isinstance(item["key"], str)
+                or not isinstance(item["job"], str)
+                or not isinstance(item["step"], str)
+                or not isinstance(item["scope"], str)
+                or not isinstance(item["dagger_check"], str)
+                for item in items
+            )
+        ):
+            raise ValueError("Invalid recorded requirement set")
+    requirements = {item["key"]: item for item in effective_requirements(value)}
+    required = set(requirements)
     optional = {"core_coverage_threshold", "consumer_failure_probe"}
     if set(value["checks"]) != required | optional:
         raise ValueError("Missing or unexpected manifest checks")
@@ -407,7 +537,7 @@ def validate(value, repository, tag, head, *, published=False):
             }:
                 raise ValueError("Invalid optional check")
             continue
-        source = "dagger" if key in DAGGER_POLICY_CHECKS else key
+        requirement = requirements[key]
         fields = {
             "required",
             "status",
@@ -417,14 +547,15 @@ def validate(value, repository, tag, head, *, published=False):
             "job_conclusion",
             "step_conclusion",
         }
-        if key in DAGGER_POLICY_CHECKS:
+        if requirement["dagger_check"]:
             fields.add("dagger_check")
-            if record.get("dagger_check") != DAGGER_POLICY_CHECKS[key]:
+            if record.get("dagger_check") != requirement["dagger_check"]:
                 raise ValueError("Invalid Dagger check")
         if (
             set(record) != fields
             or record["required"] is not True
-            or (record["job"], record["step"]) != CHECKS[source]
+            or (record["job"], record["step"])
+            != (requirement["job"], requirement["step"])
             or record["status"] not in set(STATES.values())
             or record["job_conclusion"] not in {None, *STATES}
             or record["step_conclusion"] not in {None, *STATES}

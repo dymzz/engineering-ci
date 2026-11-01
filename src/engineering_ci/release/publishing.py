@@ -113,11 +113,10 @@ def require_jobs(needs, head, publishing=False):
 
 def published_evidence(api, value, repository, tag, head):
     from .manifest import (
-        CHECKS,
         artifact_metadata,
-        check_record,
         run_context,
         validate,
+        verified_results,
         workflow_jobs,
     )
 
@@ -138,9 +137,9 @@ def published_evidence(api, value, repository, tag, head):
         publication=True,
     )
     jobs = workflow_jobs(api, workflow["run_id"], workflow["run_attempt"], head)
-    for key, source in CHECKS.items():
-        if check_record(jobs, *source) != value["checks"][key]:
-            raise ValueError("Manifest does not match original Actions results")
+    # A published release stays verifiable after the requirements change: it
+    # is compared against the sources it recorded, not against today's set.
+    verified_results(jobs, value)
     for record in value["artifacts"]:
         current = artifact_metadata(
             api,

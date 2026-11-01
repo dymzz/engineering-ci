@@ -15,15 +15,25 @@ Two signals, deliberately kept apart:
 
 Nothing here rewrites a script, executes one, or installs an automatic fix.
 
-Verification status — NOT VERIFIED against the real tools:
+Verification status — observed against the real tool on 2026-10-31:
 
-1. No PSScriptAnalyzer run has been observed. Which default rules actually fire
-   on a given script is a property of the analyzer, not of this module, and the
-   committed fixtures assume three specific rules do.
-2. The analyzer's own report shape is read through the JSON Lines contract that
-   `powershell_invoke.ps1` writes; that pairing is unexercised end to end.
-3. The Windows runner job has never executed, so module preparation, the pinned
-   uv invocation and the checkout move are all unproven.
+1. PSScriptAnalyzer 1.9.0 was run. The analyzer reports the number of files it
+   scanned, reports its own version, and leaves the process status at zero
+   even when it reports violations, so the diagnostics decide the result.
+2. The JSON Lines contract that `powershell_invoke.ps1` writes was observed:
+   the first line is the envelope, every following line is one diagnostic.
+   `PSAvoidUsingCmdletAliases`, `PSAvoidUsingWriteHost` and
+   `PSUseDeclaredVarsMoreThanAssignments` do fire on the committed fixture.
+3. That observation exposed a real defect, now fixed: the invocation script
+   consumed one path per `-Path` flag, while both callers pass every path
+   after a single `-Path`. Analysing more than one script therefore failed
+   with `Unknown argument`. The script now consumes every value that follows
+   `-Path`, and the two-script case was re-run and observed clean.
+
+Still NOT VERIFIED:
+
+- The Windows runner job has never executed, so module preparation, the pinned
+  uv invocation and the checkout move are all unproven.
 
 The gate fails closed: an unreadable envelope, a missing script set or a failed
 process exits non-zero and writes a failure bundle rather than a clean result.
@@ -106,6 +116,11 @@ def select_scripts(workspace: Path, paths: list[str]) -> list[Path]:
                 if item.is_file() and item.suffix.lower() in POWERSHELL_SUFFIXES
             ]
         elif target.is_file():
+            # An explicitly named file is requested on its own terms, so it
+            # has to be a PowerShell file. Analysing something else would
+            # report a covered input that was never a script.
+            if target.suffix.lower() not in POWERSHELL_SUFFIXES:
+                raise AnalysisError(f"input path is not a PowerShell script: {entry}")
             selected.append(target)
         else:
             raise AnalysisError(f"input path not found: {entry}")
@@ -233,8 +248,13 @@ def analyse(
                 if key not in {"schema_version", "pinned_version"}
             },
             "files_scanned": 0,
-            "outcome": "not_executed",
-            "reason": "no_applicable_scripts",
+            "coverage": {
+                "scope": list(policy["paths"]),
+                "candidates": 0,
+                "analysed": 0,
+            },
+            "outcome": "not_applicable",
+            "reason": "no_applicable_inputs",
             "diagnostic_count": 0,
             "diagnostics": [],
             "omitted_diagnostics": 0,
@@ -284,6 +304,16 @@ def analyse(
         }
         for item in records
     ]
+    # The analyzer reports how many scripts it scanned. Every file the scope
+    # contains has to be among them: a partial scan is a coverage failure,
+    # never a clean result.
+    scanned = envelope.get("files_scanned")
+    if type(scanned) is not int or scanned != len(scripts):
+        outcome, reason = "not_executed", "incomplete_input_coverage"
+    elif diagnostics:
+        outcome, reason = "findings", "rule_violations_reported"
+    else:
+        outcome, reason = "clean", "no_rule_violations"
     return {
         "schema_version": 1,
         "tool": "psscriptanalyzer",
@@ -295,9 +325,14 @@ def analyse(
             for key, value in policy.items()
             if key not in {"schema_version", "pinned_version"}
         },
-        "files_scanned": envelope.get("files_scanned", len(scripts)),
-        "outcome": "findings" if diagnostics else "clean",
-        "reason": "rule_violations_reported" if diagnostics else "no_rule_violations",
+        "files_scanned": scanned if type(scanned) is int else len(scripts),
+        "coverage": {
+            "scope": list(policy["paths"]),
+            "candidates": len(scripts),
+            "analysed": scanned if type(scanned) is int else None,
+        },
+        "outcome": outcome,
+        "reason": reason,
         "diagnostic_count": len(diagnostics),
         "diagnostics": diagnostics[:MAX_DIAGNOSTICS],
         "omitted_diagnostics": max(0, len(diagnostics) - MAX_DIAGNOSTICS),
@@ -392,6 +427,11 @@ def main(argv=None) -> int:
                 "pinned_version": PSSCRIPTANALYZER_VERSION,
                 "outcome": "failure",
                 "reason": "psscriptanalyzer_execution_error",
+                "coverage": {
+                    "scope": [item for item in args.paths.split(",") if item.strip()],
+                    "candidates": None,
+                    "analysed": None,
+                },
                 "diagnostic_count": 0,
                 "diagnostics": [],
                 "omitted_diagnostics": 0,

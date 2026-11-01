@@ -35,14 +35,26 @@ $moduleRoot = ''
 $paths = New-Object System.Collections.Generic.List[string]
 $settings = ''
 $severity = ''
-for ($i = 0; $i -lt $args.Count; $i++) {
-    switch ($args[$i]) {
-        '-Version' { $version = $args[++$i]; continue }
-        '-ModuleRoot' { $moduleRoot = $args[++$i]; continue }
-        '-Path' { $paths.Add($args[++$i]); continue }
-        '-Settings' { $settings = $args[++$i]; continue }
-        '-Severity' { $severity = $args[++$i]; continue }
-        default { Write-Failure "Unknown argument: $($args[$i])"; exit 3 }
+# One -Path carries every path that follows it, so the caller can pass a
+# whole script set in one argument. The index is managed here rather than by
+# the loop, because a single flag now consumes more than one value.
+$i = 0
+while ($i -lt $args.Count) {
+    $argument = $args[$i]
+    switch ($argument) {
+        '-Version' { $i++; $version = $args[$i]; $i++; continue }
+        '-ModuleRoot' { $i++; $moduleRoot = $args[$i]; $i++; continue }
+        '-Path' {
+            $i++
+            while ($i -lt $args.Count -and -not $args[$i].StartsWith('-')) {
+                $paths.Add($args[$i])
+                $i++
+            }
+            continue
+        }
+        '-Settings' { $i++; $settings = $args[$i]; $i++; continue }
+        '-Severity' { $i++; $severity = $args[$i]; $i++; continue }
+        default { Write-Failure "Unknown argument: $argument"; exit 3 }
     }
 }
 

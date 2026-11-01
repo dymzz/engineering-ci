@@ -16,6 +16,8 @@ on:
         value: ${{ jobs.sync-tool-tests.outputs.artifact_id }}
       ruff_artifact_id:
         value: ${{ jobs.python-ci.outputs.artifact_id }}
+      powershell_artifact_id:
+        value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
 
 permissions:
   contents: read
@@ -43,6 +45,8 @@ jobs:
         run: dagger check --engineering-ci --check=lint
       - name: Ruff Format Check
         run: dagger check --engineering-ci --check=format-check
+      - name: Workflow analysis
+        run: dagger check --engineering-ci --check=workflow-analysis
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
         run: dagger api call repository-ruff-tools export --path release-tools/tool-versions.json
@@ -95,6 +99,67 @@ jobs:
             core-evidence/core-coverage.xml
             core-evidence/core-coverage.json
             core-evidence/tool-versions.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # PSScriptAnalyzer runs on a Windows runner rather than inside the Linux
+  # Dagger container: its rules and the environment they depend on are
+  # PowerShell-specific, and a Windows job is the only place reporting them
+  # as analysed would be honest. The repository is its own helper here, so
+  # no second checkout and no duplicate execution is needed.
+  powershell-analysis:
+    outputs:
+      artifact_id: ${{ steps.powershell_artifact.outputs.artifact-id }}
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Analyse PowerShell scripts
+        shell: pwsh
+        env:
+          POWERSHELL_PATHS: '.dagger/src/engineering_ci,config'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arguments = @(
+            'powershell',
+            '--workspace', $env:GITHUB_WORKSPACE,
+            '--helper-root', $env:GITHUB_WORKSPACE,
+            '--paths', $env:POWERSHELL_PATHS,
+            '--mode', 'enforce',
+            '--out', (Join-Path $env:RUNNER_TEMP 'powershell-analysis')
+          )
+          uv run --python 3.14 --no-project python -m engineering_ci.workflow_actions @arguments
+      - name: Publish PowerShell Analysis Summary
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $summary = Join-Path $env:RUNNER_TEMP 'powershell-analysis/summary.md'
+          if (Test-Path $summary) {
+            Get-Content -LiteralPath $summary -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            '## PowerShell Analysis Summary' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            'Evidence unavailable; see the failed setup or execution step. No pass is established.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+      - name: Upload PowerShell evidence
+        id: powershell_artifact
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: powershell-analysis
+          path: |
+            ${{ runner.temp }}/powershell-analysis/report.json
+            ${{ runner.temp }}/powershell-analysis/summary.md
           if-no-files-found: error
           retention-days: 7
 

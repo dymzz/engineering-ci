@@ -99,10 +99,11 @@ jobs:
           SECURITY_ID: ${{ needs.complete-ci.outputs.security_artifact_id }}
           CORE_ID: ${{ needs.core-tests.outputs.core_artifact_id }}
           RUFF_ID: ${{ needs.core-tests.outputs.ruff_artifact_id }}
+          POWERSHELL_ID: ${{ needs.core-tests.outputs.powershell_artifact_id }}
         shell: bash
         run: |
           set -euo pipefail
-          for artifact_id in "$PYTEST_ID" "$SECURITY_ID" "$CORE_ID" "$RUFF_ID"; do
+          for artifact_id in "$PYTEST_ID" "$SECURITY_ID" "$CORE_ID" "$RUFF_ID" "$POWERSHELL_ID"; do
             if [[ ! "$artifact_id" =~ ^[1-9][0-9]*$ ]]; then
               echo "::error::Required native Artifact ID unavailable"
               exit 1
@@ -124,6 +125,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.core-tests.outputs.ruff_artifact_id }}
           path: .release-evidence/ruff
+      - uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ needs.core-tests.outputs.powershell_artifact_id }}
+          path: .release-evidence/powershell
       - name: Require usable evidence and original execution gates
         run: python3 -m engineering_ci.workflow_actions manifest facts --directory .release-evidence --output release-facts/facts.json
       - uses: actions/upload-artifact@v7.0.2

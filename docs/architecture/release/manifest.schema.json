@@ -11,6 +11,7 @@
     "workflow",
     "mode",
     "checks",
+    "requirements",
     "tools",
     "artifacts",
     "result"
@@ -93,6 +94,59 @@
         "publication"
       ]
     },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "digest",
+        "checks"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "job",
+              "step",
+              "scope",
+              "dagger_check"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "job": {
+                "type": "string",
+                "minLength": 1
+              },
+              "step": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 1
+              },
+              "dagger_check": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
     "checks": {
       "type": "object",
       "additionalProperties": false,
@@ -100,8 +154,10 @@
         "candidate",
         "ruff_lint",
         "ruff_format",
+        "workflow_analysis",
         "core_tests",
         "version_integrity",
+        "powershell_analysis",
         "dependency_security",
         "dagger",
         "tests",
@@ -146,6 +202,17 @@
             }
           }
         },
+        "workflow_analysis": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / python-ci / checks"
+            },
+            "step": {
+              "const": "Workflow analysis"
+            }
+          }
+        },
         "core_tests": {
           "$ref": "#/$defs/check",
           "properties": {
@@ -165,6 +232,17 @@
             },
             "step": {
               "const": "Validate release metadata and root lock consistency"
+            }
+          }
+        },
+        "powershell_analysis": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / powershell-analysis"
+            },
+            "step": {
+              "const": "Analyse PowerShell scripts"
             }
           }
         },
@@ -548,7 +626,8 @@
               "pytest-report",
               "dependency-security",
               "core-tests",
-              "release-tools-ruff"
+              "release-tools-ruff",
+              "powershell-analysis"
             ]
           },
           "id": {
@@ -568,7 +647,7 @@
           }
         }
       },
-      "maxItems": 4,
+      "maxItems": 5,
       "allOf": [
         {
           "contains": {
@@ -617,6 +696,20 @@
             "properties": {
               "name": {
                 "const": "release-tools-ruff"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "powershell-analysis"
               }
             },
             "required": [
@@ -917,6 +1010,23 @@
                   }
                 }
               },
+              "workflow_analysis": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
               "core_tests": {
                 "properties": {
                   "status": {
@@ -935,6 +1045,23 @@
                 }
               },
               "version_integrity": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "powershell_analysis": {
                 "properties": {
                   "status": {
                     "const": "passed"
@@ -1076,7 +1203,7 @@
             "minItems": 8
           },
           "artifacts": {
-            "minItems": 4
+            "minItems": 5
           }
         }
       },
@@ -1106,6 +1233,13 @@
                     }
                   }
                 },
+                "workflow_analysis": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
                 "core_tests": {
                   "properties": {
                     "status": {
@@ -1114,6 +1248,13 @@
                   }
                 },
                 "version_integrity": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "powershell_analysis": {
                   "properties": {
                     "status": {
                       "const": "passed"

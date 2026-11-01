@@ -9,12 +9,17 @@ dagger check -l --format cli
 dagger check
 dagger check --engineering-ci --check=lint
 dagger check --engineering-ci --check=format-check
+dagger check --engineering-ci --check=workflow-analysis
 dagger check --engineering-ci --check=tests
 dagger check --engineering-ci --check=version --check=lock
 ```
 
-默认五项检查针对根仓实际源码：Ruff Lint、Ruff Format、核心 pytest、四处版本一致性、
-两份 uv.lock 完整性。单项筛选使用 Dagger 原生选择器，不存在宿主 `checks` 命令、
+默认六项原生 Dagger 检查针对根仓实际源码：Ruff Lint、Ruff Format、
+Workflow 分析、核心 pytest、四处版本一致性、两份 uv.lock 完整性。
+Workflow 分析使用固定版本 actionlint，覆盖 `.github/workflows` 下全部
+Workflow 文件；覆盖范围、输入清点与强制判定见
+[Workflow 与 PowerShell 分析](testing/script-analysis.md)。
+单项筛选使用 Dagger 原生选择器，不存在宿主 `checks` 命令、
 Profile 注册表、`--reuse` 或历史 passed JSON 准入。
 
 ## 定义与输入
@@ -53,4 +58,24 @@ Coverage 是显式开关，根仓没有额外增加覆盖率阈值。
 公共消费者继续调用既有 `python-*` Functions，见[公共接口](../delivery/public-components.md)。
 
 PR CI 的三个现有 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
+PowerShell 分析在 `windows-2025` Job 中执行，规则与环境只在该 Runner 上成立；
+本仓同时是该能力的宿主，因此直接调用仓内实现，不再检出第二份 helper。
 依赖安全扫描、Python Matrix 和四个静态分析检查仍由正式发布的显式策略调用，未在默认检查中暗中增加。
+
+## 必需检查的定义与绑定
+
+`src/engineering_ci/requirements.py` 是唯一来源：每项必需检查记录其键、
+执行它的 Job 与 step、它覆盖的输入范围，以及它是否是一个原生 Dagger 检查。
+发布证据契约、CI Workflow 与漂移测试都读取该表，因此新增或重新划定范围
+只需改一处，再由机器校验绑定关系。
+
+`tests/test_required_checks.py` 负责机器校验：
+
+- 每项必需检查在其所属 Workflow 中确实存在对应的 Job 与 step；
+- 每项必需的原生 Dagger 检查确实被声明并被该 step 选中；
+- 声明范围与 Workflow 实际传入的参数一致；
+- 仓内每个 `.ps1`/`.psm1` 要么在声明范围内，要么在显式排除清单内，
+  新增脚本不会静默漏检；
+- 共享排除清单不会遮蔽必需范围内的文件，否则被检输入集会被静默缩小。
+
+必需检查的定义变化因此由 PR 检查发现，而不是等到正式发布才暴露。

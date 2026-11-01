@@ -42,8 +42,9 @@ $pr.url
 gh pr checks $pr.number --watch
 ```
 
-核对当前 head 的三个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`，
-完成代码审查后再 Ready 和合并。合并权限遵循 [AGENTS.md](../AGENTS.md)。
+核对当前 head 的四个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`、
+`powershell-analysis`，完成代码审查后再 Ready 和合并。
+合并权限遵循 [AGENTS.md](../AGENTS.md)。
 如果检查尚未完成或失败，在此停止；修复并提交到同一分支，再查同一 PR。
 
 ```powershell
