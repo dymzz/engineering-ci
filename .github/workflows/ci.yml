@@ -113,5 +113,80 @@ jobs:
           curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
-      - name: Validate release metadata and root lock consistency
-        run: dagger check --engineering-ci --check=version --check=lock
+      - name: Validate release version metadata
+        run: dagger check --engineering-ci --check=version
+      - name: Verify uv lock consistency
+        run: dagger check --engineering-ci --check=lock
+
+  workflow-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Dagger CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
+      - name: Analyse GitHub Actions Workflows
+        run: dagger check --engineering-ci --check=workflow-analysis
+
+  # PSScriptAnalyzer runs on a Windows runner rather than inside the Linux
+  # Dagger container: its rules and the environment they depend on are
+  # PowerShell-specific, and a Windows job is the only place reporting them as
+  # analysed would be honest. This repository analyses its own scripts with
+  # its own checkout, so no separate helper ref is selected here.
+  powershell-analysis:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Analyse PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'src'
+          $arguments = @(
+            'powershell',
+            '--workspace', $env:GITHUB_WORKSPACE,
+            '--helper-root', $env:GITHUB_WORKSPACE,
+            '--paths', '.',
+            '--mode', 'enforce',
+            '--out', (Join-Path $env:RUNNER_TEMP 'powershell-analysis')
+          )
+          uv run --python 3.14 --no-project python -m engineering_ci.workflow_actions @arguments
+      - name: Publish PowerShell Analysis Summary
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $summary = Join-Path $env:RUNNER_TEMP 'powershell-analysis/summary.md'
+          if (Test-Path $summary) {
+            Get-Content -LiteralPath $summary -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            '## PowerShell Analysis Summary' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            'Evidence unavailable; see the failed setup or execution step. No pass is established.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+      - name: Upload PowerShell evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        continue-on-error: true
+        with:
+          name: powershell-analysis
+          path: |
+            ${{ runner.temp }}/powershell-analysis/report.json
+            ${{ runner.temp }}/powershell-analysis/summary.md
+          if-no-files-found: warn
+          retention-days: 7

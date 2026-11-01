@@ -5,35 +5,34 @@ locations, chosen because the tools genuinely differ rather than for
 convenience.
 
 - **actionlint** is a Go binary that runs anywhere. It is exposed as a Dagger
-  function alongside the other static checks and is selected by
-  `dagger_checks`.
+  function alongside the other static checks, and the repository's own
+  `workflow-analysis` Check is its strict form.
 - **PSScriptAnalyzer** depends on a PowerShell environment and on rules that
-  only mean something on one. It runs in a dedicated `windows-2025` job inside
-  the reusable Workflow, invoked the same way the dependency-security job
-  invokes its helper, rather than inside the Linux Dagger container.
+  only mean something on one. It runs in a dedicated `windows-2025` job,
+  invoked the same way the dependency-security job invokes its helper, rather
+  than inside the Linux Dagger container.
 
 There is deliberately no second PowerShell execution path. A Dagger-only
 implementation would report Windows requirements it cannot honour, which is
 worse than saying so.
 
-## NOT VERIFIED
+## Verification status
 
-Nothing in this issue has been executed against the real tools yet. The
-following are recorded as open, and none of them may be described as verified
-until a real run says so:
-
-1. **actionlint's exit-code semantics and output format are assumed.** This
-   assumes `0` means clean, `1` means reported problems, and that a diagnostic
-   line reads `<path>:<line>[:<column>]: <message> [<rule>]`. actionlint may
-   also expose no structured output at all, in which case
-   `native_json_available` is legitimately always false for it.
+1. **actionlint's exit-code semantics and text output format are observed.**
+   The `fixture_workflow_analysis` Check runs the pinned tool against the
+   committed clean and broken Workflows and asserts both outcomes, and the
+   observed diagnostic format is the one this implementation parses:
+   `<path>:<line>[:<column>]: <message> [<rule>]`. actionlint exposes no
+   structured output, so `native_json_available` is legitimately always false
+   for it. The pinned version is asserted from the tool's own `-version`
+   output.
 2. **No PSScriptAnalyzer run has been observed.** The committed fixtures assume
    that `PSAvoidUsingCmdletAliases`, `PSAvoidUsingWriteHost` and
    `PSUseDeclaredVarsMoreThanAssignments` fire on `violations.ps1`. Which
    default rules actually fire is a property of the analyzer.
 3. **The Windows runner job has never executed.** The runner label, the pinned
-   uv invocation, moving the helper checkout out of the workspace and the
-   `PYTHONPATH` wiring are all unexercised.
+   uv invocation, the `PYTHONPATH` wiring and the analysed script set are all
+   unexercised.
 
 Every classifier in both implementations fails closed: an unreadable envelope,
 an empty script set, a missing module or a failed process produces a non-zero
@@ -46,10 +45,39 @@ surfaces as a red check that prints the observed value, not as a silent pass.
 `.github/workflows`, and an optional `config`. It returns a JSON report and
 does not gate CI; callers raise on `outcome`.
 
+`workflow-analysis` is the strict form of the same function. Both reference one
+execution node, so the gate and the report never describe two different scans.
+The Check requires `outcome == clean` *and* an applicable coverage: a scope
+that holds no analysable Workflow is a failed required check, not a pass.
+
 ShellCheck and pyflakes are passed as explicitly empty, so the analysed scope
 never changes with whatever happens to be present in the image. Only Workflow
 structure is checked: inline scripts that were not analysed are never reported
 as passing.
+
+## Required input coverage
+
+A scanner that runs is not the same as a scanner that covered the inputs the
+requirement names. Both implementations therefore state their coverage.
+
+| Fact | Meaning |
+| --- | --- |
+| `coverage.scope` | The declared scope the scan had to cover |
+| `coverage.inputs` | The files that were actually handed to the scanner |
+| `coverage.input_count` | How many required inputs there were |
+| `coverage.present` | Whether the scope exists in the analysed tree at all |
+| `coverage.applicable` | Whether the scope holds anything to analyse |
+
+Workflow inputs are enumerated from the declared scope by suffix, and the
+enumeration is what the scanner receives, so a clean result means every
+required Workflow was analysed. A scope that does not exist is reported as
+`scope_absent`; a scope that exists but holds no Workflow is reported as
+`no_applicable_workflows`. Neither starts a scan, because a scan over an empty
+scope would report a clean result over nothing.
+
+PowerShell inputs are enumerated the same way, and the report names the
+analysed scripts by their path inside the checked tree. An empty script set is
+`not_executed` and never a clean analysis.
 
 ## PowerShell analysis on Windows
 
@@ -68,11 +96,17 @@ includes an empty script set: an unanalysed scope is not a pass.
 
 Scripts are parsed, never executed and never automatically fixed.
 
-## Optional, and not a dependency of this repository
+## Optional for consumers, required here
 
-PowerShell analysis is opt-in and nothing in this repository turns it on:
-`powershell_mode` defaults to `off`, the job is skipped entirely in that case,
-and this repository's own Workflow does not enable it.
+For consumers, PowerShell analysis stays opt-in: `powershell_mode` defaults to
+`off` and the job is skipped entirely in that case. For this repository it is
+required: `ci.yml` runs the same analysis in `enforce` mode on a
+`windows-2025` runner, and the release evidence names that Job and Step.
+
+This repository analyses its own scripts with its own checkout, so the Job
+selects the checkout as the helper instead of checking out a pinned helper ref.
+The reusable Workflow keeps the pinned-helper arrangement, because a consumer
+has no engineering-ci checkout of its own.
 
 The analyzer is resolved rather than assumed. PowerShell's own discovery runs
 first, and an installed module whose version equals the pin is used as-is.
@@ -107,12 +141,12 @@ Windows runner.
 
 ## Boundary crossing to record
 
-Issue #46 states that reusable Workflow selection, gating, Runner scheduling and
-Artifact delivery belong to the integration issue. The Windows job deliberately
-crosses that line so GitHub Actions can actually exercise the analyzer, which
-was an explicit instruction. The integration issue now owns Linux-side
-selection and Report/Enforce for the Python scanners; this issue owns the
-Windows job.
+Issue #46 stated that reusable Workflow selection, gating, Runner scheduling and
+Artifact delivery belong to the integration issue. That integration now exists:
+the strict `workflow-analysis` Check, the required coverage it states, the
+Windows Job in `ci.yml` and the release evidence entries for both are in place.
+The reusable Workflow's own Windows Job is unchanged, so the consumer interface
+did not move.
 
 Bash and sh scripts remain out of scope, and Workflow inline scripts are never
 extracted for a second scan.

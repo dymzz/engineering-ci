@@ -20,6 +20,7 @@ from .registry import (
     SCOPES,
     STATES,
     TOOLS,
+    required_dagger_checks,
 )
 
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -184,7 +185,17 @@ def facts(directory):
         .read_text(encoding="utf-8")
         .splitlines()
     )
-    if not set(DAGGER_POLICY_CHECKS.values()).issubset(checks):
+    executed = set(checks)
+    # Every required Dagger Check has to appear in the executed list. A
+    # required Check that did not run leaves the release scope narrower than
+    # the candidate declares, which is a failed verification rather than a
+    # pass over a smaller scope.
+    missing = required_dagger_checks() - executed
+    if missing:
+        raise ValueError(
+            "Required Dagger Checks did not run: " + ", ".join(sorted(missing))
+        )
+    if not set(DAGGER_POLICY_CHECKS.values()).issubset(executed):
         raise ValueError("Existing Dagger policy execution evidence missing")
     records = clean_tools(records)
     if {(item["scope"], item["name"]) for item in records} != REQUIRED_TOOLS:

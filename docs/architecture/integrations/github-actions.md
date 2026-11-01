@@ -63,6 +63,23 @@ The actual bundle and status contracts remain authoritative in
 The separate core `ci.yml` is a repository verification implementation;
 consumers use the reusable workflow above, not the core test repository profile.
 
+## Core `ci.yml` verification Jobs
+
+`ci.yml` is this repository's own PR and push verification. It keeps the
+existing `python-ci / checks`, `sync-tool-tests` and `version-metadata` Jobs and
+their status names, and adds two:
+
+| Job | Runner | Required operation |
+| --- | --- | --- |
+| `workflow-analysis` | ubuntu-24.04 | `dagger check --engineering-ci --check=workflow-analysis` |
+| `powershell-analysis` | windows-2025 | PSScriptAnalyzer in `enforce` mode over this repository's own scripts |
+
+Each Job runs one required operation in a Step of its own, so the release
+evidence names every operation separately instead of relying on the success of
+an enclosing Job. The Windows Job selects this checkout as the analysis helper,
+so it analyses the candidate's own scripts with the candidate's own code; the
+reusable Workflow keeps its pinned-helper arrangement for consumers.
+
 ## Reusable Python CI Workflow
 
 - **Status:** adopted

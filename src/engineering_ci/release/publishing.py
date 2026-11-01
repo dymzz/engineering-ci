@@ -355,10 +355,18 @@ def main(argv=None):
         api = GitHub(os.environ["GITHUB_REPOSITORY"])
         candidate(api, tag, head, publish)
         if args.command == "prepare":
+            from .registry import REQUIRED_DAGGER_CHECKS
+
             with Path(os.environ["GITHUB_OUTPUT"]).open(
                 "a", encoding="utf-8"
             ) as stream:
                 stream.write(f"sha={head}\n")
+                # The required Check selection is declared once, in the release
+                # contract, and the Workflow selects exactly these names. The
+                # evidence then has to show that each of them ran.
+                stream.write("dagger_checks<<EOF\n")
+                stream.write("\n".join(REQUIRED_DAGGER_CHECKS) + "\n")
+                stream.write("EOF\n")
         else:
             if args.manifest is None:
                 raise ValueError("Manifest path required")

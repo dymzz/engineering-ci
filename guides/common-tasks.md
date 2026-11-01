@@ -42,9 +42,12 @@ $pr.url
 gh pr checks $pr.number --watch
 ```
 
-核对当前 head 的三个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`，
-完成代码审查后再 Ready 和合并。合并权限遵循 [AGENTS.md](../AGENTS.md)。
+核对当前 head 的五个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`、
+`workflow-analysis`、`powershell-analysis`，完成代码审查后再 Ready 和合并。
+合并权限遵循 [AGENTS.md](../AGENTS.md)。
 如果检查尚未完成或失败，在此停止；修复并提交到同一分支，再查同一 PR。
+服务端必需检查能否阻断合并以仓库管理员的实际配置为准；未启用时以上述状态为准，
+不能宣称服务器已经阻断失败合并。
 
 ```powershell
 gh pr ready $pr.number

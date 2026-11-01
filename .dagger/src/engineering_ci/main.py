@@ -360,8 +360,41 @@ class EngineeringCi:
             .stdout()
         )
 
+    async def _actionlint_scope(self, container, policy: dict) -> dict:
+        """Enumerate the required inputs inside the container the scanner reads.
+
+        The enumeration runs where the scanner runs, so the scope it reports is
+        the scope the scanner will actually see.
+        """
+        reader = container.with_new_file(
+            "/tmp/engineering-ci-script-analysis.py",
+            Path(__file__).with_name("script_analysis.py").read_text(encoding="utf-8"),
+        )
+        arguments = [
+            "python",
+            "/tmp/engineering-ci-script-analysis.py",
+            "scope",
+            "--root",
+            "/workspace",
+        ]
+        for scan_path in policy["scan_paths"]:
+            arguments += ["--path", scan_path]
+        result = await reader.with_exec(arguments, expect=dagger.ReturnType.ANY)
+        code = await result.exit_code()
+        if code != 0:
+            raise RuntimeError(
+                "Workflow scope enumeration failed: " + (await result.stderr())[-1500:]
+            )
+        return script.coverage(policy["scan_paths"], json.loads(await result.stdout()))
+
     async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned Workflow checker once and classify its result."""
+        """Execute the pinned Workflow checker once and classify its result.
+
+        The required inputs are enumerated first and the scanner is given
+        exactly those files, so a clean result covers the whole declared scope
+        instead of an unstated part of it. The scanner still runs once: the
+        report is built from that single execution.
+        """
         container = (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
@@ -373,8 +406,18 @@ class EngineeringCi:
             .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
             .with_workdir("/workspace")
         )
+        covered = await self._actionlint_scope(container, policy)
+        if not covered["applicable"]:
+            # A scan over an empty scope would report a clean result over
+            # nothing, so the scanner is not started and the gap is reported.
+            return script.not_applicable_report(
+                policy,
+                covered,
+                "scope_absent" if not covered["present"] else "no_applicable_workflows",
+            )
         result = container.with_exec(
-            script.runner_prefix("actionlint") + script.actionlint_arguments(policy),
+            script.runner_prefix("actionlint")
+            + script.actionlint_arguments(policy, covered["inputs"]),
             expect=dagger.ReturnType.ANY,
         )
         return script.script_report(
@@ -382,6 +425,7 @@ class EngineeringCi:
             await result.exit_code(),
             await result.stdout(),
             await result.stderr(),
+            covered=covered,
         )
 
     @function
@@ -395,12 +439,43 @@ class EngineeringCi:
 
         ShellCheck and pyflakes stay explicitly disabled so the checked scope
         never depends on what happens to be installed. Unchecked inline scripts
-        are never reported as passing. Returns a JSON report without gating.
+        are never reported as passing. The report states the inputs the scan
+        had to cover and the scope it covers them from. Returns a JSON report
+        without gating.
         """
         report = await self._run_actionlint(
             source, script.actionlint_policy(scan_paths, config)
         )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    @check
+    async def workflow_analysis(
+        self,
+        source: Annotated[
+            dagger.Directory, DefaultPath("/"), Ignore(repository.SOURCE_EXCLUDES)
+        ],
+    ) -> None:
+        """Require a clean and completely covered actionlint run.
+
+        The strict result and `actionlint_workflows` are built from the same
+        execution for the same source and policy, so the gate and the report
+        never describe two different scans. A scope that holds no analysable
+        Workflow is not a pass: the required coverage is missing, and the check
+        says which scope was empty.
+        """
+        report = await self._run_actionlint(source, script.actionlint_policy())
+        if report["outcome"] != "clean":
+            raise RuntimeError(script.findings_summary(report))
+        if not report["coverage"]["applicable"]:
+            raise RuntimeError(
+                "Required Workflow analysis covered no input\n"
+                + script.findings_summary(report)
+            )
+        print(
+            f"PASS: actionlint {report['pinned_version']} analysed "
+            f"{report['coverage']['input_count']} Workflow file(s)"
+        )
 
     @function
     async def analyze_script_scope(
@@ -425,8 +500,9 @@ class EngineeringCi:
             elif kind == "psscriptanalyzer":
                 report = script.deferred_report(
                     scan_path,
-                    "PowerShell scripts are analysed by the Windows runner in "
-                    "reusable-python-ci.yml, not by this Linux Dagger check",
+                    "PowerShell scripts are analysed by the Windows runner job "
+                    "in the GitHub Actions Workflow, not by this Linux Dagger "
+                    "check",
                 )
             else:
                 report = script.unsupported_report(
@@ -1606,12 +1682,15 @@ def pytest_sessionfinish(session, exitstatus):
 
         This is what turns the documented actionlint assumptions into observed
         facts. A mismatch fails the check and prints what the tool actually
-        returned, instead of leaving the assumption in place.
+        returned, instead of leaving the assumption in place. The empty scope
+        is part of it: a scan that covered nothing must not read as a clean
+        run.
         """
         results = {}
         for name, scan_path, outcome in (
             ("clean", ".github/workflows/valid.yml", "clean"),
             ("broken", ".github/workflows/broken.yml", "findings"),
+            ("empty", "scripts", "not_executed"),
         ):
             report = await self._run_actionlint(
                 source, script.actionlint_policy([scan_path])
@@ -1629,6 +1708,23 @@ def pytest_sessionfinish(session, exitstatus):
             raise RuntimeError("actionlint reported no usable diagnostic")
         if not broken["stdout"].strip():
             raise RuntimeError("actionlint diagnostics were not preserved")
+        for name in ("clean", "broken"):
+            covered = results[name]["coverage"]
+            if covered["input_count"] != 1 or not covered["applicable"]:
+                raise RuntimeError(
+                    f"actionlint on {name} did not cover the required input: {covered}"
+                )
+        empty = results["empty"]
+        if (
+            empty["coverage"]["input_count"] != 0
+            or empty["coverage"]["present"] is not True
+        ):
+            raise RuntimeError(
+                f"the empty scope was not reported as present without inputs: "
+                f"{empty['coverage']}"
+            )
+        if empty["exit_code"] is not None:
+            raise RuntimeError("an empty scope must not start a scan at all")
         version = await (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
@@ -1650,7 +1746,7 @@ def pytest_sessionfinish(session, exitstatus):
         print(
             f"PASS: actionlint {script.ACTIONLINT_VERSION}; clean exit 0, "
             f"broken exit {broken['exit_code']} with {broken['finding_count']} "
-            "diagnostic(s) preserved"
+            "diagnostic(s) preserved; an empty scope covered nothing"
         )
 
     async def _static_fixture_versions(self, source, python_version):

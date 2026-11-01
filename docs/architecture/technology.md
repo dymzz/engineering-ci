@@ -31,6 +31,8 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | Pyright | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | deptry | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | Pylint | adopted | opt-in R0801 duplicate-code function | [static analysis](testing/python-static-analysis.md) |
+| actionlint | adopted | Workflow static analysis gate | [script analysis](testing/script-analysis.md) |
+| PSScriptAnalyzer | adopted | PowerShell static analysis gate | [script analysis](testing/script-analysis.md) |
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
@@ -40,5 +42,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 Ruff is locked in root dev dependencies and configured in standard `pyproject.toml`.
 Vulture, Pyright, deptry and Pylint are pinned in the Dagger module and run through
 `uvx` in their own environment, so they are not root dev dependencies and never
-enter a consumer's lockfile. The removed host Runner, input receipt cache and YAML
-mirror validator are not integration layers.
+enter a consumer's lockfile. actionlint is pinned in the same way and runs through
+`uvx`; PSScriptAnalyzer is pinned in the helper and resolved by PowerShell's own
+module discovery, because it has no Python distribution. The removed host Runner,
+input receipt cache and YAML mirror validator are not integration layers.

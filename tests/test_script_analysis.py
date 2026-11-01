@@ -144,6 +144,22 @@ class ArgumentTests(unittest.TestCase):
         self.assertIn("-pyflakes=", arguments)
         self.assertEqual(arguments[-1], ".github")
 
+    def test_enumerated_inputs_replace_the_scope_in_the_arguments(self):
+        policy = script.actionlint_policy([".github/workflows"])
+        arguments = script.actionlint_arguments(
+            policy, [".github/workflows/ci.yml", ".github/workflows/ci.yml"]
+        )
+        self.assertEqual(
+            arguments,
+            [
+                "-no-color",
+                "-shellcheck=",
+                "-pyflakes=",
+                ".github/workflows/ci.yml",
+                ".github/workflows/ci.yml",
+            ],
+        )
+
     def test_actionlint_runs_through_its_own_isolated_environment(self):
         prefix = script.runner_prefix("actionlint")
         self.assertEqual(
@@ -185,6 +201,189 @@ class ActionlintSemanticsTests(unittest.TestCase):
         for code in (2, 3, 127):
             with self.subTest(code=code):
                 self.assertEqual(self.report(code)["outcome"], "failure")
+
+
+class ObservedActionlintOutputTests(unittest.TestCase):
+    """The real actionlint 1.7.12 output of the committed broken fixture.
+
+    Observed on 2026-10-31 by running the pinned actionlint against
+    tests/fixtures/workflow-app/.github/workflows/broken.yml: exit 1, two
+    diagnostics, each followed by the source excerpt lines actionlint prints.
+    """
+
+    OBSERVED = (
+        "tests/fixtures/workflow-app/.github/workflows/broken.yml:12:9: "
+        'unexpected key "uses" for step to run shell command. expected one of '
+        '"continue-on-error", "env", "id", "if", "name", "run", "shell", '
+        '"timeout-minutes", "working-directory" [syntax-check]\n'
+        "   |\n"
+        "12 |       - uses: actions/checkout@v7.0.1\n"
+        "   |         ^~~~~\n"
+        "tests/fixtures/workflow-app/.github/workflows/broken.yml:16:24: "
+        'property "os" is not defined in object type {} [expression]\n'
+        "   |\n"
+        '16 |         run: echo "${{ matrix.os }}"\n'
+        "   |                        ^~~~~~~~~\n"
+    )
+
+    def test_the_observed_output_is_parsed_into_its_diagnostics(self):
+        report = script.script_report(script.actionlint_policy(), 1, self.OBSERVED)
+        self.assertEqual(report["outcome"], "findings")
+        self.assertEqual(report["finding_count"], 2)
+        self.assertEqual(report["findings"][0]["rule"], "syntax-check")
+        self.assertEqual(report["findings"][0]["line"], 12)
+        self.assertEqual(
+            report["findings"][0]["path"],
+            ("tests/fixtures/workflow-app/.github/workflows/broken.yml"),
+        )
+        self.assertEqual(report["findings"][1]["rule"], "expression")
+        self.assertEqual(report["findings"][1]["line"], 16)
+
+    def test_the_excerpt_lines_are_not_read_as_diagnostics(self):
+        report = script.script_report(script.actionlint_policy(), 1, self.OBSERVED)
+        self.assertTrue(all("|" not in item["message"] for item in report["findings"]))
+
+
+class WorkflowScopeTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.workspace = Path(tempfile.mkdtemp())
+        (self.workspace / ".github/workflows").mkdir(parents=True)
+        (self.workspace / ".github/workflows/ci.yml").write_text("a: 1\n")
+        (self.workspace / ".github/workflows/release.yaml").write_text("b: 2\n")
+        (self.workspace / ".github/workflows/notes.txt").write_text("c\n")
+        (self.workspace / ".github/workflows/actionlint.yaml").write_text("d: 4\n")
+        (self.workspace / ".github/workflows/nested").mkdir()
+        (self.workspace / ".github/workflows/nested/extra.yml").write_text("e: 5\n")
+        (self.workspace / "scripts").mkdir()
+        (self.workspace / "scripts/build.ps1").write_text("Get-Date\n")
+
+    def select(self, paths):
+        return script.select_workflows(self.workspace, paths)
+
+    def test_the_scope_names_every_workflow_the_scan_has_to_cover(self):
+        selected = self.select([".github/workflows"])
+        self.assertTrue(selected["present"])
+        self.assertTrue(selected["applicable"])
+        self.assertEqual(
+            selected["inputs"],
+            [
+                ".github/workflows/ci.yml",
+                ".github/workflows/nested/extra.yml",
+                ".github/workflows/release.yaml",
+            ],
+        )
+        self.assertEqual(selected["input_count"], 3)
+
+    def test_only_the_declared_suffix_selects_an_input(self):
+        selected = self.select([".github/workflows"])
+        self.assertNotIn(".github/workflows/notes.txt", selected["inputs"])
+        self.assertNotIn(".github/workflows/actionlint.yaml", selected["inputs"])
+
+    def test_a_scope_outside_the_workflow_directory_contributes_nothing(self):
+        selected = self.select(["scripts"])
+        self.assertTrue(selected["present"])
+        self.assertFalse(selected["applicable"])
+        self.assertEqual(selected["inputs"], [])
+
+    def test_an_absent_scope_is_absent_and_not_applicable(self):
+        selected = self.select([".github/nothing"])
+        self.assertFalse(selected["present"])
+        self.assertFalse(selected["applicable"])
+        self.assertEqual(selected["input_count"], 0)
+
+    def test_an_explicit_file_is_the_whole_required_input(self):
+        selected = self.select([".github/workflows/ci.yml"])
+        self.assertEqual(selected["inputs"], [".github/workflows/ci.yml"])
+        self.assertTrue(selected["applicable"])
+
+    def test_the_repository_workflows_are_the_required_inputs(self):
+        selected = script.select_workflows(ROOT, [".github/workflows"])
+        self.assertEqual(
+            selected["inputs"],
+            [
+                ".github/workflows/ci.yml",
+                ".github/workflows/release.yml",
+                ".github/workflows/reusable-python-ci.yml",
+            ],
+        )
+
+
+class CoverageTests(unittest.TestCase):
+    def test_a_report_states_the_inputs_it_covered(self):
+        covered = script.coverage(
+            [".github/workflows"],
+            script.select_workflows(ROOT, [".github/workflows"]),
+        )
+        report = script.script_report(script.actionlint_policy(), 0, covered=covered)
+        self.assertEqual(report["coverage"]["input_count"], 3)
+        self.assertTrue(report["coverage"]["applicable"])
+        self.assertEqual(report["coverage"]["scope"], [".github/workflows"])
+
+    def test_an_empty_scope_is_never_reported_as_clean(self):
+        covered = script.coverage(
+            ["scripts"], script.select_workflows(ROOT, ["scripts"])
+        )
+        report = script.not_applicable_report(
+            script.actionlint_policy(), covered, "no_applicable_workflows"
+        )
+        self.assertEqual(report["outcome"], "not_executed")
+        self.assertEqual(report["reason"], "no_applicable_workflows")
+        self.assertFalse(report["coverage"]["applicable"])
+        self.assertIsNone(report["exit_code"])
+
+    def test_an_absent_scope_is_reported_as_absent(self):
+        covered = script.coverage(
+            [".github/nothing"],
+            script.select_workflows(ROOT, [".github/nothing"]),
+        )
+        report = script.not_applicable_report(
+            script.actionlint_policy(), covered, "scope_absent"
+        )
+        self.assertEqual(report["outcome"], "not_executed")
+        self.assertEqual(report["reason"], "scope_absent")
+        self.assertFalse(report["coverage"]["present"])
+
+    def test_a_deferred_scope_states_no_coverage_at_all(self):
+        report = script.deferred_report("scripts/a.ps1", "runs on a Windows runner")
+        self.assertEqual(report["coverage"]["input_count"], 0)
+        self.assertFalse(report["coverage"]["applicable"])
+
+    def test_the_summary_names_the_covered_scope(self):
+        covered = script.coverage(
+            [".github/workflows"],
+            script.select_workflows(ROOT, [".github/workflows"]),
+        )
+        report = script.script_report(script.actionlint_policy(), 0, covered=covered)
+        self.assertIn("coverage:", script.findings_summary(report))
+        self.assertIn("3 input(s)", script.findings_summary(report))
+
+
+class ScopeCommandTests(unittest.TestCase):
+    """The command the Dagger container runs to enumerate its required inputs."""
+
+    def test_the_command_prints_the_enumerated_scope_as_json(self):
+        import contextlib
+        import io
+
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            code = script.main(
+                ["scope", "--root", str(ROOT), "--path", ".github/workflows"]
+            )
+        self.assertEqual(code, 0)
+        value = json.loads(stream.getvalue())
+        self.assertEqual(value["input_count"], 3)
+        self.assertTrue(value["applicable"])
+        self.assertEqual(
+            value["inputs"],
+            [
+                ".github/workflows/ci.yml",
+                ".github/workflows/release.yml",
+                ".github/workflows/reusable-python-ci.yml",
+            ],
+        )
 
 
 class PowershellSemanticsTests(unittest.TestCase):
@@ -293,6 +492,27 @@ class RunnerSelectionTests(unittest.TestCase):
         source = inspect.getsource(powershell.analyse)
         self.assertIn("not_executed", source)
         self.assertEqual(report["tool"], "psscriptanalyzer")
+
+    def test_the_analysed_scripts_are_named_in_the_evidence(self):
+        import tempfile
+
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / "scripts").mkdir()
+        (workspace / "scripts/clean.ps1").write_text("Get-ChildItem\n")
+        (workspace / "scripts/module.psm1").write_text("function Get-Thing { }\n")
+        names = [
+            powershell._relative_name(workspace, workspace / "scripts/clean.ps1"),
+            powershell._relative_name(workspace, workspace / "scripts/module.psm1"),
+        ]
+        self.assertEqual(sorted(names), ["scripts/clean.ps1", "scripts/module.psm1"])
+
+    def test_a_script_outside_the_workspace_is_named_by_its_file_name(self):
+        import tempfile
+
+        workspace = Path(tempfile.mkdtemp())
+        outside = Path(tempfile.mkdtemp()) / "other.ps1"
+        outside.write_text("Get-Date\n")
+        self.assertEqual(powershell._relative_name(workspace, outside), "other.ps1")
 
 
 class ModeTests(unittest.TestCase):

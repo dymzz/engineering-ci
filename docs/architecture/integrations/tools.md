@@ -35,3 +35,24 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Contract:** [dependency security](../dependency-security.md)
 - **Verify:** `tests/test_dependency_security.py`
 - **Verified:** 2026-10-14 @ `963d809a295f`
+
+## actionlint
+
+- **Status:** adopted
+- **Pin:** `actionlint-py==1.7.12.25` wrapping actionlint `1.7.12` —
+  `.dagger/src/engineering_ci/script_analysis.py` (`ACTIONLINT_WRAPPER`, `ACTIONLINT_VERSION`)
+- **Used by:** the `workflow-analysis` native Dagger Check and the public
+  `actionlint_workflows` function — GitHub Actions Workflow static analysis
+- **Contract:** [script analysis](../testing/script-analysis.md)
+- **Verify:** `tests/test_script_analysis.py`; the pinned tool is executed against the
+  committed clean and broken Workflows by `fixture_workflow_analysis` in CI
+
+## PSScriptAnalyzer
+
+- **Status:** adopted
+- **Pin:** `1.9.0` — `src/engineering_ci/powershell_analysis.py` and
+  `.dagger/src/engineering_ci/script_analysis.py` (`PSSCRIPTANALYZER_VERSION`)
+- **Used by:** `src/engineering_ci/powershell_analysis.py` on the `windows-2025` Job of
+  `.github/workflows/ci.yml` and of the reusable Workflow — PowerShell static analysis
+- **Contract:** [script analysis](../testing/script-analysis.md)
+- **Verify:** `tests/test_script_analysis.py`; the analyzer itself has not been run yet

@@ -488,6 +488,7 @@ class ManualReleaseTests(unittest.TestCase):
         api.fail_promote = False
         api.calls.clear()
         from engineering_ci.release.manifest import manifest
+        from engineering_ci.release.registry import DAGGER_POLICY_CHECKS
 
         fresh = manifest(
             api,
@@ -499,10 +500,7 @@ class ManualReleaseTests(unittest.TestCase):
             "publication",
             {
                 "tools": saved["tools"],
-                "dagger_checks": [
-                    "validation:fixture-quality-gates",
-                    "validation:fixture-python-matrix",
-                ],
+                "dagger_checks": list(DAGGER_POLICY_CHECKS.values()),
             },
             ids=IDS,
         )

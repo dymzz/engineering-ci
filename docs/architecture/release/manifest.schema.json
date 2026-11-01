@@ -102,11 +102,15 @@
         "ruff_format",
         "core_tests",
         "version_integrity",
+        "lock_integrity",
+        "workflow_analysis",
+        "powershell_analysis",
         "dependency_security",
         "dagger",
         "tests",
         "module_lock",
         "evidence",
+        "failure_report",
         "coverage",
         "python_matrix",
         "core_coverage_threshold",
@@ -164,7 +168,40 @@
               "const": "core-tests / version-metadata"
             },
             "step": {
-              "const": "Validate release metadata and root lock consistency"
+              "const": "Validate release version metadata"
+            }
+          }
+        },
+        "lock_integrity": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / version-metadata"
+            },
+            "step": {
+              "const": "Verify uv lock consistency"
+            }
+          }
+        },
+        "workflow_analysis": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / workflow-analysis"
+            },
+            "step": {
+              "const": "Analyse GitHub Actions Workflows"
+            }
+          }
+        },
+        "powershell_analysis": {
+          "$ref": "#/$defs/check",
+          "properties": {
+            "job": {
+              "const": "core-tests / powershell-analysis"
+            },
+            "step": {
+              "const": "Analyse PowerShell scripts"
             }
           }
         },
@@ -234,6 +271,20 @@
             },
             "dagger_check": {
               "const": "validation:fixture-quality-gates"
+            }
+          }
+        },
+        "failure_report": {
+          "$ref": "#/$defs/dagger_check",
+          "properties": {
+            "job": {
+              "const": "complete-ci / checks"
+            },
+            "step": {
+              "const": "Run Dagger Checks"
+            },
+            "dagger_check": {
+              "const": "validation:fixture-failure-report"
             }
           }
         },
@@ -800,6 +851,7 @@
         },
         "dagger_check": {
           "enum": [
+            "validation:fixture-failure-report",
             "validation:fixture-quality-gates",
             "validation:fixture-python-matrix"
           ]
@@ -951,6 +1003,57 @@
                   }
                 }
               },
+              "lock_integrity": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "workflow_analysis": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "powershell_analysis": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
               "dependency_security": {
                 "properties": {
                   "status": {
@@ -1053,6 +1156,23 @@
                   }
                 }
               },
+              "failure_report": {
+                "properties": {
+                  "status": {
+                    "const": "passed"
+                  },
+                  "job_conclusion": {
+                    "const": "success"
+                  },
+                  "step_conclusion": {
+                    "const": "success"
+                  },
+                  "job_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
               "python_matrix": {
                 "properties": {
                   "status": {
@@ -1120,6 +1240,27 @@
                     }
                   }
                 },
+                "lock_integrity": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "workflow_analysis": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "powershell_analysis": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
                 "dependency_security": {
                   "properties": {
                     "status": {
@@ -1156,6 +1297,13 @@
                   }
                 },
                 "coverage": {
+                  "properties": {
+                    "status": {
+                      "const": "passed"
+                    }
+                  }
+                },
+                "failure_report": {
                   "properties": {
                     "status": {
                       "const": "passed"

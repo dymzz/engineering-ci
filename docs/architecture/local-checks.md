@@ -10,12 +10,19 @@ dagger check
 dagger check --engineering-ci --check=lint
 dagger check --engineering-ci --check=format-check
 dagger check --engineering-ci --check=tests
-dagger check --engineering-ci --check=version --check=lock
+dagger check --engineering-ci --check=version
+dagger check --engineering-ci --check=lock
+dagger check --engineering-ci --check=workflow-analysis
 ```
 
-默认五项检查针对根仓实际源码：Ruff Lint、Ruff Format、核心 pytest、四处版本一致性、
-两份 uv.lock 完整性。单项筛选使用 Dagger 原生选择器，不存在宿主 `checks` 命令、
-Profile 注册表、`--reuse` 或历史 passed JSON 准入。
+默认六项检查针对根仓实际源码：Ruff Lint、Ruff Format、核心 pytest、四处版本一致性、
+两份 uv.lock 完整性、GitHub Actions Workflow 静态分析。单项筛选使用 Dagger 原生选择器，
+不存在宿主 `checks` 命令、Profile 注册表、`--reuse` 或历史 passed JSON 准入。
+
+`workflow-analysis` 是 `actionlint_workflows` 的严格形式：同一份源码与策略下两者
+引用同一次执行节点，门禁结论与 JSON 报告不会描述两次不同的扫描。该检查先枚举
+声明范围内必须覆盖的 Workflow 文件，再把这份文件清单交给固定版本的 actionlint；
+覆盖为空时结论是 `not_executed` 而不是 clean，缺失的覆盖不会被读成通过。
 
 ## 定义与输入
 
@@ -52,5 +59,7 @@ Coverage 是显式开关，根仓没有额外增加覆盖率阈值。
 [Python 静态分析](testing/python-static-analysis.md)。
 公共消费者继续调用既有 `python-*` Functions，见[公共接口](../delivery/public-components.md)。
 
-PR CI 的三个现有 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
+PR CI 的五个 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
 依赖安全扫描、Python Matrix 和四个静态分析检查仍由正式发布的显式策略调用，未在默认检查中暗中增加。
+PowerShell 静态分析不在 Dagger 容器内执行：它的规则与运行环境是 PowerShell 专有的，
+Windows runner 才是能如实报告“已分析”的位置。该 Job 属于 `ci.yml`，与其它必需检查并列。

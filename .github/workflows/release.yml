@@ -34,6 +34,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.prepare.outputs.sha }}
+      dagger_checks: ${{ steps.prepare.outputs.dagger_checks }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -67,11 +68,8 @@ jobs:
       # One report execution replaces only this exact check; all other checks run.
       dagger_environment: fixtures
       dagger_module: validation
-      dagger_checks: |
-        fixture-test
-        fixture-failure-report
-        fixture-quality-gates
-        fixture-python-matrix
+      # The required Check selection is declared once, in the release contract.
+      dagger_checks: ${{ needs.candidate.outputs.dagger_checks }}
       pytest_report_function: fixture-pytest-artifacts
       pytest_check: validation:fixture-test
       pytest_report_scenario: ${{ inputs.pytest_scenario }}

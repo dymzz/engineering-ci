@@ -127,6 +127,18 @@ def invocation_script(helper_root: Path) -> Path:
     return script
 
 
+def _relative_name(workspace: Path, item: Path) -> str:
+    """Name an analysed script by its workspace-relative path.
+
+    The evidence has to say which files the required coverage reached, so the
+    absolute runner path is replaced by the path inside the checked tree.
+    """
+    try:
+        return item.resolve().relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        return item.name
+
+
 def _run_powershell(
     arguments: list[str], cwd: Path, timeout: int
 ) -> subprocess.CompletedProcess:
@@ -221,6 +233,7 @@ def analyse(
 ) -> dict:
     """Run one analysis and describe what the analyzer actually returned."""
     scripts = select_scripts(workspace, policy["paths"])
+    analysed = [_relative_name(workspace, item) for item in scripts]
     if not scripts:
         return {
             "schema_version": 1,
@@ -233,6 +246,7 @@ def analyse(
                 if key not in {"schema_version", "pinned_version"}
             },
             "files_scanned": 0,
+            "scripts": [],
             "outcome": "not_executed",
             "reason": "no_applicable_scripts",
             "diagnostic_count": 0,
@@ -296,6 +310,7 @@ def analyse(
             if key not in {"schema_version", "pinned_version"}
         },
         "files_scanned": envelope.get("files_scanned", len(scripts)),
+        "scripts": analysed,
         "outcome": "findings" if diagnostics else "clean",
         "reason": "rule_violations_reported" if diagnostics else "no_rule_violations",
         "diagnostic_count": len(diagnostics),
@@ -331,6 +346,11 @@ def summary(report: dict, mode: str) -> str:
     ]
     if report.get("limitations"):
         lines += ["Limitation: " + cell(item, 500) for item in report["limitations"]]
+        lines += [""]
+    scripts = report.get("scripts") or []
+    if scripts:
+        lines += ["Analysed scripts:", ""]
+        lines += [f"- {cell(item, 300)}" for item in scripts]
         lines += [""]
     if report.get("diagnostics"):
         lines += [
@@ -390,6 +410,8 @@ def main(argv=None) -> int:
                 "schema_version": 1,
                 "tool": "psscriptanalyzer",
                 "pinned_version": PSSCRIPTANALYZER_VERSION,
+                "files_scanned": 0,
+                "scripts": [],
                 "outcome": "failure",
                 "reason": "psscriptanalyzer_execution_error",
                 "diagnostic_count": 0,

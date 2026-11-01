@@ -1,10 +1,11 @@
 """Pinned Workflow and PowerShell static analysis through the native tools.
 
 Dagger-independent on purpose: this module only builds argument vectors,
-classifies the exit status each tool already produced and normalises the output
-it emitted. It never re-runs a check to render a report, never re-implements
-actionlint's or PSScriptAnalyzer's rules, and never decides which language a
-file is written in beyond its explicit suffix.
+enumerates the inputs a scan has to cover, classifies the exit status each tool
+already produced and normalises the output it emitted. It never re-runs a check
+to render a report, never re-implements actionlint's or PSScriptAnalyzer's
+rules, and never decides which language a file is written in beyond its
+explicit suffix.
 
 Two different signals, deliberately handled differently:
 
@@ -16,13 +17,20 @@ Two different signals, deliberately handled differently:
 Neither result may become a pass by omission: an absent file, an unsupported
 scope, a missing environment and a tool failure are each reported as such.
 
-Verification status — NOT VERIFIED against the real tools:
+Input coverage is stated, not assumed. The required inputs of a scan are
+enumerated from the declared scope, and the enumerated files are the files the
+scanner is given. A scope that does not exist, or that holds no analysable
+input, is reported as not applicable instead of as a clean run over nothing.
 
-1. actionlint's exit-code semantics and text output format are assumed, not
-   observed. This module assumes 0 means clean, 1 means reported problems, and
-   that a diagnostic line reads `<path>:<line>[:<col>]: <message> [<rule>]`.
-   actionlint may also expose no structured output at all, in which case
-   `native_json_available` is legitimately always false for it.
+Verification status:
+
+1. actionlint's exit-code semantics and text output format are observed by the
+   `fixture_workflow_analysis` Check, which runs the pinned tool against
+   committed clean and broken Workflows and asserts both outcomes. The
+   diagnostic line format this module parses is the one that check observed:
+   `<path>:<line>[:<col>]: <message> [<rule>]`. actionlint exposes no
+   structured output, so `native_json_available` is legitimately always false
+   for it.
 2. No PSScriptAnalyzer run has been observed. Which default rules actually fire
    on a given script is a property of the analyzer, not of this module.
 3. The Windows runner job has never executed. `windows-2025`, the pinned uv
@@ -30,15 +38,15 @@ Verification status — NOT VERIFIED against the real tools:
    unexercised.
 
 Every classifier here fails closed, so a wrong assumption produces a failing
-check that prints the observed value rather than a silent pass. None of the
-three may be described as verified until a real run says so.
+check that prints the observed value rather than a silent pass. The two
+unobserved items may not be described as verified until a real run says so.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 # The PyPI distribution is a thin wrapper that pins the Go tool's own release.
 ACTIONLINT_WRAPPER = "1.7.12.25"
@@ -54,6 +62,10 @@ MAX_SUMMARY_FINDINGS = 10
 
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
 POWERSHELL_SUFFIXES = (".ps1", ".psm1")
+# actionlint reads its own configuration from these names. They are tool
+# configuration, not Workflow inputs, so they are never part of the scope a
+# required scan has to cover.
+ACTIONLINT_CONFIG_NAMES = ("actionlint.yaml", "actionlint.yml")
 
 _ACTIONLINT_LINE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+)(?:[:-]\d+)?(?:[:-]\d+)?: "
@@ -102,6 +114,53 @@ def target_kind(scan_path: str) -> str:
     if suffix in POWERSHELL_SUFFIXES:
         return "psscriptanalyzer"
     return "unsupported"
+
+
+def select_workflows(root: Path, paths: list[str]) -> dict:
+    """Enumerate the Workflow files a required scan has to cover.
+
+    The scope is read exactly as the scanner reads it, so the enumerated inputs
+    are the coverage the report can claim. A scope that does not exist stays
+    absent instead of becoming an empty pass, and a scope that holds no
+    analysable Workflow is reported as present but not applicable.
+
+    Only the declared suffix selects a file, so a directory that also holds
+    unrelated files contributes just its Workflows.
+    """
+    root = Path(root).resolve()
+    present = False
+    found: list[str] = []
+    for entry in paths:
+        target = root / entry
+        if target.is_dir():
+            present = True
+            for item in sorted(target.rglob("*")):
+                if not item.is_file() or item.name.lower() in ACTIONLINT_CONFIG_NAMES:
+                    continue
+                if item.suffix.lower() in WORKFLOW_SUFFIXES:
+                    found.append(item.relative_to(root).as_posix())
+        elif target.is_file():
+            present = True
+            if target.suffix.lower() in WORKFLOW_SUFFIXES:
+                found.append(target.relative_to(root).as_posix())
+    inputs = sorted(set(found))
+    return {
+        "present": present,
+        "inputs": inputs,
+        "input_count": len(inputs),
+        "applicable": present and bool(inputs),
+    }
+
+
+def coverage(scope: list[str], selected: dict) -> dict:
+    """Describe what a required scan had to cover and what it did cover."""
+    return {
+        "scope": list(scope),
+        "present": selected["present"],
+        "inputs": selected["inputs"],
+        "input_count": selected["input_count"],
+        "applicable": selected["applicable"],
+    }
 
 
 def actionlint_policy(
@@ -159,7 +218,13 @@ def runner_prefix(tool: str) -> list[str]:
     return ["uvx", "--from", f"actionlint-py=={ACTIONLINT_WRAPPER}", "actionlint"]
 
 
-def actionlint_arguments(policy: dict) -> list[str]:
+def actionlint_arguments(policy: dict, inputs: list[str] | None = None) -> list[str]:
+    """Arguments for the pinned Workflow checker.
+
+    The scanner is given the enumerated inputs rather than the scope itself,
+    so a clean result means every required input was analysed. The scope stays
+    the fallback when no enumeration was made.
+    """
     args = [
         "-no-color",
         # Optional integrations stay explicitly off so the checked scope never
@@ -169,7 +234,7 @@ def actionlint_arguments(policy: dict) -> list[str]:
     ]
     if policy["config"]:
         args.append(f"-config-file={policy['config']}")
-    return args + policy["scan_paths"]
+    return args + list(policy["scan_paths"] if inputs is None else inputs)
 
 
 def powershell_arguments(policy: dict) -> list[str]:
@@ -339,7 +404,12 @@ _REPORT_ONLY_POLICY_KEYS = {
 
 
 def _shell(
-    tool: str, pinned_version: str, scan_paths: list[str], outcome: str, reason: str
+    tool: str,
+    pinned_version: str | None,
+    scan_paths: list[str],
+    outcome: str,
+    reason: str,
+    covered: dict | None = None,
 ) -> dict:
     return {
         "schema_version": 1,
@@ -354,11 +424,23 @@ def _shell(
         "findings": [],
         "omitted_findings": 0,
         "limitations": [reason],
+        "coverage": covered or _no_coverage(scan_paths),
         "native_json_available": False,
         "native_json": None,
         "native_truncated": False,
         "stdout": "",
         "stderr": "",
+    }
+
+
+def _no_coverage(scan_paths: list[str]) -> dict:
+    """Coverage for a scope this module did not analyse at all."""
+    return {
+        "scope": list(scan_paths),
+        "present": False,
+        "inputs": [],
+        "input_count": 0,
+        "applicable": False,
     }
 
 
@@ -378,12 +460,35 @@ def deferred_report(scan_path: str, reason: str) -> dict:
     )
 
 
+def not_applicable_report(policy: dict, covered: dict, reason: str) -> dict:
+    """A required scope that holds nothing to analyse, stated rather than passed.
+
+    The scanner is not started at all in this case: a scan over an empty scope
+    would report a clean result over nothing and hide the missing coverage.
+    """
+    report = _shell(
+        policy["tool"],
+        policy["pinned_version"],
+        list(policy.get("scan_paths", [])),
+        "not_executed",
+        reason,
+        covered,
+    )
+    report["policy"] = {
+        key: value
+        for key, value in policy.items()
+        if key not in _REPORT_ONLY_POLICY_KEYS
+    }
+    return report
+
+
 def script_report(
     policy: dict,
     exit_code: int,
     stdout: str = "",
     stderr: str = "",
     native_raw: str = "",
+    covered: dict | None = None,
 ) -> dict:
     """Normalise one finished check. Nothing here starts a second execution."""
     if type(exit_code) is not int or not 0 <= exit_code <= 255:
@@ -415,6 +520,7 @@ def script_report(
         "findings": findings[:MAX_FINDINGS],
         "omitted_findings": max(0, len(findings) - MAX_FINDINGS),
         "limitations": limitations,
+        "coverage": covered or _no_coverage(list(policy.get("scan_paths", []))),
         "native_json_available": envelope is not None,
         "native_json": envelope,
         "native_truncated": truncated,
@@ -431,6 +537,13 @@ def findings_summary(report: dict) -> str:
             f"({report['outcome']}): {report['reason']}"
         )
     ]
+    covered = report.get("coverage")
+    if covered:
+        lines.append(
+            "coverage: "
+            f"{covered['input_count']} input(s) in {', '.join(covered['scope']) or '-'} "
+            f"(applicable: {covered['applicable']})"
+        )
     for item in report["findings"][:MAX_SUMMARY_FINDINGS]:
         location = f"{item.get('path') or '?'}:{item.get('line') or '?'}"
         rule = f" [{item['rule']}]" if item.get("rule") else ""
@@ -442,3 +555,28 @@ def findings_summary(report: dict) -> str:
         tail = (report["stderr"] or report["stdout"] or "no diagnostics")[-1500:]
         lines.append(tail)
     return "\n".join(lines)
+
+
+def main(argv=None) -> int:
+    """Enumerate the inputs a required scan has to cover.
+
+    The enumeration runs inside the same container the scanner reads, so the
+    scope it reports is exactly the scope the scanner will see.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    scope = sub.add_parser("scope")
+    scope.add_argument("--root", required=True)
+    scope.add_argument("--path", action="append", required=True)
+    args = parser.parse_args(argv)
+    if args.command == "scope":
+        selected = select_workflows(Path(args.root), list(args.path))
+        print(json.dumps(selected, ensure_ascii=False, sort_keys=True))
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

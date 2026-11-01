@@ -18,6 +18,12 @@ RELEASE_DEPENDENCIES = {
     "publish": frozenset({"candidate", "verified"}),
 }
 
+# The checks whose original execution the release evidence has to name.
+#
+# Each entry pairs the Job that runs the operation with the Step that performs
+# it, so one required operation is one piece of evidence. A Job that succeeds
+# only proves its own Steps succeeded; a required operation that has no Step
+# of its own has no evidence at all.
 CHECKS = {
     "candidate": ("candidate", "Validate manual release request"),
     "ruff_lint": (
@@ -34,7 +40,19 @@ CHECKS = {
     ),
     "version_integrity": (
         "core-tests / version-metadata",
-        "Validate release metadata and root lock consistency",
+        "Validate release version metadata",
+    ),
+    "lock_integrity": (
+        "core-tests / version-metadata",
+        "Verify uv lock consistency",
+    ),
+    "workflow_analysis": (
+        "core-tests / workflow-analysis",
+        "Analyse GitHub Actions Workflows",
+    ),
+    "powershell_analysis": (
+        "core-tests / powershell-analysis",
+        "Analyse PowerShell scripts",
     ),
     "dependency_security": (
         "complete-ci / dependency-security",
@@ -49,7 +67,44 @@ CHECKS = {
     "evidence": ("evidence", "Require usable evidence and original execution gates"),
 }
 
+# The Dagger Checks the release has to execute in the validation environment.
+#
+# This is the single declaration of that set: the release Workflow selects
+# exactly these names, and the evidence has to show that each of them ran.
+# A check that is required here but absent from the executed list makes the
+# release fail instead of quietly narrowing the verified scope.
+REQUIRED_DAGGER_CHECKS = (
+    "fixture-test",
+    "fixture-failure-report",
+    "fixture-quality-gates",
+    "fixture-python-matrix",
+)
+
+# The one required Check a single report execution replaces. Its own result
+# comes from the exported bundle, not from a second Check execution.
+REPLACED_DAGGER_CHECK = "fixture-test"
+
+# The Dagger module the release selects the required Checks in.
+DAGGER_MODULE = "validation"
+
+
+def required_dagger_checks() -> set[str]:
+    """The required Dagger Checks, named as the executed Check list names them.
+
+    The replaced Check is absent on purpose: a single report execution takes
+    its place, so its result is proven by the exported bundle instead.
+    """
+    return {
+        f"{DAGGER_MODULE}:{name}"
+        for name in REQUIRED_DAGGER_CHECKS
+        if name != REPLACED_DAGGER_CHECK
+    }
+
+
+# Required Dagger Checks whose evidence is the executed Check list rather than
+# a Step of their own.
 DAGGER_POLICY_CHECKS = {
+    "failure_report": "validation:fixture-failure-report",
     "coverage": "validation:fixture-quality-gates",
     "python_matrix": "validation:fixture-python-matrix",
 }
