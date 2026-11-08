@@ -985,6 +985,7 @@ def run_tests(
     python=None,
     expected_tree=None,
     junit_path=None,
+    capture=None,
 ):
     """Run selected targets with their native framework; return the native exit."""
     modules = tuple(modules)
@@ -1013,7 +1014,19 @@ def run_tests(
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
     else:
         raise SelectionError("framework_unsupported")
-    result = subprocess.run(command, cwd=root, env=environment, check=False)
+    result = subprocess.run(
+        command,
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=capture is not None,
+        text=capture is not None,
+        encoding="utf-8" if capture is not None else None,
+        errors="replace" if capture is not None else None,
+    )
+    if capture is not None:
+        capture["stdout"] = result.stdout or ""
+        capture["stderr"] = result.stderr or ""
     return result.returncode
 
 

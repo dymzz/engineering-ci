@@ -90,6 +90,17 @@ def test_execute_without_targets_is_not_executed(repo):
     assert report["exit_code"] == 3
 
 
+def test_execute_blocks_unvalidated_tach_narrowing(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["requires_tach_check"] = True
+    value["selection"]["tach_graph_validation"] = {"status": "not_executed"}
+    report = execution.execute(value, root=path)
+    assert report["status"] == "blocked"
+    assert report["reason"] == "tach_graph_unvalidated"
+    assert report["exit_code"] == 5
+
+
 def test_execute_blocks_when_coverage_evidence_is_required(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])

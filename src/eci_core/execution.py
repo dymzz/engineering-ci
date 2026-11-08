@@ -78,26 +78,42 @@ def execute(plan, *, root, junit_path=None):
     if plan["git"].get("snapshot") == "multi":
         report["reason"] = "multi_ref_requires_per_ref_execution"
         return report
+    if tree and selection._tree_of(root, "HEAD") != tree:
+        report["status"] = "not_executed"
+        report["exit_code"] = 4
+        report["reason"] = "tree_mismatch"
+        return report
+    graph = chosen.get("tach_graph_validation") or {}
+    if (
+        chosen.get("requires_tach_check")
+        and not chosen.get("full_tests")
+        and graph.get("status") != "passed"
+    ):
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "tach_graph_unvalidated"
+        return report
     if chosen.get("coverage_required"):
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "coverage_evidence_required"
         report["coverage"]["scope"] = "not_measured"
         return report
+    native = {}
     exit_code = selection.run_tests(
         tests,
         root=root,
         framework=framework,
         src_root=chosen.get("src_root", "src"),
-        expected_tree=tree,
+        expected_tree=None,
         junit_path=junit_path,
+        capture=native,
     )
     report["exit_code"] = exit_code
+    report["native_stdout"] = native.get("stdout", "")
+    report["native_stderr"] = native.get("stderr", "")
     if exit_code == 0:
         report["status"], report["reason"] = "passed", None
-    elif exit_code in {3, 4}:
-        report["status"] = "not_executed"
-        report["reason"] = "tree_mismatch" if exit_code == 4 else "no_selected_tests"
     else:
         report["status"], report["reason"] = "failed", "tests_failed"
     return report

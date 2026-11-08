@@ -104,12 +104,12 @@ class EngineeringCi:
         container = self._uv_container(source, python_version)
         junit = "/tmp/engineering-ci-junit.xml"
         if framework == "pytest":
-            pytest_targets = [
-                target
-                if target.endswith(".py") or "/" in target or "::" in target
-                else f"--pyargs={target}"
-                for target in targets
-            ]
+            pytest_targets = []
+            for target in targets:
+                if target.endswith(".py") or "/" in target or "::" in target:
+                    pytest_targets.append(target)
+                else:
+                    pytest_targets.extend(["--pyargs", target])
             command = [
                 "uv",
                 "run",

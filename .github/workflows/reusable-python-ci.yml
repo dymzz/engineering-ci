@@ -116,10 +116,10 @@ on:
         required: false
         default: ''
       selection_source_ref:
-        description: 'Pinned engineering-ci ref providing the selection CLI'
+        description: 'Immutable engineering-ci commit SHA providing the selection CLI; required when selection is enabled'
         type: string
         required: false
-        default: 'main'
+        default: ''
       selection_artifact_name:
         description: 'Unique selection plan/execution evidence artifact name'
         type: string
@@ -636,7 +636,17 @@ jobs:
       - name: Checkout selection target
         uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Require immutable selection source
+        env:
+          SELECTION_SOURCE_REF: ${{ inputs.selection_source_ref }}
+        run: |
+          set -euo pipefail
+          test -n "$SELECTION_SOURCE_REF"
+          case "$SELECTION_SOURCE_REF" in
+            *[!0-9a-fA-F]*) echo "selection_source_ref must be a commit SHA" >&2; exit 1 ;;
+          esac
       - name: Checkout matching selection helper
         uses: actions/checkout@v7.0.1
         with:
@@ -660,10 +670,17 @@ jobs:
         env:
           SELECTION_CONFIG: ${{ inputs.selection_config }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          .venv/bin/engineering-ci select --root . --base "$BASE_SHA" \
-            --config "$SELECTION_CONFIG" --json > "$RUNNER_TEMP/selection-plan.json"
+          mode_args=(--mode pr --base "$BASE_SHA" --head "$HEAD_SHA")
+          if [ "$EVENT_NAME" = push ] && [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            mode_args=(--mode push --before "$BEFORE_SHA" --after "$HEAD_SHA")
+          fi
+          .venv/bin/engineering-ci select --root . --config "$SELECTION_CONFIG" \
+            "${mode_args[@]}" --json > "$RUNNER_TEMP/selection-plan.json"
           .venv/bin/engineering-ci execute --plan "$RUNNER_TEMP/selection-plan.json" \
             --root . --junit "$RUNNER_TEMP/selection-junit.xml" \
             --json > "$RUNNER_TEMP/selection-execution.json"

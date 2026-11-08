@@ -3,10 +3,11 @@ engineVersion = "v1.0.0-beta.16"
 source = ".dagger"
 include = [
   "pyproject.toml",
+  "uv.lock",
+  ".python-version",
   "README.md",
   "LICENSE",
-  "src/eci_core/**",
-  "src/engineering_ci/**",
+  "src/**",
 ]
 
 [runtime]
