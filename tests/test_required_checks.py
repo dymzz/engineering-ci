@@ -231,6 +231,22 @@ def test_the_powershell_scope_matches_the_workflow_input():
     assert declared == paths
 
 
+def test_the_workflow_scope_matches_actionlint_policy():
+    """The workflow_analysis requirement scope must bind to actionlint's scan paths."""
+    requirement = requirements.BY_KEY["workflow_analysis"]
+    kind, paths = scope_paths(requirement.scope)
+    assert kind == "workflow"
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "script_analysis", ROOT / ".dagger/src/engineering_ci/script_analysis.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    policy = module.actionlint_policy()
+    assert policy["scan_paths"] == paths
+
+
 def test_every_repository_powershell_script_is_covered_or_excluded():
     """A script outside the declared scope would never be analysed."""
     requirement = requirements.BY_KEY["powershell_analysis"]
@@ -254,7 +270,7 @@ def test_no_source_exclusion_shadows_a_required_scope():
     """An excluded path would silently shrink the checked input set."""
     patterns = [pattern_regex(item) for item in source_excludes()]
     for requirement in requirements.REQUIREMENTS:
-        _, paths = scope_paths(requirement.scope)
+        kind, paths = scope_paths(requirement.scope)
         if not paths:
             continue
         for item in paths:
@@ -262,6 +278,11 @@ def test_no_source_exclusion_shadows_a_required_scope():
             candidates = [root] if root.is_file() else sorted(root.rglob("*"))
             for candidate in candidates:
                 if not candidate.is_file():
+                    continue
+                if (
+                    kind == "powershell"
+                    and candidate.suffix.lower() not in POWERSHELL_SUFFIXES
+                ):
                     continue
                 relative = candidate.relative_to(ROOT).as_posix()
                 for pattern in patterns:

@@ -164,7 +164,13 @@ BY_KEY = {requirement.key: requirement for requirement in REQUIREMENTS}
 # and the local scratch directory are generated. Everything else must be
 # inside a required scope, so a script added outside the declared scope
 # cannot go unnoticed.
-POWERSHELL_EXCLUSIONS = ("tests/fixtures", ".venv", ".test-tools")
+POWERSHELL_EXCLUSIONS = (
+    "tests/fixtures",
+    ".venv",
+    ".dagger/.venv",
+    ".test-tools",
+    ".tmp",
+)
 
 
 def records(requirements=None) -> list[dict]:

@@ -21,6 +21,10 @@ from .registry import (
     CHECKS,
     DAGGER_EXECUTION_CHECKS,
     DAGGER_POLICY_CHECKS,
+    LEGACY_ARTIFACT_NAMES,
+    LEGACY_CHECKS,
+    LEGACY_DAGGER_POLICY_CHECKS,
+    PERMITTED_REPLACED_CHECK,
     REQUIRED_TOOLS,
     SCOPES,
     STATES,
@@ -202,6 +206,11 @@ def facts(directory):
     # check ran. The ledger names the set that its success covers, so the
     # required set is compared against the ledger instead.
     ledger = dagger_ledger(directory)
+    if ledger["replaced"] != PERMITTED_REPLACED_CHECK:
+        raise ValueError(
+            f"The replaced Dagger check must be {PERMITTED_REPLACED_CHECK!r}, "
+            f"got {ledger['replaced']!r}"
+        )
     if ledger["replaced"] not in ledger["discovered"]:
         raise ValueError("The replaced Dagger check was never discovered")
     if ledger["ran"] != ledger["expected_ran"]:
@@ -301,25 +310,36 @@ def check_record(jobs, name, step):
 def effective_requirements(value: dict) -> list[dict]:
     """The requirement set this manifest says it covers.
 
-    A manifest written before the requirement set was recorded still names
-    the job and step of every check it covers, so its own recorded checks
-    remain the identity it was verified against. It simply carries no
-    coverage scope, which a candidate verification cannot accept.
+    A manifest written before the requirement set was recorded is validated
+    against the authentic historical contract that was in force when it was
+    produced. It carries no coverage scope, which a candidate verification
+    cannot accept.
     """
     recorded = value.get("requirements")
     if isinstance(recorded, dict) and isinstance(recorded.get("checks"), list):
         return recorded["checks"]
-    return [
-        {
-            "key": key,
-            "job": record["job"],
-            "step": record["step"],
-            "scope": "",
-            "dagger_check": record.get("dagger_check", ""),
-        }
-        for key, record in sorted(value.get("checks", {}).items())
-        if isinstance(record, dict) and record.get("required") is True
-    ]
+    result = []
+    for key, (job, step) in sorted(LEGACY_CHECKS.items()):
+        result.append(
+            {
+                "key": key,
+                "job": job,
+                "step": step,
+                "scope": "",
+                "dagger_check": "",
+            }
+        )
+    for key, dagger_check in sorted(LEGACY_DAGGER_POLICY_CHECKS.items()):
+        result.append(
+            {
+                "key": key,
+                "job": LEGACY_CHECKS["dagger"][0],
+                "step": LEGACY_CHECKS["dagger"][1],
+                "scope": "",
+                "dagger_check": dagger_check,
+            }
+        )
+    return result
 
 
 def verified_results(jobs, value):
@@ -578,10 +598,13 @@ def validate(value, repository, tag, head, *, published=False):
         and {(item["scope"], item["name"]) for item in value["tools"]} != REQUIRED_TOOLS
     ):
         raise ValueError("Passed manifest lacks required tool evidence")
+    expected_artifacts = (
+        ARTIFACT_NAMES if "requirements" in value else LEGACY_ARTIFACT_NAMES
+    )
     for item in value["artifacts"]:
         if (
             set(item) != {"name", "id", "digest", "url"}
-            or item["name"] not in ARTIFACT_NAMES
+            or item["name"] not in expected_artifacts
             or type(item["id"]) is not int
             or item["id"] <= 0
             or item["url"]
@@ -597,7 +620,7 @@ def validate(value, repository, tag, head, *, published=False):
     ) or len({item["id"] for item in value["artifacts"]}) != len(value["artifacts"]):
         raise ValueError("Duplicate artifact references")
     passed = all(value["checks"][key]["status"] == "passed" for key in required)
-    if passed and {item["name"] for item in value["artifacts"]} != ARTIFACT_NAMES:
+    if passed and {item["name"] for item in value["artifacts"]} != expected_artifacts:
         raise ValueError("Passed manifest lacks required artifact references")
     if value["result"] != ("passed" if passed else "failed"):
         raise ValueError("Manifest aggregate does not match checks")

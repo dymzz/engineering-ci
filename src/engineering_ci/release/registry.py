@@ -50,6 +50,55 @@ DAGGER_EXECUTION_CHECKS = (
     "validation:fixture-python-matrix",
 )
 
+DAGGER_MODULE = "validation"
+REPLACED_DAGGER_CHECK = "fixture-test"
+PERMITTED_REPLACED_CHECK = f"{DAGGER_MODULE}:{REPLACED_DAGGER_CHECK}"
+
+# The authentic historical 4-artifact set prior to powershell-analysis.
+LEGACY_ARTIFACT_NAMES = frozenset(
+    {
+        "pytest-report",
+        "dependency-security",
+        "core-tests",
+        "release-tools-ruff",
+    }
+)
+
+# The authentic historical 12-check set prior to ECI-CHECK-01.
+LEGACY_CHECKS = {
+    "candidate": ("candidate", "Validate manual release request"),
+    "ruff_lint": ("core-tests / python-ci / checks", "Ruff Lint"),
+    "ruff_format": ("core-tests / python-ci / checks", "Ruff Format Check"),
+    "core_tests": (
+        "core-tests / sync-tool-tests",
+        "Run all core unit and process tests",
+    ),
+    "version_integrity": (
+        "core-tests / version-metadata",
+        "Validate release metadata and root lock consistency",
+    ),
+    "dependency_security": (
+        "complete-ci / dependency-security",
+        "Check lock integrity and scan known vulnerabilities",
+    ),
+    "dagger": ("complete-ci / checks", "Run Dagger Checks"),
+    "tests": (
+        "complete-ci / checks",
+        "Gate on pytest execution and explicit quality policy",
+    ),
+    "module_lock": ("complete-ci / checks", "Verify generated module lock consistency"),
+    "evidence": ("evidence", "Require usable evidence and original execution gates"),
+}
+
+LEGACY_DAGGER_POLICY_CHECKS = {
+    "coverage": "validation:fixture-quality-gates",
+    "python_matrix": "validation:fixture-python-matrix",
+}
+
+LEGACY_REQUIRED_CHECKS = frozenset(LEGACY_CHECKS) | frozenset(
+    LEGACY_DAGGER_POLICY_CHECKS
+)
+
 TOOLS = {"python", "uv", "pytest", "pytest-cov", "ruff", "dagger", "osv-scanner"}
 
 SCOPES = {"core", "ruff", "dagger_cli", "root_lock"}
@@ -74,3 +123,8 @@ ARTIFACT_OUTPUTS = {
 }
 
 ARTIFACT_NAMES = set(ARTIFACT_OUTPUTS)
+
+HISTORICAL_ARTIFACT_NAMES = frozenset(
+    {"pytest-report", "dependency-security", "core-tests", "release-tools-ruff"}
+)
+EARLIEST_ARTIFACT_NAMES = frozenset({"pytest-report", "dependency-security"})

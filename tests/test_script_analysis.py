@@ -456,6 +456,18 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "failure")
         self.assertTrue(report["limitations"])
 
+    def test_records_preserves_error_envelope_and_failure_cause(self):
+        raw = (
+            '{"schema_version": 1, "status": "ok", "files_scanned": 1}\n'
+            '{"rule": "RuleA", "severity": "Warning"}\n'
+            '{"schema_version": 1, "status": "error", "error": "Analyzing broken.ps1 failed: parse error", "files_scanned": 1, "candidates": 2}\n'
+        )
+        envelope, diags = powershell._records(raw)
+        self.assertEqual(envelope["status"], "error")
+        self.assertEqual(envelope["error"], "Analyzing broken.ps1 failed: parse error")
+        self.assertEqual(envelope["files_scanned"], 1)
+        self.assertEqual(len(diags), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

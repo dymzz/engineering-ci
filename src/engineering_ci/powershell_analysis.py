@@ -216,16 +216,26 @@ def _records(raw: str) -> tuple[dict, list[dict]]:
     lines = [line for line in raw.splitlines() if line.strip()]
     if not lines:
         raise AnalysisError("the analyzer returned no diagnostic envelope")
-    try:
-        envelope = json.loads(lines[0])
-        diagnostics = [json.loads(line) for line in lines[1:]]
-    except ValueError as exc:
-        raise AnalysisError(
-            f"the analyzer output is not valid JSON ({type(exc).__name__})"
-        )
-    if not isinstance(envelope, dict):
-        raise AnalysisError("the analyzer envelope is not an object")
-    return envelope, [item for item in diagnostics if isinstance(item, dict)]
+    records = []
+    for line in lines:
+        try:
+            val = json.loads(line)
+            if isinstance(val, dict):
+                records.append(val)
+        except ValueError as exc:
+            raise AnalysisError(
+                f"the analyzer output is not valid JSON ({type(exc).__name__})"
+            )
+    if not records:
+        raise AnalysisError("the analyzer returned no diagnostic envelope")
+    error_envelopes = [r for r in records if r.get("status") == "error"]
+    if error_envelopes:
+        envelope = error_envelopes[-1]
+        diagnostics = [r for r in records if "rule" in r]
+        return envelope, diagnostics
+    envelope = records[0]
+    diagnostics = [r for r in records[1:] if "rule" in r]
+    return envelope, diagnostics
 
 
 def analyse(
@@ -289,9 +299,13 @@ def analyse(
             f"the analyzer failed: {_bounded(str(envelope.get('error') or ''), 400)}"
         )
     if result.returncode != 0:
+        if envelope.get("error"):
+            raise AnalysisError(
+                f"the analyzer failed: {_bounded(str(envelope.get('error') or ''), 400)}"
+            )
         raise AnalysisError(
             f"the analyzer process exited {result.returncode}: "
-            f"{_bounded(result.stderr.strip(), 400)}"
+            f"{_bounded(result.stderr.strip() or result.stdout.strip(), 400)}"
         )
     diagnostics = [
         {
@@ -325,11 +339,11 @@ def analyse(
             for key, value in policy.items()
             if key not in {"schema_version", "pinned_version"}
         },
-        "files_scanned": scanned if type(scanned) is int else len(scripts),
+        "files_scanned": scanned if type(scanned) is int else 0,
         "coverage": {
             "scope": list(policy["paths"]),
             "candidates": len(scripts),
-            "analysed": scanned if type(scanned) is int else None,
+            "analysed": scanned if type(scanned) is int else 0,
         },
         "outcome": outcome,
         "reason": reason,

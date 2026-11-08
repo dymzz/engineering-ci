@@ -10,18 +10,18 @@
 
 | 触发 | 实际执行 | 发布 |
 |---|---|---|
-| PR / push 到 main | 原生 Lint/Format、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
+| PR / push 到 main | 原生 Lint/Format、Workflow 分析、PowerShell 分析、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
 | 手动 Release，publish=false | 上述检查加 Coverage 证据、完整 Dagger checks、既有质量与 Matrix fixture、真实根项目安全 enforce、报告下载核验 | 不创建 Tag/Release |
 | 手动 Release，publish=true | 同一完整验收；main SHA 与版本检查通过后才发布 | 精确提交 |
 
-PR 的五项原生 Dagger Checks 通过三个既有 Job 执行，不运行安全扫描或完整 Matrix。
+PR 的原生 Dagger Checks 与宿主/Windows 检查通过既有 Job 执行，不运行安全扫描或完整 Matrix。
 这些额外发布策略仍在手动 Release 中显式执行。
 
 ## 检查定义与执行环境
 
 本地与 `ci.yml` 使用同一组[原生 Dagger Checks](../local-checks.md)。
 标准 Ruff 配置和锁定开发工具在根 `pyproject.toml` / `uv.lock`；没有宿主 Profile、
-输入散列收据或另一套 Workflow YAML 校验器。三个既有 PR Job 名称保持不变。
+输入散列收据或另一套 Workflow YAML 校验器。PR Job 名称与对应步骤由 `requirements.py` 严格绑定。
 根仓 Coverage 由原生 `release` 环境开启，严格检查与报告引用相同 pytest 节点。
 发布 fixture 通过 `fixtures` 环境、`validation` 模块及四个明确的 fixture 检查名显式执行；
 `validation:fixture-test` 由一次报告执行替代，质量/Matrix Check 仍实际执行。

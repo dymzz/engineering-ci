@@ -24,9 +24,10 @@ function Write-Failure($message) {
         status                    = 'error'
         error                     = "$message"
         diagnostics               = @()
-        files_scanned             = 0
+        candidates                = if ($files) { $files.Count } else { 0 }
+        files_scanned             = if ($analyzed) { $analyzed.Count } else { 0 }
         powershell_version        = "$($PSVersionTable.PSVersion)"
-        psscriptanalyzer_version  = ''
+        psscriptanalyzer_version  = try { "$((Get-Module PSScriptAnalyzer).Version)" } catch { '' }
     }
 }
 
@@ -90,14 +91,8 @@ try {
     exit 3
 }
 
-Write-Record @{
-    schema_version           = 1
-    status                    = 'ok'
-    diagnostics               = @()
-    files_scanned             = $files.Count
-    powershell_version        = "$($PSVersionTable.PSVersion)"
-    psscriptanalyzer_version  = "$((Get-Module PSScriptAnalyzer).Version)"
-}
+$analyzed = New-Object System.Collections.Generic.List[string]
+$diagnostics = New-Object System.Collections.Generic.List[object]
 
 foreach ($file in $files) {
     $invoke = @{ Path = $file }
@@ -105,19 +100,34 @@ foreach ($file in $files) {
     if ($severity) { $invoke['Severity'] = $severity }
     try {
         foreach ($record in @(Invoke-ScriptAnalyzer @invoke)) {
-            Write-Record @{
+            $diagnostics.Add(@{
                 rule     = "$($record.RuleName)"
                 severity = "$($record.Severity)"
                 message  = "$($record.Message)"
                 script   = "$($record.ScriptName)"
                 line     = $record.Line
                 column   = $record.Column
-            }
+            })
         }
+        $analyzed.Add($file)
     } catch {
         Write-Failure "Analyzing $file failed: $($_.Exception.Message)"
         exit 3
     }
+}
+
+Write-Record @{
+    schema_version           = 1
+    status                    = 'ok'
+    diagnostics               = @()
+    candidates                = $files.Count
+    files_scanned             = $analyzed.Count
+    powershell_version        = "$($PSVersionTable.PSVersion)"
+    psscriptanalyzer_version  = "$((Get-Module PSScriptAnalyzer).Version)"
+}
+
+foreach ($diag in $diagnostics) {
+    Write-Record $diag
 }
 
 exit 0

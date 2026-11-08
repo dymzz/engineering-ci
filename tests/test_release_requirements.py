@@ -110,16 +110,135 @@ def test_candidate_verification_names_a_removed_requirement(monkeypatch):
         verification.current_requirements(value)
 
 
-def test_a_published_manifest_is_verified_against_its_own_recorded_sources():
-    """A published release stays verifiable after the requirements change."""
+def make_legacy_manifest():
     value = make_manifest()
     legacy = copy.deepcopy(value)
     legacy.pop("requirements")
+    legacy["artifacts"] = [
+        item for item in legacy["artifacts"] if item["name"] != "powershell-analysis"
+    ]
+    legacy["checks"].pop("powershell_analysis", None)
+    legacy["checks"].pop("workflow_analysis", None)
+    return legacy
+
+
+def test_a_published_manifest_is_verified_against_its_own_recorded_sources():
+    """A published release stays verifiable after the requirements change."""
+    legacy = make_legacy_manifest()
     api = ManifestGitHub()
     # The recorded results still match the original Actions results.
     evidence.verified_results(api.jobs, legacy)
-    # The manifest is still structurally valid.
+    # The manifest is still structurally valid under its authentic historical contract.
     evidence.validate(legacy, REPOSITORY, TAG, HEAD)
+
+
+def test_historical_manifest_missing_artifact_is_rejected():
+    legacy = make_legacy_manifest()
+    legacy["artifacts"] = [
+        item for item in legacy["artifacts"] if item["name"] != "core-tests"
+    ]
+    with pytest.raises(
+        ValueError, match="Passed manifest lacks required artifact references"
+    ):
+        evidence.validate(legacy, REPOSITORY, TAG, HEAD)
+
+
+def test_historical_manifest_missing_check_is_rejected():
+    legacy = make_legacy_manifest()
+    legacy["checks"].pop("dependency_security")
+    with pytest.raises(ValueError, match="Missing or unexpected manifest checks"):
+        evidence.validate(legacy, REPOSITORY, TAG, HEAD)
+
+
+def test_historical_manifest_with_fabricated_check_is_rejected():
+    legacy = make_legacy_manifest()
+    legacy["checks"]["fabricated_check"] = {
+        "required": True,
+        "status": "passed",
+        "job": "fake",
+        "step": "fake",
+        "job_id": 1,
+        "job_conclusion": "success",
+        "step_conclusion": "success",
+    }
+    with pytest.raises(ValueError, match="Missing or unexpected manifest checks"):
+        evidence.validate(legacy, REPOSITORY, TAG, HEAD)
+
+
+def test_first_publication_rejects_historical_manifest(tmp_path):
+    from engineering_ci.release import publishing
+
+    legacy = make_legacy_manifest()
+    api = ManifestGitHub()
+    with pytest.raises(
+        ValueError,
+        match="Release evidence does not record the required checks it covers",
+    ):
+        publishing.publish_release(
+            api, TAG, HEAD, legacy, tmp_path / "release-manifest.json"
+        )
+
+
+def test_first_publication_rejects_manifest_omitting_workflow_analysis_even_with_matching_digest(
+    tmp_path,
+):
+    from engineering_ci.release import publishing
+
+    value = make_manifest()
+    value["checks"].pop("workflow_analysis")
+    value["requirements"]["checks"] = [
+        item
+        for item in value["requirements"]["checks"]
+        if item["key"] != "workflow_analysis"
+    ]
+    value["requirements"]["digest"] = requirements.digest_records(
+        value["requirements"]["checks"]
+    )
+    api = ManifestGitHub()
+    with pytest.raises(
+        ValueError,
+        match="Release evidence does not cover the current required checks: added workflow_analysis",
+    ):
+        publishing.publish_release(
+            api, TAG, HEAD, value, tmp_path / "release-manifest.json"
+        )
+
+
+def test_first_publication_rejects_manifest_omitting_powershell_analysis_even_with_matching_digest(
+    tmp_path,
+):
+    from engineering_ci.release import publishing
+
+    value = make_manifest()
+    value["checks"].pop("powershell_analysis")
+    value["artifacts"] = [
+        item for item in value["artifacts"] if item["name"] != "powershell-analysis"
+    ]
+    value["requirements"]["checks"] = [
+        item
+        for item in value["requirements"]["checks"]
+        if item["key"] != "powershell_analysis"
+    ]
+    value["requirements"]["digest"] = requirements.digest_records(
+        value["requirements"]["checks"]
+    )
+    api = ManifestGitHub()
+    with pytest.raises(
+        ValueError,
+        match="Release evidence does not cover the current required checks: added powershell_analysis",
+    ):
+        publishing.publish_release(
+            api, TAG, HEAD, value, tmp_path / "release-manifest.json"
+        )
+
+
+def test_published_evidence_verifies_historical_manifest():
+    from engineering_ci.release import publishing
+
+    legacy = make_legacy_manifest()
+    legacy["mode"] = "publication"
+    api = ManifestGitHub()
+    publishing.published_evidence(api, legacy, REPOSITORY, TAG, HEAD)
 
 
 def test_a_manifest_that_disagrees_with_its_own_requirement_set_is_rejected():

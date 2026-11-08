@@ -211,8 +211,11 @@ def release_url(release, repository):
 
 def publish_release(api, tag, head, manifest, path):
     from .manifest import write
+    from .verification import current_requirements
 
     repository = manifest["repository"]
+    # Before first publication, require the currently authoritative complete requirement set.
+    current_requirements(manifest)
     # Validate identity and original Actions results before any publication write.
     published_evidence(api, manifest, repository, tag, head)
     proposed = json.loads(json.dumps(manifest))
@@ -248,6 +251,7 @@ def publish_release(api, tag, head, manifest, path):
             },
         )
     proposed["release"]["release_url"] = release_url(release, repository)
+    current_requirements(proposed)
     published_evidence(api, proposed, repository, tag, head)
     saved = release_asset(api, release, recovery_head=head)
     if saved is None:
@@ -262,6 +266,7 @@ def publish_release(api, tag, head, manifest, path):
         # Preserve a prior valid attempt's evidence instead of overwriting its asset.
         if saved["release"]["release_url"] != release_url(release, repository):
             raise ValueError("Draft Manifest Release URL mismatch")
+        current_requirements(saved)
         published_evidence(api, saved, repository, tag, head)
     live = candidate(api, tag, head, True)
     if live is None or live["id"] != release["id"] or live.get("draft") is not True:
