@@ -90,6 +90,17 @@ def test_execute_without_targets_is_not_executed(repo):
     assert report["exit_code"] == 3
 
 
+def test_execute_blocks_when_coverage_evidence_is_required(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["coverage_required"] = True
+    report = execution.execute(value, root=path)
+    assert report["status"] == "blocked"
+    assert report["exit_code"] == 5
+    assert report["reason"] == "coverage_evidence_required"
+    assert report["coverage"]["satisfied"] is False
+
+
 def test_cli_writes_json_and_exit(repo, tmp_path, capsys):
     path, _ = repo
     plan_path = tmp_path / "plan.json"

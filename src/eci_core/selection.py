@@ -40,6 +40,7 @@ _CONFIG_KEYS = {
     "non_code_rules",
     "prerequisites",
     "strict_modules",
+    "coverage_required",
     "check_scope",
 }
 
@@ -83,6 +84,7 @@ class Config:
     non_code_rules: tuple[NonCodeRule, ...]
     prerequisites: dict[str, tuple[str, ...]]
     strict_modules: bool
+    coverage_required: bool
     check_scope: CheckScopeConfig
 
 
@@ -210,6 +212,9 @@ def load_config(path):
     strict_modules = value.get("strict_modules", True)
     if type(strict_modules) is not bool:
         raise SelectionError("strict_modules_invalid")
+    coverage_required = value.get("coverage_required", False)
+    if type(coverage_required) is not bool:
+        raise SelectionError("coverage_required_invalid")
     scope = value.get("check_scope", {})
     if not isinstance(scope, dict) or set(scope) - {
         "docs_suffixes",
@@ -256,6 +261,7 @@ def load_config(path):
         non_code_rules=tuple(parsed_rules),
         prerequisites=prerequisites,
         strict_modules=strict_modules,
+        coverage_required=coverage_required,
         check_scope=check_scope,
     )
 
@@ -955,6 +961,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "framework": config.framework,
             "tests_dir": config.tests_dir,
             "src_root": config.src_root,
+            "coverage_required": config.coverage_required,
             "tach_graph_validation": graph,
             "requires_tach_check": True,
             "reasons": {

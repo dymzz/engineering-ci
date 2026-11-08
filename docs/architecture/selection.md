@@ -227,6 +227,13 @@ identity, actual targets and framework, JUnit path, native exit and status.
 Selection status and execution status stay separate. This host executor is the
 Actions-consumable path.
 
+If the consumer sets `coverage_required = true`, the plan carries it and
+`execute` returns `blocked` / exit `5` with reason
+`coverage_evidence_required`; no tests run. A subset run, and even a full test
+run without coverage evidence, cannot satisfy the gate. Actual
+coverage/min_coverage execution or #63 verified complete evidence is still
+required before this can become a pass.
+
 Dagger also has `execute-plan(plan: File, source: Directory)`: it validates the
 plan kind, refuses multi-ref unions and empty targets, runs the exact targets
 with `uv run` in a synced consumer environment, and returns native exit/stdout/
@@ -300,6 +307,6 @@ multi-target pytest execution and CLI modes.
 | P1-3 incomplete Git treated as not_applicable | `check_scope` emits `unknown` for docs/Tach/Vulture/source when the change set is incomplete |
 | P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge/multi-ref selection and execution tree refusal delivered; per-ref execution and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
-| P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
+| P2 pytest report/coverage | Local multi-target JUnit and explicit `blocked` coverage gate delivered; actual coverage execution / #63 evidence wiring open |
 | Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions job added but not yet run |
 | Clean-environment install and non-Knowledge consumer | Delivered: wheel install outside checkout; independent fixture `select → execute` passed 3 tests |

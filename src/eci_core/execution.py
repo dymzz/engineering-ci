@@ -67,11 +67,22 @@ def execute(plan, *, root, junit_path=None):
         "status": "not_executed",
         "exit_code": 3,
         "reason": "no_selected_tests",
+        "coverage": {
+            "required": bool(chosen.get("coverage_required")),
+            "satisfied": False,
+            "scope": "unverified",
+        },
     }
     if not tests:
         return report
     if plan["git"].get("snapshot") == "multi":
         report["reason"] = "multi_ref_requires_per_ref_execution"
+        return report
+    if chosen.get("coverage_required"):
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "coverage_evidence_required"
+        report["coverage"]["scope"] = "not_measured"
         return report
     exit_code = selection.run_tests(
         tests,
@@ -123,6 +134,8 @@ def main(argv=None):
         return 0
     if report["status"] == "not_executed":
         return 3
+    if report["status"] == "blocked":
+        return 5
     return 1
 
 
