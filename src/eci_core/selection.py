@@ -832,10 +832,60 @@ def _check_scope(selection, config, root):
     ]
 
 
-def plan(selection, *, config, config_path, root):
+def _tach_check(root, config, changes):
+    try:
+        result = subprocess.run(
+            ["tach", "check"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except FileNotFoundError:
+        return {
+            "status": "unavailable",
+            "exit_code": 127,
+            "stdout": "",
+            "stderr": "tach not found",
+            "tach_sha256": _digest(root / config.tach),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    return {
+        "status": "passed" if result.returncode == 0 else "failed",
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
+        "tach_sha256": _digest(root / config.tach),
+        "source_tree": changes.execution_tree or changes.tree,
+        "snapshot": changes.snapshot,
+    }
+
+
+def _graph_validation(selection, config, root, value):
+    if value is None:
+        return {"status": "not_executed"}
+    expected_sha = _digest(root / config.tach)
+    expected_tree = selection.changeset.execution_tree or selection.changeset.tree
+    if value.get("tach_sha256") != expected_sha:
+        return {"status": "untrusted", "reason": "tach_config_mismatch"}
+    if value.get("source_tree") != expected_tree:
+        return {"status": "untrusted", "reason": "source_tree_mismatch"}
+    return {
+        "status": value.get("status", "failed"),
+        "exit_code": value.get("exit_code"),
+        "tach_sha256": value.get("tach_sha256"),
+        "source_tree": value.get("source_tree"),
+    }
+
+
+def plan(selection, *, config, config_path, root, tach_validation=None):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
     tach_path = root / config.tach
+    graph = _graph_validation(selection, config, root, tach_validation)
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": PLAN_KIND,
@@ -869,7 +919,7 @@ def plan(selection, *, config, config_path, root):
             "framework": config.framework,
             "tests_dir": config.tests_dir,
             "src_root": config.src_root,
-            "tach_graph_validation": "not_executed",
+            "tach_graph_validation": graph,
             "requires_tach_check": True,
             "reasons": {
                 name: list(items) for name, items in sorted(selection.reasons.items())
@@ -952,6 +1002,11 @@ def main(argv=None):
     )
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument(
+        "--validate-tach",
+        action="store_true",
+        help="Run native tach check and bind its result to the plan",
+    )
+    parser.add_argument(
         "--junit",
         type=Path,
         help="Write a native JUnit XML for pytest targets in this execution",
@@ -981,7 +1036,17 @@ def main(argv=None):
         full=args.full,
     )
     if args.json:
-        _print(plan(selection, config=config, config_path=config_path, root=root))
+        _print(
+            plan(
+                selection,
+                config=config,
+                config_path=config_path,
+                root=root,
+                tach_validation=_tach_check(root, config, selection.changeset)
+                if args.validate_tach
+                else None,
+            )
+        )
         return 0
     if args.list:
         print(" ".join(selection.tests))

@@ -163,6 +163,21 @@ Dagger receives the plan and the consumer source; it executes the selected
 checks/tests in containers and records native results. It must not recompute
 selection from a container without `.git`.
 
+### Tach graph validation
+
+The TOML graph is never trusted on its own. `plan.selection` carries
+`requires_tach_check` and a bound `tach_graph_validation`:
+
+- without `--validate-tach`: `{"status": "not_executed"}`;
+- with it: native `tach check` exit/status plus `tach_sha256` and
+  `source_tree`;
+- if either identity differs at plan time: `{"status": "untrusted",
+  "reason": "tach_config_mismatch" | "source_tree_mismatch"}`.
+
+A narrow reverse-closure selection is coverage evidence only when validation is
+`passed` for the same Tach file and execution tree. `failed`, `unavailable`,
+`not_executed` and `untrusted` must not be reported as a trusted narrow run.
+
 ## Shared implementation and Dagger import (P1-3)
 
 The algorithms live once in `src/eci_core`. The root `engineering-ci` wheel
@@ -252,7 +267,7 @@ multi-target pytest execution and CLI modes.
 | Finding | Status |
 | --- | --- |
 | P1-1 empty escalation ran as success | Fixed: `run_tests(())` returns 3; `--run` refuses any empty selection unless `--allow-empty` for genuinely no-applicable changes |
-| P1-2 Tach graph trusted without native check | Plan now emits `tach_graph_validation: not_executed` and `requires_tach_check: true`; narrow selection is not presented as coverage proof |
+| P1-2 Tach graph trusted without native check | Delivered: `--validate-tach` binds native result to Tach digest + source tree; stale/unexecuted is explicit |
 | P1-3 incomplete Git treated as not_applicable | `check_scope` emits `unknown` for docs/Tach/Vulture/source when the change set is incomplete |
 | P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge snapshots and execution tree refusal delivered; multi-ref batching and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |

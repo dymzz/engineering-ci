@@ -9,14 +9,14 @@ Contract: [selection and plan](../architecture/selection.md).
 
 ```sh
 pytest -q tests/test_selection.py
-# 33 passed
+# 34 passed
 
 pytest -q tests/test_execution.py
 # 5 passed
 
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 502 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 503 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
@@ -56,6 +56,7 @@ checkout or the Knowledge repository:
 | Plan execution | `execute --plan` runs exactly plan targets; failing test → `failed` |
 | Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
 | Empty execution | no targets → `not_executed`/exit 3, never a pass |
+| Tach validation | passed result binds Tach digest + source tree; stale tree → `untrusted` |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |
 
 ## Plan identity observed

@@ -410,7 +410,39 @@ def test_incomplete_git_scope_is_unknown_not_not_applicable(repo):
     assert result.escalated is True
     for name in ("docs", "tach", "vulture", "source"):
         assert scope[name]["status"] == "unknown"
-    assert plan["selection"]["tach_graph_validation"] == "not_executed"
+    assert plan["selection"]["tach_graph_validation"]["status"] == "not_executed"
+
+
+def test_tach_validation_is_bound_to_config_and_tree(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 20\n", encoding="utf-8")
+    result = select(path, base)
+    tree = result.changeset.execution_tree or result.changeset.tree
+    valid = {
+        "status": "passed",
+        "exit_code": 0,
+        "tach_sha256": selection._digest(path / "tach.toml"),
+        "source_tree": tree,
+    }
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation=valid,
+    )
+    assert plan["selection"]["tach_graph_validation"]["status"] == "passed"
+    stale = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation={**valid, "source_tree": "0" * 40},
+    )
+    assert stale["selection"]["tach_graph_validation"] == {
+        "status": "untrusted",
+        "reason": "source_tree_mismatch",
+    }
 
 
 def test_escalation_without_discovered_tests_refuses_success(repo):
