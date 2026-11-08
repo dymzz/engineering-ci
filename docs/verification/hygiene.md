@@ -43,12 +43,34 @@ runner so no Lychee/Vulture/Tach installation is required.
 | Report identity | base/head commit, tree, dirty flag and changed paths recorded |
 | CLI | JSON report emitted, exit 1 preserved on failure |
 
+## Host-native tool evidence
+
+No image was pulled. The host already provides the tools:
+
+```text
+lychee --version   # 0.24.2
+tach --version     # 0.35.3
+vulture --version  # 2.16
+```
+
+A disposable fixture repository with a changed `docs/guide.md` ran the actual
+host CLI:
+
+```text
+python -m eci_core.hygiene --root <fixture> --config ci-hygiene.toml --base HEAD --json
+# status: passed; docs: passed (Lychee invoked)
+```
+
+The local Docker store contains only the Dagger engine and a socket proxy, so
+Dagger-native Lychee/Tach are not claimed. Pulling an image for them is
+forbidden by the workspace constraint.
+
 ## Limits
 
-- Dagger/Actions execution of the same check selection is not implemented yet.
-- Python source-manifest validation (path safety, size, SHA-256, Git attributes,
-  registered/acquired semantics) is a follow-up slice; no Knowledge-specific
-  manifest logic is in ECI.
-- External tools are not installed in the test environment; their native
-  positive/negative execution is exercised through the same `subprocess`
-  contract in Dagger/Actions later.
+- Dagger/Actions execution of the same check selection is not implemented; a
+  Dagger-native tool check would require preloaded local images and an explicit
+  no-pull path.
+- Source-manifest validation now lives in `eci_core.sources`; see
+  [source reconciliation](sources.md).
+- The unit tests use a fake native runner; the host CLI above is the real
+  positive check.

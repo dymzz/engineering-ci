@@ -79,6 +79,21 @@ A `not_applicable` report is not a success claim for a protected check: the
 caller/config must decide whether the check is required. The CLI exits `1` only
 for `failed`; `not_applicable` exits `0` but is labelled.
 
+## Tool acquisition and image policy
+
+The CLI executes `lychee`, `tach` and `vulture` from the host `PATH`. Missing
+tools are failures, never `not_applicable`. Observed host versions:
+Lychee `0.24.2`, Tach `0.35.3`, Vulture `2.16`; the same binaries are used for
+local evidence.
+
+Dagger-native tool checks are **not** wired in this branch. This workspace
+forbids implicit image pulls, and the local Docker store has no Lychee/Tach
+image (only the Dagger engine and a socket proxy). A Dagger check that pulls
+`ghcr.io/...` on demand is therefore rejected by policy. Enabling it later
+requires preloaded images with exact local references, an explicit no-pull
+invocation, and a Source that retains docs/source paths; until then no report
+may claim Dagger executed these tools.
+
 ## CLI
 
 ```sh
@@ -94,12 +109,11 @@ tail, not as an empty success.
 
 ## Handoff and remaining work
 
-The report is native execution evidence for local runs and #63 can consume its
-identities/statuses. Dagger execution will accept the same check selection and
-source sets, but that wiring is not in this slice. Python source-manifest
-validation (path safety, `size_bytes`, SHA-256, Git attributes, registered vs
-acquired files) is also a follow-up slice; its domain field projection stays in
-the consumer.
+The report is native host evidence for local runs and #63 can consume its
+identities/statuses. Dagger execution of a consumer hygiene plan is not wired;
+see the image policy above. Source-manifest reconciliation is now implemented
+in `eci_core.sources` and runs on the same host; its Knowledge configuration and
+Dagger integration are tracked separately.
 
 ## Verification
 
