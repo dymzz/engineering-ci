@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -9,6 +10,10 @@ from typing import Annotated
 
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
 
 from . import python_static as static
 from . import repository, tooling
@@ -229,14 +234,13 @@ class EngineeringCi:
 
     @function
     async def shared_identity(self) -> str:
-        """Import the installed common package; proves one implementation."""
-        from importlib import metadata
+        """Import the included common package; proves one source implementation."""
+        import eci_core
 
         from eci_core import selection
 
         return (
-            f"{metadata.version('engineering-ci')}:"
-            f"{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
+            f"{eci_core.__version__}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
         )
 
     repository_coverage: bool = dagger.field(default=False)
