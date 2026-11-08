@@ -70,6 +70,9 @@ def execute(plan, *, root, junit_path=None):
     }
     if not tests:
         return report
+    if plan["git"].get("snapshot") == "multi":
+        report["reason"] = "multi_ref_requires_per_ref_execution"
+        return report
     exit_code = selection.run_tests(
         tests,
         root=root,

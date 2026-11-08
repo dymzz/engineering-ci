@@ -80,6 +80,7 @@ wheel_smoke = ["tests.test_pkg"]
 | `commit` | merge-base..HEAD only | `execution_tree = HEAD tree` |
 | `push` | explicit `before`/`after` commits; no merge-base | `execution_tree = after` tree |
 | `pr` | `git merge-tree --write-tree` merge tree | `execution_tree = merge_tree` |
+| `multi` | union of several push `before:after` pairs; `references[]` recorded | no single execution tree; per-ref execution required |
 
 The plan records `git.snapshot`, `index_tree`, `merge_tree` and
 `execution_tree`. `--run` passes `execution_tree` to `run_tests`; if the
@@ -89,8 +90,9 @@ must not be reported as a commit-bound pass.
 
 PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
 or missing objects produce `complete: false`, never a narrower pass. Multi-ref
-pre-push batches are not implemented; a caller must issue one push snapshot per
-ref pair and must not aggregate them into one plan identity.
+pre-push batches produce a union selection plus `references[]`, but the
+executor refuses to attribute one run to them: `multi_ref_requires_per_ref_execution`.
+Per-ref execution orchestration remains open.
 
 ## Per-check impact (not a global ignore)
 
@@ -269,7 +271,7 @@ multi-target pytest execution and CLI modes.
 | P1-1 empty escalation ran as success | Fixed: `run_tests(())` returns 3; `--run` refuses any empty selection unless `--allow-empty` for genuinely no-applicable changes |
 | P1-2 Tach graph trusted without native check | Delivered: `--validate-tach` binds native result to Tach digest + source tree; stale/unexecuted is explicit |
 | P1-3 incomplete Git treated as not_applicable | `check_scope` emits `unknown` for docs/Tach/Vulture/source when the change set is incomplete |
-| P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge snapshots and execution tree refusal delivered; multi-ref batching and Dagger/Actions consumption open |
+| P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge/multi-ref selection and execution tree refusal delivered; per-ref execution and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
 | P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
 | Production Dagger/Actions plan execution | Partial: host `execute --plan` validates tree and runs targets with JUnit; Dagger consumption/aggregation is next |

@@ -101,6 +101,7 @@ class ChangeSet:
     snapshot: str = "worktree"
     index_tree: str | None = None
     merge_tree: str | None = None
+    references: tuple[dict, ...] = ()
 
     @property
     def execution_tree(self):
@@ -299,6 +300,40 @@ def _parse_porcelain(data):
 def _tree_of(root, commit):
     result = _git(root, "rev-parse", "--verify", f"{commit}^{{tree}}")
     return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def changeset_multi(root, refs):
+    """Union of several push ref pairs; execution still requires per-ref runs."""
+    root = Path(root)
+    parts = []
+    for before, after in refs:
+        parts.append(
+            changeset(root, base=before, mode="push", before=before, after=after)
+        )
+    paths = sorted({path for part in parts for path in part.paths})
+    references = tuple(
+        {
+            "before": part.base_commit,
+            "after": part.head_commit,
+            "paths": list(part.paths),
+            "complete": part.complete,
+        }
+        for part in parts
+    )
+    return ChangeSet(
+        root=root,
+        base_ref=",".join(before for before, _ in refs),
+        head_ref=",".join(after for _, after in refs),
+        base_commit=parts[0].base_commit if parts else None,
+        head_commit=parts[-1].head_commit if parts else None,
+        tree=None,
+        paths=tuple(paths),
+        worktree_dirty=False,
+        complete=all(part.complete for part in parts) and bool(parts),
+        error=None if all(part.complete for part in parts) else "multi_ref_incomplete",
+        snapshot="multi",
+        references=references,
+    )
 
 
 def changeset(
@@ -906,6 +941,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "index_tree": selection.changeset.index_tree,
             "merge_tree": selection.changeset.merge_tree,
             "execution_tree": selection.changeset.execution_tree,
+            "references": list(selection.changeset.references),
             "changed_paths": list(selection.changeset.paths),
         },
         "selection": {
@@ -989,12 +1025,16 @@ def main(argv=None):
     parser.add_argument("--head", default="HEAD")
     parser.add_argument(
         "--mode",
-        choices=("worktree", "index", "commit", "push", "pr"),
+        choices=("worktree", "index", "commit", "push", "pr", "multi"),
         default="worktree",
-        help="Git snapshot mode; push uses --before/--after, pr uses the merge tree",
+        help="Git snapshot mode; push uses --before/--after, multi uses --refs",
     )
     parser.add_argument("--before")
     parser.add_argument("--after")
+    parser.add_argument(
+        "--refs",
+        help="Comma-separated before:after pairs for --mode multi",
+    )
     parser.add_argument(
         "--full",
         action="store_true",
@@ -1022,15 +1062,29 @@ def main(argv=None):
         config = load_config(config_path)
     except SelectionError as error:
         parser.exit(1, f"selection rejected: {error.code}\n")
-    selection = select(
-        changeset(
+    if args.mode == "multi":
+        try:
+            refs = [
+                tuple(item.split(":", 1))
+                for item in (args.refs or "").split(",")
+                if item
+            ]
+            if not refs or any(len(pair) != 2 for pair in refs):
+                raise ValueError
+        except ValueError:
+            parser.exit(2, "multi mode requires --refs before:after,...\n")
+        changes = changeset_multi(root, refs)
+    else:
+        changes = changeset(
             root,
             base=args.base,
             head=args.head,
             mode=args.mode,
             before=args.before,
             after=args.after,
-        ),
+        )
+    selection = select(
+        changes,
         config,
         root=root,
         full=args.full,

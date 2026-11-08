@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from eci_core import selection
+from eci_core import execution, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -525,6 +525,33 @@ def test_execution_refuses_a_different_tree(repo):
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "newer")
     assert selection.run_tests(("tests.test_pkg",), root=path, expected_tree=tree) == 4
+
+
+def test_multi_ref_union_refuses_single_execution(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 21\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "first")
+    first = run(path, "rev-parse", "HEAD").strip()
+    (path / "src/pkg/other.py").write_text("VALUE = 22\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "second")
+    second = run(path, "rev-parse", "HEAD").strip()
+    multi = selection.changeset_multi(path, [(base, first), (first, second)])
+    assert multi.snapshot == "multi"
+    assert multi.execution_tree is None
+    assert multi.paths == ("src/pkg/other.py", "src/pkg/sub.py")
+    assert len(multi.references) == 2
+    plan = {
+        "schema_version": 1,
+        "kind": selection.PLAN_KIND,
+        "generator": {},
+        "git": {"snapshot": "multi"},
+        "selection": {"tests": ["tests.test_pkg"], "framework": "unittest"},
+    }
+    report = execution.execute(plan, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "multi_ref_requires_per_ref_execution"
 
 
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):
