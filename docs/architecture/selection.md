@@ -237,6 +237,23 @@ Source-identity binding.
 
 Actions workflow wiring is not in this slice.
 
+### Actions
+
+`reusable-python-ci.yml` now has an opt-in `selection` job (default disabled by
+empty `selection_config`):
+
+- inputs: `selection_config`, `selection_source_ref`,
+  `selection_artifact_name`;
+- checks out the consumer and the pinned engineering-ci ref;
+- syncs the consumer uv environment, installs the pinned CLI into it;
+- runs `engineering-ci select` then `engineering-ci execute --plan`, uploading
+  `selection-plan.json`, `selection-execution.json` and `selection-junit.xml`;
+- output: `selection_artifact_id`.
+
+This reuses the existing reusable workflow rather than adding a new runner.
+`actionlint -shellcheck=` passes. It has not yet executed in GitHub Actions;
+the first real Run remains required evidence.
+
 ## CLI
 
 ```sh
@@ -284,5 +301,5 @@ multi-target pytest execution and CLI modes.
 | P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge/multi-ref selection and execution tree refusal delivered; per-ref execution and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
 | P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
-| Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions wiring open |
+| Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions job added but not yet run |
 | Clean-environment install and non-Knowledge consumer | Delivered: wheel install outside checkout; independent fixture `select → execute` passed 3 tests |

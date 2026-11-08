@@ -133,6 +133,15 @@ synced consumer environment, returned the JUnit XML and preserved the native
 exit. `trusted:false` is intentional: the container has no `.git` to verify the
 plan's execution tree.
 
+## Actions wiring
+
+`actionlint -shellcheck= .github/workflows/reusable-python-ci.yml` exits 0 for
+the opt-in `selection` job. The job runs `select` then `execute --plan` in the
+consumer environment and uploads plan/execution/JUnit artifacts.
+
+No GitHub Actions Run has executed this job yet; actionlint is syntax evidence,
+not execution evidence. The first real Run remains required.
+
 ## Limits
 
 - Local `unittest` and pytest execution are wired; Dagger check execution of a

@@ -110,6 +110,21 @@ on:
         type: string
         required: false
         default: powershell-analysis
+      selection_config:
+        description: 'Consumer ci-selection.toml path; empty disables selection execution'
+        type: string
+        required: false
+        default: ''
+      selection_source_ref:
+        description: 'Pinned engineering-ci ref providing the selection CLI'
+        type: string
+        required: false
+        default: 'main'
+      selection_artifact_name:
+        description: 'Unique selection plan/execution evidence artifact name'
+        type: string
+        required: false
+        default: selection-evidence
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -120,6 +135,8 @@ on:
         value: ${{ jobs.dependency-security.outputs.artifact_id }}
       powershell_artifact_id:
         value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
+      selection_artifact_id:
+        value: ${{ jobs.selection.outputs.artifact_id }}
 
 permissions:
   contents: read
@@ -606,5 +623,59 @@ jobs:
           path: |
             ${{ runner.temp }}/powershell-analysis/report.json
             ${{ runner.temp }}/powershell-analysis/summary.md
+          if-no-files-found: warn
+          retention-days: 7
+
+  selection:
+    outputs:
+      artifact_id: ${{ steps.selection_artifact.outputs.artifact-id }}
+    if: ${{ inputs.selection_config != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout selection target
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Checkout matching selection helper
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: dymzz/engineering-ci
+          ref: ${{ inputs.selection_source_ref }}
+          path: .engineering-ci-selection
+          token: ${{ secrets.ENGINEERING_CI_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Sync consumer environment
+        run: uv sync --locked --project "$GITHUB_WORKSPACE"
+      - name: Install pinned selection CLI
+        run: |
+          set -euo pipefail
+          mv -- .engineering-ci-selection "$RUNNER_TEMP/engineering-ci-selection"
+          uv pip install --python "$GITHUB_WORKSPACE/.venv/bin/python" "$RUNNER_TEMP/engineering-ci-selection"
+      - name: Select and execute exactly the plan
+        env:
+          SELECTION_CONFIG: ${{ inputs.selection_config }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+        run: |
+          set -euo pipefail
+          .venv/bin/engineering-ci select --root . --base "$BASE_SHA" \
+            --config "$SELECTION_CONFIG" --json > "$RUNNER_TEMP/selection-plan.json"
+          .venv/bin/engineering-ci execute --plan "$RUNNER_TEMP/selection-plan.json" \
+            --root . --junit "$RUNNER_TEMP/selection-junit.xml" \
+            --json > "$RUNNER_TEMP/selection-execution.json"
+      - name: Upload selection evidence
+        id: selection_artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ inputs.selection_artifact_name }}
+          path: |
+            ${{ runner.temp }}/selection-plan.json
+            ${{ runner.temp }}/selection-execution.json
+            ${{ runner.temp }}/selection-junit.xml
           if-no-files-found: warn
           retention-days: 7
