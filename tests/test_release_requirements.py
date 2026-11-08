@@ -272,3 +272,43 @@ def test_an_unchanged_requirement_set_keeps_its_result_valid():
         evidence.effective_requirements(value), requirements.records()
     )
     assert difference == {"added": [], "removed": [], "changed": []}
+
+
+def test_manifest_with_duplicate_requirement_keys_is_rejected():
+    """A manifest whose requirements.checks list contains duplicate keys is rejected.
+
+    Even if its digest is recomputed to match the duplicated list, validate() must
+    reject duplicate keys to prevent divergence between the list digest and the
+    parsed dictionary.
+    """
+    value = make_manifest()
+    duplicate_item = copy.deepcopy(value["requirements"]["checks"][0])
+    value["requirements"]["checks"].append(duplicate_item)
+    value["requirements"]["digest"] = requirements.digest_records(
+        value["requirements"]["checks"]
+    )
+    with pytest.raises(ValueError, match="Invalid recorded requirement set"):
+        evidence.validate(value, REPOSITORY, TAG, HEAD)
+
+
+def test_historical_manifest_distinguishes_schema_contract_from_validation():
+    """Historical manifests omit requirements, which the current candidate schema requires,
+
+    but historical evidence remains verifiable through the Python validation contract.
+    """
+    import json
+    from pathlib import Path
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/architecture/release/manifest.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    legacy = make_legacy_manifest()
+    assert "requirements" not in legacy
+    assert "requirements" in schema["required"]
+    # Fails current candidate schema requirement:
+    assert set(legacy.keys()) != set(schema["required"])
+    # But passes Python validation under historical legacy contract:
+    evidence.validate(legacy, REPOSITORY, TAG, HEAD)

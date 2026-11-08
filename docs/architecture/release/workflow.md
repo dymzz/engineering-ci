@@ -108,7 +108,7 @@ Draft 并读回 → 执行既有最终 `draft=false` 操作。恢复时保留已
 每次手动验证将 Actions 原始 job / step 结果写入
 `release-manifest.json`，保存为 `release-manifest` Artifact（30 天）；
 Job Summary 同时显示版本、SHA、验证 Run 链接与各检查状态。
-机器可读结构见 [JSON Schema](manifest.schema.json)。
+机器可读结构见 [JSON Schema](manifest.schema.json)。该 Schema 严格约束当前候选发布证据的必需字段（包括 `requirements`、5 个 Artifact 及全部当前必需检查）。
 同一组输入产生相同核心 JSON；不复制日志、环境变量、Token 或临时下载 URL。
 
 身份来自实际 checkout、四处版本元数据、GitHub Run API 与当前 attempt 的
@@ -123,15 +123,10 @@ Jobs API。Manifest 的 `result=passed` 表示必需验证结果与证据齐全�
 
 Manifest 同时记录 `requirements`：它被验证时实际生效的必需检查集合，
 含每项的键、Job、step、覆盖范围与 Dagger 检查名，并附一个摘要。
-这使"结果仍然有效"与"结果不再覆盖当前要求"可以被区分：
+当前候选版本和首次发布必须包含该字段，不能省略；这使"结果仍然有效"与"结果不再覆盖当前要求"可以被区分：
 
-- 候选验证把记录的要求集合与当前要求集合比较。新增、删除或重新划定范围
-  都会被指名拒绝，历史结果不能被重新解读为当前要求的证明。
-- 已发布 Release 按自己记录的要求集合核对原始 Actions 结果，
-  因此要求集合演进之后，已发布版本仍然可以核验。
-
-在记录该字段之前写出的 Manifest 仍然可用：它自身记录的 job 与 step
-就是它被验证时的依据，但它不覆盖范围，候选验证不接受它。
+- 候选验证与发布准入把记录的要求集合与当前权威要求集合比较。新增、删除或重新划定范围都会被指名拒绝，缺失该字段或篡改 digest 均阻断发布，历史结果绝不能被重新解读为当前要求的证明。
+- 已发布 Release 按自己记录的要求集合核对原始 Actions 结果；对于记录该字段前发布并归档的历史 Manifest，Python 校验与发布核验保留向下兼容支持（按其当时合法的 4 个 Artifact 与 12 项检查契约验证），因此要求集合演进之后，历史已发布版本仍然可以只读核验。这仅用于历史已发布版本核验，当前候选版本绝不可随意省略 requirements。
 
 Ruff、核心 pytest、版本锁一致性、Workflow 分析、PowerShell 分析、
 安全 enforce、Dagger 与原始 pytest Gate 关联既有 job / step；
@@ -161,9 +156,8 @@ Jobs API 核对当前 attempt 和 SHA。facts、Manifest 也用精确 ID 下载�
 提供持续追溯入口。重复发布还需要原始 Actions 元数据；历史记录删除导致
 无法核验时明确拒绝，不修改已发布版本。
 
-Schema 约束字段、固定检查来源、状态、工具 scope/name 和必需证据数量；
-Python 校验进一步核对版本与 Tag、仓库与 URL、SHA 及原始 API 结果等
-跨字段和远端事实。通过 Schema 不等于已有可信的发布验证。
+Schema 严格约束当前候选 Manifest 的顶层字段、固定检查来源、状态、工具 scope/name、5 个必需 Artifact 及 requirements 结构；
+Python 校验进一步核对版本与 Tag、仓库与 URL、SHA 及原始 API 结果等跨字段和远端事实，并在校验已发布历史版本时提供向后兼容契约。通过 Schema 不等于已有可信的发布验证。
 
 正式发布沿用完整验证与 create-only Tag，然后用 GitHub 原生自动 Release Notes
 创建 Draft。填入实际 Release URL，上传 Manifest，再下载并核验原始检查、

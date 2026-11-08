@@ -78,14 +78,39 @@ def owning_workflow(requirement):
 
 def step_run(path, step_name):
     """The run command of one named step, or None."""
-    text = path.read_text(encoding="utf-8")
-    for job in workflow_jobs(path):
-        for name in job["steps"]:
-            if name != step_name:
-                continue
-            body = text.split(f"- name: {name}", 1)[1]
-            match = re.search(r"^\s+run:\s*(.*)$", body, re.MULTILINE)
-            return match.group(1).strip() if match else None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    in_step = False
+    step_indent = None
+    run_indent = None
+    command_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if in_step and run_indent is not None:
+                command_lines.append("")
+            continue
+        indent = len(line) - len(line.lstrip())
+        if in_step:
+            if indent <= step_indent and (
+                stripped.startswith("- ") or indent < step_indent
+            ):
+                break
+            if run_indent is not None:
+                if indent <= run_indent:
+                    break
+                command_lines.append(line.rstrip())
+            elif stripped.startswith("run:"):
+                run_indent = indent
+                rest = stripped.split("run:", 1)[1].strip()
+                if rest and rest not in ("|", "|-", "|+", ">", ">-", ">+"):
+                    return rest
+        elif stripped.startswith("- name:"):
+            name = stripped.split(":", 1)[1].strip().strip("'\"")
+            if name == step_name:
+                in_step = True
+                step_indent = indent
+    if command_lines:
+        return "\n".join(command_lines).strip()
     return None
 
 
@@ -212,6 +237,16 @@ def test_a_required_dagger_check_exists_and_is_selected():
                 f"{requirement.key}: step selects {name!r}; the requirement and "
                 "the selected check must name the same check"
             )
+
+
+def test_step_run_parses_multiline_commands_and_extracts_check_options():
+    """step_run must capture multi-line block scalar command bodies."""
+    command = step_run(WORKFLOWS["ci.yml"], "Run all core unit and process tests")
+    assert command is not None
+    assert "\n" in command
+    assert "--check=tests" in command
+    lint_run = step_run(WORKFLOWS["ci.yml"], "Ruff Lint")
+    assert lint_run == "dagger check --engineering-ci --check=lint"
 
 
 def test_required_check_names_are_unique_and_ordered():

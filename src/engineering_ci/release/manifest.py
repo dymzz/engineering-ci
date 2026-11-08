@@ -462,7 +462,13 @@ def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids
 
 
 def validate(value, repository, tag, head, *, published=False):
-    """Validate the fixed publication contract; do not trust arbitrary artifact JSON."""
+    """Validate release manifest structure, release metadata and cross-field facts.
+
+    Current release candidate manifests must satisfy current requirements, all
+    authoritative checks and all 5 artifacts. Historical published manifests
+    omitting the `requirements` field are verified under their authentic legacy
+    4-artifact and 12-check contract, without trusting arbitrary artifact JSON.
+    """
     if not REPOSITORY.fullmatch(repository):
         raise ValueError("Invalid Manifest repository")
     expected = {
@@ -526,7 +532,6 @@ def validate(value, repository, tag, head, *, published=False):
             or set(recorded) != {"schema_version", "digest", "checks"}
             or recorded["schema_version"] != 1
             or not isinstance(items, list)
-            or recorded["digest"] != requirement_digest_records(items)
             or any(
                 not isinstance(item, dict)
                 or set(item) != {"key", "job", "step", "scope", "dagger_check"}
@@ -537,6 +542,8 @@ def validate(value, repository, tag, head, *, published=False):
                 or not isinstance(item["dagger_check"], str)
                 for item in items
             )
+            or len(items) != len({item["key"] for item in items})
+            or recorded["digest"] != requirement_digest_records(items)
         ):
             raise ValueError("Invalid recorded requirement set")
     requirements = {item["key"]: item for item in effective_requirements(value)}
