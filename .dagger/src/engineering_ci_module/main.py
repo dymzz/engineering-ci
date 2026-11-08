@@ -11,7 +11,7 @@ import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
 from . import python_static as static
-from . import repository
+from . import repository, tooling
 from . import script_analysis as script
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -607,6 +607,112 @@ class EngineeringCi:
             git_token=git_token,
         )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def tach_check(
+        self,
+        source: dagger.Directory,
+    ) -> str:
+        """Run pinned Tach inside the existing uv image; Source keeps non-Python files."""
+        container = (
+            dag.container()
+            .from_(tooling.UV_IMAGE)
+            .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
+            .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
+            .with_mounted_cache(
+                "/root/.cache/uv",
+                dag.cache_volume("engineering-ci-uv-native-tools"),
+            )
+            .with_directory("/workspace", source, exclude=list(tooling.SOURCE_NOISE))
+            .with_workdir("/workspace")
+        )
+        result = container.with_exec(
+            ["uvx", "--from", f"tach=={tooling.TACH_VERSION}", "tach", "check"],
+            expect=dagger.ReturnType.ANY,
+        )
+        exit_code = await result.exit_code()
+        return json.dumps(
+            {
+                "tool": "tach",
+                "version": tooling.TACH_VERSION,
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "stdout": await result.stdout(),
+                "stderr": await result.stderr(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    @function
+    async def lychee_check(
+        self,
+        source: dagger.Directory,
+        files: str,
+    ) -> str:
+        """Install and run pinned Lychee inside the cached uv image."""
+        targets = [line.strip() for line in files.splitlines() if line.strip()]
+        if not targets:
+            return json.dumps(
+                {
+                    "tool": "lychee",
+                    "version": tooling.LYCHEE_VERSION,
+                    "status": "not_applicable",
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "no applicable documents",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        download = (
+            "import io,os,tarfile,urllib.request;"
+            f"data=urllib.request.urlopen({tooling.LYCHEE_ASSET!r}).read();"
+            "tar=tarfile.open(fileobj=io.BytesIO(data));"
+            "member=tar.extractfile('lychee-x86_64-unknown-linux-gnu/lychee');"
+            "open('/usr/local/bin/lychee','wb').write(member.read());"
+            "os.chmod('/usr/local/bin/lychee',0o755)"
+        )
+        installed = (
+            dag.container()
+            .from_(tooling.UV_IMAGE)
+            .with_exec(["python", "-c", download], expect=dagger.ReturnType.ANY)
+        )
+        install_exit = await installed.exit_code()
+        if install_exit != 0:
+            return json.dumps(
+                {
+                    "tool": "lychee",
+                    "version": tooling.LYCHEE_VERSION,
+                    "status": "failed",
+                    "exit_code": install_exit,
+                    "stdout": await installed.stdout(),
+                    "stderr": await installed.stderr(),
+                    "reason": "tool_install_failed",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        container = installed.with_directory(
+            "/workspace", source, exclude=list(tooling.SOURCE_NOISE)
+        ).with_workdir("/workspace")
+        result = container.with_exec(
+            ["/usr/local/bin/lychee", "--offline", "--no-progress", *targets],
+            expect=dagger.ReturnType.ANY,
+        )
+        exit_code = await result.exit_code()
+        return json.dumps(
+            {
+                "tool": "lychee",
+                "version": tooling.LYCHEE_VERSION,
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "stdout": await result.stdout(),
+                "stderr": await result.stderr(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     @function
     async def python_pyright(

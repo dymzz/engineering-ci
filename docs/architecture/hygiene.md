@@ -79,20 +79,37 @@ A `not_applicable` report is not a success claim for a protected check: the
 caller/config must decide whether the check is required. The CLI exits `1` only
 for `failed`; `not_applicable` exits `0` but is labelled.
 
-## Tool acquisition and image policy
+## Native tool acquisition (no image pulls)
 
-The CLI executes `lychee`, `tach` and `vulture` from the host `PATH`. Missing
-tools are failures, never `not_applicable`. Observed host versions:
-Lychee `0.24.2`, Tach `0.35.3`, Vulture `2.16`; the same binaries are used for
-local evidence.
+The host CLI executes `lychee`, `tach` and `vulture` from `PATH` (observed
+Lychee `0.24.2`, Tach `0.35.3`, Vulture `2.16`). Missing tools are failures,
+never `not_applicable`.
 
-Dagger-native tool checks are **not** wired in this branch. This workspace
-forbids implicit image pulls, and the local Docker store has no Lychee/Tach
-image (only the Dagger engine and a socket proxy). A Dagger check that pulls
-`ghcr.io/...` on demand is therefore rejected by policy. Enabling it later
-requires preloaded images with exact local references, an explicit no-pull
-invocation, and a Source that retains docs/source paths; until then no report
-may claim Dagger executed these tools.
+Dagger reuses the already cached `ghcr.io/astral-sh/uv:python3.14-trixie-slim`
+image; it does not pull a new image for either tool:
+
+- `tach-check` installs `tach==0.35.3` inside that container with `uvx` and
+  runs `tach check`.
+- `lychee-check` downloads the pinned Lychee `0.24.2` Linux release asset,
+  extracts it to `/usr/local/bin/lychee` in the same container, then runs it.
+- Source construction excludes only `.git`, virtualenvs and caches. `docs/**`
+  and source inputs are retained, unlike the Python-check `SOURCE_EXCLUDES`.
+- Empty `files` returns `not_applicable` without executing; a real broken link
+  or failed `tach check` returns `failed` with native output.
+
+Evidence from the engine:
+
+```text
+dagger call tach-check --source tests/fixtures/tach-ok
+# {"status": "passed", "exit_code": 0, ...}
+
+dagger call lychee-check --source . --files docs/architecture/selection.md
+# {"status": "passed", "exit_code": 0, "version": "0.24.2", ...}
+```
+
+Vulture continues to reuse the existing `python_vulture` function; no second
+scanner is added. Full plan-driven hygiene orchestration (host change set +
+acceptance of these native results) remains the next production step.
 
 ## CLI
 
@@ -110,10 +127,11 @@ tail, not as an empty success.
 ## Handoff and remaining work
 
 The report is native host evidence for local runs and #63 can consume its
-identities/statuses. Dagger execution of a consumer hygiene plan is not wired;
-see the image policy above. Source-manifest reconciliation is now implemented
-in `eci_core.sources` and runs on the same host; its Knowledge configuration and
-Dagger integration are tracked separately.
+identities/statuses. Dagger's `tach-check` / `lychee-check` are native building
+blocks, but the plan-to-Dagger orchestration (source identity validation,
+check list, aggregated evidence) is not wired yet. Source-manifest
+reconciliation is implemented in `eci_core.sources`; its Knowledge
+configuration is verified separately.
 
 ## Verification
 

@@ -358,6 +358,50 @@ def test_check_scope_marks_code_checks_for_code_changes(repo):
     assert scope["docs"]["status"] == "not_applicable"
 
 
+def test_incomplete_git_scope_is_unknown_not_not_applicable(repo):
+    path, _ = repo
+    result = selection.select(
+        selection.changeset(path, base="missing-base"),
+        config(path),
+        root=path,
+    )
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert result.escalated is True
+    for name in ("docs", "tach", "vulture", "source"):
+        assert scope[name]["status"] == "unknown"
+    assert plan["selection"]["tach_graph_validation"] == "not_executed"
+
+
+def test_escalation_without_discovered_tests_refuses_success(repo):
+    path, base = repo
+    shutil.rmtree(path / "tests")
+    (path / "unknown.bin").write_bytes(b"x")
+    result = select(path, base)
+    assert result.status == "escalated"
+    assert result.tests == ()
+    assert selection.run_tests((), root=path) != 0
+    assert (
+        selection.main(
+            [
+                "--root",
+                str(path),
+                "--base",
+                base,
+                "--run",
+                "--config",
+                str(path / "ci-selection.toml"),
+            ]
+        )
+        != 0
+    )
+
+
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")

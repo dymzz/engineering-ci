@@ -62,15 +62,25 @@ python -m eci_core.hygiene --root <fixture> --config ci-hygiene.toml --base HEAD
 ```
 
 The local Docker store contains only the Dagger engine and a socket proxy, so
-Dagger-native Lychee/Tach are not claimed. Pulling an image for them is
-forbidden by the workspace constraint.
+the Dagger functions reuse the already cached uv image and install the tools
+inside it:
+
+```text
+dagger call tach-check --source tests/fixtures/tach-ok
+# {"status": "passed", "exit_code": 0, "version": "0.35.3"}
+
+dagger call lychee-check --source . --files docs/architecture/selection.md
+# {"status": "passed", "exit_code": 0, "version": "0.24.2"}
+```
+
+No image pull was issued for these checks.
 
 ## Limits
 
-- Dagger/Actions execution of the same check selection is not implemented; a
-  Dagger-native tool check would require preloaded local images and an explicit
-  no-pull path.
+- Plan-driven Dagger execution (host change set, check list, aggregated native
+  evidence) is not wired; `tach-check` / `lychee-check` are the native building
+  blocks.
 - Source-manifest validation now lives in `eci_core.sources`; see
   [source reconciliation](sources.md).
-- The unit tests use a fake native runner; the host CLI above is the real
-  positive check.
+- The unit tests use a fake native runner; the host CLI and Dagger calls above
+  are the real checks.

@@ -205,3 +205,16 @@ multi-target pytest execution and CLI modes.
 | P2-1 Git attributes host location | Pending with the source slice; must run where `.git` exists |
 | P2-2 `--full` scope | Delivered: `selection.full_tests` is explicit; tests only, not an all-checks pass |
 | P2-3 path fidelity | Delivered: no `.strip()`, leading-space and rename/delete-with-spaces NUL tests |
+
+## Code-review resolution (2026-11-08 19:11)
+
+| Finding | Status |
+| --- | --- |
+| P1-1 empty escalation ran as success | Fixed: `run_tests(())` returns 3; `--run` refuses any empty selection unless `--allow-empty` for genuinely no-applicable changes |
+| P1-2 Tach graph trusted without native check | Plan now emits `tach_graph_validation: not_executed` and `requires_tach_check: true`; narrow selection is not presented as coverage proof |
+| P1-3 incomplete Git treated as not_applicable | `check_scope` emits `unknown` for docs/Tach/Vulture/source when the change set is incomplete |
+| P1-4 event snapshots and execution binding | Open: index/worktree, PR merge tree, push before/after and multi-ref modes are not implemented |
+| P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
+| P2 pytest report/coverage | Local multi-target execution exists; JUnit/Artifact/coverage gate wiring into Dagger is open |
+| Production Dagger/Actions plan execution | Open: native `tach-check` / `lychee-check` building blocks exist; plan-to-check orchestration is next |
+| Clean-environment install and non-Knowledge consumer | Open |

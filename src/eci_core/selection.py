@@ -571,6 +571,24 @@ def _digest(path):
 def _check_scope(selection, config, root):
     """Per-check impact; a documentation-only change still selects Lychee."""
     paths = [_normalized(path) for path in selection.changeset.paths]
+    if not selection.changeset.complete:
+        return [
+            {
+                "name": config.framework,
+                "status": selection.status,
+                "inputs": list(selection.tests),
+                "reason": selection.escalation_reason,
+            },
+            *[
+                {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": "git input is incomplete; full applicability unknown",
+                }
+                for name in ("docs", "tach", "vulture", "source")
+            ],
+        ]
     docs_changed = sorted(
         path
         for path in paths
@@ -585,7 +603,7 @@ def _check_scope(selection, config, root):
     )
     return [
         {
-            "name": "unittest",
+            "name": config.framework,
             "status": selection.status,
             "inputs": list(selection.tests),
             "reason": selection.escalation_reason,
@@ -660,6 +678,8 @@ def plan(selection, *, config, config_path, root):
             "escalated": selection.escalated,
             "escalation_reason": selection.escalation_reason,
             "full_tests": selection.full_tests,
+            "tach_graph_validation": "not_executed",
+            "requires_tach_check": True,
             "reasons": {
                 name: list(items) for name, items in sorted(selection.reasons.items())
             },
@@ -676,7 +696,7 @@ def run_tests(modules, *, root, framework="unittest", src_root="src", python=Non
     """Run selected targets with their native framework; return the native exit."""
     modules = tuple(modules)
     if not modules:
-        return 0
+        return 3
     root = Path(root)
     environment = dict(os.environ)
     source = str((root / src_root).resolve())
@@ -736,9 +756,15 @@ def main(argv=None):
         print(" ".join(selection.tests))
         return 0
     if args.run:
-        if selection.status in {"no_changes", "no_tests"} and not args.allow_empty:
+        if not selection.tests:
+            if selection.status in {"no_changes", "no_tests"} and args.allow_empty:
+                print(
+                    "no applicable tests; explicitly allowed without execution",
+                    file=sys.stderr,
+                )
+                return 0
             print(
-                f"selection {selection.status}: no tests to execute; refusing a pass",
+                f"selection {selection.status}: no tests executed; refusing a pass",
                 file=sys.stderr,
             )
             return 3
