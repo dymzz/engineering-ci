@@ -236,7 +236,6 @@ class EngineeringCi:
     async def shared_identity(self) -> str:
         """Import the included common package; proves one source implementation."""
         import eci_core
-
         from eci_core import selection
 
         return (
