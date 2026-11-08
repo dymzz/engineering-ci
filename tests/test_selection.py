@@ -483,7 +483,7 @@ def test_pr_merge_snapshot_records_merge_tree(repo):
 
 
 def test_execution_refuses_a_different_tree(repo):
-    path, base = repo
+    path, _ = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "target")
