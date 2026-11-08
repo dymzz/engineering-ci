@@ -285,4 +285,4 @@ multi-target pytest execution and CLI modes.
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
 | P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
 | Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions wiring open |
-| Clean-environment install and non-Knowledge consumer | Clean wheel install outside the checkout delivered; a real non-Knowledge consumer execution is still open |
+| Clean-environment install and non-Knowledge consumer | Delivered: wheel install outside checkout; independent fixture `select → execute` passed 3 tests |
