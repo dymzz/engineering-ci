@@ -199,7 +199,7 @@ multi-target pytest execution and CLI modes.
 | Review item | Status in this branch |
 | --- | --- |
 | P1-1 per-check impact | Delivered: `plan.check_scope` separates tests, docs, Tach, Vulture and source; deletions set `recheck_all` |
-| P1-2 source set reconciliation | Not yet: next slice (`sources` module with enumeration/diff/conflicts/attributes) |
+| P1-2 source set reconciliation | Generic enumeration/diff/conflict/digest/attribute algorithm delivered in `eci_core.sources`; Knowledge config equivalence pending |
 | P1-3 common package import in Dagger | Import and selector call delivered via `eci_core` + `engineering_ci_module`; Tach/Lychee acquisition and Source construction pending |
 | P1-4 multi pytest targets | Local execution delivered as one native process with exit fidelity; Required full-coverage caveat documented; Dagger/Actions pending |
 | P2-1 Git attributes host location | Pending with the source slice; must run where `.git` exists |

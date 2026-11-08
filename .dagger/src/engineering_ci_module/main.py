@@ -73,6 +73,46 @@ _READ_OPTIONAL = (
 @object_type
 class EngineeringCi:
     @function
+    async def sources_self_test(self) -> str:
+        """Run the installed source reconciler on a disposable fixture."""
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from eci_core import sources
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data/acquired").mkdir(parents=True)
+            content = b"source bytes"
+            (root / "data/acquired/a.bin").write_bytes(content)
+            (root / "data/catalog").mkdir()
+            (root / "data/catalog/manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "path": "data/acquired/a.bin",
+                            "sha256": hashlib.sha256(content).hexdigest(),
+                            "size_bytes": len(content),
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "ci-sources.toml").write_text(
+                "schema_version = 1\n"
+                'manifest = "data/catalog/manifest.json"\n'
+                'acquired_roots = ["data/acquired"]\n'
+                "require_text_unset = false\n",
+                encoding="utf-8",
+            )
+            report = sources.reconcile(
+                sources.load_config(root / "ci-sources.toml"), root=root
+            )
+            return f"{sources.REPORT_KIND}:{report.status}:{report.counts['checked']}"
+
+    @function
     async def selection_self_test(self) -> str:
         """Run the installed selector on a disposable fixture, without Git."""
         import tempfile
