@@ -9,11 +9,16 @@ Contract: [selection and plan](../architecture/selection.md).
 
 ```sh
 pytest -q tests/test_selection.py
-# 18 passed
+# 24 passed
 
 pytest -q tests
-# 452 passed, 8 skipped, 187 subtests passed
+# 471 passed, 8 skipped, 187 subtests passed
+# 1 known Windows-checkout failure: tests/test_security_policy.py
+#   test_example_policy_is_a_valid_publish_input (CRLF vs canonical LF bytes)
 ```
+
+The policy-fixture failure is a Windows `core.autocrlf` artifact unrelated to
+this slice; it passes with an LF fixture and on Linux CI and was not modified.
 
 `tests/test_selection.py` builds a disposable Git repository from
 `tests/fixtures/selection-app` for every case, so nothing depends on a consumer
@@ -34,6 +39,10 @@ checkout or the Knowledge repository:
 | Rename/untracked | both rename sides and an untracked file appear in the change set |
 | Missing base | escalated because Git input is incomplete |
 | Native runner | selected `unittest` modules pass; an injected failure propagates |
+| Multi-target pytest | two file targets run in one native pytest process; one failure propagates |
+| Per-check scope | Markdown-only change: `unittest: no_tests`, `docs: selected`; code change: Tach/Vulture selected, docs not applicable |
+| Deletion scope | `docs.recheck_all = true`, so unchanged referencing documents remain in scope |
+| Path fidelity | a leading space in a renamed path survives the NUL-separated Git report |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |
 
 ## Plan identity observed
@@ -45,11 +54,14 @@ The fixture plan is disposable and is not committed.
 
 ## Limits
 
-- Only local `unittest` execution is wired. Pytest/Dagger execution and Actions
-  consumption are the next slice; no second selector exists.
+- Local `unittest` and pytest execution are wired; Dagger/Actions consumption is
+  not. No second selector exists.
 - Push/PR event objects and simulated merge trees are not implemented yet;
   callers must pass commits they actually hold.
-- Documentation and hygiene checks (`Lychee`, `Vulture`, `Tach check`, source
-  byte validation) are not part of this verification.
+- A subset pytest run is real execution for its targets, but it cannot satisfy a
+  Required full-coverage gate; that gate must run fully or consume #63 verified
+  complete evidence. `--full` expands tests only.
+- Source-manifest validation and Dagger import of the common package are the
+  remaining P1 items from the 2026-11-08 review.
 - Windows checkout line endings can change byte-level policy fixtures; the
   selection fixture is content-only and unaffected.

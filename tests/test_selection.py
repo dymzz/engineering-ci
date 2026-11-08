@@ -208,6 +208,14 @@ def test_changeset_includes_renames_and_untracked_paths(repo):
     assert changed.worktree_dirty is True
 
 
+def test_paths_preserve_leading_spaces_from_git_reports(repo):
+    path, base = repo
+    run(path, "mv", "src/pkg/other.py", "src/pkg/ leading.py")
+    changed = changes(path, base)
+    assert "src/pkg/ leading.py" in changed.paths
+    assert "src/pkg/other.py" in changed.paths
+
+
 def test_missing_base_escalates_instead_of_assuming_no_changes(repo):
     path, _ = repo
     result = selection.select(
@@ -233,6 +241,80 @@ def test_unittest_runner_propagates_failure(repo):
         encoding="utf-8",
     )
     assert selection.run_tests(("tests.test_pkg",), root=path) != 0
+
+
+def test_pytest_runner_accepts_multiple_targets_in_one_execution(repo):
+    path, _ = repo
+    result = selection.run_tests(
+        ("tests/test_pkg.py", "tests/test_sub.py"),
+        root=path,
+        framework="pytest",
+    )
+    assert result == 0
+
+
+def test_pytest_runner_propagates_failure_from_one_target(repo):
+    path, _ = repo
+    (path / "tests/test_sub.py").write_text(
+        "import unittest\n\n\nclass F(unittest.TestCase):\n"
+        "    def test_fail(self):\n        self.fail('nope')\n",
+        encoding="utf-8",
+    )
+    result = selection.run_tests(
+        ("tests/test_pkg.py", "tests/test_sub.py"),
+        root=path,
+        framework="pytest",
+    )
+    assert result != 0
+
+
+def test_check_scope_separates_documents_from_business_tests(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    result = select(path, base)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["unittest"]["status"] == "no_tests"
+    assert scope["docs"]["status"] == "selected"
+    assert "docs/guide.md" in scope["docs"]["inputs"]
+    assert scope["tach"]["status"] == "not_applicable"
+
+
+def test_check_scope_rechecks_all_documents_after_deletion(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    result = select(path, base)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["docs"]["status"] == "selected"
+    assert scope["docs"]["recheck_all"] is True
+
+
+def test_check_scope_marks_code_checks_for_code_changes(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 5\n", encoding="utf-8")
+    result = select(path, base)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["unittest"]["status"] == "targeted"
+    assert scope["tach"]["status"] == "selected"
+    assert scope["vulture"]["status"] == "selected"
+    assert scope["docs"]["status"] == "not_applicable"
 
 
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):

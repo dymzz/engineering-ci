@@ -40,6 +40,7 @@ _CONFIG_KEYS = {
     "non_code_rules",
     "prerequisites",
     "strict_modules",
+    "check_scope",
 }
 
 
@@ -60,6 +61,13 @@ class NonCodeRule:
 
 
 @dataclass(frozen=True)
+class CheckScopeConfig:
+    docs_suffixes: tuple[str, ...]
+    code_prefixes: tuple[str, ...]
+    source_prefixes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Config:
     schema_version: int
     tach: str
@@ -75,6 +83,7 @@ class Config:
     non_code_rules: tuple[NonCodeRule, ...]
     prerequisites: dict[str, tuple[str, ...]]
     strict_modules: bool
+    check_scope: CheckScopeConfig
 
 
 @dataclass(frozen=True)
@@ -188,6 +197,29 @@ def load_config(path):
     strict_modules = value.get("strict_modules", True)
     if type(strict_modules) is not bool:
         raise SelectionError("strict_modules_invalid")
+    scope = value.get("check_scope", {})
+    if not isinstance(scope, dict) or set(scope) - {
+        "docs_suffixes",
+        "code_prefixes",
+        "source_prefixes",
+    }:
+        raise SelectionError("check_scope_invalid")
+    docs_suffixes = _string_list(
+        scope.get("docs_suffixes", [".md", ".html"]), "docs_suffixes"
+    )
+    if any(not suffix.startswith(".") for suffix in docs_suffixes):
+        raise SelectionError("check_scope_invalid")
+    check_scope = CheckScopeConfig(
+        docs_suffixes=docs_suffixes,
+        code_prefixes=_string_list(
+            scope.get("code_prefixes", ["src/", "scripts/", "tests/"]),
+            "code_prefixes",
+        ),
+        source_prefixes=_string_list(
+            scope.get("source_prefixes", ["data/", "sources/"]),
+            "source_prefixes",
+        ),
+    )
     return Config(
         schema_version=SCHEMA_VERSION,
         tach=tach,
@@ -211,6 +243,7 @@ def load_config(path):
         non_code_rules=tuple(parsed_rules),
         prerequisites=prerequisites,
         strict_modules=strict_modules,
+        check_scope=check_scope,
     )
 
 
@@ -309,15 +342,15 @@ def changeset(root, *, base, head="HEAD", include_worktree=True):
 
 
 def _normalized(path):
-    return path.replace("\\", "/").strip()
+    return path.replace("\\", "/")
 
 
-def _test_modules(tests_dir):
+def _test_modules(tests_dir, prefix):
     if not tests_dir.is_dir():
         return ()
     return tuple(
         sorted(
-            f"{tests_dir.name}.{path.stem}"
+            f"{prefix}.{path.stem}"
             for path in tests_dir.glob("test_*.py")
             if path.is_file()
         )
@@ -407,7 +440,8 @@ def select(changes, config, *, root, full=False):
     """Select tests for one change set; unknown coverage escalates, never passes."""
     root = Path(root)
     tests_dir = root / config.tests_dir
-    all_tests = _test_modules(tests_dir)
+    test_prefix = ".".join(Path(config.tests_dir).parts)
+    all_tests = _test_modules(tests_dir, test_prefix)
     if full:
         return _escalated(changes, config, all_tests, "Explicitly requested full suite")
     if not changes.complete:
@@ -460,8 +494,8 @@ def select(changes, config, *, root, full=False):
                         all_tests,
                         f"Test file deleted or renamed: {path}",
                     )
-                selected.add(f"{config.tests_dir}.{stem}")
-                reasons.setdefault(f"{config.tests_dir}.{stem}", []).append(
+                selected.add(f"{test_prefix}.{stem}")
+                reasons.setdefault(f"{test_prefix}.{stem}", []).append(
                     f"Direct test file modification: {path}"
                 )
                 continue
@@ -526,6 +560,68 @@ def _digest(path):
         return None
 
 
+def _check_scope(selection, config, root):
+    """Per-check impact; a documentation-only change still selects Lychee."""
+    paths = [_normalized(path) for path in selection.changeset.paths]
+    docs_changed = sorted(
+        path
+        for path in paths
+        if path.lower().endswith(config.check_scope.docs_suffixes)
+    )
+    removed = any(not (root / path).exists() for path in paths)
+    code_changed = any(
+        path.startswith(config.check_scope.code_prefixes) for path in paths
+    ) or any(path in {"tach.toml", "pyproject.toml"} for path in paths)
+    source_changed = any(
+        path.startswith(config.check_scope.source_prefixes) for path in paths
+    )
+    return [
+        {
+            "name": "unittest",
+            "status": selection.status,
+            "inputs": list(selection.tests),
+            "reason": selection.escalation_reason,
+        },
+        {
+            "name": "docs",
+            "status": "selected" if docs_changed or removed else "not_applicable",
+            "inputs": docs_changed,
+            "recheck_all": bool(removed),
+            "reason": (
+                "deleted path may break unchanged documents"
+                if removed
+                else "changed documents"
+                if docs_changed
+                else "no document changes"
+            ),
+        },
+        {
+            "name": "tach",
+            "status": "selected" if code_changed else "not_applicable",
+            "inputs": [],
+            "reason": "code changed" if code_changed else "no code changes",
+        },
+        {
+            "name": "vulture",
+            "status": "selected" if code_changed else "not_applicable",
+            "inputs": [],
+            "reason": "code changed" if code_changed else "no code changes",
+        },
+        {
+            "name": "source",
+            "status": "selected" if source_changed else "not_applicable",
+            "inputs": [
+                path
+                for path in paths
+                if path.startswith(config.check_scope.source_prefixes)
+            ],
+            "reason": "source inputs changed"
+            if source_changed
+            else "no source changes",
+        },
+    ]
+
+
 def plan(selection, *, config, config_path, root):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
@@ -559,6 +655,7 @@ def plan(selection, *, config, config_path, root):
                 name: list(items) for name, items in sorted(selection.reasons.items())
             },
         },
+        "check_scope": _check_scope(selection, config, root),
         "inputs": {
             "config": {"path": str(config_path), "sha256": _digest(config_path)},
             "tach": {"path": config.tach, "sha256": _digest(tach_path)},
@@ -566,22 +663,24 @@ def plan(selection, *, config, config_path, root):
     }
 
 
-def run_tests(modules, *, root, python=None):
-    """Run selected modules with their native framework; return the native exit."""
+def run_tests(modules, *, root, framework="unittest", src_root="src", python=None):
+    """Run selected targets with their native framework; return the native exit."""
     modules = tuple(modules)
     if not modules:
         return 0
     root = Path(root)
     environment = dict(os.environ)
-    source = str((root / "src").resolve())
+    source = str((root / src_root).resolve())
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
-    result = subprocess.run(
-        [python or sys.executable, "-X", "utf8", "-m", "unittest", *modules, "-v"],
-        cwd=root,
-        env=environment,
-        check=False,
-    )
+    executable = python or sys.executable
+    if framework == "pytest":
+        command = [executable, "-X", "utf8", "-m", "pytest", "-q", *modules]
+    elif framework == "unittest":
+        command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
+    else:
+        raise SelectionError("framework_unsupported")
+    result = subprocess.run(command, cwd=root, env=environment, check=False)
     return result.returncode
 
 
@@ -598,7 +697,11 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=Path("ci-selection.toml"))
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--full", action="store_true")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run the full discovered test suite; it does not run every hygiene check",
+    )
     parser.add_argument("--allow-empty", action="store_true")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--json", action="store_true")
@@ -630,7 +733,12 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 3
-        return run_tests(selection.tests, root=root)
+        return run_tests(
+            selection.tests,
+            root=root,
+            framework=config.framework,
+            src_root=config.src_root,
+        )
     print(f"status: {selection.status}")
     print(f"tests: {' '.join(selection.tests) or '(none)'}")
     if selection.escalated:

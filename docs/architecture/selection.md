@@ -66,6 +66,25 @@ wheel_smoke = ["tests.test_pkg"]
   escalates and never reports zero changes.
 - Push/PR event objects and simulated merge trees are not implemented in this
   slice; callers must pass explicit commits they actually hold.
+- Paths from NUL-separated Git reports are preserved exactly (backslashes are
+  normalised only); leading spaces are not stripped.
+
+## Per-check impact (not a global ignore)
+
+Ignoring a path for business tests does not ignore it for every check. The plan
+emits `check_scope` for each check type:
+
+| Check | Selected when | `not_applicable` when |
+| --- | --- | --- |
+| `unittest` / `pytest` targets | Selection status is `targeted`/`escalated` | `no_changes`, `no_tests` |
+| `docs` (Lychee) | A document changed, or a path was deleted | No document change and no deletion |
+| `tach` | Code/config inputs changed | Documentation-only change |
+| `vulture` | Code/config inputs changed | Documentation-only change |
+| `source` | Paths under configured source prefixes changed | No source input |
+
+A documentation-only change therefore produces `unittest: no_tests` and
+`docs: selected` with the affected files. A deletion sets `recheck_all: true` so
+unchanged documents that referenced the deleted target are still checked.
 
 ## Selection statuses
 
@@ -76,10 +95,15 @@ wheel_smoke = ["tests.test_pkg"]
 | `no_changes` | No paths in the change set; nothing executed |
 | `no_tests` | Changes exist but are ignored/non-code without test coverage; not a pass |
 
-`--run` executes the selected `unittest` modules with the native interpreter
-and returns its exit code. `no_changes`/`no_tests` return `3` (not executed)
-unless `--allow-empty` is explicit. A plan is not execution evidence: Dagger,
-Actions and #63 must record actual execution separately.
+`--run` executes the selected targets with their declared framework
+(`unittest` dotted modules, or one native `pytest` process for multiple files,
+preserving its exit code). `no_changes`/`no_tests` return `3` (not executed)
+unless `--allow-empty` is explicit. `--full` expands **tests only** to the full
+discovered suite; it does not claim Tach/Lychee/Vulture/source/Required checks
+ran. A plan is not execution evidence: Dagger, Actions and #63 must record
+actual execution separately. A subset pytest run cannot satisfy a Required
+full-coverage gate; that gate must run fully or consume #63 verified complete
+evidence.
 
 ## Plan handoff
 
@@ -98,6 +122,12 @@ Actions and #63 must record actual execution separately.
                 "checks": ["hygiene", "tach", "vulture"],
                 "prerequisites": ["identity_commit"], "escalated": false,
                 "escalation_reason": null, "reasons": {"tests.test_sub": ["..."]}},
+  "check_scope": [
+    {"name": "unittest", "status": "targeted", "inputs": ["tests.test_sub"]},
+    {"name": "docs", "status": "not_applicable", "inputs": [],
+     "recheck_all": false, "reason": "no document changes"},
+    {"name": "tach", "status": "selected", "inputs": [], "reason": "code changed"}
+  ],
   "inputs": {"config": {"path": "...", "sha256": "..."},
              "tach": {"path": "tach.toml", "sha256": "..."}}
 }
@@ -118,12 +148,25 @@ engineering-ci select --root . --base origin/main --run
 engineering-ci select --root . --full --list
 ```
 
-`--json`, `--list` and `--run` are mutually exclusive. `--full` is an explicit
-conservative escalation.
+`--json`, `--list` and `--run` are mutually exclusive. `--full` expands tests
+only; it is not an "all checks passed" claim.
 
 ## Verification
 
 `tests/test_selection.py` exercises a disposable Git fixture: discovery, Tach
 reverse closure, module mapping, non-code rules, ignored paths, escalation,
-deleted tests, unmapped modules, renames/untracked paths, plan identity,
-unittest pass/fail propagation and CLI modes.
+deleted tests, unmapped modules, renames/untracked paths including leading
+spaces, plan identity and per-check scope, unittest pass/fail propagation,
+multi-target pytest execution and CLI modes.
+
+## Review resolution (2026-11-08)
+
+| Review item | Status in this branch |
+| --- | --- |
+| P1-1 per-check impact | Delivered: `plan.check_scope` separates tests, docs, Tach, Vulture and source; deletions set `recheck_all` |
+| P1-2 source set reconciliation | Not yet: next slice (`sources` module with enumeration/diff/conflicts/attributes) |
+| P1-3 common package import in Dagger | Not yet: requires a non-colliding shared package plus `dagger-module.toml` `include` spike |
+| P1-4 multi pytest targets | Local execution delivered as one native process with exit fidelity; Required full-coverage caveat documented; Dagger/Actions pending |
+| P2-1 Git attributes host location | Pending with the source slice; must run where `.git` exists |
+| P2-2 `--full` scope | Delivered: tests only, explicitly not an all-checks pass |
+| P2-3 path fidelity | Delivered: no `.strip()`, real NUL-separated leading-space test |
