@@ -290,7 +290,8 @@ jobs:
             mapfile -t remaining < "$RUNNER_TEMP/remaining-selectors.txt"
             if [[ "${RECORD_RELEASE_EVIDENCE:-false}" == 'true' ]]; then
               cp "$RUNNER_TEMP/dagger-version.txt" "$RUNNER_TEMP/dagger-checks.txt" \
-                "$RUNNER_TEMP/remaining-checks.txt" "$RUNNER_TEMP/pytest-report/"
+                "$RUNNER_TEMP/remaining-checks.txt" "$RUNNER_TEMP/replaced-check.txt" \
+                "$RUNNER_TEMP/pytest-report/"
             fi
             if [[ "${#remaining[@]}" -gt 0 ]]; then
               timed remaining-checks dagger "${dagger_options[@]}" check "${remaining[@]}"
@@ -346,6 +347,7 @@ jobs:
             ${{ runner.temp }}/pytest-report/dagger-version.txt
             ${{ runner.temp }}/pytest-report/dagger-checks.txt
             ${{ runner.temp }}/pytest-report/remaining-checks.txt
+            ${{ runner.temp }}/pytest-report/replaced-check.txt
             ${{ runner.temp }}/pytest-report/fixture-timing.json
             ${{ runner.temp }}/pytest-report/quality-policy.json
             ${{ runner.temp }}/pytest-report/coverage.xml

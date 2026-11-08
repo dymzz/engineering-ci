@@ -1,0 +1,209 @@
+{
+  "artifacts": [
+    {
+      "digest": "sha256:c158723dfe4adafe9cf7904acc4ec7643453e50fa9140c1fda124888d6388c07",
+      "id": 12277835766,
+      "name": "core-tests",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12277835766"
+    },
+    {
+      "digest": "sha256:3951a63c322b942827c4a005540bcd54a89032380128515471b13a1c6ff09463",
+      "id": 12276584917,
+      "name": "dependency-security",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12276584917"
+    },
+    {
+      "digest": "sha256:b7f8ec4d0b6039ec7010e6dc7c258948a0a96085e5a6c22d3b37b9a48f0fef4b",
+      "id": 12277975577,
+      "name": "pytest-report",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12277975577"
+    },
+    {
+      "digest": "sha256:907d4efea0ebef515069a64f7e5bd03fd0a15eddb38ed35ad1941bb34e51b378",
+      "id": 12277508620,
+      "name": "release-tools-ruff",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12277508620"
+    }
+  ],
+  "checks": {
+    "candidate": {
+      "job": "candidate",
+      "job_conclusion": "success",
+      "job_id": 118719846431,
+      "required": true,
+      "status": "passed",
+      "step": "Validate manual release request",
+      "step_conclusion": "success"
+    },
+    "consumer_failure_probe": {
+      "reason": "The smoke-only Ruff rejection probe is disabled in core releases.",
+      "required": false,
+      "status": "not_enabled"
+    },
+    "core_coverage_threshold": {
+      "reason": "Core coverage is exported; no core coverage threshold is configured.",
+      "required": false,
+      "status": "not_enabled"
+    },
+    "core_tests": {
+      "job": "core-tests / sync-tool-tests",
+      "job_conclusion": "success",
+      "job_id": 118720029756,
+      "required": true,
+      "status": "passed",
+      "step": "Run all core unit and process tests",
+      "step_conclusion": "success"
+    },
+    "coverage": {
+      "dagger_check": "engineering-ci:fixture-quality-gates",
+      "job": "complete-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720029569,
+      "required": true,
+      "status": "passed",
+      "step": "Run Dagger Checks",
+      "step_conclusion": "success"
+    },
+    "dagger": {
+      "job": "complete-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720029569,
+      "required": true,
+      "status": "passed",
+      "step": "Run Dagger Checks",
+      "step_conclusion": "success"
+    },
+    "dependency_security": {
+      "job": "complete-ci / dependency-security",
+      "job_conclusion": "success",
+      "job_id": 118720029543,
+      "required": true,
+      "status": "passed",
+      "step": "Check lock integrity and scan known vulnerabilities",
+      "step_conclusion": "success"
+    },
+    "evidence": {
+      "job": "evidence",
+      "job_conclusion": "success",
+      "job_id": 118721270805,
+      "required": true,
+      "status": "passed",
+      "step": "Require usable evidence and original execution gates",
+      "step_conclusion": "success"
+    },
+    "module_lock": {
+      "job": "complete-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720029569,
+      "required": true,
+      "status": "passed",
+      "step": "Verify generated module lock consistency",
+      "step_conclusion": "success"
+    },
+    "python_matrix": {
+      "dagger_check": "engineering-ci:fixture-python-matrix",
+      "job": "complete-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720029569,
+      "required": true,
+      "status": "passed",
+      "step": "Run Dagger Checks",
+      "step_conclusion": "success"
+    },
+    "ruff_format": {
+      "job": "core-tests / python-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720030403,
+      "required": true,
+      "status": "passed",
+      "step": "Ruff Format Check",
+      "step_conclusion": "success"
+    },
+    "ruff_lint": {
+      "job": "core-tests / python-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720030403,
+      "required": true,
+      "status": "passed",
+      "step": "Ruff Lint",
+      "step_conclusion": "success"
+    },
+    "tests": {
+      "job": "complete-ci / checks",
+      "job_conclusion": "success",
+      "job_id": 118720029569,
+      "required": true,
+      "status": "passed",
+      "step": "Gate on pytest execution and explicit quality policy",
+      "step_conclusion": "success"
+    },
+    "version_integrity": {
+      "job": "core-tests / version-metadata",
+      "job_conclusion": "success",
+      "job_id": 118720029698,
+      "required": true,
+      "status": "passed",
+      "step": "Validate release metadata and root lock consistency",
+      "step_conclusion": "success"
+    }
+  },
+  "mode": "publication",
+  "release": {
+    "commit_sha": "eb0e457de2c172006b62d3962b0a7e932a5adb32",
+    "release_url": "https://api.github.com/repos/dymzz/engineering-ci/releases/418568386",
+    "tag": "v0.6.8",
+    "version": "0.6.8"
+  },
+  "repository": "dymzz/engineering-ci",
+  "result": "passed",
+  "schema_version": 1,
+  "tools": [
+    {
+      "name": "pytest",
+      "scope": "core",
+      "version": "9.0.3"
+    },
+    {
+      "name": "pytest-cov",
+      "scope": "core",
+      "version": "7.0.0"
+    },
+    {
+      "name": "python",
+      "scope": "core",
+      "version": "3.14.8"
+    },
+    {
+      "name": "uv",
+      "scope": "core",
+      "version": "0.12.23"
+    },
+    {
+      "name": "dagger",
+      "scope": "dagger_cli",
+      "version": "1.0.0-beta.16"
+    },
+    {
+      "name": "osv-scanner",
+      "scope": "root_lock",
+      "version": "2.6.0"
+    },
+    {
+      "name": "ruff",
+      "scope": "ruff",
+      "version": "0.16.10"
+    },
+    {
+      "name": "uv",
+      "scope": "ruff",
+      "version": "0.12.23"
+    }
+  ],
+  "workflow": {
+    "event": "workflow_dispatch",
+    "path": ".github/workflows/release.yml",
+    "run_attempt": 1,
+    "run_id": 39449394205,
+    "run_url": "https://github.com/dymzz/engineering-ci/actions/runs/39449394205"
+  }
+}

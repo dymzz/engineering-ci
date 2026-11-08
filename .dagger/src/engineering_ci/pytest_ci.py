@@ -161,6 +161,11 @@ def main(argv=None) -> int:
             args.output.write_text(
                 "".join(name + "\n" for name in names), encoding="utf-8"
             )
+            # The replaced check is part of the executed set: the report
+            # execution is that check. Recording it lets the release evidence
+            # name the set its success covers instead of inferring it.
+            replaced = args.output.with_name("replaced-check.txt")
+            replaced.write_text(args.replaced + "\n", encoding="utf-8")
             if args.selectors:
                 selectors = discovered_checks(listing)
                 args.selectors.write_text(

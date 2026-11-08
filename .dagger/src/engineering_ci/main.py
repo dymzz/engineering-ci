@@ -360,8 +360,38 @@ class EngineeringCi:
             .stdout()
         )
 
+    async def _script_scope(self, container, kind: str, scope: list[str]) -> list[str]:
+        """Enumerate the files the declared scope contains."""
+        helper = container.with_new_file(
+            "/tmp/engineering-ci-script-scope.py",
+            Path(__file__).with_name("script_scope.py").read_text(encoding="utf-8"),
+        )
+        result = await helper.with_exec(
+            [
+                "python",
+                "/tmp/engineering-ci-script-scope.py",
+                kind,
+                *scope,
+            ],
+            expect=dagger.ReturnType.ANY,
+        )
+        if await result.exit_code() != 0:
+            raise RuntimeError(
+                f"Cannot enumerate the {kind} scope: "
+                + (await result.stderr()).strip()[-1500:]
+            )
+        files = json.loads(await result.stdout())
+        if not isinstance(files, list):
+            raise TypeError(f"Unexpected {kind} scope listing")
+        return files
+
     async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned Workflow checker once and classify its result."""
+        """Execute the pinned Workflow checker once and classify its result.
+
+        The scope is enumerated first and the enumerated files are passed
+        explicitly, so the covered input set is known before the scan and the
+        invocation behaves the same on every platform.
+        """
         container = (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
@@ -373,15 +403,48 @@ class EngineeringCi:
             .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
             .with_workdir("/workspace")
         )
+        candidates = await self._script_scope(
+            container, "workflow", policy["scan_paths"]
+        )
+        if not candidates:
+            return script.empty_scope_report(policy, policy["scan_paths"])
         result = container.with_exec(
-            script.runner_prefix("actionlint") + script.actionlint_arguments(policy),
+            script.runner_prefix("actionlint")
+            + script.actionlint_arguments(policy, candidates),
             expect=dagger.ReturnType.ANY,
         )
+        exit_code = await result.exit_code()
+        # actionlint reads every file it is given and exits 3 when it cannot
+        # read one, so a completed invocation covered exactly these files.
+        analysed = len(candidates) if exit_code in (0, 1) else None
         return script.script_report(
             policy,
-            await result.exit_code(),
+            exit_code,
             await result.stdout(),
             await result.stderr(),
+            coverage=script.coverage_record(policy["scan_paths"], candidates, analysed),
+        )
+
+    @function
+    @check
+    async def workflow_analysis(
+        self,
+        source: Annotated[
+            dagger.Directory, DefaultPath("/"), Ignore(repository.SOURCE_EXCLUDES)
+        ],
+    ) -> None:
+        """Require a clean Workflow analysis of every Workflow in scope.
+
+        The same execution and the same classifier produce the report that the
+        report-only function returns; enforcing reads that result instead of
+        running the scanner a second time.
+        """
+        report = await self._run_actionlint(source, script.actionlint_policy())
+        script.enforce(report)
+        print(
+            f"actionlint {report['pinned_version']}: "
+            f"{report['coverage']['candidates']} Workflow file(s) analysed, "
+            "no findings"
         )
 
     @function
@@ -426,7 +489,7 @@ class EngineeringCi:
                 report = script.deferred_report(
                     scan_path,
                     "PowerShell scripts are analysed by the Windows runner in "
-                    "reusable-python-ci.yml, not by this Linux Dagger check",
+                    "ci.yml / reusable-python-ci.yml, not by this Linux Dagger check",
                 )
             else:
                 report = script.unsupported_report(

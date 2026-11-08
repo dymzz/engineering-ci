@@ -11,6 +11,9 @@ import tomllib
 import zipfile
 from urllib.parse import quote
 
+from ..requirements import delta as requirement_delta
+from ..requirements import describe as describe_difference
+from ..requirements import records as requirement_records
 from . import manifest
 from .publishing import (
     find_release,
@@ -122,9 +125,8 @@ def evidence(api, value, repository, tag, head):
     jobs = manifest.workflow_jobs(
         api, workflow["run_id"], workflow["run_attempt"], head
     )
-    for key, source in manifest.CHECKS.items():
-        if manifest.check_record(jobs, *source) != value["checks"][key]:
-            raise ValueError("Manifest does not match original Actions results")
+    manifest.verified_results(jobs, value)
+    current_requirements(value)
     for item in value["artifacts"]:
         current = manifest.artifact_metadata(
             api,
@@ -137,6 +139,29 @@ def evidence(api, value, repository, tag, head):
         )
         if item["digest"] is not None and item["digest"] != current["digest"]:
             raise ValueError("Manifest Artifact digest mismatch")
+    return value
+
+
+def current_requirements(value):
+    """Refuse evidence that does not cover the requirements in force now.
+
+    A recorded result is evidence for the requirement set it was produced
+    against. Reading it again later does not extend it to requirements that
+    were added or rescoped afterwards, so the recorded set is compared with
+    the current one and the difference is named.
+    """
+    if "requirements" not in value:
+        raise ValueError(
+            "Release evidence does not record the required checks it covers"
+        )
+    difference = requirement_delta(
+        manifest.effective_requirements(value), requirement_records()
+    )
+    if difference["added"] or difference["removed"] or difference["changed"]:
+        raise ValueError(
+            "Release evidence does not cover the current required checks: "
+            + describe_difference(difference)
+        )
     return value
 
 

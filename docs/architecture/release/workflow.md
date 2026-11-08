@@ -10,22 +10,44 @@
 
 | 触发 | 实际执行 | 发布 |
 |---|---|---|
-| PR / push 到 main | 原生 Lint/Format、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
+| PR / push 到 main | 原生 Lint/Format、Workflow 分析、PowerShell 分析、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
 | 手动 Release，publish=false | 上述检查加 Coverage 证据、完整 Dagger checks、既有质量与 Matrix fixture、真实根项目安全 enforce、报告下载核验 | 不创建 Tag/Release |
 | 手动 Release，publish=true | 同一完整验收；main SHA 与版本检查通过后才发布 | 精确提交 |
 
-PR 的五项原生 Dagger Checks 通过三个既有 Job 执行，不运行安全扫描或完整 Matrix。
+PR 的原生 Dagger Checks 与宿主/Windows 检查通过既有 Job 执行，不运行安全扫描或完整 Matrix。
 这些额外发布策略仍在手动 Release 中显式执行。
 
 ## 检查定义与执行环境
 
 本地与 `ci.yml` 使用同一组[原生 Dagger Checks](../local-checks.md)。
 标准 Ruff 配置和锁定开发工具在根 `pyproject.toml` / `uv.lock`；没有宿主 Profile、
-输入散列收据或另一套 Workflow YAML 校验器。三个既有 PR Job 名称保持不变。
+输入散列收据或另一套 Workflow YAML 校验器。PR Job 名称与对应步骤由 `requirements.py` 严格绑定。
 根仓 Coverage 由原生 `release` 环境开启，严格检查与报告引用相同 pytest 节点。
 发布 fixture 通过 `fixtures` 环境、`validation` 模块及四个明确的 fixture 检查名显式执行；
 `validation:fixture-test` 由一次报告执行替代，质量/Matrix Check 仍实际执行。
 GitHub Actions 继续拥有 Job DAG、权限、Artifact 上传和发布条件。
+
+必需检查的唯一来源是 `src/engineering_ci/requirements.py`：每项记录键、
+执行它的 Job 与 step、覆盖范围，以及是否是一个原生 Dagger 检查。
+发布证据契约、CI Workflow 与漂移测试都读取该表，
+新增或重新划定范围只需改一处，再由机器校验绑定关系，
+而不是手工维护 Workflow、注册表与 Schema 三份副本。
+
+## 必需检查与证据的关系
+
+PR 与 main 分支的普通校验要求：Ruff Lint、Ruff Format、Workflow 分析、
+核心 pytest、四处版本一致性与两份锁文件完整性；
+Workflow 分析由原生 `workflow-analysis` 检查执行，
+PowerShell 分析由 `windows-2025` Job 执行。
+两者都在正式发布中经由 `core-tests` 复用同一 Job，不重复执行。
+
+证据与执行是两件事：
+
+- 执行结论来自原生结果。Workflow 分析读 actionlint 的退出状态与诊断，
+  PowerShell 分析读 PSScriptAnalyzer 的诊断对象与已扫描文件数；
+  覆盖不足、空范围与工具失败都不通过，原因分别记录。
+- 证据结论来自可交付物。Artifact 上传失败不改变已经成立的执行结论，
+  但发布证据不再完整，发布被拒绝。
 
 ## 发布 Run 的身份与执行范围
 
@@ -86,7 +108,7 @@ Draft 并读回 → 执行既有最终 `draft=false` 操作。恢复时保留已
 每次手动验证将 Actions 原始 job / step 结果写入
 `release-manifest.json`，保存为 `release-manifest` Artifact（30 天）；
 Job Summary 同时显示版本、SHA、验证 Run 链接与各检查状态。
-机器可读结构见 [JSON Schema](manifest.schema.json)。
+机器可读结构见 [JSON Schema](manifest.schema.json)。该 Schema 严格约束当前候选发布证据的必需字段（包括 `requirements`、5 个 Artifact 及全部当前必需检查）。
 同一组输入产生相同核心 JSON；不复制日志、环境变量、Token 或临时下载 URL。
 
 身份来自实际 checkout、四处版本元数据、GitHub Run API 与当前 attempt 的
@@ -99,11 +121,27 @@ Jobs API。Manifest 的 `result=passed` 表示必需验证结果与证据齐全�
 不能伪造缺失状态。检查失败、skipped、cancelled、timed_out、unavailable
 都阻断发布。可选未启用项目记为 `not_enabled`。
 
-Ruff、核心 pytest、版本锁一致性、安全 enforce、Dagger 与原始 pytest Gate
-关联既有 job / step；Coverage / Python Matrix 关联实际执行清单中的
+Manifest 同时记录 `requirements`：它被验证时实际生效的必需检查集合，
+含每项的键、Job、step、覆盖范围与 Dagger 检查名，并附一个摘要。
+当前候选版本和首次发布必须包含该字段，不能省略；这使"结果仍然有效"与"结果不再覆盖当前要求"可以被区分：
+
+- 候选验证与发布准入把记录的要求集合与当前权威要求集合比较。新增、删除或重新划定范围都会被指名拒绝，缺失该字段或篡改 digest 均阻断发布，历史结果绝不能被重新解读为当前要求的证明。
+- 已发布 Release 按自己记录的要求集合核对原始 Actions 结果；对于记录该字段前发布并归档的历史 Manifest，Python 校验与发布核验保留向下兼容支持（按其当时合法的 4 个 Artifact 与 12 项检查契约验证），因此要求集合演进之后，历史已发布版本仍然可以只读核验。这仅用于历史已发布版本核验，当前候选版本绝不可随意省略 requirements。
+
+Ruff、核心 pytest、版本锁一致性、Workflow 分析、PowerShell 分析、
+安全 enforce、Dagger 与原始 pytest Gate 关联既有 job / step；
+Coverage / Python Matrix 关联实际执行清单中的
 `fixture-quality-gates` / `fixture-python-matrix`，不再执行一次。
 它们是既有模块能力 fixture，不能当作根项目多版本兼容或根 Coverage 阈值。
 根 Coverage 无阈值和 Smoke 专用负向 Probe 都明确未启用。
+
+## 执行清单与覆盖
+
+包住执行的 Job 成功，并不证明每一项必需操作都真的运行过。
+可复用 Workflow 因此写出执行清单：模块提供的检查、被执行的检查，
+以及被一次报告执行替代的那一项。`manifest facts` 核对清单与发现列表一致，
+并要求必需集合被覆盖；缺一项或清单自相矛盾都会拒绝发布。
+原先只要求两项 fixture 检查出现在清单中，其余可被漏掉；现在要求全部四项。
 
 工具记录读取实际环境：根 Python / uv / pytest / pytest-cov、Ruff runner
 的 uv / Ruff、既有 `dagger version`、已核验的 OSV Scanner 版本。
@@ -118,9 +156,8 @@ Jobs API 核对当前 attempt 和 SHA。facts、Manifest 也用精确 ID 下载�
 提供持续追溯入口。重复发布还需要原始 Actions 元数据；历史记录删除导致
 无法核验时明确拒绝，不修改已发布版本。
 
-Schema 约束字段、固定检查来源、状态、工具 scope/name 和必需证据数量；
-Python 校验进一步核对版本与 Tag、仓库与 URL、SHA 及原始 API 结果等
-跨字段和远端事实。通过 Schema 不等于已有可信的发布验证。
+Schema 严格约束当前候选 Manifest 的顶层字段、固定检查来源、状态、工具 scope/name、5 个必需 Artifact 及 requirements 结构；
+Python 校验进一步核对版本与 Tag、仓库与 URL、SHA 及原始 API 结果等跨字段和远端事实，并在校验已发布历史版本时提供向后兼容契约。通过 Schema 不等于已有可信的发布验证。
 
 正式发布沿用完整验证与 create-only Tag，然后用 GitHub 原生自动 Release Notes
 创建 Draft。填入实际 Release URL，上传 Manifest，再下载并核验原始检查、
@@ -150,11 +187,19 @@ Renovate 仍检测正式 Tag。公共接口范围和独立消费验收见[交付
 Release 入口本身不执行 PR 合并，不由 Readiness 重建另一套发布门禁。
 
 PR 保留 sync-tool-tests、version-metadata、python-ci / checks 三个真实状态名。
-python-ci / dependency-security 移到手动发布；
+Workflow 分析作为 python-ci / checks 内的独立 step 执行，
+PowerShell 分析使用独立的 powershell-analysis Job；
+两者都不改变既有状态名。python-ci / dependency-security 移到手动发布；
 若是 Required Check，需移除旧 PR 要求，不能提供假的成功占位。
 此前私有仓库套餐的 branch protection / rulesets 返回 403，无法启用 Required Checks。
 若目标仓库未启用服务端必需检查保护，执行合并的人或 Agent 必须核对当前 PR head 的三个状态，
 不能宣称服务器已经阻断失败合并；实际权限及限制仍以本次 GitHub 操作结果为准。
+
+三层结论互不替代：Dagger 的检查结果说明这项检查实际跑了什么；
+Actions 的 Job 状态说明该 Job 的 step 是否成功；
+GitHub 服务端的 Required Status 决定合并是否被阻断。
+本仓只拥有前两层；第三层属于仓库管理设置，本次实现不改动它，
+也不据此宣称服务端已经阻断失败合并。
 
 
 ## 本地请求与调用职责

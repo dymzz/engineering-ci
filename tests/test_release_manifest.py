@@ -109,6 +109,31 @@ def make_manifest(api=None, mode="publication", source=None, ids=None):
     )
 
 
+def write_ledger(directory, replaced="validation:fixture-test", executed=None):
+    """Write the native Dagger execution ledger the reusable Workflow produces.
+
+    The ledger names the checks the module offered, the checks that were left
+    to run and the one check a report execution replaced.
+    """
+    checks = list(
+        executed if executed is not None else evidence.DAGGER_EXECUTION_CHECKS
+    )
+    (directory / "pytest/dagger-checks.txt").write_text(
+        "".join(
+            f"--validation --check={name.split(':', 1)[1]} # {name}\n"
+            for name in checks
+        ),
+        encoding="utf-8",
+    )
+    (directory / "pytest/replaced-check.txt").write_text(
+        replaced + "\n", encoding="utf-8"
+    )
+    (directory / "pytest/remaining-checks.txt").write_text(
+        "".join(name + "\n" for name in checks if name != replaced), encoding="utf-8"
+    )
+    return checks
+
+
 def publish(api, value=None):
     with tempfile.TemporaryDirectory() as temp:
         return release.publish_release(
@@ -255,9 +280,7 @@ def test_actual_tool_files_are_required_and_scoped(
             [item for item in records if item["scope"] == scope],
         )
     (tmp_path / "pytest/dagger-version.txt").write_text(output)
-    (tmp_path / "pytest/remaining-checks.txt").write_text(
-        "\n".join(evidence.DAGGER_POLICY_CHECKS.values()) + "\n"
-    )
+    write_ledger(tmp_path)
     evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
     assert evidence.facts(tmp_path)["tools"] == records
     (tmp_path / "pytest/dagger-version.txt").unlink()
@@ -277,6 +300,76 @@ def test_actual_tool_files_are_required_and_scoped(
 def test_dagger_cli_version_rejects_missing_or_ambiguous_output(output):
     with pytest.raises(ValueError, match="Dagger CLI version unavailable"):
         evidence.dagger_cli_version(output)
+
+
+def test_the_dagger_execution_ledger_must_cover_every_required_check(
+    tmp_path, monkeypatch
+):
+    """A successful enclosing Job does not prove the required set ran."""
+    monkeypatch.setattr(release, "require_evidence", lambda _: None)
+    for name in ("core", "ruff", "pytest", "security"):
+        (tmp_path / name).mkdir()
+    records = facts()["tools"]
+    for scope in ("core", "ruff"):
+        evidence.write(
+            tmp_path / scope / "tool-versions.json",
+            [item for item in records if item["scope"] == scope],
+        )
+    (tmp_path / "pytest/dagger-version.txt").write_text("version: v1.0.0-beta.16")
+    evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
+    incomplete = [
+        name
+        for name in evidence.DAGGER_EXECUTION_CHECKS
+        if name != "validation:fixture-failure-report"
+    ]
+    write_ledger(tmp_path, executed=incomplete)
+    with pytest.raises(ValueError, match="Required Dagger execution evidence missing"):
+        evidence.facts(tmp_path)
+    write_ledger(tmp_path)
+    assert set(evidence.facts(tmp_path)["dagger_checks"]) == set(
+        evidence.DAGGER_EXECUTION_CHECKS
+    )
+
+
+def test_the_dagger_execution_ledger_must_agree_with_the_listing(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "require_evidence", lambda _: None)
+    for name in ("core", "ruff", "pytest", "security"):
+        (tmp_path / name).mkdir()
+    records = facts()["tools"]
+    for scope in ("core", "ruff"):
+        evidence.write(
+            tmp_path / scope / "tool-versions.json",
+            [item for item in records if item["scope"] == scope],
+        )
+    (tmp_path / "pytest/dagger-version.txt").write_text("version: v1.0.0-beta.16")
+    evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
+    write_ledger(tmp_path)
+    (tmp_path / "pytest/remaining-checks.txt").write_text(
+        "validation:fixture-test\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="disagrees with the discovered check listing"):
+        evidence.facts(tmp_path)
+
+
+def test_the_dagger_execution_ledger_rejects_unpermitted_replaced_check(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(release, "require_evidence", lambda _: None)
+    for name in ("core", "ruff", "pytest", "security"):
+        (tmp_path / name).mkdir()
+    records = facts()["tools"]
+    for scope in ("core", "ruff"):
+        evidence.write(
+            tmp_path / scope / "tool-versions.json",
+            [item for item in records if item["scope"] == scope],
+        )
+    (tmp_path / "pytest/dagger-version.txt").write_text("version: v1.0.0-beta.16")
+    evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
+    write_ledger(tmp_path, replaced="validation:fixture-quality-gates")
+    with pytest.raises(
+        ValueError, match="The replaced Dagger check must be 'validation:fixture-test'"
+    ):
+        evidence.facts(tmp_path)
 
 
 def test_dagger_cli_version_does_not_record_runner_credentials():

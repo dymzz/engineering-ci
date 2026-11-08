@@ -16,22 +16,33 @@ Two different signals, deliberately handled differently:
 Neither result may become a pass by omission: an absent file, an unsupported
 scope, a missing environment and a tool failure are each reported as such.
 
-Verification status — NOT VERIFIED against the real tools:
+Verification status — observed against the real tools on 2026-10-31:
 
-1. actionlint's exit-code semantics and text output format are assumed, not
-   observed. This module assumes 0 means clean, 1 means reported problems, and
-   that a diagnostic line reads `<path>:<line>[:<col>]: <message> [<rule>]`.
-   actionlint may also expose no structured output at all, in which case
-   `native_json_available` is legitimately always false for it.
-2. No PSScriptAnalyzer run has been observed. Which default rules actually fire
-   on a given script is a property of the analyzer, not of this module.
-3. The Windows runner job has never executed. `windows-2025`, the pinned uv
-   invocation, moving the helper checkout and the PYTHONPATH wiring are all
-   unexercised.
+1. actionlint 1.7.12 was run. Exit 0 with no output on a clean Workflow set;
+   exit 1 with diagnostics reading `<path>:<line>:<col>: <message> [<rule>]`
+   for a broken one; exit 3 with `could not read "<path>"` for a path that
+   does not exist. The rules it emitted were `syntax-check` and `expression`.
+   It exposes no structured output, so `native_json_available` is legitimately
+   always false for it.
+2. PSScriptAnalyzer 1.9.0 was run. The process exits 0 even when it reports
+   violations, and the diagnostics decide the outcome. The analyzer reports
+   the files it scanned, so a partial scan is distinguishable from a clean one.
+3. actionlint could not read a *directory* argument on the Windows host used
+   for that observation, so the scope is enumerated and the files are passed
+   explicitly. The Linux container this module runs in is unaffected; the
+   explicit form simply behaves the same everywhere.
+
+Still NOT VERIFIED:
+
+- The Windows runner job has never executed. `windows-2025`, the pinned uv
+  invocation, moving the helper checkout and the PYTHONPATH wiring are all
+  unexercised.
+- The Dagger container has not been run for these tools, so the Linux
+  behaviour of the pinned actionlint wrapper is inherited from the host
+  observation rather than observed directly.
 
 Every classifier here fails closed, so a wrong assumption produces a failing
-check that prints the observed value rather than a silent pass. None of the
-three may be described as verified until a real run says so.
+check that prints the observed value rather than a silent pass.
 """
 
 from __future__ import annotations
@@ -159,7 +170,15 @@ def runner_prefix(tool: str) -> list[str]:
     return ["uvx", "--from", f"actionlint-py=={ACTIONLINT_WRAPPER}", "actionlint"]
 
 
-def actionlint_arguments(policy: dict) -> list[str]:
+def actionlint_arguments(policy: dict, files: list[str] | None = None) -> list[str]:
+    """Arguments for one actionlint invocation.
+
+    `files` replaces the declared scope with the exact files that were
+    enumerated from it. Passing the enumerated files rather than the scope
+    itself makes the covered input set explicit, and makes the invocation
+    reproducible on every platform instead of relying on the tool's own
+    directory handling.
+    """
     args = [
         "-no-color",
         # Optional integrations stay explicitly off so the checked scope never
@@ -169,7 +188,7 @@ def actionlint_arguments(policy: dict) -> list[str]:
     ]
     if policy["config"]:
         args.append(f"-config-file={policy['config']}")
-    return args + policy["scan_paths"]
+    return args + (policy["scan_paths"] if files is None else files)
 
 
 def powershell_arguments(policy: dict) -> list[str]:
@@ -296,8 +315,39 @@ FACTS = {
     "psscriptanalyzer": _powershell_facts,
 }
 
+# The outcomes one script check can reach. `clean` and `findings` are the two
+# results of an executed scan. `not_applicable` is a positive proof that the
+# declared scope holds nothing of the required kind. `not_executed` and
+# `failure` are failures; neither ever authorises a pass.
+OUTCOMES = ("clean", "findings", "not_applicable", "not_executed", "failure")
 
-def _classify_actionlint(exit_code, findings, envelope, limitations) -> tuple[str, str]:
+# Only a clean result establishes that the required input set was covered and
+# nothing was found in it.
+PASSING_OUTCOMES = ("clean",)
+
+
+def coverage_record(scope: list[str], candidates: list[str], analysed) -> dict:
+    """Record the input set a check was meant to cover and what it covered.
+
+    `candidates` are the files the declared scope actually contains.
+    `analysed` is how many the tool processed, or None when the tool does not
+    report that. An empty scope and an incomplete scan are different facts,
+    and neither is a clean result.
+    """
+    return {
+        "scope": list(scope),
+        "candidates": len(candidates),
+        "analysed": analysed,
+    }
+
+
+def _classify_actionlint(
+    exit_code, findings, envelope, limitations, coverage
+) -> tuple[str, str]:
+    # actionlint reads every file it is given and exits 3 when it cannot read
+    # one, so a completed invocation covers exactly the enumerated scope.
+    if coverage.get("candidates") == 0:
+        return "not_applicable", "no_applicable_inputs"
     if exit_code == 0:
         return "clean", "no_workflow_problems"
     if exit_code == 1 and findings:
@@ -305,9 +355,13 @@ def _classify_actionlint(exit_code, findings, envelope, limitations) -> tuple[st
     return "failure", "actionlint_execution_error"
 
 
-def _classify_powershell(exit_code, findings, envelope, limitations) -> tuple[str, str]:
+def _classify_powershell(
+    exit_code, findings, envelope, limitations, coverage
+) -> tuple[str, str]:
     # The process status is secondary: PowerShell exits zero even when the
     # analyzer reports violations, so the diagnostics decide the outcome.
+    if coverage.get("candidates") == 0:
+        return "not_applicable", "no_applicable_inputs"
     if not isinstance(envelope, dict):
         return "failure", "psscriptanalyzer_report_unavailable"
     if envelope.get("status") != "ok":
@@ -321,6 +375,11 @@ def _classify_powershell(exit_code, findings, envelope, limitations) -> tuple[st
     scanned = envelope.get("files_scanned")
     if type(scanned) is not int or scanned <= 0:
         return "not_executed", "no_applicable_scripts"
+    # Every file the scope contains has to have been analysed. A partial scan
+    # is a coverage failure, never a clean result.
+    candidates = coverage.get("candidates")
+    if candidates is not None and scanned != candidates:
+        return "not_executed", "incomplete_input_coverage"
     return "clean", "no_rule_violations"
 
 
@@ -350,6 +409,11 @@ def _shell(
         "exit_code": None,
         "outcome": outcome,
         "reason": reason,
+        "coverage": {
+            "scope": list(scan_paths),
+            "candidates": None,
+            "analysed": None,
+        },
         "finding_count": 0,
         "findings": [],
         "omitted_findings": 0,
@@ -360,6 +424,29 @@ def _shell(
         "stdout": "",
         "stderr": "",
     }
+
+
+def empty_scope_report(policy: dict, scope: list[str]) -> dict:
+    """A declared scope that provably holds nothing of the required kind.
+
+    The tool is not run, so there is no exit status to report. The report
+    states the empty scope instead of inventing one, and the empty scope is
+    never presented as a clean result.
+    """
+    report = _shell(
+        policy["tool"],
+        policy["pinned_version"],
+        list(scope),
+        "not_applicable",
+        "no_applicable_inputs",
+    )
+    report["policy"] = {
+        key: value
+        for key, value in policy.items()
+        if key not in _REPORT_ONLY_POLICY_KEYS
+    }
+    report["coverage"] = coverage_record(scope, [], 0)
+    return report
 
 
 def unsupported_report(scan_path: str, reason: str) -> dict:
@@ -384,6 +471,7 @@ def script_report(
     stdout: str = "",
     stderr: str = "",
     native_raw: str = "",
+    coverage: dict | None = None,
 ) -> dict:
     """Normalise one finished check. Nothing here starts a second execution."""
     if type(exit_code) is not int or not 0 <= exit_code <= 255:
@@ -397,7 +485,14 @@ def script_report(
     )
     if truncated:
         limitations = [*limitations, "native structured output exceeds the 1 MiB limit"]
-    outcome, reason = CLASSIFIERS[tool](exit_code, findings, envelope, limitations)
+    covered = coverage or {
+        "scope": list(policy.get("scan_paths", [])),
+        "candidates": None,
+        "analysed": None,
+    }
+    outcome, reason = CLASSIFIERS[tool](
+        exit_code, findings, envelope, limitations, covered
+    )
     return {
         "schema_version": 1,
         "tool": tool,
@@ -411,6 +506,7 @@ def script_report(
         "exit_code": exit_code,
         "outcome": outcome,
         "reason": reason,
+        "coverage": covered,
         "finding_count": len(findings),
         "findings": findings[:MAX_FINDINGS],
         "omitted_findings": max(0, len(findings) - MAX_FINDINGS),
@@ -421,6 +517,20 @@ def script_report(
         "stdout": _bounded_stream(stdout),
         "stderr": _bounded_stream(stderr),
     }
+
+
+def enforce(report: dict) -> str:
+    """Turn one finished report into a gate decision.
+
+    The report already holds the scanner's own exit status and its own
+    diagnostics, so enforcing reads that result instead of running the
+    scanner a second time or re-interpreting its native output. Only a clean
+    result passes; an empty scope, an incomplete scan, a finding and a tool
+    failure all fail, each with the reason the report recorded.
+    """
+    if report["outcome"] in PASSING_OUTCOMES:
+        return f"{report['tool']} {report['pinned_version']}: clean"
+    raise RuntimeError(findings_summary(report))
 
 
 def findings_summary(report: dict) -> str:

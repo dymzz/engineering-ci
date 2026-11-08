@@ -15,15 +15,25 @@ Two signals, deliberately kept apart:
 
 Nothing here rewrites a script, executes one, or installs an automatic fix.
 
-Verification status — NOT VERIFIED against the real tools:
+Verification status — observed against the real tool on 2026-10-31:
 
-1. No PSScriptAnalyzer run has been observed. Which default rules actually fire
-   on a given script is a property of the analyzer, not of this module, and the
-   committed fixtures assume three specific rules do.
-2. The analyzer's own report shape is read through the JSON Lines contract that
-   `powershell_invoke.ps1` writes; that pairing is unexercised end to end.
-3. The Windows runner job has never executed, so module preparation, the pinned
-   uv invocation and the checkout move are all unproven.
+1. PSScriptAnalyzer 1.9.0 was run. The analyzer reports the number of files it
+   scanned, reports its own version, and leaves the process status at zero
+   even when it reports violations, so the diagnostics decide the result.
+2. The JSON Lines contract that `powershell_invoke.ps1` writes was observed:
+   the first line is the envelope, every following line is one diagnostic.
+   `PSAvoidUsingCmdletAliases`, `PSAvoidUsingWriteHost` and
+   `PSUseDeclaredVarsMoreThanAssignments` do fire on the committed fixture.
+3. That observation exposed a real defect, now fixed: the invocation script
+   consumed one path per `-Path` flag, while both callers pass every path
+   after a single `-Path`. Analysing more than one script therefore failed
+   with `Unknown argument`. The script now consumes every value that follows
+   `-Path`, and the two-script case was re-run and observed clean.
+
+Still NOT VERIFIED:
+
+- The Windows runner job has never executed, so module preparation, the pinned
+  uv invocation and the checkout move are all unproven.
 
 The gate fails closed: an unreadable envelope, a missing script set or a failed
 process exits non-zero and writes a failure bundle rather than a clean result.
@@ -49,6 +59,21 @@ DEFAULT_TIMEOUT = 600
 
 class AnalysisError(Exception):
     """A failure that must never be reported as a clean analysis."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        candidates: int | None = None,
+        files_scanned: int | None = None,
+        error_cause: str | None = None,
+        limitations: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+        self.files_scanned = files_scanned
+        self.error_cause = error_cause
+        self.limitations = limitations or []
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -106,6 +131,11 @@ def select_scripts(workspace: Path, paths: list[str]) -> list[Path]:
                 if item.is_file() and item.suffix.lower() in POWERSHELL_SUFFIXES
             ]
         elif target.is_file():
+            # An explicitly named file is requested on its own terms, so it
+            # has to be a PowerShell file. Analysing something else would
+            # report a covered input that was never a script.
+            if target.suffix.lower() not in POWERSHELL_SUFFIXES:
+                raise AnalysisError(f"input path is not a PowerShell script: {entry}")
             selected.append(target)
         else:
             raise AnalysisError(f"input path not found: {entry}")
@@ -201,16 +231,26 @@ def _records(raw: str) -> tuple[dict, list[dict]]:
     lines = [line for line in raw.splitlines() if line.strip()]
     if not lines:
         raise AnalysisError("the analyzer returned no diagnostic envelope")
-    try:
-        envelope = json.loads(lines[0])
-        diagnostics = [json.loads(line) for line in lines[1:]]
-    except ValueError as exc:
-        raise AnalysisError(
-            f"the analyzer output is not valid JSON ({type(exc).__name__})"
-        )
-    if not isinstance(envelope, dict):
-        raise AnalysisError("the analyzer envelope is not an object")
-    return envelope, [item for item in diagnostics if isinstance(item, dict)]
+    records = []
+    for line in lines:
+        try:
+            val = json.loads(line)
+            if isinstance(val, dict):
+                records.append(val)
+        except ValueError as exc:
+            raise AnalysisError(
+                f"the analyzer output is not valid JSON ({type(exc).__name__})"
+            )
+    if not records:
+        raise AnalysisError("the analyzer returned no diagnostic envelope")
+    error_envelopes = [r for r in records if r.get("status") == "error"]
+    if error_envelopes:
+        envelope = error_envelopes[-1]
+        diagnostics = [r for r in records if "rule" in r]
+        return envelope, diagnostics
+    envelope = records[0]
+    diagnostics = [r for r in records[1:] if "rule" in r]
+    return envelope, diagnostics
 
 
 def analyse(
@@ -233,8 +273,13 @@ def analyse(
                 if key not in {"schema_version", "pinned_version"}
             },
             "files_scanned": 0,
-            "outcome": "not_executed",
-            "reason": "no_applicable_scripts",
+            "coverage": {
+                "scope": list(policy["paths"]),
+                "candidates": 0,
+                "analysed": 0,
+            },
+            "outcome": "not_applicable",
+            "reason": "no_applicable_inputs",
             "diagnostic_count": 0,
             "diagnostics": [],
             "omitted_diagnostics": 0,
@@ -265,13 +310,55 @@ def analyse(
     result = _run_powershell(arguments, workspace, timeout)
     envelope, records = _records(result.stdout)
     if envelope.get("status") != "ok":
+        error_msg = str(envelope.get("error") or "")
+        candidates = envelope.get("candidates")
+        files_scanned = envelope.get("files_scanned")
+        expected_candidates = len(scripts)
+        notes = []
+        count_matched = (
+            type(candidates) is int
+            and type(files_scanned) is int
+            and candidates == expected_candidates
+            and 0 <= files_scanned <= candidates
+        )
+        if type(candidates) is int and candidates != expected_candidates:
+            notes.append(
+                f"candidate_count_mismatch: envelope reported {candidates} candidates, expected {expected_candidates}"
+            )
         raise AnalysisError(
-            f"the analyzer failed: {_bounded(str(envelope.get('error') or ''), 400)}"
+            f"the analyzer failed: {_bounded(error_msg, 400)}",
+            candidates=candidates if count_matched else None,
+            files_scanned=files_scanned if count_matched else None,
+            error_cause=error_msg or None,
+            limitations=notes,
         )
     if result.returncode != 0:
+        if envelope.get("error"):
+            error_msg = str(envelope.get("error") or "")
+            candidates = envelope.get("candidates")
+            files_scanned = envelope.get("files_scanned")
+            expected_candidates = len(scripts)
+            notes = []
+            count_matched = (
+                type(candidates) is int
+                and type(files_scanned) is int
+                and candidates == expected_candidates
+                and 0 <= files_scanned <= candidates
+            )
+            if type(candidates) is int and candidates != expected_candidates:
+                notes.append(
+                    f"candidate_count_mismatch: envelope reported {candidates} candidates, expected {expected_candidates}"
+                )
+            raise AnalysisError(
+                f"the analyzer failed: {_bounded(error_msg, 400)}",
+                candidates=candidates if count_matched else None,
+                files_scanned=files_scanned if count_matched else None,
+                error_cause=error_msg or None,
+                limitations=notes,
+            )
         raise AnalysisError(
             f"the analyzer process exited {result.returncode}: "
-            f"{_bounded(result.stderr.strip(), 400)}"
+            f"{_bounded(result.stderr.strip() or result.stdout.strip(), 400)}"
         )
     diagnostics = [
         {
@@ -284,6 +371,16 @@ def analyse(
         }
         for item in records
     ]
+    # The analyzer reports how many scripts it scanned. Every file the scope
+    # contains has to be among them: a partial scan is a coverage failure,
+    # never a clean result.
+    scanned = envelope.get("files_scanned")
+    if type(scanned) is not int or scanned != len(scripts):
+        outcome, reason = "not_executed", "incomplete_input_coverage"
+    elif diagnostics:
+        outcome, reason = "findings", "rule_violations_reported"
+    else:
+        outcome, reason = "clean", "no_rule_violations"
     return {
         "schema_version": 1,
         "tool": "psscriptanalyzer",
@@ -295,9 +392,14 @@ def analyse(
             for key, value in policy.items()
             if key not in {"schema_version", "pinned_version"}
         },
-        "files_scanned": envelope.get("files_scanned", len(scripts)),
-        "outcome": "findings" if diagnostics else "clean",
-        "reason": "rule_violations_reported" if diagnostics else "no_rule_violations",
+        "files_scanned": scanned if type(scanned) is int else 0,
+        "coverage": {
+            "scope": list(policy["paths"]),
+            "candidates": len(scripts),
+            "analysed": scanned if type(scanned) is int else 0,
+        },
+        "outcome": outcome,
+        "reason": reason,
         "diagnostic_count": len(diagnostics),
         "diagnostics": diagnostics[:MAX_DIAGNOSTICS],
         "omitted_diagnostics": max(0, len(diagnostics) - MAX_DIAGNOSTICS),
@@ -384,6 +486,9 @@ def main(argv=None) -> int:
         report = analyse(workspace, Path(args.helper_root).resolve(), policy)
     except AnalysisError as exc:
         # A tool that cannot run must not be reported as a clean analysis.
+        limitations = [str(exc)]
+        if exc.limitations:
+            limitations.extend(exc.limitations)
         write_bundle(
             Path(args.out),
             {
@@ -392,10 +497,15 @@ def main(argv=None) -> int:
                 "pinned_version": PSSCRIPTANALYZER_VERSION,
                 "outcome": "failure",
                 "reason": "psscriptanalyzer_execution_error",
+                "coverage": {
+                    "scope": [item for item in args.paths.split(",") if item.strip()],
+                    "candidates": exc.candidates,
+                    "analysed": exc.files_scanned,
+                },
                 "diagnostic_count": 0,
                 "diagnostics": [],
                 "omitted_diagnostics": 0,
-                "limitations": [str(exc)],
+                "limitations": limitations,
             },
             args.mode,
         )

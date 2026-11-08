@@ -24,9 +24,10 @@ function Write-Failure($message) {
         status                    = 'error'
         error                     = "$message"
         diagnostics               = @()
-        files_scanned             = 0
+        candidates                = if ($files) { $files.Count } else { 0 }
+        files_scanned             = if ($analyzed) { $analyzed.Count } else { 0 }
         powershell_version        = "$($PSVersionTable.PSVersion)"
-        psscriptanalyzer_version  = ''
+        psscriptanalyzer_version  = try { "$((Get-Module PSScriptAnalyzer).Version)" } catch { '' }
     }
 }
 
@@ -35,14 +36,26 @@ $moduleRoot = ''
 $paths = New-Object System.Collections.Generic.List[string]
 $settings = ''
 $severity = ''
-for ($i = 0; $i -lt $args.Count; $i++) {
-    switch ($args[$i]) {
-        '-Version' { $version = $args[++$i]; continue }
-        '-ModuleRoot' { $moduleRoot = $args[++$i]; continue }
-        '-Path' { $paths.Add($args[++$i]); continue }
-        '-Settings' { $settings = $args[++$i]; continue }
-        '-Severity' { $severity = $args[++$i]; continue }
-        default { Write-Failure "Unknown argument: $($args[$i])"; exit 3 }
+# One -Path carries every path that follows it, so the caller can pass a
+# whole script set in one argument. The index is managed here rather than by
+# the loop, because a single flag now consumes more than one value.
+$i = 0
+while ($i -lt $args.Count) {
+    $argument = $args[$i]
+    switch ($argument) {
+        '-Version' { $i++; $version = $args[$i]; $i++; continue }
+        '-ModuleRoot' { $i++; $moduleRoot = $args[$i]; $i++; continue }
+        '-Path' {
+            $i++
+            while ($i -lt $args.Count -and -not $args[$i].StartsWith('-')) {
+                $paths.Add($args[$i])
+                $i++
+            }
+            continue
+        }
+        '-Settings' { $i++; $settings = $args[$i]; $i++; continue }
+        '-Severity' { $i++; $severity = $args[$i]; $i++; continue }
+        default { Write-Failure "Unknown argument: $argument"; exit 3 }
     }
 }
 
@@ -78,14 +91,8 @@ try {
     exit 3
 }
 
-Write-Record @{
-    schema_version           = 1
-    status                    = 'ok'
-    diagnostics               = @()
-    files_scanned             = $files.Count
-    powershell_version        = "$($PSVersionTable.PSVersion)"
-    psscriptanalyzer_version  = "$((Get-Module PSScriptAnalyzer).Version)"
-}
+$analyzed = New-Object System.Collections.Generic.List[string]
+$diagnostics = New-Object System.Collections.Generic.List[object]
 
 foreach ($file in $files) {
     $invoke = @{ Path = $file }
@@ -93,19 +100,34 @@ foreach ($file in $files) {
     if ($severity) { $invoke['Severity'] = $severity }
     try {
         foreach ($record in @(Invoke-ScriptAnalyzer @invoke)) {
-            Write-Record @{
+            $diagnostics.Add(@{
                 rule     = "$($record.RuleName)"
                 severity = "$($record.Severity)"
                 message  = "$($record.Message)"
                 script   = "$($record.ScriptName)"
                 line     = $record.Line
                 column   = $record.Column
-            }
+            })
         }
+        $analyzed.Add($file)
     } catch {
         Write-Failure "Analyzing $file failed: $($_.Exception.Message)"
         exit 3
     }
+}
+
+Write-Record @{
+    schema_version           = 1
+    status                    = 'ok'
+    diagnostics               = @()
+    candidates                = $files.Count
+    files_scanned             = $analyzed.Count
+    powershell_version        = "$($PSVersionTable.PSVersion)"
+    psscriptanalyzer_version  = "$((Get-Module PSScriptAnalyzer).Version)"
+}
+
+foreach ($diag in $diagnostics) {
+    Write-Record $diag
 }
 
 exit 0
