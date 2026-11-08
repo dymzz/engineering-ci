@@ -18,6 +18,7 @@ def main(argv=None):
             "download",
             "version",
             "policy",
+            "select",
         ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -31,6 +32,8 @@ def main(argv=None):
         from ..release.version import main as invoke
     elif namespace.command == "policy":
         from ..security_policy import main as invoke
+    elif namespace.command == "select":
+        from ..selection import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)
