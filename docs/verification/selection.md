@@ -9,11 +9,11 @@ Contract: [selection and plan](../architecture/selection.md).
 
 ```sh
 pytest -q tests/test_selection.py
-# 24 passed
+# 26 passed
 
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 471 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 473 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
@@ -43,6 +43,8 @@ checkout or the Knowledge repository:
 | Per-check scope | Markdown-only change: `unittest: no_tests`, `docs: selected`; code change: Tach/Vulture selected, docs not applicable |
 | Deletion scope | `docs.recheck_all = true`, so unchanged referencing documents remain in scope |
 | Path fidelity | a leading space in a renamed path survives the NUL-separated Git report |
+| Rename/delete with spaces | exact `docs/space name.md` identity kept; deletion sets `docs.recheck_all` |
+| `--full` scope | `selection.full_tests = true`; docs/Tach/Vulture remain `not_applicable` |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |
 
 ## Plan identity observed

@@ -110,6 +110,7 @@ class Selection:
     escalation_reason: str | None = None
     reasons: dict[str, list[str]] = field(default_factory=dict)
     prerequisites: frozenset[str] = frozenset()
+    full_tests: bool = False
 
 
 def _text(value, name):
@@ -423,7 +424,7 @@ def _rule_for(path, config):
     return None
 
 
-def _escalated(changeset, config, tests, reason, reasons=None):
+def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=False):
     return Selection(
         changeset=changeset,
         tests=tests,
@@ -433,6 +434,7 @@ def _escalated(changeset, config, tests, reason, reasons=None):
         escalation_reason=reason,
         reasons=reasons or {"all": [reason]},
         prerequisites=frozenset(config.prerequisites),
+        full_tests=full_tests,
     )
 
 
@@ -443,7 +445,13 @@ def select(changes, config, *, root, full=False):
     test_prefix = ".".join(Path(config.tests_dir).parts)
     all_tests = _test_modules(tests_dir, test_prefix)
     if full:
-        return _escalated(changes, config, all_tests, "Explicitly requested full suite")
+        return _escalated(
+            changes,
+            config,
+            all_tests,
+            "Explicitly requested full suite",
+            full_tests=True,
+        )
     if not changes.complete:
         return _escalated(
             changes,
@@ -651,6 +659,7 @@ def plan(selection, *, config, config_path, root):
             "prerequisites": sorted(selection.prerequisites),
             "escalated": selection.escalated,
             "escalation_reason": selection.escalation_reason,
+            "full_tests": selection.full_tests,
             "reasons": {
                 name: list(items) for name, items in sorted(selection.reasons.items())
             },
@@ -741,6 +750,7 @@ def main(argv=None):
         )
     print(f"status: {selection.status}")
     print(f"tests: {' '.join(selection.tests) or '(none)'}")
+    print(f"full_tests: {'yes (tests only)' if selection.full_tests else 'no'}")
     if selection.escalated:
         print(f"escalation: {selection.escalation_reason}")
     return 0

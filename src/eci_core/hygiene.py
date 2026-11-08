@@ -486,7 +486,11 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=Path("ci-hygiene.toml"))
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--full", action="store_true")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run all applicable documents/code checks; it does not run tests",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = args.root.resolve()

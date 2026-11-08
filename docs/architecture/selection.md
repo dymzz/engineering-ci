@@ -121,7 +121,8 @@ evidence.
   "selection": {"status": "targeted", "tests": ["tests.test_sub"],
                 "checks": ["hygiene", "tach", "vulture"],
                 "prerequisites": ["identity_commit"], "escalated": false,
-                "escalation_reason": null, "reasons": {"tests.test_sub": ["..."]}},
+                "escalation_reason": null, "full_tests": false,
+                "reasons": {"tests.test_sub": ["..."]}},
   "check_scope": [
     {"name": "unittest", "status": "targeted", "inputs": ["tests.test_sub"]},
     {"name": "docs", "status": "not_applicable", "inputs": [],
@@ -178,7 +179,12 @@ engineering-ci select --root . --full --list
 ```
 
 `--json`, `--list` and `--run` are mutually exclusive. `--full` expands tests
-only; it is not an "all checks passed" claim.
+only and sets `selection.full_tests`; `check_scope` keeps reporting whether
+documents/Tach/Vulture/source checks are applicable. It is not an
+"all checks passed" claim.
+
+`engineering-ci hygiene --full` is the separate contract: it expands applicable
+hygiene checks (all active documents and code checks), not tests.
 
 ## Verification
 
@@ -197,5 +203,5 @@ multi-target pytest execution and CLI modes.
 | P1-3 common package import in Dagger | Import and selector call delivered via `eci_core` + `engineering_ci_module`; Tach/Lychee acquisition and Source construction pending |
 | P1-4 multi pytest targets | Local execution delivered as one native process with exit fidelity; Required full-coverage caveat documented; Dagger/Actions pending |
 | P2-1 Git attributes host location | Pending with the source slice; must run where `.git` exists |
-| P2-2 `--full` scope | Delivered: tests only, explicitly not an all-checks pass |
-| P2-3 path fidelity | Delivered: no `.strip()`, real NUL-separated leading-space test |
+| P2-2 `--full` scope | Delivered: `selection.full_tests` is explicit; tests only, not an all-checks pass |
+| P2-3 path fidelity | Delivered: no `.strip()`, leading-space and rename/delete-with-spaces NUL tests |

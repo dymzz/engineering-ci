@@ -175,6 +175,23 @@ def test_force_full_selects_every_discovered_module(repo):
     assert result.prerequisites == frozenset({"identity_commit", "wheel_smoke"})
 
 
+def test_full_selection_explicitly_marks_tests_only(repo):
+    path, base = repo
+    result = select(path, base, full=True)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    assert plan["selection"]["full_tests"] is True
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["unittest"]["status"] == "escalated"
+    assert scope["docs"]["status"] == "not_applicable"
+    assert scope["tach"]["status"] == "not_applicable"
+    assert scope["vulture"]["status"] == "not_applicable"
+
+
 def test_plan_records_git_config_and_tach_identity(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
@@ -214,6 +231,30 @@ def test_paths_preserve_leading_spaces_from_git_reports(repo):
     changed = changes(path, base)
     assert "src/pkg/ leading.py" in changed.paths
     assert "src/pkg/other.py" in changed.paths
+
+
+def test_paths_preserve_spaces_across_rename_and_deletion(repo):
+    path, base = repo
+    run(path, "mv", "docs/guide.md", "docs/space name.md")
+    renamed = changes(path, base)
+    assert "docs/space name.md" in renamed.paths
+    assert "docs/guide.md" in renamed.paths
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "rename document with spaces")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "docs/space name.md").unlink()
+    deleted = changes(path, base)
+    assert "docs/space name.md" in deleted.paths
+    result = selection.select(deleted, config(path), root=path)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["docs"]["recheck_all"] is True
+    assert "docs/space name.md" in scope["docs"]["inputs"]
 
 
 def test_missing_base_escalates_instead_of_assuming_no_changes(repo):
