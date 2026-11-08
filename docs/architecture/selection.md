@@ -192,6 +192,24 @@ proof, not a claim that Dagger already executes the full consumer plan.
 Tach/Lychee tool acquisition, Dagger check execution and Source construction
 remain follow-ups.
 
+## Plan execution
+
+```sh
+engineering-ci execute --plan selection-plan.json --root . \
+  --junit pytest.xml --json
+```
+
+`execute` loads exactly the plan's targets and framework; it does not re-select.
+For immutable snapshots it passes `execution_tree` to the native runner. If the
+checkout `HEAD` tree differs, no test runs and the report is `not_executed`
+(exit 4). Empty targets are `not_executed` (exit 3), never a pass. Test failure
+keeps the native exit and is reported as `failed`.
+
+The report (`engineering-ci-execution-report`) carries the plan's generator/Git
+identity, actual targets and framework, JUnit path, native exit and status.
+Selection status and execution status stay separate. This host executor is the
+Actions-consumable path; Dagger plan consumption is still open.
+
 ## CLI
 
 ```sh
@@ -239,5 +257,5 @@ multi-target pytest execution and CLI modes.
 | P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge snapshots and execution tree refusal delivered; multi-ref batching and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
 | P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
-| Production Dagger/Actions plan execution | Open: native `tach-check` / `lychee-check` building blocks exist; plan-to-check orchestration is next |
+| Production Dagger/Actions plan execution | Partial: host `execute --plan` validates tree and runs targets with JUnit; Dagger consumption/aggregation is next |
 | Clean-environment install and non-Knowledge consumer | Clean wheel install outside the checkout delivered; a real non-Knowledge consumer execution is still open |

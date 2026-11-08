@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
         ("select", "eci_core.selection"),
         ("hygiene", "eci_core.hygiene"),
         ("sources", "eci_core.sources"),
+        ("execute", "eci_core.execution"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):

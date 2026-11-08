@@ -866,6 +866,9 @@ def plan(selection, *, config, config_path, root):
             "escalated": selection.escalated,
             "escalation_reason": selection.escalation_reason,
             "full_tests": selection.full_tests,
+            "framework": config.framework,
+            "tests_dir": config.tests_dir,
+            "src_root": config.src_root,
             "tach_graph_validation": "not_executed",
             "requires_tach_check": True,
             "reasons": {

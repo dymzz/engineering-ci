@@ -11,9 +11,12 @@ Contract: [selection and plan](../architecture/selection.md).
 pytest -q tests/test_selection.py
 # 33 passed
 
+pytest -q tests/test_execution.py
+# 5 passed
+
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 496 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 502 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
@@ -50,6 +53,9 @@ checkout or the Knowledge repository:
 | PR snapshot | `merge-tree --write-tree` recorded as `merge_tree` |
 | Execution binding | a checkout with a different `HEAD` tree returns `4` and runs nothing |
 | pytest JUnit | multiple targets write JUnit XML; failing target keeps native exit and XML |
+| Plan execution | `execute --plan` runs exactly plan targets; failing test → `failed` |
+| Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
+| Empty execution | no targets → `not_executed`/exit 3, never a pass |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |
 
 ## Plan identity observed
@@ -87,7 +93,7 @@ uv venv <outside-checkout>/.venv
 uv pip install --no-index --find-links <dist> engineering-ci
 
 engineering-ci --help
-# release, download, version, policy, select, hygiene, sources
+# release, download, version, policy, select, hygiene, sources, execute
 engineering-ci select --help
 # includes --mode {worktree,index,commit,push,pr}
 ```
