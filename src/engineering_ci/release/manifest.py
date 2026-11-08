@@ -21,14 +21,12 @@ from .registry import (
     CHECKS,
     DAGGER_EXECUTION_CHECKS,
     DAGGER_POLICY_CHECKS,
-    LEGACY_ARTIFACT_NAMES,
-    LEGACY_CHECKS,
-    LEGACY_DAGGER_POLICY_CHECKS,
     PERMITTED_REPLACED_CHECK,
     REQUIRED_TOOLS,
     SCOPES,
     STATES,
     TOOLS,
+    resolve_historical_contract,
 )
 from .version import ROOT
 
@@ -318,8 +316,21 @@ def effective_requirements(value: dict) -> list[dict]:
     recorded = value.get("requirements")
     if isinstance(recorded, dict) and isinstance(recorded.get("checks"), list):
         return recorded["checks"]
+    rel = value.get("release", {})
+    wf = value.get("workflow", {})
+    contract = resolve_historical_contract(
+        rel.get("tag"),
+        rel.get("commit_sha"),
+        wf.get("run_id"),
+        wf.get("run_attempt"),
+        value.get("repository"),
+    )
+    if contract is None:
+        raise ValueError(
+            f"Historical manifest lacks authentic release contract for tag {rel.get('tag')!r}"
+        )
     result = []
-    for key, (job, step) in sorted(LEGACY_CHECKS.items()):
+    for key, (job, step) in sorted(contract["checks"].items()):
         result.append(
             {
                 "key": key,
@@ -329,12 +340,12 @@ def effective_requirements(value: dict) -> list[dict]:
                 "dagger_check": "",
             }
         )
-    for key, dagger_check in sorted(LEGACY_DAGGER_POLICY_CHECKS.items()):
+    for key, dagger_check in sorted(contract["dagger_policy_checks"].items()):
         result.append(
             {
                 "key": key,
-                "job": LEGACY_CHECKS["dagger"][0],
-                "step": LEGACY_CHECKS["dagger"][1],
+                "job": contract["checks"]["dagger"][0],
+                "step": contract["checks"]["dagger"][1],
                 "scope": "",
                 "dagger_check": dagger_check,
             }
@@ -546,6 +557,22 @@ def validate(value, repository, tag, head, *, published=False):
             or recorded["digest"] != requirement_digest_records(items)
         ):
             raise ValueError("Invalid recorded requirement set")
+        expected_artifacts = ARTIFACT_NAMES
+    else:
+        rel = value.get("release", {})
+        wf = value.get("workflow", {})
+        contract = resolve_historical_contract(
+            rel.get("tag"),
+            rel.get("commit_sha"),
+            wf.get("run_id"),
+            wf.get("run_attempt"),
+            repository,
+        )
+        if contract is None:
+            raise ValueError(
+                f"Historical manifest lacks authentic release contract for tag {rel.get('tag')!r}"
+            )
+        expected_artifacts = contract["artifacts"]
     requirements = {item["key"]: item for item in effective_requirements(value)}
     required = set(requirements)
     optional = {"core_coverage_threshold", "consumer_failure_probe"}
@@ -605,9 +632,6 @@ def validate(value, repository, tag, head, *, published=False):
         and {(item["scope"], item["name"]) for item in value["tools"]} != REQUIRED_TOOLS
     ):
         raise ValueError("Passed manifest lacks required tool evidence")
-    expected_artifacts = (
-        ARTIFACT_NAMES if "requirements" in value else LEGACY_ARTIFACT_NAMES
-    )
     for item in value["artifacts"]:
         if (
             set(item) != {"name", "id", "digest", "url"}

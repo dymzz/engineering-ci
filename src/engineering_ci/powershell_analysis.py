@@ -60,6 +60,19 @@ DEFAULT_TIMEOUT = 600
 class AnalysisError(Exception):
     """A failure that must never be reported as a clean analysis."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        candidates: int | None = None,
+        files_scanned: int | None = None,
+        error_cause: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+        self.files_scanned = files_scanned
+        self.error_cause = error_cause
+
 
 def _bounded(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit] + "[truncated]"
@@ -295,13 +308,37 @@ def analyse(
     result = _run_powershell(arguments, workspace, timeout)
     envelope, records = _records(result.stdout)
     if envelope.get("status") != "ok":
+        error_msg = str(envelope.get("error") or "")
+        candidates = envelope.get("candidates")
+        files_scanned = envelope.get("files_scanned")
+        valid_counts = (
+            type(candidates) is int
+            and type(files_scanned) is int
+            and candidates >= 0
+            and 0 <= files_scanned <= candidates
+        )
         raise AnalysisError(
-            f"the analyzer failed: {_bounded(str(envelope.get('error') or ''), 400)}"
+            f"the analyzer failed: {_bounded(error_msg, 400)}",
+            candidates=candidates if valid_counts else None,
+            files_scanned=files_scanned if valid_counts else None,
+            error_cause=error_msg or None,
         )
     if result.returncode != 0:
         if envelope.get("error"):
+            error_msg = str(envelope.get("error") or "")
+            candidates = envelope.get("candidates")
+            files_scanned = envelope.get("files_scanned")
+            valid_counts = (
+                type(candidates) is int
+                and type(files_scanned) is int
+                and candidates >= 0
+                and 0 <= files_scanned <= candidates
+            )
             raise AnalysisError(
-                f"the analyzer failed: {_bounded(str(envelope.get('error') or ''), 400)}"
+                f"the analyzer failed: {_bounded(error_msg, 400)}",
+                candidates=candidates if valid_counts else None,
+                files_scanned=files_scanned if valid_counts else None,
+                error_cause=error_msg or None,
             )
         raise AnalysisError(
             f"the analyzer process exited {result.returncode}: "
@@ -443,8 +480,8 @@ def main(argv=None) -> int:
                 "reason": "psscriptanalyzer_execution_error",
                 "coverage": {
                     "scope": [item for item in args.paths.split(",") if item.strip()],
-                    "candidates": None,
-                    "analysed": None,
+                    "candidates": exc.candidates,
+                    "analysed": exc.files_scanned,
                 },
                 "diagnostic_count": 0,
                 "diagnostics": [],

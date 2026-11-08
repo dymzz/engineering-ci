@@ -455,6 +455,86 @@ class RunnerSelectionTests(unittest.TestCase):
                     "Analyzing broken.ps1 failed: parse syntax error",
                     str(ctx.exception),
                 )
+                self.assertEqual(ctx.exception.candidates, 2)
+                self.assertEqual(ctx.exception.files_scanned, 1)
+
+    def test_powershell_partial_failure_preserves_error_envelope_coverage_in_report(
+        self,
+    ):
+        import json
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+
+        out = Path(tempfile.mkdtemp()) / "bundle"
+        with patch.object(powershell, "_run_powershell") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pwsh"],
+                returncode=3,
+                stdout='{"schema_version": 1, "status": "error", "error": "Analyzing file3.ps1 failed: syntax error", "candidates": 3, "files_scanned": 2}\n',
+                stderr="",
+            )
+            with patch.object(
+                powershell, "prepare_module", return_value=(Path("/mod"), "cached")
+            ):
+                code = powershell.main(
+                    [
+                        "--mode",
+                        "enforce",
+                        "--workspace",
+                        str(self.workspace),
+                        "--paths",
+                        "scripts",
+                        "--out",
+                        str(out),
+                    ]
+                )
+                self.assertEqual(code, 1)
+                report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+                self.assertEqual(report["outcome"], "failure")
+                self.assertEqual(report["coverage"]["candidates"], 3)
+                self.assertEqual(report["coverage"]["analysed"], 2)
+                self.assertTrue(
+                    any(
+                        "Analyzing file3.ps1 failed: syntax error" in item
+                        for item in report["limitations"]
+                    )
+                )
+
+    def test_powershell_malformed_envelope_counts_fall_back_to_none_coverage(self):
+        import json
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+
+        out = Path(tempfile.mkdtemp()) / "bundle"
+        with patch.object(powershell, "_run_powershell") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pwsh"],
+                returncode=3,
+                stdout='{"schema_version": 1, "status": "error", "error": "corrupted count", "candidates": -1, "files_scanned": 5}\n',
+                stderr="",
+            )
+            with patch.object(
+                powershell, "prepare_module", return_value=(Path("/mod"), "cached")
+            ):
+                code = powershell.main(
+                    [
+                        "--mode",
+                        "enforce",
+                        "--workspace",
+                        str(self.workspace),
+                        "--paths",
+                        "scripts",
+                        "--out",
+                        str(out),
+                    ]
+                )
+                self.assertEqual(code, 1)
+                report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+                self.assertEqual(report["outcome"], "failure")
+                self.assertIsNone(report["coverage"]["candidates"])
+                self.assertIsNone(report["coverage"]["analysed"])
 
 
 class ModeTests(unittest.TestCase):
