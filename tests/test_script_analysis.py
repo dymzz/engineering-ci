@@ -466,6 +466,14 @@ class RunnerSelectionTests(unittest.TestCase):
         import tempfile
         from unittest.mock import patch
 
+        # Realistically create 3 scripts so len(scripts) == 3
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / "scripts").mkdir()
+        for i in range(1, 4):
+            (workspace / "scripts" / f"file{i}.ps1").write_text(
+                f"Write-Output 'file {i}'\n", encoding="utf-8"
+            )
+
         out = Path(tempfile.mkdtemp()) / "bundle"
         with patch.object(powershell, "_run_powershell") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
@@ -482,7 +490,7 @@ class RunnerSelectionTests(unittest.TestCase):
                         "--mode",
                         "enforce",
                         "--workspace",
-                        str(self.workspace),
+                        str(workspace),
                         "--paths",
                         "scripts",
                         "--out",
@@ -497,6 +505,55 @@ class RunnerSelectionTests(unittest.TestCase):
                 self.assertTrue(
                     any(
                         "Analyzing file3.ps1 failed: syntax error" in item
+                        for item in report["limitations"]
+                    )
+                )
+
+    def test_powershell_candidate_count_mismatch_falls_back_to_none_coverage(self):
+        import json
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+
+        # Workspace only has 2 scripts, but envelope claims 3
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / "scripts").mkdir()
+        for i in range(1, 3):
+            (workspace / "scripts" / f"file{i}.ps1").write_text(
+                f"Write-Output 'file {i}'\n", encoding="utf-8"
+            )
+
+        out = Path(tempfile.mkdtemp()) / "bundle"
+        with patch.object(powershell, "_run_powershell") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pwsh"],
+                returncode=3,
+                stdout='{"schema_version": 1, "status": "error", "error": "Analyzing file3.ps1 failed: syntax error", "candidates": 3, "files_scanned": 2}\n',
+                stderr="",
+            )
+            with patch.object(
+                powershell, "prepare_module", return_value=(Path("/mod"), "cached")
+            ):
+                code = powershell.main(
+                    [
+                        "--mode",
+                        "enforce",
+                        "--workspace",
+                        str(workspace),
+                        "--paths",
+                        "scripts",
+                        "--out",
+                        str(out),
+                    ]
+                )
+                self.assertEqual(code, 1)
+                report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+                self.assertEqual(report["outcome"], "failure")
+                self.assertIsNone(report["coverage"]["candidates"])
+                self.assertIsNone(report["coverage"]["analysed"])
+                self.assertTrue(
+                    any(
+                        "candidate_count_mismatch" in item
                         for item in report["limitations"]
                     )
                 )

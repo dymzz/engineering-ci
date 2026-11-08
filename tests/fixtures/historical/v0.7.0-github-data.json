@@ -1,0 +1,1288 @@
+{
+  "run": {
+    "id": 39614205390,
+    "name": "Release engineering-ci",
+    "node_id": "WFR_kwLOVA3XLc8AAAAJOTDNzg",
+    "head_branch": "main",
+    "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+    "path": ".github/workflows/release.yml",
+    "display_title": "Release engineering-ci",
+    "run_number": 33,
+    "event": "workflow_dispatch",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_id": 379646725,
+    "check_suite_id": 107354118970,
+    "check_suite_node_id": "CS_kwDOVA3XLc8AAAAY_s3bOg",
+    "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+    "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390",
+    "pull_requests": [],
+    "created_at": "2026-10-21T14:08:23Z",
+    "updated_at": "2026-10-21T14:12:13Z",
+    "actor": {
+      "login": "dymzz",
+      "id": 6121707,
+      "node_id": "MDQ6VXNlcjYxMjE3MDc=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dymzz",
+      "html_url": "https://github.com/dymzz",
+      "followers_url": "https://api.github.com/users/dymzz/followers",
+      "following_url": "https://api.github.com/users/dymzz/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dymzz/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dymzz/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dymzz/subscriptions",
+      "organizations_url": "https://api.github.com/users/dymzz/orgs",
+      "repos_url": "https://api.github.com/users/dymzz/repos",
+      "events_url": "https://api.github.com/users/dymzz/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dymzz/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "run_attempt": 1,
+    "referenced_workflows": [
+      {
+        "path": "dymzz/engineering-ci/.github/workflows/reusable-python-ci.yml@9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "ref": "refs/heads/main"
+      },
+      {
+        "path": "dymzz/engineering-ci/.github/workflows/ci.yml@9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "ref": "refs/heads/main"
+      }
+    ],
+    "run_started_at": "2026-10-21T14:08:23Z",
+    "triggering_actor": {
+      "login": "dymzz",
+      "id": 6121707,
+      "node_id": "MDQ6VXNlcjYxMjE3MDc=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dymzz",
+      "html_url": "https://github.com/dymzz",
+      "followers_url": "https://api.github.com/users/dymzz/followers",
+      "following_url": "https://api.github.com/users/dymzz/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dymzz/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dymzz/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dymzz/subscriptions",
+      "organizations_url": "https://api.github.com/users/dymzz/orgs",
+      "repos_url": "https://api.github.com/users/dymzz/repos",
+      "events_url": "https://api.github.com/users/dymzz/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dymzz/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "jobs_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390/attempts/1/jobs",
+    "logs_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390/attempts/1/logs",
+    "check_suite_url": "https://api.github.com/repos/dymzz/engineering-ci/check-suites/107354118970",
+    "artifacts_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390/artifacts",
+    "cancel_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390/cancel",
+    "rerun_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390/rerun",
+    "previous_attempt_url": null,
+    "workflow_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/workflows/379646725",
+    "head_commit": {
+      "id": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "tree_id": "7ef80e71eac196f0fc2f10eaa40c5d74997e7989",
+      "message": "fix(test): import timing module in generated quality fixture (#44)\n\nCo-authored-by: Aurora <dyjane@protonmail.com>",
+      "timestamp": "2026-10-21T14:05:13Z",
+      "author": {
+        "name": "dymzz",
+        "email": "dyjane@live.cn"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com"
+      }
+    },
+    "repository": {
+      "id": 1410193197,
+      "node_id": "R_kgDOVA3XLQ",
+      "name": "engineering-ci",
+      "full_name": "dymzz/engineering-ci",
+      "private": true,
+      "owner": {
+        "login": "dymzz",
+        "id": 6121707,
+        "node_id": "MDQ6VXNlcjYxMjE3MDc=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dymzz",
+        "html_url": "https://github.com/dymzz",
+        "followers_url": "https://api.github.com/users/dymzz/followers",
+        "following_url": "https://api.github.com/users/dymzz/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dymzz/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dymzz/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dymzz/subscriptions",
+        "organizations_url": "https://api.github.com/users/dymzz/orgs",
+        "repos_url": "https://api.github.com/users/dymzz/repos",
+        "events_url": "https://api.github.com/users/dymzz/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dymzz/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/dymzz/engineering-ci",
+      "description": null,
+      "fork": false,
+      "url": "https://api.github.com/repos/dymzz/engineering-ci",
+      "forks_url": "https://api.github.com/repos/dymzz/engineering-ci/forks",
+      "keys_url": "https://api.github.com/repos/dymzz/engineering-ci/keys{/key_id}",
+      "collaborators_url": "https://api.github.com/repos/dymzz/engineering-ci/collaborators{/collaborator}",
+      "teams_url": "https://api.github.com/repos/dymzz/engineering-ci/teams",
+      "hooks_url": "https://api.github.com/repos/dymzz/engineering-ci/hooks",
+      "issue_events_url": "https://api.github.com/repos/dymzz/engineering-ci/issues/events{/number}",
+      "events_url": "https://api.github.com/repos/dymzz/engineering-ci/events",
+      "assignees_url": "https://api.github.com/repos/dymzz/engineering-ci/assignees{/user}",
+      "branches_url": "https://api.github.com/repos/dymzz/engineering-ci/branches{/branch}",
+      "tags_url": "https://api.github.com/repos/dymzz/engineering-ci/tags",
+      "blobs_url": "https://api.github.com/repos/dymzz/engineering-ci/git/blobs{/sha}",
+      "git_tags_url": "https://api.github.com/repos/dymzz/engineering-ci/git/tags{/sha}",
+      "git_refs_url": "https://api.github.com/repos/dymzz/engineering-ci/git/refs{/sha}",
+      "trees_url": "https://api.github.com/repos/dymzz/engineering-ci/git/trees{/sha}",
+      "statuses_url": "https://api.github.com/repos/dymzz/engineering-ci/statuses/{sha}",
+      "languages_url": "https://api.github.com/repos/dymzz/engineering-ci/languages",
+      "stargazers_url": "https://api.github.com/repos/dymzz/engineering-ci/stargazers",
+      "contributors_url": "https://api.github.com/repos/dymzz/engineering-ci/contributors",
+      "subscribers_url": "https://api.github.com/repos/dymzz/engineering-ci/subscribers",
+      "subscription_url": "https://api.github.com/repos/dymzz/engineering-ci/subscription",
+      "commits_url": "https://api.github.com/repos/dymzz/engineering-ci/commits{/sha}",
+      "git_commits_url": "https://api.github.com/repos/dymzz/engineering-ci/git/commits{/sha}",
+      "comments_url": "https://api.github.com/repos/dymzz/engineering-ci/comments{/number}",
+      "issue_comment_url": "https://api.github.com/repos/dymzz/engineering-ci/issues/comments{/number}",
+      "contents_url": "https://api.github.com/repos/dymzz/engineering-ci/contents/{+path}",
+      "compare_url": "https://api.github.com/repos/dymzz/engineering-ci/compare/{base}...{head}",
+      "merges_url": "https://api.github.com/repos/dymzz/engineering-ci/merges",
+      "archive_url": "https://api.github.com/repos/dymzz/engineering-ci/{archive_format}{/ref}",
+      "downloads_url": "https://api.github.com/repos/dymzz/engineering-ci/downloads",
+      "issues_url": "https://api.github.com/repos/dymzz/engineering-ci/issues{/number}",
+      "pulls_url": "https://api.github.com/repos/dymzz/engineering-ci/pulls{/number}",
+      "milestones_url": "https://api.github.com/repos/dymzz/engineering-ci/milestones{/number}",
+      "notifications_url": "https://api.github.com/repos/dymzz/engineering-ci/notifications{?since,all,participating}",
+      "labels_url": "https://api.github.com/repos/dymzz/engineering-ci/labels{/name}",
+      "releases_url": "https://api.github.com/repos/dymzz/engineering-ci/releases{/id}",
+      "deployments_url": "https://api.github.com/repos/dymzz/engineering-ci/deployments"
+    },
+    "head_repository": {
+      "id": 1410193197,
+      "node_id": "R_kgDOVA3XLQ",
+      "name": "engineering-ci",
+      "full_name": "dymzz/engineering-ci",
+      "private": true,
+      "owner": {
+        "login": "dymzz",
+        "id": 6121707,
+        "node_id": "MDQ6VXNlcjYxMjE3MDc=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dymzz",
+        "html_url": "https://github.com/dymzz",
+        "followers_url": "https://api.github.com/users/dymzz/followers",
+        "following_url": "https://api.github.com/users/dymzz/following{/other_user}",
+        "gists_url": "https://api.github.com/users/dymzz/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/dymzz/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/dymzz/subscriptions",
+        "organizations_url": "https://api.github.com/users/dymzz/orgs",
+        "repos_url": "https://api.github.com/users/dymzz/repos",
+        "events_url": "https://api.github.com/users/dymzz/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/dymzz/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/dymzz/engineering-ci",
+      "description": null,
+      "fork": false,
+      "url": "https://api.github.com/repos/dymzz/engineering-ci",
+      "forks_url": "https://api.github.com/repos/dymzz/engineering-ci/forks",
+      "keys_url": "https://api.github.com/repos/dymzz/engineering-ci/keys{/key_id}",
+      "collaborators_url": "https://api.github.com/repos/dymzz/engineering-ci/collaborators{/collaborator}",
+      "teams_url": "https://api.github.com/repos/dymzz/engineering-ci/teams",
+      "hooks_url": "https://api.github.com/repos/dymzz/engineering-ci/hooks",
+      "issue_events_url": "https://api.github.com/repos/dymzz/engineering-ci/issues/events{/number}",
+      "events_url": "https://api.github.com/repos/dymzz/engineering-ci/events",
+      "assignees_url": "https://api.github.com/repos/dymzz/engineering-ci/assignees{/user}",
+      "branches_url": "https://api.github.com/repos/dymzz/engineering-ci/branches{/branch}",
+      "tags_url": "https://api.github.com/repos/dymzz/engineering-ci/tags",
+      "blobs_url": "https://api.github.com/repos/dymzz/engineering-ci/git/blobs{/sha}",
+      "git_tags_url": "https://api.github.com/repos/dymzz/engineering-ci/git/tags{/sha}",
+      "git_refs_url": "https://api.github.com/repos/dymzz/engineering-ci/git/refs{/sha}",
+      "trees_url": "https://api.github.com/repos/dymzz/engineering-ci/git/trees{/sha}",
+      "statuses_url": "https://api.github.com/repos/dymzz/engineering-ci/statuses/{sha}",
+      "languages_url": "https://api.github.com/repos/dymzz/engineering-ci/languages",
+      "stargazers_url": "https://api.github.com/repos/dymzz/engineering-ci/stargazers",
+      "contributors_url": "https://api.github.com/repos/dymzz/engineering-ci/contributors",
+      "subscribers_url": "https://api.github.com/repos/dymzz/engineering-ci/subscribers",
+      "subscription_url": "https://api.github.com/repos/dymzz/engineering-ci/subscription",
+      "commits_url": "https://api.github.com/repos/dymzz/engineering-ci/commits{/sha}",
+      "git_commits_url": "https://api.github.com/repos/dymzz/engineering-ci/git/commits{/sha}",
+      "comments_url": "https://api.github.com/repos/dymzz/engineering-ci/comments{/number}",
+      "issue_comment_url": "https://api.github.com/repos/dymzz/engineering-ci/issues/comments{/number}",
+      "contents_url": "https://api.github.com/repos/dymzz/engineering-ci/contents/{+path}",
+      "compare_url": "https://api.github.com/repos/dymzz/engineering-ci/compare/{base}...{head}",
+      "merges_url": "https://api.github.com/repos/dymzz/engineering-ci/merges",
+      "archive_url": "https://api.github.com/repos/dymzz/engineering-ci/{archive_format}{/ref}",
+      "downloads_url": "https://api.github.com/repos/dymzz/engineering-ci/downloads",
+      "issues_url": "https://api.github.com/repos/dymzz/engineering-ci/issues{/number}",
+      "pulls_url": "https://api.github.com/repos/dymzz/engineering-ci/pulls{/number}",
+      "milestones_url": "https://api.github.com/repos/dymzz/engineering-ci/milestones{/number}",
+      "notifications_url": "https://api.github.com/repos/dymzz/engineering-ci/notifications{?since,all,participating}",
+      "labels_url": "https://api.github.com/repos/dymzz/engineering-ci/labels{/name}",
+      "releases_url": "https://api.github.com/repos/dymzz/engineering-ci/releases{/id}",
+      "deployments_url": "https://api.github.com/repos/dymzz/engineering-ci/deployments"
+    }
+  },
+  "jobs": [
+    {
+      "id": 119270758077,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRdWvQ",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270758077",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270758077",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:25Z",
+      "started_at": "2026-10-21T14:08:28Z",
+      "completed_at": "2026-10-21T14:08:42Z",
+      "name": "candidate",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:29Z",
+          "completed_at": "2026-10-21T14:08:29Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:29Z",
+          "completed_at": "2026-10-21T14:08:30Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:30Z",
+          "completed_at": "2026-10-21T14:08:33Z"
+        },
+        {
+          "name": "Install runtime dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:33Z",
+          "completed_at": "2026-10-21T14:08:37Z"
+        },
+        {
+          "name": "Validate manual release request",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:08:37Z",
+          "completed_at": "2026-10-21T14:08:40Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-21T14:08:40Z",
+          "completed_at": "2026-10-21T14:08:40Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-10-21T14:08:40Z",
+          "completed_at": "2026-10-21T14:08:41Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-10-21T14:08:41Z",
+          "completed_at": "2026-10-21T14:08:41Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270758077",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000987,
+      "runner_name": "GitHub Actions 1000000987",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119270919257,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRnMWQ",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270919257",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270919257",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:43Z",
+      "started_at": "2026-10-21T14:08:46Z",
+      "completed_at": "2026-10-21T14:11:04Z",
+      "name": "complete-ci / checks",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:46Z",
+          "completed_at": "2026-10-21T14:08:49Z"
+        },
+        {
+          "name": "Checkout caller repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:49Z",
+          "completed_at": "2026-10-21T14:08:50Z"
+        },
+        {
+          "name": "Configure private Dagger module authentication",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:50Z",
+          "completed_at": "2026-10-21T14:08:50Z"
+        },
+        {
+          "name": "Start Dagger Engine",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:50Z",
+          "completed_at": "2026-10-21T14:09:14Z"
+        },
+        {
+          "name": "Install Dagger CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:09:14Z",
+          "completed_at": "2026-10-21T14:09:15Z"
+        },
+        {
+          "name": "Run Dagger Checks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:09:15Z",
+          "completed_at": "2026-10-21T14:10:55Z"
+        },
+        {
+          "name": "Gate on pytest execution and explicit quality policy",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:10:55Z",
+          "completed_at": "2026-10-21T14:10:55Z"
+        },
+        {
+          "name": "Publish pytest Job Summary",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-21T14:10:55Z",
+          "completed_at": "2026-10-21T14:10:56Z"
+        },
+        {
+          "name": "Explain pytest report delivery warning",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-10-21T14:10:56Z",
+          "completed_at": "2026-10-21T14:10:56Z"
+        },
+        {
+          "name": "Upload pytest evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-10-21T14:10:56Z",
+          "completed_at": "2026-10-21T14:10:57Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-10-21T14:10:57Z",
+          "completed_at": "2026-10-21T14:10:58Z"
+        },
+        {
+          "name": "Verify generated module lock consistency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-10-21T14:10:58Z",
+          "completed_at": "2026-10-21T14:11:01Z"
+        },
+        {
+          "name": "Verify Ruff rejection and recovery (smoke only)",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-10-21T14:11:01Z",
+          "completed_at": "2026-10-21T14:11:01Z"
+        },
+        {
+          "name": "Engine logs on failure",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-10-21T14:11:01Z",
+          "completed_at": "2026-10-21T14:11:01Z"
+        },
+        {
+          "name": "Cleanup temporary Git credentials",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-21T14:11:01Z",
+          "completed_at": "2026-10-21T14:11:01Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-10-21T14:11:01Z",
+          "completed_at": "2026-10-21T14:11:01Z"
+        },
+        {
+          "name": "Post Checkout caller repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-10-21T14:11:01Z",
+          "completed_at": "2026-10-21T14:11:02Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-10-21T14:11:02Z",
+          "completed_at": "2026-10-21T14:11:02Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270919257",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000988,
+      "runner_name": "GitHub Actions 1000000988",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119270919312,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRnMkA",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270919312",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270919312",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:43Z",
+      "started_at": "2026-10-21T14:08:46Z",
+      "completed_at": "2026-10-21T14:09:03Z",
+      "name": "complete-ci / dependency-security",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:47Z",
+          "completed_at": "2026-10-21T14:08:49Z"
+        },
+        {
+          "name": "Checkout dependency scan target",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:49Z",
+          "completed_at": "2026-10-21T14:08:50Z"
+        },
+        {
+          "name": "Checkout matching security helper",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:50Z",
+          "completed_at": "2026-10-21T14:08:52Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:52Z",
+          "completed_at": "2026-10-21T14:08:53Z"
+        },
+        {
+          "name": "Cache verified scanner binary",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:08:53Z",
+          "completed_at": "2026-10-21T14:08:55Z"
+        },
+        {
+          "name": "Check lock integrity and scan known vulnerabilities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:08:55Z",
+          "completed_at": "2026-10-21T14:08:57Z"
+        },
+        {
+          "name": "Publish Dependency Security Summary",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:08:57Z",
+          "completed_at": "2026-10-21T14:08:57Z"
+        },
+        {
+          "name": "Upload dependency security evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-21T14:08:57Z",
+          "completed_at": "2026-10-21T14:08:59Z"
+        },
+        {
+          "name": "Post Cache verified scanner binary",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-10-21T14:08:59Z",
+          "completed_at": "2026-10-21T14:08:59Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-10-21T14:08:59Z",
+          "completed_at": "2026-10-21T14:08:59Z"
+        },
+        {
+          "name": "Post Checkout matching security helper",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-21T14:08:59Z",
+          "completed_at": "2026-10-21T14:08:59Z"
+        },
+        {
+          "name": "Post Checkout dependency scan target",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-10-21T14:08:59Z",
+          "completed_at": "2026-10-21T14:09:00Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-10-21T14:09:00Z",
+          "completed_at": "2026-10-21T14:09:00Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270919312",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000989,
+      "runner_name": "GitHub Actions 1000000989",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119270919383,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRnM1w",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270919383",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270919383",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:43Z",
+      "started_at": "2026-10-21T14:08:46Z",
+      "completed_at": "2026-10-21T14:10:14Z",
+      "name": "core-tests / version-metadata",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:47Z",
+          "completed_at": "2026-10-21T14:08:47Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:47Z",
+          "completed_at": "2026-10-21T14:08:48Z"
+        },
+        {
+          "name": "Install pinned Dagger CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:48Z",
+          "completed_at": "2026-10-21T14:08:50Z"
+        },
+        {
+          "name": "Validate release metadata and root lock consistency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:50Z",
+          "completed_at": "2026-10-21T14:10:12Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-21T14:10:12Z",
+          "completed_at": "2026-10-21T14:10:13Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-21T14:10:13Z",
+          "completed_at": "2026-10-21T14:10:13Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270919383",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000990,
+      "runner_name": "GitHub Actions 1000000990",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119270919523,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRnNYw",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270919523",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270919523",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:43Z",
+      "started_at": "2026-10-21T14:08:46Z",
+      "completed_at": "2026-10-21T14:10:28Z",
+      "name": "core-tests / python-ci / checks",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:47Z",
+          "completed_at": "2026-10-21T14:08:48Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:48Z",
+          "completed_at": "2026-10-21T14:08:49Z"
+        },
+        {
+          "name": "Install pinned Dagger CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:49Z",
+          "completed_at": "2026-10-21T14:08:51Z"
+        },
+        {
+          "name": "Ruff Lint",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:51Z",
+          "completed_at": "2026-10-21T14:10:17Z"
+        },
+        {
+          "name": "Ruff Format Check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:10:17Z",
+          "completed_at": "2026-10-21T14:10:21Z"
+        },
+        {
+          "name": "Record release Ruff tool versions",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:10:21Z",
+          "completed_at": "2026-10-21T14:10:25Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7.0.2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:10:25Z",
+          "completed_at": "2026-10-21T14:10:26Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-10-21T14:10:26Z",
+          "completed_at": "2026-10-21T14:10:26Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-21T14:10:26Z",
+          "completed_at": "2026-10-21T14:10:27Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270919523",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000992,
+      "runner_name": "GitHub Actions 1000000992",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119270919810,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxRnOgg",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119270919810",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119270919810",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:08:43Z",
+      "started_at": "2026-10-21T14:08:46Z",
+      "completed_at": "2026-10-21T14:10:36Z",
+      "name": "core-tests / sync-tool-tests",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:08:47Z",
+          "completed_at": "2026-10-21T14:08:48Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:08:48Z",
+          "completed_at": "2026-10-21T14:08:49Z"
+        },
+        {
+          "name": "Install pinned Dagger CLI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:08:49Z",
+          "completed_at": "2026-10-21T14:08:50Z"
+        },
+        {
+          "name": "Run all core unit and process tests",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:08:50Z",
+          "completed_at": "2026-10-21T14:10:29Z"
+        },
+        {
+          "name": "Export the original core execution evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:10:29Z",
+          "completed_at": "2026-10-21T14:10:33Z"
+        },
+        {
+          "name": "Upload core release evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:10:33Z",
+          "completed_at": "2026-10-21T14:10:34Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-10-21T14:10:34Z",
+          "completed_at": "2026-10-21T14:10:35Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-10-21T14:10:35Z",
+          "completed_at": "2026-10-21T14:10:35Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119270919810",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000991,
+      "runner_name": "GitHub Actions 1000000991",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119272169399,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxSzftw",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119272169399",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119272169399",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:11:04Z",
+      "started_at": "2026-10-21T14:11:07Z",
+      "completed_at": "2026-10-21T14:11:18Z",
+      "name": "evidence",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:11:08Z",
+          "completed_at": "2026-10-21T14:11:10Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:11:10Z",
+          "completed_at": "2026-10-21T14:11:13Z"
+        },
+        {
+          "name": "Require exact native Artifact IDs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:11:13Z",
+          "completed_at": "2026-10-21T14:11:13Z"
+        },
+        {
+          "name": "Run actions/download-artifact@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:11:13Z",
+          "completed_at": "2026-10-21T14:11:13Z"
+        },
+        {
+          "name": "Run actions/download-artifact@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:11:13Z",
+          "completed_at": "2026-10-21T14:11:14Z"
+        },
+        {
+          "name": "Run actions/download-artifact@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:11:14Z",
+          "completed_at": "2026-10-21T14:11:14Z"
+        },
+        {
+          "name": "Run actions/download-artifact@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:11:14Z",
+          "completed_at": "2026-10-21T14:11:15Z"
+        },
+        {
+          "name": "Require usable evidence and original execution gates",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-21T14:11:15Z",
+          "completed_at": "2026-10-21T14:11:15Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7.0.2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-21T14:11:15Z",
+          "completed_at": "2026-10-21T14:11:16Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-10-21T14:11:16Z",
+          "completed_at": "2026-10-21T14:11:16Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-10-21T14:11:16Z",
+          "completed_at": "2026-10-21T14:11:16Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119272169399",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000993,
+      "runner_name": "GitHub Actions 1000000993",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119272292257,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxS6_oQ",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119272292257",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119272292257",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:11:18Z",
+      "started_at": "2026-10-21T14:11:21Z",
+      "completed_at": "2026-10-21T14:11:38Z",
+      "name": "verified",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:11:22Z",
+          "completed_at": "2026-10-21T14:11:24Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:11:24Z",
+          "completed_at": "2026-10-21T14:11:25Z"
+        },
+        {
+          "name": "Run actions/download-artifact@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:11:25Z",
+          "completed_at": "2026-10-21T14:11:26Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:11:26Z",
+          "completed_at": "2026-10-21T14:11:28Z"
+        },
+        {
+          "name": "Install runtime dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:11:28Z",
+          "completed_at": "2026-10-21T14:11:30Z"
+        },
+        {
+          "name": "Require every validation job and exact candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:11:30Z",
+          "completed_at": "2026-10-21T14:11:34Z"
+        },
+        {
+          "name": "Preserve validation Manifest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:11:34Z",
+          "completed_at": "2026-10-21T14:11:35Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-10-21T14:11:35Z",
+          "completed_at": "2026-10-21T14:11:36Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-10-21T14:11:36Z",
+          "completed_at": "2026-10-21T14:11:36Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-21T14:11:36Z",
+          "completed_at": "2026-10-21T14:11:36Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119272292257",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000994,
+      "runner_name": "GitHub Actions 1000000994",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 119272463161,
+      "run_id": 39614205390,
+      "workflow_name": "Release engineering-ci",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/39614205390",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVA3XLc8AAAAbxTFbOQ",
+      "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/jobs/119272463161",
+      "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390/job/119272463161",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-21T14:11:38Z",
+      "started_at": "2026-10-21T14:11:41Z",
+      "completed_at": "2026-10-21T14:12:12Z",
+      "name": "publish",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-21T14:11:42Z",
+          "completed_at": "2026-10-21T14:11:45Z"
+        },
+        {
+          "name": "Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-21T14:11:45Z",
+          "completed_at": "2026-10-21T14:11:46Z"
+        },
+        {
+          "name": "Download exact verified Manifest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-21T14:11:46Z",
+          "completed_at": "2026-10-21T14:11:47Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-21T14:11:47Z",
+          "completed_at": "2026-10-21T14:11:48Z"
+        },
+        {
+          "name": "Install runtime dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-21T14:11:49Z",
+          "completed_at": "2026-10-21T14:11:50Z"
+        },
+        {
+          "name": "Recheck main and publish immutable tag and evidenced GitHub Release",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-21T14:11:50Z",
+          "completed_at": "2026-10-21T14:12:09Z"
+        },
+        {
+          "name": "Preserve publication evidence after an API failure",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-21T14:12:09Z",
+          "completed_at": "2026-10-21T14:12:10Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-10-21T14:12:10Z",
+          "completed_at": "2026-10-21T14:12:10Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7.0.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-10-21T14:12:10Z",
+          "completed_at": "2026-10-21T14:12:10Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-21T14:12:10Z",
+          "completed_at": "2026-10-21T14:12:10Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/dymzz/engineering-ci/check-runs/119272463161",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000000995,
+      "runner_name": "GitHub Actions 1000000995",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": 12351403610,
+      "name": "core-tests",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351403610",
+      "expired": true,
+      "digest": "sha256:00fc1d211651ce3a16e1bf94a382b65cec9bb95f73b201134b549f852ae902be",
+      "workflow_run": {
+        "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "id": 39614205390
+      },
+      "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD"
+    },
+    {
+      "id": 12351212985,
+      "name": "dependency-security",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351212985",
+      "expired": true,
+      "digest": "sha256:222b198499ea1c0363cfa54c2a7cd5a300b2cdfa6ed5a10e55f61490586110bb",
+      "workflow_run": {
+        "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "id": 39614205390
+      },
+      "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD"
+    },
+    {
+      "id": 12352375695,
+      "name": "pytest-report",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12352375695",
+      "expired": true,
+      "digest": "sha256:064aea2125a38acafcf1423f3bca06cc011fb151a178b36c2fbd97f860950270",
+      "workflow_run": {
+        "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "id": 39614205390
+      },
+      "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD"
+    },
+    {
+      "id": 12351977770,
+      "name": "release-tools-ruff",
+      "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351977770",
+      "expired": true,
+      "digest": "sha256:b4e8ae537ac5079f04ba9e66e6963d3d4cb91cf22a497815b0423238a6686444",
+      "workflow_run": {
+        "head_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
+        "id": 39614205390
+      },
+      "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD"
+    }
+  ],
+  "manifest_asset_digest": "sha256:e0cfd27cf7d3a591050124b4beec9796ae69e8428b850e63593a7684685c6201",
+  "release_tag": "v0.7.0",
+  "commit_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18"
+}

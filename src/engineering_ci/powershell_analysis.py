@@ -67,11 +67,13 @@ class AnalysisError(Exception):
         candidates: int | None = None,
         files_scanned: int | None = None,
         error_cause: str | None = None,
+        limitations: list[str] | None = None,
     ) -> None:
         super().__init__(message)
         self.candidates = candidates
         self.files_scanned = files_scanned
         self.error_cause = error_cause
+        self.limitations = limitations or []
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -311,34 +313,48 @@ def analyse(
         error_msg = str(envelope.get("error") or "")
         candidates = envelope.get("candidates")
         files_scanned = envelope.get("files_scanned")
-        valid_counts = (
+        expected_candidates = len(scripts)
+        notes = []
+        count_matched = (
             type(candidates) is int
             and type(files_scanned) is int
-            and candidates >= 0
+            and candidates == expected_candidates
             and 0 <= files_scanned <= candidates
         )
+        if type(candidates) is int and candidates != expected_candidates:
+            notes.append(
+                f"candidate_count_mismatch: envelope reported {candidates} candidates, expected {expected_candidates}"
+            )
         raise AnalysisError(
             f"the analyzer failed: {_bounded(error_msg, 400)}",
-            candidates=candidates if valid_counts else None,
-            files_scanned=files_scanned if valid_counts else None,
+            candidates=candidates if count_matched else None,
+            files_scanned=files_scanned if count_matched else None,
             error_cause=error_msg or None,
+            limitations=notes,
         )
     if result.returncode != 0:
         if envelope.get("error"):
             error_msg = str(envelope.get("error") or "")
             candidates = envelope.get("candidates")
             files_scanned = envelope.get("files_scanned")
-            valid_counts = (
+            expected_candidates = len(scripts)
+            notes = []
+            count_matched = (
                 type(candidates) is int
                 and type(files_scanned) is int
-                and candidates >= 0
+                and candidates == expected_candidates
                 and 0 <= files_scanned <= candidates
             )
+            if type(candidates) is int and candidates != expected_candidates:
+                notes.append(
+                    f"candidate_count_mismatch: envelope reported {candidates} candidates, expected {expected_candidates}"
+                )
             raise AnalysisError(
                 f"the analyzer failed: {_bounded(error_msg, 400)}",
-                candidates=candidates if valid_counts else None,
-                files_scanned=files_scanned if valid_counts else None,
+                candidates=candidates if count_matched else None,
+                files_scanned=files_scanned if count_matched else None,
                 error_cause=error_msg or None,
+                limitations=notes,
             )
         raise AnalysisError(
             f"the analyzer process exited {result.returncode}: "
@@ -470,6 +486,9 @@ def main(argv=None) -> int:
         report = analyse(workspace, Path(args.helper_root).resolve(), policy)
     except AnalysisError as exc:
         # A tool that cannot run must not be reported as a clean analysis.
+        limitations = [str(exc)]
+        if exc.limitations:
+            limitations.extend(exc.limitations)
         write_bundle(
             Path(args.out),
             {
@@ -486,7 +505,7 @@ def main(argv=None) -> int:
                 "diagnostic_count": 0,
                 "diagnostics": [],
                 "omitted_diagnostics": 0,
-                "limitations": [str(exc)],
+                "limitations": limitations,
             },
             args.mode,
         )

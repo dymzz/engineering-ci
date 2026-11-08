@@ -8,6 +8,8 @@ it recorded.
 """
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 from test_release_manifest import (
@@ -110,278 +112,48 @@ def test_candidate_verification_names_a_removed_requirement(monkeypatch):
         verification.current_requirements(value)
 
 
-def make_v070_manifest():
-    """Authentic historical release manifest for v0.7.0 (prior to ECI-CHECK-01)."""
-    return {
-        "schema_version": 1,
-        "repository": "dymzz/engineering-ci",
-        "mode": "publication",
-        "result": "passed",
-        "release": {
-            "version": "0.7.0",
-            "tag": "v0.7.0",
-            "commit_sha": "9d03ade4f2af89538c9a0362beae55c9a0835e18",
-            "release_url": "https://api.github.com/repos/dymzz/engineering-ci/releases/419641784",
-        },
-        "workflow": {
-            "event": "workflow_dispatch",
-            "path": ".github/workflows/release.yml",
-            "run_attempt": 1,
-            "run_id": 39614205390,
-            "run_url": "https://github.com/dymzz/engineering-ci/actions/runs/39614205390",
-        },
-        "artifacts": [
-            {
-                "digest": "sha256:00fc1d211651ce3a16e1bf94a382b65cec9bb95f73b201134b549f852ae902be",
-                "id": 12351403610,
-                "name": "core-tests",
-                "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351403610",
-            },
-            {
-                "digest": "sha256:222b198499ea1c0363cfa54c2a7cd5a300b2cdfa6ed5a10e55f61490586110bb",
-                "id": 12351212985,
-                "name": "dependency-security",
-                "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351212985",
-            },
-            {
-                "digest": "sha256:064aea2125a38acafcf1423f3bca06cc011fb151a178b36c2fbd97f860950270",
-                "id": 12352375695,
-                "name": "pytest-report",
-                "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12352375695",
-            },
-            {
-                "digest": "sha256:b4e8ae537ac5079f04ba9e66e6963d3d4cb91cf22a497815b0423238a6686444",
-                "id": 12351977770,
-                "name": "release-tools-ruff",
-                "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/12351977770",
-            },
-        ],
-        "checks": {
-            "candidate": {
-                "job": "candidate",
-                "job_conclusion": "success",
-                "job_id": 119270758077,
-                "required": True,
-                "status": "passed",
-                "step": "Validate manual release request",
-                "step_conclusion": "success",
-            },
-            "consumer_failure_probe": {
-                "reason": "The smoke-only Ruff rejection probe is disabled in core releases.",
-                "required": False,
-                "status": "not_enabled",
-            },
-            "core_coverage_threshold": {
-                "reason": "Core coverage is exported; no core coverage threshold is configured.",
-                "required": False,
-                "status": "not_enabled",
-            },
-            "core_tests": {
-                "job": "core-tests / sync-tool-tests",
-                "job_conclusion": "success",
-                "job_id": 119270919810,
-                "required": True,
-                "status": "passed",
-                "step": "Run all core unit and process tests",
-                "step_conclusion": "success",
-            },
-            "coverage": {
-                "dagger_check": "validation:fixture-quality-gates",
-                "job": "complete-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919257,
-                "required": True,
-                "status": "passed",
-                "step": "Run Dagger Checks",
-                "step_conclusion": "success",
-            },
-            "dagger": {
-                "job": "complete-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919257,
-                "required": True,
-                "status": "passed",
-                "step": "Run Dagger Checks",
-                "step_conclusion": "success",
-            },
-            "dependency_security": {
-                "job": "complete-ci / dependency-security",
-                "job_conclusion": "success",
-                "job_id": 119270919312,
-                "required": True,
-                "status": "passed",
-                "step": "Check lock integrity and scan known vulnerabilities",
-                "step_conclusion": "success",
-            },
-            "evidence": {
-                "job": "evidence",
-                "job_conclusion": "success",
-                "job_id": 119272169399,
-                "required": True,
-                "status": "passed",
-                "step": "Require usable evidence and original execution gates",
-                "step_conclusion": "success",
-            },
-            "module_lock": {
-                "job": "complete-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919257,
-                "required": True,
-                "status": "passed",
-                "step": "Verify generated module lock consistency",
-                "step_conclusion": "success",
-            },
-            "python_matrix": {
-                "dagger_check": "validation:fixture-python-matrix",
-                "job": "complete-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919257,
-                "required": True,
-                "status": "passed",
-                "step": "Run Dagger Checks",
-                "step_conclusion": "success",
-            },
-            "ruff_format": {
-                "job": "core-tests / python-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919523,
-                "required": True,
-                "status": "passed",
-                "step": "Ruff Format Check",
-                "step_conclusion": "success",
-            },
-            "ruff_lint": {
-                "job": "core-tests / python-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919523,
-                "required": True,
-                "status": "passed",
-                "step": "Ruff Lint",
-                "step_conclusion": "success",
-            },
-            "tests": {
-                "job": "complete-ci / checks",
-                "job_conclusion": "success",
-                "job_id": 119270919257,
-                "required": True,
-                "status": "passed",
-                "step": "Gate on pytest execution and explicit quality policy",
-                "step_conclusion": "success",
-            },
-            "version_integrity": {
-                "job": "core-tests / version-metadata",
-                "job_conclusion": "success",
-                "job_id": 119270919383,
-                "required": True,
-                "status": "passed",
-                "step": "Validate release metadata and root lock consistency",
-                "step_conclusion": "success",
-            },
-        },
-        "tools": [
-            {"name": "pytest", "scope": "core", "version": "9.0.3"},
-            {"name": "pytest-cov", "scope": "core", "version": "7.0.0"},
-            {"name": "python", "scope": "core", "version": "3.14.8"},
-            {"name": "uv", "scope": "core", "version": "0.13.0"},
-            {"name": "dagger", "scope": "dagger_cli", "version": "1.0.0-beta.16"},
-            {"name": "osv-scanner", "scope": "root_lock", "version": "2.6.0"},
-            {"name": "ruff", "scope": "ruff", "version": "0.16.10"},
-            {"name": "uv", "scope": "ruff", "version": "0.13.0"},
-        ],
-    }
+HISTORICAL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "historical"
 
 
-def make_v068_manifest():
-    """Authentic historical release manifest for v0.6.8 with its genuine Dagger check identities."""
-    manifest = make_v070_manifest()
-    manifest["release"]["version"] = "0.6.8"
-    manifest["release"]["tag"] = "v0.6.8"
-    manifest["release"]["commit_sha"] = "eb0e457de2c172006b62d3962b0a7e932a5adb32"
-    manifest["release"]["release_url"] = (
-        "https://api.github.com/repos/dymzz/engineering-ci/releases/418568386"
-    )
-    manifest["workflow"]["run_id"] = 39449394205
-    manifest["workflow"]["run_url"] = (
-        "https://github.com/dymzz/engineering-ci/actions/runs/39449394205"
-    )
-    manifest["checks"]["coverage"]["dagger_check"] = (
-        "engineering-ci:fixture-quality-gates"
-    )
-    manifest["checks"]["python_matrix"]["dagger_check"] = (
-        "engineering-ci:fixture-python-matrix"
-    )
-    return manifest
+def load_historical_manifest(tag: str) -> dict:
+    path = HISTORICAL_FIXTURES / f"{tag}-release-manifest.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def make_legacy_manifest():
+def load_historical_github_data(tag: str) -> dict:
+    path = HISTORICAL_FIXTURES / f"{tag}-github-data.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def make_v070_manifest() -> dict:
+    """Authentic historical release manifest for v0.7.0 loaded from release asset fixture."""
+    return load_historical_manifest("v0.7.0")
+
+
+def make_v068_manifest() -> dict:
+    """Authentic historical release manifest for v0.6.8 loaded from release asset fixture."""
+    return load_historical_manifest("v0.6.8")
+
+
+def make_legacy_manifest() -> dict:
     return make_v070_manifest()
 
 
-def _matching_actions_jobs(manifest):
-    groups = {}
-    for record in manifest["checks"].values():
-        if not record.get("required"):
-            continue
-        job_name, step_name = record["job"], record["step"]
-        if job_name not in groups:
-            groups[job_name] = {
-                "id": record["job_id"],
-                "run_id": manifest["workflow"]["run_id"],
-                "run_attempt": manifest["workflow"]["run_attempt"],
-                "head_sha": manifest["release"]["commit_sha"],
-                "name": job_name,
-                "status": "completed",
-                "conclusion": record["job_conclusion"],
-                "steps": [],
-            }
-        if not any(s["name"] == step_name for s in groups[job_name]["steps"]):
-            groups[job_name]["steps"].append(
-                {
-                    "name": step_name,
-                    "status": "completed",
-                    "conclusion": record["step_conclusion"],
-                }
-            )
-    return list(groups.values())
-
-
 class HistoricalGitHub:
-    def __init__(self, manifest):
-        self.manifest = manifest
-        run_id = manifest["workflow"]["run_id"]
-        attempt = manifest["workflow"]["run_attempt"]
-        repo = manifest["repository"]
-        head = manifest["release"]["commit_sha"]
-        self.run = {
-            "id": run_id,
-            "run_attempt": attempt,
-            "head_sha": head,
-            "event": "workflow_dispatch",
-            "repository": {"full_name": repo},
-            "html_url": manifest["workflow"]["run_url"],
-            "path": ".github/workflows/release.yml",
-            "head_branch": "main",
-            "token": "ghp_DO_NOT_RECORD",
-        }
-        self.jobs = _matching_actions_jobs(manifest)
-        self.artifacts = [
-            {
-                "id": item["id"],
-                "name": item["name"],
-                "url": item["url"],
-                "expired": False,
-                "digest": item["digest"],
-                "workflow_run": {"head_sha": head, "id": run_id},
-                "archive_download_url": "https://secret.example/?token=DO_NOT_RECORD",
-            }
-            for item in manifest["artifacts"]
-        ]
+    """Mock GitHub API that returns independently recorded genuine GitHub REST facts for a historical release."""
+
+    def __init__(self, target: str | dict):
+        tag = target if isinstance(target, str) else target["release"]["tag"]
+        self.data = load_historical_github_data(tag)
+        self.run = self.data["run"]
+        self.jobs = self.data["jobs"]
+        self.artifacts = self.data["artifacts"]
 
     def __call__(self, path, method="GET", data=None):
         from engineering_ci.github_cli import ApiError
 
-        run_id = self.manifest["workflow"]["run_id"]
-        attempt = self.manifest["workflow"]["run_attempt"]
+        run_id = self.run["id"]
+        attempt = self.run["run_attempt"]
         if path == f"actions/runs/{run_id}/attempts/{attempt}":
             return self.run
         if path.startswith(f"actions/runs/{run_id}/attempts/{attempt}/jobs?"):
@@ -396,11 +168,31 @@ class HistoricalGitHub:
 
 
 def test_v070_historical_manifest_validates_under_its_authentic_contract():
-    """v0.7.0 historical release validates cleanly under its authentic contract."""
+    """v0.7.0 historical release validates cleanly against authentic independent GitHub records."""
+    from engineering_ci.release import publishing
+
     v070 = make_v070_manifest()
-    jobs = _matching_actions_jobs(v070)
-    evidence.verified_results(jobs, v070)
+    api = HistoricalGitHub("v0.7.0")
+    # Verify exact authentic metadata facts
+    assert v070["release"]["tag"] == "v0.7.0"
+    assert v070["release"]["commit_sha"] == "9d03ade4f2af89538c9a0362beae55c9a0835e18"
+    assert v070["workflow"]["run_id"] == 39614205390
+    assert v070["workflow"]["run_attempt"] == 1
+    assert v070["checks"]["candidate"]["job_id"] == 119270758077
+    assert (
+        v070["checks"]["coverage"]["dagger_check"] == "validation:fixture-quality-gates"
+    )
+    assert len(v070["artifacts"]) == 4
+
+    evidence.verified_results(api.jobs, v070)
     evidence.validate(
+        v070,
+        v070["repository"],
+        v070["release"]["tag"],
+        v070["release"]["commit_sha"],
+    )
+    publishing.published_evidence(
+        api,
         v070,
         v070["repository"],
         v070["release"]["tag"],
@@ -413,11 +205,32 @@ def test_v070_historical_manifest_validates_under_its_authentic_contract():
 
 
 def test_v068_historical_manifest_validates_under_its_authentic_contract():
-    """v0.6.8 historical release validates cleanly with its authentic engineering-ci Dagger identity."""
+    """v0.6.8 historical release validates cleanly with its authentic engineering-ci Dagger identity and independent GitHub records."""
+    from engineering_ci.release import publishing
+
     v068 = make_v068_manifest()
-    jobs = _matching_actions_jobs(v068)
-    evidence.verified_results(jobs, v068)
+    api = HistoricalGitHub("v0.6.8")
+    # Verify exact authentic metadata facts
+    assert v068["release"]["tag"] == "v0.6.8"
+    assert v068["release"]["commit_sha"] == "eb0e457de2c172006b62d3962b0a7e932a5adb32"
+    assert v068["workflow"]["run_id"] == 39449394205
+    assert v068["workflow"]["run_attempt"] == 1
+    assert v068["checks"]["candidate"]["job_id"] == 118719846431
+    assert (
+        v068["checks"]["coverage"]["dagger_check"]
+        == "engineering-ci:fixture-quality-gates"
+    )
+    assert len(v068["artifacts"]) == 4
+
+    evidence.verified_results(api.jobs, v068)
     evidence.validate(
+        v068,
+        v068["repository"],
+        v068["release"]["tag"],
+        v068["release"]["commit_sha"],
+    )
+    publishing.published_evidence(
+        api,
         v068,
         v068["repository"],
         v068["release"]["tag"],
@@ -427,6 +240,47 @@ def test_v068_historical_manifest_validates_under_its_authentic_contract():
     assert len(reqs) == 12
     coverage_req = next(r for r in reqs if r["key"] == "coverage")
     assert coverage_req["dagger_check"] == "engineering-ci:fixture-quality-gates"
+
+
+def test_historical_manifest_tampered_job_id_is_rejected():
+    """Manifest with tampered or swapped Job ID is rejected by published_evidence."""
+    from engineering_ci.release import publishing
+
+    v068 = make_v068_manifest()
+    # Swapping v0.6.8 candidate job_id (118719846431) with v0.7.0 job_id (119270758077)
+    v068["checks"]["candidate"]["job_id"] = 119270758077
+    api = HistoricalGitHub("v0.6.8")
+    with pytest.raises(
+        ValueError, match="Manifest does not match original Actions results"
+    ):
+        publishing.published_evidence(
+            api,
+            v068,
+            v068["repository"],
+            v068["release"]["tag"],
+            v068["release"]["commit_sha"],
+        )
+
+
+def test_historical_manifest_tampered_artifact_id_is_rejected():
+    """Manifest with tampered or swapped Artifact ID is rejected by published_evidence."""
+    from engineering_ci.release import publishing
+
+    v068 = make_v068_manifest()
+    # Swapping v0.6.8 artifact id with nonexistent or mismatched artifact id
+    v068["artifacts"][0]["id"] = 999999999
+    v068["artifacts"][0]["url"] = (
+        f"https://api.github.com/repos/{v068['repository']}/actions/artifacts/999999999"
+    )
+    api = HistoricalGitHub("v0.6.8")
+    with pytest.raises((ValueError, Exception)):
+        publishing.published_evidence(
+            api,
+            v068,
+            v068["repository"],
+            v068["release"]["tag"],
+            v068["release"]["commit_sha"],
+        )
 
 
 def test_v068_with_v070_dagger_identity_is_rejected():
@@ -623,15 +477,16 @@ def test_first_publication_rejects_manifest_omitting_powershell_analysis_even_wi
 def test_published_evidence_verifies_historical_manifest():
     from engineering_ci.release import publishing
 
-    legacy = make_v070_manifest()
-    api = HistoricalGitHub(legacy)
-    publishing.published_evidence(
-        api,
-        legacy,
-        legacy["repository"],
-        legacy["release"]["tag"],
-        legacy["release"]["commit_sha"],
-    )
+    for tag in ("v0.6.8", "v0.7.0"):
+        manifest = load_historical_manifest(tag)
+        api = HistoricalGitHub(tag)
+        publishing.published_evidence(
+            api,
+            manifest,
+            manifest["repository"],
+            manifest["release"]["tag"],
+            manifest["release"]["commit_sha"],
+        )
 
 
 def test_a_manifest_that_disagrees_with_its_own_requirement_set_is_rejected():
