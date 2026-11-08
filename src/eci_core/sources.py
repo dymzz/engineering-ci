@@ -30,6 +30,9 @@ _KEYS = {
     "exempt_paths",
     "environment_prefixes",
     "require_text_unset",
+    "require_acquired_roots",
+    "environment_requires_no_digest",
+    "require_under_acquired_roots",
 }
 
 
@@ -53,6 +56,9 @@ class Config:
     exempt_paths: tuple[str, ...]
     environment_prefixes: tuple[str, ...]
     require_text_unset: bool
+    require_acquired_roots: bool
+    environment_requires_no_digest: bool
+    require_under_acquired_roots: bool
 
 
 @dataclass(frozen=True)
@@ -99,8 +105,12 @@ def load_config(path):
     if not roots:
         raise SourcesError("acquired_roots_invalid")
     require = value.get("require_text_unset", True)
-    if type(require) is not bool:
-        raise SourcesError("require_text_unset_invalid")
+    require_roots = value.get("require_acquired_roots", True)
+    environment_no_digest = value.get("environment_requires_no_digest", True)
+    under_roots = value.get("require_under_acquired_roots", True)
+    for flag in (require, require_roots, environment_no_digest, under_roots):
+        if type(flag) is not bool:
+            raise SourcesError("boolean_invalid")
     return Config(
         schema_version=SCHEMA_VERSION,
         manifest=_text(value.get("manifest"), "manifest"),
@@ -118,6 +128,9 @@ def load_config(path):
             value.get("environment_prefixes", []), "environment_prefixes"
         ),
         require_text_unset=require,
+        require_acquired_roots=require_roots,
+        environment_requires_no_digest=environment_no_digest,
+        require_under_acquired_roots=under_roots,
     )
 
 
@@ -156,19 +169,58 @@ def _entries(config, root):
                 {"code": "entry_invalid", "path": None, "detail": "not an object"}
             )
             continue
+        raw_path = entry.get(config.path_field)
+        sha = entry.get(config.sha256_field)
+        size = entry.get(config.size_field) if config.size_field else None
+        if raw_path is None:
+            if sha is not None or size is not None:
+                failures.append(
+                    {
+                        "code": "path_missing_evidence",
+                        "path": None,
+                        "detail": "byte evidence without a local path",
+                    }
+                )
+            continue
         try:
-            path = _safe_path(entry.get(config.path_field))
+            path = _safe_path(raw_path)
         except SourcesError:
             failures.append(
                 {
                     "code": "path_invalid",
                     "path": None,
-                    "detail": repr(entry.get(config.path_field)),
+                    "detail": repr(raw_path),
                 }
             )
             continue
-        sha = entry.get(config.sha256_field)
-        size = entry.get(config.size_field) if config.size_field else None
+        environment = any(
+            path.startswith(prefix) for prefix in config.environment_prefixes
+        )
+        if environment:
+            if config.environment_requires_no_digest and (
+                sha is not None or size is not None
+            ):
+                failures.append(
+                    {
+                        "code": "environment_has_digest",
+                        "path": path,
+                        "detail": "environment-managed entry must not claim bytes",
+                    }
+                )
+                continue
+            if sha is None and size is None:
+                continue
+        if config.require_under_acquired_roots and not any(
+            path.startswith(root.rstrip("/") + "/") for root in config.acquired_roots
+        ):
+            failures.append(
+                {
+                    "code": "path_outside_roots",
+                    "path": path,
+                    "detail": "not under an acquired root",
+                }
+            )
+            continue
         if not isinstance(sha, str) or len(sha) != 64:
             failures.append(
                 {"code": "digest_invalid", "path": path, "detail": "sha256"}
@@ -268,6 +320,10 @@ def reconcile(config, *, root, runner=_run):
     for directory in config.acquired_roots:
         base = root / directory
         if not base.is_dir():
+            if config.require_acquired_roots:
+                failures.append(
+                    {"code": "root_missing", "path": directory, "detail": "not found"}
+                )
             continue
         for path in base.rglob("*"):
             if path.is_file():

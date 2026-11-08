@@ -22,6 +22,9 @@ acquired_roots = ["data/acquired"]
 exempt_paths = ["data/acquired/README.md"]
 environment_prefixes = ["sources/environment/"]
 require_text_unset = true
+require_acquired_roots = true
+environment_requires_no_digest = true
+require_under_acquired_roots = true
 ```
 
 - `entries_key` supports a manifest that wraps the list; without it the JSON
@@ -30,6 +33,11 @@ require_text_unset = true
   projection. Knowledge's names stay in Knowledge's config.
 - `exempt_paths` and `environment_prefixes` are explicit allowances, not
   implicit "anything under data/" exemptions.
+- `environment_prefixes` entries are skipped only when they claim no byte
+  evidence (`sha256`/`size` both null); an environment path with a digest fails.
+- `require_acquired_roots` requires each root directory to exist.
+- `require_under_acquired_roots` rejects expected paths outside the declared
+  roots.
 - `require_text_unset = true` makes `git check-attr text` a required native
   check; `unset` is the expected value for acquired bytes.
 
@@ -40,6 +48,10 @@ require_text_unset = true
 | `manifest_missing` / `manifest_unreadable` | Manifest cannot be read |
 | `manifest_invalid` / `entry_invalid` | Wrong JSON shape or non-object entry |
 | `path_invalid` / `digest_invalid` / `size_invalid` | Unsafe path (`..`, absolute, backslash, drive), bad digest/size |
+| `path_missing_evidence` | Entry has byte evidence but no local path |
+| `path_outside_roots` | Path is outside every acquired root |
+| `root_missing` | A required acquired root directory is absent |
+| `environment_has_digest` | Environment-managed path claims byte evidence |
 | `duplicate` | Same path repeated with identical digest/size |
 | `conflict` | Same path repeated with different digest/size |
 | `missing` | Declared, non-exempt, non-environment file absent |

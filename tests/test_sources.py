@@ -136,9 +136,46 @@ def test_unsafe_manifest_path_is_refused(tmp_path):
 
 
 def test_environment_coordinate_may_be_absent(tmp_path):
-    root = make(tmp_path, entries=[entry("sources/environment/a.bin", b"x")])
+    root = make(
+        tmp_path,
+        entries=[
+            {
+                "path": "sources/environment/a.bin",
+                "sha256": None,
+                "size_bytes": None,
+            }
+        ],
+    )
     report = check(root)
     assert "missing" not in codes(report)
+
+
+def test_environment_entry_with_claimed_bytes_is_refused(tmp_path):
+    root = make(
+        tmp_path,
+        entries=[entry("sources/environment/a.bin", b"x")],
+    )
+    assert "environment_has_digest" in codes(check(root))
+
+
+def test_path_outside_acquired_roots_is_refused(tmp_path):
+    root = make(tmp_path, entries=[entry("src/other.py", b"x")])
+    assert "path_outside_roots" in codes(check(root))
+
+
+def test_null_path_without_evidence_is_allowed_but_with_evidence_is_refused(tmp_path):
+    allowed = make(
+        tmp_path / "allowed",
+        entries=[{"local_path": None, "sha256": None, "size_bytes": None}],
+        config_extra='path_field = "local_path"',
+    )
+    assert "path_missing_evidence" not in codes(check(allowed))
+    refused = make(
+        tmp_path / "refused",
+        entries=[{"local_path": None, "sha256": "0" * 64, "size_bytes": 1}],
+        config_extra='path_field = "local_path"',
+    )
+    assert "path_missing_evidence" in codes(check(refused))
 
 
 def test_exempt_extra_file_is_allowed(tmp_path):
