@@ -608,9 +608,7 @@ def test_pr_merge_uses_base_tip_not_merge_base(repo):
         pytest.skip("git merge-tree is unavailable")
     assert merged.base_tip == base_tip
     assert merged.base_commit != base_tip
-    assert merged.merge_tree != run(
-        path, "rev-parse", f"{feature}^{{tree}}"
-    ).strip()
+    assert merged.merge_tree != run(path, "rev-parse", f"{feature}^{{tree}}").strip()
     assert merged.paths == ("src/pkg/sub.py",)
 
 
