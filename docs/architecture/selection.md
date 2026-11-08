@@ -258,14 +258,18 @@ empty `selection_config`):
 - inputs: `selection_config`, `selection_source_ref`,
   `selection_artifact_name`;
 - checks out the consumer and the pinned engineering-ci ref;
+- installs pinned `tach==0.35.3` and runs `select --validate-tach`, so
+  `tach_graph_validation` is bound to the same Tach file/tree;
+- supports PR merge, push before/after and workflow_dispatch commit modes;
 - syncs the consumer uv environment, installs the pinned CLI into it;
 - runs `engineering-ci select` then `engineering-ci execute --plan`, uploading
   `selection-plan.json`, `selection-execution.json` and `selection-junit.xml`;
 - output: `selection_artifact_id`.
 
 This reuses the existing reusable workflow rather than adding a new runner.
-`actionlint -shellcheck=` passes. It has not yet executed in GitHub Actions;
-the first real Run remains required evidence.
+`actionlint -shellcheck=` passes. Tach validation and dispatch modes are wired,
+but the selected Hygiene/source/prerequisite execution still returns
+`blocked`; a real opt-in selection Run has not succeeded yet.
 
 ## CLI
 

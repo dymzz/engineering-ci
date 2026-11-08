@@ -667,6 +667,8 @@ jobs:
           set -euo pipefail
           mv -- .engineering-ci-selection "$RUNNER_TEMP/engineering-ci-selection"
           uv pip install --python "$GITHUB_WORKSPACE/.venv/bin/python" "$RUNNER_TEMP/engineering-ci-selection"
+      - name: Install pinned Tach
+        run: uv tool install tach==0.35.3
       - name: Select and execute exactly the plan
         env:
           SELECTION_CONFIG: ${{ inputs.selection_config }}
@@ -680,8 +682,11 @@ jobs:
           if [ "$EVENT_NAME" = push ] && [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             mode_args=(--mode push --before "$BEFORE_SHA" --after "$HEAD_SHA")
           fi
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            mode_args=(--mode commit --base "$BASE_SHA" --head "$HEAD_SHA")
+          fi
           .venv/bin/engineering-ci select --root . --config "$SELECTION_CONFIG" \
-            "${mode_args[@]}" --json > "$RUNNER_TEMP/selection-plan.json"
+            "${mode_args[@]}" --validate-tach --json > "$RUNNER_TEMP/selection-plan.json"
           .venv/bin/engineering-ci execute --plan "$RUNNER_TEMP/selection-plan.json" \
             --root . --junit "$RUNNER_TEMP/selection-junit.xml" \
             --json > "$RUNNER_TEMP/selection-execution.json"
