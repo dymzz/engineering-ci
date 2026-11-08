@@ -149,7 +149,7 @@ class EngineeringCi:
                 report["junit"] = None
         selected_checks = [
             item
-            for item in chosen.get("check_scope", [])
+            for item in value.get("check_scope", chosen.get("check_scope", []))
             if item.get("status") in {"selected", "unknown"}
         ]
         if not selected_checks and chosen.get("checks"):

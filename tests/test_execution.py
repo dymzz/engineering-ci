@@ -93,7 +93,7 @@ def test_execute_without_targets_is_not_executed(repo):
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])
-    value["selection"]["check_scope"] = [
+    value["check_scope"] = [
         {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]}
     ]
     value["selection"]["prerequisites"] = ["identity_commit"]

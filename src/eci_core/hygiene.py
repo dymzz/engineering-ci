@@ -330,8 +330,18 @@ def _forwarding(paths, changes, root, runner, config):
     for path in candidates:
         previous = runner(["git", "show", f"{changes.base_commit}:{path}"], root)
         if previous.returncode:
-            # A newly added module has no base content; it is not a regression.
-            continue
+            exists = runner(
+                ["git", "cat-file", "-e", f"{changes.base_commit}:{path}"], root
+            )
+            if exists.returncode:
+                # A newly added module has no base object; it is not a regression.
+                continue
+            return _result(
+                "forwarding",
+                "failed",
+                exit_code=previous.returncode,
+                reason="base_content_unavailable",
+            )
         try:
             previous_is_forwarder = _pure_reexport(previous.stdout)
             current_is_forwarder = _pure_reexport(

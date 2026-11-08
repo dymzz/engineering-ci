@@ -591,6 +591,29 @@ def test_nested_test_discovery_and_direct_mapping(repo):
     assert targeted.tests == ("tests.unit.test_nested",)
 
 
+def test_pr_merge_uses_base_tip_not_merge_base(repo):
+    path, _ = repo
+    run(path, "checkout", "-q", "-b", "feature")
+    (path / "src/pkg/sub.py").write_text("VALUE = 30\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "feature")
+    feature = run(path, "rev-parse", "HEAD").strip()
+    run(path, "checkout", "-q", "main")
+    (path / "src/pkg/other.py").write_text("VALUE = 31\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "main moves")
+    base_tip = run(path, "rev-parse", "HEAD").strip()
+    merged = changes(path, base=base_tip, head=feature, mode="pr")
+    if not merged.complete:
+        pytest.skip("git merge-tree is unavailable")
+    assert merged.base_tip == base_tip
+    assert merged.base_commit != base_tip
+    assert merged.merge_tree != run(
+        path, "rev-parse", f"{feature}^{{tree}}"
+    ).strip()
+    assert merged.paths == ("src/pkg/sub.py",)
+
+
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")

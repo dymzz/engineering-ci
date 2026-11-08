@@ -116,7 +116,7 @@ def execute(plan, *, root, junit_path=None):
     report["tests"] = {"status": tests_status, "exit_code": exit_code}
     selected_checks = [
         item
-        for item in chosen.get("check_scope", [])
+        for item in plan.get("check_scope", chosen.get("check_scope", []))
         if item.get("status") in {"selected", "unknown"}
     ]
     if not selected_checks and chosen.get("checks"):

@@ -104,6 +104,7 @@ class ChangeSet:
     index_tree: str | None = None
     merge_tree: str | None = None
     references: tuple[dict, ...] = ()
+    base_tip: str | None = None
 
     @property
     def execution_tree(self):
@@ -480,7 +481,22 @@ def changeset(
             index_tree=index_tree,
         )
     if mode == "pr":
-        merged = _git(root, "merge-tree", "--write-tree", base_commit, head_commit)
+        base_tip = _resolve(root, base)
+        if base_tip is None:
+            return ChangeSet(
+                root,
+                base,
+                head,
+                base_commit,
+                head_commit,
+                tree,
+                (),
+                False,
+                False,
+                "base_tip_unresolved",
+                snapshot="pr_merge",
+            )
+        merged = _git(root, "merge-tree", "--write-tree", base_tip, head_commit)
         merge_tree = merged.stdout.splitlines()[0].strip() if merged.stdout else None
         if merged.returncode != 0 or not merge_tree:
             return ChangeSet(
@@ -495,6 +511,7 @@ def changeset(
                 False,
                 "merge_tree_failed" if merged.returncode else "merge_tree_missing",
                 snapshot="pr_merge",
+                base_tip=base_tip,
             )
         diff = _git(
             root,
@@ -502,7 +519,7 @@ def changeset(
             "--no-renames",
             "--name-only",
             "-z",
-            base_commit,
+            base_tip,
             merge_tree,
         )
         paths = [path for path in diff.stdout.split("\0") if path]
@@ -519,6 +536,7 @@ def changeset(
             None if diff.returncode == 0 else "diff_failed",
             snapshot="pr_merge",
             merge_tree=merge_tree,
+            base_tip=base_tip,
         )
     if mode != "worktree":
         return ChangeSet(
@@ -946,6 +964,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "base_ref": selection.changeset.base_ref,
             "head_ref": selection.changeset.head_ref,
             "base_commit": selection.changeset.base_commit,
+            "base_tip": selection.changeset.base_tip,
             "head_commit": selection.changeset.head_commit,
             "tree": selection.changeset.tree,
             "worktree_dirty": selection.changeset.worktree_dirty,

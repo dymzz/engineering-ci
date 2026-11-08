@@ -9,14 +9,14 @@ Contract: [selection and plan](../architecture/selection.md).
 
 ```sh
 pytest -q tests/test_selection.py
-# 37 passed
+# 38 passed
 
 pytest -q tests/test_execution.py
 # 8 passed
 
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 510 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 511 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
