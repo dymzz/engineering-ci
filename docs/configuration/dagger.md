@@ -101,7 +101,7 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 
 ### 本仓检查与消费者检查
 
-本仓默认五项 Checks 检查根仓源码；消费者组合既有 `python-*` Functions，
+本仓默认原生 Checks 检查根仓源码；消费者组合既有 `python-*` Functions，
 按自己的源码、范围与策略声明原生 Checks，见[接入示例](../../guides/new-repository.md)。
 
 ### 按执行位置选择 GitHub 认证入口

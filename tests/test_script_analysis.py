@@ -402,18 +402,59 @@ class RunnerSelectionTests(unittest.TestCase):
         with self.assertRaises(powershell.AnalysisError):
             powershell.select_scripts(self.workspace, ["absent"])
 
-    def test_no_matching_scripts_is_not_executed_rather_than_clean(self):
-        report = {
-            "schema_version": 1,
-            "tool": "psscriptanalyzer",
-            "pinned_version": powershell.PSSCRIPTANALYZER_VERSION,
-        }
-        # The gate path: analyse() returns not_executed before touching the tool.
-        import inspect
+    def test_no_matching_scripts_is_not_applicable_and_fails_enforce(self):
+        empty = self.workspace / "empty_dir"
+        empty.mkdir()
+        policy = powershell.paths_policy(["empty_dir"])
+        report = powershell.analyse(self.workspace, Path("/unused"), policy)
+        self.assertEqual(report["outcome"], "not_applicable")
+        self.assertEqual(report["reason"], "no_applicable_inputs")
+        self.assertEqual(report["coverage"]["candidates"], 0)
+        self.assertEqual(report["files_scanned"], 0)
+        out = self.workspace / "bundle_empty"
+        code = powershell.main(
+            [
+                "--mode",
+                "enforce",
+                "--workspace",
+                str(self.workspace),
+                "--paths",
+                "empty_dir",
+                "--out",
+                str(out),
+            ]
+        )
+        self.assertEqual(code, 1)
 
-        source = inspect.getsource(powershell.analyse)
-        self.assertIn("not_executed", source)
-        self.assertEqual(report["tool"], "psscriptanalyzer")
+    def test_analyse_raises_on_analyzer_failure_with_actual_cause(self):
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(powershell, "_run_powershell") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pwsh"],
+                returncode=3,
+                stdout='{"schema_version": 1, "status": "error", "error": "Analyzing broken.ps1 failed: parse syntax error", "files_scanned": 1, "candidates": 2}\n',
+                stderr="",
+            )
+            with patch.object(
+                powershell, "prepare_module", return_value=(Path("/mod"), "cached")
+            ):
+                with self.assertRaises(powershell.AnalysisError) as ctx:
+                    powershell.analyse(
+                        self.workspace,
+                        ROOT,
+                        {
+                            "paths": ["scripts"],
+                            "pinned_version": "1.9.0",
+                            "settings": None,
+                            "severity": None,
+                        },
+                    )
+                self.assertIn(
+                    "Analyzing broken.ps1 failed: parse syntax error",
+                    str(ctx.exception),
+                )
 
 
 class ModeTests(unittest.TestCase):

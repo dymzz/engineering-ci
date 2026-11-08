@@ -489,7 +489,7 @@ class EngineeringCi:
                 report = script.deferred_report(
                     scan_path,
                     "PowerShell scripts are analysed by the Windows runner in "
-                    "reusable-python-ci.yml, not by this Linux Dagger check",
+                    "ci.yml / reusable-python-ci.yml, not by this Linux Dagger check",
                 )
             else:
                 report = script.unsupported_report(

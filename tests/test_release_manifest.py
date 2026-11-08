@@ -351,6 +351,27 @@ def test_the_dagger_execution_ledger_must_agree_with_the_listing(tmp_path, monke
         evidence.facts(tmp_path)
 
 
+def test_the_dagger_execution_ledger_rejects_unpermitted_replaced_check(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(release, "require_evidence", lambda _: None)
+    for name in ("core", "ruff", "pytest", "security"):
+        (tmp_path / name).mkdir()
+    records = facts()["tools"]
+    for scope in ("core", "ruff"):
+        evidence.write(
+            tmp_path / scope / "tool-versions.json",
+            [item for item in records if item["scope"] == scope],
+        )
+    (tmp_path / "pytest/dagger-version.txt").write_text("version: v1.0.0-beta.16")
+    evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
+    write_ledger(tmp_path, replaced="validation:fixture-quality-gates")
+    with pytest.raises(
+        ValueError, match="The replaced Dagger check must be 'validation:fixture-test'"
+    ):
+        evidence.facts(tmp_path)
+
+
 def test_dagger_cli_version_does_not_record_runner_credentials():
     assert (
         evidence.dagger_cli_version(

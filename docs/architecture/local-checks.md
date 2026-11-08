@@ -57,7 +57,7 @@ Coverage 是显式开关，根仓没有额外增加覆盖率阈值。
 [Python 静态分析](testing/python-static-analysis.md)。
 公共消费者继续调用既有 `python-*` Functions，见[公共接口](../delivery/public-components.md)。
 
-PR CI 的三个现有 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
+PR CI 的既有 Job 调用以上原生定义与 Windows PowerShell 分析；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
 PowerShell 分析在 `windows-2025` Job 中执行，规则与环境只在该 Runner 上成立；
 本仓同时是该能力的宿主，因此直接调用仓内实现，不再检出第二份 helper。
 依赖安全扫描、Python Matrix 和四个静态分析检查仍由正式发布的显式策略调用，未在默认检查中暗中增加。

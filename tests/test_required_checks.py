@@ -228,14 +228,18 @@ def test_a_required_dagger_check_exists_and_is_selected():
                 f"{requirement.key}: selects Dagger check {name!r}, which the "
                 "module does not declare"
             )
-            assert requirement.key.replace("_", "-") == name or requirement.key in (
-                "ruff_lint",
-                "ruff_format",
-                "core_tests",
-                "version_integrity",
-            ), (
+            check_map = {
+                "ruff_lint": {"lint"},
+                "ruff_format": {"format-check"},
+                "core_tests": {"tests"},
+                "version_integrity": {"version", "lock"},
+            }
+            expected_checks = check_map.get(
+                requirement.key, {requirement.key.replace("_", "-")}
+            )
+            assert name in expected_checks, (
                 f"{requirement.key}: step selects {name!r}; the requirement and "
-                "the selected check must name the same check"
+                f"the selected check must name one of {expected_checks}"
             )
 
 
@@ -378,6 +382,17 @@ def test_the_release_workflow_selects_every_required_dagger_check():
     selected = {f"validation:{item}" for item in block_scalar(text, "dagger_checks")}
     assert selected, "the release Workflow must declare its Dagger checks"
     assert selected == set(registry.DAGGER_EXECUTION_CHECKS)
+
+
+def test_the_release_workflow_binds_permitted_replaced_check():
+    """release.yml must bind pytest_check to the permitted replacement identity."""
+    text = WORKFLOWS["release.yml"].read_text(encoding="utf-8")
+    match_check = re.search(r"pytest_check:\s*([^\s\n]+)", text)
+    assert match_check, "pytest_check must be declared in release.yml"
+    assert match_check.group(1) == registry.PERMITTED_REPLACED_CHECK
+    match_module = re.search(r"dagger_module:\s*([^\s\n]+)", text)
+    assert match_module, "dagger_module must be declared in release.yml"
+    assert match_module.group(1) == registry.DAGGER_MODULE
 
 
 def input_defaults(text):
