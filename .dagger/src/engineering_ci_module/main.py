@@ -73,6 +73,78 @@ _READ_OPTIONAL = (
 @object_type
 class EngineeringCi:
     @function
+    async def execute_plan(
+        self,
+        plan: dagger.File,
+        source: dagger.Directory,
+        python_version: str = "3.14",
+    ) -> str:
+        """Execute exactly the targets in a selection plan; no reselection."""
+        from eci_core import execution, selection
+
+        raw = await plan.contents()
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+        if value.get("kind") != selection.PLAN_KIND:
+            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+        chosen = value.get("selection") or {}
+        targets = chosen.get("tests") or []
+        framework = chosen.get("framework", "unittest")
+        if value.get("git", {}).get("snapshot") == "multi":
+            return json.dumps(
+                {
+                    "status": "not_executed",
+                    "reason": "multi_ref_requires_per_ref_execution",
+                }
+            )
+        if not targets:
+            return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
+        container = self._uv_container(source, python_version)
+        junit = "/tmp/engineering-ci-junit.xml"
+        if framework == "pytest":
+            pytest_targets = [
+                target
+                if target.endswith(".py") or "/" in target or "::" in target
+                else f"--pyargs={target}"
+                for target in targets
+            ]
+            command = [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                f"--junitxml={junit}",
+                *pytest_targets,
+            ]
+        elif framework == "unittest":
+            command = ["uv", "run", "python", "-m", "unittest", *targets]
+        else:
+            return json.dumps({"status": "not_executed", "reason": "framework_invalid"})
+        result = container.with_exec(command, expect=dagger.ReturnType.ANY)
+        exit_code = await result.exit_code()
+        report = {
+            "kind": execution.REPORT_KIND,
+            "schema_version": execution.SCHEMA_VERSION,
+            "status": "passed" if exit_code == 0 else "failed",
+            "exit_code": exit_code,
+            "targets": targets,
+            "framework": framework,
+            "tree_verified": False,
+            "trusted": False,
+            "plan_execution_tree": value.get("git", {}).get("execution_tree"),
+            "stdout": await result.stdout(),
+            "stderr": await result.stderr(),
+        }
+        if framework == "pytest" and exit_code in {0, 1}:
+            try:
+                report["junit"] = await result.file(junit).contents()
+            except dagger.QueryError:
+                report["junit"] = None
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
     async def sources_self_test(self) -> str:
         """Run the installed source reconciler on a disposable fixture."""
         import hashlib

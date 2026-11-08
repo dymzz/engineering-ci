@@ -103,6 +103,20 @@ engineering-ci select --help
 The wheel installs both `engineering_ci` and `eci_core`; no checkout path or
 source tree is required to start the CLI.
 
+## Dagger plan execution
+
+```text
+dagger call execute-plan --plan plan-ecitest.json --source .
+# {"status":"passed","exit_code":0,"framework":"pytest",
+#  "tests":[...],"junit":"<testsuites ... tests=\"11\">",
+#  "tree_verified":false,"trusted":false}
+```
+
+The Dagger run executed the plan's `tests/test_release_version.py` target in a
+synced consumer environment, returned the JUnit XML and preserved the native
+exit. `trusted:false` is intentional: the container has no `.git` to verify the
+plan's execution tree.
+
 ## Limits
 
 - Local `unittest` and pytest execution are wired; Dagger check execution of a

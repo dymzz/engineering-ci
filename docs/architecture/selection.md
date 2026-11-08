@@ -225,7 +225,17 @@ keeps the native exit and is reported as `failed`.
 The report (`engineering-ci-execution-report`) carries the plan's generator/Git
 identity, actual targets and framework, JUnit path, native exit and status.
 Selection status and execution status stay separate. This host executor is the
-Actions-consumable path; Dagger plan consumption is still open.
+Actions-consumable path.
+
+Dagger also has `execute-plan(plan: File, source: Directory)`: it validates the
+plan kind, refuses multi-ref unions and empty targets, runs the exact targets
+with `uv run` in a synced consumer environment, and returns native exit/stdout/
+stderr plus pytest JUnit. Because the Dagger Source excludes `.git`, it cannot
+verify `execution_tree`; the report sets `tree_verified: false` and
+`trusted: false`. A trusted pass must use the host executor or a future
+Source-identity binding.
+
+Actions workflow wiring is not in this slice.
 
 ## CLI
 
@@ -274,5 +284,5 @@ multi-target pytest execution and CLI modes.
 | P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge/multi-ref selection and execution tree refusal delivered; per-ref execution and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
 | P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
-| Production Dagger/Actions plan execution | Partial: host `execute --plan` validates tree and runs targets with JUnit; Dagger consumption/aggregation is next |
+| Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions wiring open |
 | Clean-environment install and non-Knowledge consumer | Clean wheel install outside the checkout delivered; a real non-Knowledge consumer execution is still open |
