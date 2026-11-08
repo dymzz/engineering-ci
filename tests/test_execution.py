@@ -90,6 +90,21 @@ def test_execute_without_targets_is_not_executed(repo):
     assert report["exit_code"] == 3
 
 
+def test_execute_blocks_when_required_checks_are_not_executed(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["check_scope"] = [
+        {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]}
+    ]
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    report = execution.execute(value, root=path)
+    assert report["status"] == "blocked"
+    assert report["exit_code"] == 5
+    assert report["reason"] == "required_checks_not_executed"
+    assert report["tests"]["status"] == "passed"
+    assert report["checks"][0]["status"] == "not_executed"
+
+
 def test_execute_blocks_unvalidated_tach_narrowing(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])

@@ -112,10 +112,38 @@ def execute(plan, *, root, junit_path=None):
     report["exit_code"] = exit_code
     report["native_stdout"] = native.get("stdout", "")
     report["native_stderr"] = native.get("stderr", "")
-    if exit_code == 0:
-        report["status"], report["reason"] = "passed", None
-    else:
+    tests_status = "passed" if exit_code == 0 else "failed"
+    report["tests"] = {"status": tests_status, "exit_code": exit_code}
+    selected_checks = [
+        item
+        for item in chosen.get("check_scope", [])
+        if item.get("status") in {"selected", "unknown"}
+    ]
+    if not selected_checks and chosen.get("checks"):
+        selected_checks = [
+            {"name": name, "status": "unknown"} for name in chosen["checks"]
+        ]
+    report["checks"] = [
+        {
+            "name": item.get("name"),
+            "selected": item.get("status"),
+            "status": "not_executed",
+            "reason": "no native check execution wired",
+        }
+        for item in selected_checks
+    ]
+    report["prerequisites"] = [
+        {"name": name, "status": "not_executed"}
+        for name in chosen.get("prerequisites", [])
+    ]
+    if exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
+    elif report["checks"] or report["prerequisites"]:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "required_checks_not_executed"
+    else:
+        report["status"], report["reason"] = "passed", None
     return report
 
 

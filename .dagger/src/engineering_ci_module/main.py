@@ -147,6 +147,22 @@ class EngineeringCi:
                 report["junit"] = await result.file(junit).contents()
             except dagger.QueryError:
                 report["junit"] = None
+        selected_checks = [
+            item
+            for item in chosen.get("check_scope", [])
+            if item.get("status") in {"selected", "unknown"}
+        ]
+        if not selected_checks and chosen.get("checks"):
+            selected_checks = [
+                {"name": name, "status": "unknown"} for name in chosen["checks"]
+            ]
+        if exit_code == 0 and (selected_checks or chosen.get("prerequisites")):
+            report["status"] = "blocked"
+            report["reason"] = "required_checks_not_executed"
+            report["checks"] = [
+                {"name": item.get("name"), "status": "not_executed"}
+                for item in selected_checks
+            ]
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     @function

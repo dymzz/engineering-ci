@@ -12,11 +12,11 @@ pytest -q tests/test_selection.py
 # 35 passed
 
 pytest -q tests/test_execution.py
-# 6 passed
+# 8 passed
 
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 505 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 507 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
@@ -57,6 +57,7 @@ checkout or the Knowledge repository:
 | Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
 | Empty execution | no targets → `not_executed`/exit 3, never a pass |
 | Coverage gate | `coverage_required` → `blocked`/exit 5, no tests run, `satisfied:false` |
+| Required checks | selected/unknown checks or prerequisites → tests may pass but overall `blocked`/exit 5 |
 | Tach validation | passed result binds Tach digest + source tree; stale tree → `untrusted` |
 | Multi-ref | union paths + `references[]`; single execution refused as `multi_ref_requires_per_ref_execution` |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |

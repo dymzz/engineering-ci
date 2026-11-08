@@ -227,6 +227,12 @@ identity, actual targets and framework, JUnit path, native exit and status.
 Selection status and execution status stay separate. This host executor is the
 Actions-consumable path.
 
+If the plan has selected/unknown checks or non-empty prerequisites, test
+success alone is `blocked` / exit `5` with reason
+`required_checks_not_executed`; `checks[]` and `prerequisites[]` record
+`not_executed`, while the native test result is preserved. Only a plan with no
+unexecuted required work can be `passed`.
+
 If the consumer sets `coverage_required = true`, the plan carries it and
 `execute` returns `blocked` / exit `5` with reason
 `coverage_evidence_required`; no tests run. A subset run, and even a full test
