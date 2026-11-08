@@ -185,6 +185,14 @@ def test_forwarding_module_is_reported_without_failing(repo):
     )
 
 
+def test_forwarding_new_module_is_not_a_failure(repo):
+    path, base = repo
+    (path / "src/pkg/new.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    result = report(path, base, checks=("forwarding",))
+    assert result["status"] == "passed"
+    assert by_name(result)["forwarding"]["status"] == "passed"
+
+
 def test_report_records_git_identity_and_changes(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")

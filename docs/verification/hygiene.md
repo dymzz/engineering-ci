@@ -9,7 +9,7 @@ Contract: [hygiene checks](../architecture/hygiene.md).
 
 ```sh
 pytest -q tests/test_hygiene.py
-# 13 passed
+# 14 passed
 
 pytest -q tests
 # 465 passed, 8 skipped, 187 subtests passed
@@ -40,6 +40,7 @@ runner so no Lychee/Vulture/Tach installation is required.
 | Tach config missing | `failed` / `tach_config_missing`, not skipped |
 | Tach check failure | `failed` / `tach_check_failed` |
 | Forwarding module | pure re-export over a substantive base → advisory finding, run passes |
+| New forwarding module | absent base content is a new file, not `base_content_unavailable` |
 | Report identity | base/head commit, tree, dirty flag and changed paths recorded |
 | CLI | JSON report emitted, exit 1 preserved on failure |
 

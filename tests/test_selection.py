@@ -554,6 +554,43 @@ def test_multi_ref_union_refuses_single_execution(repo):
     assert report["reason"] == "multi_ref_requires_per_ref_execution"
 
 
+def test_overlapping_rules_prioritize_exact_and_do_not_shadow(repo):
+    path, base = repo
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + '\n[[non_code_rules]]\nexact = "data/input.json"\n'
+        'tests = ["tests.test_sub"]\nreason = "exact data input"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "exact rule")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "data").mkdir()
+    (path / "data/input.json").write_text("{}\n", encoding="utf-8")
+    result = select(path, base)
+    assert result.tests == ("tests.test_sub",)
+
+
+def test_nested_test_discovery_and_direct_mapping(repo):
+    path, base = repo
+    nested = path / "tests/unit"
+    nested.mkdir(parents=True)
+    (nested / "test_nested.py").write_text(
+        "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_ok(self):\n        self.assertTrue(True)\n",
+        encoding="utf-8",
+    )
+    full = select(path, base, full=True)
+    assert "tests.unit.test_nested" in full.tests
+    (nested / "test_nested.py").write_text(
+        (nested / "test_nested.py").read_text(encoding="utf-8") + "\n# changed\n",
+        encoding="utf-8",
+    )
+    targeted = select(path, base)
+    assert targeted.tests == ("tests.unit.test_nested",)
+
+
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")

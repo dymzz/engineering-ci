@@ -464,7 +464,7 @@ def changeset(
             write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
-        status = _git(root, "status", "--porcelain", "-z")
+        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
         return ChangeSet(
             root,
             base,
@@ -546,7 +546,7 @@ def changeset(
     error = None if complete else "diff_failed"
     worktree_dirty = False
     if include_worktree and head_commit == _resolve(root, "HEAD"):
-        status = _git(root, "status", "--porcelain", "-z")
+        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
         if status.returncode == 0:
             worktree_dirty = bool(status.stdout)
             paths.extend(_parse_porcelain(status.stdout))
@@ -576,8 +576,8 @@ def _test_modules(tests_dir, prefix):
         return ()
     return tuple(
         sorted(
-            f"{prefix}.{path.stem}"
-            for path in tests_dir.glob("test_*.py")
+            f"{prefix}.{'.'.join(path.relative_to(tests_dir).with_suffix('').parts)}"
+            for path in tests_dir.rglob("test_*.py")
             if path.is_file()
         )
     )
@@ -640,13 +640,15 @@ def _is_ignored(path, config):
     )
 
 
-def _rule_for(path, config):
-    for rule in config.non_code_rules:
-        if rule.exact is not None and path == rule.exact:
-            return rule
-        if rule.prefix is not None and path.startswith(rule.prefix):
-            return rule
-    return None
+def _rules_for(path, config):
+    exact = [rule for rule in config.non_code_rules if rule.exact == path]
+    if exact:
+        return exact
+    return [
+        rule
+        for rule in config.non_code_rules
+        if rule.prefix is not None and path.startswith(rule.prefix)
+    ]
 
 
 def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=False):
@@ -711,27 +713,31 @@ def select(changes, config, *, root, full=False):
     for path in paths:
         if _is_ignored(path, config):
             continue
-        rule = _rule_for(path, config)
-        if rule is not None:
-            for test in rule.tests:
-                selected.add(test)
-                reasons.setdefault(test, []).append(rule.reason)
+        rules = _rules_for(path, config)
+        if rules:
+            for rule in rules:
+                for test in rule.tests:
+                    selected.add(test)
+                    reasons.setdefault(test, []).append(rule.reason)
             continue
-        if path.startswith(config.tests_dir.rstrip("/") + "/") and path.endswith(".py"):
-            stem = Path(path).stem
-            if path.split("/")[-1].startswith("test_"):
-                if not (root / path).is_file():
-                    return _escalated(
-                        changes,
-                        config,
-                        all_tests,
-                        f"Test file deleted or renamed: {path}",
-                    )
-                selected.add(f"{test_prefix}.{stem}")
-                reasons.setdefault(f"{test_prefix}.{stem}", []).append(
-                    f"Direct test file modification: {path}"
+        if (
+            path.startswith(config.tests_dir.rstrip("/") + "/")
+            and path.endswith(".py")
+            and path.split("/")[-1].startswith("test_")
+        ):
+            if not (root / path).is_file():
+                return _escalated(
+                    changes,
+                    config,
+                    all_tests,
+                    f"Test file deleted or renamed: {path}",
                 )
-                continue
+            module = ".".join(Path(path).with_suffix("").parts)
+            selected.add(module)
+            reasons.setdefault(module, []).append(
+                f"Direct test file modification: {path}"
+            )
+            continue
         module = _module_for(path, modules, config.src_root)
         if module:
             changed_modules.add(module)
