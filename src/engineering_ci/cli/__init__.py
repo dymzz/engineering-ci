@@ -34,9 +34,9 @@ def main(argv=None):
     elif namespace.command == "policy":
         from ..security_policy import main as invoke
     elif namespace.command == "select":
-        from ..selection import main as invoke
+        from eci_core.selection import main as invoke
     elif namespace.command == "hygiene":
-        from ..hygiene import main as invoke
+        from eci_core.hygiene import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

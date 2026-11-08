@@ -139,6 +139,35 @@ Dagger receives the plan and the consumer source; it executes the selected
 checks/tests in containers and records native results. It must not recompute
 selection from a container without `.git`.
 
+## Shared implementation and Dagger import (P1-3)
+
+The algorithms live once in `src/eci_core`. The root `engineering-ci` wheel
+packages both `engineering_ci` and `eci_core` (`module-name` list), so a normal
+install carries the shared implementation.
+
+The Dagger module project is `engineering-ci-module` and its Python package is
+`engineering_ci_module`, avoiding the top-level `engineering_ci` collision with
+the installed wheel. `dagger-module.toml` includes the root `pyproject.toml`
+and `src/eci_core/**`; `.dagger/pyproject.toml` depends on the root project via
+a path source (lockfile updated). The module imports `eci_core` directly; there
+is no copied selector.
+
+Verified with the engine:
+
+```text
+dagger call shared-identity
+# 0.7.0:1:engineering-ci-selection-plan
+
+dagger call selection-self-test
+# engineering-ci-selection-plan:targeted:tests.test_pkg
+```
+
+`selection-self-test` builds a disposable Tach/config/tests layout inside the
+module runtime and calls `eci_core.selection.select`; it is an import/call
+proof, not a claim that Dagger already executes the full consumer plan.
+Tach/Lychee tool acquisition, Dagger check execution and Source construction
+remain follow-ups.
+
 ## CLI
 
 ```sh
@@ -165,7 +194,7 @@ multi-target pytest execution and CLI modes.
 | --- | --- |
 | P1-1 per-check impact | Delivered: `plan.check_scope` separates tests, docs, Tach, Vulture and source; deletions set `recheck_all` |
 | P1-2 source set reconciliation | Not yet: next slice (`sources` module with enumeration/diff/conflicts/attributes) |
-| P1-3 common package import in Dagger | Not yet: requires a non-colliding shared package plus `dagger-module.toml` `include` spike |
+| P1-3 common package import in Dagger | Import and selector call delivered via `eci_core` + `engineering_ci_module`; Tach/Lychee acquisition and Source construction pending |
 | P1-4 multi pytest targets | Local execution delivered as one native process with exit fidelity; Required full-coverage caveat documented; Dagger/Actions pending |
 | P2-1 Git attributes host location | Pending with the source slice; must run where `.git` exists |
 | P2-2 `--full` scope | Delivered: tests only, explicitly not an all-checks pass |

@@ -1,15 +1,22 @@
 [project]
-name = "engineering-ci"
+name = "engineering-ci-module"
 version = "0.7.0"
 requires-python = ">=3.14"
-dependencies = ["dagger-io", "packaging>=24.2"]
+dependencies = ["dagger-io", "packaging>=24.2", "engineering-ci"]
+
+[project.entry-points."dagger.mod"]
+main_object = "engineering_ci_module:EngineeringCi"
 
 [build-system]
 requires = ["uv_build>=0.8.4,<0.9.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+module-name = "engineering_ci_module"
+
 [tool.uv.sources]
 dagger-io = { path = "sdk", editable = true }
+engineering-ci = { path = "..", editable = false }
 
 [dependency-groups]
 dev = [

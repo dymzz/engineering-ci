@@ -34,7 +34,7 @@ other than `clean` as a non-pass; there is no implicit clean state.
 
 ## Pinned versions and the check environment
 
-`.dagger/src/engineering_ci/python_static.py` pins one version per scanner and
+`.dagger/src/engineering_ci_module/python_static.py` pins one version per scanner and
 is the only place that states them. The scanners run through
 `uvx --from <tool>==<version>`, so their environment is built separately from
 the consumer's.
@@ -134,7 +134,7 @@ analysed interpreter version.
 
 ## Verification
 
-`.dagger/src/engineering_ci/main.py` declares `fixture_static_analysis`, which
+`.dagger/src/engineering_ci_module/main.py` declares `fixture_static_analysis`, which
 runs every scanner against committed negative and positive sources in
 `tests/fixtures/static-app/`. It asserts the pinned version each `uvx` actually
 resolved, the native exit code and outcome of each case, that Pyright honours

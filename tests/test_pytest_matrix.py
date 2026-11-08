@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-MODULES = Path(__file__).resolve().parent.parent / ".dagger/src/engineering_ci"
+MODULES = Path(__file__).resolve().parent.parent / ".dagger/src/engineering_ci_module"
 sys.path.insert(0, str(MODULES))
 
 

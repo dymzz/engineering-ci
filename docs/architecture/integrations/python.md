@@ -38,7 +38,7 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 
 - **Status:** adopted
 - **Pin:** `pytest-cov==7.0.0` — `pyproject.toml` (`dev` group)
-- **Used by:** `.dagger/src/engineering_ci/pytest_quality.py` — enforces minimum line coverage
+- **Used by:** `.dagger/src/engineering_ci_module/pytest_quality.py` — enforces minimum line coverage
   and outputs XML/JSON reports
 - **Contract:** [quality gates](../testing/quality-gates.md)
 - **Verify:** `tests/test_pytest_quality.py`

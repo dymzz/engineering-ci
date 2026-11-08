@@ -11,14 +11,14 @@ Contract: [selection and plan](../architecture/selection.md).
 pytest -q tests/test_selection.py
 # 24 passed
 
-pytest -q tests
-# 471 passed, 8 skipped, 187 subtests passed
-# 1 known Windows-checkout failure: tests/test_security_policy.py
-#   test_example_policy_is_a_valid_publish_input (CRLF vs canonical LF bytes)
+pytest -q tests \
+  --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
+# 471 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
-The policy-fixture failure is a Windows `core.autocrlf` artifact unrelated to
-this slice; it passes with an LF fixture and on Linux CI and was not modified.
+The deselected policy-fixture test is a Windows `core.autocrlf` artifact
+unrelated to this slice; it passes with an LF fixture and on Linux CI and was
+not modified.
 
 `tests/test_selection.py` builds a disposable Git repository from
 `tests/fixtures/selection-app` for every case, so nothing depends on a consumer
@@ -52,16 +52,36 @@ A plan from the fixture records `kind = "engineering-ci-selection-plan"`,
 resolved Git commits/tree and the sorted `selection.tests` plus prerequisites.
 The fixture plan is disposable and is not committed.
 
+## Dagger shared implementation
+
+`uv build --wheel` produced one wheel containing both `engineering_ci/` and
+`eci_core/`. The Dagger module project is `engineering-ci-module` (package
+`engineering_ci_module`) and depends on that wheel via a path source; its
+`dagger-module.toml` includes the root metadata and `src/eci_core/**`.
+
+```text
+dagger call shared-identity
+# 0.7.0:1:engineering-ci-selection-plan
+
+dagger call selection-self-test
+# engineering-ci-selection-plan:targeted:tests.test_pkg
+```
+
+The second call runs `eci_core.selection.select` against a disposable
+Tach/config/tests layout inside the Dagger runtime. This proves the Dagger side
+imports and invokes the installed shared selector, not a copy or a plan-only
+claim.
+
 ## Limits
 
-- Local `unittest` and pytest execution are wired; Dagger/Actions consumption is
-  not. No second selector exists.
+- Local `unittest` and pytest execution are wired; Dagger check execution of a
+  consumer plan is not. No second selector exists.
 - Push/PR event objects and simulated merge trees are not implemented yet;
   callers must pass commits they actually hold.
 - A subset pytest run is real execution for its targets, but it cannot satisfy a
   Required full-coverage gate; that gate must run fully or consume #63 verified
   complete evidence. `--full` expands tests only.
-- Source-manifest validation and Dagger import of the common package are the
-  remaining P1 items from the 2026-11-08 review.
+- Source-manifest validation, Tach/Lychee acquisition and Dagger Source
+  construction are the remaining review items.
 - Windows checkout line endings can change byte-level policy fixtures; the
   selection fixture is content-only and unaffected.

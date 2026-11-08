@@ -16,6 +16,7 @@ import tomllib
 from .._paths import ROOT
 
 PROJECTS = (ROOT, ROOT / ".dagger")
+PROJECT_NAMES = {ROOT: "engineering-ci", ROOT / ".dagger": "engineering-ci-module"}
 VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+)$")
 
 
@@ -30,21 +31,20 @@ def versions() -> dict[str, str]:
     found: dict[str, str] = {}
     for project in PROJECTS:
         label = str(project.relative_to(ROOT)) or "."
+        expected = PROJECT_NAMES[project]
         for name in ("pyproject.toml", "uv.lock"):
             data = tomllib.loads((project / name).read_text(encoding="utf-8"))
             if name == "pyproject.toml":
-                if data["project"]["name"] != "engineering-ci":
+                if data["project"]["name"] != expected:
                     raise ValueError(f"Unexpected project name in {label}/{name}")
                 version = data["project"]["version"]
             else:
                 matches = [
-                    pkg["version"]
-                    for pkg in data["package"]
-                    if pkg["name"] == "engineering-ci"
+                    pkg["version"] for pkg in data["package"] if pkg["name"] == expected
                 ]
                 if len(matches) != 1:
                     raise ValueError(
-                        f"Expected one engineering-ci package in {label}/{name}"
+                        f"Expected one {expected} package in {label}/{name}"
                     )
                 version = matches[0]
             found[f"{label}/{name}"] = version

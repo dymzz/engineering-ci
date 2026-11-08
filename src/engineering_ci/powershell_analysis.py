@@ -121,7 +121,7 @@ def select_scripts(workspace: Path, paths: list[str]) -> list[Path]:
 
 
 def invocation_script(helper_root: Path) -> Path:
-    script = helper_root / ".dagger/src/engineering_ci/powershell_invoke.ps1"
+    script = helper_root / ".dagger/src/engineering_ci_module/powershell_invoke.ps1"
     if not script.is_file():
         raise AnalysisError(f"invocation script not found under {helper_root}")
     return script

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULES = ROOT / ".dagger/src/engineering_ci"
+MODULES = ROOT / ".dagger/src/engineering_ci_module"
 
 
 def load(name, filename):

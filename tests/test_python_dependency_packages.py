@@ -9,7 +9,7 @@ import pytest
 spec = importlib.util.spec_from_file_location(
     "python_dependency_packages",
     Path(__file__).resolve().parents[1]
-    / ".dagger/src/engineering_ci/python_dependency_packages.py",
+    / ".dagger/src/engineering_ci_module/python_dependency_packages.py",
 )
 packages = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packages)

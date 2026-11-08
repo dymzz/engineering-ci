@@ -8,7 +8,7 @@ import pytest
 spec = importlib.util.spec_from_file_location(
     "python_dependency_auth",
     Path(__file__).resolve().parents[1]
-    / ".dagger/src/engineering_ci/python_dependency_auth.py",
+    / ".dagger/src/engineering_ci_module/python_dependency_auth.py",
 )
 auth = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(auth)

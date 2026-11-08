@@ -19,7 +19,7 @@ Profile 注册表、`--reuse` 或历史 passed JSON 准入。
 
 ## 定义与输入
 
-`.dagger/src/engineering_ci/main.py` 的 `@check` 声明检查；`repository.py` 只构造共享容器。
+`.dagger/src/engineering_ci_module/main.py` 的 `@check` 声明检查；`repository.py` 只构造共享容器。
 Dagger 自行管理依赖图、并发、目录输入和执行缓存，不在宿主复制调度或计算内容指纹。
 未提交和未跟踪的源码属于当前目录输入；修改后下次调用由 Dagger 重新计算对应节点。
 执行过程中继续编辑时，应在编辑完成后重新调用检查；先前快照的成功不证明后续内容通过。

@@ -72,6 +72,61 @@ _READ_OPTIONAL = (
 
 @object_type
 class EngineeringCi:
+    @function
+    async def selection_self_test(self) -> str:
+        """Run the installed selector on a disposable fixture, without Git."""
+        import tempfile
+        from pathlib import Path
+
+        from eci_core import selection
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / "src/pkg/__init__.py").write_text("", encoding="utf-8")
+            (root / "src/pkg/sub.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "tests/test_pkg.py").write_text(
+                "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_ok(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            (root / "tach.toml").write_text(
+                'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\n'
+                "depends_on = []\n",
+                encoding="utf-8",
+            )
+            (root / "ci-selection.toml").write_text(
+                'schema_version = 1\n\n[module_tests]\n"pkg" = ["tests.test_pkg"]\n',
+                encoding="utf-8",
+            )
+            config = selection.load_config(root / "ci-selection.toml")
+            changes = selection.ChangeSet(
+                root=root,
+                base_ref="base",
+                head_ref="HEAD",
+                base_commit="a" * 40,
+                head_commit="b" * 40,
+                tree="c" * 40,
+                paths=("src/pkg/sub.py",),
+                worktree_dirty=True,
+                complete=True,
+            )
+            result = selection.select(changes, config, root=root)
+            return f"{selection.PLAN_KIND}:{result.status}:{','.join(result.tests)}"
+
+    @function
+    async def shared_identity(self) -> str:
+        """Import the installed common package; proves one implementation."""
+        from importlib import metadata
+
+        from eci_core import selection
+
+        return (
+            f"{metadata.version('engineering-ci')}:"
+            f"{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
+        )
+
     repository_coverage: bool = dagger.field(default=False)
 
     @function

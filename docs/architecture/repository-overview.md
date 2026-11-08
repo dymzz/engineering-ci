@@ -33,8 +33,8 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 
 | 能力 | 代码位置 | 职责 |
 | --- | --- | --- |
-| 本仓原生检查 | `.dagger/src/engineering_ci/main.py`、`repository.py` | 实际源码上的五项 Dagger Checks，原生 DAG 与缓存 |
-| 可复用容器检查 | `.dagger/src/engineering_ci/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
+| 本仓原生检查 | `.dagger/src/engineering_ci_module/main.py`、`repository.py` | 实际源码上的五项 Dagger Checks，原生 DAG 与缓存 |
+| 可复用容器检查 | `.dagger/src/engineering_ci_module/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
 | GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
 | 发布请求及证据 | `src/engineering_ci/release/` | 具体 Dispatch 意图、版本、Manifest、身份核验与发布操作 |
 | 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |
