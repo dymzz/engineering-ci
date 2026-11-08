@@ -98,6 +98,17 @@ class ChangeSet:
     worktree_dirty: bool
     complete: bool
     error: str | None = None
+    snapshot: str = "worktree"
+    index_tree: str | None = None
+    merge_tree: str | None = None
+
+    @property
+    def execution_tree(self):
+        if self.snapshot == "pr_merge":
+            return self.merge_tree
+        if self.snapshot in {"commit", "push"}:
+            return self.tree
+        return None
 
 
 @dataclass(frozen=True)
@@ -285,16 +296,83 @@ def _parse_porcelain(data):
     return paths
 
 
-def changeset(root, *, base, head="HEAD", include_worktree=True):
-    """Describe the real Git objects and working-tree state behind a change set."""
+def _tree_of(root, commit):
+    result = _git(root, "rev-parse", "--verify", f"{commit}^{{tree}}")
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def changeset(
+    root,
+    *,
+    base,
+    head="HEAD",
+    include_worktree=True,
+    mode="worktree",
+    before=None,
+    after=None,
+):
+    """Describe the Git snapshot behind a change set.
+
+    Modes: worktree, index, commit, push (before/after), pr (merge tree).
+    Immutable snapshots expose execution_tree; mutable ones do not.
+    """
     root = Path(root)
+    if mode == "push":
+        before_commit = _resolve(root, before) if before else None
+        after_commit = _resolve(root, after) if after else None
+        if before_commit is None or after_commit is None:
+            return ChangeSet(
+                root,
+                before or "",
+                after or "",
+                before_commit,
+                after_commit,
+                None,
+                (),
+                False,
+                False,
+                "push_ref_unresolved",
+                snapshot="push",
+            )
+        diff = _git(
+            root,
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            before_commit,
+            after_commit,
+        )
+        paths = [path for path in diff.stdout.split("\0") if path]
+        return ChangeSet(
+            root=root,
+            base_ref=before or "",
+            head_ref=after or "",
+            base_commit=before_commit,
+            head_commit=after_commit,
+            tree=_tree_of(root, after_commit),
+            paths=tuple(sorted(set(paths))),
+            worktree_dirty=False,
+            complete=diff.returncode == 0,
+            error=None if diff.returncode == 0 else "push_diff_failed",
+            snapshot="push",
+        )
     head_commit = _resolve(root, head)
     if head_commit is None:
         return ChangeSet(
-            root, base, head, None, None, None, (), False, False, "head_unresolved"
+            root,
+            base,
+            head,
+            None,
+            None,
+            None,
+            (),
+            False,
+            False,
+            "head_unresolved",
+            snapshot=mode,
         )
-    tree = _git(root, "rev-parse", "--verify", f"{head_commit}^{{tree}}")
-    tree = tree.stdout.strip() or None if tree.returncode == 0 else None
+    tree = _tree_of(root, head_commit)
     merge = _git(root, "merge-base", head_commit, base)
     base_commit = merge.stdout.strip() if merge.returncode == 0 else None
     if base_commit is None:
@@ -309,6 +387,111 @@ def changeset(root, *, base, head="HEAD", include_worktree=True):
             False,
             False,
             "base_unresolved",
+            snapshot=mode,
+        )
+    if mode == "commit":
+        diff = _git(
+            root, "diff", "--no-renames", "--name-only", "-z", base_commit, head_commit
+        )
+        paths = [path for path in diff.stdout.split("\0") if path]
+        return ChangeSet(
+            root,
+            base,
+            head,
+            base_commit,
+            head_commit,
+            tree,
+            tuple(sorted(set(paths))),
+            False,
+            diff.returncode == 0,
+            None if diff.returncode == 0 else "diff_failed",
+            snapshot="commit",
+        )
+    if mode == "index":
+        diff = _git(
+            root,
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--cached",
+            base_commit,
+        )
+        index_tree = None
+        write_tree = _git(root, "write-tree")
+        index_tree = (
+            write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
+        )
+        paths = [path for path in diff.stdout.split("\0") if path]
+        status = _git(root, "status", "--porcelain", "-z")
+        return ChangeSet(
+            root,
+            base,
+            head,
+            base_commit,
+            head_commit,
+            tree,
+            tuple(sorted(set(paths))),
+            bool(status.stdout) if status.returncode == 0 else False,
+            diff.returncode == 0,
+            None if diff.returncode == 0 else "diff_failed",
+            snapshot="index",
+            index_tree=index_tree,
+        )
+    if mode == "pr":
+        merged = _git(root, "merge-tree", "--write-tree", base_commit, head_commit)
+        merge_tree = merged.stdout.splitlines()[0].strip() if merged.stdout else None
+        if merged.returncode != 0 or not merge_tree:
+            return ChangeSet(
+                root,
+                base,
+                head,
+                base_commit,
+                head_commit,
+                tree,
+                (),
+                False,
+                False,
+                "merge_tree_failed" if merged.returncode else "merge_tree_missing",
+                snapshot="pr_merge",
+            )
+        diff = _git(
+            root,
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            base_commit,
+            merge_tree,
+        )
+        paths = [path for path in diff.stdout.split("\0") if path]
+        return ChangeSet(
+            root,
+            base,
+            head,
+            base_commit,
+            head_commit,
+            tree,
+            tuple(sorted(set(paths))),
+            False,
+            diff.returncode == 0,
+            None if diff.returncode == 0 else "diff_failed",
+            snapshot="pr_merge",
+            merge_tree=merge_tree,
+        )
+    if mode != "worktree":
+        return ChangeSet(
+            root,
+            base,
+            head,
+            base_commit,
+            head_commit,
+            tree,
+            (),
+            False,
+            False,
+            "snapshot_mode_unsupported",
+            snapshot=mode,
         )
     diff = _git(
         root, "diff", "--no-renames", "--name-only", "-z", base_commit, head_commit
@@ -329,16 +512,17 @@ def changeset(root, *, base, head="HEAD", include_worktree=True):
         else:
             complete, error = False, "worktree_unresolved"
     return ChangeSet(
-        root,
-        base,
-        head,
-        base_commit,
-        head_commit,
-        tree,
-        tuple(sorted(set(paths))),
-        worktree_dirty,
-        complete,
-        error,
+        root=root,
+        base_ref=base,
+        head_ref=head,
+        base_commit=base_commit,
+        head_commit=head_commit,
+        tree=tree,
+        paths=tuple(sorted(set(paths))),
+        worktree_dirty=worktree_dirty,
+        complete=complete,
+        error=error,
+        snapshot="worktree",
     )
 
 
@@ -668,6 +852,10 @@ def plan(selection, *, config, config_path, root):
             "head_commit": selection.changeset.head_commit,
             "tree": selection.changeset.tree,
             "worktree_dirty": selection.changeset.worktree_dirty,
+            "snapshot": selection.changeset.snapshot,
+            "index_tree": selection.changeset.index_tree,
+            "merge_tree": selection.changeset.merge_tree,
+            "execution_tree": selection.changeset.execution_tree,
             "changed_paths": list(selection.changeset.paths),
         },
         "selection": {
@@ -692,19 +880,39 @@ def plan(selection, *, config, config_path, root):
     }
 
 
-def run_tests(modules, *, root, framework="unittest", src_root="src", python=None):
+def run_tests(
+    modules,
+    *,
+    root,
+    framework="unittest",
+    src_root="src",
+    python=None,
+    expected_tree=None,
+    junit_path=None,
+):
     """Run selected targets with their native framework; return the native exit."""
     modules = tuple(modules)
     if not modules:
         return 3
     root = Path(root)
+    if expected_tree is not None:
+        current = _tree_of(root, "HEAD")
+        if current != expected_tree:
+            print(
+                "execution refused: checkout tree does not match the selected snapshot",
+                file=sys.stderr,
+            )
+            return 4
     environment = dict(os.environ)
     source = str((root / src_root).resolve())
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
     executable = python or sys.executable
     if framework == "pytest":
-        command = [executable, "-X", "utf8", "-m", "pytest", "-q", *modules]
+        command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
+        if junit_path is not None:
+            command.append(f"--junitxml={Path(junit_path).resolve()}")
+        command.extend(modules)
     elif framework == "unittest":
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
     else:
@@ -727,11 +935,24 @@ def main(argv=None):
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument(
+        "--mode",
+        choices=("worktree", "index", "commit", "push", "pr"),
+        default="worktree",
+        help="Git snapshot mode; push uses --before/--after, pr uses the merge tree",
+    )
+    parser.add_argument("--before")
+    parser.add_argument("--after")
+    parser.add_argument(
         "--full",
         action="store_true",
         help="Run the full discovered test suite; it does not run every hygiene check",
     )
     parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument(
+        "--junit",
+        type=Path,
+        help="Write a native JUnit XML for pytest targets in this execution",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--json", action="store_true")
     mode.add_argument("--list", action="store_true")
@@ -744,7 +965,14 @@ def main(argv=None):
     except SelectionError as error:
         parser.exit(1, f"selection rejected: {error.code}\n")
     selection = select(
-        changeset(root, base=args.base, head=args.head),
+        changeset(
+            root,
+            base=args.base,
+            head=args.head,
+            mode=args.mode,
+            before=args.before,
+            after=args.after,
+        ),
         config,
         root=root,
         full=args.full,
@@ -773,6 +1001,8 @@ def main(argv=None):
             root=root,
             framework=config.framework,
             src_root=config.src_root,
+            expected_tree=selection.changeset.execution_tree,
+            junit_path=args.junit,
         )
     print(f"status: {selection.status}")
     print(f"tests: {' '.join(selection.tests) or '(none)'}")

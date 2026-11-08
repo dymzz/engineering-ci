@@ -69,6 +69,29 @@ wheel_smoke = ["tests.test_pkg"]
 - Paths from NUL-separated Git reports are preserved exactly (backslashes are
   normalised only); leading spaces are not stripped.
 
+### Snapshot modes and execution binding
+
+`changeset(..., mode=...)` supports:
+
+| Mode | Snapshot | Execution binding |
+| --- | --- | --- |
+| `worktree` | merge-base..HEAD plus staged/unstaged/untracked paths | `worktree_dirty`; no immutable tree |
+| `index` | merge-base..index (`git diff --cached`), `index_tree` recorded | index tree is not the execution tree; treated as mutable |
+| `commit` | merge-base..HEAD only | `execution_tree = HEAD tree` |
+| `push` | explicit `before`/`after` commits; no merge-base | `execution_tree = after` tree |
+| `pr` | `git merge-tree --write-tree` merge tree | `execution_tree = merge_tree` |
+
+The plan records `git.snapshot`, `index_tree`, `merge_tree` and
+`execution_tree`. `--run` passes `execution_tree` to `run_tests`; if the
+checkout's current `HEAD` tree differs, execution returns `4` and does not run
+tests. Mutable worktree/index snapshots explicitly have no immutable binding and
+must not be reported as a commit-bound pass.
+
+PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
+or missing objects produce `complete: false`, never a narrower pass. Multi-ref
+pre-push batches are not implemented; a caller must issue one push snapshot per
+ref pair and must not aggregate them into one plan identity.
+
 ## Per-check impact (not a global ignore)
 
 Ignoring a path for business tests does not ignore it for every check. The plan
@@ -213,8 +236,8 @@ multi-target pytest execution and CLI modes.
 | P1-1 empty escalation ran as success | Fixed: `run_tests(())` returns 3; `--run` refuses any empty selection unless `--allow-empty` for genuinely no-applicable changes |
 | P1-2 Tach graph trusted without native check | Plan now emits `tach_graph_validation: not_executed` and `requires_tach_check: true`; narrow selection is not presented as coverage proof |
 | P1-3 incomplete Git treated as not_applicable | `check_scope` emits `unknown` for docs/Tach/Vulture/source when the change set is incomplete |
-| P1-4 event snapshots and execution binding | Open: index/worktree, PR merge tree, push before/after and multi-ref modes are not implemented |
+| P1-4 event snapshots and execution binding | Partial: worktree/index/commit/push/PR merge snapshots and execution tree refusal delivered; multi-ref batching and Dagger/Actions consumption open |
 | P2 framework identity | `check_scope` uses the configured framework name (`unittest`/`pytest`), not a fixed label |
-| P2 pytest report/coverage | Local multi-target execution exists; JUnit/Artifact/coverage gate wiring into Dagger is open |
+| P2 pytest report/coverage | Local multi-target JUnit XML and native exit delivered; Dagger/Actions artifact and coverage-gate wiring open |
 | Production Dagger/Actions plan execution | Open: native `tach-check` / `lychee-check` building blocks exist; plan-to-check orchestration is next |
-| Clean-environment install and non-Knowledge consumer | Open |
+| Clean-environment install and non-Knowledge consumer | Clean wheel install outside the checkout delivered; a real non-Knowledge consumer execution is still open |

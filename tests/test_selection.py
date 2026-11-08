@@ -40,9 +40,13 @@ def config(repo):
     return selection.load_config(repo / "ci-selection.toml")
 
 
-def changes(repo, base, *, head="HEAD", include_worktree=True):
+def changes(repo, base, *, head="HEAD", include_worktree=True, **kwargs):
     return selection.changeset(
-        repo, base=base, head=head, include_worktree=include_worktree
+        repo,
+        base=base,
+        head=head,
+        include_worktree=include_worktree,
+        **kwargs,
     )
 
 
@@ -309,6 +313,37 @@ def test_pytest_runner_propagates_failure_from_one_target(repo):
     assert result != 0
 
 
+def test_pytest_runner_writes_junit_and_preserves_exit(repo, tmp_path):
+    path, _ = repo
+    output = tmp_path / "junit.xml"
+    assert (
+        selection.run_tests(
+            ("tests/test_pkg.py", "tests/test_sub.py"),
+            root=path,
+            framework="pytest",
+            junit_path=output,
+        )
+        == 0
+    )
+    assert "testsuite" in output.read_text(encoding="utf-8")
+    (path / "tests/test_sub.py").write_text(
+        "import unittest\n\n\nclass F(unittest.TestCase):\n"
+        "    def test_fail(self):\n        self.fail('nope')\n",
+        encoding="utf-8",
+    )
+    failing = tmp_path / "failing.xml"
+    assert (
+        selection.run_tests(
+            ("tests/test_pkg.py", "tests/test_sub.py"),
+            root=path,
+            framework="pytest",
+            junit_path=failing,
+        )
+        != 0
+    )
+    assert failing.is_file()
+
+
 def test_check_scope_separates_documents_from_business_tests(repo):
     path, base = repo
     (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
@@ -400,6 +435,64 @@ def test_escalation_without_discovered_tests_refuses_success(repo):
         )
         != 0
     )
+
+
+def test_index_snapshot_excludes_unstaged_worktree_changes(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 6\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    (path / "src/pkg/other.py").write_text("VALUE = 7\n", encoding="utf-8")
+    index = changes(path, base, mode="index")
+    assert "src/pkg/sub.py" in index.paths
+    assert "src/pkg/other.py" not in index.paths
+    assert index.snapshot == "index"
+    worktree = changes(path, base, mode="worktree")
+    assert {"src/pkg/sub.py", "src/pkg/other.py"} <= set(worktree.paths)
+
+
+def test_push_snapshot_uses_before_after_commits(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "first")
+    first = run(path, "rev-parse", "HEAD").strip()
+    (path / "src/pkg/other.py").write_text("VALUE = 9\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "second")
+    second = run(path, "rev-parse", "HEAD").strip()
+    pushed = changes(path, base=base, mode="push", before=first, after=second)
+    assert pushed.snapshot == "push"
+    assert pushed.base_commit == first
+    assert pushed.head_commit == second
+    assert pushed.paths == ("src/pkg/other.py",)
+
+
+def test_pr_merge_snapshot_records_merge_tree(repo):
+    path, base = repo
+    run(path, "checkout", "-q", "-b", "feature")
+    (path / "src/pkg/sub.py").write_text("VALUE = 10\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "feature")
+    feature = run(path, "rev-parse", "HEAD").strip()
+    merged = changes(path, base=base, head=feature, mode="pr")
+    if not merged.complete:
+        pytest.skip("git merge-tree is unavailable")
+    assert merged.snapshot == "pr_merge"
+    assert merged.merge_tree
+    assert "src/pkg/sub.py" in merged.paths
+
+
+def test_execution_refuses_a_different_tree(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "target")
+    target = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", f"{target}^{{tree}}").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 12\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "newer")
+    assert selection.run_tests(("tests.test_pkg",), root=path, expected_tree=tree) == 4
 
 
 def test_cli_prints_plan_and_rejects_run_with_json(repo, capsys):

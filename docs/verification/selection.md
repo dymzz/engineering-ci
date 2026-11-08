@@ -9,11 +9,11 @@ Contract: [selection and plan](../architecture/selection.md).
 
 ```sh
 pytest -q tests/test_selection.py
-# 28 passed
+# 33 passed
 
 pytest -q tests \
   --deselect "tests/test_security_policy.py::TestPolicyDocument::test_example_policy_is_a_valid_publish_input"
-# 491 passed, 8 skipped, 1 deselected, 187 subtests passed
+# 496 passed, 8 skipped, 1 deselected, 187 subtests passed
 ```
 
 The deselected policy-fixture test is a Windows `core.autocrlf` artifact
@@ -45,6 +45,11 @@ checkout or the Knowledge repository:
 | Path fidelity | a leading space in a renamed path survives the NUL-separated Git report |
 | Rename/delete with spaces | exact `docs/space name.md` identity kept; deletion sets `docs.recheck_all` |
 | `--full` scope | `selection.full_tests = true`; docs/Tach/Vulture remain `not_applicable` |
+| Index snapshot | staged paths selected; unstaged path excluded; `snapshot=index` |
+| Push snapshot | `before..after` commits and exact path set recorded |
+| PR snapshot | `merge-tree --write-tree` recorded as `merge_tree` |
+| Execution binding | a checkout with a different `HEAD` tree returns `4` and runs nothing |
+| pytest JUnit | multiple targets write JUnit XML; failing target keeps native exit and XML |
 | CLI | JSON plan shape and `--json`/`--run` exclusion; `--run` with no tests returns 3 |
 
 ## Plan identity observed
@@ -73,6 +78,22 @@ The second call runs `eci_core.selection.select` against a disposable
 Tach/config/tests layout inside the Dagger runtime. This proves the Dagger side
 imports and invokes the installed shared selector, not a copy or a plan-only
 claim.
+
+## Clean-environment install
+
+```text
+uv build --wheel
+uv venv <outside-checkout>/.venv
+uv pip install --no-index --find-links <dist> engineering-ci
+
+engineering-ci --help
+# release, download, version, policy, select, hygiene, sources
+engineering-ci select --help
+# includes --mode {worktree,index,commit,push,pr}
+```
+
+The wheel installs both `engineering_ci` and `eci_core`; no checkout path or
+source tree is required to start the CLI.
 
 ## Limits
 
