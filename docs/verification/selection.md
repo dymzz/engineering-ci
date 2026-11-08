@@ -103,6 +103,22 @@ engineering-ci select --help
 The wheel installs both `engineering_ci` and `eci_core`; no checkout path or
 source tree is required to start the CLI.
 
+## Independent non-Knowledge consumer
+
+A fresh venv installed the built wheel, then a disposable `selection-app` Git
+repository (no Knowledge code, no ECI checkout path on `PYTHONPATH`) ran:
+
+```text
+engineering-ci select --root <repo> --base HEAD --config ci-selection.toml --json
+# status targeted; tests: tests.test_other, tests.test_pkg, tests.test_sub
+
+engineering-ci execute --plan plan.json --root <repo> --json
+# status passed; exit 0; targets: the same three tests
+# native unittest: Ran 3 tests ... OK
+```
+
+The plan was written with UTF-8; the executor ran exactly the planned targets.
+
 ## Dagger plan execution
 
 ```text
