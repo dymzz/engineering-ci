@@ -120,25 +120,25 @@ engineering-ci hooks run pre-push --repo .
 
 ## 7. 工具触发与执行作用域的正交分类（第三轮审定）
 
-**必须同时声明两个不同性质的字段：** \`trigger\`（什么事件/文件变化唤醒检查）与 \`analysis_scope\`（工具真正读取、检查和据此作出 PASS 的对象范围）。\`glob\`、\`root\`、\`{staged_files}\` 是 Lefthook 的确定性快速筛选/路径传递机制，**不代表 Git Index 被检查过，也不能把全项目工具改造成单文件检查器**。ECI 的公共 Check/选择配置应承载这两层信息；不建立另一套工具 Registry。
+**必须从现有 ECI 配置、Source、Selection Plan 和原生 Check 结果中推导出** Trigger / Analysis / Invalidation 三类关系，不得另建三套配置表或规则引擎。它们分别描述唤醒、真实读取/覆盖、旧结果何时失效；`glob›、`root› 和 `{staged_files}› 仅提供 Lefthook 粗过滤，不能证明暂存 Tree 受检。原有 `eci_core.selection›、`execution›、Hygiene/Sources、Plan/Report 是实施位置。
 
 ### 7.0 每个 Check 的三类输入集合（规范性要求）
 
-- **Trigger Set（触发集合）**：Git 事件或明确调度事件中，哪些路径/对象/条件的变化使该 Check **进入适用性判断**；Lefthook `glob› / `root› 只能作为保守的快速过滤器，不能代替 ECI 当前 `select›/Check 的真实影响决策。匹配到不代表检查已执行；未匹配到也不自动证明原有 PASS 可复用。
+- **Trigger Set（触发集合）**：Git 事件或明确调度事件中，哪些路径/对象/条件的变化使该 Check **进入适用性判断**；Lefthook `glob` / `root` 只能作为保守的快速过滤器，不能代替 ECI 当前 `select`/Check 的真实影响决策。匹配到不代表检查已执行；未匹配到也不自动证明原有 PASS 可复用。
 - **Analysis Set（实际分析集合）**：原生命令实际需要读取的 staged 文件、完整包/模块图、依赖、资源反向引用、真实 old→new 接口快照、运行环境等。F/P/R/D/E 描述此集合的形态，**不是**额外工具类型注册表。
 - **Invalidation Set（结果失效集合）**：能够改变 Check 原始结论或覆盖范围的真实输入：被检 Source Tree/文件内容、配置/规则/忽略清单、工具及运行时版本、锁文件/构建定义、导入与反向引用闭包、生成资源、必要外部数据库/服务状态。变化后要么计算新的适用检查并重新执行，要么提供有效的输入/覆盖等价证明；没有证明时不能沿用旧 PASS。对外部漏洞公告、在线链接等非 Git 条件，必须有适用的独立定期/Release 触发或有效期规则，单靠文件 glob 不充分。
-- **联系不变量**：对某 Check 的 Invalidation Set 任意成员发生有效变化时，必须由 Trigger Set 唤醒并由 Analysis Set 覆盖，**或**有 ECI #63 可采信的未受影响证明；不允许 `skipped› / Workflow path-filter 未触发被解释成 `passed›。Check 的实际原生执行属于 ECI #52/#66，历史证据可信接纳属于 #63，最终 Required 完整性仍由 #61 裁决；不新增另一套调度器或缓存账本。
+- **联系不变量**：对某 Check 的 Invalidation Set 任意成员发生有效变化时，必须由 Trigger Set 唤醒并由 Analysis Set 覆盖，**或**有 ECI #63 可采信的未受影响证明；不允许 `skipped` / Workflow path-filter 未触发被解释成 `passed`。Check 的实际原生执行属于 ECI #52/#66，历史证据可信接纳属于 #63，最终 Required 完整性仍由 #61 裁决；不新增另一套调度器或缓存账本。
 - **分层保守性**：配置变化可能影响大量文件，应扩大相关 Check 的 Analysis Set（例如 Ruff 配置改动触发受影响 Python 文件检查、Tach 图配置改动触发完整适用依赖图），但**不因此无依据扩大成所有 unittest 和 wheel/CLI smoke**。只对无法判定的**相关** Check 扩大或阻断，明确原因和原始状态。
 
 ### 7.1 执行作用域分类（独立于 pre-commit/commit-msg/pre-push）
 
 | 类别 | 典型工具与模式 | 被唤醒后实际需要的输入 | 对 Lefthook 的正确用法 |
 | --- | --- | --- | --- |
-| **F — 文件级（file-local）** | Ruff 单文件格式/局部规则、shfmt、taplo、dprint、google-java-format、typos；Biome/Oxlint 的纯文件规则；某些 ast-grep、ShellCheck/actionlint/zizmor 单文件规则 | 被选中的文件**实际暂存版本**，加有效的共享配置/忽略规则；部分工具虽接收文件名，仍可能按项目配置解释它们 | \`glob\`/ \`root\` 过滤，\`{staged_files}\` 传递路径；由 ECI 确保实际读取的是 Index 字节而非工作树中不同的未暂存版本 |
-| **P — 包/模块/构建图级** | Pyright 或 BasedPyright、Tach、Import Linter、Cargo Clippy、Maven/Gradle、完整模块 lint；Vulture 全工程死代码分析 | 受影响模块/包及其 import/dependency/build 图、配置和必要跨文件引用；如没有可靠模块收敛则按适用项目范围执行 | 使用 \`glob: "*.py"\`、\`glob: "*.rs"\`、\`glob: "*.java"\` **作为唤醒条件**；执行真正的项目/包命令，不把 \`{staged_files}\` 冒充完整分析输入 |
-| **R — 仓库/关系/资产级** | Gitleaks Git 历史/暂存扫描、Lychee 本地文档/锚点引用闭包、Semgrep 跨文件污点、全局 ast-grep、Vulture 全仓；Sources/RDF 对账 | 实际选定的 Git 对象/变更、引用目标及反向依赖闭包、全局规则/字典、工具版本；按实际扫描模式确定是否包含历史/外部输入 | \`glob\` 先过滤不相干变更，但删除链接目标/重命名或修改配置亦必须唤醒相关检查，不可只匹配文档后缀 |
-| **D — 新旧契约/版本比较级** | Griffe、oasdiff、buf、ECI Git 变更影响选择、Semgrep baseline 模式 | Git 正确旧/新对象、公共 API/Schema/Protobuf 及兼容性规则；包含删除、重命名、强推 old→new | pre-commit 可按资源路径触发；pre-push **不能**仅凭 \`{push_files}\`/固定 \`origin/main\` 证明本次所有 ref，必须由 ECI 消费完整 stdin 并建立正确 baseline |
-| **E — 动态执行/环境/服务级** | unittest/pytest、pytest-testmon、CrossHair/Hypothesis、Schemathesis、mutmut/cargo-mutants、在线 Lychee、wheel/installed CLI smoke、OSV/cargo-deny 依赖审计 | 真正的受影响测试/契约/目标服务、依赖环境、项目锁、可复用原始结果或许可证/漏洞数据；变异和模糊测试要有专项预算 | \`glob\` 只决定是否考虑执行；由现有 ECI Check/工具选择判断环境、依赖与阶段，绝不把“文件类型匹配”作为足够的完成证据 |
+| **F — 文件级（file-local）** | Ruff 单文件格式/局部规则、shfmt、taplo、dprint、google-java-format、typos；Biome/Oxlint 的纯文件规则；某些 ast-grep、ShellCheck/actionlint/zizmor 单文件规则 | 被选中的文件**实际暂存版本**，加有效的共享配置/忽略规则；部分工具虽接收文件名，仍可能按项目配置解释它们 | `glob`/ `root` 过滤，`{staged_files}` 传递路径；由 ECI 确保实际读取的是 Index 字节而非工作树中不同的未暂存版本 |
+| **P — 包/模块/构建图级** | Pyright 或 BasedPyright、Tach、Import Linter、Cargo Clippy、Maven/Gradle、完整模块 lint；Vulture 全工程死代码分析 | 受影响模块/包及其 import/dependency/build 图、配置和必要跨文件引用；如没有可靠模块收敛则按适用项目范围执行 | 使用 `glob: "*.py"`、`glob: "*.rs"`、`glob: "*.java"` **作为唤醒条件**；执行真正的项目/包命令，不把 `{staged_files}` 冒充完整分析输入 |
+| **R — 仓库/关系/资产级** | Gitleaks Git 历史/暂存扫描、Lychee 本地文档/锚点引用闭包、Semgrep 跨文件污点、全局 ast-grep、Vulture 全仓；Sources/RDF 对账 | 实际选定的 Git 对象/变更、引用目标及反向依赖闭包、全局规则/字典、工具版本；按实际扫描模式确定是否包含历史/外部输入 | `glob` 先过滤不相干变更，但删除链接目标/重命名或修改配置亦必须唤醒相关检查，不可只匹配文档后缀 |
+| **D — 新旧契约/版本比较级** | Griffe、oasdiff、buf、ECI Git 变更影响选择、Semgrep baseline 模式 | Git 正确旧/新对象、公共 API/Schema/Protobuf 及兼容性规则；包含删除、重命名、强推 old→new | pre-commit 可按资源路径触发；pre-push **不能**仅凭 `{push_files}`/固定 `origin/main` 证明本次所有 ref，必须由 ECI 消费完整 stdin 并建立正确 baseline |
+| **E — 动态执行/环境/服务级** | unittest/pytest、pytest-testmon、CrossHair/Hypothesis、Schemathesis、mutmut/cargo-mutants、在线 Lychee、wheel/installed CLI smoke、OSV/cargo-deny 依赖审计 | 真正的受影响测试/契约/目标服务、依赖环境、项目锁、可复用原始结果或许可证/漏洞数据；变异和模糊测试要有专项预算 | `glob` 只决定是否考虑执行；由现有 ECI Check/工具选择判断环境、依赖与阶段，绝不把“文件类型匹配”作为足够的完成证据 |
 
 **边界案例**：同一工具可以有多种作用域。例如 Semgrep 单文件模式是 F、跨文件 taint 是 R；Lychee 针对已改文件的离线 URL 检查是 F/R，目标被删除时涉及 R 反向引用；Gitleaks staged 内容检查与 Git 历史扫描不是同一作用域。工具归类应按所用的**具体原生命令/检查策略**，不是永久绑定某个工具名称。
 
@@ -151,17 +151,17 @@ engineering-ci hooks run pre-push --repo .
 | **pre-push** | 仅在必要时对真实 push 目标的文件快速复核 | 对受影响 Cargo/Java/Python 包执行包级 Checks | Semgrep 污点、依赖安全与在线链接按原生对象/有效输入运行 | Griffe/oasdiff/buf 等在真实 old→new 上比较 | 增量回归、适用形式验证；fuzz/mutation 优先专项/Actions，不能伪称常规 push 数秒完成 |
 | **Actions / Release** | 复用原始 Check；缺失时定向补执行 | 必要全项目/构建型检查按策略运行 | 全依赖/安全和来源验证，检查 Required 证据 | 合并目标与发布候选兼容性 | 有实际服务/环境/预算的集成、fuzz、mutation 或发布验收 |
 
-**重要的唤醒条件补足**：\`Cargo.toml\`/\`Cargo.lock\`、\`pom.xml\`/\`build.gradle*\`、\`pyproject.toml\`/\`uv.lock\`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 \`glob: "*.rs"\` 或 \`glob: "*.py"\` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
+**重要的唤醒条件补足**：`Cargo.toml`/`Cargo.lock`、`pom.xml`/`build.gradle*`、`pyproject.toml`/`uv.lock`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 `glob: "*.rs"` 或 `glob: "*.py"` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
 
 ### 7.3 Lefthook 配置语义、共享配置及根目录过滤（示意）
 
-- `glob› 决定是否唤醒相应命令；`{staged_files}› 和 `{push_files}› 只提供路径而非保证读取了暂存 Tree/正确推送 refs。`root› 设置子目录并可能进一步限制候选文件；`glob› 仍按**仓库根**路径解释。没有匹配路径时省去工具进程启动，但不等于没有调度器/Git 固定成本。
-- **P/R/D/E 的项目级入口必须同时考虑全局配置/锁文件和依赖输入**。例如 Java 子项目 `root: "services/java/"› 即使其 `glob› 列了仓根 `settings.gradle›，仍可能因 `root› 范围筛选而失去唤醒。对消费仓根共享配置的模块检查，优先让触发入口运行在仓根，由 ECI 按 `--project› 或配置指向实际目标；仅在证明完全独立时使用 `root› 做窄化过滤。共享配置影响哪些子项目，需要受信依赖映射或适当扩大，不是盲目全部运行。
-- `src/**/*.js› 等递归 glob 在不同匹配模式下可能漏根层直接子文件；匹配模式须以安装的 Lefthook 版本及实际路径测试固定。删除/重命名、带空格/特殊字符的路径仍由 ECI 的原生 Git 事件与 NUL 安全解析覆盖。
-- **Read-only pre-commit 默认**：文件级 Check 也要基于本次 `GIT_INDEX_FILE› 对应的 Index Tree，不能直接用未暂存工作区内容伪造 PASS；`stage_fixed: true› 的 git add 可能改变部分暂存内容，不能默认作为验证模式。
-- **Pre-push 单一 stdin 消费者**：从 Git 提供的完整 ref old/new 元组生成 Source/Plan；ECI 复用现有选择/执行，不允许以硬编码 `origin/main› 或单个 HEAD 的结果覆盖所有引用。
+- `glob` 决定是否唤醒相应命令；`{staged_files}` 和 `{push_files}` 只提供路径而非保证读取了暂存 Tree/正确推送 refs。`root` 设置子目录并可能进一步限制候选文件；`glob` 仍按**仓库根**路径解释。没有匹配路径时省去工具进程启动，但不等于没有调度器/Git 固定成本。
+- **P/R/D/E 的项目级入口必须同时考虑全局配置/锁文件和依赖输入**。例如 Java 子项目 `root: "services/java/"` 即使其 `glob` 列了仓根 `settings.gradle`，仍可能因 `root` 范围筛选而失去唤醒。对消费仓根共享配置的模块检查，优先让触发入口运行在仓根，由 ECI 按 `--project` 或配置指向实际目标；仅在证明完全独立时使用 `root` 做窄化过滤。共享配置影响哪些子项目，需要受信依赖映射或适当扩大，不是盲目全部运行。
+- `src/**/*.js` 等递归 glob 在不同匹配模式下可能漏根层直接子文件；匹配模式须以安装的 Lefthook 版本及实际路径测试固定。删除/重命名、带空格/特殊字符的路径仍由 ECI 的原生 Git 事件与 NUL 安全解析覆盖。
+- **Read-only pre-commit 默认**：文件级 Check 也要基于本次 `GIT_INDEX_FILE` 对应的 Index Tree，不能直接用未暂存工作区内容伪造 PASS；`stage_fixed: true` 的 git add 可能改变部分暂存内容，不能默认作为验证模式。
+- **Pre-push 单一 stdin 消费者**：从 Git 提供的完整 ref old/new 元组生成 Source/Plan；ECI 复用现有选择/执行，不允许以硬编码 `origin/main` 或单个 HEAD 的结果覆盖所有引用。
 
-以下 YAML **仅是触发与执行范围关系的设计示意，非可部署的已实现 CLI**；命令 `engineering-ci hooks run ... --profile› 仍待审定。需要精确覆盖的条件、缺失 glob、真实版本参数必须在实施 PR 中定向验证。
+以下 YAML **仅是触发与执行范围关系的设计示意，非可部署的已实现 CLI**；命令 `engineering-ci hooks run ... --profile` 仍待审定。需要精确覆盖的条件、缺失 glob、真实版本参数必须在实施 PR 中定向验证。
 
 ```yaml
 pre-commit:
@@ -214,25 +214,56 @@ pre-push:
       run: engineering-ci hooks run pre-push
 ```
 
-**示例的 `glob› 不是规范性完整 Trigger Set**：消费其他脚本、父 POM、共享插件、Git attributes、构建源码或动态配置时应扩展相应触发规则。ECI 可把候选事件统一交给一个 Source/Impact Plan，从而让多个 Check 复用同一 staged Tree 及 Tach 原生结果，避免按每个 Lefthook Job 再建一个无关临时 worktree。不存在相关项目输入的语言工具不应启动。
+**示例的 `glob` 不是规范性完整 Trigger Set**：消费其他脚本、父 POM、共享插件、Git attributes、构建源码或动态配置时应扩展相应触发规则。ECI 可把候选事件统一交给一个 Source/Impact Plan，从而让多个 Check 复用同一 staged Tree 及 Tach 原生结果，避免按每个 Lefthook Job 再建一个无关临时 worktree。不存在相关项目输入的语言工具不应启动。
 
 ### 7.4 配置与判定数据（复用已有 ECI 公共契约）
 
-每个 Check 的现有公共配置/派生计划/结果中，应可以定位以下信息；**字段是逻辑概念，先评估映射到已交付对象，不要求新建一份平行 Registry 或强制新增字面同名字段**：
+每项 Check 的相关信息应**从现有 ECI 对象推导或定点扩展**。下列名称是逻辑视图，**不要求新增同名 `trigger_set›、`analysis_set›、`invalidation_set› 的 TOML/Plan/Report 字段**，更不允许建立第二份工具 Registry、失效算法或执行结果账本：
 
-- `hook_phase›、F/P/R/D/E `analysis_scope›、Trigger Set 的输入路径/事件/共享配置和 Invalidation Set 的完整依赖规则及外部有效期；必要时区分根目录与子模块执行上下文。
+- `hook_phase`、F/P/R/D/E `analysis_scope`、Trigger Set 的输入路径/事件/共享配置和 Invalidation Set 的完整依赖规则及外部有效期；必要时区分根目录与子模块执行上下文。
 - Check ID/适用规则、原生运行输入、实际 Source Tree、受影响模块或旧新契约、工具/规则/锁版本、必要环境与前置条件及真实执行状态。
-- 复用的原始 Check 及其有效覆盖/身份，工具进程是否启动、单项耗时、并行或写入冲突。`skipped›、`not_applicable›、`not_executed›、`blocked› 和 `passed› 不得互相代替。
+- 复用的原始 Check 及其有效覆盖/身份，工具进程是否启动、单项耗时、并行或写入冲突。`skipped`、`not_applicable`、`not_executed`、`blocked` 和 `passed` 不得互相代替。
 
 ### 7.5 定向验收：同时检验唤醒、分析覆盖与失效
 
 - [ ] 仅变更 Python 文件：适用 Python F/P Checks 运行；无对应 Rust/Java 输入时其原生命令**不启动**。
-- [ ] 只修改 `ruff.toml› / `.ruff.toml› / `pyproject.toml›：唤醒对应文件/项目检查，并扩大到受配置影响的分析集合，不能仅检查本次改动的 TOML 文件；无依据不升级所有业务测试/所有 wheel。
-- [ ] 只修改 `pyrightconfig.json› 或类型存根/依赖版本：类型检查覆盖其受影响模块；只改 `Cargo.lock›、Cargo workspace 配置或共享 Gradle/POM：唤醒相关包，包括 `root› 限制外的共享配置来源。
+- [ ] 只修改 `ruff.toml` / `.ruff.toml` / `pyproject.toml`：唤醒对应文件/项目检查，并扩大到受配置影响的分析集合，不能仅检查本次改动的 TOML 文件；无依据不升级所有业务测试/所有 wheel。
+- [ ] 只修改 `pyrightconfig.json` 或类型存根/依赖版本：类型检查覆盖其受影响模块；只改 `Cargo.lock`、Cargo workspace 配置或共享 Gradle/POM：唤醒相关包，包括 `root` 限制外的共享配置来源。
 - [ ] 只删除/重命名某文档引用的目标或 Sources/RDF 资源：Lychee/Sources/消费者反向依赖按适用关系验证；不能仅因没有 Markdown 改动就跳过。
 - [ ] 单独更新工具规则/版本、CI Workflow、构建定义：受影响 Check 旧 PASS 失效或由可信等价证据保留，不以 Hook 空唤醒或文件扩展名匹配代替原生覆盖。
 - [ ] 在线链接或漏洞数据库在 Git 无变更时发生有效变化：适用的计划/Release 检查重新判定，或明确既有结果有效期和未验证状态；不能宣称文件过滤已经充分保障。
-- [ ] 原始 Git Index 与 Worktree 不同、临时 `GIT_INDEX_FILE›、多引用/强推/非 HEAD 目标及共享根配置均按真实被检对象和依赖范围判定。
+- [ ] 原始 Git Index 与 Worktree 不同、临时 `GIT_INDEX_FILE`、多引用/强推/非 HEAD 目标及共享根配置均按真实被检对象和依赖范围判定。
 - [ ] 公共 Source/失效/范围规则只做一次组合正反验收；新增工具仅补真实命令与特有风险，已有同输入/同版本 Check 成果不重跑全量 CI。
+
+### 7.6 对应现有 ECI Source/Selection/Check（实施映射）
+
+| 现有对象 | 已实现的事实 | 应扩展的缺口 |
+| --- | --- | --- |
+| `selection.ChangeSet› / `changeset_multi› | `snapshot›、`index_tree›、`execution_tree›、`references›、`changed_paths› 和 Git 完整性 | 让 Hook Index 和每个 Push ref 复用现有 Source；glob 不得变成第二份最终影响判定 |
+| `selection.Config› / `load_config› | `escalation_files/prefixes›、`ignored_files/prefixes›、`module_tests›、`non_code_rules›、`prerequisites›、`check_scope› | 将配置、锁文件、工具规则、非代码依赖的触发与失效关系写入已有消费者规则；不能用新的 Hook-only TOML 重复定义 |
+| `select()› / `_reverse_closure()› / `_check_scope()› | Python 反向依赖、非代码映射、逐 Check `selected›/`unknown›/`not_applicable› | 按 Check 扩大实际受影响范围，取代把所有配置变更一律升级为全部单测和所有前置条件 |
+| 既有 `plan()› 的 `generator/git/selection/check_scope/inputs› | Git Tree、ECI 版本、选择原因、Tach 和部分规则摘要 | 在 `inputs› / 相关 Check 节点补充真实消费的 Hygiene、Sources、工具规则、依赖和环境身份；不重复一个新 Plan |
+| `execution._verify_execution_binding()› / `execute()› 与 Hygiene/Sources | Git 输入绑定、原生 Check 和前置条件结果、失败/未执行状态 | 执行前核实相应规则/环境身份；消除 Hygiene 用独立 `code_changed› 路径再次决定 Selection 已裁定的同一 Check 适用性 |
+| ECI #63 和 #61 | 分别负责旧证据受信、最终 Required/Release 完备 | 扩展既有接纳/覆盖证据消费，不在 #66 新增受信引擎、最终 Gate 或缓存账本 |
+
+**规则**：对真实输入/Check 的新增需求直接补现有 Selection、Plan、Execution 或原生 Report；若已具备充分数据就只修改使用逻辑。没有证据的旧 PASS 不可复用，但也不能为一个相关 Check 的失效无依据重跑所有业务测试与 wheel。
+
+### 7.7 OpenTelemetry (OTel) 执行观测需求（尚未交付）
+
+已核对当前 ECI main：未发现用于该 Hook→Selection→Check→Report 链的 OTel SDK/API、Exporter 或运行时链路验收。ECI #39 曾删除不属于实际 CI 的通用 Tracing/Mining/日志依赖；本需求只针对**工程检查自身**，不得恢复通用 Harness 追踪、Provider、集中存储或独立报告判定器。
+
+- **原生链路接线**：在已有 Hook/ECI CLI、Git Source 绑定、Selection、实际执行的 Check、Prerequisite 和 Report 路径记录可关联的 OTel Spans/Span Links，包含必要的耗时、源身份、Check ID、规则/工具版本、原生状态及失败类别。Lefthook 在 ECI 启动前直接过滤的命令应由原选择/调度事实记录，不能凭无 Span 认定已 PASS。
+- **采用标准，不再建平台**：使用既有适用的 OpenTelemetry API/SDK/Context 传播，固定实际 CI/CD 语义约定版本并核对字段稳定性；复用可能已具备的 Dagger 观测，避免双重采集。只有确实支持传播的子进程/Dagger/Actions 才建立父子关系；其他情况提供已核实的 Span Link 或独立 Trace。
+- **本地低成本与可选传输**：启用 OTel 不要求常驻 Collector；Exporter/OTLP 由明确配置才开启，未安装 SDK、Exporter 缺失、网络失败或超时不得改变原生 Check 结论、Git 退出码或产生每次 Hook 隐式网络等待。原生 Report/阶段耗时/诊断即使没有 OTel 也可用，OTel 采集自身成本须可计量。
+- **证据与隐私边界**：Span 只用于关联/性能诊断，不取代 Git Tree、Check/Run/Evidence ID、#63 历史接纳及 #61 Required。OTel Export 成功不能将 skipped/not_executed/blocked/failed 变成 PASS；默认不得将 token、私密路径、源码正文、敏感命令参数或原生 stdout/stderr 作为属性。原始失败、JUnit 和状态保持在现有 ECI 结果中。
+
+### 7.8 OTel 定向验收
+
+- [ ] 一次真实 Hook 或 CI Run 启用测试 Exporter，关联 Source、Selection、一个实际 Check、实际存在的前置条件与 Report；Span 的 Check ID/执行状态/阶段耗时与原生 Plan/Report 一致，无须运行全部候选工具。
+- [ ] 代表性原生失败与按条件跳过分别保留真实 Report/退出码；缺少 Span、导出成功均不等于 Check 成功。
+- [ ] 一处真实支持传播的子进程或 Dagger 边界验证 Trace Context；不支持则明确独立 Trace/Span Link，不能伪造父子关系。
+- [ ] 未安装 SDK、未启用 Exporter、Exporter 不可用或超时仍有正确原生结论、低成本阶段耗时与诊断；不造成无依据阻塞和敏感信息泄漏。
+- [ ] 确认没有恢复 ECI #39 已删的通用跟踪存储和流程框架；OTel 不带来第二次工具执行或重复验收。
+
 
 上述条款审定后仅同步 ECI #66 的实际新增部分，避免把提案长期保留为第二套规范；无需新建缓存层、框架或 Required 判定器。
