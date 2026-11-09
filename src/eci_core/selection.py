@@ -112,6 +112,8 @@ class ChangeSet:
             return self.merge_tree
         if self.snapshot in {"commit", "push"}:
             return self.tree
+        if self.snapshot == "index":
+            return self.index_tree
         return None
 
 
