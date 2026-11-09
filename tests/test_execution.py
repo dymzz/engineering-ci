@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from eci_core import execution, hygiene
+from eci_core import execution, hygiene, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -400,6 +400,116 @@ def test_execute_refuses_stale_index_tree(repo):
     assert report["status"] == "not_executed"
     assert report["exit_code"] == 4
     assert report["reason"] == "index_tree_mismatch"
+
+
+def test_execute_refuses_worktree_content_drift(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    binding = selection.worktree_content_binding(path, ("src/pkg/sub.py",))
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "worktree_dirty": True,
+            "execution_tree": None,
+            "changed_paths": ["src/pkg/sub.py"],
+            "content_binding": binding,
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] == "worktree_snapshot_stale"
+
+
+def test_execute_push_requires_matching_head_commit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "after")
+    after = run(path, "rev-parse", "HEAD").strip()
+    after_tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    run(path, "reset", "--hard", base)
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": after,
+            "base_commit": base,
+            "head_commit": after,
+            "snapshot": "push",
+            "execution_tree": after_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] in {"tree_mismatch", "head_commit_mismatch"}
+
+
+def test_execute_pr_merge_refuses_feature_head(repo):
+    path, base = repo
+    run(path, "checkout", "-q", "-b", "feature")
+    (path / "src/pkg/sub.py").write_text("VALUE = 10\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "feature")
+    feature = run(path, "rev-parse", "HEAD").strip()
+    merged = selection.changeset(path, base=base, head=feature, mode="pr")
+    if not merged.complete or not merged.merge_tree:
+        pytest.skip("git merge-tree unavailable")
+    if merged.merge_tree == selection._tree_of(path, "HEAD"):
+        pytest.skip("merge tree equals feature HEAD tree")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": feature,
+            "base_commit": merged.base_commit,
+            "head_commit": feature,
+            "snapshot": "pr_merge",
+            "merge_tree": merged.merge_tree,
+            "execution_tree": merged.merge_tree,
+            "changed_paths": list(merged.paths),
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] == "pr_merge_tree_unmaterialized"
+
+
+def test_execute_passes_expected_tree_into_run_tests(repo, monkeypatch):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    seen = {}
+
+    def fake_run_tests(*args, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(selection, "run_tests", fake_run_tests)
+    value = plan(
+        ["tests.test_pkg"],
+        tree=tree,
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": [],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "passed"
+    assert seen.get("expected_tree") == tree
 
 
 def test_execute_blocks_unvalidated_tach_narrowing(repo):

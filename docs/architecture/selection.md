@@ -85,18 +85,19 @@ argv = ["python", "-m", "your_wheel_smoke"]
 
 | Mode | Snapshot | Execution binding |
 | --- | --- | --- |
-| `worktree` | merge-base..HEAD plus staged/unstaged/untracked paths | `worktree_dirty`; no immutable tree |
-| `index` | merge-base..index (`git diff --cached`), `index_tree` recorded | index tree is not the execution tree; treated as mutable |
-| `commit` | merge-base..HEAD only | `execution_tree = HEAD tree` |
-| `push` | explicit `before`/`after` commits; no merge-base | `execution_tree = after` tree |
-| `pr` | `git merge-tree --write-tree` merge tree | `execution_tree = merge_tree` |
+| `worktree` | merge-base..HEAD plus staged/unstaged/untracked paths | `content_binding` path digests; drift → `worktree_snapshot_stale` |
+| `index` | merge-base..index (`git diff --cached`), `index_tree` recorded | `execution_tree = index_tree`; live `write-tree` must match |
+| `commit` | merge-base..HEAD only | `execution_tree` + `head_commit` must match checkout |
+| `push` | explicit `before`/`after` commits; no merge-base | `execution_tree = after` tree + `head_commit = after` |
+| `pr` | `git merge-tree --write-tree` merge tree | checkout must materialize `merge_tree` or `pr_merge_tree_unmaterialized` |
 | `multi` | union of several push `before:after` pairs; `references[]` recorded | no single execution tree; per-ref execution required |
 
-The plan records `git.snapshot`, `index_tree`, `merge_tree` and
-`execution_tree`. `--run` passes `execution_tree` to `run_tests`; if the
-checkout's current `HEAD` tree differs, execution returns `4` and does not run
-tests. Mutable worktree/index snapshots explicitly have no immutable binding and
-must not be reported as a commit-bound pass.
+The plan records `git.snapshot`, `index_tree`, `merge_tree`, `execution_tree`,
+`content_binding` (worktree) and `source_tree_id` (immutable trees). Host
+`execute` verifies the binding before tests/checks and passes `expected_tree`
+into `run_tests` when immutable. Dagger `execute-plan` compares the mounted
+`source` Directory to `source_tree_id` and sets `tree_verified`/`trusted` only
+when they match; a mismatch is `source_tree_mismatch`.
 
 PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
 or missing objects produce `complete: false`, never a narrower pass. Multi-ref

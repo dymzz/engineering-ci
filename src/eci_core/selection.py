@@ -335,6 +335,79 @@ def _tree_of(root, commit):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+def worktree_content_binding(root, paths):
+    """Digest of selected paths' current worktree bytes; None means missing."""
+    root = Path(root)
+    entries = {}
+    for path in sorted({str(item).replace("\\", "/") for item in paths}):
+        file = root / path
+        if file.is_file():
+            entries[path] = hashlib.sha256(file.read_bytes()).hexdigest()
+        else:
+            entries[path] = None
+    digest = hashlib.sha256(
+        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
+
+
+def directory_content_id(root):
+    """Stable content id over a directory tree (path + file bytes)."""
+    root = Path(root)
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == ".git" or relative.startswith(".git/"):
+            continue
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def tree_content_id(root, tree):
+    """Content id for a Git tree, matching directory_content_id on a raw checkout."""
+    import tempfile
+
+    root = Path(root).resolve()
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return None
+    with tempfile.TemporaryDirectory() as temporary:
+        temporary = Path(temporary)
+        index = temporary / "index"
+        work = temporary / "work"
+        work.mkdir()
+        env = {
+            **os.environ,
+            "GIT_DIR": str(git_dir),
+            "GIT_INDEX_FILE": str(index),
+            "GIT_WORK_TREE": str(work),
+        }
+        read = subprocess.run(
+            ["git", "read-tree", tree],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+        if read.returncode != 0:
+            return None
+        checkout = subprocess.run(
+            ["git", "checkout-index", "-a", "-f"],
+            cwd=work,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+        if checkout.returncode != 0:
+            return None
+        return directory_content_id(work)
+
+
 def changeset_multi(root, refs):
     """Union of several push ref pairs; execution still requires per-ref runs."""
     root = Path(root)
@@ -1000,6 +1073,16 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "execution_tree": selection.changeset.execution_tree,
             "references": list(selection.changeset.references),
             "changed_paths": list(selection.changeset.paths),
+            "content_binding": (
+                worktree_content_binding(root, selection.changeset.paths)
+                if selection.changeset.snapshot == "worktree"
+                else None
+            ),
+            "source_tree_id": (
+                tree_content_id(root, selection.changeset.execution_tree)
+                if selection.changeset.execution_tree
+                else None
+            ),
         },
         "selection": {
             "status": selection.status,
