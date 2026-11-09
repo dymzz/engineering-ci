@@ -393,6 +393,32 @@ def test_check_scope_marks_code_checks_for_code_changes(repo):
     assert scope["docs"]["status"] == "not_applicable"
 
 
+def test_check_scope_marks_source_checks_for_exact_source_files(repo):
+    path, base = repo
+    (path / "ci-sources.toml").write_text("[sources]\n", encoding="utf-8")
+    # Add non-code rule for ci-sources.toml with no tests
+    cfg_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    cfg_text += '\n[[non_code_rules]]\nexact = "ci-sources.toml"\ntests = []\nreason = "sources config"\n'
+    (path / "ci-selection.toml").write_text(cfg_text, encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "add rule")
+    new_base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "ci-sources.toml").write_text("[sources]\nmanifest = 'foo'\n", encoding="utf-8")
+    result = select(path, new_base)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in plan["check_scope"]}
+    assert scope["source"]["status"] == "selected"
+    assert "ci-sources.toml" in scope["source"]["inputs"]
+    assert plan["checks_scope"]["source"]["applicability"] == "selected"
+    assert plan["tests_scope"]["selection_status"] == "no_tests"
+
+
 def test_incomplete_git_scope_is_unknown_not_not_applicable(repo):
     path, _ = repo
     result = selection.select(

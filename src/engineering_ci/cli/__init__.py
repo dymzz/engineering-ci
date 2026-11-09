@@ -22,6 +22,7 @@ def main(argv=None):
             "hygiene",
             "sources",
             "execute",
+            "run",
         ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -43,6 +44,8 @@ def main(argv=None):
         from eci_core.sources import main as invoke
     elif namespace.command == "execute":
         from eci_core.execution import main as invoke
+    elif namespace.command == "run":
+        from .run import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

@@ -66,6 +66,7 @@ class CheckScopeConfig:
     docs_suffixes: tuple[str, ...]
     code_prefixes: tuple[str, ...]
     source_prefixes: tuple[str, ...]
+    source_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,8 @@ class ChangeSet:
 
     @property
     def execution_tree(self):
+        if self.snapshot == "index":
+            return self.index_tree
         if self.snapshot == "pr_merge":
             return self.merge_tree
         if self.snapshot in {"commit", "push"}:
@@ -221,6 +224,7 @@ def load_config(path):
         "docs_suffixes",
         "code_prefixes",
         "source_prefixes",
+        "source_files",
     }:
         raise SelectionError("check_scope_invalid")
     docs_suffixes = _string_list(
@@ -237,6 +241,10 @@ def load_config(path):
         source_prefixes=_string_list(
             scope.get("source_prefixes", ["data/", "sources/"]),
             "source_prefixes",
+        ),
+        source_files=_string_list(
+            scope.get("source_files", [".gitattributes", "ci-sources.toml"]),
+            "source_files",
         ),
     )
     return Config(
@@ -346,7 +354,7 @@ def changeset_multi(root, refs):
 def changeset(
     root,
     *,
-    base,
+    base=None,
     head="HEAD",
     include_worktree=True,
     mode="worktree",
@@ -359,6 +367,8 @@ def changeset(
     Immutable snapshots expose execution_tree; mutable ones do not.
     """
     root = Path(root)
+    if base is None:
+        base = "HEAD" if mode == "index" else "origin/main"
     if mode == "push":
         before_commit = _resolve(root, before) if before else None
         after_commit = _resolve(root, after) if after else None
@@ -398,6 +408,39 @@ def changeset(
             complete=diff.returncode == 0,
             error=None if diff.returncode == 0 else "push_diff_failed",
             snapshot="push",
+        )
+    if mode == "index":
+        head_commit = _resolve(root, head)
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        diff_base = head_commit if head_commit is not None else empty_tree
+        diff = _git(
+            root,
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--cached",
+            diff_base,
+        )
+        write_tree = _git(root, "write-tree")
+        index_tree = (
+            write_tree.stdout.strip() if write_tree.returncode == 0 else None
+        )
+        paths = [path for path in diff.stdout.split("\0") if path]
+        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+        return ChangeSet(
+            root,
+            base or "HEAD",
+            head,
+            base_commit=head_commit,
+            head_commit=head_commit,
+            tree=index_tree,
+            paths=tuple(sorted(set(paths))),
+            worktree_dirty=bool(status.stdout) if status.returncode == 0 else False,
+            complete=(diff.returncode == 0 and write_tree.returncode == 0 and index_tree is not None),
+            error=None if (diff.returncode == 0 and write_tree.returncode == 0 and index_tree is not None) else "index_diff_failed",
+            snapshot="index",
+            index_tree=index_tree,
         )
     head_commit = _resolve(root, head)
     if head_commit is None:
@@ -448,37 +491,6 @@ def changeset(
             diff.returncode == 0,
             None if diff.returncode == 0 else "diff_failed",
             snapshot="commit",
-        )
-    if mode == "index":
-        diff = _git(
-            root,
-            "diff",
-            "--no-renames",
-            "--name-only",
-            "-z",
-            "--cached",
-            base_commit,
-        )
-        index_tree = None
-        write_tree = _git(root, "write-tree")
-        index_tree = (
-            write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
-        )
-        paths = [path for path in diff.stdout.split("\0") if path]
-        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
-        return ChangeSet(
-            root,
-            base,
-            head,
-            base_commit,
-            head_commit,
-            tree,
-            tuple(sorted(set(paths))),
-            bool(status.stdout) if status.returncode == 0 else False,
-            diff.returncode == 0,
-            None if diff.returncode == 0 else "diff_failed",
-            snapshot="index",
-            index_tree=index_tree,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -848,7 +860,9 @@ def _check_scope(selection, config, root):
         path.startswith(config.check_scope.code_prefixes) for path in paths
     ) or any(path in {"tach.toml", "pyproject.toml"} for path in paths)
     source_changed = any(
-        path.startswith(config.check_scope.source_prefixes) for path in paths
+        path.startswith(config.check_scope.source_prefixes)
+        or path in config.check_scope.source_files
+        for path in paths
     )
     return [
         {
@@ -889,6 +903,7 @@ def _check_scope(selection, config, root):
                 path
                 for path in paths
                 if path.startswith(config.check_scope.source_prefixes)
+                or path in config.check_scope.source_files
             ],
             "reason": "source inputs changed"
             if source_changed
@@ -994,6 +1009,20 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             },
         },
         "check_scope": _check_scope(selection, config, root),
+        "checks_scope": {
+            item["name"]: {
+                "applicability": item["status"],
+                "inputs": item.get("inputs", []),
+                "reason": item.get("reason"),
+            }
+            for item in _check_scope(selection, config, root)
+            if item.get("name") != config.framework
+        },
+        "tests_scope": {
+            "selection_status": selection.status,
+            "targets": list(selection.tests),
+            "reason": selection.escalation_reason,
+        },
         "inputs": {
             "config": {"path": str(config_path), "sha256": _digest(config_path)},
             "tach": {"path": config.tach, "sha256": _digest(tach_path)},
