@@ -1,8 +1,8 @@
 ## 目标
 
-将 [engineering-knowledge](https://github.com/dymzz/engineering-knowledge) 已合并的工程 Hygiene、Tach 与增量测试选择通用实现**按代码及测试迁移**到 `engineering-ci`，供多个 Python 仓库本地、Dagger 和 GitHub Actions 使用。Knowledge 成为公共能力的真实消费者，仅维护自身规则与配置。
+将 [engineering-knowledge](https://github.com/dymzz/engineering-knowledge) 已合并的工程 Hygiene、Tach 与增量测试选择通用能力落到 `engineering-ci` 公共实现，供多个 Python 仓库本地、Dagger 和 GitHub Actions 使用。Knowledge 成为公共能力的真实消费者，仅维护自身规则与配置。
 
-以 Knowledge [PR #61](https://github.com/dymzz/engineering-knowledge/pull/61)、[#66](https://github.com/dymzz/engineering-knowledge/pull/66)、[#69](https://github.com/dymzz/engineering-knowledge/pull/69)、[#70](https://github.com/dymzz/engineering-knowledge/pull/70) 的**实际合并代码及有效测试**为迁移基线。直接调整 ECI 公共 Python API、CLI、Dagger Functions、Workflow 和测试；不以现有接口尚未存在为理由在 Knowledge 永久保留第二套通用实现。验收依据是执行行为、真实测试覆盖与收益，不是代码行数最少或兼容旧包装。
+**以 ECI [PR #67](https://github.com/dymzz/engineering-ci/pull/67) 已合并代码为当前实现基线**：对照 Knowledge [PR #61](https://github.com/dymzz/engineering-knowledge/pull/61)、[#66](https://github.com/dymzz/engineering-knowledge/pull/66)、[#69](https://github.com/dymzz/engineering-knowledge/pull/69)、[#70](https://github.com/dymzz/engineering-knowledge/pull/70) 的**实际合并行为与有效测试**核实覆盖；**只补生产方缺口并扩展既有 ECI API/CLI/Dagger/Workflow**，禁止把已交付的 `eci_core` 选择/Hygiene/CLI 再迁一遍。不以「接口尚未存在」为理由在 Knowledge 永久保留第二套通用实现。验收依据是执行行为、真实测试覆盖与收益，不是代码行数最少或兼容旧包装。
 
 ## 当前实现基线（2026-11-09；保留此前已核实的迁移依据）
 
@@ -10,22 +10,20 @@
 
 - **剩余生产方缺口：** 修复 Index/Worktree/PR/Push Source 选择与实际执行内容的身份一致性；`eci_core/execution.py` 目前在无选中业务测试时提前返回，适用原生 Checks/前置条件仍可能未运行；Dagger `execute_plan` 的 `tree_verified: false` / `trusted: false` 不证明执行输入受信。完成原生 Check/前置条件、Agent 可定位诊断和实际 Dagger/Actions 调用。不得用成功的选择计划、Check 名称或业务测试 PASS 代替覆盖完成。
 
-- **后续职责：** #66 继续交付原生执行生产方；#52 工具 Report/Enforce 与 Actions 传递；#63 受信历史执行接纳与复用；#61 最终 Required 聚合及 Release/服务端连接。复用原生与 Release 已有校验，不新建平行 Gate、Runner 或证据账本。
+- **后续职责：** #66 继续交付原生执行生产方；#52 工具 Report/Enforce 与 Actions 传递；#63 受信历史执行接纳与复用；#61 负责最终 Required 完备/聚合及 Release/服务端连接——**复用既有 Release/Manifest/Run/Artifact 机制，不新建平行 Gate、聚合器、Runner 或证据账本**。
 
-- **历史段落：** 以下此前核实的 Dagger/Workflow 内容保留作为实施依据，不应自动解释为 2026-11-09 main 仍未交付的工作。
-
-
+- **历史段落读法：** 下文「已核实的 ECI 现状」与 §1/§2 中的 Knowledge 脚本路径是**迁移前行为基线与契约清单**，用来对照验收；**不得解释为还要从这些脚本重新实现一遍**。2026-11-09 `main`（含 PR #67）已交付的能力只核实缺口并补齐，不重迁。
 
 ## 已核实的 ECI 现状与复用边界
 
 - 现有 `.dagger/src/engineering_ci/main.py` 有 `python_vulture`、`python_test`（pytest）、`python_test_artifacts`、核心 `@check`，`python_static.py` 提供 Vulture 的原生退出码/诊断分类。**复用**这些能力，不重写执行器或将 Vulture findings 误判为工具故障。
 - `.github/workflows/reusable-python-ci.yml` 已承载公共 Dagger Checks、报告与 Artifact；新增入口应与其实际调用和现有报告契约对接。
-- [ECI #47](https://github.com/dymzz/engineering-ci/issues/47) 曾定义 Lychee/Semgrep 接入且已关闭，但当前公共接口清单未列出通用 Lychee/Tach 入口。先核对仓内实际实现：有可复用代码直接迁移/接线；缺少的公共能力在**本 Issue**补齐，不为 Tach/Lychee 另开零散 Issue。
+- **PR #67 之后（以当前 `main` 为准）：** 公共 `src/eci_core/hygiene.py` 已包含 Lychee / Vulture / Tach 配置与执行路径，`selection.py` / `execution.py` / `sources.py` 与 `engineering-ci select`/`execute` 已在仓内。本 Issue **不再**把通用 Lychee/Tach/Hygiene/选择算法当作「缺失、从零接入」的任务；只核对相对 Knowledge 基线是否仍有行为缺口，并完成下文剩余生产方接线。[ECI #47](https://github.com/dymzz/engineering-ci/issues/47) 的历史表述仅作背景，不能覆盖上述已交付事实。不为已交付能力另开零散 Issue。
 - [ECI #52](https://github.com/dymzz/engineering-ci/issues/52) 管已有工具资产/选择/门禁/Actions 连接（不是本 Issue 的 Git→测试影响选择算法）；[ECI #63](https://github.com/dymzz/engineering-ci/issues/63) 管 Required Checks、可信证据、Release 与门禁传播。本 Issue 交付可用的检查/选择**生产方接口与结果**，并与两者衔接，不重建其治理/证据机制。
 
-## 1. 迁移通用 Hygiene 检查代码
+## 1. Hygiene 公共能力：对照基线核实，只补缺口
 
-从 Knowledge `scripts/check_repo_hygiene.py` 与 `tests/test_repo_hygiene.py` 按行为提取并整合以下可复用逻辑：
+以 Knowledge `scripts/check_repo_hygiene.py` 与 `tests/test_repo_hygiene.py` 的**已验证行为**为对照基线，核对 PR #67 已合并的 `eci_core` Hygiene/Sources/公共入口是否已覆盖下列契约；**仅补真实缺口与回归**，禁止从 Knowledge 脚本重新提取/再实现一套通用 Hygiene：
 
 - Git 基线、变更/工作区文件、重命名与删除、`git diff --check`；Python 变更导致的纯转发模块检测与原生诊断。
 - 可配置的有效文档文件集合、相对路径保真与 Lychee 原生离线检查；原生命令缺失、无适用文件、实际链接失效及执行故障不得被混为 PASS。
@@ -37,14 +35,14 @@
 
 ### 公共实现、领域规则与 Hygiene 输入的交接
 
-- **唯一实现位置**：通用 Git/Hygiene、Tach 解析、增量选择、结果结构及本地执行代码应有一个实际源实现。ECI 现有可安装包 `src/engineering_ci/` 与独立 Dagger 模块 `.dagger/src/engineering_ci/` 不能假定彼此可直接 import；需通过实际可安装的公共包/依赖连接，让本地 CLI 与 Dagger 消费**同一版本的算法**，而不是复制源码或维持两套选择器。可调整两侧模块与构建配置；公共 CLI 必须能在 ECI checkout 之外独立使用。
-- **Hygiene 真实输入集合**：Dagger 的 `repository.py::SOURCE_EXCLUDES` 为 Python 检查排除了 `guides`、`docs/**/*.md`、`scripts/*.md` 等输入，不能直接当作 Lychee/来源字节检查的通用 Source；按具体检查所需文件构造输入并对齐宿主相对路径。文档存在于上述排除目录时也必须真实检查，不能因目录不在容器中报告不适用。
-- **来源校验分工**：通用入口负责可配置的文件存在、路径规则、真实文件大小（`size_bytes`）、SHA-256、Git attributes 及实际原生诊断；Knowledge 的 Manifest 字段投影、空路径含义、环境管理目录豁免、已登记/未登记 acquired 文件及来源身份语义作为可加载的领域规则保留在 Knowledge。不能把 Knowledge 的 JSON 字段解释硬编码为所有消费者的全局行为。
-- **迁移规则而不是硬编码**：将 Knowledge 的精确路径/前缀、资源类型、测试消费者、升级/忽略规则转为可加载的消费者配置或必要领域扩展；明确精确匹配优先级、组合/去重、未知输入处理。迁移 `tests/test_repo_hygiene.py` 的通用案例至 ECI，并保留 Knowledge 领域契约的正反测试；不要为了删除旧脚本丢失异常来源、路径或字节约束。
+- **唯一实现位置：** 通用 Git/Hygiene、Tach 解析、增量选择、结果结构及本地执行以 PR #67 已进入 `main` 的可安装公共实现为准（`src/eci_core` 等）。ECI 可安装包与独立 Dagger 模块 `.dagger/src/engineering_ci/` 不能假定彼此可直接 import；须通过实际可安装的公共包/依赖让本地 CLI 与 Dagger 消费**同一版本算法**，禁止再复制源码或维持第二套选择器。可调整两侧模块与构建配置；公共 CLI 必须能在 ECI checkout 之外独立使用。
+- **Hygiene 真实输入集合：** Dagger 的 `repository.py::SOURCE_EXCLUDES` 为 Python 检查排除了 `guides`、`docs/**/*.md`、`scripts/*.md` 等输入，不能直接当作 Lychee/来源字节检查的通用 Source；按具体检查所需文件构造输入并对齐宿主相对路径。文档存在于上述排除目录时也必须真实检查，不能因目录不在容器中报告不适用。
+- **来源校验分工：** 通用入口负责可配置的文件存在、路径规则、真实文件大小（`size_bytes`）、SHA-256、Git attributes 及实际原生诊断；Knowledge 的 Manifest 字段投影、空路径含义、环境管理目录豁免、已登记/未登记 acquired 文件及来源身份语义作为可加载的领域规则保留在 Knowledge。不能把 Knowledge 的 JSON 字段解释硬编码为所有消费者的全局行为。
+- **对照而非重迁：** 将 Knowledge 精确路径/前缀、资源类型、测试消费者、升级/忽略规则继续作为可加载消费者配置或必要领域扩展；明确精确匹配优先级、组合/去重、未知输入处理。对 `tests/test_repo_hygiene.py` 的通用案例：以 ECI 已有测试/夹具核对覆盖，**只补缺失回归**；Knowledge 领域契约正反测试仍留在 Knowledge。不要为了删旧脚本丢失异常来源、路径或字节约束，也**不要**把已迁入 ECI 的通用用例再实现一遍。
 
-## 2. 迁移增量选择与原生测试执行
+## 2. 增量选择与原生测试执行：对照基线核实，只补缺口
 
-以 Knowledge `scripts/select_tests.py`、`tests/test_test_selection.py` 为真实实现/测试基线：
+以 Knowledge `scripts/select_tests.py`、`tests/test_test_selection.py` 的**已验证行为**为对照基线，核对 PR #67 已合并的 `eci_core` selection/execution 与公共 CLI；**仅补真实缺口**，禁止从 Knowledge 脚本重新迁移一套选择器：
 
 - Git diff、merge-base、当前工作区、push/PR 对象识别；正确处理新文件、删除和重命名，不用可变分支名推断历史 merge 对象。
 - 解析消费者现有 `tach.toml`、Python 模块匹配、反向依赖闭包；独立表示测试文件的真实消费者关系与非 Python 数据/脚本/资源输入映射。
@@ -52,13 +50,13 @@
 - 保留 Python 标准库 `unittest` 的实际选择性运行、原生退出码和 Windows UTF-8 行为；与 ECI 现有 pytest/Dagger 报告能力并存，各自使用其原生执行，不强制消费者迁移测试框架。
 - 区分 *selected / executed / passed / advisory / not-applicable / not-executed / reused* 的可验证事实；候选历史证据能否复用由 #63 的有效性与门禁链决定，选择器本身不得把「无需执行」伪装为 PASS。
 
-**Knowledge 负责的配置**：`tach.toml`、模块与测试实际对应关系、RDF/Content/Catalog/Application 数据输入和消费者映射、Identity 固定提交与 Wheel/CLI 前置条件等。ECI 不硬编码 `data/catalog/**`、`content/issue-24/**` 等 Knowledge 专用路径。
+**Knowledge 负责的配置：** `tach.toml`、模块与测试实际对应关系、RDF/Content/Catalog/Application 数据输入和消费者映射、Identity 固定提交与 Wheel/CLI 前置条件等。ECI 不硬编码 `data/catalog/**`、`content/issue-24/**` 等 Knowledge 专用路径。
 
 ### Tach 图可信性与测试前置步骤
 
-- **增量图先决条件**：`parse_tach_dependency_graph()` 当前只读取 `tach.toml` 声明，不证明它与实际 Python imports 一致。使用反向闭包作测试覆盖依据时，必须关联同一输入快照/规则版本下有效的 `tach check` 结果；图配置缺失、校验失败或无对应有效证据时，不能直接把静态闭包当完整覆盖。可以按适用策略扩大相关回归或阻断选择性通过，但不能静默选零项。第三方依赖边界由 `tach check-external` 另行检查，不与图正确性混为一个结论。
-- **可执行前置条件**：Knowledge 现有 `requires_identity_commit`、`requires_wheel_smoke` 只是选择器输出信号，不会抓取提交或构建 wheel。公共结果应表达类型化的必要前置检查及所需消费者参数（例如固定身份提交、wheel/仓外 CLI），执行端真实执行/复用并记录各项结果；缺少参数、未运行或失败不得因测试集合自身 PASS 而标为覆盖完整。不得把 Knowledge 的固定 SHA 或 CLI 指令写死在 ECI。
-- **原生结果清晰分层**：选择结果只描述应执行的集合及原因，执行结果另外报告真正运行的 unittest/pytest、Tach/Hygiene 与前置检查、原生退出码、失败及不适用项；历史证据接纳仍由 #63 决定。
+- **增量图先决条件：** 当前图解析只读 `tach.toml` 声明，不证明它与实际 Python imports 一致。使用反向闭包作测试覆盖依据时，必须关联同一输入快照/规则版本下有效的 `tach check` 结果；图配置缺失、校验失败或无对应有效证据时，不能直接把静态闭包当完整覆盖。可以按适用策略扩大相关回归或阻断选择性通过，但不能静默选零项。第三方依赖边界由 `tach check-external` 另行检查，不与图正确性混为一个结论。
+- **可执行前置条件：** Knowledge 现有 `requires_identity_commit`、`requires_wheel_smoke` 只是选择器输出信号，不会抓取提交或构建 wheel。公共结果应表达类型化的必要前置检查及所需消费者参数（例如固定身份提交、wheel/仓外 CLI），执行端真实执行/复用并记录各项结果；缺少参数、未运行或失败不得因测试集合自身 PASS 而标为覆盖完整。不得把 Knowledge 的固定 SHA 或 CLI 指令写死在 ECI。
+- **原生结果清晰分层：** 选择结果只描述应执行的集合及原因，执行结果另外报告真正运行的 unittest/pytest、Tach/Hygiene 与前置检查、原生退出码、失败及不适用项；历史证据接纳仍由 #63 决定。
 
 ## 3. 同源本地、Dagger、Actions 入口
 
@@ -96,18 +94,19 @@
 - [ ] Knowledge #70 中已验证的 Git/Tach/内容消费者/资源/删除文件/前置条件/动态发现测试场景迁移并保持覆盖，无已知静默漏测；未改变的现有证据复用。
 - [ ] 非 Knowledge Python 项目实际消费 Tach 依赖图、Git 变更和测试影响选择；消费者规则不写死在 ECI 源码。
 - [ ] unittest 与 pytest 两种原生结果可执行、区分通过与失败；本地调用无需默认启动 Dagger，适用隔离任务可复用 Dagger 的原生缓存。
-- [ ] 基于 PR #67 真实完成一条 Git 对象/工作区变更 → 机器选择结果 → **选中原生 Check/必要前置条件确实执行** → Dagger/Actions 真实结果路径。验证无业务测试但存在适用 Hygiene/Tach/Lychee/来源检查，不能因 `no_selected_tests` 跳过检查；对选择后 Worktree 改动及 Dagger Source Tree 尚未核验的情况正确拒绝或重新核验。#63 的本地受信接纳/PR→main 历史复用与 #61 最终 Required/Release 判定各归原责任，不作为本 Issue 公共生产方完成前置。
+- [ ] 基于 PR #67 真实完成一条 Git 对象/工作区变更 → 机器选择结果 → **选中原生 Check/必要前置条件确实执行** → Dagger/Actions 真实结果路径。验证无业务测试但存在适用 Hygiene/Tach/Lychee/来源检查，不能因 `no_selected_tests` 跳过检查；对选择后 Worktree 改动及 Dagger Source Tree 尚未核验的情况正确拒绝或重新核验。#63 的本地受信接纳/PR→main 历史复用与 #61 最终 Required/Release 判定（复用既有 Release/Manifest/Run，不新建 Gate）各归原责任，不作为本 Issue 公共生产方完成前置。
+- [ ] **Agent 可定位诊断（P2）：** 一次真实失败的原生 Check/前置条件在 Preflight/本地反馈中给出可导航的源/检查定位，并支持定向复检通过；仅有 Plan JSON 或外层 Job 成功不得冒充已诊断。
 - [ ] ECI 通用实现与消费者配置边界明确，Knowledge 可据此移除旧脚本；交付公共 API、CLI、Dagger/Workflow 必要修订及消费者迁移说明。Knowledge 实际删除重复入口由 Knowledge #68 验收。
 - [ ] 在**全新、非 ECI checkout** 的 Python 环境安装固定且具备已验收 Source/Check 能力的 ECI 公共版本并实际调用 CLI；Dagger/Actions 从同一公共实现消费（无需复制算法）。固定旧 SHA 本身不能证明能力完备，工具、来源 Commit/包版本及消费者规则版本仍可追踪。
 - [ ] 新增未在 `tach.toml` 声明的跨模块 import：不允许使用未经有效 `tach check` 验证的图输出错误的窄化测试集；`tach check-external` 的真实结果另行保留。
 - [ ] 文档仅位于原 `SOURCE_EXCLUDES` 所排除目录时，Lychee 在实际消费者 Dagger/Actions 路径仍检查有效与失效相对链接，且原生失败传播正确。
 - [ ] Index 与工作区内容不同、目标 Commit 与本地文件不同，以及首次/多引用/强制推送或缺失基线时，检查计划及执行事实均绑定真实对象；未知对象不得显示为零变更或通过。
 - [ ] Knowledge 规则配置迁移后，精确路径与前缀优先级、实际测试消费者集合、Manifest 领域语义和未登记 acquired 文件等正反结果保持；前置 Identity Commit/Wheel/CLI 被实际执行或明确报告未完成，不能仅输出布尔信号代替验收。
-- [ ] 验证以本次迁移接口和新增执行路径的正反场景为主；复用已有有效测试，不为格式/汇总重复扫描，不默认无差别重跑全量。
+- [ ] 验证以本次**缺口补齐与接线**的正反场景为主；复用 PR #67 及既有有效测试，不为格式/汇总重复扫描，不默认无差别重跑全量，**不重迁**已交付通用实现。
 
 ## 不属于本 Issue 的工作
 
-不实现独立质量平台、全局状态机、通用 Runner/下载器、工具 Registry、第二套检查证据账本；不重写 #52、#63 的资产接纳/Required Check/Release 语义；不在本任务新增工程检查器或规定新的 Knowledge 领域语义。不以先修改 AGENTS.md 作为迁移前置。
+不实现独立质量平台、全局状态机、通用 Runner/下载器、工具 Registry、第二套检查证据账本；不重写 #52、#63 的资产接纳/Required Check/Release 语义；不在本任务新增工程检查器或规定新的 Knowledge 领域语义；**不重新迁移 PR #67 已交付的通用选择/Hygiene/CLI**；不为 #61 新建平行 Gate/聚合器。不以先修改 AGENTS.md 作为迁移前置。
 ---
 
 ## Review 修订：可执行契约与定向验收（2026-11-08 复审）
@@ -163,3 +162,4 @@ pytest：多个选中目标可在一次原生 pytest 执行中传入，保留单
 - 依据：[Knowledge PR #75 已合并实施计划](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/implementation-plan.md) P1/P2 与后续生产方交接。本节仅补充真实当前代码状态，保留本 Issue 已有效的来源、Tach、资源映射、原生 unittest/pytest 及跨仓公共能力要求。
 - P1 Source/快照修正与 P2 已有原生 Check 接线可以并行实施；声明 Index、Worktree、PR Merge 或 Push 已验证通过时必须有相应真实执行输入证据。Dagger 官方 Pytest/Pants 是否替换只影响选定的真实 Check 家族，不是其他检查的阻断前置。
 - 当选择器输出 `requires_identity_commit` 或 `requires_wheel_smoke`，必须公开可执行的类型化前置条件与原生执行/未完成事实；具体固定 Identity Commit、wheel 构建和仓外 CLI 命令仍由消费者配置提供，不在 ECI 硬编码。
+- **读法重申：** §1/§2 标题与清单是契约对照表，不是授权重新从 Knowledge 脚本实现通用层；实施 PR 的 diff 应体现对已有 `eci_core`/CLI/Dagger 的缺口修复与接线，而不是平行再迁。
