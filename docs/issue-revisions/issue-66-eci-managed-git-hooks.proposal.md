@@ -116,3 +116,89 @@ engineering-ci hooks run pre-push --repo .
 5. **独立消费者收口**：ECI #66 证明一个 Knowledge 与至少一个非 Knowledge 消费者、公共 Hook 与原生结果可用；Knowledge #68 在有效固定版本接入并删除重复的 hook_adapter.py / 安装器。#63 历史可信接纳与 #61 Required/Release 继续按各自实际契约验收，不阻断新检查执行。
 
 **审定重点**：选择 Lefthook 作单一生命周期调度层，但不要另起 ECI 并行事件调度；一次批量接入不是让每次 Git 事件都运行所有候选；本需求 PR 不宣称工具均已成功运行或已修改 Ruleset。审定后仅同步到 Issue #66 的有效新增条款，不把此文件留下作为第二份长期规范。
+
+
+## 7. 工具触发与执行作用域的正交分类（第三轮审定）
+
+**必须同时声明两个不同性质的字段：** \`trigger\`（什么事件/文件变化唤醒检查）与 \`analysis_scope\`（工具真正读取、检查和据此作出 PASS 的对象范围）。\`glob\`、\`root\`、\`{staged_files}\` 是 Lefthook 的确定性快速筛选/路径传递机制，**不代表 Git Index 被检查过，也不能把全项目工具改造成单文件检查器**。ECI 的公共 Check/选择配置应承载这两层信息；不建立另一套工具 Registry。
+
+### 7.1 执行作用域分类（独立于 pre-commit/commit-msg/pre-push）
+
+| 类别 | 典型工具与模式 | 被唤醒后实际需要的输入 | 对 Lefthook 的正确用法 |
+| --- | --- | --- | --- |
+| **F — 文件级（file-local）** | Ruff 单文件格式/局部规则、shfmt、taplo、dprint、google-java-format、typos；Biome/Oxlint 的纯文件规则；某些 ast-grep、ShellCheck/actionlint/zizmor 单文件规则 | 被选中的文件**实际暂存版本**，加有效的共享配置/忽略规则；部分工具虽接收文件名，仍可能按项目配置解释它们 | \`glob\`/ \`root\` 过滤，\`{staged_files}\` 传递路径；由 ECI 确保实际读取的是 Index 字节而非工作树中不同的未暂存版本 |
+| **P — 包/模块/构建图级** | Pyright 或 BasedPyright、Tach、Import Linter、Cargo Clippy、Maven/Gradle、完整模块 lint；Vulture 全工程死代码分析 | 受影响模块/包及其 import/dependency/build 图、配置和必要跨文件引用；如没有可靠模块收敛则按适用项目范围执行 | 使用 \`glob: "*.py"\`、\`glob: "*.rs"\`、\`glob: "*.java"\` **作为唤醒条件**；执行真正的项目/包命令，不把 \`{staged_files}\` 冒充完整分析输入 |
+| **R — 仓库/关系/资产级** | Gitleaks Git 历史/暂存扫描、Lychee 本地文档/锚点引用闭包、Semgrep 跨文件污点、全局 ast-grep、Vulture 全仓；Sources/RDF 对账 | 实际选定的 Git 对象/变更、引用目标及反向依赖闭包、全局规则/字典、工具版本；按实际扫描模式确定是否包含历史/外部输入 | \`glob\` 先过滤不相干变更，但删除链接目标/重命名或修改配置亦必须唤醒相关检查，不可只匹配文档后缀 |
+| **D — 新旧契约/版本比较级** | Griffe、oasdiff、buf、ECI Git 变更影响选择、Semgrep baseline 模式 | Git 正确旧/新对象、公共 API/Schema/Protobuf 及兼容性规则；包含删除、重命名、强推 old→new | pre-commit 可按资源路径触发；pre-push **不能**仅凭 \`{push_files}\`/固定 \`origin/main\` 证明本次所有 ref，必须由 ECI 消费完整 stdin 并建立正确 baseline |
+| **E — 动态执行/环境/服务级** | unittest/pytest、pytest-testmon、CrossHair/Hypothesis、Schemathesis、mutmut/cargo-mutants、在线 Lychee、wheel/installed CLI smoke、OSV/cargo-deny 依赖审计 | 真正的受影响测试/契约/目标服务、依赖环境、项目锁、可复用原始结果或许可证/漏洞数据；变异和模糊测试要有专项预算 | \`glob\` 只决定是否考虑执行；由现有 ECI Check/工具选择判断环境、依赖与阶段，绝不把“文件类型匹配”作为足够的完成证据 |
+
+**边界案例**：同一工具可以有多种作用域。例如 Semgrep 单文件模式是 F、跨文件 taint 是 R；Lychee 针对已改文件的离线 URL 检查是 F/R，目标被删除时涉及 R 反向引用；Gitleaks staged 内容检查与 Git 历史扫描不是同一作用域。工具归类应按所用的**具体原生命令/检查策略**，不是永久绑定某个工具名称。
+
+### 7.2 二维分发：阶段 × 执行作用域 × 实际事件
+
+| 阶段 | 文件级 F | 包/模块级 P | 关系/资产级 R | 比较级 D | 动态/环境级 E |
+| --- | --- | --- | --- | --- | --- |
+| **pre-commit** | 匹配 staged 文件才启用，如 Ruff、taplo、shfmt；默认只读 | 匹配代码或包配置才运行适用 Tach/类型检查/模块 Lint；避免无故跑全部项目 | Secrets、来源对账、离线链接按变更闭包唤醒；不能漏掉被删除的引用目标 | 仅对暂存 Index 相对基线的真实变化执行适用契约检查 | 只运行有效小范围前置或定向测试；昂贵运行按实际风险移至其他阶段 |
+| **commit-msg** | 消息文本本身的定向验证（cog 或 commitlint-rs） | 不适用 | 不适用 | 如提交策略需要时核对实际提交语义，不变成新测试选择器 | 不适用 |
+| **pre-push** | 仅在必要时对真实 push 目标的文件快速复核 | 对受影响 Cargo/Java/Python 包执行包级 Checks | Semgrep 污点、依赖安全与在线链接按原生对象/有效输入运行 | Griffe/oasdiff/buf 等在真实 old→new 上比较 | 增量回归、适用形式验证；fuzz/mutation 优先专项/Actions，不能伪称常规 push 数秒完成 |
+| **Actions / Release** | 复用原始 Check；缺失时定向补执行 | 必要全项目/构建型检查按策略运行 | 全依赖/安全和来源验证，检查 Required 证据 | 合并目标与发布候选兼容性 | 有实际服务/环境/预算的集成、fuzz、mutation 或发布验收 |
+
+**重要的唤醒条件补足**：\`Cargo.toml\`/\`Cargo.lock\`、\`pom.xml\`/\`build.gradle*\`、\`pyproject.toml\`/\`uv.lock\`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 \`glob: "*.rs"\` 或 \`glob: "*.py"\` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
+
+### 7.3 Lefthook 配置语义与分发形态（示意，命令尚未实现）
+
+- \`glob\` 通过匹配文件确定命令是否启动：即使 \`run\` 不包含文件占位符，也会对 pre-commit 用 staged 文件、pre-push 用 push 文件尝试过滤，空集合跳过。**零空跑仅指没有启动该工具进程**；Git 取文件集合和 Lefthook 自身仍有固定开销。
+- \`root\` 改变子命令工作目录，也会进一步过滤候选路径；**glob 仍相对于 Git 仓根匹配**，不是相对于 \`root\`。例如 \`root: "frontend/"\` 时 \`glob\` 应覆盖 \`frontend/**\` 的仓根路径，而不能把 \`src/**\` 想当然当成 frontend 下的文件。
+- 默认 glob 语义下，\`src/**/*.js\` 的 \`**\` 需一层以上目录，可能漏掉 \`src/file.js\`；要同时匹配 \`src/*.js\` 或明确采用经核验的 \`glob_matcher: doublestar\`。删除文件、改名、路径含空格和规模较大的文件集合仍需真实原生事件核验。
+
+以下仅说明“文件触发 vs 项目触发”。\`engineering-ci hooks run ... --profile\` **是候选 ECI API**，不是可直接执行的已交付命令：
+
+\`\`\`yaml
+pre-commit:
+  commands:
+    python-file:
+      glob:
+        - "*.py"
+        - "pyproject.toml"
+        - "ruff.toml"
+      run: engineering-ci hooks run pre-commit --profile python-file
+    python-project:
+      glob:
+        - "*.py"
+        - "pyproject.toml"
+        - "uv.lock"
+        - "tach.toml"
+      run: engineering-ci hooks run pre-commit --profile python-project
+    rust-package:
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: engineering-ci hooks run pre-commit --profile rust-package
+    java-package:
+      root: "services/java/"
+      glob:
+        - "services/java/*.java"
+        - "services/java/**/*.java"
+        - "services/java/pom.xml"
+        - "services/java/build.gradle"
+      run: engineering-ci hooks run pre-commit --profile java-package
+
+pre-push:
+  commands:
+    eci-all-ref-checks:
+      use_stdin: true
+      run: engineering-ci hooks run pre-push
+\`\`\`
+
+此配置**不授权**直接在有未暂存修改的工作区上运行 \`ruff {staged_files}\` 并把结果认作 Index 已验证。ECI 各 pre-commit profile 必须在**同一个被检 staged Tree 与规则版本**上工作；不应因多个 Lefthook jobs 为同一提交建立 N 份无关工作区，重复运行相同 Tach 或 wheel。可共享一次已确定的 Source/Plan 身份及有效原始结果，**不新建第二个缓存/调度/数据库**。pre-push 则保留一个读取完整 stdin 的 ECI 入口，再按真实变更与类别做内部快速过滤，避免多个工具各自错误消费 stdin。
+
+### 7.4 配置字段及验收（复用现有 ECI 公共契约）
+
+每项适用 Check 至少能从现有公共声明/派生计划明确辨认：
+
+- \`hook_phase\`、\`analysis_scope\`、\`trigger_paths\`（含配置与依赖）、可用的 \`root\`/生态范围，以及触发是否具有完整性保证；
+- 原生工具/检查 ID、实际命令/有效输入、Source/规则/工具版本身份、是否需要真实旧新 Git 对象或环境/服务/前置条件；
+- 是否可以并行、是否修改工作区或 Index、与其他检查共享了哪份原始结果、单次实际执行耗时和适用/未执行/失败状态。
+
+**定向场景**：仅改 Python 时 Rust/Java Check 进程不启动；仅改 Cargo.lock 仍唤醒适用 Rust 项目 Check；仅改 pyproject.toml 仍唤醒相应项目级检查；root 子项目过滤正确；F 只检查匹配的暂存字节、P 真正检查包、D 比较真实 old→new；删除被 Markdown 引用的文件仍会要求适用链接反向检查；多引用推送真实遍历而不是依赖不完整 push_files。已有有效工具检查结果复用，只补新增触发/范围的正反例。不因为全景新增工具类别就强制重跑整套 CI。
