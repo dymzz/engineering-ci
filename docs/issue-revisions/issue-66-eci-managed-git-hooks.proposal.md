@@ -120,7 +120,7 @@ engineering-ci hooks run pre-push --repo .
 
 ## 7. 工具触发与执行作用域的正交分类（第三轮审定）
 
-**必须从现有 ECI 配置、Source、Selection Plan 和原生 Check 结果中推导出** Trigger / Analysis / Invalidation 三类关系，不得另建三套配置表或规则引擎。它们分别描述唤醒、真实读取/覆盖、旧结果何时失效；`glob›、`root› 和 `{staged_files}› 仅提供 Lefthook 粗过滤，不能证明暂存 Tree 受检。原有 `eci_core.selection›、`execution›、Hygiene/Sources、Plan/Report 是实施位置。
+**必须从现有 ECI 配置、Source、Selection Plan 和原生 Check 结果中推导出** Trigger / Analysis / Invalidation 三类关系，不得另建三套配置表或规则引擎。它们分别描述唤醒、真实读取/覆盖、旧结果何时失效；`glob`、`root` 和 `{staged_files}` 仅提供 Lefthook 粗过滤，不能证明暂存 Tree 受检。原有 `eci_core.selection`、`execution`、Hygiene/Sources、Plan/Report 是实施位置。
 
 ### 7.0 每个 Check 的三类输入集合（规范性要求）
 
@@ -218,7 +218,7 @@ pre-push:
 
 ### 7.4 配置与判定数据（复用已有 ECI 公共契约）
 
-每项 Check 的相关信息应**从现有 ECI 对象推导或定点扩展**。下列名称是逻辑视图，**不要求新增同名 `trigger_set›、`analysis_set›、`invalidation_set› 的 TOML/Plan/Report 字段**，更不允许建立第二份工具 Registry、失效算法或执行结果账本：
+每项 Check 的相关信息应**从现有 ECI 对象推导或定点扩展**。下列名称是逻辑视图，**不要求新增同名 `trigger_set`、`analysis_set`、`invalidation_set` 的 TOML/Plan/Report 字段**，更不允许建立第二份工具 Registry、失效算法或执行结果账本：
 
 - `hook_phase`、F/P/R/D/E `analysis_scope`、Trigger Set 的输入路径/事件/共享配置和 Invalidation Set 的完整依赖规则及外部有效期；必要时区分根目录与子模块执行上下文。
 - Check ID/适用规则、原生运行输入、实际 Source Tree、受影响模块或旧新契约、工具/规则/锁版本、必要环境与前置条件及真实执行状态。
@@ -239,11 +239,11 @@ pre-push:
 
 | 现有对象 | 已实现的事实 | 应扩展的缺口 |
 | --- | --- | --- |
-| `selection.ChangeSet› / `changeset_multi› | `snapshot›、`index_tree›、`execution_tree›、`references›、`changed_paths› 和 Git 完整性 | 让 Hook Index 和每个 Push ref 复用现有 Source；glob 不得变成第二份最终影响判定 |
-| `selection.Config› / `load_config› | `escalation_files/prefixes›、`ignored_files/prefixes›、`module_tests›、`non_code_rules›、`prerequisites›、`check_scope› | 将配置、锁文件、工具规则、非代码依赖的触发与失效关系写入已有消费者规则；不能用新的 Hook-only TOML 重复定义 |
-| `select()› / `_reverse_closure()› / `_check_scope()› | Python 反向依赖、非代码映射、逐 Check `selected›/`unknown›/`not_applicable› | 按 Check 扩大实际受影响范围，取代把所有配置变更一律升级为全部单测和所有前置条件 |
-| 既有 `plan()› 的 `generator/git/selection/check_scope/inputs› | Git Tree、ECI 版本、选择原因、Tach 和部分规则摘要 | 在 `inputs› / 相关 Check 节点补充真实消费的 Hygiene、Sources、工具规则、依赖和环境身份；不重复一个新 Plan |
-| `execution._verify_execution_binding()› / `execute()› 与 Hygiene/Sources | Git 输入绑定、原生 Check 和前置条件结果、失败/未执行状态 | 执行前核实相应规则/环境身份；消除 Hygiene 用独立 `code_changed› 路径再次决定 Selection 已裁定的同一 Check 适用性 |
+| `selection.ChangeSet` / `changeset_multi` | `snapshot`、`index_tree`、`execution_tree`、`references`、`changed_paths` 和 Git 完整性 | 让 Hook Index 和每个 Push ref 复用现有 Source；glob 不得变成第二份最终影响判定 |
+| `selection.Config` / `load_config` | `escalation_files/prefixes`、`ignored_files/prefixes`、`module_tests`、`non_code_rules`、`prerequisites`、`check_scope` | 将配置、锁文件、工具规则、非代码依赖的触发与失效关系写入已有消费者规则；不能用新的 Hook-only TOML 重复定义 |
+| `select()` / `_reverse_closure()` / `_check_scope()` | Python 反向依赖、非代码映射、逐 Check `selected`/`unknown`/`not_applicable` | 按 Check 扩大实际受影响范围，取代把所有配置变更一律升级为全部单测和所有前置条件 |
+| 既有 `plan()` 的 `generator/git/selection/check_scope/inputs` | Git Tree、ECI 版本、选择原因、Tach 和部分规则摘要 | 在 `inputs` / 相关 Check 节点补充真实消费的 Hygiene、Sources、工具规则、依赖和环境身份；不重复一个新 Plan |
+| `execution._verify_execution_binding()` / `execute()` 与 Hygiene/Sources | Git 输入绑定、原生 Check 和前置条件结果、失败/未执行状态 | 执行前核实相应规则/环境身份；消除 Hygiene 用独立 `code_changed` 路径再次决定 Selection 已裁定的同一 Check 适用性 |
 | ECI #63 和 #61 | 分别负责旧证据受信、最终 Required/Release 完备 | 扩展既有接纳/覆盖证据消费，不在 #66 新增受信引擎、最终 Gate 或缓存账本 |
 
 **规则**：对真实输入/Check 的新增需求直接补现有 Selection、Plan、Execution 或原生 Report；若已具备充分数据就只修改使用逻辑。没有证据的旧 PASS 不可复用，但也不能为一个相关 Check 的失效无依据重跑所有业务测试与 wheel。
