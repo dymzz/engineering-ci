@@ -159,7 +159,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
     seen = set()
     for native in report["checks"]:
         name = native["name"]
-        base = name[:-9] if name.endswith("_external") else name
+        base = name.removesuffix("_external")
         if base not in selected_by_name and name not in selected_by_name:
             continue
         payload = dict(native)
@@ -310,7 +310,7 @@ def execute(
     if source_result is not None:
         native_checks.append(source_result)
     covered = {item["name"] for item in native_checks}
-    covered.update(name[:-9] for name in covered if name.endswith("_external"))
+    covered.update(name.removesuffix("_external") for name in covered)
     remaining = [
         {
             "name": item.get("name"),
