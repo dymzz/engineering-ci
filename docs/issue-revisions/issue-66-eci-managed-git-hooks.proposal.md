@@ -69,3 +69,50 @@ engineering-ci hooks run pre-push --repo .
 1. 公共安装是采用 ECI 自管稳定 Hook 目录，还是 ECI 安装时创建**零逻辑薄转发入口**：以 Git for Windows/多 worktree 的可复现性、已有 Hook 兼容和版本升级成本比较，**不提前制造两套实现**。
 2. 确认 CLI 子命令名称及配置字段后再进行代码实施，避免在本需求 PR 中宣称现成接口。
 3. 审定后将**仅新增/冲突的条款**并入 ECI #66；保留其已交付 PR #67 事实、现有来源/Hygiene/选择器接口及 #52/#61/#63 职责，不复制本草案成另一个常驻规范源。
+
+
+## 6. 批量工具接入与生命周期策略（第二轮审定）
+
+**实施裁定：一次设计公共接线，按实际仓库的适用工具矩阵成批实现，按执行类别集中验收；不采取一个工具一个 PR、一个全量 CI 验收，也不把全部候选默认配置成每次提交的 Required。** 已合并 ECI PR #67 的选择/Hygiene/CLI、ECI #52 的现有 Check/Actions/工具资产和原生 Dagger Checks 作为基线，先核对现有能力，只补实际缺口。
+
+### 6.1 采用一个成熟 Hook 调度器，而不是两套
+
+- **Lefthook 为默认候选**：使用其 Git 生命周期入口、文件 glob、适用并发和 commit-msg 转发。ECI 保有事件 Source、Index/Push Git 对象、影响选择、原生 Check、身份和结果判定；glob / staged_files / push_files 是调度输入，不能代替 ECI 的真实 Tree 证明。
+- **prek 是备选、不是同时启用的第二套**：其 Rust/uv 环境和内置快检有价值，但截至本次核查，公开文档明确指出 pre-push 默认只检查第一个 ref，且可能在当前工作树上执行。除非由 ECI 独立接管所有 Git 原始 ref 及目标提交快照，否则不满足 #66 的多引用和非 HEAD 保真要求。
+- **Lefthook 的 use_stdin 有一个关键约束**：即使有多个命令开启 use_stdin，只有一个接收 Git pre-push 的完整 stdin。将 Git 原生 ref 元组交给一个 ECI 入口，使用现有 ECI 选择/执行器对适用检查分发；其余独立工具不能按 HEAD 或 origin/main 结果冒充特定 old→new 推送验证。避免在 ECI 里再建立一个与 Lefthook 并行的生命周期调度器。
+- **只读检查可以并发，写 Index 的检查不能无条件并发**。Lefthook stage_fixed 会调用 git add；Ruff/shfmt/taplo 自动修复若与部分暂存或不同 GIT_INDEX_FILE 叠加，可把未暂存字节纳入提交，或使先前验证的 Tree 失效。pre-commit 门禁默认 check-only；自动修复由显式命令或能核验真正 Index 更新的独立流程完成。
+- **工具包及缓存不双建**：继续复用现有 ECI/Runtime 的可安装工具、原生结果、版本和制品来源；Hook 管理仅负责触发与接线，不为每项扫描器复制安装器、下载器、结果解释器和状态数据库。
+
+### 6.2 全阶段工具候选目录及按仓库启用策略
+
+表中均为**候选能力**，应在一次批量盘点中标记 already-implemented / needs-binding / applicable-new / not-applicable，而不是将工具名称视为已交付或全部 Required。同类替代品应按项目语义择一或证明互补。
+
+| 阶段 | 候选工具组（覆盖全部讨论范围） | 接入与执行裁决 |
+| --- | --- | --- |
+| pre-commit 格式/基础检查 | Ruff；Biome / Oxlint / dprint；shfmt；taplo；prek 内置基础检查 | Python、前端、Shell、TOML 按实际语言启用；格式修复与只读门禁分离，避免同一文件多工具改写。 |
+| pre-commit Secrets/拼写 | Gitleaks 或 ripsecrets；typos | Gitleaks protect 已弃用；根据锁定版本核对 git --pre-commit --staged 等真实有效命令；匹配真实 Index，不把领域术语当拼写错误。 |
+| pre-commit 规则/架构 | ast-grep、sd、ripgrep；Tach；Vulture；Import Linter（如有实际契约） | sd/ripgrep 主要用于替换/搜索，不是第三套 Gate；Tach 依据全图输入与原生校验；Vulture、Pyright 等需要项目/依赖上下文，不能只分析零散 staged 文件就声称全局通过。 |
+| pre-commit 静态/文档 | ShellCheck、actionlint、zizmor；Pyright 或 BasedPyright；Lychee --offline；YAML/TOML/大文件/空白检查；Windows 适用 PSScriptAnalyzer | 复用 ECI 已有 actionlint/PowerShell 路径；glob 只决定启动与否，不证明 Source、完整导入图或 GitHub 原生失败正确。 |
+| commit-msg | cocogitto 或 commitlint-rs | 只有仓库明确采用提交格式时才启用一项，读取 Git 给出的消息文件路径；不把规范无依据地施加给所有消费者。 |
+| pre-push SAST/依赖 | Semgrep；osv-scanner；cargo-deny | Semgrep 的 baseline 使用实际受检 old→new；依赖检查按有效锁文件/声明变化或真实 Required 执行；Rust 规则仅对 Cargo 工程。 |
+| pre-push API 兼容 | griffe；oasdiff；buf | 仅适用 Python 公共 API、OpenAPI、Proto 资产。griffe 对比可导入包与有效 Git ref；oasdiff 接受真实旧/新 schema 文件，而非将 HEAD 当 schema 路径；buf 依据实际 proto module/基线。 |
+| pre-push 增量动态/形式 | ECI unittest/pytest 原生选测；候选 pytest-testmon；CrossHair；Hypothesis | ECI 是公共选择权威；testmon 只在实际收益与覆盖可证明时接入，不另跑重复的完整回归。CrossHair/Hypothesis 对应实际形式化/属性契约执行，不以预估 3–20 秒作保证。 |
+| 条件专项/Actions/Release | Schemathesis；mutmut；cargo-mutants；Lychee 在线链接 | API fuzz 需服务和真实 schema（新版 Schemathesis 已移除 --app），mutation 受真实运行成本约束；cargo-mutants --in-diff 使用实际 diff 文件；在线链接可在适用风险/CI 环境运行，不能用波动网络代替可靠本地门禁。 |
+
+### 6.3 原始 lefthook.yml 不能直接当作可执行配置
+
+1. **50ms–3s 与 3s–20s 是未经测量的目标，不是承诺**。跨文件分析、符号执行、全量属性测试、变异测试和在线死链检查可能显著超过，必须按真实墙钟和原生命令记录。
+2. **staged_files 不是暂存字节快照**：直接在开发工作区运行文件路径，可能读取未暂存修改；涉及原生验证结论时 ECI 必须使用 Index Tree 或已证明相同的隔离执行输入。stage_fixed=true 自动 git add 不默认使用。
+3. **push_files / glob 不自动证明本次 Push 的所有 refs**：必须实际读取 Git 原生 stdin old/new、多个目标、强推/删除与缺失对象，并在对应目标快照执行。各项 baseline 不得硬编码 origin/main。
+4. **原示例中多个命令需修正**：Gitleaks protect 已弃用；Schemathesis --app 已移除；oasdiff breaking 要求真实旧/新规范；cargo-mutants --in-diff 要求实际 diff 文件；griffe check 必须绑定真实包及 Git 对照。版本固定后据原生 help/doc 核实各项命令，不得通过错误命令的跳过冒充 PASS。
+5. **parallel=true 不代表任意检查可安全并行**：只有不冲突的只读任务可并行；变更 Index/依赖环境/同一输出目录、或依赖同源原始 Check 的任务，必须依次消费有效结果并避免同样工具重复扫描。
+
+### 6.4 一批接线，按公共路径和新增风险集中验收
+
+1. **一次资产与已有证据盘点**：查看 ECI/Runtime tool_id、入口、版本/OS、原生 Checks、可用失败/跳过状态和现存验证；不用再逐工具设计 Schema、重新安装或跑全套正反例。
+2. **一个公共适配 PR 批量接入所有对目标仓库确实适用的工具**：先确定唯一 Hook 调度器、统一 Source/Config/Result、工具执行组及前置关系；静态基础、架构/文档、依赖/API、动态/形式检查可分组并行配置。其他语言/未使用的 API 协议保留在 ECI 能力目录，真实消费者出现时再启用，不降低长期需求范围。
+3. **按公共执行类别共享验收**：Index≠Worktree、临时 GIT_INDEX_FILE、真实多引用/强推、工具未安装/真实非零失败/跳过/不适用、Source/配置不匹配及原始结果复用，各用代表场景验证**公共路径一次**；对新命令、独特语义或尚无有效证据的 adapter 补其必要原生正反例。已有同输入/同版本证据直接复用，不要求每项都重复完整 CI。
+4. **Required 与性能分别验收**：Required 使用现有 ECI #52/#61/原始事实，Hook 汇总 PASS 不取代服务端完备；选择一组文档、Python、Hook/配置、依赖、未映射、push old→new 变更记录墙钟、重复扫描、选测规模和覆盖。只比较相同有效输入/检查范围的成本，不靠漏跑项目提高速度。
+5. **独立消费者收口**：ECI #66 证明一个 Knowledge 与至少一个非 Knowledge 消费者、公共 Hook 与原生结果可用；Knowledge #68 在有效固定版本接入并删除重复的 hook_adapter.py / 安装器。#63 历史可信接纳与 #61 Required/Release 继续按各自实际契约验收，不阻断新检查执行。
+
+**审定重点**：选择 Lefthook 作单一生命周期调度层，但不要另起 ECI 并行事件调度；一次批量接入不是让每次 Git 事件都运行所有候选；本需求 PR 不宣称工具均已成功运行或已修改 Ruleset。审定后仅同步到 Issue #66 的有效新增条款，不把此文件留下作为第二份长期规范。
