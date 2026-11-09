@@ -1,6 +1,6 @@
 ## 目标
 
-> **关联设计修订（待审阅）：** [Knowledge PR #77 — 并行启动/接口交接与独立验收](https://github.com/dymzz/engineering-knowledge/pull/77)；[实施计划 §2.1 与 §5 的具体产物（HEAD f5d974e4）](https://github.com/dymzz/engineering-knowledge/blob/f5d974e43246a576a1ab0d86b5becf9203a6bdce/design/engineering-verification/implementation-plan.md)。P1-A Source 与 P2 原生生产方可以并行；公共 ECI 生产方的独立验收不等待 Knowledge #68 整体切换或 ECI #63 历史复用。只在声称真实 Source-bound 集成成功时核对对应输入和原生事实。 **PR #77 仍处于 Draft，引用不代表其已合并或当前能力已验收。**
+> **关联设计修订：** [Knowledge PR #77 — 并行启动/接口交接与独立验收](https://github.com/dymzz/engineering-knowledge/pull/77)（已合并）；[实施计划 §2.1 与 §5 的具体产物（f5d974e4）](https://github.com/dymzz/engineering-knowledge/blob/f5d974e43246a576a1ab0d86b5becf9203a6bdce/design/engineering-verification/implementation-plan.md)。P1-A Source 与 P2 原生生产方可以并行；公共 ECI 生产方的独立验收不等待 Knowledge #68 整体切换或 ECI #63 历史复用。只在声称真实 Source-bound 集成成功时核对对应输入和原生事实。 **引用已合并设计不等于 #66 能力已验收。**
 
 
 将 [engineering-knowledge](https://github.com/dymzz/engineering-knowledge) 已合并的工程 Hygiene、Tach 与增量测试选择通用能力落到 `engineering-ci` 公共实现，供多个 Python 仓库本地、Dagger 和 GitHub Actions 使用。Knowledge 成为公共能力的真实消费者，仅维护自身规则与配置。
@@ -21,7 +21,7 @@
 
 - 现有 `.dagger/src/engineering_ci_module/main.py` 有 `python_vulture`、`python_test`（pytest）、`python_test_artifacts`、核心 `@check`，`python_static.py` 提供 Vulture 的原生退出码/诊断分类。**复用**这些能力，不重写执行器或将 Vulture findings 误判为工具故障。
 - `.github/workflows/reusable-python-ci.yml` 已承载公共 Dagger Checks、报告与 Artifact；新增入口应与其实际调用和现有报告契约对接。
-- **PR #67 之后（以当前 `main` 为准）：** 公共 `src/eci_core/hygiene.py` 已包含 Lychee/Vulture/Tach 配置和 `tach check` 执行路径，`selection.py` / `execution.py` / `sources.py` 与 `engineering-ci select`/`execute` 已在仓内。**具体未完成部分：** `hygiene.py::_tach()` 目前只执行 `tach check`；虽然配置解析了 `tach.external`，此路径尚未实际调用 `tach check-external` 并传播其独立结果；选中原生 Check 的完整 Dagger/Actions 执行交接同样尚未完成。本 Issue **不再**把已有通用 Lychee/Tach/Hygiene/选择算法当作「缺失、从零接入」的任务；只补这些确认缺口并核对相对 Knowledge 基线的行为差异。[ECI #47](https://github.com/dymzz/engineering-ci/issues/47) 的历史表述仅作背景，不能覆盖上述已交付事实。不为已交付能力另开零散 Issue。
+- **PR #67 之后（以当前 `main` 为准）：** 公共 `src/eci_core/hygiene.py` 已包含 Lychee/Vulture/Tach 配置和执行路径，`selection.py` / `execution.py` / `sources.py` 与 `engineering-ci select`/`execute` 已在仓内。本地 `hygiene.run()` 在 `tach.external = true` 且有代码变更时**已**以独立结果名 `tach_external` 调用 `tach check-external`（`_tach()` 仍只跑 `tach check`）。**具体未完成部分：** 缺少 `tach_external` 的定向回归测试；选中原生 Check（含 Hygiene/Tach）到 Dagger/Actions 的完整执行交接与失败传播尚未完成——配置开启不等于 CI 路径已验收。本 Issue **不再**把已有通用 Lychee/Tach/Hygiene/选择算法当作「缺失、从零接入」的任务；只补这些确认缺口并核对相对 Knowledge 基线的行为差异。[ECI #47](https://github.com/dymzz/engineering-ci/issues/47) 的历史表述仅作背景，不能覆盖上述已交付事实。不为已交付能力另开零散 Issue。
 - [ECI #52](https://github.com/dymzz/engineering-ci/issues/52) 管已有工具资产/选择/门禁/Actions 连接（不是本 Issue 的 Git→测试影响选择算法）；[ECI #63](https://github.com/dymzz/engineering-ci/issues/63) 管 Required Checks、可信证据、Release 与门禁传播。本 Issue 交付可用的检查/选择**生产方接口与结果**，并与两者衔接，不重建其治理/证据机制。
 
 ## 1. Hygiene 公共能力：对照基线核实，只补缺口
@@ -30,7 +30,7 @@
 
 - Git 基线、变更/工作区文件、重命名与删除、`git diff --check`；Python 变更导致的纯转发模块检测与原生诊断。
 - 可配置的有效文档文件集合、相对路径保真与 Lychee 原生离线检查；原生命令缺失、无适用文件、实际链接失效及执行故障不得被混为 PASS。
-- 复用已实现的 Tach `check`；补齐并验收 `check-external` 的实际执行路径、独立原生结果/退出码与适用 Dagger/Actions 的失败传播。配置中有 `tach.external` 不等于执行过外部依赖检查，不再重实现 Tach/选择算法。
+- 复用已实现的 Tach `check` 与本地 `tach_external`（`check-external`）路径；补齐定向回归，并验收独立原生结果/退出码在适用 Dagger/Actions 上的失败传播。配置中有 `tach.external` 不等于 CI 路径已执行并验收外部依赖检查，不再重实现 Tach/选择算法。
 - 对已有 `python_vulture` 衔接消费者的扫描路径、置信度、advisory/required 策略及原生结果；不能为摘要/门禁重复扫描。
 - 来源文件的路径合法性、文件存在、摘要/大小、Git attributes 等**可通用校验机制**。Manifest 的字段投影、来源身份、豁免语义、适用目录/文件集、来源契约判定仍由消费者配置/扩展定义；不要把 Knowledge 的 RDF/Catalog 特定规则硬编码进 ECI。
 
@@ -98,7 +98,7 @@
 
 ## 验收标准
 
-- [ ] ECI 公共入口加载真实 Knowledge 配置/输入，核对已有 Hygiene/Tach/Lychee 的正反行为；`tach check-external` 的实际调用及原生失败必须区别于已有 `tach check`。缺工具、诊断失败、来源 SHA-256/**实际 size_bytes**/属性错误均正确传播，Vulture advisory 不被强制升级为 failure。Sources 的 acquired-only 或通用清单适用范围有基于真实消费者的明确裁决，并只对实际扩展范围补定向验收。
+- [ ] ECI 公共入口加载真实 Knowledge 配置/输入，核对已有 Hygiene/Tach/Lychee 的正反行为；本地已有的 `tach_external` 与 `tach check` 须保持独立结果，并在适用 Dagger/Actions 路径上传播原生失败。缺工具、诊断失败、来源 SHA-256/**实际 size_bytes**/属性错误均正确传播，Vulture advisory 不被强制升级为 failure。Sources 的 acquired-only 或通用清单适用范围有基于真实消费者的明确裁决，并只对实际扩展范围补定向验收。
 - [ ] Knowledge #70 中已验证的 Git/Tach/内容消费者/资源/删除文件/前置条件/动态发现测试场景迁移并保持覆盖，无已知静默漏测；未改变的现有证据复用。
 - [ ] 非 Knowledge Python 项目实际消费 Tach 依赖图、Git 变更和测试影响选择；消费者规则不写死在 ECI 源码。
 - [ ] unittest 与 pytest 两种原生结果可执行、区分通过与失败；本地调用无需默认启动 Dagger，适用隔离任务可复用 Dagger 的原生缓存。
