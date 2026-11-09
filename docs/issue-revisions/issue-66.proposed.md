@@ -72,7 +72,7 @@
 - **对象绑定**：CLI/API 支持本地工作区、明确的 `base/head` Commit、PR 和 `push: main` 的真实事件对象；后者使用事件 `before/after` 而非默认当前 `origin/main`。不具备必需 Git 对象时应报告不可确定或获取所需对象，不能默认为「零变更/零测试」。Git Hook 读取实际推送 ref/SHA，不把任意 push 当成当前 HEAD。
 - **机器可读交接**：选择输出包含 Git 对象/基线及 Tree（本地含未提交变更时另明确标识）、变更路径、影响闭包、所需测试/检查 ID、原生框架与执行参数、Identity/Wheel 等前置条件、扩大原因与不适用理由。检查结果另记录实际执行与原生退出码；只选择而未执行不能成为 PASS。
 - **Dagger/Actions 消费**：提供将上述选择结果交给消费者 Dagger Checks / Workflow 的真实参数或输入方式，保留 unittest/pytest 原生执行，按选择执行实际所需的前置步骤；沿用现有 `dagger_checks`、报告/Artifact 契约，但该现有参数只选择 Check 名，不能冒充已支持任意 unittest 模块列表。无适用 Check 与缺失必需 Check 必须可区分。
-- **分期独立验收**：本 Issue 验收一次真实 Git 变更 → 机器选择结果 → Dagger/Actions 定向执行，核对执行的检查/测试集合与原生状态。ECI #63 后续核验、接纳和跨 Run 复用结果；Knowledge #68 后续切换消费者并删除重复通用实现。两项后续交付不是本 Issue 公共算法/API 可用的先决完成条件。
+- **分期独立验收**：P1-A Source 正确性与 P2 原生 Check/诊断可并行开工；宣称完整 Source-bound 执行时才核对两条路径的真实接口。#66 验收一次真实 Git 变更 → 机器选择结果 → Dagger/Actions 定向执行及原生状态。ECI #63 的同 Run/跨 Run/本地来源接纳可独立推进，其受信历史复用不作为 #66 公共生产方完成前提；Knowledge #68 同步推进配置/Hook/Dagger，待对应公共能力可用后完成消费者切换和删除重复实现。不把后续 Issue 整体完成误写为硬前置。
 
 ### Git 输入快照与执行一致性（本 Issue 的生产方契约）
 
@@ -80,13 +80,16 @@
 - 针对首次推送、多引用/多提交推送、强制推送、无共同祖先、缺失 Git 对象及事件基线不可用，提供明确可解释的范围扩大或失败结果；不能把「基线不可确定」解释为无变更。此处仅生产真实选择/执行事实，不实现 #63 的跨 Run 可信接纳。
 - 选择计划包含可核对的快照身份、规则/工具版本和执行必要输入，作为同源 CLI、Dagger 和 Actions 的交接数据。执行端校验计划与实际 Source 对应，并保留本次原生结果；仅有 `dagger_checks` 名称或 `--json` 计划文件不视为执行证据。
 
-## 4. 迁移交付及跨仓接线
+## 4. 并行启动、能力交接与跨仓验收
 
-1. **基于已合并 PR #67 补完实际缺口**：Source/Check 输入绑定、被选中但未执行的原生 Check/前置条件、Dagger/Actions 真正调用和 Agent 可定位诊断；复用已交付公共 API/CLI 与通用算法。#66 以 ECI 的公共接口和真实 Knowledge 配置/受检输入进行定向消费验证，另由至少一个非 Knowledge Python 仓库或真实项目夹具验证通用性；这里不要求 Knowledge 的正式 Hooks、Dagger、Actions 全部切换。
-2. [Knowledge #68](https://github.com/dymzz/engineering-knowledge/issues/68) **作为独立下游交付**消费 ECI：迁移项目规则和调用配置，Hooks/Actions 接线，**删除已经迁出的通用算法和执行入口**。不长期维护 `check_repo_hygiene.py`、`select_tests.py` 两套通用实现；只保留必要的 Knowledge 领域规则/配置。ECI #66 的公共 API/实际非 Knowledge 消费验证完成后即可独立验收，不要求先关闭 #68。
-3. ECI #66 提供可交给 #63 的原生执行事实与检查覆盖数据；**本地有效证据接纳、PR→main 历史结果复用和 Required/Release 可信性由 ECI #63 后续独立交付**。不将 #63 尚未实现的受信能力作为 #66 本次完成条件；服务端保护配置未知时说明权限限制，不自行修改规则。
+**本节不是 #66 → Knowledge #68 → #63 的串行执行表。** 分开记录启动条件、实际接口交接和验收依赖。参照已合并 [Knowledge PR #75](https://github.com/dymzz/engineering-knowledge/pull/75) 的 P1–P4 阶段图，不因某个 Issue 尚未关闭而禁止另一项可独立实现的工作。
 
-**独立验收交接：** #66 验证公共 ECI 版本可安装、通过公共入口加载真实 Knowledge 配置并对受检输入产生正确原生结果，以及非 Knowledge 项目的通用性；这些可以通过独立 checkout/真实项目夹具和受影响的 Dagger/Actions 公共路径验收。Knowledge #68 才验收本仓实际 Hooks、Dagger、Actions 切换、领域规则接线及旧通用脚本/调用删除。#68 未完成不阻断 #66 已具证据的公共生产方能力，但不能用 #66 的夹具调用宣称 #68 的真实消费者切换已经交付。
+1. **#66 P1-A / P2 立即并行：** 在已合并 PR #67 的 `eci_core`/CLI/局部 Dagger 和 Actions 基础上，P1-A 修复 Index/Worktree/PR/push 的 Source 与执行快照一致性；P2 独立推进原生 Check、前置条件、Dagger/Actions 调用与 Agent 可定位诊断。两条可从真实代码同时启动；声称 Source-bound 端到端通过时，才要求相应 P1-A + P2 的实际交接证据。无需重迁既有算法。
+2. **#52 / #61 / #63 与 #66 并行启动：** [ECI #52](https://github.com/dymzz/engineering-ci/issues/52) 可立即接入适用原生 Check 的 Report/Enforce 与 Actions；[ECI #61](https://github.com/dymzz/engineering-ci/issues/61) 可立即审计当前 Required/Release/服务端规则（GA），只对被证实的缺口实施最终连接，不要求 #66/#68/#63 整体完成。#63 的普通 PR/main actionlint/适用 Windows PSScriptAnalyzer 可与 #52 原生 CI 接线并行；其 **T1-a 同 Run、T1-b 原生 GitHub 跨 Run、T2 本地→Actions** 可信证据路径可各自开展技术选型与实现，其中 T1-b **不依赖** T2 本地交接完成。最终历史复用与 Required 覆盖必须使用对应受信原生事实，职责不转交 #66。
+3. **Knowledge #68 同步准备、按能力切换：** 项目规则/配置、版本固定、Hooks 和 [Knowledge PR #73](https://github.com/dymzz/engineering-knowledge/pull/73) 的独立 Dagger 初始化可立即推进；涉及某项 ECI 尚缺 Source/Check/前置接口的最终消费者接线，才等待该项能力经真实验收并固定兼容版本，而非等待 #66 Issue 关闭。#68 独立验收本仓 PR/main 自动 `hygiene` + `selected_tests`、正确事件/Tree、实际前置条件和旧通用代码删除。
+4. **各自的退出条件：** #66 验收公共 ECI 可安装版本、真实 Knowledge 配置/输入调用、至少一个非 Knowledge Python 项目消费和真实 Source→选测→原生 Check/前置条件生产方事实；这不等同于 #68 的正式 Hooks/Dagger/Actions 切换，也不需要 #63 的历史接纳先交付。#63 的可信复用交付不阻塞 #66/#68 已正确实现的**新执行路径**；但 #68 宣称本地或 PR→main **有效历史复用**、#61 宣称使用受信复用覆盖的 Required/Release 闭环时，必须有对应 #63 的真正接纳与原始证据。清理旧脚本在 #68 实际切换时完成，不留待独立的 P5 阶段。
+
+**独立验收交接：** #66 证明公共生产方真实可用及跨项目通用性；#68 证明生产消费者实际接线与去重；#52 负责原生 Check/Actions 交付；#63 负责可信来源、有效覆盖与历史接纳；#61 负责最终 Required/Release/服务端规则。保留有效现有 Run/Check/Artifact 结果，不能把不同范围的「已通过」相互替代。
 
 迁移期间允许短暂并行供比对，但最终消费者以 ECI 为**唯一通用实现**；历史接口只在有真实外部依赖证据时限期过渡，不因缺少接口而永久保留两套实现。
 
@@ -162,6 +165,6 @@ pytest：多个选中目标可在一次原生 pytest 执行中传入，保留单
 ## 已合并阶段设计与剩余交付校准（2026-11-09）
 
 - 依据：[Knowledge PR #75 已合并实施计划](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/implementation-plan.md) P1/P2 与后续生产方交接。本节仅补充真实当前代码状态，保留本 Issue 已有效的来源、Tach、资源映射、原生 unittest/pytest 及跨仓公共能力要求。
-- P1 Source/快照修正与 P2 已有原生 Check 接线可以并行实施；声明 Index、Worktree、PR Merge 或 Push 已验证通过时必须有相应真实执行输入证据。Dagger 官方 Pytest/Pants 是否替换只影响选定的真实 Check 家族，不是其他检查的阻断前置。
+- P1 Source/快照修正与 P2 已有原生 Check 接线可以并行实施；#52 原生 Actions、#61 当前 Required/Release 审计、#63 原生 CI/可信证据技术工作、Knowledge #68 配置/Hook/独立 Dagger 初始化也可同步启动。只有某个实际集成或历史复用声称成功时才要求对应上游能力的真实交接证据，不设置跨 Issue 的整体验收串行门槛。声明 Index、Worktree、PR Merge 或 Push 已验证通过时必须有相应真实执行输入证据。Dagger 官方 Pytest/Pants 是否替换只影响选定的真实 Check 家族，不是其他检查的阻断前置。
 - 当选择器输出 `requires_identity_commit` 或 `requires_wheel_smoke`，必须公开可执行的类型化前置条件与原生执行/未完成事实；具体固定 Identity Commit、wheel 构建和仓外 CLI 命令仍由消费者配置提供，不在 ECI 硬编码。
 - **读法重申：** §1/§2 标题与清单是契约对照表，不是授权重新从 Knowledge 脚本实现通用层；实施 PR 的 diff 应体现对已有 `eci_core`/CLI/Dagger 的缺口修复与接线，而不是平行再迁。
