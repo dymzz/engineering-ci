@@ -219,7 +219,11 @@ engineering-ci execute --plan selection-plan.json --root . \
 `execute` loads exactly the plan's targets and framework; it does not re-select.
 For immutable snapshots it passes `execution_tree` to the native runner. If the
 checkout `HEAD` tree differs, no test runs and the report is `not_executed`
-(exit 4). Empty targets are `not_executed` (exit 3), never a pass. Test failure
+(exit 4). Empty targets with no selected/unknown checks and no prerequisites
+are `not_executed` (exit 3), never a pass. When `check_scope` still selects
+docs/tach/vulture, host `execute` runs those Hygiene checks even with zero
+business tests (`--hygiene-config` or `inputs.hygiene.path`, default
+`ci-hygiene.toml`). Test failure
 keeps the native exit and is reported as `failed`.
 
 The report (`engineering-ci-execution-report`) carries the plan's generator/Git
@@ -268,8 +272,9 @@ empty `selection_config`):
 
 This reuses the existing reusable workflow rather than adding a new runner.
 `actionlint -shellcheck=` passes. Tach validation and dispatch modes are wired,
-but the selected Hygiene/source/prerequisite execution still returns
-`blocked`; a real opt-in selection Run has not succeeded yet.
+Host `execute` now runs selected docs/tach/vulture Hygiene checks; source and
+prerequisite execution can still return `blocked`. A real opt-in selection Run
+has not succeeded yet.
 
 ## CLI
 

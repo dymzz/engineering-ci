@@ -2,20 +2,23 @@
 
 This is the host/Actions consumer of the plan. It never re-selects tests: it
 runs exactly the plan targets, verifies the checkout tree for immutable
-snapshots, and records native results separately from selection.
+snapshots, and records native results separately from selection. Selected
+Hygiene checks (docs/tach/vulture) run even when no business tests were chosen.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
 
-from . import selection
+from . import hygiene, selection
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
+_HYGIENE_CHECKS = frozenset({"docs", "tach", "vulture", "whitespace", "forwarding"})
 
 
 class ExecutionError(ValueError):
@@ -48,12 +51,118 @@ def load_plan(path):
     return value
 
 
-def execute(plan, *, root, junit_path=None):
+def _selected_checks(plan):
+    chosen = plan["selection"]
+    selected = [
+        item
+        for item in plan.get("check_scope", chosen.get("check_scope", []))
+        if item.get("status") in {"selected", "unknown"}
+    ]
+    if not selected and chosen.get("checks"):
+        selected = [{"name": name, "status": "unknown"} for name in chosen["checks"]]
+    return selected
+
+
+def _hygiene_config_path(plan, root, hygiene_config):
+    if hygiene_config is not None:
+        path = Path(hygiene_config)
+        return path if path.is_absolute() else root / path
+    inputs = plan.get("inputs") or {}
+    declared = inputs.get("hygiene") if isinstance(inputs, dict) else None
+    if isinstance(declared, dict) and declared.get("path"):
+        path = Path(declared["path"])
+        return path if path.is_absolute() else root / path
+    return root / "ci-hygiene.toml"
+
+
+def _changeset_from_plan(plan, root):
+    git = plan["git"]
+    paths = tuple(git.get("changed_paths") or ())
+    complete = bool(git.get("base_commit")) and "changed_paths" in git
+    return selection.ChangeSet(
+        root=Path(root),
+        base_ref=str(git.get("base_ref") or ""),
+        head_ref=str(git.get("head_ref") or "HEAD"),
+        base_commit=git.get("base_commit"),
+        head_commit=git.get("head_commit"),
+        tree=git.get("tree"),
+        paths=paths,
+        worktree_dirty=bool(git.get("worktree_dirty")),
+        complete=complete,
+        error=None if complete else "incomplete_plan_git",
+        snapshot=str(git.get("snapshot") or "worktree"),
+        index_tree=git.get("index_tree"),
+        merge_tree=git.get("merge_tree"),
+        base_tip=git.get("base_tip"),
+    )
+
+
+def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
+    selected_by_name = {
+        item["name"]: item
+        for item in selected
+        if item.get("name") in _HYGIENE_CHECKS
+    }
+    wanted = tuple(selected_by_name)
+    if not wanted:
+        return [], False
+    config_path = _hygiene_config_path(plan, root, hygiene_config)
+    try:
+        config = hygiene.load_config(config_path)
+    except hygiene.HygieneError as error:
+        return [
+            {
+                "name": name,
+                "selected": selected_by_name[name].get("status"),
+                "status": "failed",
+                "reason": f"hygiene_config_{error.code}",
+            }
+            for name in wanted
+        ], True
+    checks = tuple(name for name in config.checks if name in selected_by_name)
+    if not checks:
+        checks = wanted
+    report = hygiene.run(
+        _changeset_from_plan(plan, root),
+        dataclasses.replace(config, checks=checks),
+        root=root,
+        runner=runner or hygiene._run,
+    )
+    results = []
+    seen = set()
+    for native in report["checks"]:
+        name = native["name"]
+        base = name[:-9] if name.endswith("_external") else name
+        if base not in selected_by_name and name not in selected_by_name:
+            continue
+        payload = dict(native)
+        origin = selected_by_name.get(base) or selected_by_name.get(name)
+        payload["selected"] = origin.get("status") if origin else "selected"
+        results.append(payload)
+        seen.add(name)
+        seen.add(base)
+    for name, item in selected_by_name.items():
+        if name in seen:
+            continue
+        results.append(
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "hygiene_check_missing",
+            }
+        )
+    return results, report["status"] == "failed"
+
+
+def execute(plan, *, root, junit_path=None, hygiene_config=None, runner=None):
     root = Path(root)
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
     framework = chosen.get("framework", "unittest")
     tree = plan["git"].get("execution_tree")
+    selected = _selected_checks(plan)
+    prerequisites = list(chosen.get("prerequisites", []))
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -73,7 +182,7 @@ def execute(plan, *, root, junit_path=None):
             "scope": "unverified",
         },
     }
-    if not tests:
+    if not tests and not selected and not prerequisites:
         return report
     if plan["git"].get("snapshot") == "multi":
         report["reason"] = "multi_ref_requires_per_ref_execution"
@@ -85,7 +194,8 @@ def execute(plan, *, root, junit_path=None):
         return report
     graph = chosen.get("tach_graph_validation") or {}
     if (
-        chosen.get("requires_tach_check")
+        tests
+        and chosen.get("requires_tach_check")
         and not chosen.get("full_tests")
         and graph.get("status") != "passed"
     ):
@@ -93,57 +203,77 @@ def execute(plan, *, root, junit_path=None):
         report["exit_code"] = 5
         report["reason"] = "tach_graph_unvalidated"
         return report
-    if chosen.get("coverage_required"):
+    if tests and chosen.get("coverage_required"):
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "coverage_evidence_required"
         report["coverage"]["scope"] = "not_measured"
         return report
-    native = {}
-    exit_code = selection.run_tests(
-        tests,
+
+    exit_code = 0
+    if tests:
+        native = {}
+        exit_code = selection.run_tests(
+            tests,
+            root=root,
+            framework=framework,
+            src_root=chosen.get("src_root", "src"),
+            expected_tree=None,
+            junit_path=junit_path,
+            capture=native,
+        )
+        report["exit_code"] = exit_code
+        report["native_stdout"] = native.get("stdout", "")
+        report["native_stderr"] = native.get("stderr", "")
+        tests_status = "passed" if exit_code == 0 else "failed"
+        report["tests"] = {"status": tests_status, "exit_code": exit_code}
+    else:
+        report["tests"] = {"status": "not_executed", "exit_code": 3}
+
+    hygiene_results, hygiene_failed = _run_hygiene_checks(
+        plan,
+        selected,
         root=root,
-        framework=framework,
-        src_root=chosen.get("src_root", "src"),
-        expected_tree=None,
-        junit_path=junit_path,
-        capture=native,
+        hygiene_config=hygiene_config,
+        runner=runner,
     )
-    report["exit_code"] = exit_code
-    report["native_stdout"] = native.get("stdout", "")
-    report["native_stderr"] = native.get("stderr", "")
-    tests_status = "passed" if exit_code == 0 else "failed"
-    report["tests"] = {"status": tests_status, "exit_code": exit_code}
-    selected_checks = [
-        item
-        for item in plan.get("check_scope", chosen.get("check_scope", []))
-        if item.get("status") in {"selected", "unknown"}
-    ]
-    if not selected_checks and chosen.get("checks"):
-        selected_checks = [
-            {"name": name, "status": "unknown"} for name in chosen["checks"]
-        ]
-    report["checks"] = [
+    covered = {item["name"] for item in hygiene_results}
+    covered.update(
+        name[:-9] for name in covered if name.endswith("_external")
+    )
+    remaining = [
         {
             "name": item.get("name"),
             "selected": item.get("status"),
             "status": "not_executed",
             "reason": "no native check execution wired",
         }
-        for item in selected_checks
+        for item in selected
+        if item.get("name") not in covered
     ]
+    report["checks"] = hygiene_results + remaining
     report["prerequisites"] = [
-        {"name": name, "status": "not_executed"}
-        for name in chosen.get("prerequisites", [])
+        {"name": name, "status": "not_executed"} for name in prerequisites
     ]
-    if exit_code != 0:
+
+    unfinished = [
+        item
+        for item in report["checks"]
+        if item.get("status") == "not_executed"
+    ] or report["prerequisites"]
+    if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
-    elif report["checks"] or report["prerequisites"]:
+    elif hygiene_failed:
+        report["status"] = "failed"
+        report["exit_code"] = 1
+        report["reason"] = "checks_failed"
+    elif unfinished:
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "required_checks_not_executed"
     else:
         report["status"], report["reason"] = "passed", None
+        report["exit_code"] = 0
     return report
 
 
@@ -154,18 +284,31 @@ def _print(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="engineering-ci execute",
-        description="Execute exactly the tests in a selection plan and report native results.",
+        description=(
+            "Execute the tests and selected native checks in a selection plan "
+            "and report native results."
+        ),
     )
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--junit", type=Path)
+    parser.add_argument(
+        "--hygiene-config",
+        type=Path,
+        help="Hygiene config used for selected docs/tach/vulture checks",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         plan = load_plan(args.plan)
     except ExecutionError as error:
         parser.exit(2, f"execution rejected: {error.code}\n")
-    report = execute(plan, root=args.root, junit_path=args.junit)
+    report = execute(
+        plan,
+        root=args.root,
+        junit_path=args.junit,
+        hygiene_config=args.hygiene_config,
+    )
     if args.json:
         _print(report)
     else:

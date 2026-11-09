@@ -174,6 +174,43 @@ def test_tach_failure_propagates(repo):
     assert by_name(result)["tach"]["reason"] == "tach_check_failed"
 
 
+def test_tach_external_runs_separately_when_enabled(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    value = dataclasses.replace(
+        config(path, ("tach",)),
+        tach=dataclasses.replace(config(path).tach, external=True),
+    )
+    fake = FakeRunner()
+    result = hygiene.run(changes(path, base), value, root=path, runner=fake)
+    assert result["status"] == "passed"
+    assert by_name(result)["tach"]["status"] == "passed"
+    assert by_name(result)["tach_external"]["status"] == "passed"
+    tools = [call[0] for call in fake.calls if call[0][0] != "git"]
+    assert tools == [("tach", "check"), ("tach", "check-external")]
+
+
+def test_tach_external_failure_is_independent_of_tach_check(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    value = dataclasses.replace(
+        config(path, ("tach",)),
+        tach=dataclasses.replace(config(path).tach, external=True),
+    )
+
+    def runner(argv, root, data=None):
+        if argv[0] == "git":
+            return hygiene._run(argv, root, data)
+        if argv[1:] == ["check-external"]:
+            return subprocess.CompletedProcess(argv, 1, "", "external failed")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = hygiene.run(changes(path, base), value, root=path, runner=runner)
+    assert result["status"] == "failed"
+    assert by_name(result)["tach"]["status"] == "passed"
+    assert by_name(result)["tach_external"]["reason"] == "tach_external_failed"
+
+
 def test_forwarding_module_is_reported_without_failing(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
