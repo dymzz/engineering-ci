@@ -119,79 +119,108 @@ class EngineeringCi:
             )
         if not targets and not selected_checks and not prerequisites:
             return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
-        report = {
-            "kind": execution.REPORT_KIND,
-            "schema_version": execution.SCHEMA_VERSION,
-            "status": "passed",
-            "exit_code": 0,
-            "targets": targets,
-            "framework": framework,
-            "tree_verified": False,
-            "trusted": False,
-            "plan_execution_tree": value.get("git", {}).get("execution_tree"),
-            "tests": {"status": "not_executed", "exit_code": 3},
-            "checks": [],
-            "prerequisites": [],
-        }
-        if targets:
-            container = self._uv_container(source, python_version)
-            junit = "/tmp/engineering-ci-junit.xml"
-            if framework == "pytest":
-                pytest_targets = []
-                for target in targets:
-                    if target.endswith(".py") or "/" in target or "::" in target:
-                        pytest_targets.append(target)
-                    else:
-                        pytest_targets.extend(["--pyargs", target])
-                command = [
-                    "uv",
-                    "run",
-                    "pytest",
-                    "-q",
-                    f"--junitxml={junit}",
-                    *pytest_targets,
-                ]
-            elif framework == "unittest":
-                command = ["uv", "run", "python", "-m", "unittest", *targets]
-            else:
-                return json.dumps(
-                    {"status": "not_executed", "reason": "framework_invalid"}
-                )
-            result = container.with_exec(command, expect=dagger.ReturnType.ANY)
-            exit_code = await result.exit_code()
-            report["exit_code"] = exit_code
-            report["stdout"] = await result.stdout()
-            report["stderr"] = await result.stderr()
-            report["tests"] = {
-                "status": "passed" if exit_code == 0 else "failed",
-                "exit_code": exit_code,
+        git = value.get("git") or {}
+        source_tree_id = git.get("source_tree_id")
+        execution_tree = git.get("execution_tree")
+        tree_verified = False
+        source_digest = None
+        with tempfile.TemporaryDirectory() as directory:
+            await source.export(directory)
+            if source_tree_id and execution_tree:
+                source_digest = selection.directory_content_id(directory)
+                tree_verified = source_digest == source_tree_id
+                if not tree_verified:
+                    return json.dumps(
+                        {
+                            "kind": execution.REPORT_KIND,
+                            "schema_version": execution.SCHEMA_VERSION,
+                            "status": "not_executed",
+                            "reason": "source_tree_mismatch",
+                            "exit_code": 4,
+                            "tree_verified": False,
+                            "trusted": False,
+                            "plan_execution_tree": execution_tree,
+                            "source_tree_id": source_tree_id,
+                            "source_digest": source_digest,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+            report = {
+                "kind": execution.REPORT_KIND,
+                "schema_version": execution.SCHEMA_VERSION,
+                "status": "passed",
+                "exit_code": 0,
+                "targets": targets,
+                "framework": framework,
+                "tree_verified": tree_verified,
+                "trusted": tree_verified,
+                "plan_execution_tree": execution_tree,
+                "source_tree_id": source_tree_id,
+                "source_digest": source_digest,
+                "tests": {"status": "not_executed", "exit_code": 3},
+                "checks": [],
+                "prerequisites": [],
             }
-            if exit_code != 0:
-                report["status"] = "failed"
-                report["reason"] = "tests_failed"
-            if framework == "pytest" and exit_code in {0, 1}:
-                try:
-                    report["junit"] = await result.file(junit).contents()
-                except dagger.QueryError:
-                    report["junit"] = None
-        if selected_checks or prerequisites:
-            with tempfile.TemporaryDirectory() as directory:
-                await source.export(directory)
+            if targets:
+                container = self._uv_container(source, python_version)
+                junit = "/tmp/engineering-ci-junit.xml"
+                if framework == "pytest":
+                    pytest_targets = []
+                    for target in targets:
+                        if target.endswith(".py") or "/" in target or "::" in target:
+                            pytest_targets.append(target)
+                        else:
+                            pytest_targets.extend(["--pyargs", target])
+                    command = [
+                        "uv",
+                        "run",
+                        "pytest",
+                        "-q",
+                        f"--junitxml={junit}",
+                        *pytest_targets,
+                    ]
+                elif framework == "unittest":
+                    command = ["uv", "run", "python", "-m", "unittest", *targets]
+                else:
+                    return json.dumps(
+                        {"status": "not_executed", "reason": "framework_invalid"}
+                    )
+                result = container.with_exec(command, expect=dagger.ReturnType.ANY)
+                exit_code = await result.exit_code()
+                report["exit_code"] = exit_code
+                report["stdout"] = await result.stdout()
+                report["stderr"] = await result.stderr()
+                report["tests"] = {
+                    "status": "passed" if exit_code == 0 else "failed",
+                    "exit_code": exit_code,
+                }
+                if exit_code != 0:
+                    report["status"] = "failed"
+                    report["reason"] = "tests_failed"
+                if framework == "pytest" and exit_code in {0, 1}:
+                    try:
+                        report["junit"] = await result.file(junit).contents()
+                    except dagger.QueryError:
+                        report["junit"] = None
+            if selected_checks or prerequisites:
                 check_plan = copy.deepcopy(value)
                 check_plan.setdefault("selection", {})
                 check_plan["selection"] = dict(check_plan["selection"])
                 check_plan["selection"]["tests"] = []
                 check_plan["git"] = dict(check_plan.get("git") or {})
+                # Exported Directory has no .git; identity already proven via source_tree_id.
                 check_plan["git"]["execution_tree"] = None
                 check_plan["git"]["index_tree"] = None
+                check_plan["git"]["content_binding"] = None
                 check_plan["git"]["snapshot"] = "worktree"
                 host = execution.execute(check_plan, root=directory)
-            report["checks"] = host.get("checks") or []
-            report["prerequisites"] = host.get("prerequisites") or []
-            if report["status"] == "passed":
-                report["status"] = host.get("status", "blocked")
-                report["reason"] = host.get("reason")
-                report["exit_code"] = host.get("exit_code", 5)
+                report["checks"] = host.get("checks") or []
+                report["prerequisites"] = host.get("prerequisites") or []
+                if report["status"] == "passed":
+                    report["status"] = host.get("status", "blocked")
+                    report["reason"] = host.get("reason")
+                    report["exit_code"] = host.get("exit_code", 5)
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     @function

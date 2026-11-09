@@ -1,6 +1,7 @@
 """Generic Git impact selection, plan identity and native unittest execution."""
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -217,6 +218,77 @@ def test_plan_records_git_config_and_tach_identity(repo):
     assert plan["selection"]["tests"] == list(result.tests)
     assert plan["selection"]["prerequisites"] == ["identity_commit", "wheel_smoke"]
     assert plan["prerequisite_actions"] == {}
+
+
+def test_plan_emits_content_binding_and_source_tree_id(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")
+    dirty = select(path, base)
+    dirty_plan = selection.plan(
+        dirty,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    assert dirty_plan["git"]["snapshot"] == "worktree"
+    assert dirty_plan["git"]["execution_tree"] is None
+    assert dirty_plan["git"]["content_binding"]["digest"]
+    assert "src/pkg/sub.py" in dirty_plan["git"]["content_binding"]["paths"]
+
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "committed")
+    head = run(path, "rev-parse", "HEAD").strip()
+    committed = changes(path, base, mode="commit", head=head)
+    commit_plan = selection.plan(
+        selection.select(committed, config(path), root=path),
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    assert commit_plan["git"]["execution_tree"]
+    assert commit_plan["git"]["source_tree_id"]
+    assert commit_plan["git"]["source_tree_id"] == selection.tree_content_id(
+        path, commit_plan["git"]["execution_tree"]
+    )
+
+
+def test_directory_content_id_matches_tree_content_id(repo, tmp_path):
+    path, _ = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    expected = selection.tree_content_id(path, tree)
+    export = tmp_path / "tree"
+    export.mkdir()
+    env = {
+        **os.environ,
+        "GIT_DIR": str(path / ".git"),
+        "GIT_INDEX_FILE": str(tmp_path / "index"),
+        "GIT_WORK_TREE": str(export),
+    }
+    subprocess.run(["git", "read-tree", tree], cwd=path, env=env, check=True)
+    subprocess.run(
+        ["git", "checkout-index", "-a", "-f"], cwd=export, env=env, check=True
+    )
+    assert selection.directory_content_id(export) == expected
+
+
+def test_directory_content_id_detects_tampering(repo, tmp_path):
+    path, _ = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    expected = selection.tree_content_id(path, tree)
+    export = tmp_path / "tree"
+    export.mkdir()
+    env = {
+        **os.environ,
+        "GIT_DIR": str(path / ".git"),
+        "GIT_INDEX_FILE": str(tmp_path / "index"),
+        "GIT_WORK_TREE": str(export),
+    }
+    subprocess.run(["git", "read-tree", tree], cwd=path, env=env, check=True)
+    subprocess.run(
+        ["git", "checkout-index", "-a", "-f"], cwd=export, env=env, check=True
+    )
+    (export / "src/pkg/sub.py").write_text("VALUE = tampered\n", encoding="utf-8")
+    assert selection.directory_content_id(export) != expected
 
 
 def test_plan_includes_typed_prerequisite_actions(repo):

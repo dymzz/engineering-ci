@@ -87,19 +87,48 @@ def _sources_config_path(plan, root, sources_config):
     )
 
 
-def _current_bound_tree(plan, root):
+def _verify_execution_binding(plan, root):
+    """Return (ok, reason, expected_tree). ok False means refuse execution."""
     git = plan["git"]
-    tree = git.get("execution_tree")
-    if git.get("snapshot") == "index":
-        tree = tree or git.get("index_tree")
-        if not tree:
-            return None, None, None
+    expected_tree = git.get("execution_tree")
+    snapshot = git.get("snapshot")
+    if not snapshot:
+        snapshot = "commit" if expected_tree else "worktree"
+    if snapshot == "index":
+        expected_tree = expected_tree or git.get("index_tree")
+        if not expected_tree:
+            return True, None, None
         current = selection._git(root, "write-tree")
         actual = current.stdout.strip() if current.returncode == 0 else None
-        return tree, actual, "index_tree_mismatch"
-    if not tree:
-        return None, None, None
-    return tree, selection._tree_of(root, "HEAD"), "tree_mismatch"
+        if actual != expected_tree:
+            return False, "index_tree_mismatch", expected_tree
+        return True, None, expected_tree
+    if snapshot == "worktree":
+        binding = git.get("content_binding")
+        if isinstance(binding, dict) and binding.get("digest"):
+            current = selection.worktree_content_binding(
+                root, git.get("changed_paths") or ()
+            )
+            if current.get("digest") != binding.get("digest"):
+                return False, "worktree_snapshot_stale", None
+        return True, None, None
+    if snapshot == "multi":
+        return False, "multi_ref_requires_per_ref_execution", None
+    if expected_tree:
+        actual = selection._tree_of(root, "HEAD")
+        if actual != expected_tree:
+            reason = (
+                "pr_merge_tree_unmaterialized"
+                if snapshot == "pr_merge"
+                else "tree_mismatch"
+            )
+            return False, reason, expected_tree
+    head_commit = git.get("head_commit")
+    if snapshot in {"commit", "push"} and head_commit:
+        actual_head = selection._resolve(root, "HEAD")
+        if actual_head != head_commit:
+            return False, "head_commit_mismatch", expected_tree
+    return True, None, expected_tree
 
 
 def _changeset_from_plan(plan, root):
@@ -361,14 +390,13 @@ def execute(
     }
     if not tests and not selected and not prerequisites:
         return report
-    if plan["git"].get("snapshot") == "multi":
-        report["reason"] = "multi_ref_requires_per_ref_execution"
-        return report
-    expected, actual, mismatch_reason = _current_bound_tree(plan, root)
-    if expected and actual != expected:
+    bound_ok, bind_reason, expected_tree = _verify_execution_binding(plan, root)
+    if not bound_ok:
         report["status"] = "not_executed"
-        report["exit_code"] = 4
-        report["reason"] = mismatch_reason
+        report["exit_code"] = (
+            4 if bind_reason != "multi_ref_requires_per_ref_execution" else 3
+        )
+        report["reason"] = bind_reason
         return report
     graph = chosen.get("tach_graph_validation") or {}
     if (
@@ -396,7 +424,7 @@ def execute(
             root=root,
             framework=framework,
             src_root=chosen.get("src_root", "src"),
-            expected_tree=None,
+            expected_tree=expected_tree,
             junit_path=junit_path,
             capture=native,
         )
