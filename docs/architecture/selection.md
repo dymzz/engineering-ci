@@ -39,6 +39,14 @@ reason = "data input"
 [prerequisites]
 identity_commit = ["tests.test_sub"]
 wheel_smoke = ["tests.test_pkg"]
+
+[prerequisite_actions.identity_commit]
+type = "git_commit_present"
+commit = "0123abcd..."
+
+[prerequisite_actions.wheel_smoke]
+type = "command"
+argv = ["python", "-m", "your_wheel_smoke"]
 ```
 
 - `module_tests` is the only module → test mapping. A shared module without a
@@ -48,8 +56,10 @@ wheel_smoke = ["tests.test_pkg"]
 - `ignored_*` removes documentation/meta changes; those produce `no_tests`, not
   a pass.
 - `prerequisites` names type signals (for example an approved identity commit or
-  a wheel smoke test). The plan reports them; execution remains the consumer's
-  job and is not implied by a test pass.
+  a wheel smoke test). `prerequisite_actions` supplies consumer parameters so
+  host/`execute-plan` can run them: `git_commit_present` or `command`. Missing
+  parameters stay `not_executed` and block a pass; ECI never hardcodes Knowledge
+  SHAs or CLI strings.
 - No Knowledge path (`data/catalog/**`, `content/**`) is built into ECI. Its
   domain rules belong in its own config.
 
@@ -273,8 +283,10 @@ empty `selection_config`):
 
 This reuses the existing reusable workflow rather than adding a new runner.
 `actionlint -shellcheck=` passes. Tach validation and dispatch modes are wired,
-Host `execute` now runs selected docs/tach/vulture/source checks; prerequisites
-can still return `blocked`. A real opt-in selection Run has not succeeded yet.
+Host `execute` and Dagger `execute-plan` run selected docs/tach/vulture/source
+checks and typed `prerequisite_actions` when parameters are present; missing
+prerequisite parameters still return `blocked`. A real opt-in selection Run has
+not succeeded yet.
 
 ## CLI
 

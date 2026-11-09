@@ -210,6 +210,52 @@ def test_execute_blocks_when_required_checks_are_not_executed(repo):
     assert report["reason"] == "required_checks_not_executed"
     assert report["tests"]["status"] == "passed"
     assert report["prerequisites"][0]["status"] == "not_executed"
+    assert report["prerequisites"][0]["reason"] == "prerequisite_parameters_missing"
+
+
+def test_execute_runs_identity_commit_prerequisite(repo):
+    path, base = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {"type": "git_commit_present", "commit": base}
+    }
+    report = execution.execute(value, root=path)
+    assert report["status"] == "passed"
+    assert report["prerequisites"][0]["status"] == "passed"
+    assert report["prerequisites"][0]["commit"] == base
+
+
+def test_execute_fails_missing_identity_commit(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {
+            "type": "git_commit_present",
+            "commit": "0" * 40,
+        }
+    }
+    report = execution.execute(value, root=path)
+    assert report["status"] == "failed"
+    assert report["reason"] == "prerequisites_failed"
+    assert report["prerequisites"][0]["status"] == "failed"
+
+
+def test_execute_runs_command_prerequisite(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["selection"]["prerequisites"] = ["wheel_smoke"]
+    value["prerequisite_actions"] = {
+        "wheel_smoke": {
+            "type": "command",
+            "argv": ["python", "-c", "raise SystemExit(0)"],
+        }
+    }
+    report = execution.execute(value, root=path, runner=FakeRunner())
+    assert report["status"] == "passed"
+    assert report["prerequisites"][0]["status"] == "passed"
+    assert report["prerequisites"][0]["exit_code"] == 0
 
 
 def test_execute_runs_selected_source_check(repo):
