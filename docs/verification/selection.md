@@ -55,7 +55,8 @@ checkout or the Knowledge repository:
 | pytest JUnit | multiple targets write JUnit XML; failing target keeps native exit and XML |
 | Plan execution | `execute --plan` runs exactly plan targets; failing test → `failed` |
 | Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
-| Empty execution | no targets and no selected checks → `not_executed`/exit 3; docs-only selected checks still run Hygiene |
+| Empty execution | no targets and no selected checks → `not_executed`/exit 3; selected docs/source checks still run natively |
+| Index binding | stale `index_tree` → `not_executed`/`index_tree_mismatch` |
 | Coverage gate | `coverage_required` → `blocked`/exit 5, no tests run, `satisfied:false` |
 | Required checks | selected/unknown checks or prerequisites → tests may pass but overall `blocked`/exit 5 |
 | Tach validation | passed result binds Tach digest + source tree; stale tree → `untrusted` |

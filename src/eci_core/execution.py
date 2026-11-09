@@ -3,7 +3,7 @@
 This is the host/Actions consumer of the plan. It never re-selects tests: it
 runs exactly the plan targets, verifies the checkout tree for immutable
 snapshots, and records native results separately from selection. Selected
-Hygiene checks (docs/tach/vulture) run even when no business tests were chosen.
+Hygiene and source checks run even when no business tests were chosen.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import hygiene, selection
+from . import hygiene, selection, sources
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -63,16 +63,43 @@ def _selected_checks(plan):
     return selected
 
 
-def _hygiene_config_path(plan, root, hygiene_config):
-    if hygiene_config is not None:
-        path = Path(hygiene_config)
+def _config_path(plan, root, override, *, key, default_name):
+    if override is not None:
+        path = Path(override)
         return path if path.is_absolute() else root / path
     inputs = plan.get("inputs") or {}
-    declared = inputs.get("hygiene") if isinstance(inputs, dict) else None
+    declared = inputs.get(key) if isinstance(inputs, dict) else None
     if isinstance(declared, dict) and declared.get("path"):
         path = Path(declared["path"])
         return path if path.is_absolute() else root / path
-    return root / "ci-hygiene.toml"
+    return root / default_name
+
+
+def _hygiene_config_path(plan, root, hygiene_config):
+    return _config_path(
+        plan, root, hygiene_config, key="hygiene", default_name="ci-hygiene.toml"
+    )
+
+
+def _sources_config_path(plan, root, sources_config):
+    return _config_path(
+        plan, root, sources_config, key="sources", default_name="ci-sources.toml"
+    )
+
+
+def _current_bound_tree(plan, root):
+    git = plan["git"]
+    tree = git.get("execution_tree")
+    if git.get("snapshot") == "index":
+        tree = tree or git.get("index_tree")
+        if not tree:
+            return None, None, None
+        current = selection._git(root, "write-tree")
+        actual = current.stdout.strip() if current.returncode == 0 else None
+        return tree, actual, "index_tree_mismatch"
+    if not tree:
+        return None, None, None
+    return tree, selection._tree_of(root, "HEAD"), "tree_mismatch"
 
 
 def _changeset_from_plan(plan, root):
@@ -155,12 +182,46 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
     return results, report["status"] == "failed"
 
 
-def execute(plan, *, root, junit_path=None, hygiene_config=None, runner=None):
+def _run_source_check(plan, selected, *, root, sources_config, runner):
+    item = next((entry for entry in selected if entry.get("name") == "source"), None)
+    if item is None:
+        return None, False
+    config_path = _sources_config_path(plan, root, sources_config)
+    try:
+        config = sources.load_config(config_path)
+    except sources.SourcesError as error:
+        return {
+            "name": "source",
+            "selected": item.get("status"),
+            "status": "failed",
+            "reason": f"sources_config_{error.code}",
+        }, True
+    source_runner = runner or sources._run
+    report = sources.reconcile(config, root=root, runner=source_runner)
+    payload = {
+        "name": "source",
+        "selected": item.get("status"),
+        "status": report.status,
+        "reason": None if report.status == "passed" else "source_reconcile_failed",
+        "counts": dict(report.counts),
+        "failures": list(report.failures),
+    }
+    return payload, report.status == "failed"
+
+
+def execute(
+    plan,
+    *,
+    root,
+    junit_path=None,
+    hygiene_config=None,
+    sources_config=None,
+    runner=None,
+):
     root = Path(root)
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
     framework = chosen.get("framework", "unittest")
-    tree = plan["git"].get("execution_tree")
     selected = _selected_checks(plan)
     prerequisites = list(chosen.get("prerequisites", []))
     report = {
@@ -187,10 +248,11 @@ def execute(plan, *, root, junit_path=None, hygiene_config=None, runner=None):
     if plan["git"].get("snapshot") == "multi":
         report["reason"] = "multi_ref_requires_per_ref_execution"
         return report
-    if tree and selection._tree_of(root, "HEAD") != tree:
+    expected, actual, mismatch_reason = _current_bound_tree(plan, root)
+    if expected and actual != expected:
         report["status"] = "not_executed"
         report["exit_code"] = 4
-        report["reason"] = "tree_mismatch"
+        report["reason"] = mismatch_reason
         return report
     graph = chosen.get("tach_graph_validation") or {}
     if (
@@ -237,10 +299,18 @@ def execute(plan, *, root, junit_path=None, hygiene_config=None, runner=None):
         hygiene_config=hygiene_config,
         runner=runner,
     )
-    covered = {item["name"] for item in hygiene_results}
-    covered.update(
-        name[:-9] for name in covered if name.endswith("_external")
+    source_result, source_failed = _run_source_check(
+        plan,
+        selected,
+        root=root,
+        sources_config=sources_config,
+        runner=runner,
     )
+    native_checks = list(hygiene_results)
+    if source_result is not None:
+        native_checks.append(source_result)
+    covered = {item["name"] for item in native_checks}
+    covered.update(name[:-9] for name in covered if name.endswith("_external"))
     remaining = [
         {
             "name": item.get("name"),
@@ -251,19 +321,17 @@ def execute(plan, *, root, junit_path=None, hygiene_config=None, runner=None):
         for item in selected
         if item.get("name") not in covered
     ]
-    report["checks"] = hygiene_results + remaining
+    report["checks"] = native_checks + remaining
     report["prerequisites"] = [
         {"name": name, "status": "not_executed"} for name in prerequisites
     ]
 
     unfinished = [
-        item
-        for item in report["checks"]
-        if item.get("status") == "not_executed"
+        item for item in report["checks"] if item.get("status") == "not_executed"
     ] or report["prerequisites"]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
-    elif hygiene_failed:
+    elif hygiene_failed or source_failed:
         report["status"] = "failed"
         report["exit_code"] = 1
         report["reason"] = "checks_failed"
@@ -297,6 +365,11 @@ def main(argv=None):
         type=Path,
         help="Hygiene config used for selected docs/tach/vulture checks",
     )
+    parser.add_argument(
+        "--sources-config",
+        type=Path,
+        help="Sources config used when check_scope selects source",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -308,6 +381,7 @@ def main(argv=None):
         root=args.root,
         junit_path=args.junit,
         hygiene_config=args.hygiene_config,
+        sources_config=args.sources_config,
     )
     if args.json:
         _print(report)

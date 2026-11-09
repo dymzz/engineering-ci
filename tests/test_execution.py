@@ -1,5 +1,6 @@
 """Selection-plan execution: native tests, snapshot refusal, report status."""
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -202,17 +203,157 @@ def test_execute_propagates_docs_failure_without_tests(repo):
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])
-    value["check_scope"] = [
-        {"name": "source", "status": "selected", "inputs": ["sources/a.bin"]}
-    ]
     value["selection"]["prerequisites"] = ["identity_commit"]
     report = execution.execute(value, root=path)
     assert report["status"] == "blocked"
     assert report["exit_code"] == 5
     assert report["reason"] == "required_checks_not_executed"
     assert report["tests"]["status"] == "passed"
-    assert report["checks"][0]["status"] == "not_executed"
+    assert report["prerequisites"][0]["status"] == "not_executed"
+
+
+def test_execute_runs_selected_source_check(repo):
+    path, base = repo
+    content = b"source-bytes"
+    acquired = path / "data/acquired"
+    acquired.mkdir(parents=True)
+    (acquired / "a.bin").write_bytes(content)
+    (path / "data/catalog").mkdir(parents=True)
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (path / "ci-sources.toml").write_text(
+        """schema_version = 1
+manifest = "data/catalog/manifest.json"
+acquired_roots = ["data/acquired"]
+exempt_paths = []
+environment_prefixes = []
+require_text_unset = false
+""",
+        encoding="utf-8",
+    )
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "execution_tree": None,
+            "changed_paths": ["data/acquired/a.bin"],
+        },
+        check_scope=[
+            {
+                "name": "source",
+                "status": "selected",
+                "inputs": ["data/acquired/a.bin"],
+                "reason": "source inputs changed",
+            }
+        ],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        sources_config=path / "ci-sources.toml",
+        runner=FakeRunner(),
+    )
+    assert report["status"] == "passed"
     assert report["checks"][0]["name"] == "source"
+    assert report["checks"][0]["status"] == "passed"
+
+
+def test_execute_propagates_source_failure(repo):
+    path, base = repo
+    (path / "data/acquired").mkdir(parents=True)
+    (path / "data/catalog").mkdir(parents=True)
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                    "size_bytes": 1,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (path / "ci-sources.toml").write_text(
+        """schema_version = 1
+manifest = "data/catalog/manifest.json"
+acquired_roots = ["data/acquired"]
+exempt_paths = []
+environment_prefixes = []
+require_text_unset = false
+""",
+        encoding="utf-8",
+    )
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "execution_tree": None,
+            "changed_paths": ["data/acquired/a.bin"],
+        },
+        check_scope=[
+            {
+                "name": "source",
+                "status": "selected",
+                "inputs": ["data/acquired/a.bin"],
+                "reason": "source inputs changed",
+            }
+        ],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        sources_config=path / "ci-sources.toml",
+        runner=FakeRunner(),
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert report["checks"][0]["status"] == "failed"
+    assert report["checks"][0]["reason"] == "source_reconcile_failed"
+
+
+def test_execute_refuses_stale_index_tree(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    index_tree = run(path, "write-tree").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] == "index_tree_mismatch"
 
 
 def test_execute_blocks_unvalidated_tach_narrowing(repo):
