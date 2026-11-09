@@ -126,9 +126,7 @@ def _changeset_from_plan(plan, root):
 
 def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
     selected_by_name = {
-        item["name"]: item
-        for item in selected
-        if item.get("name") in _HYGIENE_CHECKS
+        item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
     wanted = tuple(selected_by_name)
     if not wanted:
