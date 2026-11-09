@@ -39,6 +39,7 @@ _CONFIG_KEYS = {
     "module_tests",
     "non_code_rules",
     "prerequisites",
+    "prerequisite_actions",
     "strict_modules",
     "coverage_required",
     "check_scope",
@@ -83,6 +84,7 @@ class Config:
     module_tests: dict[str, tuple[str, ...]]
     non_code_rules: tuple[NonCodeRule, ...]
     prerequisites: dict[str, tuple[str, ...]]
+    prerequisite_actions: dict[str, dict]
     strict_modules: bool
     coverage_required: bool
     check_scope: CheckScopeConfig
@@ -211,6 +213,27 @@ def load_config(path):
         _text(name, "prerequisite"): _string_list(tests, "prerequisite_tests")
         for name, tests in prerequisites.items()
     }
+    actions = value.get("prerequisite_actions", {})
+    if not isinstance(actions, dict):
+        raise SelectionError("prerequisite_actions_invalid")
+    prerequisite_actions = {}
+    for name, spec in actions.items():
+        key = _text(name, "prerequisite_action")
+        if not isinstance(spec, dict):
+            raise SelectionError("prerequisite_actions_invalid")
+        kind = _text(spec.get("type", ""), "prerequisite_type")
+        if kind == "git_commit_present":
+            prerequisite_actions[key] = {
+                "type": kind,
+                "commit": _text(spec.get("commit", ""), "prerequisite_commit"),
+            }
+        elif kind == "command":
+            argv = _string_list(spec.get("argv", []), "prerequisite_argv")
+            if not argv:
+                raise SelectionError("prerequisite_actions_invalid")
+            prerequisite_actions[key] = {"type": kind, "argv": list(argv)}
+        else:
+            raise SelectionError("prerequisite_type_invalid")
     checks = _string_list(value.get("checks", ["hygiene", "tach", "vulture"]), "checks")
     strict_modules = value.get("strict_modules", True)
     if type(strict_modules) is not bool:
@@ -263,6 +286,7 @@ def load_config(path):
         module_tests=module_tests,
         non_code_rules=tuple(parsed_rules),
         prerequisites=prerequisites,
+        prerequisite_actions=prerequisite_actions,
         strict_modules=strict_modules,
         coverage_required=coverage_required,
         check_scope=check_scope,
@@ -996,6 +1020,10 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             },
         },
         "check_scope": _check_scope(selection, config, root),
+        "prerequisite_actions": {
+            name: dict(spec)
+            for name, spec in sorted(config.prerequisite_actions.items())
+        },
         "inputs": {
             "config": {"path": str(config_path), "sha256": _digest(config_path)},
             "tach": {"path": config.tach, "sha256": _digest(tach_path)},

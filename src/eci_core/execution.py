@@ -207,6 +207,123 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
     return payload, report.status == "failed"
 
 
+def _prerequisite_actions(plan, override):
+    if override is not None:
+        return dict(override)
+    actions = plan.get("prerequisite_actions")
+    if isinstance(actions, dict):
+        return dict(actions)
+    inputs = plan.get("inputs") or {}
+    declared = inputs.get("prerequisite_actions") if isinstance(inputs, dict) else None
+    return dict(declared) if isinstance(declared, dict) else {}
+
+
+def _run_prerequisites(names, actions, *, root, runner):
+    results = []
+    failed = False
+    for name in names:
+        spec = actions.get(name)
+        if not isinstance(spec, dict) or not spec.get("type"):
+            results.append(
+                {
+                    "name": name,
+                    "status": "not_executed",
+                    "reason": "prerequisite_parameters_missing",
+                }
+            )
+            continue
+        kind = spec.get("type")
+        if kind == "git_commit_present":
+            commit = spec.get("commit")
+            if not isinstance(commit, str) or not commit:
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "not_executed",
+                        "reason": "prerequisite_parameters_missing",
+                    }
+                )
+                continue
+            probe = selection._git(root, "cat-file", "-e", f"{commit}^{{commit}}")
+            if probe.returncode == 0:
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "passed",
+                        "commit": commit,
+                    }
+                )
+            else:
+                failed = True
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "failed",
+                        "reason": "identity_commit_missing",
+                        "commit": commit,
+                    }
+                )
+            continue
+        if kind == "command":
+            argv = spec.get("argv")
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or any(not isinstance(item, str) for item in argv)
+            ):
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "not_executed",
+                        "reason": "prerequisite_parameters_missing",
+                    }
+                )
+                continue
+            command_runner = runner or hygiene._run
+            try:
+                completed = command_runner(list(argv), root)
+            except TypeError:
+                completed = command_runner(list(argv), root, None)
+            if completed.returncode == 0:
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "passed",
+                        "exit_code": 0,
+                        "argv": list(argv),
+                    }
+                )
+            else:
+                failed = True
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "failed",
+                        "reason": "prerequisite_command_failed",
+                        "exit_code": completed.returncode,
+                        "argv": list(argv),
+                        "stdout": getattr(completed, "stdout", "") or "",
+                        "stderr": getattr(completed, "stderr", "") or "",
+                    }
+                )
+            continue
+        results.append(
+            {
+                "name": name,
+                "type": kind,
+                "status": "not_executed",
+                "reason": "prerequisite_type_unsupported",
+            }
+        )
+    return results, failed
+
+
 def execute(
     plan,
     *,
@@ -214,6 +331,7 @@ def execute(
     junit_path=None,
     hygiene_config=None,
     sources_config=None,
+    prerequisite_actions=None,
     runner=None,
 ):
     root = Path(root)
@@ -320,19 +438,29 @@ def execute(
         if item.get("name") not in covered
     ]
     report["checks"] = native_checks + remaining
-    report["prerequisites"] = [
-        {"name": name, "status": "not_executed"} for name in prerequisites
-    ]
+    prereq_results, prereq_failed = _run_prerequisites(
+        prerequisites,
+        _prerequisite_actions(plan, prerequisite_actions),
+        root=root,
+        runner=runner,
+    )
+    report["prerequisites"] = prereq_results
 
     unfinished = [
         item for item in report["checks"] if item.get("status") == "not_executed"
-    ] or report["prerequisites"]
+    ] + [
+        item for item in report["prerequisites"] if item.get("status") == "not_executed"
+    ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
     elif hygiene_failed or source_failed:
         report["status"] = "failed"
         report["exit_code"] = 1
         report["reason"] = "checks_failed"
+    elif prereq_failed:
+        report["status"] = "failed"
+        report["exit_code"] = 1
+        report["reason"] = "prerequisites_failed"
     elif unfinished:
         report["status"] = "blocked"
         report["exit_code"] = 5

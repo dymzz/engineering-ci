@@ -216,6 +216,39 @@ def test_plan_records_git_config_and_tach_identity(repo):
     assert plan["generator"]["tach_sha256"]
     assert plan["selection"]["tests"] == list(result.tests)
     assert plan["selection"]["prerequisites"] == ["identity_commit", "wheel_smoke"]
+    assert plan["prerequisite_actions"] == {}
+
+
+def test_plan_includes_typed_prerequisite_actions(repo):
+    path, base = repo
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f"""
+[prerequisite_actions.identity_commit]
+type = "git_commit_present"
+commit = "{base}"
+
+[prerequisite_actions.wheel_smoke]
+type = "command"
+argv = ["python", "-c", "raise SystemExit(0)"]
+""",
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    result = select(path, base)
+    plan = selection.plan(
+        result,
+        config=config(path),
+        config_path=config_path,
+        root=path,
+    )
+    assert plan["prerequisite_actions"]["identity_commit"] == {
+        "type": "git_commit_present",
+        "commit": base,
+    }
+    assert plan["prerequisite_actions"]["wheel_smoke"]["type"] == "command"
+    assert plan["prerequisite_actions"]["wheel_smoke"]["argv"][0] == "python"
 
 
 def test_changeset_includes_renames_and_untracked_paths(repo):

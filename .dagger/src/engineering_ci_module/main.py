@@ -84,7 +84,10 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str = "3.14",
     ) -> str:
-        """Execute exactly the targets in a selection plan; no reselection."""
+        """Execute plan targets in-container; host-run selected checks/prereqs."""
+        import copy
+        import tempfile
+
         from eci_core import execution, selection
 
         raw = await plan.contents()
@@ -97,56 +100,6 @@ class EngineeringCi:
         chosen = value.get("selection") or {}
         targets = chosen.get("tests") or []
         framework = chosen.get("framework", "unittest")
-        if value.get("git", {}).get("snapshot") == "multi":
-            return json.dumps(
-                {
-                    "status": "not_executed",
-                    "reason": "multi_ref_requires_per_ref_execution",
-                }
-            )
-        if not targets:
-            return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
-        container = self._uv_container(source, python_version)
-        junit = "/tmp/engineering-ci-junit.xml"
-        if framework == "pytest":
-            pytest_targets = []
-            for target in targets:
-                if target.endswith(".py") or "/" in target or "::" in target:
-                    pytest_targets.append(target)
-                else:
-                    pytest_targets.extend(["--pyargs", target])
-            command = [
-                "uv",
-                "run",
-                "pytest",
-                "-q",
-                f"--junitxml={junit}",
-                *pytest_targets,
-            ]
-        elif framework == "unittest":
-            command = ["uv", "run", "python", "-m", "unittest", *targets]
-        else:
-            return json.dumps({"status": "not_executed", "reason": "framework_invalid"})
-        result = container.with_exec(command, expect=dagger.ReturnType.ANY)
-        exit_code = await result.exit_code()
-        report = {
-            "kind": execution.REPORT_KIND,
-            "schema_version": execution.SCHEMA_VERSION,
-            "status": "passed" if exit_code == 0 else "failed",
-            "exit_code": exit_code,
-            "targets": targets,
-            "framework": framework,
-            "tree_verified": False,
-            "trusted": False,
-            "plan_execution_tree": value.get("git", {}).get("execution_tree"),
-            "stdout": await result.stdout(),
-            "stderr": await result.stderr(),
-        }
-        if framework == "pytest" and exit_code in {0, 1}:
-            try:
-                report["junit"] = await result.file(junit).contents()
-            except dagger.QueryError:
-                report["junit"] = None
         selected_checks = [
             item
             for item in value.get("check_scope", chosen.get("check_scope", []))
@@ -156,13 +109,89 @@ class EngineeringCi:
             selected_checks = [
                 {"name": name, "status": "unknown"} for name in chosen["checks"]
             ]
-        if exit_code == 0 and (selected_checks or chosen.get("prerequisites")):
-            report["status"] = "blocked"
-            report["reason"] = "required_checks_not_executed"
-            report["checks"] = [
-                {"name": item.get("name"), "status": "not_executed"}
-                for item in selected_checks
-            ]
+        prerequisites = list(chosen.get("prerequisites") or [])
+        if value.get("git", {}).get("snapshot") == "multi":
+            return json.dumps(
+                {
+                    "status": "not_executed",
+                    "reason": "multi_ref_requires_per_ref_execution",
+                }
+            )
+        if not targets and not selected_checks and not prerequisites:
+            return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
+        report = {
+            "kind": execution.REPORT_KIND,
+            "schema_version": execution.SCHEMA_VERSION,
+            "status": "passed",
+            "exit_code": 0,
+            "targets": targets,
+            "framework": framework,
+            "tree_verified": False,
+            "trusted": False,
+            "plan_execution_tree": value.get("git", {}).get("execution_tree"),
+            "tests": {"status": "not_executed", "exit_code": 3},
+            "checks": [],
+            "prerequisites": [],
+        }
+        if targets:
+            container = self._uv_container(source, python_version)
+            junit = "/tmp/engineering-ci-junit.xml"
+            if framework == "pytest":
+                pytest_targets = []
+                for target in targets:
+                    if target.endswith(".py") or "/" in target or "::" in target:
+                        pytest_targets.append(target)
+                    else:
+                        pytest_targets.extend(["--pyargs", target])
+                command = [
+                    "uv",
+                    "run",
+                    "pytest",
+                    "-q",
+                    f"--junitxml={junit}",
+                    *pytest_targets,
+                ]
+            elif framework == "unittest":
+                command = ["uv", "run", "python", "-m", "unittest", *targets]
+            else:
+                return json.dumps(
+                    {"status": "not_executed", "reason": "framework_invalid"}
+                )
+            result = container.with_exec(command, expect=dagger.ReturnType.ANY)
+            exit_code = await result.exit_code()
+            report["exit_code"] = exit_code
+            report["stdout"] = await result.stdout()
+            report["stderr"] = await result.stderr()
+            report["tests"] = {
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+            }
+            if exit_code != 0:
+                report["status"] = "failed"
+                report["reason"] = "tests_failed"
+            if framework == "pytest" and exit_code in {0, 1}:
+                try:
+                    report["junit"] = await result.file(junit).contents()
+                except dagger.QueryError:
+                    report["junit"] = None
+        if selected_checks or prerequisites:
+            with tempfile.TemporaryDirectory() as directory:
+                await source.export(directory)
+                check_plan = copy.deepcopy(value)
+                check_plan.setdefault("selection", {})
+                check_plan["selection"] = dict(check_plan["selection"])
+                check_plan["selection"]["tests"] = []
+                check_plan["git"] = dict(check_plan.get("git") or {})
+                check_plan["git"]["execution_tree"] = None
+                check_plan["git"]["index_tree"] = None
+                check_plan["git"]["snapshot"] = "worktree"
+                host = execution.execute(check_plan, root=directory)
+            report["checks"] = host.get("checks") or []
+            report["prerequisites"] = host.get("prerequisites") or []
+            if report["status"] == "passed":
+                report["status"] = host.get("status", "blocked")
+                report["reason"] = host.get("reason")
+                report["exit_code"] = host.get("exit_code", 5)
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     @function

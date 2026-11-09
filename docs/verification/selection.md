@@ -58,7 +58,8 @@ checkout or the Knowledge repository:
 | Empty execution | no targets and no selected checks → `not_executed`/exit 3; selected docs/source checks still run natively |
 | Index binding | stale `index_tree` → `not_executed`/`index_tree_mismatch` |
 | Coverage gate | `coverage_required` → `blocked`/exit 5, no tests run, `satisfied:false` |
-| Required checks | selected/unknown checks or prerequisites → tests may pass but overall `blocked`/exit 5 |
+| Required checks | selected/unknown checks without native results, or prerequisites lacking parameters → `blocked`/exit 5 |
+| Prerequisites | `git_commit_present` / `command` actions execute when declared; missing params stay `not_executed` |
 | Tach validation | passed result binds Tach digest + source tree; stale tree → `untrusted` |
 | Multi-ref | union paths + `references[]`; single execution refused as `multi_ref_requires_per_ref_execution` |
 | Rule precedence | exact rule wins over a broader prefix; all matching tests combine |
