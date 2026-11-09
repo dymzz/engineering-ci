@@ -1,5 +1,8 @@
 ## 目标
 
+> **关联设计修订（待审阅）：** [Knowledge PR #77 — 并行启动/接口交接与独立验收](https://github.com/dymzz/engineering-knowledge/pull/77)；[实施计划 §2.1 与 §5 的具体产物（HEAD f5d974e4）](https://github.com/dymzz/engineering-knowledge/blob/f5d974e43246a576a1ab0d86b5becf9203a6bdce/design/engineering-verification/implementation-plan.md)。P1-A Source 与 P2 原生生产方可以并行；公共 ECI 生产方的独立验收不等待 Knowledge #68 整体切换或 ECI #63 历史复用。只在声称真实 Source-bound 集成成功时核对对应输入和原生事实。 **PR #77 仍处于 Draft，引用不代表其已合并或当前能力已验收。**
+
+
 将 [engineering-knowledge](https://github.com/dymzz/engineering-knowledge) 已合并的工程 Hygiene、Tach 与增量测试选择通用能力落到 `engineering-ci` 公共实现，供多个 Python 仓库本地、Dagger 和 GitHub Actions 使用。Knowledge 成为公共能力的真实消费者，仅维护自身规则与配置。
 
 **以 ECI [PR #67](https://github.com/dymzz/engineering-ci/pull/67) 已合并代码为当前实现基线**：对照 Knowledge [PR #61](https://github.com/dymzz/engineering-knowledge/pull/61)、[#66](https://github.com/dymzz/engineering-knowledge/pull/66)、[#69](https://github.com/dymzz/engineering-knowledge/pull/69)、[#70](https://github.com/dymzz/engineering-knowledge/pull/70) 的**实际合并行为与有效测试**核实覆盖；**只补生产方缺口并扩展既有 ECI API/CLI/Dagger/Workflow**，禁止把已交付的 `eci_core` 选择/Hygiene/CLI 再迁一遍。不以「接口尚未存在」为理由在 Knowledge 永久保留第二套通用实现。验收依据是执行行为、真实测试覆盖与收益，不是代码行数最少或兼容旧包装。
