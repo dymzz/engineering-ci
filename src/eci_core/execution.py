@@ -48,18 +48,30 @@ def load_plan(path):
     return value
 
 
-def execute(plan, *, root, junit_path=None):
+def execute(plan, *, root, junit_path=None, check_results=None):
     root = Path(root)
     chosen = plan["selection"]
-    tests = tuple(chosen["tests"])
+    tests = tuple(chosen.get("tests", ()))
     framework = chosen.get("framework", "unittest")
-    tree = plan["git"].get("execution_tree")
+    tree = plan.get("git", {}).get("execution_tree")
+    snapshot_kind = plan.get("git", {}).get("snapshot", "worktree")
+
+    selection_status = (
+        chosen.get("status")
+        or plan.get("tests_scope", {}).get("selection_status")
+        or ("targeted" if tests else "not_executed")
+    )
+
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
         "plan": {
             "generator": plan.get("generator"),
             "git": plan.get("git"),
+        },
+        "snapshot": {
+            "kind": snapshot_kind,
+            "tree_oid": tree,
         },
         "targets": list(tests),
         "framework": framework,
@@ -72,17 +84,30 @@ def execute(plan, *, root, junit_path=None):
             "satisfied": False,
             "scope": "unverified",
         },
+        "selection": {
+            "tests": {
+                "selection_status": selection_status,
+                "targets": list(tests),
+            },
+            "checks": {},
+        },
+        "execution": {
+            "tests": {"status": "not_executed", "exit_code": 3},
+            "checks": {},
+        },
     }
-    if not tests:
-        return report
-    if plan["git"].get("snapshot") == "multi":
+
+    if plan.get("git", {}).get("snapshot") == "multi":
         report["reason"] = "multi_ref_requires_per_ref_execution"
         return report
+
     if tree and selection._tree_of(root, "HEAD") != tree:
         report["status"] = "not_executed"
         report["exit_code"] = 4
         report["reason"] = "tree_mismatch"
+        report["execution"]["tests"] = {"status": "not_executed", "exit_code": 4}
         return report
+
     graph = chosen.get("tach_graph_validation") or {}
     if (
         chosen.get("requires_tach_check")
@@ -92,58 +117,121 @@ def execute(plan, *, root, junit_path=None):
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "tach_graph_unvalidated"
+        report["execution"]["tests"] = {"status": "blocked", "exit_code": 5}
         return report
-    if chosen.get("coverage_required"):
+
+    if chosen.get("coverage_required") and tests:
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "coverage_evidence_required"
         report["coverage"]["scope"] = "not_measured"
+        report["execution"]["tests"] = {"status": "blocked", "exit_code": 5}
         return report
+
     native = {}
-    exit_code = selection.run_tests(
-        tests,
-        root=root,
-        framework=framework,
-        src_root=chosen.get("src_root", "src"),
-        expected_tree=None,
-        junit_path=junit_path,
-        capture=native,
-    )
+    if tests:
+        exit_code = selection.run_tests(
+            tests,
+            root=root,
+            framework=framework,
+            src_root=chosen.get("src_root", "src"),
+            expected_tree=None,
+            junit_path=junit_path,
+            capture=native,
+        )
+        tests_status = "passed" if exit_code == 0 else "failed"
+        tests_result = {"status": tests_status, "exit_code": exit_code}
+    else:
+        if selection_status in {"no_tests", "no_changes"}:
+            exit_code = 0
+            tests_status = "not_applicable"
+            tests_result = {"status": "not_applicable", "exit_code": 0}
+        else:
+            exit_code = 3
+            tests_status = "not_executed"
+            tests_result = {"status": "not_executed", "exit_code": 3}
+
     report["exit_code"] = exit_code
     report["native_stdout"] = native.get("stdout", "")
     report["native_stderr"] = native.get("stderr", "")
-    tests_status = "passed" if exit_code == 0 else "failed"
-    report["tests"] = {"status": tests_status, "exit_code": exit_code}
-    selected_checks = [
-        item
-        for item in plan.get("check_scope", chosen.get("check_scope", []))
-        if item.get("status") in {"selected", "unknown"}
+    report["tests"] = tests_result
+    report["execution"]["tests"] = tests_result
+    if chosen.get("coverage_required"):
+        report["coverage"]["satisfied"] = bool(tests and exit_code == 0)
+
+    # Resolve checks applicability
+    checks_input = plan.get("checks_scope") or {}
+    check_scope_list = plan.get("check_scope", chosen.get("check_scope", []))
+
+    applicability_map = {}
+    if isinstance(checks_input, dict) and checks_input:
+        for k, v in checks_input.items():
+            applicability_map[k] = v.get("applicability", "unknown")
+    else:
+        for item in check_scope_list:
+            name = item.get("name")
+            if name and name != framework:
+                applicability_map[name] = item.get("status", "unknown")
+
+    selected_checks_names = [
+        name for name, app in applicability_map.items()
+        if app in {"selected", "unknown"}
     ]
-    if not selected_checks and chosen.get("checks"):
-        selected_checks = [
-            {"name": name, "status": "unknown"} for name in chosen["checks"]
-        ]
+    if not selected_checks_names and not applicability_map and chosen.get("checks"):
+        selected_checks_names = list(chosen["checks"])
+        for name in selected_checks_names:
+            applicability_map[name] = "unknown"
+
+    results = check_results or {}
+    checks_execution = {}
+    for name, app in applicability_map.items():
+        if name in results:
+            checks_execution[name] = results[name]
+        elif app == "not_applicable":
+            checks_execution[name] = {"status": "not_applicable", "native_exit_code": 0}
+        else:
+            checks_execution[name] = {
+                "status": "not_executed",
+                "reason": "no native check execution wired",
+            }
+
     report["checks"] = [
         {
-            "name": item.get("name"),
-            "selected": item.get("status"),
-            "status": "not_executed",
-            "reason": "no native check execution wired",
+            "name": name,
+            "selected": applicability_map.get(name, "unknown"),
+            "status": checks_execution.get(name, {}).get("status", "not_executed"),
+            "reason": checks_execution.get(name, {}).get("reason", "no native check execution wired"),
         }
-        for item in selected_checks
+        for name in selected_checks_names
     ]
     report["prerequisites"] = [
         {"name": name, "status": "not_executed"}
         for name in chosen.get("prerequisites", [])
     ]
-    if exit_code != 0:
+    report["selection"]["checks"] = {
+        name: {"applicability": applicability_map[name]}
+        for name in applicability_map
+    }
+    report["execution"]["checks"] = checks_execution
+
+    unexecuted_selected_checks = [
+        name for name in selected_checks_names
+        if checks_execution.get(name, {}).get("status") not in {"passed", "advisory", "reused"}
+    ]
+
+    if tests and tests_status == "failed":
         report["status"], report["reason"] = "failed", "tests_failed"
-    elif report["checks"] or report["prerequisites"]:
+    elif unexecuted_selected_checks or report["prerequisites"]:
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "required_checks_not_executed"
+    elif not tests and tests_status == "not_executed":
+        report["status"] = "not_executed"
+        report["exit_code"] = 3
+        report["reason"] = "no_selected_tests"
     else:
         report["status"], report["reason"] = "passed", None
+
     return report
 
 

@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
         ("hygiene", "eci_core.hygiene"),
         ("sources", "eci_core.sources"),
         ("execute", "eci_core.execution"),
+        ("run", "engineering_ci.cli.run"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
@@ -190,3 +191,20 @@ def test_security_workflow_accepts_published_helper_and_preserves_failure(
             "--mode",
             "enforce",
         ]
+
+
+def test_unified_run_pre_commit_invokes_and_reports(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "run@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Run Test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    report_file = tmp_path / "report.json"
+    code = main(["run", "--event", "pre-commit", "--root", str(repo), "--report", str(report_file)])
+    assert code == 0
+    data = json.loads(report_file.read_text(encoding="utf-8"))
+    assert data["event"] == "pre-commit"
+    assert data["status"] == "passed"
+    assert data["exit_code"] == 0

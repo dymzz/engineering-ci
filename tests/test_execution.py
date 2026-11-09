@@ -137,3 +137,86 @@ def test_cli_writes_json_and_exit(repo, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "engineering-ci-execution-report"
     assert payload["status"] == "passed"
+
+
+def test_execute_no_tests_without_checks_passes(repo):
+    path, _ = repo
+    value = plan([])
+    value["selection"]["status"] = "no_tests"
+    value["check_scope"] = [
+        {"name": "docs", "status": "not_applicable"},
+        {"name": "tach", "status": "not_applicable"},
+        {"name": "vulture", "status": "not_applicable"},
+        {"name": "source", "status": "not_applicable"},
+    ]
+    report = execution.execute(value, root=path)
+    assert report["status"] == "passed"
+    assert report["exit_code"] == 0
+    assert report["tests"]["status"] == "not_applicable"
+    assert report["selection"]["tests"]["selection_status"] == "no_tests"
+
+
+def test_execute_docs_only_blocks_when_unexecuted(repo):
+    path, _ = repo
+    value = plan([])
+    value["selection"]["status"] = "no_tests"
+    value["check_scope"] = [
+        {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]}
+    ]
+    report = execution.execute(value, root=path)
+    assert report["status"] == "blocked"
+    assert report["exit_code"] == 5
+    assert report["reason"] == "required_checks_not_executed"
+    assert report["selection"]["checks"]["docs"]["applicability"] == "selected"
+    assert report["execution"]["checks"]["docs"]["status"] == "not_executed"
+
+
+def test_execute_docs_only_passes_with_check_results(repo):
+    path, _ = repo
+    value = plan([])
+    value["selection"]["status"] = "no_tests"
+    value["check_scope"] = [
+        {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]}
+    ]
+    check_results = {"docs": {"status": "passed", "native_exit_code": 0}}
+    report = execution.execute(value, root=path, check_results=check_results)
+    assert report["status"] == "passed"
+    assert report["exit_code"] == 0
+    assert report["execution"]["checks"]["docs"]["status"] == "passed"
+    assert report["tests"]["status"] == "not_applicable"
+
+
+def test_execute_sources_only_blocks_when_unexecuted(repo):
+    path, _ = repo
+    value = plan([])
+    value["selection"]["status"] = "no_tests"
+    value["check_scope"] = [
+        {"name": "source", "status": "selected", "inputs": [".gitattributes"]}
+    ]
+    report = execution.execute(value, root=path)
+    assert report["status"] == "blocked"
+    assert report["exit_code"] == 5
+    assert report["reason"] == "required_checks_not_executed"
+    assert report["selection"]["checks"]["source"]["applicability"] == "selected"
+
+
+def test_execute_structured_selection_and_execution_shape(repo):
+    path, _ = repo
+    value = plan(["tests.test_pkg"])
+    value["checks_scope"] = {
+        "docs": {"applicability": "not_applicable", "inputs": [], "reason": "no docs changed"},
+        "tach": {"applicability": "selected", "inputs": [], "reason": "code changed"},
+    }
+    check_results = {"tach": {"status": "passed", "native_exit_code": 0}}
+    report = execution.execute(value, root=path, check_results=check_results)
+    assert report["status"] == "passed"
+    assert report["exit_code"] == 0
+    assert "snapshot" in report
+    assert "selection" in report
+    assert report["selection"]["tests"]["selection_status"] == "targeted"
+    assert report["selection"]["tests"]["targets"] == ["tests.test_pkg"]
+    assert report["selection"]["checks"]["tach"]["applicability"] == "selected"
+    assert report["selection"]["checks"]["docs"]["applicability"] == "not_applicable"
+    assert "execution" in report
+    assert report["execution"]["tests"]["status"] == "passed"
+    assert report["execution"]["checks"]["tach"]["status"] == "passed"
