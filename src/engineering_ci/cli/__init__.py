@@ -18,6 +18,10 @@ def main(argv=None):
             "download",
             "version",
             "policy",
+            "select",
+            "hygiene",
+            "sources",
+            "execute",
         ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -31,6 +35,14 @@ def main(argv=None):
         from ..release.version import main as invoke
     elif namespace.command == "policy":
         from ..security_policy import main as invoke
+    elif namespace.command == "select":
+        from eci_core.selection import main as invoke
+    elif namespace.command == "hygiene":
+        from eci_core.hygiene import main as invoke
+    elif namespace.command == "sources":
+        from eci_core.sources import main as invoke
+    elif namespace.command == "execute":
+        from eci_core.execution import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

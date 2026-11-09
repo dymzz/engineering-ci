@@ -1,0 +1,25 @@
+schema_version = 1
+tach = "tach.toml"
+tests_dir = "tests"
+src_root = "src"
+framework = "unittest"
+
+escalation_files = ["pyproject.toml", "uv.lock", "tach.toml", ".gitattributes"]
+escalation_prefixes = [".github/workflows/"]
+ignored_files = ["README.md", ".gitignore"]
+ignored_prefixes = ["docs/"]
+checks = ["hygiene", "tach", "vulture"]
+
+[module_tests]
+"pkg" = ["tests.test_pkg"]
+"pkg.sub" = ["tests.test_sub"]
+"pkg.other" = ["tests.test_other"]
+
+[[non_code_rules]]
+prefix = "data/"
+tests = ["tests.test_pkg"]
+reason = "data input"
+
+[prerequisites]
+identity_commit = ["tests.test_sub"]
+wheel_smoke = ["tests.test_other"]

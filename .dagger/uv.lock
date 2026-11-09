@@ -210,7 +210,7 @@ dev = [
 ]
 
 [[package]]
-name = "engineering-ci"
+name = "engineering-ci-module"
 version = "0.7.0"
 source = { editable = "." }
 dependencies = [

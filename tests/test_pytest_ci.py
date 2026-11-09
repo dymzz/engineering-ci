@@ -16,9 +16,10 @@ def load(name, path):
     return module
 
 
-ci = load("pytest_ci_unit", ROOT / ".dagger/src/engineering_ci/pytest_ci.py")
+ci = load("pytest_ci_unit", ROOT / ".dagger/src/engineering_ci_module/pytest_ci.py")
 parser = load(
-    "pytest_report_delivery_unit", ROOT / ".dagger/src/engineering_ci/pytest_report.py"
+    "pytest_report_delivery_unit",
+    ROOT / ".dagger/src/engineering_ci_module/pytest_report.py",
 )
 
 

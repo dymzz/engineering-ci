@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -10,8 +11,12 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
+_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
 from . import python_static as static
-from . import repository
+from . import repository, tooling
 from . import script_analysis as script
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
@@ -72,6 +77,187 @@ _READ_OPTIONAL = (
 
 @object_type
 class EngineeringCi:
+    @function
+    async def execute_plan(
+        self,
+        plan: dagger.File,
+        source: dagger.Directory,
+        python_version: str = "3.14",
+    ) -> str:
+        """Execute exactly the targets in a selection plan; no reselection."""
+        from eci_core import execution, selection
+
+        raw = await plan.contents()
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+        if value.get("kind") != selection.PLAN_KIND:
+            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+        chosen = value.get("selection") or {}
+        targets = chosen.get("tests") or []
+        framework = chosen.get("framework", "unittest")
+        if value.get("git", {}).get("snapshot") == "multi":
+            return json.dumps(
+                {
+                    "status": "not_executed",
+                    "reason": "multi_ref_requires_per_ref_execution",
+                }
+            )
+        if not targets:
+            return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
+        container = self._uv_container(source, python_version)
+        junit = "/tmp/engineering-ci-junit.xml"
+        if framework == "pytest":
+            pytest_targets = []
+            for target in targets:
+                if target.endswith(".py") or "/" in target or "::" in target:
+                    pytest_targets.append(target)
+                else:
+                    pytest_targets.extend(["--pyargs", target])
+            command = [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                f"--junitxml={junit}",
+                *pytest_targets,
+            ]
+        elif framework == "unittest":
+            command = ["uv", "run", "python", "-m", "unittest", *targets]
+        else:
+            return json.dumps({"status": "not_executed", "reason": "framework_invalid"})
+        result = container.with_exec(command, expect=dagger.ReturnType.ANY)
+        exit_code = await result.exit_code()
+        report = {
+            "kind": execution.REPORT_KIND,
+            "schema_version": execution.SCHEMA_VERSION,
+            "status": "passed" if exit_code == 0 else "failed",
+            "exit_code": exit_code,
+            "targets": targets,
+            "framework": framework,
+            "tree_verified": False,
+            "trusted": False,
+            "plan_execution_tree": value.get("git", {}).get("execution_tree"),
+            "stdout": await result.stdout(),
+            "stderr": await result.stderr(),
+        }
+        if framework == "pytest" and exit_code in {0, 1}:
+            try:
+                report["junit"] = await result.file(junit).contents()
+            except dagger.QueryError:
+                report["junit"] = None
+        selected_checks = [
+            item
+            for item in value.get("check_scope", chosen.get("check_scope", []))
+            if item.get("status") in {"selected", "unknown"}
+        ]
+        if not selected_checks and chosen.get("checks"):
+            selected_checks = [
+                {"name": name, "status": "unknown"} for name in chosen["checks"]
+            ]
+        if exit_code == 0 and (selected_checks or chosen.get("prerequisites")):
+            report["status"] = "blocked"
+            report["reason"] = "required_checks_not_executed"
+            report["checks"] = [
+                {"name": item.get("name"), "status": "not_executed"}
+                for item in selected_checks
+            ]
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def sources_self_test(self) -> str:
+        """Run the installed source reconciler on a disposable fixture."""
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from eci_core import sources
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data/acquired").mkdir(parents=True)
+            content = b"source bytes"
+            (root / "data/acquired/a.bin").write_bytes(content)
+            (root / "data/catalog").mkdir()
+            (root / "data/catalog/manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "path": "data/acquired/a.bin",
+                            "sha256": hashlib.sha256(content).hexdigest(),
+                            "size_bytes": len(content),
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "ci-sources.toml").write_text(
+                "schema_version = 1\n"
+                'manifest = "data/catalog/manifest.json"\n'
+                'acquired_roots = ["data/acquired"]\n'
+                "require_text_unset = false\n",
+                encoding="utf-8",
+            )
+            report = sources.reconcile(
+                sources.load_config(root / "ci-sources.toml"), root=root
+            )
+            return f"{sources.REPORT_KIND}:{report.status}:{report.counts['checked']}"
+
+    @function
+    async def selection_self_test(self) -> str:
+        """Run the installed selector on a disposable fixture, without Git."""
+        import tempfile
+        from pathlib import Path
+
+        from eci_core import selection
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / "src/pkg/__init__.py").write_text("", encoding="utf-8")
+            (root / "src/pkg/sub.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "tests/test_pkg.py").write_text(
+                "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_ok(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            (root / "tach.toml").write_text(
+                'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\n'
+                "depends_on = []\n",
+                encoding="utf-8",
+            )
+            (root / "ci-selection.toml").write_text(
+                'schema_version = 1\n\n[module_tests]\n"pkg" = ["tests.test_pkg"]\n',
+                encoding="utf-8",
+            )
+            config = selection.load_config(root / "ci-selection.toml")
+            changes = selection.ChangeSet(
+                root=root,
+                base_ref="base",
+                head_ref="HEAD",
+                base_commit="a" * 40,
+                head_commit="b" * 40,
+                tree="c" * 40,
+                paths=("src/pkg/sub.py",),
+                worktree_dirty=True,
+                complete=True,
+            )
+            result = selection.select(changes, config, root=root)
+            return f"{selection.PLAN_KIND}:{result.status}:{','.join(result.tests)}"
+
+    @function
+    async def shared_identity(self) -> str:
+        """Import the included common package; proves one source implementation."""
+        import eci_core
+        from eci_core import selection
+
+        return (
+            f"{eci_core.__version__}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
+        )
+
     repository_coverage: bool = dagger.field(default=False)
 
     @function
@@ -512,6 +698,112 @@ class EngineeringCi:
             git_token=git_token,
         )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def tach_check(
+        self,
+        source: dagger.Directory,
+    ) -> str:
+        """Run pinned Tach inside the existing uv image; Source keeps non-Python files."""
+        container = (
+            dag.container()
+            .from_(tooling.UV_IMAGE)
+            .with_env_variable("UV_NO_MANAGED_PYTHON", "1")
+            .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
+            .with_mounted_cache(
+                "/root/.cache/uv",
+                dag.cache_volume("engineering-ci-uv-native-tools"),
+            )
+            .with_directory("/workspace", source, exclude=list(tooling.SOURCE_NOISE))
+            .with_workdir("/workspace")
+        )
+        result = container.with_exec(
+            ["uvx", "--from", f"tach=={tooling.TACH_VERSION}", "tach", "check"],
+            expect=dagger.ReturnType.ANY,
+        )
+        exit_code = await result.exit_code()
+        return json.dumps(
+            {
+                "tool": "tach",
+                "version": tooling.TACH_VERSION,
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "stdout": await result.stdout(),
+                "stderr": await result.stderr(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    @function
+    async def lychee_check(
+        self,
+        source: dagger.Directory,
+        files: str,
+    ) -> str:
+        """Install and run pinned Lychee inside the cached uv image."""
+        targets = [line.strip() for line in files.splitlines() if line.strip()]
+        if not targets:
+            return json.dumps(
+                {
+                    "tool": "lychee",
+                    "version": tooling.LYCHEE_VERSION,
+                    "status": "not_applicable",
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "no applicable documents",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        download = (
+            "import io,os,tarfile,urllib.request;"
+            f"data=urllib.request.urlopen({tooling.LYCHEE_ASSET!r}).read();"
+            "tar=tarfile.open(fileobj=io.BytesIO(data));"
+            "member=tar.extractfile('lychee-x86_64-unknown-linux-gnu/lychee');"
+            "open('/usr/local/bin/lychee','wb').write(member.read());"
+            "os.chmod('/usr/local/bin/lychee',0o755)"
+        )
+        installed = (
+            dag.container()
+            .from_(tooling.UV_IMAGE)
+            .with_exec(["python", "-c", download], expect=dagger.ReturnType.ANY)
+        )
+        install_exit = await installed.exit_code()
+        if install_exit != 0:
+            return json.dumps(
+                {
+                    "tool": "lychee",
+                    "version": tooling.LYCHEE_VERSION,
+                    "status": "failed",
+                    "exit_code": install_exit,
+                    "stdout": await installed.stdout(),
+                    "stderr": await installed.stderr(),
+                    "reason": "tool_install_failed",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        container = installed.with_directory(
+            "/workspace", source, exclude=list(tooling.SOURCE_NOISE)
+        ).with_workdir("/workspace")
+        result = container.with_exec(
+            ["/usr/local/bin/lychee", "--offline", "--no-progress", *targets],
+            expect=dagger.ReturnType.ANY,
+        )
+        exit_code = await result.exit_code()
+        return json.dumps(
+            {
+                "tool": "lychee",
+                "version": tooling.LYCHEE_VERSION,
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "stdout": await result.stdout(),
+                "stderr": await result.stderr(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     @function
     async def python_pyright(

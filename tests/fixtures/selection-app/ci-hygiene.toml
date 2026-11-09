@@ -1,0 +1,22 @@
+schema_version = 1
+checks = ["whitespace", "forwarding", "docs", "vulture", "tach"]
+
+[docs]
+suffixes = [".md", ".html"]
+excluded_prefixes = ["docs/archive/"]
+
+[lychee]
+executable = "lychee"
+arguments = ["--offline", "--no-progress", "--files-from", "-"]
+
+[forwarding]
+source_prefix = "src/"
+
+[vulture]
+paths = ["src"]
+min_confidence = 60
+advisory_exit_codes = [3]
+
+[tach]
+path = "tach.toml"
+external = false

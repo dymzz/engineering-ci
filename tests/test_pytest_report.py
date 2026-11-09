@@ -12,7 +12,7 @@ PARSER = (
     Path(__file__).resolve().parent.parent
     / ".dagger"
     / "src"
-    / "engineering_ci"
+    / "engineering_ci_module"
     / "pytest_report.py"
 )
 spec = importlib.util.spec_from_file_location("pytest_report_unit", PARSER)

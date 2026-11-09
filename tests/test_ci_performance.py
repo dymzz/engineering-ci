@@ -221,7 +221,9 @@ class WorkflowExecutionTests(unittest.TestCase):
                 "PERF_EVENTS": str(events),
                 "PERF_BIN": posix(directory),
                 "PERF_SCRIPT": posix(script),
-                "PERF_CI_HELPER": str(ROOT / ".dagger/src/engineering_ci/pytest_ci.py"),
+                "PERF_CI_HELPER": str(
+                    ROOT / ".dagger/src/engineering_ci_module/pytest_ci.py"
+                ),
                 "PERF_PYTEST_EXIT": str(test_exit),
                 "PERF_CHECK_EXIT": str(check_exit),
                 "PERF_FAIL_LIST": str(fail_list),
@@ -293,7 +295,7 @@ class WorkflowExecutionTests(unittest.TestCase):
             gate = subprocess.run(
                 [
                     sys.executable,
-                    str(ROOT / ".dagger/src/engineering_ci/pytest_ci.py"),
+                    str(ROOT / ".dagger/src/engineering_ci_module/pytest_ci.py"),
                     "gate",
                     str(Path(tmp) / "pytest-report"),
                 ],

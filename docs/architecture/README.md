@@ -9,6 +9,9 @@
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 原生 Dagger Checks、失败传播与单次执行报告。
 - [依赖安全](dependency-security.md) — 锁文件完整性、安全扫描及质量门禁。
+- [变更影响选择](selection.md) — Git 对象、Tach 闭包、选择计划与原生 unittest 执行交接。
+- [仓库 Hygiene](hygiene.md) — 原生 whitespace/forwarding/docs/Vulture/Tach 检查与结果语义。
+- [来源集合对账](sources.md) — Manifest 投影、集合差、冲突、大小/SHA-256 与宿主 Git attributes。
 - [安全策略快照](security-policy.md) — 可信策略发布/接收、防回退及 Runtime 判定契约。
 - [发布](release/README.md) — Release Workflow 的门禁、证据与异常恢复。
 - [测试](testing/README.md) — Pytest 报告、显式质量策略、Python 兼容性及静态分析检查。

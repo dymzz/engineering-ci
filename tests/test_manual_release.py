@@ -543,7 +543,7 @@ class ManualReleaseTests(unittest.TestCase):
                 timeout=30,
             )
             self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
-            sys.path.insert(0, str(ROOT / ".dagger/src/engineering_ci"))
+            sys.path.insert(0, str(ROOT / ".dagger/src/engineering_ci_module"))
             from pytest_report import summarize_pytest
 
             facts = summarize_pytest(xml.read_text(encoding="utf-8"), 0, "")

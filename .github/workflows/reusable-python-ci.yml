@@ -110,6 +110,21 @@ on:
         type: string
         required: false
         default: powershell-analysis
+      selection_config:
+        description: 'Consumer ci-selection.toml path; empty disables selection execution'
+        type: string
+        required: false
+        default: ''
+      selection_source_ref:
+        description: 'Immutable engineering-ci commit SHA providing the selection CLI; required when selection is enabled'
+        type: string
+        required: false
+        default: ''
+      selection_artifact_name:
+        description: 'Unique selection plan/execution evidence artifact name'
+        type: string
+        required: false
+        default: selection-evidence
     secrets:
       ENGINEERING_CI_READ_TOKEN:
         required: false
@@ -120,6 +135,8 @@ on:
         value: ${{ jobs.dependency-security.outputs.artifact_id }}
       powershell_artifact_id:
         value: ${{ jobs.powershell-analysis.outputs.artifact_id }}
+      selection_artifact_id:
+        value: ${{ jobs.selection.outputs.artifact_id }}
 
 permissions:
   contents: read
@@ -606,5 +623,82 @@ jobs:
           path: |
             ${{ runner.temp }}/powershell-analysis/report.json
             ${{ runner.temp }}/powershell-analysis/summary.md
+          if-no-files-found: warn
+          retention-days: 7
+
+  selection:
+    outputs:
+      artifact_id: ${{ steps.selection_artifact.outputs.artifact-id }}
+    if: ${{ inputs.selection_config != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout selection target
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require immutable selection source
+        env:
+          SELECTION_SOURCE_REF: ${{ inputs.selection_source_ref }}
+        run: |
+          set -euo pipefail
+          test -n "$SELECTION_SOURCE_REF"
+          if ! printf '%s' "$SELECTION_SOURCE_REF" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "selection_source_ref must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+      - name: Checkout matching selection helper
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: dymzz/engineering-ci
+          ref: ${{ inputs.selection_source_ref }}
+          path: .engineering-ci-selection
+          token: ${{ secrets.ENGINEERING_CI_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Sync consumer environment
+        run: uv sync --locked --project "$GITHUB_WORKSPACE"
+      - name: Install pinned selection CLI
+        run: |
+          set -euo pipefail
+          mv -- .engineering-ci-selection "$RUNNER_TEMP/engineering-ci-selection"
+          uv pip install --python "$GITHUB_WORKSPACE/.venv/bin/python" "$RUNNER_TEMP/engineering-ci-selection"
+      - name: Install pinned Tach
+        run: uv tool install tach==0.35.3
+      - name: Select and execute exactly the plan
+        env:
+          SELECTION_CONFIG: ${{ inputs.selection_config }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          mode_args=(--mode pr --base "$BASE_SHA" --head "$HEAD_SHA")
+          if [ "$EVENT_NAME" = push ] && [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            mode_args=(--mode push --before "$BEFORE_SHA" --after "$HEAD_SHA")
+          fi
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            mode_args=(--mode commit --base "$BASE_SHA" --head "$HEAD_SHA")
+          fi
+          .venv/bin/engineering-ci select --root . --config "$SELECTION_CONFIG" \
+            "${mode_args[@]}" --validate-tach --json > "$RUNNER_TEMP/selection-plan.json"
+          .venv/bin/engineering-ci execute --plan "$RUNNER_TEMP/selection-plan.json" \
+            --root . --junit "$RUNNER_TEMP/selection-junit.xml" \
+            --json > "$RUNNER_TEMP/selection-execution.json"
+      - name: Upload selection evidence
+        id: selection_artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ inputs.selection_artifact_name }}
+          path: |
+            ${{ runner.temp }}/selection-plan.json
+            ${{ runner.temp }}/selection-execution.json
+            ${{ runner.temp }}/selection-junit.xml
           if-no-files-found: warn
           retention-days: 7

@@ -1,0 +1,5 @@
+source_roots = ["src"]
+
+[[modules]]
+path = "pkg"
+depends_on = []

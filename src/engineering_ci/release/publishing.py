@@ -288,7 +288,7 @@ def read_json(path):
 
 def require_evidence(directory):
     # Reuse the existing raw exit/JUnit gate, not a new report verdict.
-    sys.path.insert(0, str(ROOT / ".dagger/src/engineering_ci"))
+    sys.path.insert(0, str(ROOT / ".dagger/src/engineering_ci_module"))
     from pytest_ci import execution_exit_code
     from pytest_report import summarize_pytest
 

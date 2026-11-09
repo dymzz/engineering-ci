@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULES = ROOT / ".dagger/src/engineering_ci"
+MODULES = ROOT / ".dagger/src/engineering_ci_module"
 
 sys_path = ROOT / "src"
 import sys
@@ -22,7 +22,9 @@ def load(name, path):
     return module
 
 
-script = load("script_analysis_unit", ".dagger/src/engineering_ci/script_analysis.py")
+script = load(
+    "script_analysis_unit", ".dagger/src/engineering_ci_module/script_analysis.py"
+)
 powershell = load(
     "powershell_analysis_unit", "src/engineering_ci/powershell_analysis.py"
 )
