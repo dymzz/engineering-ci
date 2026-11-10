@@ -7,6 +7,13 @@ Producer decision (ECI #75 / Knowledge PR #79 C/O2):
 - Does not instrument Dagger Functions.
 - Missing identity, terminal results, required SemConv fields, or real timestamps
   yield incomplete/partial reports — never forged complete spans.
+
+Pipeline Run identity (ECI #75 / PR #77 review P2-2):
+- Each GitHub Actions *Attempt* is one distinct pipeline execution (own Trace).
+- SemConv `cicd.pipeline.run.id` is the stable canonical form
+  `{github_run_id}/{run_attempt}` — same value on Resource, Pipeline Span, and
+  Task Span correlation. Raw GitHub Run ID and Attempt remain in facts and as
+  the `github.actions.run_attempt` extension (not a Required SemConv attribute).
 """
 
 from __future__ import annotations
@@ -21,8 +28,9 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
@@ -37,6 +45,7 @@ STATUS_ERROR = 2
 # Public CI/CD SemConv attribute names (registry pin tracked with Knowledge #80).
 ATTR_PIPELINE_NAME = "cicd.pipeline.name"
 ATTR_PIPELINE_RUN_ID = "cicd.pipeline.run.id"
+ATTR_PIPELINE_RUN_URL = "cicd.pipeline.run.url.full"
 ATTR_PIPELINE_RESULT = "cicd.pipeline.result"
 ATTR_TASK_NAME = "cicd.pipeline.task.name"
 ATTR_TASK_RUN_ID = "cicd.pipeline.task.run.id"
@@ -60,6 +69,8 @@ _RESULT_MAP = {
     "skipped": "skip",
     "timed_out": "timeout",
 }
+
+_JOBS_PAGE_SIZE = 100
 
 
 class TelemetryError(ValueError):
@@ -85,6 +96,10 @@ class GitHubRunFacts:
     run_completed_at_ns: int | None = None
     job_started_at_ns: int | None = None
     job_completed_at_ns: int | None = None
+    # Provenance only — GitHub Workflow Run `updated_at` is object update time,
+    # not a proven exact Attempt completed-at (PR #77 P1-2).
+    run_updated_at_ns: int | None = None
+    run_url: str | None = None
 
     @property
     def has_run_identity(self):
@@ -93,6 +108,13 @@ class GitHubRunFacts:
     @property
     def has_job_identity(self):
         return bool(self.job_id and self.job_name and self.job_url)
+
+    @property
+    def pipeline_run_id(self):
+        """SemConv Resource/Span pipeline-run id for this Attempt execution."""
+        if not self.has_run_identity:
+            return None
+        return f"{self.run_id}/{self.run_attempt}"
 
     @property
     def run_bounds_state(self):
@@ -214,6 +236,8 @@ def facts_from_actions_env(env=None):
         job_completed_at_ns=parse_time_ns(
             _text(env, "ENGINEERING_CI_JOB_COMPLETED_AT")
         ),
+        run_updated_at_ns=parse_time_ns(_text(env, "ENGINEERING_CI_RUN_UPDATED_AT")),
+        run_url=_text(env, "ENGINEERING_CI_RUN_URL"),
     )
 
 
@@ -252,6 +276,10 @@ def facts_from_mapping(value):
         job_completed_at_ns=parse_time_ns(
             value.get("job_completed_at_ns", value.get("job_completed_at"))
         ),
+        run_updated_at_ns=parse_time_ns(
+            value.get("run_updated_at_ns", value.get("run_updated_at"))
+        ),
+        run_url=_text(value, "run_url"),
     )
 
 
@@ -300,6 +328,8 @@ def produce(
     producer="eci_core.cicd_telemetry",
     source="mapping",
     github_api_fetched=False,
+    completed_jobs_total=None,
+    job_selection=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial."""
     report = {
@@ -309,6 +339,7 @@ def produce(
         "source": source,
         "claims": {
             "otlp_delivered": False,
+            "otlp_json_prepared": False,
             "otlp_json_exported": False,
             "weaver_pass": False,
             "github_api_fetched": bool(github_api_fetched),
@@ -323,10 +354,16 @@ def produce(
                 "Attribute names follow public CI/CD SemConv Pipeline/Task Run; "
                 "registry version pin is tracked with Knowledge #80/#81"
             ),
+            "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
         },
         "status": "incomplete",
         "reason": None,
         "facts": asdict(facts),
+        "coverage": {
+            "completed_jobs_total": completed_jobs_total,
+            "job_selection": job_selection,
+            "task_spans_emitted": 0,
+        },
         "resource": {},
         "spans": [],
         "otlp_json": None,
@@ -335,11 +372,14 @@ def produce(
         report["reason"] = "missing_run_identity"
         return report
 
+    pipeline_run_id = facts.pipeline_run_id
     resource = {
         ATTR_PIPELINE_NAME: facts.workflow_name,
-        ATTR_PIPELINE_RUN_ID: facts.run_id,
+        ATTR_PIPELINE_RUN_ID: pipeline_run_id,
         ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
     }
+    if facts.run_url:
+        resource[ATTR_PIPELINE_RUN_URL] = facts.run_url
     if facts.repository:
         resource[ATTR_GITHUB_REPOSITORY] = facts.repository
     if facts.head_sha:
@@ -358,13 +398,18 @@ def produce(
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
     elif facts.run_bounds_state == "missing":
-        reasons.append("missing_run_timestamps")
+        # Prefer explicit missing completed-at over fabricating from updated_at.
+        if facts.run_updated_at_ns is not None and facts.run_completed_at_ns is None:
+            reasons.append("run_completed_at_unproven")
+        else:
+            reasons.append("missing_run_timestamps")
     elif facts.run_bounds_state == "invalid":
         reasons.append("invalid_run_timestamps")
     else:
         pipeline_attrs = {
             ATTR_PIPELINE_NAME: facts.workflow_name,
-            ATTR_PIPELINE_RUN_ID: facts.run_id,
+            ATTR_PIPELINE_RUN_ID: pipeline_run_id,
+            ATTR_PIPELINE_RUN_URL: facts.run_url,
             ATTR_PIPELINE_RESULT: run_result,
             ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
             ATTR_VCS_HEAD_REVISION: facts.head_sha,
@@ -401,7 +446,7 @@ def produce(
                 ATTR_TASK_RUN_ID: facts.job_id,
                 ATTR_TASK_RUN_RESULT: job_result,
                 ATTR_TASK_RUN_URL: facts.job_url,
-                ATTR_PIPELINE_RUN_ID: facts.run_id,
+                ATTR_PIPELINE_RUN_ID: pipeline_run_id,
                 ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
                 ATTR_ERROR_TYPE: job_error_type,
             }
@@ -419,6 +464,18 @@ def produce(
             )
 
     report["spans"] = spans
+    report["coverage"]["task_spans_emitted"] = sum(
+        1 for span in spans if span["kind"] == SPAN_KIND_INTERNAL
+    )
+    if (
+        job_selection == "job_id"
+        and completed_jobs_total is not None
+        and completed_jobs_total > report["coverage"]["task_spans_emitted"]
+    ):
+        # Explicit --job-id is a diagnostic single-Job slice, not full Attempt
+        # Task coverage (PR #77 P2-1).
+        reasons.append("partial_job_coverage")
+
     if not spans:
         report["status"] = "incomplete"
         report["reason"] = reasons[0] if reasons else "no_candidate_spans"
@@ -443,8 +500,10 @@ def write_artifact(report, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     # Do not embed the nested OTLP document twice in the candidate artifact.
     payload = {key: value for key, value in report.items() if key != "otlp_json"}
-    if report.get("otlp_json") is not None:
-        payload["otlp_json_exported"] = True
+    # Authoritative export claim lives in claims.*; mirror consistently.
+    claims = report.get("claims") or {}
+    payload["otlp_json_prepared"] = bool(claims.get("otlp_json_prepared"))
+    payload["otlp_json_exported"] = bool(claims.get("otlp_json_exported"))
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -508,9 +567,13 @@ def attach_otlp_json(report):
     """Attach OTLP JSON body when candidate spans exist; never invent spans."""
     if not report.get("spans"):
         report["otlp_json"] = None
+        report["claims"]["otlp_json_prepared"] = False
         report["claims"]["otlp_json_exported"] = False
         return report
     report["otlp_json"] = to_otlp_json(report)
+    report["claims"]["otlp_json_prepared"] = True
+    # Prepared ≠ exported; file flush alone may set exported.
+    report["claims"]["otlp_json_exported"] = False
     return report
 
 
@@ -521,24 +584,38 @@ def write_otlp_json(report, path):
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        body = json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n"
+        path.write_text(body, encoding="utf-8")
     except OSError as error:
+        report["claims"]["otlp_json_exported"] = False
         raise TelemetryError("otlp_json_flush_failed") from error
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     report["claims"]["otlp_json_exported"] = True
+    report["claims"]["otlp_json_path"] = str(path)
+    report["claims"]["otlp_json_sha256"] = digest
     # File artifact only — not live OTLP/gRPC delivery.
     report["claims"]["otlp_delivered"] = False
     return path
 
 
-def facts_from_github_api_objects(run, job=None):
-    """Map GitHub Actions Run (+ optional Job) API objects to facts.
+def _server_url_from_html(html):
+    if not isinstance(html, str) or not html.startswith("http"):
+        return "https://github.com"
+    parts = urlsplit(html)
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    return "https://github.com"
 
-    Run bounds use `run_started_at` and, when `status==completed`, `updated_at`
-    as the completed-at equivalent (Workflow Run has no separate completed_at).
-    Job bounds use Job `started_at` / `completed_at`.
+
+def facts_from_github_api_objects(run, job=None):
+    """Map GitHub Actions Run Attempt (+ optional Job) API objects to facts.
+
+    Run `updated_at` is retained as `run_updated_at_ns` provenance only. It is
+    **not** assigned to `run_completed_at_ns`: GitHub does not define
+    `updated_at` as the Attempt's exact completion instant (PR #77 P1-2).
+    Exact Pipeline end bounds require an explicit completed-at source
+    (`ENGINEERING_CI_RUN_COMPLETED_AT` / mapping). Job bounds use Job
+    `started_at` / `completed_at`.
     """
     if not isinstance(run, dict):
         raise TelemetryError("run_payload_invalid")
@@ -547,15 +624,8 @@ def facts_from_github_api_objects(run, job=None):
     if isinstance(remote, dict):
         repository = remote.get("full_name")
     repository = repository or run.get("repository_full_name")
-    server = "https://github.com"
     html = run.get("html_url")
-    if isinstance(html, str) and html.startswith("http"):
-        parts = html.split("/")
-        if len(parts) >= 3:
-            server = f"{parts[0]}//{parts[2]}"
-    run_completed = None
-    if run.get("status") == "completed":
-        run_completed = parse_time_ns(run.get("updated_at"))
+    server = _server_url_from_html(html)
     attempt = run.get("run_attempt")
     if attempt is not None and type(attempt) is not int:
         try:
@@ -587,9 +657,12 @@ def facts_from_github_api_objects(run, job=None):
         repository=repository,
         server_url=server,
         run_started_at_ns=parse_time_ns(run.get("run_started_at")),
-        run_completed_at_ns=run_completed,
+        # Never fabricate exact completed-at from updated_at.
+        run_completed_at_ns=None,
         job_started_at_ns=job_started,
         job_completed_at_ns=job_completed,
+        run_updated_at_ns=parse_time_ns(run.get("updated_at")),
+        run_url=html if isinstance(html, str) else None,
     )
 
 
@@ -633,6 +706,34 @@ def gh_api_get(path, *, runner=None):
         raise TelemetryError("github_api_invalid_json") from error
 
 
+def _jobs_path_page(base_path, page):
+    separator = "&" if "?" in base_path else "?"
+    return f"{base_path}{separator}per_page={_JOBS_PAGE_SIZE}&page={page}"
+
+
+def fetch_attempt_jobs(api_get, jobs_path):
+    """Fetch the complete Job list for one Attempt using GitHub pagination."""
+    page = 1
+    jobs = []
+    total_count = None
+    while True:
+        payload = api_get(_jobs_path_page(jobs_path, page))
+        if not isinstance(payload, dict):
+            raise TelemetryError("jobs_payload_invalid")
+        batch = payload.get("jobs")
+        if not isinstance(batch, list):
+            raise TelemetryError("jobs_payload_invalid")
+        if total_count is None and type(payload.get("total_count")) is int:
+            total_count = payload["total_count"]
+        jobs.extend(batch)
+        if total_count is not None and len(jobs) >= total_count:
+            break
+        if len(batch) < _JOBS_PAGE_SIZE:
+            break
+        page += 1
+    return jobs
+
+
 def fetch_github_run_job(
     repository,
     run_id,
@@ -641,7 +742,12 @@ def fetch_github_run_job(
     attempt=None,
     api_get=None,
 ):
-    """Fetch Run (+ Job) facts from GitHub Actions API via gh."""
+    """Fetch matching Run Attempt (+ Job) facts from GitHub Actions API via gh.
+
+    Always loads `GET .../runs/{id}/attempts/{N}` together with that Attempt's
+    Jobs. Never mixes the latest Run view with an older Attempt's Jobs
+    (PR #77 P1-1).
+    """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
         raise TelemetryError("repository_invalid")
     if type(run_id) is not int:
@@ -651,22 +757,86 @@ def fetch_github_run_job(
             raise TelemetryError("run_id_invalid") from None
     if run_id <= 0:
         raise TelemetryError("run_id_invalid")
+    if attempt is not None:
+        if type(attempt) is not int:
+            try:
+                attempt = int(attempt)
+            except (TypeError, ValueError):
+                raise TelemetryError("run_attempt_invalid") from None
+        if attempt <= 0:
+            raise TelemetryError("run_attempt_invalid")
     api_get = gh_api_get if api_get is None else api_get
-    run = api_get(f"repos/{repository}/actions/runs/{run_id}")
+
+    if attempt is None:
+        latest = api_get(f"repos/{repository}/actions/runs/{run_id}")
+        if not isinstance(latest, dict):
+            raise TelemetryError("run_payload_invalid")
+        run_attempt = latest.get("run_attempt")
+        if run_attempt is None:
+            raise TelemetryError("missing_run_attempt")
+        if type(run_attempt) is not int:
+            try:
+                run_attempt = int(run_attempt)
+            except (TypeError, ValueError):
+                raise TelemetryError("run_attempt_invalid") from None
+    else:
+        run_attempt = attempt
+
+    run = api_get(f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}")
     if not isinstance(run, dict):
         raise TelemetryError("run_payload_invalid")
     remote = run.get("repository")
     full_name = remote.get("full_name") if isinstance(remote, dict) else None
+    full_name = full_name or run.get("repository_full_name")
     if full_name and full_name.lower() != repository.lower():
         raise TelemetryError("run_repository_mismatch")
-    run_attempt = attempt if attempt is not None else run.get("run_attempt")
-    if run_attempt is None:
+    if run.get("id") is not None and int(run["id"]) != run_id:
+        raise TelemetryError("run_id_mismatch")
+    observed_attempt = run.get("run_attempt")
+    if observed_attempt is None:
         raise TelemetryError("missing_run_attempt")
+    if type(observed_attempt) is not int:
+        try:
+            observed_attempt = int(observed_attempt)
+        except (TypeError, ValueError):
+            raise TelemetryError("run_attempt_invalid") from None
+    if observed_attempt != run_attempt:
+        raise TelemetryError("run_attempt_mismatch")
+
     jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
-    jobs_payload = api_get(jobs_path)
-    jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else jobs_payload
+    jobs = fetch_attempt_jobs(api_get, jobs_path)
     job = _select_job(jobs, job_id=job_id)
-    return facts_from_github_api_objects(run, job)
+    if (
+        job is not None
+        and job.get("run_id") is not None
+        and int(job["run_id"]) != run_id
+    ):
+        raise TelemetryError("job_run_mismatch")
+    if (
+        job is not None
+        and job.get("run_attempt") is not None
+        and int(job["run_attempt"]) != run_attempt
+    ):
+        raise TelemetryError("job_attempt_mismatch")
+
+    facts = facts_from_github_api_objects(run, job)
+    completed_total = sum(
+        1
+        for item in jobs
+        if isinstance(item, dict)
+        and item.get("status") == "completed"
+        and item.get("id")
+    )
+    if job_id is not None:
+        selection = "job_id"
+    elif job is not None:
+        selection = "sole_completed"
+    else:
+        selection = "none"
+    return facts, {
+        "completed_jobs_total": completed_total,
+        "job_selection": selection,
+    }
 
 
 def _print(value):
@@ -709,6 +879,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     source = "env"
     github_api_fetched = False
+    completed_jobs_total = None
+    job_selection = None
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -726,7 +898,7 @@ def main(argv=None):
         if not repository:
             parser.exit(2, "cicd-telemetry rejected: repository_required\n")
         try:
-            facts = fetch_github_run_job(
+            facts, coverage = fetch_github_run_job(
                 repository,
                 args.run_id,
                 job_id=args.job_id,
@@ -736,21 +908,33 @@ def main(argv=None):
             parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
         source = "github_api"
         github_api_fetched = True
+        completed_jobs_total = coverage["completed_jobs_total"]
+        job_selection = coverage["job_selection"]
     else:
         facts = facts_from_actions_env()
         source = "env"
-    report = produce(facts, source=source, github_api_fetched=github_api_fetched)
+    report = produce(
+        facts,
+        source=source,
+        github_api_fetched=github_api_fetched,
+        completed_jobs_total=completed_jobs_total,
+        job_selection=job_selection,
+    )
     attach_otlp_json(report)
-    try:
-        write_artifact(report, args.output)
-    except OSError:
-        parser.exit(2, "cicd-telemetry rejected: artifact_flush_failed\n")
+    export_error = None
     if args.otlp_json is not None:
         try:
             write_otlp_json(report, args.otlp_json)
         except TelemetryError as error:
+            export_error = error
             sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
-            return 3
+    # Persist candidate after export attempt so claims match actual flush outcome.
+    try:
+        write_artifact(report, args.output)
+    except OSError:
+        parser.exit(2, "cicd-telemetry rejected: artifact_flush_failed\n")
+    if export_error is not None:
+        return 3
     if args.json:
         printable = {key: value for key, value in report.items() if key != "otlp_json"}
         printable["otlp_json_present"] = report.get("otlp_json") is not None

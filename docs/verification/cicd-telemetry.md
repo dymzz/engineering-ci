@@ -18,10 +18,16 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Equal timestamps | Compatible `start == end` | Valid zero-duration span |
 | Job after completed Run | Job start/end `> Run completed` | `partial` + `inconsistent_run_job_timestamps` |
 | `neutral` / `action_required` / `stale` | Unmapped GitHub conclusions | `unsupported_*_conclusion`; native facts retained |
-| API Run+Job mapping | Injected `gh api` payloads | Independent terminals; `github_api_fetched` |
-| In-progress API Run | `status=in_progress` | No Run completed-at; `partial` |
-| OTLP/JSON flush | `--otlp-json` writable path | File written; `otlp_json_exported`; `otlp_delivered=false` |
-| OTLP/JSON flush failure | Unwritable path / no spans | exit 3; no delivery claim |
+| Pipeline Run ID form | Attempt-scoped execution | Resource/Span `cicd.pipeline.run.id` = `{run_id}/{attempt}` |
+| API Attempt fetch | Injected attempt Run + that Attempt's Jobs | Matching Attempt facts; no latest-Run mix |
+| API `updated_at` only | Completed Run without explicit completed-at | `run_updated_at_ns` kept; no Pipeline end; `run_completed_at_unproven` |
+| Opposite Attempt conclusions | Attempt 1 failure vs Attempt 2 success | Selected Attempt's conclusion/Jobs only |
+| Job not in Attempt | `--job-id` absent from Attempt Jobs | `job_not_found` |
+| Paginated Jobs | Target Job on page 2 | Selected after full Attempt Job set |
+| `--job-id` among many | Explicit single Job | `partial_job_coverage` |
+| OTLP prepared vs exported | Spans present, no `--otlp-json` | `otlp_json_prepared=true`, `otlp_json_exported=false` |
+| OTLP/JSON flush | `--otlp-json` writable path | File written; `otlp_json_exported`; digest; `otlp_delivered=false` |
+| OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
 
 Run:
 

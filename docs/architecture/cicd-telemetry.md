@@ -16,9 +16,32 @@ Inputs (first → second slice):
 1. Explicit `--facts` mapping or Actions env (untrusted / incomplete identity).
 2. **GitHub Actions API** via native `gh api`: `--repository` + `--run-id`
    (+ optional `--job-id` / `--attempt`). Run `conclusion` and Job `conclusion`
-   stay independent. Run bounds use `run_started_at` and, when
-   `status=completed`, `updated_at` as completed-at (Workflow Run has no
-   separate `completed_at`). Job bounds use Job `started_at` / `completed_at`.
+   stay independent. The producer loads **the same Attempt**:
+   `GET .../runs/{id}/attempts/{N}` plus that Attempt's paginated Jobs — never
+   the latest Run view mixed with an older Attempt's Jobs.
+
+### Timestamps
+
+| Field | Source | Role |
+| --- | --- | --- |
+| Run start | GitHub `run_started_at` / explicit mapping | Exact Pipeline start when present |
+| Run end | Explicit `run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT` only | Exact Pipeline end bound |
+| Run `updated_at` | GitHub Workflow Run object update time | Provenance / estimate only (`run_updated_at_ns`); **not** a proven Attempt completed-at |
+| Job bounds | Job `started_at` / `completed_at` | Exact Task bounds |
+
+Without a proven Run completed-at the producer reports
+`run_completed_at_unproven` (when `updated_at` is present) or
+`missing_run_timestamps` and does **not** emit a completed Pipeline Span end.
+
+### Pipeline Run identity (cross-PR with #74)
+
+Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
+SemConv `cicd.pipeline.run.id` is the stable canonical form
+`{github_run_id}/{run_attempt}` on Resource, Pipeline Span, and Task
+correlation. Raw GitHub Run ID and Attempt remain in `facts.*`;
+`github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
+Required OTel SemConv attribute. When GitHub provides `html_url`, it is
+emitted as Recommended `cicd.pipeline.run.url.full`.
 
 Job conclusion never becomes Pipeline result. Selection / Required /
 `blocked` / `not_executed` stay in ECI Plan/Report and are never encoded as
@@ -35,6 +58,10 @@ When both candidate spans are emitted for the same completed Run/Attempt, a Job
 that starts or finishes after the Run completed-at is `partial`
 (`inconsistent_run_job_timestamps`); individually valid spans are kept.
 
+`--job-id` is a deliberate single-Job diagnostic slice. When the Attempt has
+more completed Jobs than emitted Task spans, status is `partial`
+(`partial_job_coverage`).
+
 ## Export
 
 `engineering-ci cicd-telemetry` writes:
@@ -43,11 +70,16 @@ that starts or finishes after the Run completed-at is `partial`
 - optional **`--otlp-json`** file in OTLP/JSON `resourceSpans` shape for a
   neutral receiver or replay path.
 
-`claims.otlp_json_exported` may become true after a successful file flush;
+`claims.otlp_json_prepared` means an in-memory OTLP body exists.
+`claims.otlp_json_exported` becomes true **only** after a successful file
+flush (path + sha256 recorded when asserted). The candidate artifact is
+written **after** the export attempt so top-level mirrors match claims.
 `claims.otlp_delivered` stays false until a later live OTLP/gRPC slice.
 `github_api_fetched` records an API read; it is **not** a Weaver/trusted
 provenance claim. Flush failures exit 3 with `otlp_json_flush_failed` /
-`otlp_json_unavailable` and do not invent spans.
+`otlp_json_unavailable` and do not invent spans. CLI exit 0 for `partial`
+is candidate-generator only — consumers must read `report.status` / coverage,
+not promote exit 0 to terminal PASS.
 
 ## Related
 
