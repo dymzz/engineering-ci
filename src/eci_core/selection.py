@@ -67,6 +67,7 @@ class CheckScopeConfig:
     docs_suffixes: tuple[str, ...]
     code_prefixes: tuple[str, ...]
     source_prefixes: tuple[str, ...]
+    weaver_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,6 +247,7 @@ def load_config(path):
         "docs_suffixes",
         "code_prefixes",
         "source_prefixes",
+        "weaver_prefixes",
     }:
         raise SelectionError("check_scope_invalid")
     docs_suffixes = _string_list(
@@ -262,6 +264,12 @@ def load_config(path):
         source_prefixes=_string_list(
             scope.get("source_prefixes", ["data/", "sources/"]),
             "source_prefixes",
+        ),
+        weaver_prefixes=_string_list(
+            scope.get(
+                "weaver_prefixes", ["telemetry/", "ci-weaver.toml", ".weaver.toml"]
+            ),
+            "weaver_prefixes",
         ),
     )
     return Config(
@@ -355,7 +363,9 @@ def directory_content_id(root):
     """Stable content id over a directory tree (path + file bytes)."""
     root = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
@@ -934,7 +944,18 @@ def _check_scope(selection, config, root):
                     "inputs": [],
                     "reason": "git input is incomplete; full applicability unknown",
                 }
-                for name in ("docs", "tach", "vulture", "source")
+                for name in (
+                    "docs",
+                    "tach",
+                    "vulture",
+                    "source",
+                    *[
+                        check
+                        for check in config.checks
+                        if check
+                        in {"weaver_registry", "weaver_live", "weaver_terminal"}
+                    ],
+                )
             ],
         ]
     docs_changed = sorted(
@@ -949,7 +970,7 @@ def _check_scope(selection, config, root):
     source_changed = any(
         path.startswith(config.check_scope.source_prefixes) for path in paths
     )
-    return [
+    scopes = [
         {
             "name": config.framework,
             "status": selection.status,
@@ -994,6 +1015,22 @@ def _check_scope(selection, config, root):
             else "no source changes",
         },
     ]
+    weaver_inputs = [
+        path for path in paths if path.startswith(config.check_scope.weaver_prefixes)
+    ]
+    scopes.extend(
+        {
+            "name": name,
+            "status": "selected" if weaver_inputs else "not_applicable",
+            "inputs": weaver_inputs,
+            "reason": "Weaver inputs changed"
+            if weaver_inputs
+            else "no Weaver input changes",
+        }
+        for name in config.checks
+        if name in {"weaver_registry", "weaver_live", "weaver_terminal"}
+    )
+    return scopes
 
 
 def _tach_check(root, config, changes):

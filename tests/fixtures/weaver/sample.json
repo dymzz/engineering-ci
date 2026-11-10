@@ -1,0 +1,22 @@
+[
+  {
+    "span": {
+      "name": "cart",
+      "kind": "internal",
+      "attributes": [
+        {
+          "name": "acme.cart.item.count",
+          "value": 3
+        },
+        {
+          "name": "acme.checkout.stage",
+          "value": "payment"
+        },
+        {
+          "name": "acme.session.id",
+          "value": "s-9"
+        }
+      ]
+    }
+  }
+]

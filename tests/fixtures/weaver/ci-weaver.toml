@@ -1,0 +1,12 @@
+schema_version = 1
+registry = "registry"
+registry_manifest = "registry-sha256.json"
+matcher_config = ".weaver.toml"
+sample = "sample.json"
+expected_matchers = ["fixture.cart"]
+otlp = "capture.json"
+expectations = "expected.json"
+[origin]
+repository = "https://github.com/open-telemetry/weaver"
+commit = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
+path = "crates/weaver_live_check/data/model/matchers/semconv.yaml"

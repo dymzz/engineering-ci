@@ -58,7 +58,9 @@ def _selected_checks(plan):
         for item in plan.get("check_scope", chosen.get("check_scope", []))
         if item.get("status") in {"selected", "unknown"}
     ]
-    if not selected and chosen.get("checks"):
+    if ("check_scope" not in plan and "check_scope" not in chosen) and chosen.get(
+        "checks"
+    ):
         selected = [{"name": name, "status": "unknown"} for name in chosen["checks"]]
     return selected
 

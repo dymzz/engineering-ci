@@ -1,0 +1,3 @@
+file_format: definition_manifest/2.0
+schema_url: https://acme.example.com/matchers/1.0.0
+description: Local self-contained registration of the pinned upstream Weaver matcher model.

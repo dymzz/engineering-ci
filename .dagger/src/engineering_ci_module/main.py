@@ -77,12 +77,131 @@ _READ_OPTIONAL = (
 
 @object_type
 class EngineeringCi:
+    weaver_source: dagger.Directory | None = dagger.field(default=None)
+
+    def _weaver_container(self) -> dagger.Container:
+        # Verify the complete release asset before extracting its one executable.
+        install = (
+            "import hashlib,io,os,tarfile,urllib.request;"
+            f"data=urllib.request.urlopen({tooling.WEAVER_LINUX_ASSET!r},timeout=60).read();"
+            f"assert hashlib.sha256(data).hexdigest()=={tooling.WEAVER_LINUX_SHA256!r},'Weaver checksum mismatch';"
+            "archive=tarfile.open(fileobj=io.BytesIO(data),mode='r:xz');"
+            "members=[m for m in archive.getmembers() if m.isfile() and m.name.split('/')[-1]=='weaver'];"
+            "assert len(members)==1,'Weaver executable missing or ambiguous';"
+            "open('/usr/local/bin/weaver','wb').write(archive.extractfile(members[0]).read());"
+            "os.chmod('/usr/local/bin/weaver',0o755)"
+        )
+        return (
+            dag.container(platform=dagger.Platform("linux/amd64"))
+            .from_(tooling.UV_IMAGE)
+            .with_exec(["python", "-c", install])
+            .with_new_file(
+                "/check/requirements.txt",
+                Path(__file__).with_name("weaver-requirements.txt").read_text(),
+            )
+            .with_exec(
+                ["uv", "pip", "install", "--system", "-r", "/check/requirements.txt"]
+            )
+            .with_new_file(
+                "/check/weaver.py", Path(__file__).with_name("weaver.py").read_text()
+            )
+            .with_new_file(
+                "/check/runtime.py",
+                Path(__file__).with_name("weaver_runtime.py").read_text(),
+            )
+            .with_new_file("/check/empty.toml", "")
+            .with_workdir("/workspace")
+        )
+
+    @function
+    async def weaver_artifacts(
+        self,
+        source: dagger.Directory,
+        kind: str = "registry",
+        config_path: str = "ci-weaver.toml",
+    ) -> dagger.Directory:
+        """Export one Weaver execution, its native logs, package and report."""
+        if kind not in {"registry", "sample", "live", "terminal"}:
+            raise ValueError("Unknown Weaver check")
+        bound = dag.directory().with_directory(
+            "/", source, exclude=list(tooling.SOURCE_NOISE)
+        )
+        result = (
+            self._weaver_container()
+            .with_directory("/workspace", bound)
+            .with_env_variable("ECI_SOURCE_DIGEST", await bound.digest())
+            .with_env_variable("ECI_WEAVER_ASSET_SHA256", tooling.WEAVER_LINUX_SHA256)
+            .with_exec(["python", "/check/runtime.py", kind, "--config", config_path])
+        )
+        return result.directory("/out")
+
+    @function
+    async def weaver_report(
+        self,
+        source: dagger.Directory,
+        kind: str = "registry",
+        config_path: str = "ci-weaver.toml",
+    ) -> str:
+        """Read the same native execution used by the artifact and strict checks."""
+        artifacts = await self.weaver_artifacts(source, kind, config_path)
+        return await artifacts.file("report.json").contents()
+
+    async def _require_weaver(self, source, kind, config_path):
+        report = json.loads(await self.weaver_report(source, kind, config_path))
+        if report["status"] != "passed":
+            raise ValueError(f"{report['name']}: {report['reason']}")
+
+    @function
+    async def weaver_enforce(
+        self,
+        source: dagger.Directory,
+        kind: str = "live",
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """API gate: fail the call when the selected native Weaver report fails."""
+        await self._require_weaver(source, kind, config_path)
+
+    @function
+    @check
+    async def weaver_registry(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Check and package an explicitly selected, fixed local Registry."""
+        await self._require_weaver(
+            self.weaver_source or source, "registry", config_path
+        )
+
+    @function
+    @check
+    async def weaver_live(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Validate a completed OTLP capture through Weaver's gRPC receiver."""
+        await self._require_weaver(self.weaver_source or source, "live", config_path)
+
+    @function
+    @check
+    async def weaver_terminal(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Post-completion Pipeline validation; requires explicit terminal evidence."""
+        await self._require_weaver(
+            self.weaver_source or source, "terminal", config_path
+        )
+
     @function
     async def execute_plan(
         self,
         plan: dagger.File,
         source: dagger.Directory,
         python_version: str = "3.14",
+        weaver_config: str = "ci-weaver.toml",
     ) -> str:
         """Execute plan targets in-container; host-run selected checks/prereqs."""
         import copy
@@ -105,7 +224,9 @@ class EngineeringCi:
             for item in value.get("check_scope", chosen.get("check_scope", []))
             if item.get("status") in {"selected", "unknown"}
         ]
-        if not selected_checks and chosen.get("checks"):
+        if ("check_scope" not in value and "check_scope" not in chosen) and chosen.get(
+            "checks"
+        ):
             selected_checks = [
                 {"name": name, "status": "unknown"} for name in chosen["checks"]
             ]
@@ -214,13 +335,51 @@ class EngineeringCi:
                 check_plan["git"]["index_tree"] = None
                 check_plan["git"]["content_binding"] = None
                 check_plan["git"]["snapshot"] = "worktree"
-                host = execution.execute(check_plan, root=directory)
+                weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
+                selected_weaver = [
+                    item
+                    for item in selected_checks
+                    if item.get("name") in weaver_checks
+                ]
+                check_plan["check_scope"] = [
+                    item
+                    for item in selected_checks
+                    if item.get("name") not in weaver_checks
+                ]
+                check_plan["selection"]["checks"] = [
+                    name
+                    for name in check_plan["selection"].get("checks", [])
+                    if name not in weaver_checks
+                ]
+                host = (
+                    execution.execute(check_plan, root=directory)
+                    if check_plan["check_scope"] or prerequisites
+                    else {
+                        "status": "passed",
+                        "exit_code": 0,
+                        "checks": [],
+                        "prerequisites": [],
+                    }
+                )
                 report["checks"] = host.get("checks") or []
                 report["prerequisites"] = host.get("prerequisites") or []
                 if report["status"] == "passed":
                     report["status"] = host.get("status", "blocked")
                     report["reason"] = host.get("reason")
                     report["exit_code"] = host.get("exit_code", 5)
+                for item in selected_weaver:
+                    native = json.loads(
+                        await self.weaver_report(
+                            source, item["name"].removeprefix("weaver_"), weaver_config
+                        )
+                    )
+                    native["selected"] = item.get("status")
+                    native["source_tree_verified"] = tree_verified
+                    report["checks"].append(native)
+                    if native["status"] != "passed" and report["status"] == "passed":
+                        report.update(
+                            status="failed", exit_code=1, reason="checks_failed"
+                        )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     @function

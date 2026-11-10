@@ -466,6 +466,53 @@ def test_check_scope_separates_documents_from_business_tests(repo):
     assert scope["tach"]["status"] == "not_applicable"
 
 
+def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
+    from dataclasses import replace
+
+    path, base = repo
+    (path / "telemetry").mkdir()
+    (path / "telemetry/capture.json").write_text("{}")
+    cfg = replace(config(path), checks=("weaver_registry", "weaver_live"))
+    changes = selection.changeset(path, base=base)
+    chosen = selection.select(changes, cfg, root=path)
+    value = selection.plan(
+        chosen, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    scope = {item["name"]: item for item in value["check_scope"]}
+    assert scope["weaver_registry"]["status"] == "selected"
+    assert scope["weaver_live"]["inputs"] == ["telemetry/capture.json"]
+    assert "weaver_terminal" not in scope
+
+
+def test_directory_content_id_uses_platform_independent_path_order(tmp_path):
+    import hashlib
+
+    files = {"Z.txt": b"upper", "a-b.txt": b"dash", "a/child.txt": b"child"}
+    for name, data in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    expected = hashlib.sha256()
+    for name in sorted(files):
+        expected.update(name.encode() + b"\0" + files[name] + b"\0")
+    assert selection.directory_content_id(tmp_path) == expected.hexdigest()
+
+
+def test_incomplete_weaver_scope_remains_unknown(repo):
+    from dataclasses import replace
+
+    path, _ = repo
+    cfg = replace(config(path), checks=("weaver_terminal",))
+    chosen = selection.select(
+        selection.changeset(path, base="missing-base"), cfg, root=path
+    )
+    value = selection.plan(
+        chosen, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    scope = {item["name"]: item for item in value["check_scope"]}
+    assert scope["weaver_terminal"]["status"] == "unknown"
+
+
 def test_check_scope_rechecks_all_documents_after_deletion(repo):
     path, base = repo
     (path / "docs/guide.md").unlink()
