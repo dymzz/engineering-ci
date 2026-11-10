@@ -1,0 +1,69 @@
+groups:
+  - id: entity.cloudfoundry.system
+    type: entity
+    stability: development
+    name: cloudfoundry.system
+    brief: >
+      The system component which is monitored.
+    attributes:
+      - ref: cloudfoundry.system.id
+        role: identifying
+        requirement_level: required
+  - id: entity.cloudfoundry.system.instance
+    type: entity
+    stability: development
+    name: cloudfoundry.system.instance
+    brief: >
+      A concrete instance of the system component which is monitored.
+    attributes:
+      - ref: cloudfoundry.system.instance.id
+        role: identifying
+        requirement_level: required
+  - id: entity.cloudfoundry.app
+    type: entity
+    stability: development
+    name: cloudfoundry.app
+    brief: >
+      The application which is monitored.
+    attributes:
+      - ref: cloudfoundry.app.id
+        role: identifying
+        requirement_level: required
+      - ref: cloudfoundry.app.name
+        role: descriptive
+  - id: entity.cloudfoundry.space
+    type: entity
+    stability: development
+    name: cloudfoundry.space
+    brief: >
+      The space of the application which is monitored.
+    attributes:
+      - ref: cloudfoundry.space.id
+        role: identifying
+        requirement_level: required
+      - ref: cloudfoundry.space.name
+        role: descriptive
+  - id: entity.cloudfoundry.org
+    type: entity
+    stability: development
+    name: cloudfoundry.org
+    brief: >
+      The organization of the application which is monitored.
+    attributes:
+      - ref: cloudfoundry.org.id
+        role: identifying
+        requirement_level: required
+      - ref: cloudfoundry.org.name
+        role: descriptive
+  - id: entity.cloudfoundry.process
+    type: entity
+    stability: development
+    name: cloudfoundry.process
+    brief: >
+      The process of the application which is monitored.
+    attributes:
+      - ref: cloudfoundry.process.id
+        role: identifying
+        requirement_level: required
+      - ref: cloudfoundry.process.type
+        role: descriptive

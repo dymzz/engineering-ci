@@ -244,7 +244,11 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
         return "terminal_attempt_correlation_unverified", {
             "status": "unverified",
             "reason": "attempt_extension_absent",
+            "scope": "capture_extension_vs_declared",
+            "source": "otlp_capture_or_sample",
             "declared_attempt": source["attempt"],
+            # Not #75/#63 GitHub authentication or admission.
+            "authenticated": False,
         }
     try:
         attempt_value = int(attempt_attr)
@@ -252,7 +256,14 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
         return "terminal_attempt_extension_invalid", None
     if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
         return "terminal_attempt_mismatch", None
-    return None, {"status": "verified", "attempt": attempt_value}
+    return None, {
+        # Capture/sample attribute matched declared Attempt — not provenance auth.
+        "status": "capture_attempt_matched",
+        "attempt": attempt_value,
+        "scope": "capture_extension_vs_declared",
+        "source": "otlp_capture_or_sample",
+        "authenticated": False,
+    }
 
 
 def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None):
@@ -367,13 +378,16 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                         result["attempt_correlation"] = (
                             correlations[0] if len(correlations) == 1 else correlations
                         )
-                    # SemConv live validity already passed above; terminal
-                    # Attempt correlation is a separate gate outcome.
-                    result["semconv_live"] = "passed"
+                    # Native matcher/finding policy for this declared set only —
+                    # not a claim of full CI/CD SemConv Required coverage.
+                    result["native_live_status"] = "passed"
+                    result["terminal_correlation_status"] = "failed"
                     return result
             result["attempt_correlation"] = (
                 correlations[0] if len(correlations) == 1 else correlations
             )
+            result["native_live_status"] = "passed"
+            result["terminal_correlation_status"] = "passed"
         result["coverage"] = {
             "expected_spans": len(spans),
             "matched_spans": len(spans),

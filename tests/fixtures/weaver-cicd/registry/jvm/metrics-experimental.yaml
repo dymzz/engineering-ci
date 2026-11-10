@@ -1,0 +1,209 @@
+groups:
+  - id: metric.jvm.memory.init
+    type: metric
+    metric_name: jvm.memory.init
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.memory
+    brief: "Measure of initial memory requested."
+    instrument: updowncounter
+    unit: "By"
+
+  - id: metric.jvm.system.cpu.utilization
+    type: metric
+    metric_name: jvm.system.cpu.utilization
+    annotations:
+      code_generation:
+        metric_value_type: double
+    stability: development
+    brief: "Recent CPU utilization for the whole system as reported by the JVM."
+    note: >
+      The value range is [0.0,1.0].
+      This utilization is not defined as being for the specific interval since last measurement
+      (unlike `system.cpu.utilization`).
+      [Reference](https://docs.oracle.com/en/java/javase/17/docs/api/jdk.management/com/sun/management/OperatingSystemMXBean.html#getCpuLoad()).
+    instrument: gauge
+    unit: "1"
+
+  - id: metric.jvm.system.cpu.load_1m
+    type: metric
+    metric_name: jvm.system.cpu.load_1m
+    annotations:
+      code_generation:
+        metric_value_type: double
+    stability: development
+    brief: "Average CPU load of the whole system for the last minute as reported by the JVM."
+    note: >
+      The value range is [0,n], where n is the number of CPU cores - or a negative number if the value is not available.
+      This utilization is not defined as being for the specific interval since last measurement
+      (unlike `system.cpu.utilization`).
+      [Reference](https://docs.oracle.com/en/java/javase/17/docs/api/java.management/java/lang/management/OperatingSystemMXBean.html#getSystemLoadAverage()).
+    instrument: gauge
+    unit: "{run_queue_item}"
+
+  - id: attributes.jvm.buffer
+    type: attribute_group
+    brief: "Describes JVM buffer metric attributes."
+    attributes:
+      - ref: jvm.buffer.pool.name
+        requirement_level: recommended
+
+  - id: metric.jvm.buffer.memory.used
+    type: metric
+    metric_name: jvm.buffer.memory.used
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.buffer
+    brief: "Measure of memory used by buffers."
+    instrument: updowncounter
+    unit: "By"
+
+  - id: metric.jvm.buffer.memory.limit
+    type: metric
+    metric_name: jvm.buffer.memory.limit
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.buffer
+    brief: "Measure of total memory capacity of buffers."
+    instrument: updowncounter
+    unit: "By"
+
+  - id: metric.jvm.buffer.count
+    type: metric
+    metric_name: jvm.buffer.count
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.buffer
+    brief: "Number of buffers in the pool."
+    instrument: updowncounter
+    unit: "{buffer}"
+
+  - id: attributes.jvm.executor
+    type: attribute_group
+    brief: "Describes JVM executor metric attributes."
+    attributes:
+      - ref: jvm.executor.name
+        requirement_level: required
+      - ref: jvm.executor.owner.name
+        requirement_level: recommended
+      - ref: jvm.executor.type
+        requirement_level: required
+
+  - id: metric.jvm.executor.thread.count
+    type: metric
+    metric_name: jvm.executor.thread.count
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: >
+      The number of executor threads that are currently in the state described by the
+      `jvm.executor.thread.state` attribute.
+    instrument: updowncounter
+    unit: "{thread}"
+    attributes:
+      - ref: jvm.executor.thread.state
+        requirement_level: required
+
+  - id: metric.jvm.executor.thread.core
+    type: metric
+    metric_name: jvm.executor.thread.core
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The number of core threads configured for the executor."
+    instrument: updowncounter
+    unit: "{thread}"
+
+  - id: metric.jvm.executor.thread.limit
+    type: metric
+    metric_name: jvm.executor.thread.limit
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The maximum number of threads allowed for the executor."
+    note: >
+      Instrumentations SHOULD emit this metric only when the maximum thread count is finite and
+      represents a meaningful operational limit. This metric SHOULD NOT be emitted for unbounded
+      or effectively unbounded executors. For example, an executor with a maximum thread count of
+      `Integer.MAX_VALUE` is effectively unbounded.
+    instrument: updowncounter
+    unit: "{thread}"
+
+  - id: metric.jvm.executor.queue.size
+    type: metric
+    metric_name: jvm.executor.queue.size
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The number of tasks currently queued for execution."
+    instrument: updowncounter
+    unit: "{task}"
+
+  - id: metric.jvm.executor.queue.capacity
+    type: metric
+    metric_name: jvm.executor.queue.capacity
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The maximum number of tasks the executor queue can hold."
+    note: >
+      Instrumentations SHOULD emit this metric only when the queue has a finite capacity that
+      represents a meaningful operational limit. This metric SHOULD NOT be emitted for unbounded
+      or effectively unbounded queues.
+    instrument: updowncounter
+    unit: "{task}"
+
+  - id: metric.jvm.executor.task.completed
+    type: metric
+    metric_name: jvm.executor.task.completed
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The number of tasks completed by the executor."
+    note: >
+      A task SHOULD be counted as completed when the executor has finished processing it,
+      regardless of whether it returns normally, terminates with an exception, or is canceled.
+      Cancellation during processing does not complete the task until processing ends.
+      A task that never begins processing on the executor SHOULD NOT be counted.
+      A task initially rejected but subsequently resubmitted to and processed by the executor
+      SHOULD be counted when processing ends.
+    instrument: counter
+    unit: "{task}"
+
+  - id: metric.jvm.executor.task.rejected
+    type: metric
+    metric_name: jvm.executor.task.rejected
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    extends: attributes.jvm.executor
+    brief: "The number of task submissions rejected by the executor."
+    note: >
+      A task submission SHOULD be counted as rejected when the executor invokes its
+      rejection handler, regardless of whether the handler subsequently executes the
+      task in the caller (for example, `CallerRunsPolicy`) or discards or replaces a
+      queued task (for example, `DiscardOldestPolicy`). This metric counts rejected
+      submissions, not tasks ultimately discarded from the queue.
+    instrument: counter
+    unit: "{task}"

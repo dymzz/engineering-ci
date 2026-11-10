@@ -189,7 +189,8 @@ def test_otlp_exact_identity_and_terminal_evidence():
     assert missing["status"] == "failed"
     assert missing["reason"] == "terminal_attempt_correlation_unverified"
     assert missing["attempt_correlation"]["status"] == "unverified"
-    assert missing["semconv_live"] == "passed"
+    assert missing["native_live_status"] == "passed"
+    assert missing["terminal_correlation_status"] == "failed"
     expected["source"]["attempt"] = 2
     expected["terminal_evidence"]["attempt"] = 2
     again = weaver.otlp_result(
@@ -228,7 +229,13 @@ def test_terminal_attempt_extension_cross_check():
         0, json.dumps(report), expected, terminal=True, capture=capture
     )
     assert ok["status"] == "passed"
-    assert ok["attempt_correlation"] == {"status": "verified", "attempt": 1}
+    assert ok["attempt_correlation"]["status"] == "capture_attempt_matched"
+    assert ok["attempt_correlation"]["attempt"] == 1
+    assert ok["attempt_correlation"]["authenticated"] is False
+    assert ok["terminal_correlation_status"] == "passed"
+    assert ok["native_live_status"] == "passed"
+    # Capture match is not #63 admission / GitHub authentication.
+    assert "trusted" not in ok or ok.get("trusted") is not True
     bad_report, bad_expected, bad_capture = otlp_payload(attempt_attr=9)
     bad = weaver.otlp_result(
         0, json.dumps(bad_report), bad_expected, terminal=True, capture=bad_capture

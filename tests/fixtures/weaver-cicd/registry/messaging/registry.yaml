@@ -1,0 +1,215 @@
+groups:
+  - id: registry.messaging
+    type: attribute_group
+    stability: development
+    display_name: General Messaging Attributes
+    brief: 'Attributes describing telemetry around messaging systems and messaging activities.'
+    attributes:
+      - id: messaging.batch.message_count
+        type: int
+        stability: development
+        brief: The number of messages sent, received, or processed in the scope of the batching operation.
+        note: >
+            Instrumentations SHOULD NOT set `messaging.batch.message_count` on spans that operate with a single message.
+            When a messaging client library supports both batch and single-message API for the same operation, instrumentations SHOULD
+            use `messaging.batch.message_count` for batching APIs and SHOULD NOT use it for single-message APIs.
+        examples: [0, 1, 2]
+      - id: messaging.client.id
+        type: string
+        stability: development
+        brief: >
+          A unique identifier for the client that consumes or produces a message.
+        examples: ['client-5', 'myhost@8742@s8083jm']
+      - id: messaging.consumer.group.name
+        type: string
+        stability: development
+        brief: >
+          The name of the consumer group with which a consumer is associated.
+        note: >
+          Semantic conventions for individual messaging systems SHOULD document whether `messaging.consumer.group.name`
+          is applicable and what it means in the context of that system.
+        examples: ['my-group', 'indexer']
+      - id: messaging.destination.name
+        type: string
+        stability: development
+        brief: 'The message destination name'
+        note: |
+          SHOULD uniquely identify a specific queue, topic or other entity within the broker. If
+          the broker doesn't have such notion, it SHOULD uniquely identify the broker.
+        examples: ['MyQueue', 'MyTopic']
+      - id: messaging.destination.subscription.name
+        type: string
+        stability: development
+        brief: 'The name of the destination subscription from which a message is consumed.'
+        note: >
+          Semantic conventions for individual messaging systems SHOULD document whether `messaging.destination.subscription.name`
+          is applicable and what it means in the context of that system.
+        examples: ['subscription-a']
+      - id: messaging.destination.template
+        type: string
+        stability: development
+        brief: Low cardinality representation of the messaging destination name
+        note: >
+          Destination names could be constructed from templates.
+          An example would be a destination name involving a username or product ID.
+          Although the destination name in this case is of high cardinality,
+          the underlying template is of low cardinality and can be effectively
+          used for grouping and aggregation.
+        examples: ['/customers/{customerId}']
+      - id: messaging.destination.anonymous
+        type: boolean
+        stability: development
+        brief: 'A boolean that is true if the message destination is anonymous (could be unnamed or have auto-generated name).'
+      - id: messaging.destination.temporary
+        type: boolean
+        stability: development
+        brief: 'A boolean that is true if the message destination is temporary and might not exist anymore after messages are processed.'
+      - id: messaging.destination.partition.id
+        type: string
+        stability: development
+        brief: >
+          The identifier of the partition messages are sent to or received from, unique within the `messaging.destination.name`.
+        examples: '1'
+      - id: messaging.message.conversation_id
+        type: string
+        stability: development
+        brief: >
+          The conversation ID identifying the conversation to which the message belongs,
+          represented as a string. Sometimes called "Correlation ID".
+        examples: 'MyConversationId'
+      - id: messaging.message.envelope.size
+        type: int
+        stability: development
+        brief: >
+          The size of the message body and metadata in bytes.
+        note: |
+          This can refer to both the compressed or uncompressed size. If both sizes are known, the uncompressed
+          size should be used.
+        examples: 2738
+      - id: messaging.message.id
+        type: string
+        stability: development
+        brief: 'A value used by the messaging system as an identifier for the message, represented as a string.'
+        examples: '452a7c7c7c7048c2f887f61572b18fc2'
+      - id: messaging.message.body.size
+        type: int
+        stability: development
+        brief: >
+          The size of the message body in bytes.
+        note: |
+          This can refer to both the compressed or uncompressed body size. If both sizes are known, the uncompressed
+          body size should be used.
+        examples: 1439
+      - id: messaging.operation.type
+        type:
+          members:
+            - id: create
+              value: "create"
+              brief: >
+                A message is created.
+                "Create" spans always refer to a single message and are used to provide a unique creation context for messages in batch sending scenarios.
+              stability: development
+            - id: send
+              value: "send"
+              brief: >
+                One or more messages are provided for sending to an intermediary.
+                If a single message is sent, the context of the "Send" span can be used as the creation context and no "Create" span needs to be created.
+              stability: development
+            - id: receive
+              value: "receive"
+              brief: >
+                One or more messages are requested by a consumer.
+                This operation refers to pull-based scenarios, where consumers explicitly call methods of messaging SDKs to receive messages.
+              stability: development
+            - id: process
+              value: "process"
+              brief: >
+                One or more messages are processed by a consumer.
+              stability: development
+            - id: settle
+              value: "settle"
+              brief: >
+                One or more messages are settled.
+              stability: development
+            - id: deliver
+              value: "deliver"
+              brief: "Deprecated. Use `process` instead."
+              deprecated:
+                reason: renamed
+                renamed_to: "process"
+              stability: development
+            - id: publish
+              value: "publish"
+              brief: "Deprecated. Use `send` instead."
+              deprecated:
+                reason: renamed
+                renamed_to: "send"
+              stability: development
+
+        stability: development
+        brief: >
+          A string identifying the type of the messaging operation.
+        note: If a custom value is used, it MUST be of low cardinality.
+      - id: messaging.operation.name
+        type: string
+        stability: development
+        brief: >
+          The system-specific name of the messaging operation.
+        examples: [ "ack", "nack", "send" ]
+      - id: messaging.system.name
+        brief: The messaging system as identified by the client instrumentation.
+        note: >
+          The actual messaging system may differ from the one known by the client.
+          For example, when using Kafka client libraries to communicate with Azure Event Hubs, the `messaging.system.name`
+          is set to `kafka` based on the instrumentation's best knowledge.
+        type:
+          members:
+            - id: activemq
+              value: 'activemq'
+              brief: 'Apache ActiveMQ'
+              stability: development
+            - id: aws.sns
+              value: 'aws.sns'
+              brief: 'Amazon Simple Notification Service (SNS)'
+              stability: development
+            - id: aws.sqs
+              value: 'aws.sqs'
+              brief: 'Amazon Simple Queue Service (SQS)'
+              stability: development
+            - id: azure.eventgrid
+              value: 'azure.eventgrid'
+              brief: 'Azure Event Grid'
+              stability: development
+            - id: azure.eventhubs
+              value: 'azure.eventhubs'
+              brief: 'Azure Event Hubs'
+              stability: development
+            - id: azure.servicebus
+              value: 'azure.servicebus'
+              brief: 'Azure Service Bus'
+              stability: development
+            - id: gcp.pubsub
+              value: 'gcp.pubsub'
+              brief: 'Google Cloud Pub/Sub'
+              stability: development
+            - id: jms
+              value: 'jms'
+              brief: 'Java Message Service'
+              stability: development
+            - id: kafka
+              value: 'kafka'
+              brief: 'Apache Kafka'
+              stability: development
+            - id: rabbitmq
+              value: 'rabbitmq'
+              brief: 'RabbitMQ'
+              stability: development
+            - id: rocketmq
+              value: 'rocketmq'
+              brief: 'Apache RocketMQ'
+              stability: development
+            - id: pulsar
+              value: 'pulsar'
+              brief: 'Apache Pulsar'
+              stability: development
+        stability: development

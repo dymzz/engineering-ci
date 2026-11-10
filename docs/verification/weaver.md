@@ -76,10 +76,17 @@ with the same path/hash contract. Native `diff --v2` output is exported in
 
 `.weaver.toml` is a real native configuration, with CEL matchers and applicable
 `strict_attribute_groups`. The bounded configuration supports
-`live-check.matchers` and `policy.finding_filters`. External advice files,
-resolver overrides, and exporter settings are rejected rather than read from
-unbound locations. Native built-in policies and explicit CLI options remain
-part of the pinned tool execution.
+`live-check.matchers`, optional `live-check.search_all_attributes`,
+`live-check.finding_filters`, and `policy.finding_filters`. External advice
+files, resolver overrides, and exporter settings are rejected rather than read
+from unbound locations. Native built-in policies and explicit CLI options remain
+part of the pinned tool execution. CI/CD SemConv fixtures that carry
+Resource-level `cicd.pipeline.run.id` (and related identity attrs) set
+`search_all_attributes = true` so those attributes resolve against the packaged
+catalog; Pipeline/Task Required attributes are still enforced by signal binding.
+The Attempt-correlation extension `github.actions.run_attempt` may be filtered
+as a scoped `missing_attribute` so Terminal can bind declared Attempt without
+treating a non-SemConv key as a SemConv Live violation.
 
 For the fixed SemConv candidate, the raw Group
 `span.cicd.pipeline.run.server` resolves to v2 signal type
@@ -144,10 +151,24 @@ absent `parentSpanId` accepted as Root.
 SemConv Required attribute. A SemConv-only Live Check may PASS without it.
 An explicitly requested `weaver-terminal` Run/Attempt correlation gate must
 **not** PASS while Attempt correlation remains `unverified`; absence yields
-`terminal_attempt_correlation_unverified` with `semconv_live=passed` retained.
+`terminal_attempt_correlation_unverified` with `native_live_status=passed` and
+`terminal_correlation_status=failed`. `native_live_status` covers only the
+declared Matcher / finding-policy set for that run — not full CI/CD SemConv
+Required coverage.
+
+When the capture/sample carries `github.actions.run_attempt` matching the
+declared Attempt, `attempt_correlation.status` is `capture_attempt_matched`
+(`authenticated=false`). That is an in-capture consistency check only; it is
+**not** #75 GitHub provenance authentication or #63 admission. Top-level
+`trusted` stays `false`.
+
 Matching caller assertions alone cannot pass against a different observed
 Resource Run ID or SemConv result. External GitHub provenance authentication
 remains #75/#63; #61 owns Required.
+
+Bounded CI/CD SemConv v1.45.0 Pipeline+Task fixture:
+`tests/fixtures/weaver-cicd/` (pinned Registry bytes + native matchers). Cart
+fixture remains Weaver plumbing only.
 
 ## Execution and artifacts
 

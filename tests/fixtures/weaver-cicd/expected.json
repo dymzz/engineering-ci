@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source": { "run_id": "controlled-42/1", "attempt": 1 },
+  "spans": [
+    {
+      "trace_id": "11111111111111111111111111111111",
+      "span_id": "2222222222222222",
+      "matcher": "eci.pipeline",
+      "signal": "cicd.pipeline.run.server"
+    },
+    {
+      "trace_id": "11111111111111111111111111111111",
+      "span_id": "3333333333333333",
+      "matcher": "eci.task",
+      "signal": "cicd.pipeline.task.internal"
+    }
+  ],
+  "terminal_evidence": {
+    "run_id": "controlled-42/1",
+    "attempt": 1,
+    "status": "completed",
+    "result": "success"
+  }
+}

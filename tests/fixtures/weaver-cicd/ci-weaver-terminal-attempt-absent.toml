@@ -1,0 +1,13 @@
+schema_version = 1
+registry = "registry"
+registry_manifest = "registry-sha256.json"
+matcher_config = ".weaver.toml"
+sample = "sample.json"
+expected_matchers = ["eci.pipeline", "eci.task"]
+otlp = "capture-attempt-absent.json"
+expectations = "expected.json"
+
+[origin]
+repository = "https://github.com/open-telemetry/semantic-conventions"
+commit = "fb30ca17193b551473b1f43c315482918ab6987c"
+version = "1.45.0"

@@ -152,7 +152,19 @@ def validate_matcher_config(path):
     config = tomllib.loads(path.read_text())
     if set(config) - {"live-check", "policy"}:
         raise ValueError("matcher_config_external_inputs_unsupported")
-    if set(config.get("live-check", {})) - {"matchers"}:
+    # Allow native search_all_attributes / finding_filters; reject other
+    # live-check overrides (advice paths, exporters, unbound inputs).
+    if set(config.get("live-check", {})) - {
+        "matchers",
+        "search_all_attributes",
+        "finding_filters",
+    }:
+        raise ValueError("live_config_override_unsupported")
+    search_all = config.get("live-check", {}).get("search_all_attributes")
+    if search_all is not None and type(search_all) is not bool:
+        raise ValueError("live_config_override_unsupported")
+    filters = config.get("live-check", {}).get("finding_filters")
+    if filters is not None and type(filters) is not list:
         raise ValueError("live_config_override_unsupported")
     if set(config.get("policy", {})) - {"finding_filters"}:
         raise ValueError("policy_external_inputs_unsupported")
