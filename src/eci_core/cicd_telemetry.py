@@ -15,14 +15,17 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
+OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
 # OTLP SpanKind numeric values.
 SPAN_KIND_INTERNAL = 1
 SPAN_KIND_SERVER = 2
@@ -291,15 +294,25 @@ def _stable_ids(run_id, attempt, job_id=None):
     return trace_id, pipeline_span_id, task_span_id
 
 
-def produce(facts, *, producer="eci_core.cicd_telemetry"):
+def produce(
+    facts,
+    *,
+    producer="eci_core.cicd_telemetry",
+    source="mapping",
+    github_api_fetched=False,
+):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial."""
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
         "evidence_class": EVIDENCE_CLASS,
+        "source": source,
         "claims": {
             "otlp_delivered": False,
+            "otlp_json_exported": False,
             "weaver_pass": False,
+            "github_api_fetched": bool(github_api_fetched),
+            # API fetch is not full #75 trusted provenance / Weaver evidence.
             "github_authenticated": False,
             "candidate_record_only": True,
         },
@@ -316,6 +329,7 @@ def produce(facts, *, producer="eci_core.cicd_telemetry"):
         "facts": asdict(facts),
         "resource": {},
         "spans": [],
+        "otlp_json": None,
     }
     if not facts.has_run_identity:
         report["reason"] = "missing_run_identity"
@@ -427,10 +441,232 @@ def produce(facts, *, producer="eci_core.cicd_telemetry"):
 def write_artifact(report, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Do not embed the nested OTLP document twice in the candidate artifact.
+    payload = {key: value for key, value in report.items() if key != "otlp_json"}
+    if report.get("otlp_json") is not None:
+        payload["otlp_json_exported"] = True
     path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return path
+
+
+def _otlp_attr(key, value):
+    if type(value) is bool:
+        return {"key": key, "value": {"boolValue": value}}
+    if type(value) is int:
+        return {"key": key, "value": {"intValue": str(value)}}
+    return {"key": key, "value": {"stringValue": str(value)}}
+
+
+def to_otlp_json(report):
+    """Encode candidate spans as OTLP/JSON ExportTraceServiceRequest body.
+
+    This is a file-shaped OTLP JSON artifact for a neutral receiver/replay path.
+    It is not proof of OTLP/gRPC delivery or Weaver sample compatibility.
+    """
+    resource_attrs = [
+        _otlp_attr(key, value) for key, value in report.get("resource", {}).items()
+    ]
+    spans = []
+    for item in report.get("spans", []):
+        span = {
+            "traceId": item["trace_id"],
+            "spanId": item["span_id"],
+            "name": item["name"],
+            "kind": item["kind"],
+            "startTimeUnixNano": str(item["start_time_unix_nano"]),
+            "endTimeUnixNano": str(item["end_time_unix_nano"]),
+            "attributes": [
+                _otlp_attr(key, value) for key, value in item["attributes"].items()
+            ],
+            "status": {"code": item["status"]["code"]},
+        }
+        parent = item.get("parent_span_id")
+        if parent:
+            span["parentSpanId"] = parent
+        spans.append(span)
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": resource_attrs},
+                "scopeSpans": [
+                    {
+                        "scope": {
+                            "name": OTLP_SCOPE_NAME,
+                            "version": str(SCHEMA_VERSION),
+                        },
+                        "spans": spans,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def attach_otlp_json(report):
+    """Attach OTLP JSON body when candidate spans exist; never invent spans."""
+    if not report.get("spans"):
+        report["otlp_json"] = None
+        report["claims"]["otlp_json_exported"] = False
+        return report
+    report["otlp_json"] = to_otlp_json(report)
+    return report
+
+
+def write_otlp_json(report, path):
+    """Flush OTLP JSON artifact. Failure is an explicit export error, not produced."""
+    if not report.get("otlp_json"):
+        raise TelemetryError("otlp_json_unavailable")
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise TelemetryError("otlp_json_flush_failed") from error
+    report["claims"]["otlp_json_exported"] = True
+    # File artifact only — not live OTLP/gRPC delivery.
+    report["claims"]["otlp_delivered"] = False
+    return path
+
+
+def facts_from_github_api_objects(run, job=None):
+    """Map GitHub Actions Run (+ optional Job) API objects to facts.
+
+    Run bounds use `run_started_at` and, when `status==completed`, `updated_at`
+    as the completed-at equivalent (Workflow Run has no separate completed_at).
+    Job bounds use Job `started_at` / `completed_at`.
+    """
+    if not isinstance(run, dict):
+        raise TelemetryError("run_payload_invalid")
+    repository = None
+    remote = run.get("repository")
+    if isinstance(remote, dict):
+        repository = remote.get("full_name")
+    repository = repository or run.get("repository_full_name")
+    server = "https://github.com"
+    html = run.get("html_url")
+    if isinstance(html, str) and html.startswith("http"):
+        parts = html.split("/")
+        if len(parts) >= 3:
+            server = f"{parts[0]}//{parts[2]}"
+    run_completed = None
+    if run.get("status") == "completed":
+        run_completed = parse_time_ns(run.get("updated_at"))
+    attempt = run.get("run_attempt")
+    if attempt is not None and type(attempt) is not int:
+        try:
+            attempt = int(attempt)
+        except (TypeError, ValueError):
+            attempt = None
+    run_id = run.get("id")
+    job_id = job_name = job_url = job_conclusion = None
+    job_started = job_completed = None
+    if job is not None:
+        if not isinstance(job, dict):
+            raise TelemetryError("job_payload_invalid")
+        job_id = job.get("id")
+        job_name = job.get("name")
+        job_url = job.get("html_url")
+        job_conclusion = job.get("conclusion")
+        job_started = parse_time_ns(job.get("started_at"))
+        job_completed = parse_time_ns(job.get("completed_at"))
+    return GitHubRunFacts(
+        workflow_name=run.get("name") or run.get("display_title"),
+        run_id=str(run_id) if run_id is not None else None,
+        run_attempt=attempt,
+        job_id=str(job_id) if job_id is not None else None,
+        job_name=job_name,
+        job_url=job_url,
+        run_conclusion=run.get("conclusion"),
+        job_conclusion=job_conclusion,
+        head_sha=run.get("head_sha"),
+        repository=repository,
+        server_url=server,
+        run_started_at_ns=parse_time_ns(run.get("run_started_at")),
+        run_completed_at_ns=run_completed,
+        job_started_at_ns=job_started,
+        job_completed_at_ns=job_completed,
+    )
+
+
+def _select_job(jobs, job_id=None):
+    if not isinstance(jobs, list):
+        raise TelemetryError("jobs_payload_invalid")
+    if job_id is not None:
+        wanted = str(job_id)
+        for job in jobs:
+            if str(job.get("id")) == wanted:
+                return job
+        raise TelemetryError("job_not_found")
+    completed = [
+        job
+        for job in jobs
+        if isinstance(job, dict) and job.get("status") == "completed" and job.get("id")
+    ]
+    if len(completed) == 1:
+        return completed[0]
+    if not completed:
+        return None
+    raise TelemetryError("job_id_required")
+
+
+def gh_api_get(path, *, runner=None):
+    """GET a GitHub API path through native gh. Injectable for tests."""
+    runner = subprocess.run if runner is None else runner
+    result = runner(
+        ["gh", "api", path],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    if result.returncode:
+        raise TelemetryError("github_api_failed")
+    try:
+        return json.loads(result.stdout)
+    except (TypeError, ValueError) as error:
+        raise TelemetryError("github_api_invalid_json") from error
+
+
+def fetch_github_run_job(
+    repository,
+    run_id,
+    *,
+    job_id=None,
+    attempt=None,
+    api_get=None,
+):
+    """Fetch Run (+ Job) facts from GitHub Actions API via gh."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
+        raise TelemetryError("repository_invalid")
+    if type(run_id) is not int:
+        try:
+            run_id = int(run_id)
+        except (TypeError, ValueError):
+            raise TelemetryError("run_id_invalid") from None
+    if run_id <= 0:
+        raise TelemetryError("run_id_invalid")
+    api_get = gh_api_get if api_get is None else api_get
+    run = api_get(f"repos/{repository}/actions/runs/{run_id}")
+    if not isinstance(run, dict):
+        raise TelemetryError("run_payload_invalid")
+    remote = run.get("repository")
+    full_name = remote.get("full_name") if isinstance(remote, dict) else None
+    if full_name and full_name.lower() != repository.lower():
+        raise TelemetryError("run_repository_mismatch")
+    run_attempt = attempt if attempt is not None else run.get("run_attempt")
+    if run_attempt is None:
+        raise TelemetryError("missing_run_attempt")
+    jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
+    jobs_payload = api_get(jobs_path)
+    jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else jobs_payload
+    job = _select_job(jobs, job_id=job_id)
+    return facts_from_github_api_objects(run, job)
 
 
 def _print(value):
@@ -442,8 +678,8 @@ def main(argv=None):
         prog="engineering-ci cicd-telemetry",
         description=(
             "Build candidate CI/CD Pipeline/Task telemetry records from GitHub "
-            "Run/Job facts and write a JSON artifact. Does not claim OTLP "
-            "delivery or Weaver PASS (ECI #75)."
+            "Run/Job facts or Actions API, optionally write OTLP/JSON. Does not "
+            "claim live OTLP delivery or Weaver PASS (ECI #75)."
         ),
     )
     parser.add_argument(
@@ -454,14 +690,27 @@ def main(argv=None):
             "not authenticated GitHub provenance)"
         ),
     )
+    parser.add_argument("--repository", help="owner/repo for GitHub Actions API fetch")
+    parser.add_argument("--run-id", type=int, help="Workflow Run ID for API fetch")
+    parser.add_argument("--job-id", type=int, help="Job ID when multiple Jobs exist")
+    parser.add_argument("--attempt", type=int, help="Run attempt; default from Run")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("cicd-telemetry.json"),
         help="Artifact path for candidate telemetry records",
     )
+    parser.add_argument(
+        "--otlp-json",
+        type=Path,
+        help="Write OTLP/JSON ExportTraceServiceRequest body (file flush only)",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    source = "env"
+    github_api_fetched = False
+    if args.facts is not None and args.run_id is not None:
+        parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
         try:
             payload = json.loads(args.facts.read_text(encoding="utf-8"))
@@ -471,18 +720,51 @@ def main(argv=None):
             facts = facts_from_mapping(payload)
         except TelemetryError as error:
             parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
+        source = "mapping"
+    elif args.run_id is not None:
+        repository = args.repository
+        if not repository:
+            parser.exit(2, "cicd-telemetry rejected: repository_required\n")
+        try:
+            facts = fetch_github_run_job(
+                repository,
+                args.run_id,
+                job_id=args.job_id,
+                attempt=args.attempt,
+            )
+        except TelemetryError as error:
+            parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
+        source = "github_api"
+        github_api_fetched = True
     else:
         facts = facts_from_actions_env()
-    report = produce(facts)
-    write_artifact(report, args.output)
+        source = "env"
+    report = produce(facts, source=source, github_api_fetched=github_api_fetched)
+    attach_otlp_json(report)
+    try:
+        write_artifact(report, args.output)
+    except OSError:
+        parser.exit(2, "cicd-telemetry rejected: artifact_flush_failed\n")
+    if args.otlp_json is not None:
+        try:
+            write_otlp_json(report, args.otlp_json)
+        except TelemetryError as error:
+            sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+            return 3
     if args.json:
-        _print(report)
+        printable = {key: value for key, value in report.items() if key != "otlp_json"}
+        printable["otlp_json_present"] = report.get("otlp_json") is not None
+        _print(printable)
     else:
         print(f"status: {report['status']}")
         print(f"evidence_class: {report['evidence_class']}")
+        print(f"source: {report['source']}")
         print(f"reason: {report['reason'] or 'ok'}")
         print(f"spans: {len(report['spans'])}")
         print(f"artifact: {args.output}")
+        if args.otlp_json is not None:
+            print(f"otlp_json: {args.otlp_json}")
+            print(f"otlp_json_exported: {report['claims']['otlp_json_exported']}")
     if report["status"] in {"produced", "partial"}:
         return 0
     return 3

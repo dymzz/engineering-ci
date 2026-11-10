@@ -3,7 +3,7 @@
 Local verification for [architecture/cicd-telemetry.md](../architecture/cicd-telemetry.md)
 and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
-## First slice (candidate-record producer)
+## Candidate records + API/OTLP JSON slice
 
 | Case | Input | Expected |
 | --- | --- | --- |
@@ -18,9 +18,10 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Equal timestamps | Compatible `start == end` | Valid zero-duration span |
 | Job after completed Run | Job start/end `> Run completed` | `partial` + `inconsistent_run_job_timestamps` |
 | `neutral` / `action_required` / `stale` | Unmapped GitHub conclusions | `unsupported_*_conclusion`; native facts retained |
-| Missing Task URL | Otherwise complete Job | `partial`, Pipeline only |
-| Cancel / skip / timeout | GitHub conclusions | SemConv `cancellation` / `skip` / `timeout` |
-| Two Jobs, one Run | Different `job_id` | Distinct Task span ids; stable Pipeline/trace ids |
+| API Run+Job mapping | Injected `gh api` payloads | Independent terminals; `github_api_fetched` |
+| In-progress API Run | `status=in_progress` | No Run completed-at; `partial` |
+| OTLP/JSON flush | `--otlp-json` writable path | File written; `otlp_json_exported`; `otlp_delivered=false` |
+| OTLP/JSON flush failure | Unwritable path / no spans | exit 3; no delivery claim |
 
 Run:
 
@@ -28,6 +29,9 @@ Run:
 uv run pytest tests/test_cicd_telemetry.py -q
 ```
 
-Live GitHub Actions Run → authenticated API → OTLP/gRPC receiver evidence and
-Weaver sample handoff remain later slices; `produced` here means candidate
-records only.
+Live OTLP/gRPC receiver delivery and Weaver sample handoff remain later slices.
+Manual API check (optional, requires `gh` auth):
+
+```text
+engineering-ci cicd-telemetry --repository dymzz/engineering-ci --run-id <id> --job-id <id> --otlp-json otel.json
+```
