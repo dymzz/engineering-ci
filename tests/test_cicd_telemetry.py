@@ -87,6 +87,44 @@ def test_job_success_with_run_in_progress_is_partial_task_only():
     )
 
 
+def test_explicit_null_run_conclusion_does_not_use_job_success():
+    facts = complete_facts(run_conclusion=None, job_conclusion="success")
+    assert facts.run_conclusion is None
+    assert facts.job_conclusion == "success"
+    report = cicd_telemetry.produce(facts)
+    assert report["status"] == "partial"
+    assert report["reason"] == "missing_run_terminal_result"
+    assert all(
+        span["kind"] != cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
+    )
+
+
+def test_legacy_shared_conclusion_does_not_fabricate_pipeline_or_task():
+    facts = cicd_telemetry.facts_from_mapping(
+        {
+            "workflow_name": "Engineering CI",
+            "run_id": "1",
+            "run_attempt": 1,
+            "job_id": "2",
+            "job_name": "checks",
+            "job_url": "https://example.test/job/2",
+            "conclusion": "success",
+            "head_sha": "d" * 40,
+            "repository": "dymzz/engineering-ci",
+            "run_started_at_ns": RUN_START,
+            "run_completed_at_ns": RUN_END,
+            "job_started_at_ns": JOB_START,
+            "job_completed_at_ns": JOB_END,
+        }
+    )
+    assert facts.run_conclusion is None
+    assert facts.job_conclusion is None
+    report = cicd_telemetry.produce(facts)
+    assert report["status"] == "incomplete"
+    assert report["spans"] == []
+    assert "cicd.pipeline.result" not in json.dumps(report)
+
+
 def test_missing_run_identity_is_incomplete_not_forged():
     report = cicd_telemetry.produce(complete_facts(run_id=None, run_attempt=None))
     assert report["status"] == "incomplete"
@@ -106,6 +144,45 @@ def test_missing_timestamps_refuse_timed_spans():
     assert report["status"] == "incomplete"
     assert report["reason"] == "missing_run_timestamps"
     assert report["spans"] == []
+
+
+def test_reversed_run_timestamps_are_invalid():
+    report = cicd_telemetry.produce(
+        complete_facts(run_started_at_ns=RUN_END, run_completed_at_ns=RUN_START)
+    )
+    assert report["status"] == "partial"
+    assert report["reason"] == "invalid_run_timestamps"
+    assert all(
+        span["kind"] != cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
+    )
+    assert any(
+        span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL for span in report["spans"]
+    )
+
+
+def test_reversed_job_timestamps_are_invalid():
+    report = cicd_telemetry.produce(
+        complete_facts(job_started_at_ns=JOB_END, job_completed_at_ns=JOB_START)
+    )
+    assert report["status"] == "partial"
+    assert report["reason"] == "invalid_job_timestamps"
+    assert len(report["spans"]) == 1
+    assert report["spans"][0]["kind"] == cicd_telemetry.SPAN_KIND_SERVER
+
+
+def test_equal_timestamps_are_valid_zero_duration():
+    report = cicd_telemetry.produce(
+        complete_facts(
+            run_started_at_ns=RUN_START,
+            run_completed_at_ns=RUN_START,
+            job_started_at_ns=JOB_START,
+            job_completed_at_ns=JOB_START,
+        )
+    )
+    assert report["status"] == "produced"
+    pipeline, task = report["spans"]
+    assert pipeline["start_time_unix_nano"] == pipeline["end_time_unix_nano"]
+    assert task["start_time_unix_nano"] == task["end_time_unix_nano"]
 
 
 def test_missing_task_url_is_not_complete_production():

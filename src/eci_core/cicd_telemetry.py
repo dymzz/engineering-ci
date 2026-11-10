@@ -93,16 +93,30 @@ class GitHubRunFacts:
         return bool(self.job_id and self.job_name and self.job_url)
 
     @property
+    def run_bounds_state(self):
+        """missing | invalid | ok. Equal start/end is a valid zero-duration bound."""
+        if self.run_started_at_ns is None or self.run_completed_at_ns is None:
+            return "missing"
+        if self.run_started_at_ns > self.run_completed_at_ns:
+            return "invalid"
+        return "ok"
+
+    @property
+    def job_bounds_state(self):
+        """missing | invalid | ok. Equal start/end is a valid zero-duration bound."""
+        if self.job_started_at_ns is None or self.job_completed_at_ns is None:
+            return "missing"
+        if self.job_started_at_ns > self.job_completed_at_ns:
+            return "invalid"
+        return "ok"
+
+    @property
     def has_run_bounds(self):
-        return (
-            self.run_started_at_ns is not None and self.run_completed_at_ns is not None
-        )
+        return self.run_bounds_state == "ok"
 
     @property
     def has_job_bounds(self):
-        return (
-            self.job_started_at_ns is not None and self.job_completed_at_ns is not None
-        )
+        return self.job_bounds_state == "ok"
 
 
 def _text(mapping, key):
@@ -196,9 +210,7 @@ def facts_from_mapping(value):
             attempt = int(attempt)
         except (TypeError, ValueError):
             raise TelemetryError("run_attempt_invalid") from None
-    # Backward-compatible single "conclusion" applies only when explicit run/job
-    # fields are absent — still kept separate in the dataclass.
-    shared = _text(value, "conclusion")
+    # Run and Job terminals are independent; never copy a shared "conclusion".
     return GitHubRunFacts(
         workflow_name=_text(value, "workflow_name"),
         run_id=_text(value, "run_id"),
@@ -206,8 +218,8 @@ def facts_from_mapping(value):
         job_id=_text(value, "job_id"),
         job_name=_text(value, "job_name"),
         job_url=_text(value, "job_url"),
-        run_conclusion=_text(value, "run_conclusion") or shared,
-        job_conclusion=_text(value, "job_conclusion") or shared,
+        run_conclusion=_text(value, "run_conclusion"),
+        job_conclusion=_text(value, "job_conclusion"),
         head_sha=_text(value, "head_sha"),
         repository=_text(value, "repository"),
         server_url=_text(value, "server_url") or "https://github.com",
@@ -317,8 +329,10 @@ def produce(facts, *, producer="eci_core.cicd_telemetry"):
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
-    elif not facts.has_run_bounds:
+    elif facts.run_bounds_state == "missing":
         reasons.append("missing_run_timestamps")
+    elif facts.run_bounds_state == "invalid":
+        reasons.append("invalid_run_timestamps")
     else:
         pipeline_attrs = {
             ATTR_PIPELINE_NAME: facts.workflow_name,
@@ -349,8 +363,10 @@ def produce(facts, *, producer="eci_core.cicd_telemetry"):
             reasons.append("unsupported_job_conclusion")
         elif facts.job_conclusion is None:
             reasons.append("missing_job_terminal_result")
-        elif not facts.has_job_bounds:
+        elif facts.job_bounds_state == "missing":
             reasons.append("missing_job_timestamps")
+        elif facts.job_bounds_state == "invalid":
+            reasons.append("invalid_job_timestamps")
         else:
             task_attrs = {
                 ATTR_TASK_NAME: facts.job_name,
