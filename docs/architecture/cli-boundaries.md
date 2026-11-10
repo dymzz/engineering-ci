@@ -17,7 +17,7 @@ GitHub Actions 定义发布 Job DAG、权限和门禁；内部 Actions 操作不
 ## Release 请求与查询
 
 `publish` 请求 main 上的正式发布 Workflow；`validate` 在显式 ref 上请求非发布验证。
-请求前读取远端实际 SHA，核对四处版本与 Tag 冲突。获得 Run ID 后再核对该 Run 的
+请求前读取远端实际 SHA，核对四份元数据文件中的第一方版本（含模块共享依赖）与 Tag 冲突。获得 Run ID 后再核对该 Run 的
 Workflow、仓库、版本与提交；不按最新 Run 推测请求结果。
 
 `status` / `verify` 对显式 Run 只读，`wait` 使用 `gh run watch --exit-status` 后核验同一 Run。

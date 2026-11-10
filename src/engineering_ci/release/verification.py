@@ -36,6 +36,7 @@ def version_at(api, head):
     if not manifest.SHA.fullmatch(head):
         raise ValueError("Remote commit identity unavailable")
     versions = []
+    shared_dependency = False
     for path in (
         "pyproject.toml",
         "uv.lock",
@@ -45,19 +46,35 @@ def version_at(api, head):
         try:
             data = tomllib.loads(content(api, path, head))
             if path.endswith("pyproject.toml"):
-                version = data["project"]["version"]
+                project = data["project"]
+                expected = project["name"]
+                allowed = (
+                    {"engineering-ci", "engineering-ci-module"}
+                    if path.startswith(".dagger/")
+                    else {"engineering-ci"}
+                )
+                if expected not in allowed:
+                    raise ValueError("Remote project package identity unavailable")
+                shared_dependency = any(
+                    re.match(r"(?i)^engineering[-_]ci(?=$|[\s\[<>=!~;])", item)
+                    for item in project.get("dependencies", [])
+                )
+                versions.append(normalize(project["version"]))
             else:
-                packages = [
-                    item for item in data["package"] if item["name"] == "engineering-ci"
-                ]
-                if len(packages) != 1:
-                    raise ValueError("Remote lockfile package identity unavailable")
-                version = packages[0]["version"]
-            versions.append(normalize(version))
+                names = {expected}
+                if shared_dependency:
+                    names.add("engineering-ci")
+                for name in names:
+                    packages = [
+                        item for item in data["package"] if item["name"] == name
+                    ]
+                    if len(packages) != 1:
+                        raise ValueError("Remote lockfile package identity unavailable")
+                    versions.append(normalize(packages[0]["version"]))
         except (ValueError, KeyError, TypeError) as error:
             raise ValueError("Remote version metadata is missing or invalid") from error
     if len(set(versions)) != 1:
-        raise ValueError("Remote version does not match all four metadata fields")
+        raise ValueError("Remote version does not match all project metadata fields")
     return versions[0]
 
 

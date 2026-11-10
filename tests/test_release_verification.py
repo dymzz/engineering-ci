@@ -32,6 +32,8 @@ class API(FakeGitHub):
                 ".dagger/uv.lock",
             )
         }
+        self.project_names = {".": "engineering-ci", ".dagger": "engineering-ci"}
+        self.shared_version = None
         self.value = make_manifest(self, mode="validation")
         self.refresh()
 
@@ -55,11 +57,17 @@ class API(FakeGitHub):
         if path.startswith("contents/"):
             name = path[len("contents/") :].split("?", 1)[0]
             version = self.versions[name]
-            text = (
-                f'[project]\nversion="{version}"\n'
-                if name.endswith("pyproject.toml")
-                else f'[[package]]\nname="engineering-ci"\nversion="{version}"\n'
-            )
+            project_name = self.project_names[
+                ".dagger" if name.startswith(".dagger/") else "."
+            ]
+            if name.endswith("pyproject.toml"):
+                text = f'[project]\nname="{project_name}"\nversion="{version}"\n'
+                if name.startswith(".dagger/") and self.shared_version is not None:
+                    text += 'dependencies=["engineering-ci"]\n'
+            else:
+                text = f'[[package]]\nname="{project_name}"\nversion="{version}"\n'
+                if name.startswith(".dagger/") and self.shared_version is not None:
+                    text += f'[[package]]\nname="engineering-ci"\nversion="{self.shared_version}"\n'
             result = {
                 "path": name,
                 "encoding": "base64",
@@ -105,7 +113,21 @@ def test_requested_version_is_checked_against_all_four_remote_fields():
     assert verification.target(api, "main", "0.4.11") == identity()
     assert not api.writes
     api.versions[".dagger/uv.lock"] = "0.4.9"
-    with pytest.raises(ValueError, match="four metadata"):
+    with pytest.raises(ValueError, match="project metadata"):
+        verification.target(api, "main", "0.4.11")
+
+
+@pytest.mark.parametrize("entry", [".dagger/uv.lock", "shared_dependency"])
+def test_remote_module_and_shared_dependency_versions_must_agree(entry):
+    api = API()
+    api.project_names[".dagger"] = "engineering-ci-module"
+    api.shared_version = "0.4.11"
+    assert verification.target(api, "main", "0.4.11") == identity()
+    if entry == "shared_dependency":
+        api.shared_version = "0.4.9"
+    else:
+        api.versions[entry] = "0.4.9"
+    with pytest.raises(ValueError, match="project metadata"):
         verification.target(api, "main", "0.4.11")
 
 

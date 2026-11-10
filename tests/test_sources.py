@@ -4,7 +4,7 @@ import hashlib
 import json
 import subprocess
 
-from eci_core import sources
+from engineering_ci import sources
 
 
 def make(tmp_path, *, entries, extra=(), config_extra=""):

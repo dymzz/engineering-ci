@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from eci_core import execution, hygiene, selection
+from engineering_ci import execution, hygiene, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"

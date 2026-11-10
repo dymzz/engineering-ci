@@ -7,7 +7,7 @@ Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span | `eci_core.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
+| Pipeline Run Span | `engineering_ci.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
 | Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
@@ -28,6 +28,10 @@ Run/Attempt, a Job that starts or finishes after the Run `completed_at` is
 `partial` (`inconsistent_run_job_timestamps`); individually valid spans are kept.
 
 ## Export
+
+The default report producer name remains `eci_core.cicd_telemetry` for persisted
+evidence compatibility. This is an evidence label, not an import path; Python
+callers use `engineering_ci.cicd_telemetry`.
 
 `engineering-ci cicd-telemetry` writes a **candidate-record** JSON artifact
 (`kind=engineering-ci-cicd-telemetry`, `evidence_class=candidate_record`).

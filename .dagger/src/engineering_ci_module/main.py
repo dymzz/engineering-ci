@@ -1,7 +1,6 @@
 import asyncio
 import json
 import re
-import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -10,10 +9,6 @@ from typing import Annotated
 
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
-
-_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
-if str(_SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SOURCE_ROOT))
 
 from . import python_static as static
 from . import repository, tooling
@@ -207,7 +202,7 @@ class EngineeringCi:
         import copy
         import tempfile
 
-        from eci_core import execution, selection
+        from engineering_ci import execution, selection
 
         raw = await plan.contents()
         try:
@@ -393,7 +388,7 @@ class EngineeringCi:
         import tempfile
         from pathlib import Path
 
-        from eci_core import sources
+        from engineering_ci import sources
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -431,7 +426,7 @@ class EngineeringCi:
         import tempfile
         from pathlib import Path
 
-        from eci_core import selection
+        from engineering_ci import selection
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -470,13 +465,12 @@ class EngineeringCi:
 
     @function
     async def shared_identity(self) -> str:
-        """Import the included common package; proves one source implementation."""
-        import eci_core
-        from eci_core import selection
+        """Identify the installed shared package used by CLI and Dagger."""
+        from importlib.metadata import version
 
-        return (
-            f"{eci_core.__version__}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
-        )
+        from engineering_ci import selection
+
+        return f"{version('engineering-ci')}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
 
     repository_coverage: bool = dagger.field(default=False)
 
