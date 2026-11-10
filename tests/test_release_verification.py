@@ -32,8 +32,8 @@ class API(FakeGitHub):
                 ".dagger/uv.lock",
             )
         }
-        self.project_names = {".": "engineering-ci", ".dagger": "engineering-ci"}
-        self.shared_version = None
+        self.project_names = {".": "engineering-ci", ".dagger": "engineering-ci-module"}
+        self.shared_version = "0.4.11"
         self.value = make_manifest(self, mode="validation")
         self.refresh()
 
@@ -61,13 +61,33 @@ class API(FakeGitHub):
                 ".dagger" if name.startswith(".dagger/") else "."
             ]
             if name.endswith("pyproject.toml"):
-                text = f'[project]\nname="{project_name}"\nversion="{version}"\n'
+                text = f'[project]\\nname="{project_name}"\\nversion="{version}"\\n'
                 if name.startswith(".dagger/") and self.shared_version is not None:
-                    text += 'dependencies=["engineering-ci"]\n'
+                    text += (
+                        'dependencies=["engineering-ci"]\\n'
+                        '[tool.uv.sources]\\nengineering-ci={path=".."}\\n'
+                    )
             else:
-                text = f'[[package]]\nname="{project_name}"\nversion="{version}"\n'
+                text = f'[[package]]\\nname="{project_name}"\\nversion="{version}"\\n'
                 if name.startswith(".dagger/") and self.shared_version is not None:
-                    text += f'[[package]]\nname="engineering-ci"\nversion="{self.shared_version}"\n'
+                    text += (
+                        'dependencies=[{name="engineering-ci"}]\\n'
+                        '[package.metadata]\\n'
+                        'requires-dist=[{name="engineering-ci",directory="../"}]\\n'
+                        '[[package]]\\nname="engineering-ci"\\n'
+                        f'version="{self.shared_version}"\\n'
+                        'source={directory="../"}\\n'
+                    )
+            if name.startswith(".dagger/") and hasattr(self, "invalid_module"):
+                if name.endswith("pyproject.toml"):
+                    if self.invalid_module == "missing_dependency":
+                        text = text.replace('dependencies=["engineering-ci"]', 'dependencies=[]')
+                    elif self.invalid_module == "wrong_source":
+                        text = text.replace('engineering-ci={path=".."}', 'engineering-ci={path="../elsewhere"}')
+                elif self.invalid_module == "missing_lock_link":
+                    text = text.replace('dependencies=[{name="engineering-ci"}]', 'dependencies=[]')
+                elif self.invalid_module == "wrong_lock_source":
+                    text = text.replace('source={directory="../"}', 'source={registry="https://example.invalid"}')
             result = {
                 "path": name,
                 "encoding": "base64",
@@ -120,14 +140,20 @@ def test_requested_version_is_checked_against_all_four_remote_fields():
 @pytest.mark.parametrize("entry", [".dagger/uv.lock", "shared_dependency"])
 def test_remote_module_and_shared_dependency_versions_must_agree(entry):
     api = API()
-    api.project_names[".dagger"] = "engineering-ci-module"
-    api.shared_version = "0.4.11"
-    assert verification.target(api, "main", "0.4.11") == identity()
+        assert verification.target(api, "main", "0.4.11") == identity()
     if entry == "shared_dependency":
         api.shared_version = "0.4.9"
     else:
         api.versions[entry] = "0.4.9"
     with pytest.raises(ValueError, match="project metadata"):
+        verification.target(api, "main", "0.4.11")
+
+
+@pytest.mark.parametrize("invalid", ["missing_dependency", "wrong_source", "missing_lock_link", "wrong_lock_source"])
+def test_remote_module_requires_local_shared_package(invalid):
+    api = API()
+    api.invalid_module = invalid
+    with pytest.raises(ValueError, match="Remote version metadata"):
         verification.target(api, "main", "0.4.11")
 
 
