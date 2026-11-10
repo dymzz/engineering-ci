@@ -86,100 +86,135 @@ def _sample_attributes(span):
     return attrs
 
 
-def _capture_attributes(capture, trace_id, span_id):
-    """Read attributes from the verified OTLP/JSON capture by Trace/Span identity."""
-    if not isinstance(capture, dict):
-        return {}
+def _otlp_attr_value(value):
+    if not isinstance(value, dict):
+        return None
+    if "stringValue" in value:
+        return value["stringValue"]
+    if "intValue" in value:
+        try:
+            return int(value["intValue"])
+        except (TypeError, ValueError):
+            return value["intValue"]
+    if "boolValue" in value:
+        return value["boolValue"]
+    return None
+
+
+def _otlp_attributes(entries):
     attrs = {}
-    for resource in capture.get("resourceSpans") or []:
-        for scope in resource.get("scopeSpans") or []:
-            for span in scope.get("spans") or []:
-                if span.get("traceId") != trace_id or span.get("spanId") != span_id:
-                    continue
-                for entry in span.get("attributes") or []:
-                    if not isinstance(entry, dict):
-                        continue
-                    key = entry.get("key")
-                    value = entry.get("value") or {}
-                    if key is None:
-                        continue
-                    if "stringValue" in value:
-                        attrs[str(key)] = value["stringValue"]
-                    elif "intValue" in value:
-                        try:
-                            attrs[str(key)] = int(value["intValue"])
-                        except (TypeError, ValueError):
-                            attrs[str(key)] = value["intValue"]
-                    elif "boolValue" in value:
-                        attrs[str(key)] = value["boolValue"]
-                return attrs
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("key") is None:
+            continue
+        parsed = _otlp_attr_value(entry.get("value") or {})
+        if parsed is not None:
+            attrs[str(entry["key"])] = parsed
     return attrs
 
 
-def _capture_parent(capture, trace_id, span_id):
+def _absent_parent(value):
+    return value in (None, "", "0" * 16)
+
+
+def lookup_capture_span(capture, trace_id, span_id):
+    """Return exactly one capture hit: Resource attrs + Span + parent.
+
+    Failures: missing_capture_span / duplicate_capture_span.
+    """
     if not isinstance(capture, dict):
-        return None
-    for resource in capture.get("resourceSpans") or []:
-        for scope in resource.get("scopeSpans") or []:
+        return None, "missing_capture_span"
+    matches = []
+    for resource_span in capture.get("resourceSpans") or []:
+        resource = resource_span.get("resource") or {}
+        resource_attrs = _otlp_attributes(resource.get("attributes") or [])
+        for scope in resource_span.get("scopeSpans") or []:
             for span in scope.get("spans") or []:
-                if span.get("traceId") == trace_id and span.get("spanId") == span_id:
-                    return span.get("parentSpanId") or None
-    return None
-
-
-def _is_root_span(span, *, capture=None, trace_id=None, span_id=None):
-    parent = span.get("parent_span_id") or span.get("parentSpanId")
-    if parent in (None, "", "0" * 16):
-        if capture is None:
-            return True
-        captured = _capture_parent(capture, trace_id, span_id)
-        return captured in (None, "", "0" * 16)
-    return False
-
-
-def _merge_observed_attributes(span, *, capture=None, trace_id=None, span_id=None):
-    observed = _sample_attributes(span)
-    captured = _capture_attributes(capture, trace_id, span_id) if capture else {}
-    for key, value in captured.items():
-        if key in observed and observed[key] != value:
-            raise ValueError("capture_sample_attribute_conflict")
-        observed.setdefault(key, value)
-    return observed
+                if span.get("traceId") != trace_id or span.get("spanId") != span_id:
+                    continue
+                matches.append(
+                    {
+                        "resource_attrs": resource_attrs,
+                        "span_attrs": _otlp_attributes(span.get("attributes") or []),
+                        "parent_span_id": span.get("parentSpanId") or None,
+                        "span": span,
+                    }
+                )
+    if not matches:
+        return None, "missing_capture_span"
+    if len(matches) > 1:
+        return None, "duplicate_capture_span"
+    return matches[0], None
 
 
 def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
-    """Bind observed Pipeline Root attributes to declared source/terminal facts."""
-    try:
-        attrs = _merge_observed_attributes(
-            span,
-            capture=capture,
-            trace_id=wanted["trace_id"],
-            span_id=wanted["span_id"],
-        )
-    except ValueError:
-        return "terminal_capture_sample_conflict"
-    run_id = attrs.get("cicd.pipeline.run.id")
-    attempt = attrs.get("github.actions.run_attempt")
-    result = attrs.get("cicd.pipeline.result")
-    if run_id is None or attempt is None or result is None:
-        return "terminal_observed_identity_missing"
-    try:
-        attempt_value = int(attempt)
-    except (TypeError, ValueError):
-        return "terminal_observed_identity_missing"
+    """Bind observed Pipeline Root to declared provenance using SemConv fields.
+
+    Canonical Run ID comes from the enclosing OTLP Resource. Pipeline result
+    comes from the Span. Attempt is ECI/GitHub correlation, not SemConv Required.
+    """
+    if capture is None:
+        return "terminal_capture_required", None
+    observed, error = lookup_capture_span(
+        capture, wanted["trace_id"], wanted["span_id"]
+    )
+    if error:
+        return error, None
+
+    resource_attrs = observed["resource_attrs"]
+    span_attrs = observed["span_attrs"]
+    sample_attrs = _sample_attributes(span)
+    run_id = resource_attrs.get("cicd.pipeline.run.id")
+    if run_id is None:
+        return "terminal_observed_identity_missing", None
+    for extra in (
+        span_attrs.get("cicd.pipeline.run.id"),
+        sample_attrs.get("cicd.pipeline.run.id"),
+    ):
+        if extra is not None and str(extra) != str(run_id):
+            return "terminal_run_id_conflict", None
+    result = span_attrs.get("cicd.pipeline.result")
+    if result is None:
+        result = sample_attrs.get("cicd.pipeline.result")
+    if result is None:
+        return "terminal_observed_result_missing", None
     if str(run_id) != str(source["run_id"]) or str(run_id) != str(
         evidence.get("run_id")
     ):
-        return "terminal_run_id_mismatch"
-    if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
-        return "terminal_attempt_mismatch"
-    if str(result) != str(evidence.get("conclusion")):
-        return "terminal_result_mismatch"
-    if not _is_root_span(
-        span, capture=capture, trace_id=wanted["trace_id"], span_id=wanted["span_id"]
+        return "terminal_run_id_mismatch", None
+    expected_result = evidence.get("result")
+    if expected_result is None:
+        return "terminal_evidence_missing_or_mismatched", None
+    if str(result) != str(expected_result):
+        return "terminal_result_mismatch", None
+
+    sample_parent = span.get("parent_span_id") or span.get("parentSpanId")
+    capture_parent = observed["parent_span_id"]
+    if (
+        not _absent_parent(sample_parent)
+        and not _absent_parent(capture_parent)
+        and str(sample_parent) != str(capture_parent)
     ):
-        return "terminal_span_not_root"
-    return None
+        return "terminal_capture_sample_conflict", None
+    if not _absent_parent(sample_parent) or not _absent_parent(capture_parent):
+        return "terminal_span_not_root", None
+
+    attempt_attr = span_attrs.get("github.actions.run_attempt")
+    if attempt_attr is None:
+        attempt_attr = sample_attrs.get("github.actions.run_attempt")
+    if attempt_attr is None:
+        # Extension absent: SemConv terminal can pass; Attempt stays unverified.
+        return None, {
+            "status": "unverified",
+            "reason": "attempt_extension_absent",
+            "declared_attempt": source["attempt"],
+        }
+    try:
+        attempt_value = int(attempt_attr)
+    except (TypeError, ValueError):
+        return "terminal_attempt_extension_invalid", None
+    if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
+        return "terminal_attempt_mismatch", None
+    return None, {"status": "verified", "attempt": attempt_value}
 
 
 def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None):
@@ -263,7 +298,7 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
             if (
                 not isinstance(evidence, dict)
                 or evidence.get("status") != "completed"
-                or not evidence.get("conclusion")
+                or not evidence.get("result")
                 or evidence.get("run_id") != source["run_id"]
                 or evidence.get("attempt") != source["attempt"]
             ):
@@ -281,13 +316,18 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                     status="failed", reason="terminal_pipeline_signal_missing"
                 )
                 return result
+            correlations = []
             for wanted, item in pipeline:
-                reason = _bind_terminal_pipeline(
+                reason, attempt_correlation = _bind_terminal_pipeline(
                     item, wanted, source, evidence, capture=capture
                 )
                 if reason:
                     result.update(status="failed", reason=reason)
                     return result
+                correlations.append(attempt_correlation)
+            result["attempt_correlation"] = (
+                correlations[0] if len(correlations) == 1 else correlations
+            )
         result["coverage"] = {
             "expected_spans": len(spans),
             "matched_spans": len(spans),

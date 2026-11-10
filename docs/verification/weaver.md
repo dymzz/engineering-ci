@@ -115,10 +115,14 @@ protobuf representation before calling the native gRPC TraceService.
   }],
   "terminal_evidence": {
     "run_id": "controlled-42", "attempt": 1,
-    "status": "completed", "conclusion": "success"
+    "status": "completed", "result": "success"
   }
 }
 ```
+
+`terminal_evidence.result` is the normalized SemConv `cicd.pipeline.result`
+value (`success` / `failure` / `cancellation` / `skip` / `timeout` / …).
+Raw GitHub `conclusion` belongs to #75 provenance, not this equality.
 
 Each expected span must occur exactly once, match its declared signal/matcher,
 and have valid completed timestamps. Empty expected sets, missing spans,
@@ -127,16 +131,17 @@ to this declared expected set; the producer/authorized caller owns its
 completeness. Run/Attempt metadata is retained, not independently authenticated
 by the checker as GitHub provenance.
 
-`weaver-terminal` additionally requires a Pipeline Run signal and completed
-terminal evidence. The matched Pipeline Span itself must observe
-`cicd.pipeline.run.id`, `github.actions.run_attempt`, and
-`cicd.pipeline.result`, and must be a Root Span (no parent). Those observed
-values are compared to the declared source and terminal facts and to the
-SHA-identified OTLP capture for the same Trace/Span IDs. Matching caller
-assertions alone cannot pass when the observed Span belongs to a different
-Run/Attempt/result or is not a Root. Missing observable identity fails the
-terminal coverage claim without inventing attributes. External GitHub
-provenance authentication remains #75/#63; #61 owns Required/Release.
+`weaver-terminal` requires a Pipeline Run signal and completed terminal
+evidence. Canonical Run identity is read from the enclosing OTLP **Resource**
+`cicd.pipeline.run.id`; Span-level Run ID is optional and only checked for
+consistency. Normative result is the Span's `cicd.pipeline.result`, compared to
+`terminal_evidence.result`. The capture must contain exactly one matching
+Trace/Span; only then is an absent `parentSpanId` accepted as Root.
+`github.actions.run_attempt` is an ECI/GitHub extension: when present it is
+cross-checked, when absent Attempt correlation is reported `unverified` without
+treating SemConv telemetry as nonconformant. Matching caller assertions alone
+cannot pass against a different observed Resource Run ID or SemConv result.
+External GitHub provenance authentication remains #75/#63; #61 owns Required.
 
 ## Execution and artifacts
 
