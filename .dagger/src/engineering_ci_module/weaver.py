@@ -78,7 +78,111 @@ def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -
     return result
 
 
-def otlp_result(exit_code, raw_report, expected, *, terminal=False):
+def _sample_attributes(span):
+    attrs = {}
+    for entry in span.get("attributes") or []:
+        if isinstance(entry, dict) and entry.get("name") is not None:
+            attrs[str(entry["name"])] = entry.get("value")
+    return attrs
+
+
+def _capture_attributes(capture, trace_id, span_id):
+    """Read attributes from the verified OTLP/JSON capture by Trace/Span identity."""
+    if not isinstance(capture, dict):
+        return {}
+    attrs = {}
+    for resource in capture.get("resourceSpans") or []:
+        for scope in resource.get("scopeSpans") or []:
+            for span in scope.get("spans") or []:
+                if span.get("traceId") != trace_id or span.get("spanId") != span_id:
+                    continue
+                for entry in span.get("attributes") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    key = entry.get("key")
+                    value = entry.get("value") or {}
+                    if key is None:
+                        continue
+                    if "stringValue" in value:
+                        attrs[str(key)] = value["stringValue"]
+                    elif "intValue" in value:
+                        try:
+                            attrs[str(key)] = int(value["intValue"])
+                        except (TypeError, ValueError):
+                            attrs[str(key)] = value["intValue"]
+                    elif "boolValue" in value:
+                        attrs[str(key)] = value["boolValue"]
+                return attrs
+    return attrs
+
+
+def _capture_parent(capture, trace_id, span_id):
+    if not isinstance(capture, dict):
+        return None
+    for resource in capture.get("resourceSpans") or []:
+        for scope in resource.get("scopeSpans") or []:
+            for span in scope.get("spans") or []:
+                if span.get("traceId") == trace_id and span.get("spanId") == span_id:
+                    return span.get("parentSpanId") or None
+    return None
+
+
+def _is_root_span(span, *, capture=None, trace_id=None, span_id=None):
+    parent = span.get("parent_span_id") or span.get("parentSpanId")
+    if parent in (None, "", "0" * 16):
+        if capture is None:
+            return True
+        captured = _capture_parent(capture, trace_id, span_id)
+        return captured in (None, "", "0" * 16)
+    return False
+
+
+def _merge_observed_attributes(span, *, capture=None, trace_id=None, span_id=None):
+    observed = _sample_attributes(span)
+    captured = _capture_attributes(capture, trace_id, span_id) if capture else {}
+    for key, value in captured.items():
+        if key in observed and observed[key] != value:
+            raise ValueError("capture_sample_attribute_conflict")
+        observed.setdefault(key, value)
+    return observed
+
+
+def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
+    """Bind observed Pipeline Root attributes to declared source/terminal facts."""
+    try:
+        attrs = _merge_observed_attributes(
+            span,
+            capture=capture,
+            trace_id=wanted["trace_id"],
+            span_id=wanted["span_id"],
+        )
+    except ValueError:
+        return "terminal_capture_sample_conflict"
+    run_id = attrs.get("cicd.pipeline.run.id")
+    attempt = attrs.get("github.actions.run_attempt")
+    result = attrs.get("cicd.pipeline.result")
+    if run_id is None or attempt is None or result is None:
+        return "terminal_observed_identity_missing"
+    try:
+        attempt_value = int(attempt)
+    except (TypeError, ValueError):
+        return "terminal_observed_identity_missing"
+    if str(run_id) != str(source["run_id"]) or str(run_id) != str(
+        evidence.get("run_id")
+    ):
+        return "terminal_run_id_mismatch"
+    if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
+        return "terminal_attempt_mismatch"
+    if str(result) != str(evidence.get("conclusion")):
+        return "terminal_result_mismatch"
+    if not _is_root_span(
+        span, capture=capture, trace_id=wanted["trace_id"], span_id=wanted["span_id"]
+    ):
+        return "terminal_span_not_root"
+    return None
+
+
+def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None):
     """Validate caller-declared OTLP identities, independently of finding severity."""
     failure = {
         "status": "failed",
@@ -123,6 +227,7 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False):
             for sample in result["native_report"]["samples"]
             if "span" in sample
         ]
+        matched_items = []
         for wanted, identity in zip(spans, identities, strict=True):
             found = [
                 item
@@ -152,21 +257,37 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False):
             ):
                 result.update(status="failed", reason="span_not_completed")
                 return result
+            matched_items.append((wanted, item))
         if terminal:
             evidence = expected.get("terminal_evidence", {})
             if (
-                evidence.get("status") != "completed"
+                not isinstance(evidence, dict)
+                or evidence.get("status") != "completed"
                 or not evidence.get("conclusion")
                 or evidence.get("run_id") != source["run_id"]
                 or evidence.get("attempt") != source["attempt"]
-                or not any(
-                    item["signal"] == "cicd.pipeline.run.server" for item in spans
-                )
             ):
                 result.update(
                     status="failed", reason="terminal_evidence_missing_or_mismatched"
                 )
                 return result
+            pipeline = [
+                (wanted, item)
+                for wanted, item in matched_items
+                if wanted["signal"] == "cicd.pipeline.run.server"
+            ]
+            if not pipeline:
+                result.update(
+                    status="failed", reason="terminal_pipeline_signal_missing"
+                )
+                return result
+            for wanted, item in pipeline:
+                reason = _bind_terminal_pipeline(
+                    item, wanted, source, evidence, capture=capture
+                )
+                if reason:
+                    result.update(status="failed", reason=reason)
+                    return result
         result["coverage"] = {
             "expected_spans": len(spans),
             "matched_spans": len(spans),

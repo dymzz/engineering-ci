@@ -393,9 +393,14 @@ def run(kind, config_path):
                 otlp_sha256=digest(otlp), expectations_sha256=digest(expected)
             )
             expectation = json.loads(expected.read_text())
+            capture = json.loads(otlp.read_text())
             code, raw = otlp_replay(report, argv, otlp)
             evaluation = weaver.otlp_result(
-                code, raw, expectation, terminal=kind == "terminal"
+                code,
+                raw,
+                expectation,
+                terminal=kind == "terminal",
+                capture=capture,
             )
         report.update(evaluation)
         report["gate_exit_code"] = 0 if report["status"] == "passed" else 1

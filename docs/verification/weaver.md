@@ -125,13 +125,18 @@ and have valid completed timestamps. Empty expected sets, missing spans,
 duplicates, zero matching samples and Matcher errors fail. Coverage is scoped
 to this declared expected set; the producer/authorized caller owns its
 completeness. Run/Attempt metadata is retained, not independently authenticated
-by the checker.
+by the checker as GitHub provenance.
 
-`weaver-terminal` additionally requires a Pipeline Run signal and matching
-completed terminal evidence. It is invoked by a post-completion consumer.
-That consumer must verify the Run's true terminal state and input provenance;
-caller assertions alone cannot establish a trusted GitHub final result. #75
-owns actual telemetry production/flush and #63/#61 own admission/Required.
+`weaver-terminal` additionally requires a Pipeline Run signal and completed
+terminal evidence. The matched Pipeline Span itself must observe
+`cicd.pipeline.run.id`, `github.actions.run_attempt`, and
+`cicd.pipeline.result`, and must be a Root Span (no parent). Those observed
+values are compared to the declared source and terminal facts and to the
+SHA-identified OTLP capture for the same Trace/Span IDs. Matching caller
+assertions alone cannot pass when the observed Span belongs to a different
+Run/Attempt/result or is not a Root. Missing observable identity fails the
+terminal coverage claim without inventing attributes. External GitHub
+provenance authentication remains #75/#63; #61 owns Required/Release.
 
 ## Execution and artifacts
 
@@ -220,6 +225,11 @@ upstream matcher model through the actual Linux checker container. Verified:
 | Real Git Tree Plan, same Source bytes | `tree_verified=true` and native Weaver report passed | Passed |
 | Same Plan with different Source | `source_tree_mismatch`, exit 4 | Not executed |
 
+`execute-plan` reports `tree_verified` for Source-byte equivalence and keeps
+top-level `trusted: false`. Embedded Weaver Check reports also retain
+`trusted: false`. Tree binding must not be read as #63 Check-evidence
+admission.
+
 Both the native `dagger check` and `weaver-enforce` API gate were observed to
 exit 0 on a valid Source and 1 for the strict Required negative. The relevant
 host tests passed (74 passed, one existing platform skip). All five repository
@@ -229,8 +239,9 @@ temporary-input exclusion and canonical example byte preservation.
 The full local evidence directories are under `.tmp/weaver74/verified-*`,
 including raw native reports, logs, packages, diff and input identities. They
 are local execution evidence, not GitHub-signed or Required-policy admission.
-The controlled captures do not replace #75's real producer evidence or #52's
-cross-component integration smoke.
+Checked-in summaries and checksums for review are under
+[weaver-evidence](weaver-evidence/README.md). The controlled captures do not
+replace #75's real producer evidence or #52's cross-component integration smoke.
 
 At integration baseline `a520765f0aa942a6c9f5a76566f5d65fc1a6e7ba`, #75's
 merged slice emits `engineering-ci-cicd-telemetry` candidate-record JSON. That

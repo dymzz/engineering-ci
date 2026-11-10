@@ -274,8 +274,11 @@ class EngineeringCi:
                 "exit_code": 0,
                 "targets": targets,
                 "framework": framework,
+                # tree_verified is Source-byte equivalence only; it is not #63
+                # Check-evidence admission. Parent trusted stays false so
+                # consumers cannot elevate unadmitted Weaver checks.
                 "tree_verified": tree_verified,
-                "trusted": tree_verified,
+                "trusted": False,
                 "plan_execution_tree": execution_tree,
                 "source_tree_id": source_tree_id,
                 "source_digest": source_digest,

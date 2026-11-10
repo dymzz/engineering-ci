@@ -87,6 +87,11 @@ def otlp_payload():
         span_id="2" * 16,
         start_time="2026-11-10T00:00:00Z",
         end_time="2026-11-10T00:00:01Z",
+        attributes=[
+            {"name": "cicd.pipeline.run.id", "value": "42"},
+            {"name": "github.actions.run_attempt", "value": 1},
+            {"name": "cicd.pipeline.result", "value": "success"},
+        ],
     )
     expected = {
         "schema_version": 1,
@@ -106,25 +111,138 @@ def otlp_payload():
             "conclusion": "success",
         },
     }
-    return report, expected
+    capture = {
+        "resourceSpans": [
+            {
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "1" * 32,
+                                "spanId": "2" * 16,
+                                "attributes": [
+                                    {
+                                        "key": "cicd.pipeline.run.id",
+                                        "value": {"stringValue": "42"},
+                                    },
+                                    {
+                                        "key": "github.actions.run_attempt",
+                                        "value": {"intValue": "1"},
+                                    },
+                                    {
+                                        "key": "cicd.pipeline.result",
+                                        "value": {"stringValue": "success"},
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    return report, expected, capture
 
 
 def test_otlp_exact_identity_and_terminal_evidence():
-    report, expected = otlp_payload()
+    report, expected, capture = otlp_payload()
     assert (
-        weaver.otlp_result(0, json.dumps(report), expected, terminal=True)["status"]
+        weaver.otlp_result(
+            0, json.dumps(report), expected, terminal=True, capture=capture
+        )["status"]
         == "passed"
     )
     expected["source"]["attempt"] = 2
+    expected["terminal_evidence"]["attempt"] = 2
     assert (
-        weaver.otlp_result(0, json.dumps(report), expected, terminal=True)["status"]
+        weaver.otlp_result(
+            0, json.dumps(report), expected, terminal=True, capture=capture
+        )["status"]
         == "failed"
     )
 
 
+def test_terminal_binds_observed_run_attempt_result_and_root():
+    cases = {
+        "terminal_run_id_mismatch": lambda span: span["attributes"].__setitem__(
+            0, {"name": "cicd.pipeline.run.id", "value": "99"}
+        ),
+        "terminal_attempt_mismatch": lambda span: span["attributes"].__setitem__(
+            1, {"name": "github.actions.run_attempt", "value": 9}
+        ),
+        "terminal_result_mismatch": lambda span: span["attributes"].__setitem__(
+            2, {"name": "cicd.pipeline.result", "value": "failure"}
+        ),
+        "terminal_span_not_root": lambda span: span.__setitem__(
+            "parent_span_id", "3333333333333333"
+        ),
+        "terminal_observed_identity_missing": lambda span: span.__setitem__(
+            "attributes", [{"name": "cicd.pipeline.result", "value": "success"}]
+        ),
+    }
+    for reason, mutate in cases.items():
+        mutated_report, mutated_expected, mutated_capture = otlp_payload()
+        mutate(mutated_report["samples"][0]["span"])
+        if reason == "terminal_span_not_root":
+            mutated_capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0][
+                "parentSpanId"
+            ] = "3333333333333333"
+        if reason == "terminal_observed_identity_missing":
+            mutated_capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0][
+                "attributes"
+            ] = [
+                {
+                    "key": "cicd.pipeline.result",
+                    "value": {"stringValue": "success"},
+                }
+            ]
+        if reason == "terminal_run_id_mismatch":
+            mutated_capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0][
+                "attributes"
+            ][0] = {
+                "key": "cicd.pipeline.run.id",
+                "value": {"stringValue": "99"},
+            }
+        if reason == "terminal_attempt_mismatch":
+            mutated_capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0][
+                "attributes"
+            ][1] = {
+                "key": "github.actions.run_attempt",
+                "value": {"intValue": "9"},
+            }
+        if reason == "terminal_result_mismatch":
+            mutated_capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0][
+                "attributes"
+            ][2] = {
+                "key": "cicd.pipeline.result",
+                "value": {"stringValue": "failure"},
+            }
+        result = weaver.otlp_result(
+            0,
+            json.dumps(mutated_report),
+            mutated_expected,
+            terminal=True,
+            capture=mutated_capture,
+        )
+        assert result["status"] == "failed"
+        assert result["reason"] == reason
+
+
+def test_terminal_ignores_matching_caller_assertions_without_observed_span():
+    report, expected, capture = otlp_payload()
+    # Caller source/evidence still agree on Run B, but observed Span is Run A.
+    expected["source"]["run_id"] = "B"
+    expected["terminal_evidence"]["run_id"] = "B"
+    result = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "terminal_run_id_mismatch"
+
+
 def test_otlp_missing_duplicate_unended_or_wrong_match_is_rejected():
     for mutation in ("missing", "duplicate", "unended", "wrong_match"):
-        report, expected = otlp_payload()
+        report, expected, capture = otlp_payload()
         span = report["samples"][0]["span"]
         if mutation == "missing":
             span["span_id"] = "3" * 16
@@ -134,14 +252,24 @@ def test_otlp_missing_duplicate_unended_or_wrong_match_is_rejected():
             span["end_time"] = None
         else:
             expected["spans"][0]["signal"] = "wrong"
-        assert weaver.otlp_result(0, json.dumps(report), expected)["status"] == "failed"
+        assert (
+            weaver.otlp_result(0, json.dumps(report), expected, capture=capture)[
+                "status"
+            ]
+            == "failed"
+        )
 
 
 def test_terminal_requires_root_and_completed_evidence():
-    report, expected = otlp_payload()
+    report, expected, capture = otlp_payload()
     del expected["terminal_evidence"]
-    assert weaver.otlp_result(0, json.dumps(report), expected)["status"] == "passed"
     assert (
-        weaver.otlp_result(0, json.dumps(report), expected, terminal=True)["status"]
+        weaver.otlp_result(0, json.dumps(report), expected, capture=capture)["status"]
+        == "passed"
+    )
+    assert (
+        weaver.otlp_result(
+            0, json.dumps(report), expected, terminal=True, capture=capture
+        )["status"]
         == "failed"
     )
