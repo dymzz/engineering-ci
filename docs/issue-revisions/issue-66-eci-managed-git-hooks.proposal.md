@@ -248,38 +248,8 @@ pre-push:
 
 **规则**：对真实输入/Check 的新增需求直接补现有 Selection、Plan、Execution 或原生 Report；若已具备充分数据就只修改使用逻辑。没有证据的旧 PASS 不可复用，但也不能为一个相关 Check 的失效无依据重跑所有业务测试与 wheel。
 
-### 7.7 OpenTelemetry (OTel) 执行观测需求：复用 Dagger 原生 Tracing
+### 7.7 OTel 专题已迁移（本 Git Hook 提案暂缓）
 
-**上游规范权威已确立，不在 ECI 重新裁定：** Knowledge 已合并的 [Engineering Verification 总设计 §3.6](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/overall-design.md#36-opentelemetry-cicd-semantic-conventions--canonical-vocabulary-and-native-correlation) 是本专题采用 OpenTelemetry CI/CD/VCS Semantic Conventions 的**现行上游工程采纳契约**；[分阶段实施计划 §8](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/implementation-plan.md#8-cross-stage-opentelemetry-cicd-integration-track) 已确定 O1–O4 跨阶段交接。OpenTelemetry 官方原生规范本身保有字段、资源和语义的源权威，Knowledge 规定采纳范围及具体原生身份映射；ECI 负责其本仓实现和原生运行事实。不得在 ECI #66/#72 另起一套同义 Pipeline/Task、Resource、Metric、Log、VCS 命名或标准采纳 Profile，也不应创建第二个 OTel 全仓架构 Issue。
-
-**按上游规范直接消费**：实际 GitHub Pipeline/Job/Attempt 才使用标准 Pipeline Run / Task Run Spans、CI/CD Resources、LogRecord、Metrics 与 VCS 属性；只存在本地 Hook/CLI Check 的场景使用适用通用 OTel Span/Log，不伪造 Pipeline、Job URL、Run/Attempt ID。实际交付时固定 SemConv 版本与字段稳定性（包括 Release Candidate / Mixed），按 §3.6 已列出字段/映射实施，不能仅写“参考 OTel”或把旧的 `vcs.repository.ref.*` 当有效字段。对 OTel 尚无法表达的 ECI 原生 Source/Selection/Check/Required 语义，继续保留 Plan/Report/#63/#61 权威，仅作有来源的关联或必要的有名扩展，**不反向修改标准定义**。本节及下文验收只规定 #66 的公共执行端交付，不重复维护这些标准字段的可编辑定义。
-
-**现状分层**：ECI 当前 GitHub Actions 已实际执行 `dagger check`，CLI 输出 `TRACE PASSED`、原生 Check 结果和时长；Dagger 本身已有基于 OpenTelemetry 的 Tracing 能力，**应直接复用**。这份日志只证明 Dagger 原生 Trace/计时运行，**没有证明 OTLP Span 导出或与宿主 ECI 的父子 Trace 已连通**。当前 ECI `main` 未见 Hook→Selection→Check→Report 的宿主埋点及其专项验收，本节属于待实施要求，不能将现有 Dagger TRACE 视为新链路通过。历史 ECI #39 已移除没有真实 CI 消费者的通用 Tracing/Mining/日志依赖，不能因此恢复另一套框架。
-
-- **现有能力优先、按上游归属**：Dagger Engine/Functions/Checks 内部的操作级 Span、Check 结果与耗时由 **Dagger 原生 Tracing** 负责，ECI 不为每个 Dagger Function 再包同义 Python Span，不重复生成每项工具的第二份结果。只在实际缺失的**宿主边界**（Git Hook/ECI CLI、Git Source 绑定、Selection、非 Dagger 原生 Check、Prerequisite 与 Report）添加 ECI 侧必要 Span，并关联既有 Dagger Trace；有独立意义的外层边界 Span 不等于重复内部操作埋点。
-- **具体的 Context 交接**：明确由**调用方注入**、由**接收方提取**的传播契约，记录真实使用的 Trace Context carrier（如经 SDK/目标命令确认支持的环境变量或显式参数）。普通 `subprocess` 环境继承、Dagger 进程启动或 GitHub Actions Job 边界**不自动证明**父子 Span 关系；验证确实传播时才建立 parent，其他场景按实际可验证的 Span Link 或独立 Trace 表达。CI/CD 语义约定版本及使用的属性按固定 SDK/规范版本核实，不预设尚不稳定的字段名已标准化。
-- **原生证据权威**：`ChangeSet`/Source Tree、Selection/Plan、Check ID、原始 Report/JUnit、ECI #63 受信接纳和 #61 Required 仍负责验证事实。Trace/Span ID 仅用于观测关联；一个 Span 成功或导出成功不能把原生 `failed`、`blocked`、`not_executed`、`skipped`、`not_applicable` 提升为 PASS。Lefthook 在进入 ECI 前跳过的检查必须由现有调度/选择事实解释；**没有 Span 不等于检查被执行或正确跳过**。
-- **轻量、可选且安全**：本地阶段耗时、原生 Check 结果、原因和重复执行次数不依赖 SDK/Collector；OpenTelemetry API/SDK/Exporter 仅按实际启用路径使用，OTLP 不作为每位下游开发者的安装或 Git 提交前置。未配置、禁用、Exporter 超时/网络错误不能改变原生结果及 Git 退出码，不能造成无边界的隐性 Hook 网络等待。默认不得记录令牌、源码/文件内容、敏感参数和 stdout/stderr；观测本身的时延/资源开销要测量。
-
-### 7.8 OTel 可机器核对的验收产物（公共 ECI 验证一次）
-
-**产物不是“在日志中看到 TRACE PASSED”**。针对一条真实 ECI Hook 或 CI Run，以临时测试 Exporter（例如 Python SDK `InMemorySpanExporter`，或能读取的等效测试接收端）收集**实际完成的 Span 数据**，同时保留同次真实的 Selection Plan、原生 Check Report/退出码和阶段计时。验收应可自动化核对，且不必启动所有候选工具。
-
-| 机器核对对象 | 必须验证的事实 |
-| --- | --- |
-| Run / Trace / Span 身份 | Trace ID、Span ID 合法；能与同次 Source/Selection/Check/Report 关联；重复进程没有冒名 Trace |
-| Parent / Link | 对每个声称的父子边或 Span Link，核对双方 Span Context/目标身份；未传播时显示独立边界，不能凭时间相近推断 |
-| 原生 Check / Source 关联 | 对应同一原始 Plan 的 Source Tree/Run、Check ID、规则及工具版本；不以 OTel 属性取代来源/证据身份 |
-| 时序 / 性能 | 各实际启动的阶段具有真实 start/end/duration；与原生阶段计时误差可解释，OTel 不造成二次 Tach/测试/构建执行 |
-| Status / Skip | Check 的原生 `passed/failed/blocked/not_executed/not_applicable` 与 Report 一致；Span 状态表达该操作的观测信息，不能据此替代 ECI 原生结论；Lefthook 提前跳过则核对调度/Selection 事实 |
-| Privacy / Export | 测试导出的 Span 中不包含敏感源码、token、原始命令输出；禁用与故障下仍有原生结果和计时 |
-
-- [ ] **成功场景**：ECI 真实执行一次适用的宿主 Check/Prerequisite（若场景实际适用），导出 Span 并逐项对照 Plan/Report、工具启动次数及耗时；Dagger 已有原生 Trace/计时可复用原始日志，不强制再跑 Dagger 同义检查。
-- [ ] **失败与跳过**：各选一个代表性原生失败和不适用/调度跳过，校验 Check 原生状态、Git 退出码及缺失/存在 Span 的正确解释；一个失败的 Exporter 不能掩盖原生失败。
-- [ ] **跨进程 Context**：对一处确实要求传播的 Hook/ECI→子进程或 Dagger 边界，检验注入和提取双方的 Trace Context（或已验证 Link），不能只检查“子进程继承了环境变量”。
-- [ ] **可选性与故障**：SDK 未启用、Exporter 缺失/不可达/超时，原生 Check 状态与退出码保持一致，阶段计时仍可读取；测量采集额外耗时并确认无敏感输出泄漏。
-- [ ] **重复建设检查**：没有恢复 ECI #39 删除的通用日志/Mining/Tracing Provider，没有为 Dagger 内部 Checks 重复埋同义 Span，没有新增 OTEL 专用 Gate/结果库或为了验收重跑完整工具矩阵。
-
-**所有公共 OTel 状态映射、失败、导出异常、传播与隐私验证在 ECI 集中验收一次。Knowledge #68 等下游只验证真实固定版本的消费者 Source/Check 关联与基本耗时/原生状态，复用以上公共证据，不重复执行这些公共正反测试。**
+OTel CI/CD/VCS Semantic Conventions、Weaver 原生 Registry、Knowledge F0 来源、ECI 检查及真实 OTLP 验收和下游 Issue 跟踪已统一迁移到 Knowledge [OTel/Weaver 统一总控 PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) 的 `design/engineering-verification/opentelemetry-weaver-delivery.md`；原有 OTel 专属字段映射、Span/Exporter/Trace Context 和 OTel 验收要求**不在本 PR 独立维护或审批**。本 PR 只保存独立的 Git Hook/Source/Selection/执行范围要求，**维持 Draft、暂缓 Git Hook 审定与实施**。OTel 原生实施可独立推进，不等待本 Git Hook PR。
 
 上述条款审定后仅同步 ECI #66 的实际新增部分，避免把提案长期保留为第二套规范；无需新建缓存层、框架或 Required 判定器。
