@@ -29,7 +29,6 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "engineering_ci"
-source-exclude = ["src/engineering_ci/hooks"]
 wheel-exclude = ["**/AGENTS.md"]
 
 

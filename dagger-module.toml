@@ -1,7 +1,7 @@
 name = "engineering-ci"
 engineVersion = "v1.0.0-beta.16"
 source = ".dagger"
-include = ["pyproject.toml", "README.md", "src/engineering_ci/**", "!src/engineering_ci/hooks"]
+include = ["pyproject.toml", "README.md", "src/engineering_ci/**"]
 
 [runtime]
   source = "python"

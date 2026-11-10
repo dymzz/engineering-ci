@@ -205,8 +205,9 @@ the installed wheel. `dagger-module.toml` includes the root `pyproject.toml`,
 README and `src/engineering_ci/**`; `.dagger/pyproject.toml` declares the root
 project as a local path dependency. The module imports the installed
 `engineering_ci` package without adding checkout directories to `sys.path`.
-There is no copied selector. Agent hook assets are excluded from this build
-and module context. SDK dependencies stay in the Dagger project.
+There is no copied selector. The package contains no link to external agent
+hooks or automatic agent hook registrations. SDK dependencies stay in the
+Dagger project.
 
 Verified with the engine:
 

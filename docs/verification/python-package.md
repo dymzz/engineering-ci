@@ -19,8 +19,10 @@ producer label remains `eci_core.cicd_telemetry`; it is not an import alias.
 Dagger keeps the separate `engineering_ci_module` package and SDK environment,
 declares the root project as a local dependency, and imports its installed
 package without injecting a checkout directory into `sys.path`. The root
-package still has no third-party runtime requirements. Agent hook assets are
-excluded from both the package build and module context.
+package still has no third-party runtime requirements. The
+`src/engineering_ci/hooks` link to an external shared hook directory is removed.
+The repository has no `hooks.json` or Codex/Claude Code/Antigravity automatic
+hook registration files; the external target was not accessed.
 
 The new local dependency adds a first-party version entry in `.dagger/uv.lock`.
 Local version check/set and remote release metadata verification cover both
@@ -43,6 +45,11 @@ metadata where the module distribution was also named `engineering-ci`.
 | `dagger api call selection-self-test` | `engineering-ci-selection-plan:targeted:tests.test_pkg` |
 | `dagger api call sources-self-test` | `engineering-ci-sources-report:passed:1` |
 | `dagger check --engineering-ci` | All five passed: lint, format-check, tests, version and lock; tests completed in about 2m55s |
+
+The full-suite and Dagger Check results above were recorded at `1fba419`.
+The subsequent removal of the external hook link and its exclusion settings
+was verified with a fresh wheel build/content audit, both lock checks and
+`git diff --check`.
 
 The wheel-only import probe ran with Python isolated mode, so checkout paths
 and `PYTHONPATH` could not satisfy the shared imports. The CLI check used the
