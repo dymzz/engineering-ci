@@ -16,9 +16,16 @@ Job conclusion never becomes Pipeline result. Selection / Required /
 `cicd.pipeline.result`.
 
 Span kinds follow public CI/CD SemConv: Pipeline Run `SERVER`, Task Run
-`INTERNAL`. GitHub `cancelled` / `skipped` / `timed_out` map to SemConv
-`cancellation` / `skip` / `timeout` (not generic `error`). `error.type` is set
-only when the SemConv result is `failure` or `error`.
+`INTERNAL`. Only justified GitHub conclusions map to SemConv results
+(`success` / `failure` / `cancellation` / `skip` / `timeout`);
+`neutral` / `action_required` / `stale` stay unsupported until a fixed registry
+mapping is cited. `error.type` is set only when the SemConv result is `failure`
+or `error`.
+
+Timestamp fields are adapter-supplied Run/Job `started_at`/`completed_at`
+equivalents. When both candidate spans are emitted for the same completed
+Run/Attempt, a Job that starts or finishes after the Run `completed_at` is
+`partial` (`inconsistent_run_job_timestamps`); individually valid spans are kept.
 
 ## Export
 

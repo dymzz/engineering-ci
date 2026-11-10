@@ -175,14 +175,41 @@ def test_equal_timestamps_are_valid_zero_duration():
         complete_facts(
             run_started_at_ns=RUN_START,
             run_completed_at_ns=RUN_START,
-            job_started_at_ns=JOB_START,
-            job_completed_at_ns=JOB_START,
+            job_started_at_ns=RUN_START,
+            job_completed_at_ns=RUN_START,
         )
     )
     assert report["status"] == "produced"
     pipeline, task = report["spans"]
     assert pipeline["start_time_unix_nano"] == pipeline["end_time_unix_nano"]
     assert task["start_time_unix_nano"] == task["end_time_unix_nano"]
+
+
+def test_job_after_completed_run_is_partial_inconsistency():
+    report = cicd_telemetry.produce(
+        complete_facts(
+            run_started_at_ns=RUN_START,
+            run_completed_at_ns=RUN_END,
+            job_started_at_ns=RUN_END + 1,
+            job_completed_at_ns=RUN_END + 2,
+        )
+    )
+    assert report["status"] == "partial"
+    assert report["reason"] == "inconsistent_run_job_timestamps"
+    assert len(report["spans"]) == 2
+
+
+def test_unmapped_github_conclusions_stay_unsupported():
+    for value in ("neutral", "action_required", "stale"):
+        assert cicd_telemetry.map_github_result(value) == (None, None)
+        report = cicd_telemetry.produce(
+            complete_facts(run_conclusion=value, job_conclusion=value)
+        )
+        assert report["status"] == "incomplete"
+        assert report["reason"] == "unsupported_run_conclusion"
+        assert report["spans"] == []
+        assert report["facts"]["run_conclusion"] == value
+        assert report["facts"]["job_conclusion"] == value
 
 
 def test_missing_task_url_is_not_complete_production():

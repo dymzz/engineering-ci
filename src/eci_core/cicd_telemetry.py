@@ -46,7 +46,9 @@ ATTR_VCS_HEAD_REVISION = "vcs.ref.head.revision"
 ATTR_GITHUB_RUN_ATTEMPT = "github.actions.run_attempt"
 ATTR_GITHUB_REPOSITORY = "github.repository"
 
-# GitHub conclusion → SemConv cicd.*.result (no conflation of cancel/skip/timeout).
+# Justified GitHub conclusion → SemConv cicd.*.result only.
+# Native GitHub values remain in facts.*; neutral/action_required/stale stay
+# unsupported until a fixed SemConv registry mapping is cited.
 _RESULT_MAP = {
     "success": "success",
     "failure": "failure",
@@ -54,9 +56,6 @@ _RESULT_MAP = {
     "canceled": "cancellation",
     "skipped": "skip",
     "timed_out": "timeout",
-    "action_required": "error",
-    "neutral": "error",
-    "stale": "error",
 }
 
 
@@ -154,7 +153,7 @@ def parse_time_ns(value):
 
 
 def map_github_result(conclusion):
-    """Return (semconv_result, error_type_or_none). Unknown conclusions → None."""
+    """Return (semconv_result, error_type_or_none). Unmapped values → None."""
     if conclusion is None:
         return None, None
     result = _RESULT_MAP.get(conclusion)
@@ -163,6 +162,21 @@ def map_github_result(conclusion):
     if result in {"failure", "error"}:
         return result, conclusion
     return result, None
+
+
+def run_job_temporal_inconsistency(facts):
+    """Detect Job starting/finishing after a completed parent Run.
+
+    Source semantics for this producer: ENGINEERING_CI_RUN_* / mapping fields
+    stand for the completed Workflow Run attempt bounds, and ENGINEERING_CI_JOB_*
+    for the matching Job `started_at`/`completed_at`. GitHub Jobs belonging to a
+    completed Run must not start or finish after that Run's completed_at.
+    """
+    if facts.run_bounds_state != "ok" or facts.job_bounds_state != "ok":
+        return False
+    if facts.job_started_at_ns > facts.run_completed_at_ns:
+        return True
+    return facts.job_completed_at_ns > facts.run_completed_at_ns
 
 
 def facts_from_actions_env(env=None):
@@ -398,6 +412,9 @@ def produce(facts, *, producer="eci_core.cicd_telemetry"):
 
     pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
     task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
+    if pipeline_ok and task_ok and run_job_temporal_inconsistency(facts):
+        # Keep individually valid candidate spans; do not claim produced.
+        reasons.append("inconsistent_run_job_timestamps")
     if pipeline_ok and task_ok and not reasons:
         report["status"] = "produced"
         report["reason"] = None

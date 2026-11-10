@@ -15,7 +15,9 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Missing Run ID / Attempt | Incomplete facts | `incomplete`, no spans, exit 3 |
 | Missing timestamps | Terminal conclusions without bounds | `incomplete` / no fabricated durations |
 | Reversed Run/Job bounds | `start > end` | `invalid_*_timestamps`; no affected span |
-| Equal timestamps | `start == end` | Valid zero-duration span |
+| Equal timestamps | Compatible `start == end` | Valid zero-duration span |
+| Job after completed Run | Job start/end `> Run completed` | `partial` + `inconsistent_run_job_timestamps` |
+| `neutral` / `action_required` / `stale` | Unmapped GitHub conclusions | `unsupported_*_conclusion`; native facts retained |
 | Missing Task URL | Otherwise complete Job | `partial`, Pipeline only |
 | Cancel / skip / timeout | GitHub conclusions | SemConv `cancellation` / `skip` / `timeout` |
 | Two Jobs, one Run | Different `job_id` | Distinct Task span ids; stable Pipeline/trace ids |
