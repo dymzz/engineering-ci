@@ -1,0 +1,106 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "cicd.pipeline.name",
+            "value": {
+              "stringValue": "Engineering CI"
+            }
+          },
+          {
+            "key": "cicd.pipeline.run.id",
+            "value": {
+              "stringValue": "42821429094/1"
+            }
+          },
+          {
+            "key": "github.actions.run_attempt",
+            "value": {
+              "intValue": "1"
+            }
+          },
+          {
+            "key": "cicd.pipeline.run.url.full",
+            "value": {
+              "stringValue": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094"
+            }
+          },
+          {
+            "key": "github.repository",
+            "value": {
+              "stringValue": "dymzz/engineering-ci"
+            }
+          },
+          {
+            "key": "vcs.ref.head.revision",
+            "value": {
+              "stringValue": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "eci_core.cicd_telemetry",
+            "version": "4"
+          },
+          "spans": [
+            {
+              "attributes": [
+                {
+                  "key": "cicd.pipeline.task.name",
+                  "value": {
+                    "stringValue": "python-ci / checks"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.id",
+                  "value": {
+                    "stringValue": "129847644459"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.result",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.url.full",
+                  "value": {
+                    "stringValue": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.run.id",
+                  "value": {
+                    "stringValue": "42821429094/1"
+                  }
+                },
+                {
+                  "key": "github.actions.run_attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                }
+              ],
+              "endTimeUnixNano": "1794316058000000000",
+              "kind": 1,
+              "name": "task:python-ci / checks",
+              "parentSpanId": "093c00d57bcc226c",
+              "spanId": "7d98cbfec3f44c1a",
+              "startTimeUnixNano": "1794315965000000000",
+              "status": {
+                "code": 1
+              },
+              "traceId": "21ee8206fe06a4879580f60591a3014f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

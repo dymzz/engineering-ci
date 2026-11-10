@@ -24,10 +24,14 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Opposite Attempt conclusions | Attempt 1 failure vs Attempt 2 success | Selected Attempt's conclusion/Jobs only |
 | Job not in Attempt | `--job-id` absent from Attempt Jobs | `job_not_found` |
 | Paginated Jobs | Target Job on page 2 | Selected after full Attempt Job set |
+| Short page before `total_count` | Page 2 empty while count unmet | `jobs_page_incomplete` |
+| Missing `gh` / API timeout | `OSError` / `TimeoutExpired` | `github_cli_unavailable` / `github_api_timeout` |
 | `--job-id` among many | Explicit single Job | `partial_job_coverage` |
 | OTLP prepared vs exported | Spans present, no `--otlp-json` | `otlp_json_prepared=true`, `otlp_json_exported=false` |
 | OTLP/JSON flush | `--otlp-json` writable path | File written; `otlp_json_exported`; digest; `otlp_delivered=false` |
+| OTLP protobuf decode | Flushed file via `opentelemetry-proto` | `ExportTraceServiceRequest` parses after hex→base64 ID conversion |
 | OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
+| Native API evidence | Fixed Run `42821429094` Attempt 1 Job | See [cicd-telemetry-evidence](./cicd-telemetry-evidence/README.md) |
 
 Run:
 

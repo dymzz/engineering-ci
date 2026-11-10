@@ -1,6 +1,7 @@
 """GitHub Run/Job facts → CI/CD candidate telemetry records (ECI #75)."""
 
 import json
+import subprocess
 from pathlib import Path
 
 from eci_core import cicd_telemetry
@@ -563,6 +564,43 @@ def test_fetch_paginates_jobs_across_pages():
     assert coverage["completed_jobs_total"] == cicd_telemetry._JOBS_PAGE_SIZE + 1
 
 
+def test_fetch_rejects_short_page_before_total_count():
+    def api_get(path):
+        if "page=2" in path:
+            return {"total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1, "jobs": []}
+        return {
+            "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+            "jobs": [{"id": index, "status": "completed"} for index in range(100)],
+        }
+
+    try:
+        cicd_telemetry.fetch_attempt_jobs(
+            api_get, "repos/x/y/actions/runs/1/attempts/1/jobs"
+        )
+        raise AssertionError("expected jobs_page_incomplete")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "jobs_page_incomplete"
+
+
+def test_gh_api_get_maps_timeout_and_missing_cli():
+    def timeout_runner(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=60)
+
+    def missing_runner(*_args, **_kwargs):
+        raise FileNotFoundError("gh")
+
+    try:
+        cicd_telemetry.gh_api_get("repos/x/y", runner=timeout_runner)
+        raise AssertionError("expected timeout")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "github_api_timeout"
+    try:
+        cicd_telemetry.gh_api_get("repos/x/y", runner=missing_runner)
+        raise AssertionError("expected unavailable")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "github_cli_unavailable"
+
+
 def test_in_progress_run_has_no_completed_bound():
     run, job = _api_run_job_fixture()
     run["status"] = "in_progress"
@@ -592,6 +630,26 @@ def test_otlp_json_export_and_flush_failure(tmp_path):
     assert report["claims"]["otlp_json_exported"] is True
     assert report["claims"]["otlp_json_sha256"]
     assert report["claims"]["otlp_delivered"] is False
+    decoded = cicd_telemetry.decode_otlp_export_request(body)
+    assert len(decoded.resource_spans) == 1
+    resource_attrs = {
+        item.key: item.value.string_value
+        for item in decoded.resource_spans[0].resource.attributes
+    }
+    assert resource_attrs["cicd.pipeline.run.id"] == "42627302972/1"
+    wire_span = body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    proto_span = decoded.resource_spans[0].scope_spans[0].spans[0]
+    assert proto_span.trace_id == bytes.fromhex(wire_span["traceId"])
+    assert proto_span.span_id == bytes.fromhex(wire_span["spanId"])
+    assert proto_span.start_time_unix_nano == RUN_START
+    assert proto_span.end_time_unix_nano == RUN_END
+    task = next(
+        item
+        for item in decoded.resource_spans[0].scope_spans[0].spans
+        if item.name.startswith("task:")
+    )
+    task_attrs = {item.key: item.value.string_value for item in task.attributes}
+    assert task_attrs["cicd.pipeline.task.run.url.full"]
 
     # File-as-directory makes mkdir(parents=True) fail on Windows/POSIX alike.
     file_parent = tmp_path / "not-a-dir"

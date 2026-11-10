@@ -11,6 +11,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "opentelemetry-proto>=1.45.0",
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
     "ruff==0.16.10",

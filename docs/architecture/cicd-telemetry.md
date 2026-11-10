@@ -72,14 +72,25 @@ more completed Jobs than emitted Task spans, status is `partial`
 
 `claims.otlp_json_prepared` means an in-memory OTLP body exists.
 `claims.otlp_json_exported` becomes true **only** after a successful file
-flush (path + sha256 recorded when asserted). The candidate artifact is
-written **after** the export attempt so top-level mirrors match claims.
-`claims.otlp_delivered` stays false until a later live OTLP/gRPC slice.
-`github_api_fetched` records an API read; it is **not** a Weaver/trusted
-provenance claim. Flush failures exit 3 with `otlp_json_flush_failed` /
-`otlp_json_unavailable` and do not invent spans. CLI exit 0 for `partial`
-is candidate-generator only — consumers must read `report.status` / coverage,
-not promote exit 0 to terminal PASS.
+flush (path + sha256 recorded when asserted; file bytes use LF so digests
+match on Windows). The candidate artifact is written **after** the export
+attempt so top-level mirrors match claims. `claims.otlp_delivered` stays
+false until a later live OTLP/gRPC slice. `github_api_fetched` records an
+API read; it is **not** a Weaver/trusted provenance claim. Flush failures
+exit 3 with `otlp_json_flush_failed` / `otlp_json_unavailable` and do not
+invent spans. CLI exit 0 for `partial` is candidate-generator only —
+consumers must read `report.status` / coverage, not promote exit 0 to
+terminal PASS.
+
+When GitHub reports `total_count`, a short/empty page before that count is
+`jobs_page_incomplete`. Missing `gh` or API timeouts map to
+`github_cli_unavailable` / `github_api_timeout` (no retry engine).
+
+One native API → candidate/OTLP evidence bundle for this PR slice lives under
+[cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
+Baseline after PR #76/#77: candidate Pipeline/Task construction and Attempt
+API/OTLP file export exist; exact post-run Root, full multi-Job Task set,
+live OTLP/gRPC, and trusted admission remain open on Issue #75.
 
 ## Related
 

@@ -19,6 +19,7 @@ Pipeline Run identity (ECI #75 / PR #77 review P2-2):
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -504,8 +505,9 @@ def write_artifact(report, path):
     claims = report.get("claims") or {}
     payload["otlp_json_prepared"] = bool(claims.get("otlp_json_prepared"))
     payload["otlp_json_exported"] = bool(claims.get("otlp_json_exported"))
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    # Binary write keeps LF so recorded digests match file bytes on Windows.
+    path.write_bytes(
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     )
     return path
 
@@ -584,18 +586,71 @@ def write_otlp_json(report, path):
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        body = json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n"
-        path.write_text(body, encoding="utf-8")
+        body = (
+            json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        # Binary write keeps LF so claims.otlp_json_sha256 matches file bytes.
+        path.write_bytes(body)
     except OSError as error:
         report["claims"]["otlp_json_exported"] = False
         raise TelemetryError("otlp_json_flush_failed") from error
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(body).hexdigest()
     report["claims"]["otlp_json_exported"] = True
     report["claims"]["otlp_json_path"] = str(path)
     report["claims"]["otlp_json_sha256"] = digest
     # File artifact only — not live OTLP/gRPC delivery.
     report["claims"]["otlp_delivered"] = False
     return path
+
+
+def otlp_wire_to_protobuf_json(payload):
+    """Copy OTLP/JSON wire form → protobuf JSON (hex IDs → base64 bytes).
+
+    Matches the deterministic conversion used by the #74 Weaver replay path.
+    Does not claim Weaver PASS or live delivery.
+    """
+    if not isinstance(payload, dict):
+        raise TelemetryError("otlp_json_invalid")
+    capture = json.loads(json.dumps(payload))
+    for resource in capture.get("resourceSpans") or []:
+        for scope in resource.get("scopeSpans") or []:
+            for span in scope.get("spans") or []:
+                for record in [span, *(span.get("links") or [])]:
+                    for key, size in (
+                        ("traceId", 16),
+                        ("spanId", 8),
+                        ("parentSpanId", 8),
+                    ):
+                        value = record.get(key)
+                        if not value:
+                            continue
+                        try:
+                            decoded = bytes.fromhex(value)
+                        except (TypeError, ValueError) as error:
+                            raise TelemetryError("otlp_id_invalid") from error
+                        if len(decoded) != size:
+                            raise TelemetryError("otlp_id_invalid")
+                        record[key] = base64.b64encode(decoded).decode()
+    return capture
+
+
+def decode_otlp_export_request(payload):
+    """Parse producer OTLP/JSON with the official ExportTraceServiceRequest schema.
+
+    Requires ``opentelemetry-proto`` (dev/CI). Converts wire hex IDs first.
+    """
+    try:
+        from google.protobuf import json_format
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+    except ImportError as error:
+        raise TelemetryError("otlp_proto_unavailable") from error
+    converted = otlp_wire_to_protobuf_json(payload)
+    try:
+        return json_format.ParseDict(converted, ExportTraceServiceRequest())
+    except json_format.ParseError as error:
+        raise TelemetryError("otlp_json_invalid") from error
 
 
 def _server_url_from_html(html):
@@ -690,14 +745,20 @@ def _select_job(jobs, job_id=None):
 def gh_api_get(path, *, runner=None):
     """GET a GitHub API path through native gh. Injectable for tests."""
     runner = subprocess.run if runner is None else runner
-    result = runner(
-        ["gh", "api", path],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=60,
-    )
+    try:
+        result = runner(
+            ["gh", "api", path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TelemetryError("github_api_timeout") from error
+    except OSError as error:
+        # Missing gh binary / spawn failure — stable source-unavailable code.
+        raise TelemetryError("github_cli_unavailable") from error
     if result.returncode:
         raise TelemetryError("github_api_failed")
     try:
@@ -712,7 +773,12 @@ def _jobs_path_page(base_path, page):
 
 
 def fetch_attempt_jobs(api_get, jobs_path):
-    """Fetch the complete Job list for one Attempt using GitHub pagination."""
+    """Fetch the complete Job list for one Attempt using GitHub pagination.
+
+    When GitHub provides ``total_count``, a short/empty page before that count
+    is reached is an incomplete snapshot — not a complete Job set
+    (PR #77 P2-1).
+    """
     page = 1
     jobs = []
     total_count = None
@@ -731,6 +797,8 @@ def fetch_attempt_jobs(api_get, jobs_path):
         if len(batch) < _JOBS_PAGE_SIZE:
             break
         page += 1
+    if total_count is not None and len(jobs) != total_count:
+        raise TelemetryError("jobs_page_incomplete")
     return jobs
 
 
