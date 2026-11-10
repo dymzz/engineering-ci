@@ -27,17 +27,36 @@ def normalize(raw: str) -> str:
     return match.group(1)
 
 
+def module_shared_version(project: dict, lock: dict) -> str:
+    """Require the Dagger module to install the shared package from this checkout."""
+    module = project["project"]
+    if module["name"] != "engineering-ci-module":
+        raise ValueError("Unexpected Dagger module project identity")
+    if module.get("dependencies", []).count("engineering-ci") != 1:
+        raise ValueError("Dagger module must depend on engineering-ci")
+    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
+    if sources.get("engineering-ci") != {"path": ".."}:
+        raise ValueError("Dagger module must source engineering-ci from repository root")
+    packages = [item for item in lock["package"] if item["name"] == "engineering-ci"]
+    if len(packages) != 1 or packages[0].get("source") != {"directory": "../"}:
+        raise ValueError("Dagger lock must source engineering-ci from repository root")
+    return packages[0]["version"]
+
+
 def versions() -> dict[str, str]:
     found: dict[str, str] = {}
     for project in PROJECTS:
         label = str(project.relative_to(ROOT)) or "."
         expected = PROJECT_NAMES[project]
+        module_project = None
         for name in ("pyproject.toml", "uv.lock"):
             data = tomllib.loads((project / name).read_text(encoding="utf-8"))
             if name == "pyproject.toml":
                 if data["project"]["name"] != expected:
                     raise ValueError(f"Unexpected project name in {label}/{name}")
                 version = data["project"]["version"]
+                if project != ROOT:
+                    module_project = data
             else:
                 matches = [
                     pkg["version"] for pkg in data["package"] if pkg["name"] == expected
@@ -48,16 +67,9 @@ def versions() -> dict[str, str]:
                     )
                 version = matches[0]
                 if project != ROOT:
-                    shared = [
-                        pkg["version"]
-                        for pkg in data["package"]
-                        if pkg["name"] == PROJECT_NAMES[ROOT]
-                    ]
-                    if len(shared) != 1:
-                        raise ValueError(
-                            f"Expected one shared {PROJECT_NAMES[ROOT]} package in {label}/{name}"
-                        )
-                    found[f"{label}/{name}:{PROJECT_NAMES[ROOT]}"] = shared[0]
+                    found[f"{label}/{name}:{PROJECT_NAMES[ROOT]}"] = (
+                        module_shared_version(module_project, data)
+                    )
             found[f"{label}/{name}"] = version
     return found
 
