@@ -61,22 +61,22 @@ class API(FakeGitHub):
                 ".dagger" if name.startswith(".dagger/") else "."
             ]
             if name.endswith("pyproject.toml"):
-                text = f'[project]\\nname="{project_name}"\\nversion="{version}"\\n'
+                text = f'[project]\nname="{project_name}"\nversion="{version}"\n'
                 if name.startswith(".dagger/") and self.shared_version is not None:
                     text += (
-                        'dependencies=["engineering-ci"]\\n'
-                        '[tool.uv.sources]\\nengineering-ci={path=".."}\\n'
+                        'dependencies=["engineering-ci"]\n'
+                        '[tool.uv.sources]\nengineering-ci={path=".."}\n'
                     )
             else:
-                text = f'[[package]]\\nname="{project_name}"\\nversion="{version}"\\n'
+                text = f'[[package]]\nname="{project_name}"\nversion="{version}"\n'
                 if name.startswith(".dagger/") and self.shared_version is not None:
                     text += (
-                        'dependencies=[{name="engineering-ci"}]\\n'
-                        '[package.metadata]\\n'
-                        'requires-dist=[{name="engineering-ci",directory="../"}]\\n'
-                        '[[package]]\\nname="engineering-ci"\\n'
-                        f'version="{self.shared_version}"\\n'
-                        'source={directory="../"}\\n'
+                        'dependencies=[{name="engineering-ci"}]\n'
+                        '[package.metadata]\n'
+                        'requires-dist=[{name="engineering-ci",directory="../"}]\n'
+                        '[[package]]\nname="engineering-ci"\n'
+                        f'version="{self.shared_version}"\n'
+                        'source={directory="../"}\n'
                     )
             if name.startswith(".dagger/") and hasattr(self, "invalid_module"):
                 if name.endswith("pyproject.toml"):
