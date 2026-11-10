@@ -9,6 +9,7 @@
 - [仓库 Hygiene](hygiene.md) — whitespace/forwarding/docs/Vulture/Tach 原生结果与 CLI 的本地验证。
 - [来源集合对账](sources.md) — Manifest 投影、集合差/冲突/摘要/属性及 Dagger 调用的本地验证。
 - [Weaver 原生检查](weaver.md) — 固定 Registry、OTLP 回放、终态证据与 Dagger Check/Artifact 契约。
+- [CI/CD 遥测](cicd-telemetry.md) — GitHub Run/Job 事实 → Pipeline/Task 产物与负例本地验证。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 
 上级入口：[技术文档](../README.md)。
