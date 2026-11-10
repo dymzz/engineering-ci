@@ -135,13 +135,19 @@ by the checker as GitHub provenance.
 evidence. Canonical Run identity is read from the enclosing OTLP **Resource**
 `cicd.pipeline.run.id`; Span-level Run ID is optional and only checked for
 consistency. Normative result is the Span's `cicd.pipeline.result`, compared to
-`terminal_evidence.result`. The capture must contain exactly one matching
-Trace/Span; only then is an absent `parentSpanId` accepted as Root.
-`github.actions.run_attempt` is an ECI/GitHub extension: when present it is
-cross-checked, when absent Attempt correlation is reported `unverified` without
-treating SemConv telemetry as nonconformant. Matching caller assertions alone
-cannot pass against a different observed Resource Run ID or SemConv result.
-External GitHub provenance authentication remains #75/#63; #61 owns Required.
+`terminal_evidence.result`. When capture and Weaver sample both present that
+result and disagree, the terminal bind fails (`terminal_result_conflict`).
+The capture must contain exactly one matching Trace/Span; only then is an
+absent `parentSpanId` accepted as Root.
+
+`github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
+SemConv Required attribute. A SemConv-only Live Check may PASS without it.
+An explicitly requested `weaver-terminal` Run/Attempt correlation gate must
+**not** PASS while Attempt correlation remains `unverified`; absence yields
+`terminal_attempt_correlation_unverified` with `semconv_live=passed` retained.
+Matching caller assertions alone cannot pass against a different observed
+Resource Run ID or SemConv result. External GitHub provenance authentication
+remains #75/#63; #61 owns Required.
 
 ## Execution and artifacts
 
@@ -197,9 +203,15 @@ or bypass `source_tree_mismatch` refusals.
 
 With Weaver 0.28.0 and SemConv 1.45.0, integer `123` for
 `cicd.pipeline.result` produced information-level `undefined_enum_variant` and
-native exit 0. ECI conservatively returns `enum_variant_unverified` for that
-native finding; it does not rewrite its severity. Ordinary string attribute
-type errors produced `type_mismatch` and native exit 1.
+native exit 0. ECI does **not** globally fail on that advice count (extensible
+SemConv result strings may be custom). Instead it applies a targeted type check
+on `cicd.pipeline.result` / `cicd.pipeline.task.run.result`: non-string values
+yield `result_type_invalid`; correctly typed custom strings may PASS. Ordinary
+string attribute type errors still produce native `type_mismatch` / exit 1.
+
+Committed cart fixtures prove Weaver execution and matcher policy only — not
+full CI/CD v1.45.0 Pipeline/Task Required / Conditionally Required coverage.
+That bounded native CI/CD fixture evidence remains a follow-up on this Issue.
 
 Dagger v1.0.0-beta.16 emitted `core.repositoryformatversion does not support
 extension: worktreeconfig` in this managed worktree while calls still completed.

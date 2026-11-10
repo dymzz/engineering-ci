@@ -6,6 +6,32 @@ import json
 import re
 from datetime import datetime
 
+# SemConv result attrs are extensible strings (well-known values preferred).
+# Wrong JSON/OTLP types must not be treated as conformant (PR #78 P1-2).
+_EXTENSIBLE_RESULT_ATTRS = frozenset(
+    {
+        "cicd.pipeline.result",
+        "cicd.pipeline.task.run.result",
+    }
+)
+
+
+def _invalid_extensible_result_type(samples):
+    """Return attribute name when a result value is not a string."""
+    for sample in samples:
+        span = sample.get("span") if isinstance(sample, dict) else None
+        if not isinstance(span, dict):
+            continue
+        for entry in span.get("attributes") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if name not in _EXTENSIBLE_RESULT_ATTRS:
+                continue
+            if type(entry.get("value")) is not str:
+                return str(name)
+    return None
+
 
 def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -> dict:
     """Keep the native exit and require explicit sample and matcher coverage."""
@@ -47,18 +73,22 @@ def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -
             match = sample["span"]["live_check_result"]["match_info"]
             if match.get("signal") and match.get("unmatched") is False:
                 matched_spans.add(match.get("signal_matcher"))
+        bad_result_attr = _invalid_extensible_result_type(samples)
     except (ValueError, TypeError, KeyError, AttributeError):
         if exit_code:
             result["reason"] = "tool_failed"
         return result
     result["native_report"] = report
+    if unknown_enum:
+        # Preserve native count; do not globally fail extensible custom strings.
+        result["undefined_enum_variant_count"] = unknown_enum
     if violations:
         result["reason"] = "findings"
     elif exit_code:
         result["reason"] = "tool_failed"
-    elif unknown_enum:
-        # Weaver 0.28 may report even a wrong-typed enum only as information.
-        result["reason"] = "enum_variant_unverified"
+    elif bad_result_attr:
+        result["reason"] = "result_type_invalid"
+        result["attribute"] = bad_result_attr
     elif matcher_errors:
         result["reason"] = "matcher_errors"
     elif (
@@ -172,9 +202,15 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     ):
         if extra is not None and str(extra) != str(run_id):
             return "terminal_run_id_conflict", None
-    result = span_attrs.get("cicd.pipeline.result")
-    if result is None:
-        result = sample_attrs.get("cicd.pipeline.result")
+    capture_result = span_attrs.get("cicd.pipeline.result")
+    sample_result = sample_attrs.get("cicd.pipeline.result")
+    if (
+        capture_result is not None
+        and sample_result is not None
+        and str(capture_result) != str(sample_result)
+    ):
+        return "terminal_result_conflict", None
+    result = capture_result if capture_result is not None else sample_result
     if result is None:
         return "terminal_observed_result_missing", None
     if str(run_id) != str(source["run_id"]) or str(run_id) != str(
@@ -198,12 +234,14 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     if not _absent_parent(sample_parent) or not _absent_parent(capture_parent):
         return "terminal_span_not_root", None
 
+    # github.actions.run_attempt is ECI/GitHub correlation, not SemConv Required.
+    # weaver-terminal still cannot PASS a Run/Attempt gate without verified
+    # Attempt evidence bound to the matched capture (PR #78 P1-1).
     attempt_attr = span_attrs.get("github.actions.run_attempt")
     if attempt_attr is None:
         attempt_attr = sample_attrs.get("github.actions.run_attempt")
     if attempt_attr is None:
-        # Extension absent: SemConv terminal can pass; Attempt stays unverified.
-        return None, {
+        return "terminal_attempt_correlation_unverified", {
             "status": "unverified",
             "reason": "attempt_extension_absent",
             "declared_attempt": source["attempt"],
@@ -321,10 +359,18 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                 reason, attempt_correlation = _bind_terminal_pipeline(
                     item, wanted, source, evidence, capture=capture
                 )
+                if attempt_correlation is not None:
+                    correlations.append(attempt_correlation)
                 if reason:
                     result.update(status="failed", reason=reason)
+                    if correlations:
+                        result["attempt_correlation"] = (
+                            correlations[0] if len(correlations) == 1 else correlations
+                        )
+                    # SemConv live validity already passed above; terminal
+                    # Attempt correlation is a separate gate outcome.
+                    result["semconv_live"] = "passed"
                     return result
-                correlations.append(attempt_correlation)
             result["attempt_correlation"] = (
                 correlations[0] if len(correlations) == 1 else correlations
             )

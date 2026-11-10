@@ -73,11 +73,36 @@ def test_matcher_statistics_alone_do_not_prove_span_was_matched():
     assert weaver.live_result(0, json.dumps(report), ["pipeline"])["status"] == "failed"
 
 
-def test_unknown_enum_variant_is_not_claimed_as_conformant():
+def test_undefined_enum_variant_does_not_ban_custom_string_results():
     report = json.loads(payload())
     report["statistics"]["advice_type_counts"]["undefined_enum_variant"] = 1
+    report["samples"][0]["span"]["attributes"] = [
+        {"name": "cicd.pipeline.result", "value": "org.example.deferred"}
+    ]
     result = weaver.live_result(0, json.dumps(report), ["pipeline"])
-    assert result["reason"] == "enum_variant_unverified"
+    assert result["status"] == "passed"
+    assert result["undefined_enum_variant_count"] == 1
+
+
+def test_wrong_typed_result_is_not_conformant():
+    report = json.loads(payload())
+    report["statistics"]["advice_type_counts"]["undefined_enum_variant"] = 1
+    report["samples"][0]["span"]["attributes"] = [
+        {"name": "cicd.pipeline.result", "value": 123}
+    ]
+    result = weaver.live_result(0, json.dumps(report), ["pipeline"])
+    assert result["status"] == "failed"
+    assert result["reason"] == "result_type_invalid"
+    assert result["attribute"] == "cicd.pipeline.result"
+
+
+def test_known_cancellation_result_passes_with_enum_advice_count():
+    report = json.loads(payload())
+    report["statistics"]["advice_type_counts"]["undefined_enum_variant"] = 0
+    report["samples"][0]["span"]["attributes"] = [
+        {"name": "cicd.pipeline.result", "value": "cancellation"}
+    ]
+    assert weaver.live_result(0, json.dumps(report), ["pipeline"])["status"] == "passed"
 
 
 def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
@@ -152,24 +177,30 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
 
 def test_otlp_exact_identity_and_terminal_evidence():
     report, expected, capture = otlp_payload()
-    passed = weaver.otlp_result(
+    # SemConv-only Live path may PASS without the GitHub Attempt extension.
+    live = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=False, capture=capture
+    )
+    assert live["status"] == "passed"
+    # weaver-terminal Run/Attempt gate must not PASS without verified Attempt.
+    missing = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
     )
-    assert passed["status"] == "passed"
-    assert passed["attempt_correlation"]["status"] == "unverified"
+    assert missing["status"] == "failed"
+    assert missing["reason"] == "terminal_attempt_correlation_unverified"
+    assert missing["attempt_correlation"]["status"] == "unverified"
+    assert missing["semconv_live"] == "passed"
     expected["source"]["attempt"] = 2
     expected["terminal_evidence"]["attempt"] = 2
-    # Declared Attempt changed, but no extension attribute → still SemConv-pass,
-    # attempt remains unverified against the new declaration.
     again = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
     )
-    assert again["status"] == "passed"
-    assert again["attempt_correlation"]["status"] == "unverified"
+    assert again["status"] == "failed"
+    assert again["reason"] == "terminal_attempt_correlation_unverified"
 
 
 def test_terminal_resource_only_run_id_passes():
-    report, expected, capture = otlp_payload()
+    report, expected, capture = otlp_payload(attempt_attr=1)
     result = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
     )
@@ -180,7 +211,7 @@ def test_terminal_resource_only_run_id_passes():
 
 
 def test_terminal_conflicting_resource_and_span_run_id_fails():
-    report, expected, capture = otlp_payload()
+    report, expected, capture = otlp_payload(attempt_attr=1)
     capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"].append(
         {"key": "cicd.pipeline.run.id", "value": {"stringValue": "99"}}
     )
@@ -208,14 +239,14 @@ def test_terminal_attempt_extension_cross_check():
 
 def test_terminal_semconv_results_and_mismatch():
     for value in ("success", "cancellation", "skip", "timeout"):
-        report, expected, capture = otlp_payload(result=value)
+        report, expected, capture = otlp_payload(result=value, attempt_attr=1)
         assert (
             weaver.otlp_result(
                 0, json.dumps(report), expected, terminal=True, capture=capture
             )["status"]
             == "passed"
         )
-    report, expected, capture = otlp_payload(result="success")
+    report, expected, capture = otlp_payload(result="success", attempt_attr=1)
     expected["terminal_evidence"]["result"] = "cancellation"
     failed = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
@@ -224,8 +255,29 @@ def test_terminal_semconv_results_and_mismatch():
     assert failed["reason"] == "terminal_result_mismatch"
 
 
+def test_terminal_capture_sample_result_conflict():
+    report, expected, capture = otlp_payload(result="success", attempt_attr=1)
+    report["samples"][0]["span"]["attributes"] = [
+        {"name": "cicd.pipeline.result", "value": "failure"},
+        {"name": "github.actions.run_attempt", "value": 1},
+    ]
+    conflict = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert conflict["status"] == "failed"
+    assert conflict["reason"] == "terminal_result_conflict"
+    matching = weaver.otlp_result(
+        0,
+        json.dumps(otlp_payload(result="success", attempt_attr=1)[0]),
+        expected,
+        terminal=True,
+        capture=capture,
+    )
+    assert matching["status"] == "passed"
+
+
 def test_terminal_capture_missing_duplicate_and_non_root():
-    report, expected, capture = otlp_payload()
+    report, expected, capture = otlp_payload(attempt_attr=1)
     missing = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture={"resourceSpans": []}
     )
@@ -236,7 +288,7 @@ def test_terminal_capture_missing_duplicate_and_non_root():
         0, json.dumps(report), expected, terminal=True, capture=dup
     )
     assert duplicated["reason"] == "duplicate_capture_span"
-    report2, expected2, capture2 = otlp_payload()
+    report2, expected2, capture2 = otlp_payload(attempt_attr=1)
     capture2["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["parentSpanId"] = (
         "3333333333333333"
     )
@@ -247,7 +299,7 @@ def test_terminal_capture_missing_duplicate_and_non_root():
 
 
 def test_terminal_ignores_matching_caller_assertions_without_observed_span():
-    report, expected, capture = otlp_payload()
+    report, expected, capture = otlp_payload(attempt_attr=1)
     expected["source"]["run_id"] = "B"
     expected["terminal_evidence"]["run_id"] = "B"
     result = weaver.otlp_result(
@@ -278,7 +330,7 @@ def test_otlp_missing_duplicate_unended_or_wrong_match_is_rejected():
 
 
 def test_terminal_requires_root_and_completed_evidence():
-    report, expected, capture = otlp_payload()
+    report, expected, capture = otlp_payload(attempt_attr=1)
     del expected["terminal_evidence"]
     assert (
         weaver.otlp_result(0, json.dumps(report), expected, capture=capture)["status"]
