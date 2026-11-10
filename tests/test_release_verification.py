@@ -149,6 +149,13 @@ def test_remote_module_and_shared_dependency_versions_must_agree(entry):
         verification.target(api, "main", "0.4.11")
 
 
+def test_historical_same_name_module_metadata_remains_readable():
+    api = API()
+    api.project_names[".dagger"] = "engineering-ci"
+    api.shared_version = None
+    assert verification.target(api, "main", "0.4.11") == identity()
+
+
 @pytest.mark.parametrize("invalid", ["missing_dependency", "wrong_source", "missing_lock_link", "wrong_lock_source"])
 def test_remote_module_requires_local_shared_package(invalid):
     api = API()
