@@ -1,29 +1,37 @@
-"""GitHub Actions Run/Job facts → OTel CI/CD Pipeline/Task telemetry records.
+"""GitHub Actions Run/Job facts → OTel CI/CD Pipeline/Task candidate records.
 
 Producer decision (ECI #75 / Knowledge PR #79 C/O2):
-- Source of truth: GitHub Actions environment and optional Run/Job API facts.
-- Emits Pipeline Run and Task Run span *records* suitable for OTLP export or a
-  verifiable JSON artifact. Does not instrument Dagger Functions.
-- Missing Run ID, Attempt, or Job identity yields an incomplete report — never a
-  forged complete Pipeline Span. Selection/Required statuses are not mapped into
-  cicd.pipeline.result.
+- Source of truth: separate Run and Job facts (env or explicit mapping/API).
+- Emits candidate Pipeline/Task span records for a JSON artifact only.
+- Does not prove OTLP delivery, Weaver PASS, or authenticated GitHub provenance.
+- Does not instrument Dagger Functions.
+- Missing identity, terminal results, required SemConv fields, or real timestamps
+  yield incomplete/partial reports — never forged complete spans.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
-import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPORT_KIND = "engineering-ci-cicd-telemetry"
+EVIDENCE_CLASS = "candidate_record"
+# OTLP SpanKind numeric values.
 SPAN_KIND_INTERNAL = 1
+SPAN_KIND_SERVER = 2
+# OTLP StatusCode.
+STATUS_UNSET = 0
+STATUS_OK = 1
+STATUS_ERROR = 2
 
-# Official CI/CD SemConv attribute names (registry pin tracked with Knowledge #80).
+# Public CI/CD SemConv attribute names (registry pin tracked with Knowledge #80).
 ATTR_PIPELINE_NAME = "cicd.pipeline.name"
 ATTR_PIPELINE_RUN_ID = "cicd.pipeline.run.id"
 ATTR_PIPELINE_RESULT = "cicd.pipeline.result"
@@ -31,11 +39,25 @@ ATTR_TASK_NAME = "cicd.pipeline.task.name"
 ATTR_TASK_RUN_ID = "cicd.pipeline.task.run.id"
 ATTR_TASK_RUN_URL = "cicd.pipeline.task.run.url.full"
 ATTR_TASK_RUN_RESULT = "cicd.pipeline.task.run.result"
+ATTR_ERROR_TYPE = "error.type"
 ATTR_VCS_HEAD_REVISION = "vcs.ref.head.revision"
 
 # GitHub-native fact until the fixed SemConv registry confirms an official key.
 ATTR_GITHUB_RUN_ATTEMPT = "github.actions.run_attempt"
 ATTR_GITHUB_REPOSITORY = "github.repository"
+
+# GitHub conclusion → SemConv cicd.*.result (no conflation of cancel/skip/timeout).
+_RESULT_MAP = {
+    "success": "success",
+    "failure": "failure",
+    "cancelled": "cancellation",
+    "canceled": "cancellation",
+    "skipped": "skip",
+    "timed_out": "timeout",
+    "action_required": "error",
+    "neutral": "error",
+    "stale": "error",
+}
 
 
 class TelemetryError(ValueError):
@@ -52,147 +74,215 @@ class GitHubRunFacts:
     job_id: str | None
     job_name: str | None
     job_url: str | None
-    conclusion: str | None
+    run_conclusion: str | None
+    job_conclusion: str | None
     head_sha: str | None
     repository: str | None
     server_url: str | None = None
+    run_started_at_ns: int | None = None
+    run_completed_at_ns: int | None = None
+    job_started_at_ns: int | None = None
+    job_completed_at_ns: int | None = None
 
     @property
-    def complete_for_pipeline(self):
+    def has_run_identity(self):
         return bool(self.workflow_name and self.run_id and self.run_attempt is not None)
 
     @property
-    def complete_for_task(self):
-        return self.complete_for_pipeline and bool(self.job_id and self.job_name)
+    def has_job_identity(self):
+        return bool(self.job_id and self.job_name and self.job_url)
+
+    @property
+    def has_run_bounds(self):
+        return (
+            self.run_started_at_ns is not None and self.run_completed_at_ns is not None
+        )
+
+    @property
+    def has_job_bounds(self):
+        return (
+            self.job_started_at_ns is not None and self.job_completed_at_ns is not None
+        )
+
+
+def _text(mapping, key):
+    item = mapping.get(key)
+    if item is None:
+        return None
+    item = str(item).strip()
+    return item or None
+
+
+def parse_time_ns(value):
+    """Accept unix-ns int/str or RFC3339; never invent a substitute."""
+    if value is None:
+        return None
+    if type(value) is int:
+        return value if value >= 0 else None
+    if type(value) is float:
+        if value < 0:
+            return None
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return int(moment.timestamp() * 1_000_000_000)
+
+
+def map_github_result(conclusion):
+    """Return (semconv_result, error_type_or_none). Unknown conclusions → None."""
+    if conclusion is None:
+        return None, None
+    result = _RESULT_MAP.get(conclusion)
+    if result is None:
+        return None, None
+    if result in {"failure", "error"}:
+        return result, conclusion
+    return result, None
 
 
 def facts_from_actions_env(env=None):
     """Read GitHub Actions runtime facts; missing fields stay None (no forgery)."""
     env = os.environ if env is None else env
-
-    def text(key):
-        value = env.get(key)
-        if value is None:
-            return None
-        value = str(value).strip()
-        return value or None
-
-    attempt_raw = text("GITHUB_RUN_ATTEMPT")
+    attempt_raw = _text(env, "GITHUB_RUN_ATTEMPT")
     attempt = None
     if attempt_raw is not None:
         try:
             attempt = int(attempt_raw)
         except ValueError:
             attempt = None
-    # Actions env does not expose Job ID; adapters may supply ENGINEERING_CI_*.
     return GitHubRunFacts(
-        workflow_name=text("GITHUB_WORKFLOW"),
-        run_id=text("GITHUB_RUN_ID"),
+        workflow_name=_text(env, "GITHUB_WORKFLOW"),
+        run_id=_text(env, "GITHUB_RUN_ID"),
         run_attempt=attempt,
-        job_id=text("GITHUB_JOB_ID") or text("ENGINEERING_CI_JOB_ID"),
-        job_name=text("GITHUB_JOB"),
-        job_url=text("ENGINEERING_CI_JOB_URL"),
-        conclusion=text("ENGINEERING_CI_JOB_CONCLUSION") or text("JOB_CONCLUSION"),
-        head_sha=text("GITHUB_SHA"),
-        repository=text("GITHUB_REPOSITORY"),
-        server_url=text("GITHUB_SERVER_URL") or "https://github.com",
+        job_id=_text(env, "GITHUB_JOB_ID") or _text(env, "ENGINEERING_CI_JOB_ID"),
+        job_name=_text(env, "GITHUB_JOB") or _text(env, "ENGINEERING_CI_JOB_NAME"),
+        job_url=_text(env, "ENGINEERING_CI_JOB_URL"),
+        run_conclusion=_text(env, "ENGINEERING_CI_RUN_CONCLUSION")
+        or _text(env, "GITHUB_RUN_CONCLUSION"),
+        job_conclusion=_text(env, "ENGINEERING_CI_JOB_CONCLUSION")
+        or _text(env, "JOB_CONCLUSION"),
+        head_sha=_text(env, "GITHUB_SHA"),
+        repository=_text(env, "GITHUB_REPOSITORY"),
+        server_url=_text(env, "GITHUB_SERVER_URL") or "https://github.com",
+        run_started_at_ns=parse_time_ns(_text(env, "ENGINEERING_CI_RUN_STARTED_AT")),
+        run_completed_at_ns=parse_time_ns(
+            _text(env, "ENGINEERING_CI_RUN_COMPLETED_AT")
+        ),
+        job_started_at_ns=parse_time_ns(_text(env, "ENGINEERING_CI_JOB_STARTED_AT")),
+        job_completed_at_ns=parse_time_ns(
+            _text(env, "ENGINEERING_CI_JOB_COMPLETED_AT")
+        ),
     )
 
 
 def facts_from_mapping(value):
-    """Build facts from an explicit JSON/API mapping (tests and post-job adapters)."""
+    """Build facts from an explicit JSON/API mapping (untrusted caller input)."""
     if not isinstance(value, dict):
         raise TelemetryError("facts_invalid")
-
-    def text(key):
-        item = value.get(key)
-        if item is None:
-            return None
-        item = str(item).strip()
-        return item or None
-
     attempt = value.get("run_attempt")
     if attempt is not None and type(attempt) is not int:
         try:
             attempt = int(attempt)
         except (TypeError, ValueError):
             raise TelemetryError("run_attempt_invalid") from None
+    # Backward-compatible single "conclusion" applies only when explicit run/job
+    # fields are absent — still kept separate in the dataclass.
+    shared = _text(value, "conclusion")
     return GitHubRunFacts(
-        workflow_name=text("workflow_name"),
-        run_id=text("run_id"),
+        workflow_name=_text(value, "workflow_name"),
+        run_id=_text(value, "run_id"),
         run_attempt=attempt,
-        job_id=text("job_id"),
-        job_name=text("job_name"),
-        job_url=text("job_url"),
-        conclusion=text("conclusion"),
-        head_sha=text("head_sha"),
-        repository=text("repository"),
-        server_url=text("server_url") or "https://github.com",
+        job_id=_text(value, "job_id"),
+        job_name=_text(value, "job_name"),
+        job_url=_text(value, "job_url"),
+        run_conclusion=_text(value, "run_conclusion") or shared,
+        job_conclusion=_text(value, "job_conclusion") or shared,
+        head_sha=_text(value, "head_sha"),
+        repository=_text(value, "repository"),
+        server_url=_text(value, "server_url") or "https://github.com",
+        run_started_at_ns=parse_time_ns(
+            value.get("run_started_at_ns", value.get("run_started_at"))
+        ),
+        run_completed_at_ns=parse_time_ns(
+            value.get("run_completed_at_ns", value.get("run_completed_at"))
+        ),
+        job_started_at_ns=parse_time_ns(
+            value.get("job_started_at_ns", value.get("job_started_at"))
+        ),
+        job_completed_at_ns=parse_time_ns(
+            value.get("job_completed_at_ns", value.get("job_completed_at"))
+        ),
     )
 
 
-def _pipeline_result(conclusion):
-    if conclusion is None:
-        return None
-    mapping = {
-        "success": "success",
-        "failure": "failure",
-        "cancelled": "error",
-        "canceled": "error",
-        "skipped": "error",
-        "timed_out": "error",
-        "action_required": "error",
-        "neutral": "error",
-        "stale": "error",
-    }
-    return mapping.get(conclusion)
-
-
-def _status_code(attributes):
-    result = attributes.get(ATTR_PIPELINE_RESULT) or attributes.get(
-        ATTR_TASK_RUN_RESULT
-    )
+def _status_code(result):
     if result == "success":
-        return 1
-    if result:
-        return 2
-    return 0
+        return STATUS_OK
+    if result in {"failure", "error"}:
+        return STATUS_ERROR
+    return STATUS_UNSET
 
 
-def _span(name, *, trace_id, span_id, parent_span_id, start_ns, end_ns, attributes):
+def _span(
+    name, *, kind, trace_id, span_id, parent_span_id, start_ns, end_ns, attributes
+):
     cleaned = {key: value for key, value in attributes.items() if value is not None}
+    result = cleaned.get(ATTR_PIPELINE_RESULT) or cleaned.get(ATTR_TASK_RUN_RESULT)
     return {
         "name": name,
-        "kind": SPAN_KIND_INTERNAL,
+        "kind": kind,
         "trace_id": trace_id,
         "span_id": span_id,
         "parent_span_id": parent_span_id,
         "start_time_unix_nano": start_ns,
         "end_time_unix_nano": end_ns,
         "attributes": cleaned,
-        "status": {"code": _status_code(cleaned)},
+        "status": {"code": _status_code(result)},
     }
 
 
-def _ids_from_run(run_id, attempt):
-    # Deterministic, non-secret ids for offline artifacts; not cryptographic security.
-    seed = f"{run_id}:{attempt}".encode()
-    digest = __import__("hashlib").sha256(seed).hexdigest()
-    return digest[:32], digest[32:48], digest[48:64]
+def _stable_ids(run_id, attempt, job_id=None):
+    """Deterministic reconstruction ids; not provenance authentication."""
+    pipeline_seed = f"pipeline:{run_id}:{attempt}".encode()
+    digest = hashlib.sha256(pipeline_seed).hexdigest()
+    trace_id = digest[:32]
+    pipeline_span_id = digest[32:48]
+    if job_id is None:
+        return trace_id, pipeline_span_id, None
+    task_seed = f"task:{run_id}:{attempt}:{job_id}".encode()
+    task_span_id = hashlib.sha256(task_seed).hexdigest()[:16]
+    return trace_id, pipeline_span_id, task_span_id
 
 
-def produce(facts, *, now_ns=None, producer="eci_core.cicd_telemetry"):
-    """Build a telemetry report from GitHub facts. Incomplete inputs stay incomplete."""
-    now_ns = time.time_ns() if now_ns is None else now_ns
+def produce(facts, *, producer="eci_core.cicd_telemetry"):
+    """Build candidate telemetry records. Incomplete inputs stay incomplete/partial."""
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
+        "evidence_class": EVIDENCE_CLASS,
+        "claims": {
+            "otlp_delivered": False,
+            "weaver_pass": False,
+            "github_authenticated": False,
+            "candidate_record_only": True,
+        },
         "producer": {
             "name": producer,
             "decision": "github_actions_env_or_api_adapter",
             "semconv_note": (
-                "Attribute names follow public CI/CD SemConv; registry version "
-                "pin is tracked with Knowledge #80/#81"
+                "Attribute names follow public CI/CD SemConv Pipeline/Task Run; "
+                "registry version pin is tracked with Knowledge #80/#81"
             ),
         },
         "status": "incomplete",
@@ -201,21 +291,10 @@ def produce(facts, *, now_ns=None, producer="eci_core.cicd_telemetry"):
         "resource": {},
         "spans": [],
     }
-    if not facts.complete_for_pipeline:
+    if not facts.has_run_identity:
         report["reason"] = "missing_run_identity"
         return report
-    if facts.conclusion is None:
-        report["reason"] = "missing_terminal_result"
-        return report
-    result = _pipeline_result(facts.conclusion)
-    if result is None:
-        report["reason"] = "unsupported_conclusion"
-        return report
 
-    trace_id, pipeline_span_id, task_span_id = _ids_from_run(
-        facts.run_id, facts.run_attempt
-    )
-    start_ns = now_ns - 1_000_000
     resource = {
         ATTR_PIPELINE_NAME: facts.workflow_name,
         ATTR_PIPELINE_RUN_ID: facts.run_id,
@@ -227,50 +306,88 @@ def produce(facts, *, now_ns=None, producer="eci_core.cicd_telemetry"):
         resource[ATTR_VCS_HEAD_REVISION] = facts.head_sha
     report["resource"] = resource
 
-    pipeline_attrs = {
-        ATTR_PIPELINE_NAME: facts.workflow_name,
-        ATTR_PIPELINE_RUN_ID: facts.run_id,
-        ATTR_PIPELINE_RESULT: result,
-        ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
-        ATTR_VCS_HEAD_REVISION: facts.head_sha,
-    }
-    spans = [
-        _span(
-            f"pipeline:{facts.workflow_name}",
-            trace_id=trace_id,
-            span_id=pipeline_span_id,
-            parent_span_id=None,
-            start_ns=start_ns,
-            end_ns=now_ns,
-            attributes=pipeline_attrs,
-        )
-    ]
-    if facts.complete_for_task:
-        task_attrs = {
-            ATTR_TASK_NAME: facts.job_name,
-            ATTR_TASK_RUN_ID: facts.job_id,
-            ATTR_TASK_RUN_RESULT: result,
-            ATTR_TASK_RUN_URL: facts.job_url,
+    trace_id, pipeline_span_id, task_span_id = _stable_ids(
+        facts.run_id, facts.run_attempt, facts.job_id
+    )
+    spans = []
+    reasons = []
+
+    run_result, run_error_type = map_github_result(facts.run_conclusion)
+    if run_result is None and facts.run_conclusion is not None:
+        reasons.append("unsupported_run_conclusion")
+    elif facts.run_conclusion is None:
+        reasons.append("missing_run_terminal_result")
+    elif not facts.has_run_bounds:
+        reasons.append("missing_run_timestamps")
+    else:
+        pipeline_attrs = {
+            ATTR_PIPELINE_NAME: facts.workflow_name,
             ATTR_PIPELINE_RUN_ID: facts.run_id,
+            ATTR_PIPELINE_RESULT: run_result,
             ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
+            ATTR_VCS_HEAD_REVISION: facts.head_sha,
+            ATTR_ERROR_TYPE: run_error_type,
         }
         spans.append(
             _span(
-                f"task:{facts.job_name}",
+                f"RUN {facts.workflow_name}",
+                kind=SPAN_KIND_SERVER,
                 trace_id=trace_id,
-                span_id=task_span_id,
-                parent_span_id=pipeline_span_id,
-                start_ns=start_ns,
-                end_ns=now_ns,
-                attributes=task_attrs,
+                span_id=pipeline_span_id,
+                parent_span_id=None,
+                start_ns=facts.run_started_at_ns,
+                end_ns=facts.run_completed_at_ns,
+                attributes=pipeline_attrs,
             )
         )
-    else:
-        report["reason"] = "pipeline_without_task_identity"
+
+    job_result, job_error_type = map_github_result(facts.job_conclusion)
+    if facts.job_id or facts.job_name or facts.job_conclusion is not None:
+        if not facts.has_job_identity:
+            reasons.append("missing_task_required_identity")
+        elif job_result is None and facts.job_conclusion is not None:
+            reasons.append("unsupported_job_conclusion")
+        elif facts.job_conclusion is None:
+            reasons.append("missing_job_terminal_result")
+        elif not facts.has_job_bounds:
+            reasons.append("missing_job_timestamps")
+        else:
+            task_attrs = {
+                ATTR_TASK_NAME: facts.job_name,
+                ATTR_TASK_RUN_ID: facts.job_id,
+                ATTR_TASK_RUN_RESULT: job_result,
+                ATTR_TASK_RUN_URL: facts.job_url,
+                ATTR_PIPELINE_RUN_ID: facts.run_id,
+                ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
+                ATTR_ERROR_TYPE: job_error_type,
+            }
+            spans.append(
+                _span(
+                    f"task:{facts.job_name}",
+                    kind=SPAN_KIND_INTERNAL,
+                    trace_id=trace_id,
+                    span_id=task_span_id,
+                    parent_span_id=pipeline_span_id,
+                    start_ns=facts.job_started_at_ns,
+                    end_ns=facts.job_completed_at_ns,
+                    attributes=task_attrs,
+                )
+            )
+
     report["spans"] = spans
-    report["status"] = "produced" if facts.complete_for_task else "partial"
-    if facts.complete_for_task:
+    if not spans:
+        report["status"] = "incomplete"
+        report["reason"] = reasons[0] if reasons else "no_candidate_spans"
+        return report
+
+    pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
+    task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
+    if pipeline_ok and task_ok and not reasons:
+        report["status"] = "produced"
         report["reason"] = None
+        return report
+    report["status"] = "partial"
+    report["reason"] = reasons[0] if reasons else "partial_candidate_spans"
     return report
 
 
@@ -291,20 +408,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="engineering-ci cicd-telemetry",
         description=(
-            "Produce CI/CD Pipeline/Task telemetry records from GitHub Actions "
-            "facts; write a verifiable JSON artifact (ECI #75)."
+            "Build candidate CI/CD Pipeline/Task telemetry records from GitHub "
+            "Run/Job facts and write a JSON artifact. Does not claim OTLP "
+            "delivery or Weaver PASS (ECI #75)."
         ),
     )
     parser.add_argument(
         "--facts",
         type=Path,
-        help="JSON file with explicit GitHub Run/Job facts (overrides env)",
+        help=(
+            "JSON file with explicit Run/Job facts (untrusted caller input; "
+            "not authenticated GitHub provenance)"
+        ),
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("cicd-telemetry.json"),
-        help="Artifact path for the telemetry report",
+        help="Artifact path for candidate telemetry records",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -325,12 +446,11 @@ def main(argv=None):
         _print(report)
     else:
         print(f"status: {report['status']}")
+        print(f"evidence_class: {report['evidence_class']}")
         print(f"reason: {report['reason'] or 'ok'}")
         print(f"spans: {len(report['spans'])}")
         print(f"artifact: {args.output}")
-    if report["status"] == "produced":
-        return 0
-    if report["status"] == "partial":
+    if report["status"] in {"produced", "partial"}:
         return 0
     return 3
 
