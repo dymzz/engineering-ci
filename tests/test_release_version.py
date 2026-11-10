@@ -62,6 +62,10 @@ def test_set_version_updates_module_and_its_shared_dependency(tmp_path, monkeypa
             f'[[package]]\nname = "{package}"\nversion = "0.7.0"\n'
             + ('source = { directory = "../" }\n'
                if project == module and package == "engineering-ci" else "")
+            + ('dependencies = [{ name = "engineering-ci" }]\n'
+               '[package.metadata]\n'
+               'requires-dist = [{ name = "engineering-ci", directory = "../" }]\n'
+               if project == module and package == "engineering-ci-module" else "")
             for package in packages
         )
         (project / "uv.lock").write_text(lock_text, encoding="utf-8")
