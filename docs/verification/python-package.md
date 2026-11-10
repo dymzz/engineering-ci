@@ -25,9 +25,13 @@ The repository has no `hooks.json` or Codex/Claude Code/Antigravity automatic
 hook registration files; the external target was not accessed.
 
 The new local dependency adds a first-party version entry in `.dagger/uv.lock`.
-Local version check/set and remote release metadata verification cover both
-the module and shared dependency, while retaining verification of older release
-metadata where the module distribution was also named `engineering-ci`.
+Local version checks and remote release metadata verification require the
+current Dagger module to declare `engineering-ci` as a dependency, use
+`[tool.uv.sources]` with `path = ".."`, and lock the package from
+`directory = "../"` with matching dependency metadata and versions. The
+remote reader still accepts historical release metadata in which the module
+itself was named `engineering-ci`; this does not authorize the current
+module to drop its declared root-project dependency.
 
 ## Executed checks
 
