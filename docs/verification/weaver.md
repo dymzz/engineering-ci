@@ -231,3 +231,9 @@ including raw native reports, logs, packages, diff and input identities. They
 are local execution evidence, not GitHub-signed or Required-policy admission.
 The controlled captures do not replace #75's real producer evidence or #52's
 cross-component integration smoke.
+
+At integration baseline `a520765f0aa942a6c9f5a76566f5d65fc1a6e7ba`, #75's
+merged slice emits `engineering-ci-cicd-telemetry` candidate-record JSON. That
+is not an OTLP ExportTraceServiceRequest and is not accepted as a flushed OTLP
+capture by this checker. The actual producer/export and #52's real-source
+integration smoke retain their separate acceptance requirements.

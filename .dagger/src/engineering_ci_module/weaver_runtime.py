@@ -158,10 +158,11 @@ def validate_matcher_config(path):
         raise ValueError("policy_external_inputs_unsupported")
 
 
-def port():
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
+def ports():
+    with socket.socket() as grpc_listener, socket.socket() as admin_listener:
+        grpc_listener.bind(("127.0.0.1", 0))
+        admin_listener.bind(("127.0.0.1", 0))
+        return grpc_listener.getsockname()[1], admin_listener.getsockname()[1]
 
 
 def admin(address, method, endpoint):
@@ -199,8 +200,11 @@ def otlp_replay(report, argv, otlp):
                             if len(decoded) != size:
                                 raise ValueError("otlp_id_invalid")
                             record[key] = base64.b64encode(decoded).decode()
-    request = json_format.ParseDict(capture, ExportTraceServiceRequest())
-    grpc_port, admin_port = port(), port()
+    try:
+        request = json_format.ParseDict(capture, ExportTraceServiceRequest())
+    except json_format.ParseError as error:
+        raise ValueError("otlp_json_invalid: " + str(error)) from error
+    grpc_port, admin_port = ports()
     address = f"http://127.0.0.1:{admin_port}"
     argv += [
         "--input-source",
@@ -334,6 +338,7 @@ def run(kind, config_path):
                 )
             report.update(status="passed", reason=None, gate_exit_code=0)
             return report
+        report["exit_code"] = None
         matcher = local_path(ROOT, config["matcher_config"])
         validate_matcher_config(matcher)
         report["inputs"]["matcher_sha256"] = digest(matcher)
