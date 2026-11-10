@@ -15,6 +15,7 @@
 - [安全策略快照](security-policy.md) — 可信策略发布/接收、防回退及 Runtime 判定契约。
 - [发布](release/README.md) — Release Workflow 的门禁、证据与异常恢复。
 - [测试](testing/README.md) — Pytest 报告、显式质量策略、Python 兼容性及静态分析检查。
+- [CI/CD 遥测](cicd-telemetry.md) — GitHub Run/Job → Pipeline/Task 证据产物，不重复 Dagger Function 埋点。
 - [技术清单](technology.md) — 已采用、实验性、计划中与已移除的技术及[集成记录](integrations/README.md)。
 
 上级入口：[技术文档](../README.md)。
