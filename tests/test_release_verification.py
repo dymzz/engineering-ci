@@ -140,7 +140,7 @@ def test_requested_version_is_checked_against_all_four_remote_fields():
 @pytest.mark.parametrize("entry", [".dagger/uv.lock", "shared_dependency"])
 def test_remote_module_and_shared_dependency_versions_must_agree(entry):
     api = API()
-        assert verification.target(api, "main", "0.4.11") == identity()
+    assert verification.target(api, "main", "0.4.11") == identity()
     if entry == "shared_dependency":
         api.shared_version = "0.4.9"
     else:
