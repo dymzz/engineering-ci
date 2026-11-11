@@ -41,8 +41,13 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Observation before Job end | Observed timestamp `<` max Job `completed_at` | No Root; `terminal_observed_before_jobs` |
 | Expected Job inventory | stubs + omit/emit/not_selected | `coverage.expected_completed_jobs` machine-readable set |
 | Pipeline-only Root | Exact bounds, `completed_jobs_total=0`, empty tasks | `produced` with SERVER only; `task_coverage=empty` |
-| OTLP/gRPC ACK | `--otlp-endpoint` Export success, zero rejects | `rpc_accepted=true`; still `otlp_delivered=false` |
-| OTLP/gRPC partial reject | `partial_success.rejected_spans > 0` | `otlp_grpc_partial_reject`; `rpc_accepted=false` |
+| OTLP/gRPC ACK | `--otlp-endpoint` Export success, zero rejects | Per-signal `rpc_accepted` / `otlp_logs_rpc_accepted` / `otlp_metrics_rpc_accepted`; still not delivered |
+| OTLP/gRPC partial reject | `partial_success` rejects spans, log records, or datapoints | `otlp_grpc_partial_reject`; that signal's acceptance stays false |
+| Duration Histogram | Explicit phase interval | `cicd.pipeline.run.duration` Histogram in seconds for that state only |
+| No phase interval | Exact Run bounds without a state window | No `finalizing` datapoint; `phase_interval_unproven` |
+| Mapping Root source | `--facts` with explicit completed-at | `terminal_source=mapping`, `end_time_source=explicit_mapping`, `time_precision=exact_input`, `time_source_verified=false` |
+| Receiver receipt | In-process gRPC capture of the same Run/Attempt/Trace | `snapshot_phase=receiver_confirmed` only when every prepared signal matches; `candidate_record_only` stays true |
+| Real Attempt → local receiver | Run `42821429094` Attempt 1, `--end-time-mode observed_upper_bound` | See [cicd-telemetry-real-run-receiver](./cicd-telemetry-real-run-receiver/README.md). Not a default-branch `workflow_run` |
 
 Run:
 

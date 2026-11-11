@@ -148,6 +148,8 @@ jobs:
             --end-time-mode observed_upper_bound \
             --output artifacts/cicd-telemetry/candidate.json \
             --otlp-json artifacts/cicd-telemetry/otel.json \
+            --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
+            --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
             --json \
             "${EXTRA[@]}" \
             > artifacts/cicd-telemetry/cli.stdout.json \

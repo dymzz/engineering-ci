@@ -39,7 +39,7 @@
         {
           "scope": {
             "name": "eci_core.cicd_telemetry",
-            "version": "5"
+            "version": "6"
           },
           "spans": [
             {
@@ -77,7 +77,7 @@
                 {
                   "key": "eci.cicd.end_time_quality",
                   "value": {
-                    "stringValue": "exact"
+                    "stringValue": "exact_input"
                   }
                 },
                 {

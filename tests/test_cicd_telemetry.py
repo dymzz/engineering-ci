@@ -1097,6 +1097,11 @@ def test_observed_upper_bound_emits_root_with_unverified_precision():
         cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND
     )
     assert report["terminal"]["exact_run_duration"] is False
+    assert report["terminal"]["time_precision"] == "observed_upper_bound"
+    assert report["terminal"]["time_source_verified"] is False
+    assert report["terminal_provenance"]["terminal_source"] == "mapping"
+    assert report["terminal_provenance"]["end_time_source"] == "terminal_observed_at"
+    assert "run_completed_at" not in report["terminal"]["end_time_source"]
     assert report["coverage"]["pipeline_terminal_covered"] is True
     pipeline = next(
         span
@@ -1254,7 +1259,198 @@ def test_expected_completed_jobs_inventory_tracks_omission():
     assert expected[0]["emitted"] is True
     assert expected[1]["omitted"] is True
     assert expected[2]["omit_reason"] == "not_selected_job_id_slice"
-    assert (
-        report["terminal_provenance"]["end_time_quality"]
-        == cicd_telemetry.END_TIME_EXACT
+    provenance = report["terminal_provenance"]
+    assert provenance["end_time_quality"] == cicd_telemetry.TIME_PRECISION_EXACT_INPUT
+    assert provenance["terminal_source"] == "mapping"
+    assert provenance["end_time_source"] == "explicit_mapping"
+    assert provenance["time_source_verified"] is False
+    assert provenance["time_precision"] == "exact_input"
+    assert report["spans"][0]["attributes"]["eci.cicd.end_time_quality"] == (
+        "exact_input"
     )
+
+
+def test_api_observed_root_does_not_claim_native_completed_at():
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
+    report = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=JOB_END + 5_000_000_000,
+    )
+    provenance = report["terminal_provenance"]
+    assert provenance["terminal_source"] == "github_api"
+    assert provenance["end_time_source"] == "terminal_observed_at"
+    assert provenance["time_precision"] == "observed_upper_bound"
+    assert provenance["time_source_verified"] is False
+    assert provenance["exact_run_duration"] is False
+    assert report["facts"]["run_completed_at_ns"] is None
+
+
+def test_env_explicit_end_is_not_labeled_as_github_api():
+    report = cicd_telemetry.produce(complete_facts(), source="env")
+    provenance = report["terminal_provenance"]
+    assert provenance["terminal_source"] == "env"
+    assert provenance["end_time_source"] == "explicit_env"
+    assert provenance["time_source_verified"] is False
+
+
+def test_duration_metric_requires_phase_interval():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["signals"]["metrics"] == []
+    assert report["otlp_metrics_json"] is None
+    states = {
+        item["state"]
+        for item in report["signals"]["metrics_not_observable"]
+        if item["name"] == "cicd.pipeline.run.duration"
+    }
+    assert states == {"pending", "executing", "finalizing"}
+    assert all(
+        item["reason"] == "phase_interval_unproven"
+        for item in report["signals"]["metrics_not_observable"]
+        if item["name"] == "cicd.pipeline.run.duration"
+    )
+
+
+def test_executing_histogram_omits_run_id_unless_opt_in():
+    interval = {
+        "state": "executing",
+        "start_ns": JOB_START,
+        "end_ns": JOB_END,
+    }
+    report = cicd_telemetry.produce(complete_facts(), phase_intervals=[interval])
+    cicd_telemetry.attach_signal_candidates(report)
+    metric = report["signals"]["metrics"][0]
+    assert metric["name"] == "cicd.pipeline.run.duration"
+    assert "gauge" not in metric
+    point = metric["histogram"]["data_points"][0]
+    assert point["attributes"]["cicd.pipeline.run.state"] == "executing"
+    assert "cicd.pipeline.run.id" not in point["attributes"]
+    assert point["sum"] == 80.0
+    assert len(point["bucket_counts"]) == len(point["explicit_bounds"]) + 1
+    resource_keys = [
+        item["key"]
+        for item in report["otlp_metrics_json"]["resourceMetrics"][0]["resource"][
+            "attributes"
+        ]
+    ]
+    assert "cicd.pipeline.run.id" not in resource_keys
+    assert "github.actions.run_attempt" not in resource_keys
+    assert "vcs.ref.head.revision" not in resource_keys
+    decoded = cicd_telemetry.decode_otlp_metrics_request(report["otlp_metrics_json"])
+    histogram = decoded.resource_metrics[0].scope_metrics[0].metrics[0].histogram
+    assert histogram.aggregation_temporality == 1
+    assert histogram.data_points[0].count == 1
+    assert histogram.data_points[0].sum == 80.0
+
+    opted = cicd_telemetry.produce(
+        complete_facts(),
+        phase_intervals=[interval],
+        include_run_entity_metrics=True,
+    )
+    cicd_telemetry.attach_signal_candidates(opted)
+    opted_point = opted["signals"]["metrics"][0]["histogram"]["data_points"][0]
+    assert opted_point["attributes"]["cicd.pipeline.run.id"] == "42627302972/1"
+
+
+def test_invalid_phase_interval_is_not_emitted():
+    report = cicd_telemetry.produce(
+        complete_facts(),
+        phase_intervals=[
+            {"state": "finalizing", "start_ns": JOB_END, "end_ns": JOB_START}
+        ],
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["signals"]["metrics"] == []
+    finalizing = next(
+        item
+        for item in report["signals"]["metrics_not_observable"]
+        if item.get("state") == "finalizing"
+    )
+    assert finalizing["reason"] == "invalid_phase_interval"
+
+
+def test_receiver_mark_rejects_unaccepted_rpc_and_keeps_candidate_class():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_otlp_json(report)
+    span = report["spans"][0]
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report,
+            signal="traces",
+            observed_ids=[item["span_id"] for item in report["spans"]],
+            rpc_accepted=False,
+            rejected=0,
+            run_id=report["facts"]["run_id"],
+            attempt=report["facts"]["run_attempt"],
+            trace_id=span["trace_id"],
+        )
+        raise AssertionError("expected otlp_receiver_rpc_unaccepted")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_rpc_unaccepted"
+    assert report["claims"]["otlp_delivered"] is False
+    assert report["claims"]["candidate_record_only"] is True
+    assert report["claims"]["snapshot_phase"] == "before_receiver_confirmation"
+
+
+def _trace_receipt(report, **overrides):
+    values = {
+        "signal": "traces",
+        "observed_ids": [item["span_id"] for item in report["spans"]],
+        "rpc_accepted": True,
+        "rejected": 0,
+        "run_id": report["facts"]["run_id"],
+        "attempt": report["facts"]["run_attempt"],
+        "trace_id": report["spans"][0]["trace_id"],
+        "repository": report["facts"]["repository"],
+    }
+    values.update(overrides)
+    return values
+
+
+def test_receiver_mark_checks_set_identity_and_duplicates():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_otlp_json(report)
+    report["claims"]["rpc_accepted"] = True
+    ids = [item["span_id"] for item in report["spans"]]
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report, **_trace_receipt(report, observed_ids=ids[:1])
+        )
+        raise AssertionError("expected missing span")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_incomplete"
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report, **_trace_receipt(report, observed_ids=[*ids, ids[0]])
+        )
+        raise AssertionError("expected duplicate")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_duplicate"
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report, **_trace_receipt(report, attempt=9)
+        )
+        raise AssertionError("expected identity mismatch")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_identity_mismatch"
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report, **_trace_receipt(report, trace_id="ab" * 16)
+        )
+        raise AssertionError("expected trace mismatch")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_trace_mismatch"
+    cicd_telemetry.mark_receiver_observed(report, **_trace_receipt(report))
+    assert report["claims"]["receiver_observed"] is True
+    assert report["claims"]["otlp_delivered"] is True
+    assert report["claims"]["candidate_record_only"] is True
+    assert report["claims"]["trusted"] is False
+    assert report["claims"]["weaver_pass"] is False
+    assert report["claims"]["snapshot_phase"] == "receiver_confirmed"
+    transport = report["claims"]["transport"]["traces"]
+    assert transport["missing"] == []
+    assert transport["unexpected"] == []
+    assert transport["duplicate"] == []

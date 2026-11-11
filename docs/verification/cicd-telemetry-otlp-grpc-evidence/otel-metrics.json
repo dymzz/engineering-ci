@@ -10,27 +10,9 @@
             }
           },
           {
-            "key": "cicd.pipeline.run.id",
-            "value": {
-              "stringValue": "42627302972/1"
-            }
-          },
-          {
-            "key": "github.actions.run_attempt",
-            "value": {
-              "intValue": "1"
-            }
-          },
-          {
             "key": "github.repository",
             "value": {
               "stringValue": "dymzz/engineering-ci"
-            }
-          },
-          {
-            "key": "vcs.ref.head.revision",
-            "value": {
-              "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
           }
         ]
@@ -39,11 +21,11 @@
         {
           "metrics": [
             {
-              "description": "Exact Pipeline Run duration from proven bounds",
-              "gauge": {
+              "description": "Duration of a pipeline run grouped by pipeline, state and result.",
+              "histogram": {
+                "aggregationTemporality": 1,
                 "dataPoints": [
                   {
-                    "asDouble": 120.0,
                     "attributes": [
                       {
                         "key": "cicd.pipeline.name",
@@ -52,25 +34,49 @@
                         }
                       },
                       {
-                        "key": "cicd.pipeline.run.id",
-                        "value": {
-                          "stringValue": "42627302972/1"
-                        }
-                      },
-                      {
-                        "key": "cicd.pipeline.result",
-                        "value": {
-                          "stringValue": "success"
-                        }
-                      },
-                      {
                         "key": "cicd.pipeline.run.state",
                         "value": {
-                          "stringValue": "finalizing"
+                          "stringValue": "executing"
                         }
                       }
                     ],
-                    "timeUnixNano": "1700000120000000000"
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "count": "1",
+                    "explicitBounds": [
+                      0.01,
+                      0.1,
+                      1,
+                      2,
+                      5,
+                      10,
+                      30,
+                      60,
+                      120,
+                      300,
+                      600,
+                      1800,
+                      3600
+                    ],
+                    "max": 80.0,
+                    "min": 80.0,
+                    "startTimeUnixNano": "1700000010000000000",
+                    "sum": 80.0,
+                    "timeUnixNano": "1700000090000000000"
                   }
                 ]
               },
@@ -80,7 +86,7 @@
           ],
           "scope": {
             "name": "eci_core.cicd_telemetry",
-            "version": "5"
+            "version": "6"
           }
         }
       ]

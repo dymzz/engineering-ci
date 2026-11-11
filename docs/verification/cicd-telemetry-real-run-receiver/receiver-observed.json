@@ -1,0 +1,162 @@
+{
+  "attempt": 1,
+  "candidate_record_only": true,
+  "claims": {
+    "otlp_delivered": true,
+    "otlp_logs_delivered": true,
+    "otlp_metrics_delivered": false,
+    "otlp_metrics_skip": "not_observable",
+    "receiver_observed": true,
+    "rpc_accepted": true,
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "command": [
+    "-m",
+    "engineering_ci.cicd_telemetry",
+    "--repository",
+    "dymzz/engineering-ci",
+    "--run-id",
+    "42821429094",
+    "--attempt",
+    "1",
+    "--end-time-mode",
+    "observed_upper_bound",
+    "--output",
+    "docs\\verification\\cicd-telemetry-real-run-receiver\\candidate.json",
+    "--otlp-json",
+    "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-traces.json",
+    "--otlp-logs-json",
+    "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-logs.json",
+    "--otlp-metrics-json",
+    "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-metrics.json",
+    "--otlp-endpoint",
+    "127.0.0.1:59569",
+    "--otlp-insecure",
+    "--json"
+  ],
+  "end_time_source": "terminal_observed_at",
+  "endpoint": "127.0.0.1:59569",
+  "expected_completed_jobs": [
+    {
+      "emitted": true,
+      "expected_task_span_id": "7d2f4e7f18a603cd",
+      "job_id": "129847643854",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854",
+      "omit_reason": null,
+      "omitted": false,
+      "source_index": 0
+    },
+    {
+      "emitted": true,
+      "expected_task_span_id": "a7263c2e65a30498",
+      "job_id": "129847644372",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372",
+      "omit_reason": null,
+      "omitted": false,
+      "source_index": 1
+    },
+    {
+      "emitted": true,
+      "expected_task_span_id": "7d98cbfec3f44c1a",
+      "job_id": "129847644459",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459",
+      "omit_reason": null,
+      "omitted": false,
+      "source_index": 2
+    }
+  ],
+  "github_api_fetched": true,
+  "github_authenticated": false,
+  "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+  "insecure": true,
+  "observed_log_span_ids": [
+    "7d2f4e7f18a603cd",
+    "a7263c2e65a30498",
+    "7d98cbfec3f44c1a"
+  ],
+  "observed_metric_ids": [],
+  "observed_spans": [
+    {
+      "name": "RUN Engineering CI",
+      "span_id": "093c00d57bcc226c",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    },
+    {
+      "name": "task:sync-tool-tests",
+      "span_id": "7d2f4e7f18a603cd",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    },
+    {
+      "name": "task:version-metadata",
+      "span_id": "a7263c2e65a30498",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    },
+    {
+      "name": "task:python-ci / checks",
+      "span_id": "7d98cbfec3f44c1a",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    }
+  ],
+  "producer_exit": 0,
+  "protocol": "otlp/grpc",
+  "run_id": "42821429094",
+  "snapshot_phase": "receiver_confirmed",
+  "source": "github_api",
+  "terminal_source": "github_api",
+  "time_precision": "observed_upper_bound",
+  "time_source_verified": false,
+  "transport": {
+    "logs": {
+      "attempt": 1,
+      "duplicate": [],
+      "expected": [
+        "7d2f4e7f18a603cd",
+        "a7263c2e65a30498",
+        "7d98cbfec3f44c1a"
+      ],
+      "matched": [
+        "7d2f4e7f18a603cd",
+        "7d98cbfec3f44c1a",
+        "a7263c2e65a30498"
+      ],
+      "missing": [],
+      "otlp_delivered": true,
+      "reason": null,
+      "receiver_observed": true,
+      "rejected": 0,
+      "rpc_accepted": true,
+      "run_id": "42821429094",
+      "snapshot_phase": "receiver_confirmed",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "unexpected": []
+    },
+    "traces": {
+      "attempt": 1,
+      "duplicate": [],
+      "expected": [
+        "093c00d57bcc226c",
+        "7d2f4e7f18a603cd",
+        "a7263c2e65a30498",
+        "7d98cbfec3f44c1a"
+      ],
+      "matched": [
+        "093c00d57bcc226c",
+        "7d2f4e7f18a603cd",
+        "7d98cbfec3f44c1a",
+        "a7263c2e65a30498"
+      ],
+      "missing": [],
+      "otlp_delivered": true,
+      "reason": null,
+      "receiver_observed": true,
+      "rejected": 0,
+      "rpc_accepted": true,
+      "run_id": "42821429094",
+      "snapshot_phase": "receiver_confirmed",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "unexpected": []
+    }
+  },
+  "workflow_name": "Engineering CI"
+}

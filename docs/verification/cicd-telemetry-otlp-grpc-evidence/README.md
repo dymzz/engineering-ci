@@ -1,22 +1,29 @@
 # OTLP/gRPC live receiver + O2/O3 signal evidence (#75 / PR #81)
 
-Controlled **in-process** OTLP/gRPC `TraceService` receiver evidence for the
-producer Export path, plus Job-terminal LogRecords and exact-duration Metrics.
-**Not** Weaver PASS, **not** #63 trusted admission, **not** a production Collector
-deployment.
+Controlled **in-process** OTLP/gRPC receiver evidence for one producer execution.
+This directory is a **mapping fixture**, not a GitHub Attempt API capture and not
+a Weaver PASS or #63 trusted admission.
 
-## What was proven
+## What this execution is
 
-| Claim | Value |
+| Fact | Value |
 | --- | --- |
-| Protocol | OTLP/gRPC `TraceService.Export` to `127.0.0.1:<ephemeral>` (insecure) |
-| `rpc_accepted` | `true` (zero `rejected_spans`) |
-| `receiver_observed` | `true` (receiver Span IDs match exported Pipeline+Task set) |
-| `otlp_delivered` | `true` only for this controlled observation |
+| `source` | `mapping` (`github_api_fetched=false`, `github_authenticated=false`) |
+| `candidate_record_only` | `true` (network receipt does not change the source class) |
+| `terminal_source` | `mapping` |
+| `end_time_source` | `explicit_mapping` |
+| `time_precision` | `exact_input` |
+| `time_source_verified` | `false` (a closed numeric input is not a GitHub completion timestamp) |
+| `snapshot_phase` | `receiver_confirmed` after Traces, Logs, and Metrics were all observed |
+| Protocol | OTLP/gRPC to `127.0.0.1:<ephemeral>` (insecure), one channel |
+| Traces | `rpc_accepted`, `receiver_observed`, and `otlp_delivered` are all `true` for this controlled receipt |
+| Logs | Separate `otlp_logs_rpc_accepted` / `otlp_logs_receiver_observed` / `otlp_logs_delivered`, all `true` |
+| Metrics | Histogram `cicd.pipeline.run.duration` for an **explicit** `executing` window equal to the fixture Job bounds (80s). `pending` and `finalizing` stay `phase_interval_unproven`. Run id / attempt / head revision are omitted (`include_run_entity_metrics` default false) |
 | `weaver_pass` / `trusted` | `false` |
-| LogRecords | 1× `github_job_terminal` from Task Span (Job API terminal facts) |
-| Metrics | `cicd.pipeline.run.duration` emitted only because exact Run bounds exist |
-| Negative cases | Covered in `tests/test_otlp_grpc_live.py` (unreachable + partial reject) |
+
+`otlp_delivered=true` here means this process observed the same Trace set the
+producer exported. It does not mean a real GitHub Run was delivered, and it
+does not mean the Attempt API supplied `run_completed_at`.
 
 ## Reproduce
 
@@ -24,18 +31,19 @@ deployment.
 uv run pytest tests/test_otlp_grpc_live.py -q
 ```
 
-Evidence files in this directory were regenerated from the same producer path
-used by the live receiver test (exact-bounds fixture facts, not a network
-GitHub Run). Workflow wiring for an optional remote endpoint remains
-`ECI_OTLP_ENDPOINT` on the post-run Workflow.
+The files in this directory were written by one execution of that same
+producer path (fixture facts, local receiver, then `mark_receiver_observed`).
+Negative cases — unreachable endpoint, Trace partial reject, Logs partial
+reject, missing span, duplicate span, wrong attempt, wrong trace id — are in
+`tests/test_otlp_grpc_live.py` and `tests/test_cicd_telemetry.py`.
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `candidate.json` | Candidate report (claims + signals) |
-| `otel-traces.json` | ExportTraceServiceRequest |
-| `otel-logs.json` | ExportLogsServiceRequest |
-| `otel-metrics.json` | ExportMetricsServiceRequest |
-| `receiver-observed.json` | Receiver-side Span IDs + claim snapshot |
-| `SHA256SUMS` | Digests |
+| `candidate.json` | Post-receipt candidate. Claims match the receiver receipt |
+| `otel-traces.json` | `ExportTraceServiceRequest` |
+| `otel-logs.json` | `ExportLogsServiceRequest` (Job terminal event, not Job stdout) |
+| `otel-metrics.json` | `ExportMetricsServiceRequest` Histogram |
+| `receiver-observed.json` | Receiver identities and per-signal delivery flags |
+| `SHA256SUMS` | Digests of those five files |

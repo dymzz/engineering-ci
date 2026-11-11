@@ -31,14 +31,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
-# End-time quality for Pipeline Root (PR #81 / Issue #75).
+# CLI mode: emit Root only when an explicit completed-at input closes the bounds.
+# The recorded precision is exact_input, which is not a verified GitHub timestamp.
 END_TIME_EXACT = "exact"
 END_TIME_OBSERVED_UPPER_BOUND = "observed_upper_bound"
 END_TIME_UNPROVEN = "unproven"
+TIME_PRECISION_EXACT_INPUT = "exact_input"
+TIME_PRECISION_OBSERVED_UPPER_BOUND = END_TIME_OBSERVED_UPPER_BOUND
+TIME_PRECISION_UNPROVEN = END_TIME_UNPROVEN
+PHASE_PENDING = "pending"
+PHASE_EXECUTING = "executing"
+PHASE_FINALIZING = "finalizing"
+_PHASE_STATES = frozenset({PHASE_PENDING, PHASE_EXECUTING, PHASE_FINALIZING})
+DURATION_METRIC_NAME = "cicd.pipeline.run.duration"
+ACTIVE_METRIC_NAME = "cicd.pipeline.run.active"
+# Explicit bounds (seconds) for one phase observation. Last bucket is +Inf.
+_DURATION_BOUNDS_S = (0.01, 0.1, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600)
+# opentelemetry.proto.metrics.v1.AggregationTemporality.DELTA
+_HISTOGRAM_DELTA = 1
 # OTLP SpanKind numeric values.
 SPAN_KIND_INTERNAL = 1
 SPAN_KIND_SERVER = 2
@@ -52,6 +66,7 @@ ATTR_PIPELINE_NAME = "cicd.pipeline.name"
 ATTR_PIPELINE_RUN_ID = "cicd.pipeline.run.id"
 ATTR_PIPELINE_RUN_URL = "cicd.pipeline.run.url.full"
 ATTR_PIPELINE_RESULT = "cicd.pipeline.result"
+ATTR_PIPELINE_RUN_STATE = "cicd.pipeline.run.state"
 ATTR_TASK_NAME = "cicd.pipeline.task.name"
 ATTR_TASK_RUN_ID = "cicd.pipeline.task.run.id"
 ATTR_TASK_RUN_URL = "cicd.pipeline.task.run.url.full"
@@ -342,6 +357,57 @@ def _span(
     }
 
 
+def _explicit_run_end_source(source):
+    """Name the input that closed Run bounds. None of these are GitHub-native."""
+    if source == "env":
+        return "explicit_env"
+    if source == "github_api":
+        # Attempt API has no official run-completed timestamp.
+        return "not_native"
+    return "explicit_mapping"
+
+
+def _normalize_phase_intervals(value):
+    """Keep caller-supplied phase windows. Do not invent missing ones."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TelemetryError("phase_intervals_invalid")
+    cleaned = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise TelemetryError("phase_intervals_invalid")
+        state = item.get("state")
+        if state not in _PHASE_STATES:
+            raise TelemetryError("phase_state_invalid")
+        start = item.get("start_ns")
+        end = item.get("end_ns")
+        if type(start) is not int or type(end) is not int:
+            raise TelemetryError("phase_interval_invalid")
+        entry = {
+            "state": state,
+            "start_ns": start,
+            "end_ns": end,
+            "valid": end >= start,
+        }
+        if item.get("result") is not None:
+            entry["result"] = item["result"]
+        cleaned.append(entry)
+    return cleaned
+
+
+def _histogram_buckets(duration_s):
+    bounds = list(_DURATION_BOUNDS_S)
+    counts = [0] * (len(bounds) + 1)
+    index = len(bounds)
+    for position, bound in enumerate(bounds):
+        if duration_s <= bound:
+            index = position
+            break
+    counts[index] = 1
+    return bounds, counts
+
+
 def _stable_ids(run_id, attempt, job_id=None):
     """Deterministic reconstruction ids; not provenance authentication."""
     pipeline_seed = f"pipeline:{run_id}:{attempt}".encode()
@@ -388,6 +454,8 @@ def produce(
     event_status=None,
     event_conclusion=None,
     expected_job_stubs=None,
+    phase_intervals=None,
+    include_run_entity_metrics=False,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
@@ -396,12 +464,18 @@ def produce(
     ``--job-id`` path). Full Attempt coverage passes every completed Job here.
 
     Pipeline Root end-time modes (PR #81):
-    - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is proven
+    - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is an
+      explicit input. Recorded precision is ``exact_input``. That closed numeric
+      bound is not a verified GitHub completion timestamp.
     - ``observed_upper_bound``: post-run observer may emit Root ending at
-      ``terminal_observed_at_ns`` with ``end_time_quality=observed_upper_bound``
+      ``terminal_observed_at_ns`` with ``time_precision=observed_upper_bound``
       only when native Attempt ``run_status == "completed"``; this never claims
       exact native Run duration. ``terminal_status`` / event fields are not
       substitutes for API status.
+
+    ``phase_intervals`` are already-proven ``pending`` / ``executing`` /
+    ``finalizing`` windows. Missing windows stay ``not_observable``.
+    ``include_run_entity_metrics`` defaults off (SemConv run-entity opt-in).
     """
     # Persisted producer identity predates the package move; it is not an import path.
     report = {
@@ -415,10 +489,18 @@ def produce(
             "otlp_json_exported": False,
             "otlp_logs_prepared": False,
             "otlp_logs_exported": False,
+            "otlp_logs_rpc_accepted": False,
+            "otlp_logs_receiver_observed": False,
+            "otlp_logs_delivered": False,
             "otlp_metrics_prepared": False,
             "otlp_metrics_exported": False,
+            "otlp_metrics_rpc_accepted": False,
+            "otlp_metrics_receiver_observed": False,
+            "otlp_metrics_delivered": False,
             "rpc_accepted": False,
             "receiver_observed": False,
+            "snapshot_phase": "before_receiver_confirmation",
+            "transport": {},
             "weaver_pass": False,
             "trusted": False,
             "github_api_fetched": bool(github_api_fetched),
@@ -444,9 +526,13 @@ def produce(
             "observed_at_ns": terminal_observed_at_ns,
             "run_completed_at_ns": facts.run_completed_at_ns,
             "end_time_source": None,
-            "end_time_quality": END_TIME_UNPROVEN,
+            "end_time_quality": TIME_PRECISION_UNPROVEN,
+            "time_precision": TIME_PRECISION_UNPROVEN,
+            "time_source_verified": False,
             "exact_run_duration": False,
         },
+        "phase_intervals": _normalize_phase_intervals(phase_intervals),
+        "include_run_entity_metrics": bool(include_run_entity_metrics),
         "coverage": {
             "jobs_observed_total": jobs_observed_total,
             "completed_jobs_total": completed_jobs_total,
@@ -510,16 +596,19 @@ def produce(
 
     run_result, run_error_type = map_github_result(facts.run_conclusion)
     root_end_ns = None
-    end_time_quality = END_TIME_UNPROVEN
-    end_time_source = None
+    time_precision = TIME_PRECISION_UNPROVEN
+    # Numeric closure and native-source verification are separate facts.
+    time_source_verified = False
+    run_end_source = None
     if run_result is None and facts.run_conclusion is not None:
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
     elif facts.run_bounds_state == "ok":
         root_end_ns = facts.run_completed_at_ns
-        end_time_quality = END_TIME_EXACT
-        end_time_source = "run_completed_at"
+        time_precision = TIME_PRECISION_EXACT_INPUT
+        time_source_verified = False
+        run_end_source = _explicit_run_end_source(source)
     elif end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
         api_status = facts.run_status
         if api_status is None:
@@ -552,8 +641,9 @@ def produce(
                 reasons.append("terminal_observed_before_jobs")
             else:
                 root_end_ns = terminal_observed_at_ns
-                end_time_quality = END_TIME_OBSERVED_UPPER_BOUND
-                end_time_source = "terminal_observed_at"
+                time_precision = TIME_PRECISION_OBSERVED_UPPER_BOUND
+                time_source_verified = False
+                run_end_source = "terminal_observed_at"
                 reasons.append("temporal_precision_unverified")
     elif facts.run_bounds_state == "missing":
         # Prefer explicit missing completed-at over fabricating from updated_at.
@@ -564,9 +654,13 @@ def produce(
     elif facts.run_bounds_state == "invalid":
         reasons.append("invalid_run_timestamps")
 
-    report["terminal"]["end_time_quality"] = end_time_quality
-    report["terminal"]["end_time_source"] = end_time_source
-    report["terminal"]["exact_run_duration"] = end_time_quality == END_TIME_EXACT
+    report["terminal"]["end_time_quality"] = time_precision
+    report["terminal"]["end_time_source"] = run_end_source
+    report["terminal"]["time_precision"] = time_precision
+    report["terminal"]["time_source_verified"] = time_source_verified
+    report["terminal"]["exact_run_duration"] = (
+        time_precision == TIME_PRECISION_EXACT_INPUT
+    )
 
     if root_end_ns is not None and facts.run_started_at_ns is not None:
         pipeline_attrs = {
@@ -578,8 +672,8 @@ def produce(
             ATTR_VCS_HEAD_REVISION: facts.head_sha,
             ATTR_ERROR_TYPE: run_error_type,
             # ECI extensions for Terminal consumers; not official SemConv.
-            ATTR_ECI_END_TIME_QUALITY: end_time_quality,
-            ATTR_ECI_EXACT_RUN_DURATION: end_time_quality == END_TIME_EXACT,
+            ATTR_ECI_END_TIME_QUALITY: time_precision,
+            ATTR_ECI_EXACT_RUN_DURATION: time_precision == TIME_PRECISION_EXACT_INPUT,
         }
         spans.append(
             _span(
@@ -659,7 +753,7 @@ def produce(
         # Exact Run bounds: Job after completed Run is inconsistent.
         # Observed upper-bound Root already refused earlier if observed < job end.
         if (
-            end_time_quality == END_TIME_EXACT
+            time_precision == TIME_PRECISION_EXACT_INPUT
             and run_job_temporal_inconsistency(job_facts)
             and "inconsistent_run_job_timestamps" not in reasons
         ):
@@ -734,13 +828,15 @@ def produce(
             "attempt": facts.run_attempt,
             "root_trace_id": trace_id,
             "root_span_id": pipeline_span_id,
-            "terminal_source": "github_attempt_api",
+            "terminal_source": source,
             "terminal_status": facts.run_status,
             "terminal_conclusion": facts.run_conclusion,
             "terminal_observed_at_ns": terminal_observed_at_ns,
-            "end_time_source": end_time_source,
-            "end_time_quality": end_time_quality,
-            "exact_run_duration": end_time_quality == END_TIME_EXACT,
+            "end_time_source": run_end_source,
+            "end_time_quality": time_precision,
+            "time_precision": time_precision,
+            "time_source_verified": time_source_verified,
+            "exact_run_duration": time_precision == TIME_PRECISION_EXACT_INPUT,
             "otlp_sha256": None,
         }
 
@@ -876,8 +972,109 @@ def write_otlp_json(report, path):
     if isinstance(provenance, dict):
         provenance["otlp_sha256"] = digest
     # File artifact only — not live OTLP/gRPC delivery.
-    report["claims"]["otlp_delivered"] = False
+    if report["claims"].get("snapshot_phase") != "receiver_confirmed":
+        report["claims"]["otlp_delivered"] = False
     return path
+
+
+_EXPORT_KEYS = {
+    "traces": (
+        "rejected_spans",
+        "rpc_accepted",
+        "otlp_rpc_rejected_spans",
+        "otlp_rpc_warning",
+        "otlp_delivered",
+        "receiver_observed",
+    ),
+    "logs": (
+        "rejected_log_records",
+        "otlp_logs_rpc_accepted",
+        "otlp_logs_rpc_rejected",
+        "otlp_logs_rpc_warning",
+        "otlp_logs_delivered",
+        "otlp_logs_receiver_observed",
+    ),
+    "metrics": (
+        "rejected_data_points",
+        "otlp_metrics_rpc_accepted",
+        "otlp_metrics_rpc_rejected",
+        "otlp_metrics_rpc_warning",
+        "otlp_metrics_delivered",
+        "otlp_metrics_receiver_observed",
+    ),
+}
+
+
+def _grpc_telemetry_error(error):
+    code = getattr(error, "code", None)
+    detail = code() if callable(code) else None
+    name = getattr(detail, "name", None) if detail is not None else None
+    if name == "DEADLINE_EXCEEDED":
+        return TelemetryError("otlp_grpc_timeout")
+    if name in {"UNAVAILABLE", "FAILED_PRECONDITION"}:
+        return TelemetryError("otlp_grpc_unavailable_endpoint")
+    return TelemetryError("otlp_grpc_failed")
+
+
+def _service_stub(signal, channel, factories):
+    if signal == "traces" and factories.get("traces") is not None:
+        return factories["traces"](channel)
+    if signal == "logs" and factories.get("logs") is not None:
+        return factories["logs"](channel)
+    if signal == "metrics" and factories.get("metrics") is not None:
+        return factories["metrics"](channel)
+    if signal == "traces":
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
+            TraceServiceStub,
+        )
+
+        return TraceServiceStub(channel)
+    if signal == "logs":
+        from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import (
+            LogsServiceStub,
+        )
+
+        return LogsServiceStub(channel)
+    from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import (
+        MetricsServiceStub,
+    )
+
+    return MetricsServiceStub(channel)
+
+
+def _export_signal(report, stub, request, signal, endpoint, timeout):
+    field, accepted, rejected_key, warning_key, delivered, observed = _EXPORT_KEYS[
+        signal
+    ]
+    try:
+        response = stub.Export(request, timeout=timeout)
+    except TelemetryError:
+        raise
+    except Exception as error:
+        report["claims"][accepted] = False
+        report["claims"][delivered] = False
+        report["claims"][observed] = False
+        raise _grpc_telemetry_error(error) from error
+    partial = getattr(response, "partial_success", None)
+    rejected = int(getattr(partial, field, 0) or 0) if partial else 0
+    warning = str(getattr(partial, "error_message", "") or "") if partial else ""
+    if signal == "traces":
+        report["claims"]["otlp_rpc_endpoint"] = endpoint
+    else:
+        report["claims"][f"otlp_{signal}_rpc_endpoint"] = endpoint
+    report["claims"][rejected_key] = rejected
+    if warning:
+        report["claims"][warning_key] = warning
+    if rejected > 0:
+        report["claims"][accepted] = False
+        report["claims"][delivered] = False
+        report["claims"][observed] = False
+        raise TelemetryError("otlp_grpc_partial_reject")
+    report["claims"][accepted] = True
+    # ACK is not receiver observation, delivery, Weaver PASS, or trust.
+    report["claims"][delivered] = False
+    report["claims"][observed] = False
+    return response
 
 
 def export_otlp_grpc(
@@ -888,29 +1085,41 @@ def export_otlp_grpc(
     timeout=30.0,
     channel_factory=None,
     stub_factory=None,
+    logs_stub_factory=None,
+    metrics_stub_factory=None,
 ):
-    """Export prepared OTLP spans via TraceService.Export (OTLP/gRPC).
+    """Export prepared Traces and any prepared Logs/Metrics on one gRPC channel.
 
-    Sets ``claims.rpc_accepted`` only when the RPC returns without rejected
-    spans. Does **not** set ``receiver_observed``, ``otlp_delivered``,
-    ``weaver_pass``, or ``trusted`` — those require separate evidence.
+    Each signal records its own RPC acceptance. None of them set receiver
+    observation, controlled delivery, Weaver PASS, or trust.
     """
-    if not report.get("otlp_json"):
+    planned = []
+    if report.get("otlp_json"):
+        planned.append(("traces", decode_otlp_export_request(report["otlp_json"])))
+    if report.get("otlp_logs_json"):
+        planned.append(("logs", decode_otlp_logs_request(report["otlp_logs_json"])))
+    if report.get("otlp_metrics_json"):
+        planned.append(
+            ("metrics", decode_otlp_metrics_request(report["otlp_metrics_json"]))
+        )
+    if not planned:
         raise TelemetryError("otlp_json_unavailable")
     if not endpoint or not str(endpoint).strip():
         raise TelemetryError("otlp_endpoint_invalid")
     endpoint = str(endpoint).strip()
-    request = decode_otlp_export_request(report["otlp_json"])
     try:
         import grpc
-        from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
-            TraceServiceStub,
-        )
     except ImportError as error:
         raise TelemetryError("otlp_grpc_unavailable") from error
 
+    factories = {
+        "traces": stub_factory,
+        "logs": logs_stub_factory,
+        "metrics": metrics_stub_factory,
+    }
     channel = None
     close_channel = False
+    responses = {}
     try:
         if channel_factory is not None:
             channel = channel_factory(endpoint, insecure=insecure)
@@ -920,67 +1129,201 @@ def export_otlp_grpc(
         else:
             channel = grpc.secure_channel(endpoint, grpc.ssl_channel_credentials())
             close_channel = True
-        stub = (
-            stub_factory(channel)
-            if stub_factory is not None
-            else TraceServiceStub(channel)
-        )
-        response = stub.Export(request, timeout=timeout)
-    except TelemetryError:
-        raise
-    except Exception as error:
-        report["claims"]["rpc_accepted"] = False
-        report["claims"]["otlp_delivered"] = False
-        code = getattr(error, "code", None)
-        detail = code() if callable(code) else None
-        name = getattr(detail, "name", None) if detail is not None else None
-        if name == "DEADLINE_EXCEEDED":
-            raise TelemetryError("otlp_grpc_timeout") from error
-        if name in {"UNAVAILABLE", "FAILED_PRECONDITION"}:
-            raise TelemetryError("otlp_grpc_unavailable_endpoint") from error
-        raise TelemetryError("otlp_grpc_failed") from error
+        for signal, request in planned:
+            stub = _service_stub(signal, channel, factories)
+            responses[signal] = _export_signal(
+                report, stub, request, signal, endpoint, timeout
+            )
     finally:
         if close_channel and channel is not None:
             channel.close()
-
-    partial = getattr(response, "partial_success", None)
-    rejected = int(getattr(partial, "rejected_spans", 0) or 0) if partial else 0
-    warning = str(getattr(partial, "error_message", "") or "") if partial else ""
-    report["claims"]["otlp_rpc_endpoint"] = endpoint
-    report["claims"]["otlp_rpc_rejected_spans"] = rejected
-    if warning:
-        report["claims"]["otlp_rpc_warning"] = warning
-    if rejected > 0:
-        report["claims"]["rpc_accepted"] = False
-        report["claims"]["otlp_delivered"] = False
-        raise TelemetryError("otlp_grpc_partial_reject")
-    report["claims"]["rpc_accepted"] = True
-    # ACK ≠ downstream persistence or Weaver PASS.
-    report["claims"]["otlp_delivered"] = False
-    report["claims"]["receiver_observed"] = False
-    return response
+    return responses
 
 
-def mark_receiver_observed(report, *, observed_span_ids):
-    """Record controlled-receiver observation after Export ACK.
+def _id_counts(items):
+    counts = {}
+    for item in items:
+        text = str(item)
+        counts[text] = counts.get(text, 0) + 1
+    return counts
 
-    Caller must supply the Span IDs actually seen by the receiver. Does not
-    set ``weaver_pass`` or ``trusted``.
-    """
-    expected = {
-        span["span_id"] for span in report.get("spans") or [] if span.get("span_id")
-    }
-    observed = {str(item) for item in observed_span_ids}
-    report["claims"]["receiver_observed_span_ids"] = sorted(observed)
-    if expected and expected <= observed:
-        report["claims"]["receiver_observed"] = True
-        # Controlled local observation of Export payload — still not Weaver/trusted.
-        report["claims"]["otlp_delivered"] = True
-        report["claims"]["candidate_record_only"] = False
+
+def _reconcile_ids(expected_ids, observed_ids):
+    expected = _id_counts(expected_ids)
+    observed = _id_counts(observed_ids)
+    matched, missing, unexpected, duplicate = [], [], [], []
+    for key in sorted(set(expected) | set(observed)):
+        want = expected.get(key, 0)
+        seen = observed.get(key, 0)
+        if want == 0:
+            unexpected.extend([key] * seen)
+            continue
+        if seen > want:
+            duplicate.append(key)
+            matched.extend([key] * want)
+            continue
+        matched.extend([key] * seen)
+        if seen < want:
+            missing.extend([key] * (want - seen))
+    return matched, missing, unexpected, duplicate
+
+
+def _expected_signal_ids(report, signal):
+    if signal == "traces":
+        return [
+            span["span_id"] for span in report.get("spans") or [] if span.get("span_id")
+        ]
+    if signal == "logs":
+        logs = (report.get("signals") or {}).get("logs") or []
+        return [item["span_id"] for item in logs if item.get("span_id")]
+    if signal == "metrics":
+        identities = []
+        for metric in (report.get("signals") or {}).get("metrics") or []:
+            points = (metric.get("histogram") or {}).get("data_points") or []
+            for point in points:
+                state = (point.get("attributes") or {}).get(ATTR_PIPELINE_RUN_STATE)
+                identities.append(f"{metric.get('name')}|{state}")
+        return identities
+    raise TelemetryError("otlp_receiver_signal_invalid")
+
+
+def _single_trace_id(report, signal):
+    if signal == "traces":
+        values = [span.get("trace_id") for span in report.get("spans") or []]
+    elif signal == "logs":
+        logs = (report.get("signals") or {}).get("logs") or []
+        values = [item.get("trace_id") for item in logs]
     else:
-        report["claims"]["receiver_observed"] = False
-        report["claims"]["otlp_delivered"] = False
-        raise TelemetryError("otlp_receiver_incomplete")
+        return None
+    unique = {item for item in values if item}
+    if len(unique) != 1:
+        return None
+    return next(iter(unique))
+
+
+def _identity_matches(report, *, run_id, attempt, repository):
+    facts = report.get("facts") or {}
+    if str(run_id) != str(facts.get("run_id")):
+        return False
+    try:
+        attempt_value = int(attempt)
+    except (TypeError, ValueError):
+        return False
+    if attempt_value != facts.get("run_attempt"):
+        return False
+    return repository is None or repository == facts.get("repository")
+
+
+def _prepared_signals(report):
+    names = []
+    if report.get("otlp_json"):
+        names.append("traces")
+    if report.get("otlp_logs_json"):
+        names.append("logs")
+    if report.get("otlp_metrics_json"):
+        names.append("metrics")
+    return names
+
+
+def _sync_delivery_claims(report):
+    """Top-level trace delivery follows a consistent post-receipt snapshot."""
+    claims = report["claims"]
+    transport = claims.setdefault("transport", {})
+    prepared = _prepared_signals(report)
+    complete = bool(prepared) and all(
+        (transport.get(name) or {}).get("receiver_observed") for name in prepared
+    )
+    claims["snapshot_phase"] = (
+        "receiver_confirmed" if complete else "before_receiver_confirmation"
+    )
+    traces = transport.get("traces") or {}
+    if "traces" in prepared:
+        confirmed = complete and bool(traces.get("otlp_delivered"))
+        claims["receiver_observed"] = confirmed
+        claims["otlp_delivered"] = confirmed
+    # Network receipt does not change the candidate-record source class.
+    claims["candidate_record_only"] = True
+    claims["trusted"] = False
+    claims["weaver_pass"] = False
+
+
+def mark_receiver_observed(
+    report,
+    *,
+    signal,
+    observed_ids,
+    rpc_accepted,
+    rejected=0,
+    run_id,
+    attempt,
+    trace_id=None,
+    repository=None,
+):
+    """Record one signal's receiver capture. Does not grant trust or Weaver PASS.
+
+    ``observed_ids`` are the identities the receiver actually stored: Trace Span
+    IDs, LogRecord Span IDs, or ``metric|state`` keys. A caller-supplied list is
+    only accepted together with RPC acceptance, zero rejects, and the same
+    Run/Attempt (and Trace ID for Traces and Logs).
+    """
+    if signal not in _EXPORT_KEYS:
+        raise TelemetryError("otlp_receiver_signal_invalid")
+    _field, accepted_key, _rejected_key, _warning, delivered_key, observed_key = (
+        _EXPORT_KEYS[signal]
+    )
+    expected_ids = _expected_signal_ids(report, signal)
+    matched, missing, unexpected, duplicate = _reconcile_ids(expected_ids, observed_ids)
+    claims = report["claims"]
+    reason = None
+    if not rpc_accepted or not claims.get(accepted_key) or int(rejected or 0) != 0:
+        reason = "otlp_receiver_rpc_unaccepted"
+    elif not _identity_matches(
+        report, run_id=run_id, attempt=attempt, repository=repository
+    ):
+        reason = "otlp_receiver_identity_mismatch"
+    elif signal != "metrics":
+        expected_trace = _single_trace_id(report, signal)
+        if not expected_trace or trace_id != expected_trace:
+            reason = "otlp_receiver_trace_mismatch"
+    elif not expected_ids or missing:
+        reason = "otlp_receiver_incomplete"
+    elif unexpected:
+        reason = "otlp_receiver_unexpected"
+    elif duplicate:
+        reason = "otlp_receiver_duplicate"
+    if signal != "metrics" and reason is None:
+        if not expected_ids or missing:
+            reason = "otlp_receiver_incomplete"
+        elif unexpected:
+            reason = "otlp_receiver_unexpected"
+        elif duplicate:
+            reason = "otlp_receiver_duplicate"
+    success = reason is None
+    record = {
+        "snapshot_phase": (
+            "receiver_confirmed" if success else "before_receiver_confirmation"
+        ),
+        "rpc_accepted": bool(claims.get(accepted_key)) and bool(rpc_accepted),
+        "rejected": int(rejected or 0),
+        "run_id": str(run_id),
+        "attempt": attempt,
+        "trace_id": trace_id,
+        "expected": expected_ids,
+        "matched": matched,
+        "missing": missing,
+        "duplicate": duplicate,
+        "unexpected": unexpected,
+        "receiver_observed": success,
+        "otlp_delivered": success,
+        "reason": reason,
+    }
+    claims.setdefault("transport", {})[signal] = record
+    if signal != "traces":
+        claims[observed_key] = success
+        claims[delivered_key] = success
+    _sync_delivery_claims(report)
+    if not success:
+        raise TelemetryError(reason)
     return report
 
 
@@ -1030,13 +1373,8 @@ def build_job_terminal_log_records(report):
     return records
 
 
-def build_metrics_plan(report):
-    """Decide which CI/CD Metrics are observable from proven facts only."""
-    not_observable = []
-    metrics = []
-    terminal = report.get("terminal") or {}
-    exact = bool(terminal.get("exact_run_duration"))
-    pipeline = next(
+def _pipeline_span(report):
+    return next(
         (
             span
             for span in report.get("spans") or []
@@ -1044,58 +1382,100 @@ def build_metrics_plan(report):
         ),
         None,
     )
-    if exact and pipeline is not None:
-        start = pipeline.get("start_time_unix_nano")
-        end = pipeline.get("end_time_unix_nano")
-        if type(start) is int and type(end) is int and end >= start:
-            duration_s = (end - start) / 1_000_000_000
-            metrics.append(
-                {
-                    "name": "cicd.pipeline.run.duration",
-                    "unit": "s",
-                    "description": "Exact Pipeline Run duration from proven bounds",
-                    "gauge": {
-                        "as_double": duration_s,
-                        "time_unix_nano": end,
-                        "attributes": {
-                            ATTR_PIPELINE_NAME: (report.get("resource") or {}).get(
-                                ATTR_PIPELINE_NAME
-                            ),
-                            ATTR_PIPELINE_RUN_ID: (report.get("resource") or {}).get(
-                                ATTR_PIPELINE_RUN_ID
-                            ),
-                            ATTR_PIPELINE_RESULT: (
-                                pipeline.get("attributes") or {}
-                            ).get(ATTR_PIPELINE_RESULT),
-                            "cicd.pipeline.run.state": "finalizing",
-                        },
-                    },
-                }
-            )
-        else:
+
+
+def _duration_not_observable(state, reason):
+    return {
+        "name": DURATION_METRIC_NAME,
+        "state": state,
+        "status": "not_observable",
+        "reason": reason,
+    }
+
+
+def build_metrics_plan(report):
+    """Histogram points for proven phase intervals only.
+
+    A whole-run start/end is not ``finalizing``. States without a supplied
+    window are ``not_observable``. Run id is attached only when opted in.
+    """
+    not_observable = []
+    points = []
+    resource = report.get("resource") or {}
+    pipeline_attrs = (_pipeline_span(report) or {}).get("attributes") or {}
+    include_run = bool(report.get("include_run_entity_metrics"))
+    grouped = {PHASE_PENDING: [], PHASE_EXECUTING: [], PHASE_FINALIZING: []}
+    for item in report.get("phase_intervals") or []:
+        state = item.get("state")
+        if state in grouped:
+            grouped[state].append(item)
+    for state in (PHASE_PENDING, PHASE_EXECUTING, PHASE_FINALIZING):
+        group = grouped[state]
+        if not group:
             not_observable.append(
+                _duration_not_observable(state, "phase_interval_unproven")
+            )
+            continue
+        if any(not item.get("valid") for item in group):
+            not_observable.append(
+                _duration_not_observable(state, "invalid_phase_interval")
+            )
+            continue
+        for item in group:
+            start = item["start_ns"]
+            end = item["end_ns"]
+            duration_s = (end - start) / 1_000_000_000
+            attributes = {
+                ATTR_PIPELINE_NAME: resource.get(ATTR_PIPELINE_NAME),
+                ATTR_PIPELINE_RUN_STATE: state,
+            }
+            result = item.get("result")
+            if result is None and state == PHASE_FINALIZING:
+                result = pipeline_attrs.get(ATTR_PIPELINE_RESULT)
+            if result is not None:
+                attributes[ATTR_PIPELINE_RESULT] = result
+            if result in {"failure", "error", "timeout"}:
+                error_type = pipeline_attrs.get(ATTR_ERROR_TYPE)
+                if error_type is not None:
+                    attributes[ATTR_ERROR_TYPE] = error_type
+            if include_run and resource.get(ATTR_PIPELINE_RUN_ID) is not None:
+                attributes[ATTR_PIPELINE_RUN_ID] = resource[ATTR_PIPELINE_RUN_ID]
+            bounds, counts = _histogram_buckets(duration_s)
+            points.append(
                 {
-                    "name": "cicd.pipeline.run.duration",
-                    "status": "not_observable",
-                    "reason": "invalid_exact_bounds",
+                    "start_time_unix_nano": start,
+                    "time_unix_nano": end,
+                    "count": 1,
+                    "sum": duration_s,
+                    "min": duration_s,
+                    "max": duration_s,
+                    "bucket_counts": counts,
+                    "explicit_bounds": bounds,
+                    "attributes": attributes,
                 }
             )
-    else:
-        not_observable.append(
+    metrics = []
+    if points:
+        metrics.append(
             {
-                "name": "cicd.pipeline.run.duration",
-                "status": "not_observable",
-                "reason": "exact_run_duration_unproven",
+                "name": DURATION_METRIC_NAME,
+                "unit": "s",
+                "description": (
+                    "Duration of a pipeline run grouped by pipeline, state and result."
+                ),
+                "histogram": {
+                    "aggregation_temporality": "delta",
+                    "data_points": points,
+                },
             }
         )
-    for name, reason in (
-        ("cicd.pipeline.run.active", "state_intervals_unproven"),
-        ("cicd.pipeline.run.pending_duration", "pending_interval_unproven"),
-        ("cicd.pipeline.run.finalizing_duration", "finalizing_interval_unproven"),
-    ):
-        not_observable.append(
-            {"name": name, "status": "not_observable", "reason": reason}
-        )
+    not_observable.append(
+        {
+            "name": ACTIVE_METRIC_NAME,
+            "status": "not_observable",
+            "reason": "active_count_unproven",
+        }
+    )
     return metrics, not_observable
 
 
@@ -1159,31 +1539,58 @@ def to_otlp_logs_json(report):
     }
 
 
+_RUN_LEVEL_METRIC_ATTRS = (
+    ATTR_PIPELINE_RUN_ID,
+    ATTR_PIPELINE_RUN_URL,
+    ATTR_GITHUB_RUN_ATTEMPT,
+    ATTR_VCS_HEAD_REVISION,
+)
+
+
+def _metrics_resource(report):
+    """Copy resource for Metrics. Run identity stays opt-in."""
+    resource = dict(report.get("resource") or {})
+    if not report.get("include_run_entity_metrics"):
+        for key in _RUN_LEVEL_METRIC_ATTRS:
+            resource.pop(key, None)
+    return resource
+
+
 def to_otlp_metrics_json(report):
-    """Encode observable Metrics as ExportMetricsServiceRequest JSON."""
+    """Encode phase Histograms as ExportMetricsServiceRequest JSON."""
     resource_attrs = [
-        _otlp_attr(key, value) for key, value in report.get("resource", {}).items()
+        _otlp_attr(key, value) for key, value in _metrics_resource(report).items()
     ]
     metrics = []
     for item in (report.get("signals") or {}).get("metrics") or []:
-        gauge = item["gauge"]
+        histogram = item["histogram"]
+        data_points = []
+        for point in histogram["data_points"]:
+            data_points.append(
+                {
+                    "attributes": [
+                        _otlp_attr(key, value)
+                        for key, value in point["attributes"].items()
+                        if value is not None
+                    ],
+                    "startTimeUnixNano": str(point["start_time_unix_nano"]),
+                    "timeUnixNano": str(point["time_unix_nano"]),
+                    "count": str(point["count"]),
+                    "sum": point["sum"],
+                    "min": point["min"],
+                    "max": point["max"],
+                    "bucketCounts": [str(count) for count in point["bucket_counts"]],
+                    "explicitBounds": list(point["explicit_bounds"]),
+                }
+            )
         metrics.append(
             {
                 "name": item["name"],
                 "description": item.get("description") or "",
                 "unit": item.get("unit") or "",
-                "gauge": {
-                    "dataPoints": [
-                        {
-                            "asDouble": gauge["as_double"],
-                            "timeUnixNano": str(gauge["time_unix_nano"]),
-                            "attributes": [
-                                _otlp_attr(key, value)
-                                for key, value in gauge["attributes"].items()
-                                if value is not None
-                            ],
-                        }
-                    ]
+                "histogram": {
+                    "aggregationTemporality": _HISTOGRAM_DELTA,
+                    "dataPoints": data_points,
                 },
             }
         )
@@ -1252,25 +1659,31 @@ def otlp_wire_to_protobuf_json(payload):
     if not isinstance(payload, dict):
         raise TelemetryError("otlp_json_invalid")
     capture = json.loads(json.dumps(payload))
+
+    def rewrite(record, key, size):
+        value = record.get(key)
+        if not value:
+            return
+        try:
+            decoded = bytes.fromhex(value)
+        except (TypeError, ValueError) as error:
+            raise TelemetryError("otlp_id_invalid") from error
+        if len(decoded) != size:
+            raise TelemetryError("otlp_id_invalid")
+        record[key] = base64.b64encode(decoded).decode()
+
     for resource in capture.get("resourceSpans") or []:
         for scope in resource.get("scopeSpans") or []:
             for span in scope.get("spans") or []:
                 for record in [span, *(span.get("links") or [])]:
-                    for key, size in (
-                        ("traceId", 16),
-                        ("spanId", 8),
-                        ("parentSpanId", 8),
-                    ):
-                        value = record.get(key)
-                        if not value:
-                            continue
-                        try:
-                            decoded = bytes.fromhex(value)
-                        except (TypeError, ValueError) as error:
-                            raise TelemetryError("otlp_id_invalid") from error
-                        if len(decoded) != size:
-                            raise TelemetryError("otlp_id_invalid")
-                        record[key] = base64.b64encode(decoded).decode()
+                    rewrite(record, "traceId", 16)
+                    rewrite(record, "spanId", 8)
+                    rewrite(record, "parentSpanId", 8)
+    for resource in capture.get("resourceLogs") or []:
+        for scope in resource.get("scopeLogs") or []:
+            for record in scope.get("logRecords") or []:
+                rewrite(record, "traceId", 16)
+                rewrite(record, "spanId", 8)
     return capture
 
 
@@ -1291,6 +1704,37 @@ def decode_otlp_export_request(payload):
         return json_format.ParseDict(converted, ExportTraceServiceRequest())
     except json_format.ParseError as error:
         raise TelemetryError("otlp_json_invalid") from error
+
+
+def decode_otlp_logs_request(payload):
+    """Parse ExportLogsServiceRequest. Converts wire hex IDs first."""
+    try:
+        from google.protobuf import json_format
+        from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+            ExportLogsServiceRequest,
+        )
+    except ImportError as error:
+        raise TelemetryError("otlp_proto_unavailable") from error
+    converted = otlp_wire_to_protobuf_json(payload)
+    try:
+        return json_format.ParseDict(converted, ExportLogsServiceRequest())
+    except json_format.ParseError as error:
+        raise TelemetryError("otlp_logs_invalid") from error
+
+
+def decode_otlp_metrics_request(payload):
+    """Parse ExportMetricsServiceRequest, including Histogram datapoints."""
+    try:
+        from google.protobuf import json_format
+        from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+            ExportMetricsServiceRequest,
+        )
+    except ImportError as error:
+        raise TelemetryError("otlp_proto_unavailable") from error
+    try:
+        return json_format.ParseDict(payload, ExportMetricsServiceRequest())
+    except json_format.ParseError as error:
+        raise TelemetryError("otlp_metrics_invalid") from error
 
 
 def _server_url_from_html(html):
@@ -1668,7 +2112,10 @@ def main(argv=None):
     )
     parser.add_argument(
         "--otlp-endpoint",
-        help="OTLP/gRPC host:port for TraceService.Export (ACK ≠ Weaver PASS)",
+        help=(
+            "OTLP/gRPC host:port for prepared Traces, Logs, and Metrics "
+            "(ACK is not Weaver PASS)"
+        ),
     )
     parser.add_argument(
         "--otlp-insecure",
@@ -1790,17 +2237,25 @@ def main(argv=None):
             export_error = error
             sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
     if args.otlp_logs_json is not None and export_error is None:
-        try:
-            write_otlp_logs_json(report, args.otlp_logs_json)
-        except TelemetryError as error:
-            export_error = error
-            sys.stderr.write(f"cicd-telemetry logs export failed: {error.code}\n")
+        if report.get("otlp_logs_json"):
+            try:
+                write_otlp_logs_json(report, args.otlp_logs_json)
+            except TelemetryError as error:
+                export_error = error
+                sys.stderr.write(f"cicd-telemetry logs export failed: {error.code}\n")
+        else:
+            report["claims"]["otlp_logs_skip"] = "no_log_records"
     if args.otlp_metrics_json is not None and export_error is None:
-        try:
-            write_otlp_metrics_json(report, args.otlp_metrics_json)
-        except TelemetryError as error:
-            export_error = error
-            sys.stderr.write(f"cicd-telemetry metrics export failed: {error.code}\n")
+        if report.get("otlp_metrics_json"):
+            try:
+                write_otlp_metrics_json(report, args.otlp_metrics_json)
+            except TelemetryError as error:
+                export_error = error
+                sys.stderr.write(
+                    f"cicd-telemetry metrics export failed: {error.code}\n"
+                )
+        else:
+            report["claims"]["otlp_metrics_skip"] = "not_observable"
     if args.otlp_endpoint is not None and export_error is None:
         try:
             export_otlp_grpc(

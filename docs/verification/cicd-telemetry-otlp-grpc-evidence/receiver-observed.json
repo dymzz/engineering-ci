@@ -1,13 +1,27 @@
 {
+  "candidate_record_only": true,
   "claims": {
-    "otlp_delivered": false,
+    "otlp_delivered": true,
+    "otlp_logs_delivered": true,
+    "otlp_logs_receiver_observed": true,
+    "otlp_logs_rpc_accepted": true,
+    "otlp_metrics_delivered": true,
+    "otlp_metrics_receiver_observed": true,
+    "otlp_metrics_rpc_accepted": true,
     "receiver_observed": true,
     "rpc_accepted": true,
     "trusted": false,
     "weaver_pass": false
   },
-  "endpoint": "127.0.0.1:5518",
+  "endpoint": "127.0.0.1:11243",
+  "github_authenticated": false,
   "insecure": true,
+  "observed_log_span_ids": [
+    "f39fadb5c353c887"
+  ],
+  "observed_metric_ids": [
+    "cicd.pipeline.run.duration|executing"
+  ],
   "observed_spans": [
     {
       "name": "RUN Engineering CI",
@@ -20,5 +34,74 @@
       "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
     }
   ],
-  "protocol": "otlp/grpc"
+  "protocol": "otlp/grpc",
+  "snapshot_phase": "receiver_confirmed",
+  "source": "mapping",
+  "terminal_source": "mapping",
+  "time_precision": "exact_input",
+  "time_source_verified": false,
+  "transport": {
+    "logs": {
+      "attempt": 1,
+      "duplicate": [],
+      "expected": [
+        "f39fadb5c353c887"
+      ],
+      "matched": [
+        "f39fadb5c353c887"
+      ],
+      "missing": [],
+      "otlp_delivered": true,
+      "reason": null,
+      "receiver_observed": true,
+      "rejected": 0,
+      "rpc_accepted": true,
+      "run_id": "42627302972",
+      "snapshot_phase": "receiver_confirmed",
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8",
+      "unexpected": []
+    },
+    "metrics": {
+      "attempt": 1,
+      "duplicate": [],
+      "expected": [
+        "cicd.pipeline.run.duration|executing"
+      ],
+      "matched": [
+        "cicd.pipeline.run.duration|executing"
+      ],
+      "missing": [],
+      "otlp_delivered": true,
+      "reason": null,
+      "receiver_observed": true,
+      "rejected": 0,
+      "rpc_accepted": true,
+      "run_id": "42627302972",
+      "snapshot_phase": "receiver_confirmed",
+      "trace_id": null,
+      "unexpected": []
+    },
+    "traces": {
+      "attempt": 1,
+      "duplicate": [],
+      "expected": [
+        "99e59e4635e01286",
+        "f39fadb5c353c887"
+      ],
+      "matched": [
+        "99e59e4635e01286",
+        "f39fadb5c353c887"
+      ],
+      "missing": [],
+      "otlp_delivered": true,
+      "reason": null,
+      "receiver_observed": true,
+      "rejected": 0,
+      "rpc_accepted": true,
+      "run_id": "42627302972",
+      "snapshot_phase": "receiver_confirmed",
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8",
+      "unexpected": []
+    }
+  }
 }
