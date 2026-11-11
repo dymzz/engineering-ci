@@ -218,10 +218,14 @@ Incomplete Git scope stays `unknown`. `weaver_registry` / `weaver_live` select
 when Weaver inputs under those prefixes change. Incremental selection never
 claims Terminal readiness from filenames: `weaver_terminal` stays
 `not_applicable` with `requires post-completion plan`. Callers build an
-explicit `selection.post_completion_plan(...)` (phase `post_completion` plus
-Run/Attempt/result and Capture/expectation digests). Dagger `execute-plan`
-validates that binding before Native Terminal; missing or mismatched inputs
-yield `not_executed` / `blocked` with non-zero gate — never PASS.
+explicit `selection.post_completion_plan(...)` from a single `ci-weaver.toml`
+(phase `post_completion`, Run/Attempt/result, and the recomputable closure of
+Registry manifest+bytes, Matcher, Advice Policies, OTLP, Expectation, Weaver
+tool pin). Dagger `execute-plan` recomputes that closure before Native
+Terminal; digests or identity drift yield `not_executed` / `blocked` with
+non-zero gate — never PASS. Parent reports expose `input_closure_verified`
+and `source_tree_verified` separately from legacy `tree_verified`.
+Evidence: [post-completion E2E](weaver-evidence/head-current/post-completion/).
 `execute-plan --weaver-config` selects the Source-relative configuration path.
 
 During this integration, identical Windows and Linux Source bytes exposed an

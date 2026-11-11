@@ -57,9 +57,17 @@ dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live
 | `head-current/negatives/wrong-result-type` | Non-string Pipeline result | `failed` / `result_type_invalid` (ECI type gate); native exit 0 |
 
 Coverage matrix fields are recorded on each `report.json` under `coverage`
-(Registry pin, matchers, Required, Rego Advisor digest, Result type, Resource
-entity association, Terminal correlation). `passed` applies only to those
-executed obligations.
+and are **derived from matched signals** (Registry pin, matchers, Required,
+Rego Advisor digest, Result type, Resource entity association, Terminal
+correlation). Non-CI/CD fixtures report those obligations as `not_applicable`.
+`passed` applies only to executed applicable obligations.
+
+### Post-completion Plan → `execute-plan` E2E
+
+See [head-current/post-completion](head-current/post-completion/README.md):
+explicit Plan + Dagger `execute-plan` parent Report with nested Terminal
+(PASS / closure-mismatch BLOCK / attempt-mismatch BLOCK). This is distinct
+from direct `weaver-artifacts` replays.
 
 Committed evidence keeps `report.json`, `live_check.json`, and native
 stdout/stderr (plus digests in the report). Packaged Registry bytes are not

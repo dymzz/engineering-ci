@@ -172,6 +172,74 @@ def validate_matcher_config(path):
         raise ValueError("policy_external_inputs_unsupported")
 
 
+def coverage_from_execution(*, config, evaluation, advice_meta, kind):
+    """Derive coverage statuses from this run's matched signals and advisors.
+
+    Obligations without an applicable CI/CD signal stay ``not_applicable``.
+    Applicable but unloaded Advisors stay ``not_verified``. Never hard-code
+    ``executed`` for fixtures that did not match Pipeline/Task groups.
+    """
+    matched_signals = set()
+    matched_matchers = set()
+    native = (evaluation or {}).get("native_report") or {}
+    for sample in native.get("samples") or []:
+        body = None
+        if isinstance(sample, dict):
+            body = sample.get("span") or sample.get("resource")
+        if not isinstance(body, dict):
+            continue
+        match = (body.get("live_check_result") or {}).get("match_info") or {}
+        signal = match.get("signal")
+        matcher = match.get("signal_matcher") or match.get("matcher")
+        if match.get("unmatched") is False and isinstance(signal, str) and signal:
+            matched_signals.add(signal)
+        if isinstance(matcher, str) and matcher:
+            matched_matchers.add(matcher)
+    cicd_pipeline = "cicd.pipeline.run.server" in matched_signals
+    cicd_task = "cicd.pipeline.task.internal" in matched_signals
+    cicd_applicable = cicd_pipeline or cicd_task
+    if cicd_applicable:
+        required_status = "executed"
+        result_status = "executed"
+    else:
+        required_status = "not_applicable"
+        result_status = "not_applicable"
+    if cicd_pipeline:
+        resource_status = "executed"
+    else:
+        resource_status = "not_applicable"
+    if not cicd_applicable:
+        advice_status = "not_applicable"
+    elif advice_meta:
+        advice_status = "executed"
+    else:
+        advice_status = "not_verified"
+    if kind == "terminal":
+        terminal_status = "executed"
+    else:
+        terminal_status = "not_applicable"
+    return {
+        "registry_version": (config.get("origin") or {}).get("version"),
+        "registry_commit": (config.get("origin") or {}).get("commit"),
+        "expected_matchers": list(config.get("expected_matchers") or []),
+        "matched_matchers": sorted(matched_matchers),
+        "matched_signals": sorted(matched_signals),
+        "pipeline_task_required": required_status,
+        "conditionally_required_advice": {
+            "policy_id": "cicd_conditional_error_type_required",
+            "status": advice_status,
+            "loaded": bool(advice_meta),
+            "digest": (advice_meta or {}).get("sha256"),
+        },
+        "result_type_gate": result_status,
+        "resource_required": resource_status,
+        "terminal_correlation": terminal_status,
+        "passed_means": (
+            "only executed applicable obligations above; not full SemConv"
+        ),
+    }
+
+
 def materialize_advice_policies(config, report):
     """Copy Source-local Rego Advice into /out and record digests.
 
@@ -468,25 +536,12 @@ def run(kind, config_path):
         advice_meta = (report.get("inputs") or {}).get("advice_policies")
         coverage = dict(report.get("coverage") or {})
         coverage.update(
-            {
-                "registry_version": (config.get("origin") or {}).get("version"),
-                "registry_commit": (config.get("origin") or {}).get("commit"),
-                "expected_matchers": list(config.get("expected_matchers") or []),
-                "pipeline_task_required": "executed",
-                "conditionally_required_advice": {
-                    "policy_id": "cicd_conditional_error_type_required",
-                    "loaded": bool(advice_meta),
-                    "digest": (advice_meta or {}).get("sha256"),
-                },
-                "result_type_gate": "executed",
-                "resource_required": "executed_via_pipeline_entity_association",
-                "terminal_correlation": (
-                    "executed" if kind == "terminal" else "not_applicable"
-                ),
-                "passed_means": (
-                    "only executed applicable obligations above; not full SemConv"
-                ),
-            }
+            coverage_from_execution(
+                config=config,
+                evaluation=evaluation,
+                advice_meta=advice_meta,
+                kind=kind,
+            )
         )
         report["coverage"] = coverage
         report["gate_exit_code"] = 0 if report["status"] == "passed" else 1

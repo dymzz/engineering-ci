@@ -239,12 +239,15 @@ class EngineeringCi:
         source_tree_id = git.get("source_tree_id")
         execution_tree = git.get("execution_tree")
         tree_verified = False
+        source_tree_state = "not_requested"
         source_digest = None
+        input_closure_verified = "not_requested"
         with tempfile.TemporaryDirectory() as directory:
             await source.export(directory)
             if source_tree_id and execution_tree:
                 source_digest = selection.directory_content_id(directory)
                 tree_verified = source_digest == source_tree_id
+                source_tree_state = "verified" if tree_verified else "failed"
                 if not tree_verified:
                     return json.dumps(
                         {
@@ -254,6 +257,8 @@ class EngineeringCi:
                             "reason": "source_tree_mismatch",
                             "exit_code": 4,
                             "tree_verified": False,
+                            "source_tree_verified": source_tree_state,
+                            "input_closure_verified": input_closure_verified,
                             "trusted": False,
                             "plan_execution_tree": execution_tree,
                             "source_tree_id": source_tree_id,
@@ -269,10 +274,12 @@ class EngineeringCi:
                 "exit_code": 0,
                 "targets": targets,
                 "framework": framework,
-                # tree_verified is Source-byte equivalence only; it is not #63
-                # Check-evidence admission. Parent trusted stays false so
-                # consumers cannot elevate unadmitted Weaver checks.
+                # tree_verified is whole-tree Source-byte equivalence only when
+                # that check ran. Post-completion uses input_closure_verified.
+                # Neither field is #63 Check-evidence admission.
                 "tree_verified": tree_verified,
+                "source_tree_verified": source_tree_state,
+                "input_closure_verified": input_closure_verified,
                 "trusted": False,
                 "plan_execution_tree": execution_tree,
                 "source_tree_id": source_tree_id,
@@ -374,19 +381,43 @@ class EngineeringCi:
                 for item in selected_weaver:
                     kind = item["name"].removeprefix("weaver_")
                     if kind == "terminal":
-                        ok, reason = selection.validate_post_completion_binding(
+                        gate = selection.validate_post_completion_binding(
                             value, directory
                         )
-                        if not ok:
+                        report["input_closure_verified"] = gate.get(
+                            "input_closure_verified", "failed"
+                        )
+                        report["plan_closure_digest"] = gate.get("plan_closure_digest")
+                        report["actual_closure_digest"] = gate.get(
+                            "actual_closure_digest"
+                        )
+                        if gate.get("source_tree_verified") != "not_requested":
+                            report["source_tree_verified"] = gate[
+                                "source_tree_verified"
+                            ]
+                            report["tree_verified"] = (
+                                gate["source_tree_verified"] == "verified"
+                            )
+                            if gate.get("source_digest"):
+                                report["source_digest"] = gate["source_digest"]
+                        if not gate.get("ok"):
                             native = {
                                 "name": "weaver_terminal",
                                 "status": "not_executed",
-                                "reason": reason or "post_completion_binding_invalid",
+                                "reason": gate.get("reason")
+                                or "post_completion_binding_invalid",
                                 "gate_exit_code": 1,
                                 "trusted": False,
                                 "authenticated": False,
                                 "selected": item.get("status"),
-                                "source_tree_verified": tree_verified,
+                                "input_closure_verified": gate.get(
+                                    "input_closure_verified"
+                                ),
+                                "source_tree_verified": report["source_tree_verified"],
+                                "plan_closure_digest": gate.get("plan_closure_digest"),
+                                "actual_closure_digest": gate.get(
+                                    "actual_closure_digest"
+                                ),
                             }
                             report["checks"].append(native)
                             if report["status"] == "passed":
@@ -403,9 +434,18 @@ class EngineeringCi:
                         await self.weaver_report(source, kind, config_path)
                     )
                     native["selected"] = item.get("status")
-                    native["source_tree_verified"] = tree_verified
+                    native["source_tree_verified"] = report["source_tree_verified"]
                     if kind == "terminal":
                         native["phase"] = selection.POST_COMPLETION_PHASE
+                        native["input_closure_verified"] = report[
+                            "input_closure_verified"
+                        ]
+                        native["plan_closure_digest"] = report.get(
+                            "plan_closure_digest"
+                        )
+                        native["actual_closure_digest"] = report.get(
+                            "actual_closure_digest"
+                        )
                     report["checks"].append(native)
                     if native["status"] != "passed" and report["status"] == "passed":
                         report.update(

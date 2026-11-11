@@ -520,26 +520,40 @@ def test_post_completion_plan_binds_terminal_inputs(tmp_path):
         run_id="controlled-42/1",
         attempt=1,
         result="success",
-        otlp="capture.json",
-        expectations="expected.json",
     )
     assert plan["phase"] == selection.POST_COMPLETION_PHASE
     assert plan["check_scope"][0]["name"] == "weaver_terminal"
     assert plan["check_scope"][0]["status"] == "selected"
-    assert plan["post_completion"]["run_id"] == "controlled-42/1"
-    ok, reason = selection.validate_post_completion_binding(plan, root)
-    assert ok and reason is None
+    binding = plan["post_completion"]
+    assert binding["run_id"] == "controlled-42/1"
+    assert binding["otlp"]["path"] == "capture.json"
+    assert binding["expectations"]["path"] == "expected.json"
+    assert binding["registry"]["sha256"]
+    assert binding["advice_policies"]["files"]["cicd-error-type.rego"]
+    assert binding["sha256"]
+    gate = selection.validate_post_completion_binding(plan, root)
+    assert gate["ok"] and gate["input_closure_verified"] == "verified"
+    assert gate["plan_closure_digest"] == binding["sha256"]
 
     blocked = dict(plan)
     blocked["phase"] = None
-    ok, reason = selection.validate_post_completion_binding(blocked, root)
-    assert not ok and reason == "post_completion_phase_required"
+    gate = selection.validate_post_completion_binding(blocked, root)
+    assert not gate["ok"] and gate["reason"] == "post_completion_phase_required"
 
     missing = dict(plan)
     missing["post_completion"] = dict(plan["post_completion"])
     del missing["post_completion"]["otlp"]
-    ok, reason = selection.validate_post_completion_binding(missing, root)
-    assert not ok and reason == "post_completion_binding_incomplete"
+    gate = selection.validate_post_completion_binding(missing, root)
+    assert not gate["ok"] and gate["reason"] == "post_completion_binding_incomplete"
+
+    drifted = dict(plan)
+    drifted["post_completion"] = dict(plan["post_completion"])
+    (root / "advice-policies/cicd-error-type.rego").write_text(
+        (root / "advice-policies/cicd-error-type.rego").read_text() + "\n# drift\n"
+    )
+    gate = selection.validate_post_completion_binding(drifted, root)
+    assert not gate["ok"]
+    assert gate["reason"] == "post_completion_closure_digest_mismatch"
 
 
 def test_directory_content_id_uses_platform_independent_path_order(tmp_path):

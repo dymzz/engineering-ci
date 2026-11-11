@@ -1167,6 +1167,18 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     }
 
 
+# Pinned Weaver asset identity recorded in post-completion closures (matches
+# engineering_ci_module.tooling). Selection does not download the binary.
+_WEAVER_TOOL = {
+    "version": "0.28.0",
+    "sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",
+    "asset": (
+        "https://github.com/open-telemetry/weaver/releases/download/"
+        "v0.28.0/weaver-x86_64-unknown-linux-gnu.tar.xz"
+    ),
+}
+
+
 def _relative_source_path(root, path):
     root = Path(root).resolve()
     value = Path(path)
@@ -1183,6 +1195,141 @@ def _file_binding(root, path):
     return {"path": relative, "sha256": _digest(resolved)}
 
 
+def _stable_digest(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _registry_closure(root, registry_rel, manifest_rel):
+    """Bind Registry directory via the existing per-file manifest contract."""
+    manifest = _file_binding(root, manifest_rel)
+    try:
+        expected = json.loads((root / manifest["path"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        raise SelectionError("post_completion_registry_manifest_invalid") from None
+    if not isinstance(expected, dict) or not expected:
+        raise SelectionError("post_completion_registry_manifest_invalid")
+    reg_rel, reg_path = _relative_source_path(root, registry_rel)
+    if not reg_path.is_dir():
+        raise SelectionError("post_completion_input_missing")
+    actual = {}
+    for path in sorted(
+        reg_path.rglob("*"), key=lambda item: item.relative_to(reg_path).as_posix()
+    ):
+        if path.is_symlink():
+            raise SelectionError("post_completion_registry_symlink")
+        if path.is_file():
+            actual[path.relative_to(reg_path).as_posix()] = _digest(path)
+    if actual != expected:
+        raise SelectionError("post_completion_registry_bytes_mismatch")
+    return {
+        "path": reg_rel,
+        "sha256": _stable_digest(actual),
+        "manifest": manifest,
+        "files": actual,
+    }
+
+
+def _advice_closure(root, relative):
+    adv_rel, adv_path = _relative_source_path(root, relative)
+    if not adv_path.is_dir():
+        raise SelectionError("post_completion_input_missing")
+    files = {}
+    for path in sorted(
+        adv_path.rglob("*.rego"),
+        key=lambda item: item.relative_to(adv_path).as_posix(),
+    ):
+        if path.is_symlink() or not path.is_file():
+            continue
+        rel = path.relative_to(adv_path).as_posix()
+        if ".." in Path(rel).parts:
+            raise SelectionError("post_completion_advice_path_invalid")
+        files[rel] = _digest(path)
+    if not files:
+        raise SelectionError("post_completion_advice_empty")
+    if "otel.rego" not in files:
+        raise SelectionError("post_completion_advice_default_missing")
+    if "cicd-error-type.rego" not in files:
+        raise SelectionError("post_completion_advice_conditional_missing")
+    return {"path": adv_rel, "sha256": _stable_digest(files), "files": files}
+
+
+def _capture_span_matches(capture, span):
+    matches = 0
+    for resource in capture.get("resourceSpans") or []:
+        for scope in resource.get("scopeSpans") or []:
+            for item in scope.get("spans") or []:
+                if item.get("traceId") == span.get("trace_id") and item.get(
+                    "spanId"
+                ) == span.get("span_id"):
+                    matches += 1
+    return matches
+
+
+def compute_weaver_input_closure(root, weaver_config):
+    """Recompute the Native Weaver input closure from ``ci-weaver.toml`` alone."""
+    root = Path(root)
+    weaver_rel, weaver_path = _relative_source_path(root, weaver_config)
+    if not weaver_path.is_file():
+        raise SelectionError("post_completion_input_missing")
+    try:
+        data = tomllib.loads(weaver_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise SelectionError("post_completion_weaver_config_invalid") from error
+    required = (
+        "registry",
+        "registry_manifest",
+        "matcher_config",
+        "otlp",
+        "expectations",
+        "advice_policies",
+    )
+    for key in required:
+        if not isinstance(data.get(key), str) or not data[key]:
+            raise SelectionError(f"post_completion_{key}_undeclared")
+    registry = _registry_closure(root, data["registry"], data["registry_manifest"])
+    matcher = _file_binding(root, data["matcher_config"])
+    advice = _advice_closure(root, data["advice_policies"])
+    otlp = _file_binding(root, data["otlp"])
+    expectations = _file_binding(root, data["expectations"])
+    closure = {
+        "weaver_config": {"path": weaver_rel, "sha256": _digest(weaver_path)},
+        "registry": registry,
+        "matcher_config": matcher,
+        "advice_policies": advice,
+        "otlp": otlp,
+        "expectations": expectations,
+        "weaver_tool": dict(_WEAVER_TOOL),
+        "origin": {
+            "repository": (data.get("origin") or {}).get("repository"),
+            "commit": (data.get("origin") or {}).get("commit"),
+            "version": (data.get("origin") or {}).get("version"),
+        },
+        "expected_matchers": list(data.get("expected_matchers") or []),
+    }
+    closure["sha256"] = _stable_digest(
+        {
+            "weaver_config": closure["weaver_config"],
+            "registry": {
+                "path": registry["path"],
+                "sha256": registry["sha256"],
+                "manifest": registry["manifest"],
+            },
+            "matcher_config": matcher,
+            "advice_policies": {
+                "path": advice["path"],
+                "sha256": advice["sha256"],
+                "files": advice["files"],
+            },
+            "otlp": otlp,
+            "expectations": expectations,
+            "weaver_tool": closure["weaver_tool"],
+        }
+    )
+    return closure
+
+
 def post_completion_plan(
     *,
     root,
@@ -1191,17 +1338,13 @@ def post_completion_plan(
     run_id,
     attempt,
     result,
-    otlp,
-    expectations,
-    registry=None,
-    matcher_config=None,
     source_tree_id=None,
 ):
-    """Explicit Terminal Plan; never inferred from Git filenames or diffs.
+    """Explicit Terminal Plan from one ``ci-weaver.toml`` input closure.
 
-    Callers supply completed Run/Attempt identity and Source-relative Capture /
-    expectation paths. ``execute-plan`` validates this binding before Native
-    Terminal; incremental selection never selects ``weaver_terminal``.
+    Registry/Matcher/Advice/OTLP/Expectation paths are taken only from that
+    config — no parallel overrides. ``execute-plan`` recomputes the same
+    closure before Native Terminal.
     """
     root = Path(root)
     config_path = Path(config_path)
@@ -1214,15 +1357,16 @@ def post_completion_plan(
         or not result
     ):
         raise SelectionError("post_completion_identity_invalid")
-    weaver_rel, weaver_path = _relative_source_path(root, weaver_config)
-    if not weaver_path.is_file():
-        raise SelectionError("post_completion_input_missing")
-    otlp_binding = _file_binding(root, otlp)
-    expectations_binding = _file_binding(root, expectations)
+    closure = compute_weaver_input_closure(root, weaver_config)
     try:
-        expected = json.loads((root / expectations_binding["path"]).read_text())
-    except (OSError, ValueError, UnicodeError):
-        raise SelectionError("post_completion_expectations_invalid") from None
+        expected = json.loads(
+            (root / closure["expectations"]["path"]).read_text(encoding="utf-8")
+        )
+        capture = json.loads(
+            (root / closure["otlp"]["path"]).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, UnicodeError) as error:
+        raise SelectionError("post_completion_inputs_unreadable") from error
     source = expected.get("source") if isinstance(expected, dict) else None
     evidence = expected.get("terminal_evidence") if isinstance(expected, dict) else None
     if (
@@ -1236,62 +1380,23 @@ def post_completion_plan(
         or evidence.get("result") != result
     ):
         raise SelectionError("post_completion_evidence_mismatch")
-    try:
-        capture = json.loads((root / otlp_binding["path"]).read_text())
-    except (OSError, ValueError, UnicodeError):
-        raise SelectionError("post_completion_otlp_invalid") from None
     spans = expected.get("spans") if isinstance(expected, dict) else None
     if not isinstance(spans, list) or not spans:
         raise SelectionError("post_completion_expectations_invalid")
     for span in spans:
         if not isinstance(span, dict):
             raise SelectionError("post_completion_expectations_invalid")
-        # Presence only; Native Terminal still binds observed Run/Result/Attempt.
-        matches = 0
-        for resource in capture.get("resourceSpans") or []:
-            for scope in resource.get("scopeSpans") or []:
-                for item in scope.get("spans") or []:
-                    if item.get("traceId") == span.get("trace_id") and item.get(
-                        "spanId"
-                    ) == span.get("span_id"):
-                        matches += 1
+        matches = _capture_span_matches(capture, span)
         if matches == 0:
             raise SelectionError("post_completion_missing_capture_span")
         if matches > 1:
             raise SelectionError("post_completion_duplicate_capture_span")
-    try:
-        weaver_data = tomllib.loads(weaver_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeError, tomllib.TOMLDecodeError):
-        weaver_data = {}
-    registry_binding = _file_binding(root, registry) if registry is not None else None
-    if registry_binding is None:
-        declared = weaver_data.get("registry")
-        if isinstance(declared, str) and declared:
-            reg_rel, reg_path = _relative_source_path(root, declared)
-            if not reg_path.exists():
-                raise SelectionError("post_completion_input_missing")
-            # Directory registry: path identity only; Weaver verifies bytes.
-            registry_binding = {"path": reg_rel, "sha256": None}
-    matcher_binding = None
-    if matcher_config is not None:
-        matcher_binding = _file_binding(root, matcher_config)
-    else:
-        declared = weaver_data.get("matcher_config")
-        if isinstance(declared, str) and declared:
-            matcher_binding = _file_binding(root, declared)
     binding = {
         "run_id": run_id,
         "attempt": attempt,
         "status": "completed",
         "result": result,
-        "weaver_config": {
-            "path": weaver_rel,
-            "sha256": _digest(weaver_path),
-        },
-        "otlp": otlp_binding,
-        "expectations": expectations_binding,
-        "registry": registry_binding,
-        "matcher_config": matcher_binding,
+        **closure,
     }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1326,6 +1431,9 @@ def post_completion_plan(
                     binding["otlp"]["path"],
                     binding["expectations"]["path"],
                     binding["weaver_config"]["path"],
+                    binding["matcher_config"]["path"],
+                    binding["advice_policies"]["path"],
+                    binding["registry"]["path"],
                 ],
                 "reason": "post-completion binding",
             }
@@ -1337,45 +1445,124 @@ def post_completion_plan(
                 "sha256": _digest(config_path) if config_path.is_file() else None,
             },
             "weaver": binding["weaver_config"],
+            "closure_sha256": binding["sha256"],
         },
     }
 
 
 def validate_post_completion_binding(plan, root):
-    """Fail closed before Native Terminal when post-completion inputs are incomplete."""
+    """Recompute the weaver.toml closure and refuse Native Terminal on drift.
+
+    Returns a structured result for the parent Execution Report. Callers must
+    treat ``ok is False`` as ``not_executed`` / ``blocked``.
+    """
     root = Path(root)
+    result = {
+        "ok": False,
+        "reason": None,
+        "input_closure_verified": "failed",
+        "source_tree_verified": "not_requested",
+        "plan_closure_digest": None,
+        "actual_closure_digest": None,
+    }
     if plan.get("phase") != POST_COMPLETION_PHASE:
-        return False, "post_completion_phase_required"
+        result["reason"] = "post_completion_phase_required"
+        return result
     binding = plan.get("post_completion")
     if not isinstance(binding, dict):
-        return False, "post_completion_binding_missing"
-    required = ("run_id", "attempt", "status", "result", "otlp", "expectations")
-    if any(key not in binding for key in required):
-        return False, "post_completion_binding_incomplete"
+        result["reason"] = "post_completion_binding_missing"
+        return result
+    for key in (
+        "run_id",
+        "attempt",
+        "status",
+        "result",
+        "weaver_config",
+        "otlp",
+        "expectations",
+        "registry",
+        "matcher_config",
+        "advice_policies",
+        "sha256",
+    ):
+        if key not in binding:
+            result["reason"] = "post_completion_binding_incomplete"
+            return result
     if binding.get("status") != "completed":
-        return False, "post_completion_not_completed"
+        result["reason"] = "post_completion_not_completed"
+        return result
     if type(binding.get("attempt")) is not int or binding["attempt"] < 1:
-        return False, "post_completion_attempt_invalid"
+        result["reason"] = "post_completion_attempt_invalid"
+        return result
     if not isinstance(binding.get("run_id"), str) or not binding["run_id"]:
-        return False, "post_completion_run_id_invalid"
+        result["reason"] = "post_completion_run_id_invalid"
+        return result
     if not isinstance(binding.get("result"), str) or not binding["result"]:
-        return False, "post_completion_result_invalid"
-    for key in ("otlp", "expectations", "weaver_config"):
-        item = binding.get(key)
-        if key == "weaver_config" and item is None:
-            continue
-        if not isinstance(item, dict) or not item.get("path") or not item.get("sha256"):
-            return False, f"post_completion_{key}_invalid"
-        path = root / item["path"]
-        if not path.is_file():
-            return False, f"post_completion_{key}_missing"
-        if _digest(path) != item["sha256"]:
-            return False, f"post_completion_{key}_digest_mismatch"
+        result["reason"] = "post_completion_result_invalid"
+        return result
+    weaver_cfg = binding.get("weaver_config") or {}
+    if not isinstance(weaver_cfg, dict) or not weaver_cfg.get("path"):
+        result["reason"] = "post_completion_weaver_config_invalid"
+        return result
+    result["plan_closure_digest"] = binding.get("sha256")
     try:
-        expected = json.loads((root / binding["expectations"]["path"]).read_text())
-        capture = json.loads((root / binding["otlp"]["path"]).read_text())
+        actual = compute_weaver_input_closure(root, weaver_cfg["path"])
+    except SelectionError as error:
+        result["reason"] = str(error)
+        return result
+    result["actual_closure_digest"] = actual["sha256"]
+    if actual["sha256"] != binding.get("sha256"):
+        result["reason"] = "post_completion_closure_digest_mismatch"
+        return result
+    for key in (
+        "weaver_config",
+        "matcher_config",
+        "otlp",
+        "expectations",
+        "advice_policies",
+    ):
+        planned = binding.get(key) or {}
+        current = actual.get(key) or {}
+        if planned.get("path") != current.get("path") or planned.get(
+            "sha256"
+        ) != current.get("sha256"):
+            result["reason"] = f"post_completion_{key}_digest_mismatch"
+            return result
+        if key == "advice_policies" and planned.get("files") != current.get("files"):
+            result["reason"] = "post_completion_advice_files_mismatch"
+            return result
+    planned_registry = binding.get("registry") or {}
+    actual_registry = actual.get("registry") or {}
+    if (
+        planned_registry.get("path") != actual_registry.get("path")
+        or planned_registry.get("sha256") != actual_registry.get("sha256")
+        or (planned_registry.get("manifest") or {}).get("path")
+        != (actual_registry.get("manifest") or {}).get("path")
+        or (planned_registry.get("manifest") or {}).get("sha256")
+        != (actual_registry.get("manifest") or {}).get("sha256")
+    ):
+        result["reason"] = "post_completion_registry_digest_mismatch"
+        return result
+    # Optional full file map: when present it must match; digest is authoritative.
+    if (
+        planned_registry.get("files") is not None
+        and planned_registry.get("files") != actual_registry.get("files")
+    ):
+        result["reason"] = "post_completion_registry_files_mismatch"
+        return result
+    if binding.get("weaver_tool") != actual.get("weaver_tool"):
+        result["reason"] = "post_completion_weaver_tool_mismatch"
+        return result
+    try:
+        expected = json.loads(
+            (root / actual["expectations"]["path"]).read_text(encoding="utf-8")
+        )
+        capture = json.loads(
+            (root / actual["otlp"]["path"]).read_text(encoding="utf-8")
+        )
     except (OSError, ValueError, UnicodeError):
-        return False, "post_completion_inputs_unreadable"
+        result["reason"] = "post_completion_inputs_unreadable"
+        return result
     source = expected.get("source") if isinstance(expected, dict) else None
     evidence = expected.get("terminal_evidence") if isinstance(expected, dict) else None
     if (
@@ -1388,27 +1575,29 @@ def validate_post_completion_binding(plan, root):
         or evidence.get("attempt") != binding["attempt"]
         or evidence.get("result") != binding["result"]
     ):
-        return False, "post_completion_evidence_mismatch"
+        result["reason"] = "post_completion_evidence_mismatch"
+        return result
     spans = expected.get("spans") if isinstance(expected, dict) else None
     if not isinstance(spans, list) or not spans:
-        return False, "post_completion_spans_missing"
+        result["reason"] = "post_completion_spans_missing"
+        return result
     for span in spans:
-        if not isinstance(span, dict):
-            return False, "post_completion_spans_invalid"
-        matches = 0
-        for resource in capture.get("resourceSpans") or []:
-            for scope in resource.get("scopeSpans") or []:
-                for item in scope.get("spans") or []:
-                    if item.get("traceId") == span.get("trace_id") and item.get(
-                        "spanId"
-                    ) == span.get("span_id"):
-                        matches += 1
-        if matches != 1:
-            return False, "post_completion_capture_span_mismatch"
+        if not isinstance(span, dict) or _capture_span_matches(capture, span) != 1:
+            result["reason"] = "post_completion_capture_span_mismatch"
+            return result
     source_tree_id = (plan.get("git") or {}).get("source_tree_id")
-    if source_tree_id and directory_content_id(root) != source_tree_id:
-        return False, "source_tree_mismatch"
-    return True, None
+    if source_tree_id:
+        source_digest = directory_content_id(root)
+        result["source_digest"] = source_digest
+        if source_digest != source_tree_id:
+            result["reason"] = "source_tree_mismatch"
+            result["source_tree_verified"] = "failed"
+            return result
+        result["source_tree_verified"] = "verified"
+    result["ok"] = True
+    result["reason"] = None
+    result["input_closure_verified"] = "verified"
+    return result
 
 
 def run_tests(
