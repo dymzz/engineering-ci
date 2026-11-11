@@ -34,6 +34,21 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = 8
 # Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
 ID_SCHEME = "github-actions-attempt-sha256-v1"
+# Knowledge #80 pin. identity_verified stays false until #74 supplies the
+# registry tree digest for this same commit. This is not a second registry.
+SEMCONV_SOURCE = {
+    "authority": "knowledge-80",
+    "repository": "https://github.com/open-telemetry/semantic-conventions",
+    "version": "1.45.0",
+    "full_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+    "group_ids": [
+        "span.cicd.pipeline.run.server",
+        "span.cicd.pipeline.task.internal",
+        "metric.cicd.pipeline.run.duration",
+    ],
+    "registry_identity": None,
+    "identity_verified": False,
+}
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
@@ -602,46 +617,165 @@ def _stable_ids(run_id, attempt, job_id=None):
     return trace_id, pipeline_span_id, task_span_id
 
 
-def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
-    """Match observed Task Spans to IDs rebuilt from a Run/Attempt/Job witness.
+def _audit_job_rows(spans, rows):
+    """Check this producer's own Job rows against the spans it emitted.
 
-    The expectation comes from ``_stable_ids``, not from an ID copied out of
-    the capture. A matching ID is not source authentication.
+    This is not an independent capture matcher. ``complete`` is false unless
+    every selected row is accounted for and no row was left unselected.
+    """
+    tasks = {
+        span["span_id"]: span
+        for span in spans
+        if span.get("kind") == SPAN_KIND_INTERNAL
+    }
+    identity_mismatch = []
+    url_mismatch = []
+    missing = []
+    omitted_emitted = []
+    url_rows = 0
+    url_matched = 0
+    for row in rows:
+        span_id = row.get("expected_task_span_id")
+        span = tasks.get(span_id) if span_id else None
+        selected = row.get("omit_reason") != "not_selected_job_id_slice"
+        if row.get("omitted") or not selected:
+            if span is not None:
+                omitted_emitted.append(row.get("job_id"))
+            continue
+        if not row.get("emitted"):
+            continue
+        if span is None:
+            missing.append(row.get("job_id"))
+            continue
+        attributes = span.get("attributes") or {}
+        if str(attributes.get(ATTR_TASK_RUN_ID)) != str(row.get("job_id")):
+            identity_mismatch.append(row.get("job_id"))
+        if row.get("job_url"):
+            url_rows += 1
+            if attributes.get(ATTR_TASK_RUN_URL) == row.get("job_url"):
+                url_matched += 1
+            else:
+                url_mismatch.append(row.get("job_id"))
+    identity_ok = not (identity_mismatch or missing or omitted_emitted)
+    return {
+        "verification_scope": "producer_objects",
+        "identity_ok": identity_ok,
+        "job_url_verified": bool(url_rows)
+        and url_matched == url_rows
+        and not url_mismatch,
+        "identity_mismatch": identity_mismatch,
+        "url_mismatch": url_mismatch,
+        "missing": missing,
+        "omitted_emitted": omitted_emitted,
+    }
+
+
+def semconv_citation_verified(citation):
+    """True only when the pinned source itself is verified and the citation matches.
+
+    A copied version string is not verification. The pin stays unverified until
+    the registry digest is supplied for this same commit.
+    """
+    pin = SEMCONV_SOURCE
+    if not pin["identity_verified"] or not isinstance(citation, dict):
+        return False
+    return (
+        citation.get("full_commit") == pin["full_commit"]
+        and citation.get("version") == pin["version"]
+        and citation.get("registry_identity") == pin["registry_identity"]
+    )
+
+
+def _otlp_scope():
+    """Instrumentation scope name only. Schema revision is not a scope version."""
+    return {"name": OTLP_SCOPE_NAME}
+
+
+def _canonical_job_id(value):
+    """Decimal GitHub Job ID text. 129 and "129" are the same ID."""
+    if type(value) is int:
+        text = str(value)
+    elif type(value) is str:
+        text = value.strip()
+    else:
+        return None
+    if not text.isdigit() or text.startswith("0"):
+        return None
+    number = int(text)
+    if number < 1:
+        return None
+    return str(number)
+
+
+def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
+    """Match Task Span IDs rebuilt from run_id, attempt and job_ids.
+
+    ok means only verification_scope task_trace_identity. It does not verify
+    source completeness, Job attributes, URLs, or trust.
     """
     trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
+    invalid = []
+    duplicates = []
+    seen = []
+    for value in job_ids:
+        job_id = _canonical_job_id(value)
+        if job_id is None:
+            invalid.append(None if value is None else value)
+            continue
+        if job_id in seen:
+            duplicates.append(job_id)
+        seen.append(job_id)
+    base = {
+        "id_scheme": ID_SCHEME,
+        "verification_scope": "task_trace_identity",
+        "source_completeness_verified": False,
+        "job_attributes_verified": False,
+        "trusted": False,
+        "expected_trace_id": trace_id,
+        "expected_pipeline_span_id": pipeline_span_id,
+        "invalid_expected_job_ids": invalid,
+        "duplicate_expected_job_ids": duplicates,
+    }
+    if invalid or duplicates:
+        base.update(
+            ok=False,
+            trace_mismatch=[],
+            parent_mismatch=[],
+            missing=[],
+            unexpected=[],
+            duplicate=[],
+        )
+        return base
     expected_ids = set()
-    for job_id in job_ids:
-        _, _, task_span_id = _stable_ids(str(run_id), int(attempt), str(job_id))
+    for job_id in seen:
+        _, _, task_span_id = _stable_ids(str(run_id), int(attempt), job_id)
         expected_ids.add(task_span_id)
     trace_mismatch = []
     parent_mismatch = []
-    seen = {}
+    observed_counts = {}
     for span in observed_spans:
         if span.get("kind") != SPAN_KIND_INTERNAL:
             continue
         span_id = span.get("span_id")
-        seen[span_id] = seen.get(span_id, 0) + 1
+        observed_counts[span_id] = observed_counts.get(span_id, 0) + 1
         if span.get("trace_id") != trace_id:
             trace_mismatch.append(span_id)
         if span.get("parent_span_id") != pipeline_span_id:
             parent_mismatch.append(span_id)
-    observed_ids = set(seen)
+    observed_ids = set(observed_counts)
     missing = sorted(expected_ids - observed_ids)
     unexpected = sorted(item for item in observed_ids if item not in expected_ids)
-    duplicate = sorted(item for item, count in seen.items() if count > 1)
+    duplicate = sorted(item for item, count in observed_counts.items() if count > 1)
     ok = not (trace_mismatch or parent_mismatch or missing or unexpected or duplicate)
-    return {
-        "id_scheme": ID_SCHEME,
-        "trusted": False,
-        "expected_trace_id": trace_id,
-        "expected_pipeline_span_id": pipeline_span_id,
-        "ok": ok,
-        "trace_mismatch": trace_mismatch,
-        "parent_mismatch": parent_mismatch,
-        "missing": missing,
-        "unexpected": unexpected,
-        "duplicate": duplicate,
-    }
+    base.update(
+        ok=ok,
+        trace_mismatch=trace_mismatch,
+        parent_mismatch=parent_mismatch,
+        missing=missing,
+        unexpected=unexpected,
+        duplicate=duplicate,
+    )
+    return base
 
 
 def _task_omit_reason(job_facts):
@@ -680,6 +814,7 @@ def produce(
     phase_intervals=None,
     include_run_entity_metrics=False,
     max_end_uncertainty_ns=None,
+    api_jobs_snapshot=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
@@ -742,6 +877,7 @@ def produce(
                 "Attribute names follow public CI/CD SemConv Pipeline/Task Run; "
                 "registry version pin is tracked with Knowledge #80/#81"
             ),
+            "semconv_source": dict(SEMCONV_SOURCE),
             "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
             "id_scheme": ID_SCHEME,
         },
@@ -798,6 +934,14 @@ def produce(
         "otlp_logs_json": None,
         "otlp_metrics_json": None,
     }
+    if api_jobs_snapshot is not None:
+        report["coverage"]["api_jobs_snapshot"] = {
+            "total_count": api_jobs_snapshot.get("total_count"),
+            "page_count": api_jobs_snapshot.get("page_count"),
+            "pages_sha256": list(api_jobs_snapshot.get("pages_sha256") or []),
+            "completeness": api_jobs_snapshot.get("completeness"),
+            "github_authenticated": False,
+        }
     # Authoritative terminal status is native Attempt status on facts, not CLI hints.
     report["terminal"]["status"] = facts.run_status or terminal_status
     if facts.has_run_identity:
@@ -946,6 +1090,7 @@ def produce(
 
     omitted = []
     expected_by_key = {}
+    witness_anomalies = []
     for source_index, job_facts in job_sources:
         omit = _task_omit_reason(job_facts)
         expected_key = (
@@ -953,6 +1098,43 @@ def produce(
             if job_facts.job_id is not None
             else ("index", source_index)
         )
+        if job_facts.job_id is not None and ("id", job_facts.job_id) in expected_by_key:
+            witness_anomalies.append(
+                {
+                    "source_index": source_index,
+                    "job_id": job_facts.job_id,
+                    "job_url": job_facts.job_url,
+                    "reason": "duplicate_job_id",
+                }
+            )
+            if "duplicate_job_id" not in reasons:
+                reasons.append("duplicate_job_id")
+            continue
+        if job_facts.run_id and str(job_facts.run_id) != str(facts.run_id):
+            witness_anomalies.append(
+                {
+                    "source_index": source_index,
+                    "job_id": job_facts.job_id,
+                    "reason": "witness_run_mismatch",
+                }
+            )
+            if "witness_run_mismatch" not in reasons:
+                reasons.append("witness_run_mismatch")
+            continue
+        if (
+            job_facts.run_attempt is not None
+            and job_facts.run_attempt != facts.run_attempt
+        ):
+            witness_anomalies.append(
+                {
+                    "source_index": source_index,
+                    "job_id": job_facts.job_id,
+                    "reason": "witness_attempt_mismatch",
+                }
+            )
+            if "witness_attempt_mismatch" not in reasons:
+                reasons.append("witness_attempt_mismatch")
+            continue
         if omit is not None:
             entry = {"reason": omit}
             if job_facts.job_id is not None:
@@ -1047,10 +1229,40 @@ def produce(
     report["spans"] = spans
     report["coverage"]["tasks_omitted"] = omitted
     report["coverage"]["expected_completed_jobs"] = expected_completed
+    report["coverage"]["witness_anomalies"] = witness_anomalies
+    report["coverage"]["job_mapping"] = _audit_job_rows(spans, expected_completed)
     report["coverage"]["task_spans_emitted"] = sum(
         1 for span in spans if span["kind"] == SPAN_KIND_INTERNAL
     )
     emitted = report["coverage"]["task_spans_emitted"]
+    unselected = any(
+        row.get("omit_reason") == "not_selected_job_id_slice"
+        for row in expected_completed
+    )
+    counted = emitted + len(omitted)
+    snapshot_incomplete = (
+        api_jobs_snapshot is not None
+        and api_jobs_snapshot.get("completeness") != "complete"
+    )
+    if (
+        witness_anomalies
+        or snapshot_incomplete
+        or (completed_jobs_total is not None and completed_jobs_total != counted)
+    ):
+        attempt_coverage = "incomplete"
+    elif job_selection == "job_id" or unselected:
+        attempt_coverage = "partial"
+    elif (
+        job_selection == "all_completed"
+        and completed_jobs_total is not None
+        and completed_jobs_total == counted
+        and report["coverage"]["job_mapping"]["identity_ok"]
+        and not snapshot_incomplete
+    ):
+        attempt_coverage = "complete"
+    else:
+        attempt_coverage = "not_claimed"
+    report["coverage"]["attempt_coverage"] = attempt_coverage
     if (
         completed_jobs_total is not None
         and completed_jobs_total > emitted
@@ -1285,10 +1497,7 @@ def to_otlp_json(report):
                 "resource": {"attributes": resource_attrs},
                 "scopeSpans": [
                     {
-                        "scope": {
-                            "name": OTLP_SCOPE_NAME,
-                            "version": str(SCHEMA_VERSION),
-                        },
+                        "scope": _otlp_scope(),
                         "spans": spans,
                     }
                 ],
@@ -1950,10 +2159,7 @@ def to_otlp_logs_json(report):
                 "resource": {"attributes": resource_attrs},
                 "scopeLogs": [
                     {
-                        "scope": {
-                            "name": OTLP_SCOPE_NAME,
-                            "version": str(SCHEMA_VERSION),
-                        },
+                        "scope": _otlp_scope(),
                         "logRecords": log_records,
                     }
                 ],
@@ -2023,10 +2229,7 @@ def to_otlp_metrics_json(report):
                 "resource": {"attributes": resource_attrs},
                 "scopeMetrics": [
                     {
-                        "scope": {
-                            "name": OTLP_SCOPE_NAME,
-                            "version": str(SCHEMA_VERSION),
-                        },
+                        "scope": _otlp_scope(),
                         "metrics": metrics,
                     }
                 ],
@@ -2295,6 +2498,8 @@ def fetch_attempt_jobs(api_get, jobs_path):
     page = 1
     jobs = []
     total_count = None
+    page_digests = []
+    raw_pages = []
     while True:
         payload = api_get(_jobs_path_page(jobs_path, page))
         if not isinstance(payload, dict):
@@ -2303,18 +2508,29 @@ def fetch_attempt_jobs(api_get, jobs_path):
         if not isinstance(batch, list):
             raise TelemetryError("jobs_payload_invalid")
         page_total = payload.get("total_count")
-        if type(page_total) is int:
-            if total_count is None:
-                total_count = page_total
-            elif page_total != total_count:
-                raise TelemetryError("jobs_snapshot_inconsistent")
+        # bool is an int subclass; only a real non-negative int is a total.
+        if type(page_total) is not int or page_total < 0:
+            raise TelemetryError("jobs_total_count_invalid")
+        if total_count is None:
+            total_count = page_total
+        elif page_total != total_count:
+            raise TelemetryError("jobs_snapshot_inconsistent")
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        page_digests.append(
+            {
+                "page": page,
+                "sha256": hashlib.sha256(canonical).hexdigest(),
+                "job_count": len(batch),
+            }
+        )
+        raw_pages.append(payload)
         jobs.extend(batch)
-        if total_count is not None and len(jobs) >= total_count:
+        if len(jobs) >= total_count:
             break
         if len(batch) < _JOBS_PAGE_SIZE:
             break
         page += 1
-    if total_count is not None and len(jobs) != total_count:
+    if len(jobs) != total_count:
         raise TelemetryError("jobs_page_incomplete")
     seen_ids = set()
     for job in jobs:
@@ -2327,7 +2543,14 @@ def fetch_attempt_jobs(api_get, jobs_path):
         if key in seen_ids:
             raise TelemetryError("jobs_snapshot_inconsistent")
         seen_ids.add(key)
-    return jobs
+    return jobs, {
+        "total_count": total_count,
+        "page_count": len(page_digests),
+        "pages_sha256": page_digests,
+        "completeness": "complete",
+        "github_authenticated": False,
+        "raw_pages": raw_pages,
+    }
 
 
 def fetch_github_run_job(
@@ -2421,7 +2644,8 @@ def fetch_github_run_job(
         raise TelemetryError("event_api_head_sha_conflict")
 
     jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
-    jobs = fetch_attempt_jobs(api_get, jobs_path)
+    jobs, jobs_snapshot = fetch_attempt_jobs(api_get, jobs_path)
+    raw_pages = jobs_snapshot.pop("raw_pages")
     jobs_observed_total = len(jobs)
     completed_indexes = [
         index
@@ -2484,6 +2708,8 @@ def fetch_github_run_job(
         "expected_job_stubs": expected_job_stubs,
         "api_run_status": api_status,
         "api_run_conclusion": api_conclusion,
+        "api_jobs_snapshot": jobs_snapshot,
+        "raw_api_witness": {"attempt": run, "job_pages": raw_pages},
     }
 
 
@@ -2595,6 +2821,8 @@ def main(argv=None):
     jobs_observed_total = None
     noncompleted_jobs_total = None
     expected_job_stubs = None
+    api_jobs_snapshot = None
+    raw_api_witness = None
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -2631,6 +2859,8 @@ def main(argv=None):
         jobs_observed_total = coverage.get("jobs_observed_total")
         noncompleted_jobs_total = coverage.get("noncompleted_jobs_total")
         expected_job_stubs = coverage.get("expected_job_stubs")
+        api_jobs_snapshot = coverage.get("api_jobs_snapshot")
+        raw_api_witness = coverage.get("raw_api_witness")
     else:
         facts = facts_from_actions_env()
         source = "env"
@@ -2661,6 +2891,7 @@ def main(argv=None):
         event_conclusion=args.event_conclusion,
         expected_job_stubs=expected_job_stubs,
         max_end_uncertainty_ns=args.max_end_uncertainty_ns,
+        api_jobs_snapshot=api_jobs_snapshot if github_api_fetched else None,
     )
     attach_signal_candidates(report)
     attach_otlp_json(report)
@@ -2701,6 +2932,23 @@ def main(argv=None):
         except TelemetryError as error:
             export_error = error
             sys.stderr.write(f"cicd-telemetry grpc failed: {error.code}\n")
+    if github_api_fetched and raw_api_witness is not None:
+        pages_path = args.output.with_name(args.output.name + ".api-pages.json")
+        body = json.dumps(raw_api_witness, indent=2, sort_keys=True).encode() + b"\n"
+        try:
+            pages_path.write_bytes(body)
+        except OSError:
+            parser.exit(2, "cicd-telemetry rejected: api_pages_flush_failed\n")
+        report["source_witness"] = {
+            "kind": "github_attempt_and_job_pages",
+            "path": pages_path.name,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "page_count": (api_jobs_snapshot or {}).get("page_count"),
+            "pages_sha256": (api_jobs_snapshot or {}).get("pages_sha256"),
+            "total_count": (api_jobs_snapshot or {}).get("total_count"),
+            "completeness": (api_jobs_snapshot or {}).get("completeness"),
+            "github_authenticated": False,
+        }
     # Persist candidate after export attempt so claims match actual flush outcome.
     try:
         write_artifact(report, args.output)

@@ -80,6 +80,12 @@ function, `_stable_ids`, and records `producer.id_scheme`.
 in decimal. A withheld Root still has this expected parent id, with
 `parent_exported=false`.
 
+`reconcile_expected_trace` rebuilds those IDs from `run_id`, `attempt` and
+`job_ids`. Its `ok` flag means only `verification_scope=task_trace_identity`.
+`source_completeness_verified` and `job_attributes_verified` stay false.
+Duplicate, empty, or non-decimal Job IDs fail and remain visible. Job URL and
+omission coverage stay on the producer candidate, not in this function.
+
 ### Pipeline Run identity (cross-PR with #74)
 
 Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
@@ -121,9 +127,12 @@ by `partial_job_coverage`, not fabricated `tasks_omitted` entries. When
 completed Jobs exceed emitted Task spans, status is `partial`
 (`partial_job_coverage`).
 
-Job pagination refuses an inconsistent snapshot: shifting page `total_count` or
-duplicate Job IDs across the Attempt raise `jobs_snapshot_inconsistent`
-(rather than silently deduplicating).
+Job pagination refuses an inconsistent snapshot. Every page `total_count` must
+be a non-negative integer (`bool` is not accepted). A missing, mistyped, or
+negative total is `jobs_total_count_invalid`. A total that changes between
+pages, or a duplicate Job ID, is `jobs_snapshot_inconsistent`. A short page
+that does not reach the declared total is `jobs_page_incomplete`. The producer
+does not declare a complete Attempt Job set without that total.
 
 ## Export
 
@@ -184,10 +193,24 @@ secrets / dispatch inputs; absence of a receiver leaves `rpc_accepted=false`.
 Controlled live OTLP/gRPC receiver evidence (ACK + receiver-observed Span IDs,
 logs/metrics artifacts) lives under
 [cicd-telemetry-otlp-grpc-evidence](../verification/cicd-telemetry-otlp-grpc-evidence/README.md).
+The schema 7 real-run receiver ACK stays in
+[cicd-telemetry-real-run-receiver](../verification/cicd-telemetry-real-run-receiver/README.md).
+Schema 8 identity fields for that same Run are a file check in
+[cicd-telemetry-real-run-identity-v8](../verification/cicd-telemetry-real-run-identity-v8/README.md).
 
-When GitHub reports `total_count`, a short/empty page before that count is
-`jobs_page_incomplete`. Missing `gh` or API timeouts map to
-`github_cli_unavailable` / `github_api_timeout` (no retry engine).
+A complete Attempt fetch writes the raw Attempt payload and Job pages beside
+the candidate (`*.api-pages.json`) and records only page digests, page count,
+and `completeness` on the candidate. `github_authenticated` stays false.
+Missing `gh` or API timeouts map to `github_cli_unavailable` /
+`github_api_timeout` (no retry engine).
+
+OTLP `InstrumentationScope` carries the producer name only. `schema_version`
+stays on the candidate report and is not written as `scope.version`.
+`producer.semconv_source` records the Knowledge #80 pin (repository
+`https://github.com/open-telemetry/semantic-conventions`, version `1.45.0`,
+commit `fb30ca17193b551473b1f43c315482918ab6987c`) with `identity_verified`
+false until the registry digest for that same commit is supplied. Changing the
+declared version does not make the citation verified.
 
 Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).

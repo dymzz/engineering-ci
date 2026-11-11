@@ -51,3 +51,7 @@ default branch, and it is not a Weaver match.
 | `receiver-observed.json` | Receiver Span/Log identities, expected Jobs, transport sets |
 | `cli.stdout.json` / `cli.stderr.txt` / `producer.exit` | CLI result before receipt confirmation |
 | `SHA256SUMS` | Digests |
+
+Schema 8 identity fields for this same Run are a separate file check under
+[cicd-telemetry-real-run-identity-v8](../cicd-telemetry-real-run-identity-v8/README.md).
+Those files are not a second receiver ACK. This directory stays the network receipt.

@@ -1,5 +1,6 @@
 """GitHub Run/Job facts → CI/CD candidate telemetry records (ECI #75)."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -874,6 +875,92 @@ def test_fetch_rejects_short_page_before_total_count():
         assert error.code == "jobs_page_incomplete"
 
 
+def test_fetch_rejects_missing_or_illegal_total_count():
+    def api_get(payload):
+        def _get(_path):
+            return {"jobs": [{"id": 1, "status": "completed"}], **payload}
+
+        return _get
+
+    for payload in (
+        {},
+        {"total_count": "1"},
+        {"total_count": True},
+        {"total_count": -1},
+        {"total_count": 1.0},
+    ):
+        try:
+            cicd_telemetry.fetch_attempt_jobs(
+                api_get(payload), "repos/x/y/actions/runs/1/attempts/1/jobs"
+            )
+            raise AssertionError(payload)
+        except cicd_telemetry.TelemetryError as error:
+            assert error.code == "jobs_total_count_invalid"
+
+
+def test_fetch_records_complete_page_digests():
+    payload = {"total_count": 1, "jobs": [{"id": 7, "status": "completed"}]}
+
+    def api_get(_path):
+        return payload
+
+    jobs, snapshot = cicd_telemetry.fetch_attempt_jobs(
+        api_get, "repos/x/y/actions/runs/1/attempts/1/jobs"
+    )
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    assert jobs[0]["id"] == 7
+    assert snapshot["total_count"] == 1
+    assert snapshot["completeness"] == "complete"
+    assert snapshot["github_authenticated"] is False
+    assert (
+        snapshot["pages_sha256"][0]["sha256"] == hashlib.sha256(canonical).hexdigest()
+    )
+    assert snapshot["raw_pages"] == [payload]
+
+
+def test_cli_api_fetch_writes_page_witness(tmp_path, monkeypatch):
+    run, job = _api_run_job_fixture()
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    pages = {"total_count": 1, "jobs": [job]}
+
+    def api_get(path):
+        if "/jobs" in path:
+            return pages
+        if "/attempts/" in path:
+            return run
+        raise AssertionError(path)
+
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", api_get)
+    output = tmp_path / "candidate.json"
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            "42769746408",
+            "--attempt",
+            "1",
+            "--output",
+            str(output),
+        ]
+    )
+    assert code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    witness = report["source_witness"]
+    assert witness["kind"] == "github_attempt_and_job_pages"
+    assert witness["completeness"] == "complete"
+    assert witness["github_authenticated"] is False
+    assert witness["total_count"] == 1
+    raw_path = tmp_path / "candidate.json.api-pages.json"
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert raw["attempt"]["id"] == run["id"]
+    assert raw["job_pages"][0]["jobs"][0]["id"] == job["id"]
+    body = raw_path.read_bytes()
+    assert witness["sha256"] == hashlib.sha256(body).hexdigest()
+    assert report["coverage"]["api_jobs_snapshot"]["github_authenticated"] is False
+    assert "raw_pages" not in report["coverage"]["api_jobs_snapshot"]
+
+
 def test_gh_api_get_maps_timeout_and_missing_cli():
     def timeout_runner(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=60)
@@ -912,6 +999,9 @@ def test_otlp_json_export_and_flush_failure(tmp_path):
     assert report["claims"]["otlp_json_prepared"] is True
     assert report["claims"]["otlp_json_exported"] is False
     assert report["otlp_json"]["resourceSpans"]
+    scope = report["otlp_json"]["resourceSpans"][0]["scopeSpans"][0]["scope"]
+    assert scope == {"name": "eci_core.cicd_telemetry"}
+    assert report["schema_version"] == cicd_telemetry.SCHEMA_VERSION
     span = report["otlp_json"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     assert span["kind"] == cicd_telemetry.SPAN_KIND_SERVER
     assert "attributes" in span
@@ -930,6 +1020,9 @@ def test_otlp_json_export_and_flush_failure(tmp_path):
     }
     assert resource_attrs["cicd.pipeline.run.id"] == "42627302972/1"
     wire_span = body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    proto_scope = decoded.resource_spans[0].scope_spans[0].scope
+    assert proto_scope.name == "eci_core.cicd_telemetry"
+    assert proto_scope.version == ""
     proto_span = decoded.resource_spans[0].scope_spans[0].spans[0]
     assert proto_span.trace_id == bytes.fromhex(wire_span["traceId"])
     assert proto_span.span_id == bytes.fromhex(wire_span["spanId"])
@@ -1431,6 +1524,16 @@ def test_executing_histogram_omits_run_id_unless_opt_in():
     assert "github.actions.run_attempt" not in resource_keys
     assert "vcs.ref.head.revision" not in resource_keys
     decoded = cicd_telemetry.decode_otlp_metrics_request(report["otlp_metrics_json"])
+    assert report["otlp_metrics_json"]["resourceMetrics"][0]["scopeMetrics"][0][
+        "scope"
+    ] == {"name": "eci_core.cicd_telemetry"}
+    assert decoded.resource_metrics[0].scope_metrics[0].scope.version == ""
+    logs = report["otlp_logs_json"]
+    assert logs["resourceLogs"][0]["scopeLogs"][0]["scope"] == {
+        "name": "eci_core.cicd_telemetry"
+    }
+    decoded_logs = cicd_telemetry.decode_otlp_logs_request(logs)
+    assert decoded_logs.resource_logs[0].scope_logs[0].scope.version == ""
     histogram = decoded.resource_metrics[0].scope_metrics[0].metrics[0].histogram
     assert histogram.aggregation_temporality == 1
     assert histogram.data_points[0].count == 1
@@ -1753,11 +1856,24 @@ def test_expected_trace_is_rebuilt_from_the_run_attempt_job_witness():
         assert span["span_id"] == task_span_id
         assert span["trace_id"] == trace_id
         assert span["parent_span_id"] == pipeline_span_id
-    listed = {
-        item["job_id"]: item["expected_task_span_id"]
-        for item in report["coverage"]["expected_completed_jobs"]
+    witness_urls = {
+        job_id: f"https://example.test/job/{index}"
+        for index, job_id in enumerate(job_ids)
     }
-    assert listed[job_ids[0]] == tasks[0]["span_id"]
+    assert len(report["coverage"]["expected_completed_jobs"]) == 3
+    for row in report["coverage"]["expected_completed_jobs"]:
+        assert row["emitted"] is True
+        assert row["omitted"] is False
+        assert row["omit_reason"] is None
+        assert row["job_url"] == witness_urls[row["job_id"]]
+        span = next(
+            item for item in tasks if item["span_id"] == row["expected_task_span_id"]
+        )
+        assert span["attributes"][cicd_telemetry.ATTR_TASK_RUN_ID] == row["job_id"]
+        assert (
+            span["attributes"][cicd_telemetry.ATTR_TASK_RUN_URL]
+            == (witness_urls[row["job_id"]])
+        )
     matched = cicd_telemetry.reconcile_expected_trace(
         run_id="42821429094",
         attempt=1,
@@ -1766,6 +1882,9 @@ def test_expected_trace_is_rebuilt_from_the_run_attempt_job_witness():
     )
     assert matched["ok"] is True
     assert matched["trusted"] is False
+    assert matched["verification_scope"] == "task_trace_identity"
+    assert matched["source_completeness_verified"] is False
+    assert matched["job_attributes_verified"] is False
 
 
 def test_expected_trace_reconciliation_rejects_capture_substitutes():
@@ -1815,3 +1934,288 @@ def test_expected_trace_reconciliation_rejects_capture_substitutes():
     assert wrong_attempt["ok"] is False
     assert wrong_attempt["expected_trace_id"] != original[0]["trace_id"]
     assert wrong_attempt["trace_mismatch"]
+    assert wrong_attempt["source_completeness_verified"] is False
+
+
+def test_reconcile_rejects_duplicate_and_illegal_job_ids():
+    report, job_ids = _three_job_witness()
+    tasks = []
+    for span in report["spans"]:
+        if span["kind"] != cicd_telemetry.SPAN_KIND_INTERNAL:
+            continue
+        copied = dict(span)
+        copied["attributes"] = dict(span.get("attributes") or {})
+        tasks.append(copied)
+    duplicated = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=[*job_ids, job_ids[0]],
+        observed_spans=tasks,
+    )
+    assert duplicated["ok"] is False
+    assert job_ids[0] in duplicated["duplicate_expected_job_ids"]
+    same_number = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=[int(job_ids[0]), job_ids[0]],
+        observed_spans=tasks[:1],
+    )
+    assert same_number["ok"] is False
+    assert same_number["duplicate_expected_job_ids"] == [job_ids[0]]
+    canonical = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=[int(job_ids[0])],
+        observed_spans=tasks[:1],
+    )
+    text_form = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=[job_ids[0]],
+        observed_spans=tasks[:1],
+    )
+    assert canonical["ok"] is True
+    assert canonical["expected_trace_id"] == text_form["expected_trace_id"]
+    for illegal in (None, "", "abc", "0129", 0, -3):
+        refused = cicd_telemetry.reconcile_expected_trace(
+            run_id="42821429094",
+            attempt=1,
+            job_ids=[illegal],
+            observed_spans=[],
+        )
+        assert refused["ok"] is False
+        assert refused["invalid_expected_job_ids"]
+        assert refused["source_completeness_verified"] is False
+
+
+def test_missing_job_url_is_an_omission_not_full_coverage():
+    _report, job_ids = _three_job_witness()
+    jobs = []
+    for index, job_id in enumerate(job_ids):
+        jobs.append(
+            complete_facts(
+                run_id="42821429094",
+                run_attempt=1,
+                job_id=job_id,
+                job_name=f"job-{index}",
+                job_url=None if index == 1 else f"https://example.test/job/{index}",
+            )
+        )
+    run = complete_facts(
+        run_id="42821429094",
+        run_attempt=1,
+        run_completed_at_ns=None,
+        run_status="completed",
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+    )
+    produced = cicd_telemetry.produce(
+        run,
+        source="github_api",
+        task_facts=jobs,
+        completed_jobs_total=3,
+        job_selection="all_completed",
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=cicd_telemetry.parse_time_ns("2026-11-10T13:08:30Z"),
+    )
+    omitted = [
+        row for row in produced["coverage"]["expected_completed_jobs"] if row["omitted"]
+    ]
+    emitted = [
+        row for row in produced["coverage"]["expected_completed_jobs"] if row["emitted"]
+    ]
+    assert len(omitted) == 1
+    assert omitted[0]["job_id"] == job_ids[1]
+    assert omitted[0]["omit_reason"] == "missing_task_required_identity"
+    assert len(emitted) == 2
+    assert produced["coverage"]["task_spans_emitted"] == 2
+    assert len(produced["coverage"]["tasks_omitted"]) == 1
+    assert produced["coverage"]["attempt_coverage"] == "complete"
+
+
+def test_producer_does_not_hide_a_duplicate_job_witness():
+    report, job_ids = _three_job_witness()
+    duplicated = report["coverage"]["witness_anomalies"]
+    assert duplicated == []
+    jobs = []
+    for index, job_id in enumerate(job_ids):
+        jobs.append(
+            complete_facts(
+                run_id="42821429094",
+                run_attempt=1,
+                job_id=job_id,
+                job_name=f"job-{index}",
+                job_url=f"https://example.test/job/{index}",
+            )
+        )
+    jobs.append(jobs[0])
+    run = complete_facts(
+        run_id="42821429094",
+        run_attempt=1,
+        run_completed_at_ns=None,
+        run_status="completed",
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+    )
+    produced = cicd_telemetry.produce(
+        run,
+        source="github_api",
+        task_facts=jobs,
+        completed_jobs_total=4,
+        job_selection="all_completed",
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=cicd_telemetry.parse_time_ns("2026-11-10T13:08:30Z"),
+    )
+    assert produced["coverage"]["attempt_coverage"] == "incomplete"
+    assert produced["coverage"]["witness_anomalies"][0]["reason"] == "duplicate_job_id"
+    assert produced["coverage"]["task_spans_emitted"] == 3
+    assert produced["coverage"]["job_mapping"]["identity_ok"] is True
+    assert produced["coverage"]["job_mapping"]["job_url_verified"] is True
+
+
+def test_semconv_source_is_the_knowledge_80_pin_and_unverified():
+    report = cicd_telemetry.produce(complete_facts())
+    source = report["producer"]["semconv_source"]
+    assert source["repository"] == (
+        "https://github.com/open-telemetry/semantic-conventions"
+    )
+    assert source["version"] == "1.45.0"
+    assert source["full_commit"] == "fb30ca17193b551473b1f43c315482918ab6987c"
+    assert source["identity_verified"] is False
+    assert "span.cicd.pipeline.run.server" in source["group_ids"]
+    assert cicd_telemetry.semconv_citation_verified(source) is False
+    drifted = {**source, "version": "1.46.0", "identity_verified": True}
+    assert cicd_telemetry.semconv_citation_verified(drifted) is False
+
+
+def test_post_run_workflow_syncs_with_the_lockfile():
+    workflow = Path(".github/workflows/cicd-telemetry-post-run.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "uv sync --locked" in workflow
+    assert "uv run --locked python -m engineering_ci.cicd_telemetry" in workflow
+    assert "uv sync\n" not in workflow
+
+
+_ARCHIVED_ATTEMPT_JOBS = (
+    ("sync-tool-tests", "129847643854", 1794315965000000000, 1794316079000000000),
+    ("version-metadata", "129847644372", 1794315966000000000, 1794316053000000000),
+    (
+        "python-ci / checks",
+        "129847644459",
+        1794315965000000000,
+        1794316058000000000,
+    ),
+)
+_ARCHIVED_V8 = Path("docs/verification/cicd-telemetry-real-run-identity-v8")
+_ARCHIVED_V8_NOTE = (
+    "Regenerated from the archived Run 42821429094 Attempt 1 witness "
+    "(head_sha 7ea85c24a62e65a9384a0abe9eb541ca54064cbc). "
+    "File identity check only. Not a receiver ACK. The network receipt stays in "
+    "docs/verification/cicd-telemetry-real-run-receiver."
+)
+
+
+def archived_run_identity_report():
+    base = {
+        "workflow_name": "Engineering CI",
+        "run_id": "42821429094",
+        "run_attempt": 1,
+        "run_conclusion": "success",
+        "run_status": "completed",
+        "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+        "repository": "dymzz/engineering-ci",
+        "server_url": "https://github.com",
+        "run_started_at_ns": 1794315962000000000,
+        "run_updated_at_ns": 1794316080000000000,
+        "run_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094",
+    }
+    facts = cicd_telemetry.facts_from_mapping(base)
+    task_facts = []
+    for index, (name, job_id, start_ns, end_ns) in enumerate(_ARCHIVED_ATTEMPT_JOBS):
+        task_facts.append(
+            (
+                index,
+                cicd_telemetry.facts_from_mapping(
+                    {
+                        **base,
+                        "job_id": job_id,
+                        "job_name": name,
+                        "job_url": (
+                            "https://github.com/dymzz/engineering-ci/actions/runs/"
+                            f"42821429094/job/{job_id}"
+                        ),
+                        "job_conclusion": "success",
+                        "job_started_at_ns": start_ns,
+                        "job_completed_at_ns": end_ns,
+                    }
+                ),
+            )
+        )
+    report = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        completed_jobs_total=3,
+        job_selection="all_completed",
+        task_facts=task_facts,
+        jobs_observed_total=3,
+        noncompleted_jobs_total=0,
+        terminal_observed_at_ns=1794402286346617088,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+    )
+    report["evidence_role"] = "file_identity_check"
+    report["evidence_note"] = _ARCHIVED_V8_NOTE
+    return report
+
+
+def write_archived_v8_identity(directory):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    report = archived_run_identity_report()
+    cicd_telemetry.attach_signal_candidates(report)
+    cicd_telemetry.attach_otlp_json(report)
+    cicd_telemetry.write_artifact(report, directory / "candidate.json")
+    for name, payload in (
+        ("otel-traces.json", report["otlp_json"]),
+        ("otel-logs.json", report["otlp_logs_json"]),
+    ):
+        body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+        (directory / name).write_bytes(body)
+    readme = (
+        "# Run 42821429094 Attempt 1 — schema 8 file identity check\n\n"
+        "This directory is a deterministic candidate and OTLP/JSON encoding of the\n"
+        "same fixed Run witness already archived under\n"
+        "`docs/verification/cicd-telemetry-real-run-receiver/`. It records\n"
+        "`schema_version` 8, `id_scheme`, `expected_trace`, and `semconv_source`.\n"
+        "Instrumentation scope has a name and no version.\n\n"
+        "It is not a new network receipt. `rpc_accepted` is false. The schema 7\n"
+        "receiver ACK in the other directory stays the gRPC evidence.\n\n"
+        f"{_ARCHIVED_V8_NOTE}\n"
+    )
+    (directory / "README.md").write_bytes(readme.encode())
+    return report
+
+
+def test_v8_identity_file_matches_archived_witness(tmp_path):
+    write_archived_v8_identity(tmp_path)
+    for name in ("candidate.json", "otel-traces.json", "otel-logs.json", "README.md"):
+        assert (tmp_path / name).read_bytes() == (_ARCHIVED_V8 / name).read_bytes()
+    saved = json.loads((_ARCHIVED_V8 / "candidate.json").read_text(encoding="utf-8"))
+    assert saved["schema_version"] == 8
+    assert saved["evidence_role"] == "file_identity_check"
+    assert saved["producer"]["id_scheme"] == "github-actions-attempt-sha256-v1"
+    assert saved["producer"]["semconv_source"]["identity_verified"] is False
+    assert saved["coverage"]["expected_trace"]["expected_trace_id"] == (
+        "21ee8206fe06a4879580f60591a3014f"
+    )
+    assert saved["claims"]["rpc_accepted"] is False
+    traces = json.loads((_ARCHIVED_V8 / "otel-traces.json").read_text(encoding="utf-8"))
+    scope = traces["resourceSpans"][0]["scopeSpans"][0]["scope"]
+    assert scope == {"name": "eci_core.cicd_telemetry"}
+    logs = json.loads((_ARCHIVED_V8 / "otel-logs.json").read_text(encoding="utf-8"))
+    assert logs["resourceLogs"][0]["scopeLogs"][0]["scope"] == scope
