@@ -769,11 +769,9 @@ def test_jobs_snapshot_consistency_and_coverage_denominator_matrix():
     )
     assert "source_index" in report["coverage"]["tasks_omitted"][0]
     assert "job_id" not in report["coverage"]["tasks_omitted"][0]
-    assert (
-        report["coverage"]["completed_jobs_total"]
-        == report["coverage"]["task_spans_emitted"]
-        + len(report["coverage"]["tasks_omitted"])
-    )
+    assert report["coverage"]["completed_jobs_total"] == report["coverage"][
+        "task_spans_emitted"
+    ] + len(report["coverage"]["tasks_omitted"])
     assert report["status"] == "partial"
     assert report["reason"] in {
         "missing_task_required_identity",

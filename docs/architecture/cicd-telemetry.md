@@ -64,11 +64,15 @@ on the Attempt (`job_selection=all_completed`) and records omitted Jobs under
 `coverage.tasks_omitted`. Completed Jobs are counted by `status == "completed"`
 without requiring an ID; a missing ID is an omission located by source index,
 never dropped from the denominator. Coverage also records
-`jobs_observed_total` and `noncompleted_jobs_total`. The invariant is
+`jobs_observed_total` and `noncompleted_jobs_total`. For
+`job_selection=all_completed` with a valid source snapshot, every completed Job
+has exactly one Task or omission:
 `completed_jobs_total == task_spans_emitted + len(tasks_omitted)`.
 `--job-id` remains a deliberate single-Job diagnostic slice
-(`job_selection=job_id`). When completed Jobs exceed emitted Task spans,
-status is `partial` (`partial_job_coverage`).
+(`job_selection=job_id`): unselected completed Jobs are a coverage gap signaled
+by `partial_job_coverage`, not fabricated `tasks_omitted` entries. When
+completed Jobs exceed emitted Task spans, status is `partial`
+(`partial_job_coverage`).
 
 Job pagination refuses an inconsistent snapshot: shifting page `total_count` or
 duplicate Job IDs across the Attempt raise `jobs_snapshot_inconsistent`
