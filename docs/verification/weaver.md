@@ -279,6 +279,26 @@ changed. In this Windows host, terminal-mode `dagger version` returned the
 version; `--version` is unsupported. Connection startup sometimes took over a
 minute, independently of the native Weaver execution time.
 
+## #52 real GitHub Attempt → Weaver Live integration
+
+[ECI #52](https://github.com/dymzz/engineering-ci/issues/52) owns the consumer-side cross-component Check/Report/Artifact smoke; #74 owns the Checker and #75 owns the Producer. This is a **bounded Task-only** integration slice usable on the existing main baseline, without waiting for #75 PR #81's post-run Pipeline Root. Its input is already committed evidence from real GitHub Run `42821429094` Attempt `1`, **not** a new live GitHub API fetch or a new OTLP network delivery.
+
+From the ECI checkout root on a branch containing this #52 integration:
+
+```powershell
+uv run --locked python -m pytest tests/test_real_attempt_weaver_e2e.py -q
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --destination .artifacts/real-attempt-weaver-source
+dagger api call weaver-report --source .artifacts/real-attempt-weaver-source --kind live
+dagger api call weaver-enforce --source .artifacts/real-attempt-weaver-source --kind live
+dagger api call weaver-artifacts --source .artifacts/real-attempt-weaver-source --kind live export --path .artifacts/real-attempt-weaver-evidence
+```
+
+The generated Directory is disposable and **must not** be committed. Do not run the preparation command twice against the same destination; remove or choose a new directory explicitly. The script checks the existing #75 `SHA256SUMS`, the independent pinned Run/Attempt/Job inventory under `tests/integration/real-attempt-42821429094.json`, actual OTLP Task IDs/URLs/counts, and the #74 Registry file manifest before copying the existing #74 fixture. It substitutes only the real Task capture, its three expected Task identities, and the Task-name CEL Matcher (`name.startsWith("task:")`). It does not copy an alternate SemConv Registry into the repository or rewrite the Producer/Weaver implementation.
+
+**Gate rule:** `weaver-report` may successfully return JSON even when `status=failed` or `gate_exit_code != 0`; only the strict `weaver-enforce` call (or an appropriately configured native `dagger check`) is a blocking execution. Inspect `report.json`, native `live_check.json`, stdout/stderr, `coverage`, source digest and original exit/gate exit separately. The expected set originates from pinned GitHub Job identity evidence rather than solely from matched OTLP Spans; the snapshot still lacks #63 authenticated provenance. Positive Weaver execution and a missing-Task/zero-matcher/native-finding negative **must be observed**, not inferred from passing Python preparation tests.
+
+**Remaining integration:** When #75 PR #81 provides a stable real post-run Producer/Receiver artifact, compare the same captured Trace/Span IDs to actual Weaver findings via this existing Check/Report path, then run #74's explicit `selection.post_completion_plan` / `execute-plan` for the eligible Pipeline Root. `observed_upper_bound` is **not** a proven exact `run_completed_at`; missing precision/Attempt/receiver evidence remains unverified. #63 still owns evidence trust; #61 owns Required/Release. Do not make the original Workflow depend on its own post-completion Terminal Check.
+
 ## Verification on 2026-11-10
 
 Dagger v1.0.0-beta.16 executed the fixed SemConv candidate and the pinned
