@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "authority": "Committed ECI #75 real GitHub API Attempt snapshot, not an authenticated #63 admission",
+  "upstream": {
+    "repository": "https://github.com/open-telemetry/semantic-conventions",
+    "version": "v1.45.0",
+    "commit": "fb30ca17193b551473b1f43c315482918ab6987c"
+  },
+  "run": {
+    "repository": "dymzz/engineering-ci",
+    "run_id": "42821429094",
+    "attempt": 1,
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc"
+  },
+  "jobs": [
+    {
+      "job_id": "129847643854",
+      "name": "task:sync-tool-tests",
+      "span_id": "7d2f4e7f18a603cd",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854"
+    },
+    {
+      "job_id": "129847644372",
+      "name": "task:version-metadata",
+      "span_id": "a7263c2e65a30498",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372"
+    },
+    {
+      "job_id": "129847644459",
+      "name": "task:python-ci / checks",
+      "span_id": "7d98cbfec3f44c1a",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459"
+    }
+  ],
+  "limits": {
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "weaver_pass": false,
+    "trusted": false,
+    "temporal_precision": "no_pipeline_root"
+  }
+}
