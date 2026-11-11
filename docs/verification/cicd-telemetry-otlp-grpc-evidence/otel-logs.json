@@ -1,0 +1,104 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "cicd.pipeline.name",
+            "value": {
+              "stringValue": "Engineering CI"
+            }
+          },
+          {
+            "key": "cicd.pipeline.run.id",
+            "value": {
+              "stringValue": "42627302972/1"
+            }
+          },
+          {
+            "key": "github.actions.run_attempt",
+            "value": {
+              "intValue": "1"
+            }
+          },
+          {
+            "key": "github.repository",
+            "value": {
+              "stringValue": "dymzz/engineering-ci"
+            }
+          },
+          {
+            "key": "vcs.ref.head.revision",
+            "value": {
+              "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "attributes": [
+                {
+                  "key": "cicd.pipeline.task.name",
+                  "value": {
+                    "stringValue": "python-ci / checks"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.id",
+                  "value": {
+                    "stringValue": "129194268575"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.result",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.task.run.url.full",
+                  "value": {
+                    "stringValue": "https://github.com/dymzz/engineering-ci/actions/runs/42627302972/job/129194268575"
+                  }
+                },
+                {
+                  "key": "cicd.pipeline.run.id",
+                  "value": {
+                    "stringValue": "42627302972/1"
+                  }
+                },
+                {
+                  "key": "github.actions.run_attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "eci.log.source",
+                  "value": {
+                    "stringValue": "github_job_terminal"
+                  }
+                }
+              ],
+              "body": {
+                "stringValue": "GitHub Job terminal python-ci / checks conclusion=success"
+              },
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "spanId": "f39fadb5c353c887",
+              "timeUnixNano": "1700000090000000000",
+              "traceId": "7a39047f8e25a08789d7b936cd9517f8"
+            }
+          ],
+          "scope": {
+            "name": "eci_core.cicd_telemetry",
+            "version": "5"
+          }
+        }
+      ]
+    }
+  ]
+}

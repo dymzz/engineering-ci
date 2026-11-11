@@ -1,0 +1,219 @@
+{
+  "claims": {
+    "candidate_record_only": false,
+    "github_api_fetched": false,
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "otlp_json_exported": true,
+    "otlp_json_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-traces.json",
+    "otlp_json_prepared": true,
+    "otlp_json_sha256": "0b9a8cfc5ae6c8b925a4373039e6452b837bbf189913fa11a9c06cd852336586",
+    "otlp_logs_exported": true,
+    "otlp_logs_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-logs.json",
+    "otlp_logs_prepared": true,
+    "otlp_logs_sha256": "a223f7b395e8597fcd2988bdec2e6b929b919ec9d1881f3327db264ea23cf85b",
+    "otlp_metrics_exported": true,
+    "otlp_metrics_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-metrics.json",
+    "otlp_metrics_prepared": true,
+    "otlp_metrics_sha256": "663b917224f4abca22e745ec0300a6dc6d2295238e7615c25481ed18e5ab25ea",
+    "otlp_rpc_endpoint": "127.0.0.1:5518",
+    "otlp_rpc_rejected_spans": 0,
+    "receiver_observed": true,
+    "receiver_observed_span_ids": [
+      "99e59e4635e01286",
+      "f39fadb5c353c887"
+    ],
+    "rpc_accepted": true,
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "coverage": {
+    "completed_jobs_total": null,
+    "expected_completed_jobs": [
+      {
+        "emitted": true,
+        "expected_task_span_id": "f39fadb5c353c887",
+        "job_id": "129194268575",
+        "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42627302972/job/129194268575",
+        "omit_reason": null,
+        "omitted": false,
+        "source_index": null
+      }
+    ],
+    "job_selection": null,
+    "jobs_observed_total": null,
+    "noncompleted_jobs_total": null,
+    "pipeline_terminal_covered": true,
+    "task_coverage": "partial",
+    "task_spans_emitted": 1,
+    "tasks_omitted": []
+  },
+  "evidence_class": "candidate_record",
+  "facts": {
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "job_completed_at_ns": 1700000090000000000,
+    "job_conclusion": "success",
+    "job_id": "129194268575",
+    "job_name": "python-ci / checks",
+    "job_started_at_ns": 1700000010000000000,
+    "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42627302972/job/129194268575",
+    "repository": "dymzz/engineering-ci",
+    "run_attempt": 1,
+    "run_completed_at_ns": 1700000120000000000,
+    "run_conclusion": "success",
+    "run_id": "42627302972",
+    "run_started_at_ns": 1700000000000000000,
+    "run_status": "completed",
+    "run_updated_at_ns": null,
+    "run_url": null,
+    "server_url": "https://github.com",
+    "workflow_name": "Engineering CI"
+  },
+  "kind": "engineering-ci-cicd-telemetry",
+  "otlp_json_exported": true,
+  "otlp_json_prepared": true,
+  "otlp_logs_exported": true,
+  "otlp_logs_prepared": true,
+  "otlp_metrics_exported": true,
+  "otlp_metrics_prepared": true,
+  "producer": {
+    "decision": "github_actions_env_or_api_adapter",
+    "name": "eci_core.cicd_telemetry",
+    "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
+    "semconv_note": "Attribute names follow public CI/CD SemConv Pipeline/Task Run; registry version pin is tracked with Knowledge #80/#81"
+  },
+  "reason": null,
+  "resource": {
+    "cicd.pipeline.name": "Engineering CI",
+    "cicd.pipeline.run.id": "42627302972/1",
+    "github.actions.run_attempt": 1,
+    "github.repository": "dymzz/engineering-ci",
+    "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "schema_version": 5,
+  "signals": {
+    "logs": [
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "42627302972/1",
+          "cicd.pipeline.task.name": "python-ci / checks",
+          "cicd.pipeline.task.run.id": "129194268575",
+          "cicd.pipeline.task.run.result": "success",
+          "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42627302972/job/129194268575",
+          "eci.log.source": "github_job_terminal",
+          "github.actions.run_attempt": 1
+        },
+        "body": "GitHub Job terminal python-ci / checks conclusion=success",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "span_id": "f39fadb5c353c887",
+        "time_unix_nano": 1700000090000000000,
+        "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
+      }
+    ],
+    "logs_source": "github_job_terminal",
+    "metrics": [
+      {
+        "description": "Exact Pipeline Run duration from proven bounds",
+        "gauge": {
+          "as_double": 120.0,
+          "attributes": {
+            "cicd.pipeline.name": "Engineering CI",
+            "cicd.pipeline.result": "success",
+            "cicd.pipeline.run.id": "42627302972/1",
+            "cicd.pipeline.run.state": "finalizing"
+          },
+          "time_unix_nano": 1700000120000000000
+        },
+        "name": "cicd.pipeline.run.duration",
+        "unit": "s"
+      }
+    ],
+    "metrics_not_observable": [
+      {
+        "name": "cicd.pipeline.run.active",
+        "reason": "state_intervals_unproven",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.pending_duration",
+        "reason": "pending_interval_unproven",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.finalizing_duration",
+        "reason": "finalizing_interval_unproven",
+        "status": "not_observable"
+      }
+    ]
+  },
+  "source": "mapping",
+  "spans": [
+    {
+      "attributes": {
+        "cicd.pipeline.name": "Engineering CI",
+        "cicd.pipeline.result": "success",
+        "cicd.pipeline.run.id": "42627302972/1",
+        "eci.cicd.end_time_quality": "exact",
+        "eci.cicd.exact_run_duration": true,
+        "github.actions.run_attempt": 1,
+        "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "end_time_unix_nano": 1700000120000000000,
+      "kind": 2,
+      "name": "RUN Engineering CI",
+      "parent_span_id": null,
+      "span_id": "99e59e4635e01286",
+      "start_time_unix_nano": 1700000000000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
+    },
+    {
+      "attributes": {
+        "cicd.pipeline.run.id": "42627302972/1",
+        "cicd.pipeline.task.name": "python-ci / checks",
+        "cicd.pipeline.task.run.id": "129194268575",
+        "cicd.pipeline.task.run.result": "success",
+        "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42627302972/job/129194268575",
+        "github.actions.run_attempt": 1
+      },
+      "end_time_unix_nano": 1700000090000000000,
+      "kind": 1,
+      "name": "task:python-ci / checks",
+      "parent_span_id": "99e59e4635e01286",
+      "span_id": "f39fadb5c353c887",
+      "start_time_unix_nano": 1700000010000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
+    }
+  ],
+  "status": "produced",
+  "terminal": {
+    "conclusion": "success",
+    "end_time_quality": "exact",
+    "end_time_source": "run_completed_at",
+    "exact_run_duration": true,
+    "observed_at_ns": null,
+    "run_completed_at_ns": 1700000120000000000,
+    "status": "completed"
+  },
+  "terminal_provenance": {
+    "attempt": 1,
+    "end_time_quality": "exact",
+    "end_time_source": "run_completed_at",
+    "exact_run_duration": true,
+    "otlp_sha256": "0b9a8cfc5ae6c8b925a4373039e6452b837bbf189913fa11a9c06cd852336586",
+    "repository": "dymzz/engineering-ci",
+    "root_span_id": "99e59e4635e01286",
+    "root_trace_id": "7a39047f8e25a08789d7b936cd9517f8",
+    "run_id": "42627302972",
+    "terminal_conclusion": "success",
+    "terminal_observed_at_ns": null,
+    "terminal_source": "github_attempt_api",
+    "terminal_status": "completed"
+  }
+}

@@ -413,6 +413,10 @@ def produce(
             "otlp_delivered": False,
             "otlp_json_prepared": False,
             "otlp_json_exported": False,
+            "otlp_logs_prepared": False,
+            "otlp_logs_exported": False,
+            "otlp_metrics_prepared": False,
+            "otlp_metrics_exported": False,
             "rpc_accepted": False,
             "receiver_observed": False,
             "weaver_pass": False,
@@ -455,9 +459,17 @@ def produce(
             "expected_completed_jobs": [],
         },
         "terminal_provenance": None,
+        "signals": {
+            "logs": [],
+            "metrics": [],
+            "metrics_not_observable": [],
+            "logs_source": None,
+        },
         "resource": {},
         "spans": [],
         "otlp_json": None,
+        "otlp_logs_json": None,
+        "otlp_metrics_json": None,
     }
     # Authoritative terminal status is native Attempt status on facts, not CLI hints.
     report["terminal"]["status"] = facts.run_status or terminal_status
@@ -756,12 +768,17 @@ def produce(
 def write_artifact(report, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Do not embed the nested OTLP document twice in the candidate artifact.
-    payload = {key: value for key, value in report.items() if key != "otlp_json"}
+    # Do not embed nested OTLP documents twice in the candidate artifact.
+    skip = {"otlp_json", "otlp_logs_json", "otlp_metrics_json"}
+    payload = {key: value for key, value in report.items() if key not in skip}
     # Authoritative export claim lives in claims.*; mirror consistently.
     claims = report.get("claims") or {}
     payload["otlp_json_prepared"] = bool(claims.get("otlp_json_prepared"))
     payload["otlp_json_exported"] = bool(claims.get("otlp_json_exported"))
+    payload["otlp_logs_prepared"] = bool(claims.get("otlp_logs_prepared"))
+    payload["otlp_logs_exported"] = bool(claims.get("otlp_logs_exported"))
+    payload["otlp_metrics_prepared"] = bool(claims.get("otlp_metrics_prepared"))
+    payload["otlp_metrics_exported"] = bool(claims.get("otlp_metrics_exported"))
     # Binary write keeps LF so recorded digests match file bytes on Windows.
     path.write_bytes(
         (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -942,6 +959,288 @@ def export_otlp_grpc(
     report["claims"]["otlp_delivered"] = False
     report["claims"]["receiver_observed"] = False
     return response
+
+
+def mark_receiver_observed(report, *, observed_span_ids):
+    """Record controlled-receiver observation after Export ACK.
+
+    Caller must supply the Span IDs actually seen by the receiver. Does not
+    set ``weaver_pass`` or ``trusted``.
+    """
+    expected = {
+        span["span_id"] for span in report.get("spans") or [] if span.get("span_id")
+    }
+    observed = {str(item) for item in observed_span_ids}
+    report["claims"]["receiver_observed_span_ids"] = sorted(observed)
+    if expected and expected <= observed:
+        report["claims"]["receiver_observed"] = True
+        # Controlled local observation of Export payload — still not Weaver/trusted.
+        report["claims"]["otlp_delivered"] = True
+        report["claims"]["candidate_record_only"] = False
+    else:
+        report["claims"]["receiver_observed"] = False
+        report["claims"]["otlp_delivered"] = False
+        raise TelemetryError("otlp_receiver_incomplete")
+    return report
+
+
+def _severity_for_result(result):
+    if result in {"failure", "error", "timeout"}:
+        return 17, "ERROR"
+    if result in {"cancellation", "skip"}:
+        return 13, "WARN"
+    if result == "success":
+        return 9, "INFO"
+    return 0, "UNSPECIFIED"
+
+
+def build_job_terminal_log_records(report):
+    """Build LogRecords from emitted Task Spans (GitHub Job terminal facts).
+
+    Source is the Attempt Job API terminal already mapped into Task Spans — not
+    a fabricated stdout stream. Full Job log archives remain on GitHub Actions.
+    """
+    records = []
+    for span in report.get("spans") or []:
+        if span.get("kind") != SPAN_KIND_INTERNAL:
+            continue
+        attrs = span.get("attributes") or {}
+        result = attrs.get(ATTR_TASK_RUN_RESULT)
+        severity_number, severity_text = _severity_for_result(result)
+        body = f"GitHub Job terminal {attrs.get(ATTR_TASK_NAME)} conclusion={result}"
+        records.append(
+            {
+                "time_unix_nano": span.get("end_time_unix_nano"),
+                "severity_number": severity_number,
+                "severity_text": severity_text,
+                "body": body,
+                "attributes": {
+                    ATTR_TASK_NAME: attrs.get(ATTR_TASK_NAME),
+                    ATTR_TASK_RUN_ID: attrs.get(ATTR_TASK_RUN_ID),
+                    ATTR_TASK_RUN_RESULT: result,
+                    ATTR_TASK_RUN_URL: attrs.get(ATTR_TASK_RUN_URL),
+                    ATTR_PIPELINE_RUN_ID: attrs.get(ATTR_PIPELINE_RUN_ID),
+                    ATTR_GITHUB_RUN_ATTEMPT: attrs.get(ATTR_GITHUB_RUN_ATTEMPT),
+                    "eci.log.source": "github_job_terminal",
+                },
+                "trace_id": span.get("trace_id"),
+                "span_id": span.get("span_id"),
+            }
+        )
+    return records
+
+
+def build_metrics_plan(report):
+    """Decide which CI/CD Metrics are observable from proven facts only."""
+    not_observable = []
+    metrics = []
+    terminal = report.get("terminal") or {}
+    exact = bool(terminal.get("exact_run_duration"))
+    pipeline = next(
+        (
+            span
+            for span in report.get("spans") or []
+            if span.get("kind") == SPAN_KIND_SERVER
+        ),
+        None,
+    )
+    if exact and pipeline is not None:
+        start = pipeline.get("start_time_unix_nano")
+        end = pipeline.get("end_time_unix_nano")
+        if type(start) is int and type(end) is int and end >= start:
+            duration_s = (end - start) / 1_000_000_000
+            metrics.append(
+                {
+                    "name": "cicd.pipeline.run.duration",
+                    "unit": "s",
+                    "description": "Exact Pipeline Run duration from proven bounds",
+                    "gauge": {
+                        "as_double": duration_s,
+                        "time_unix_nano": end,
+                        "attributes": {
+                            ATTR_PIPELINE_NAME: (report.get("resource") or {}).get(
+                                ATTR_PIPELINE_NAME
+                            ),
+                            ATTR_PIPELINE_RUN_ID: (report.get("resource") or {}).get(
+                                ATTR_PIPELINE_RUN_ID
+                            ),
+                            ATTR_PIPELINE_RESULT: (
+                                pipeline.get("attributes") or {}
+                            ).get(ATTR_PIPELINE_RESULT),
+                            "cicd.pipeline.run.state": "finalizing",
+                        },
+                    },
+                }
+            )
+        else:
+            not_observable.append(
+                {
+                    "name": "cicd.pipeline.run.duration",
+                    "status": "not_observable",
+                    "reason": "invalid_exact_bounds",
+                }
+            )
+    else:
+        not_observable.append(
+            {
+                "name": "cicd.pipeline.run.duration",
+                "status": "not_observable",
+                "reason": "exact_run_duration_unproven",
+            }
+        )
+    for name, reason in (
+        ("cicd.pipeline.run.active", "state_intervals_unproven"),
+        ("cicd.pipeline.run.pending_duration", "pending_interval_unproven"),
+        ("cicd.pipeline.run.finalizing_duration", "finalizing_interval_unproven"),
+    ):
+        not_observable.append(
+            {"name": name, "status": "not_observable", "reason": reason}
+        )
+    return metrics, not_observable
+
+
+def attach_signal_candidates(report):
+    """Attach O2/O3 candidate LogRecords and Metrics decisions to the report."""
+    logs = build_job_terminal_log_records(report)
+    metrics, not_observable = build_metrics_plan(report)
+    report["signals"] = {
+        "logs": logs,
+        "metrics": metrics,
+        "metrics_not_observable": not_observable,
+        "logs_source": "github_job_terminal" if logs else None,
+    }
+    report["otlp_logs_json"] = to_otlp_logs_json(report) if logs else None
+    report["otlp_metrics_json"] = to_otlp_metrics_json(report) if metrics else None
+    report["claims"]["otlp_logs_prepared"] = bool(report["otlp_logs_json"])
+    report["claims"]["otlp_metrics_prepared"] = bool(report["otlp_metrics_json"])
+    report["claims"]["otlp_logs_exported"] = False
+    report["claims"]["otlp_metrics_exported"] = False
+    return report
+
+
+def to_otlp_logs_json(report):
+    """Encode Job-terminal LogRecords as ExportLogsServiceRequest JSON."""
+    resource_attrs = [
+        _otlp_attr(key, value) for key, value in report.get("resource", {}).items()
+    ]
+    log_records = []
+    for item in (report.get("signals") or {}).get("logs") or []:
+        record = {
+            "timeUnixNano": str(item["time_unix_nano"]),
+            "severityNumber": item["severity_number"],
+            "severityText": item["severity_text"],
+            "body": {"stringValue": item["body"]},
+            "attributes": [
+                _otlp_attr(key, value)
+                for key, value in item["attributes"].items()
+                if value is not None
+            ],
+        }
+        if item.get("trace_id"):
+            record["traceId"] = item["trace_id"]
+        if item.get("span_id"):
+            record["spanId"] = item["span_id"]
+        log_records.append(record)
+    return {
+        "resourceLogs": [
+            {
+                "resource": {"attributes": resource_attrs},
+                "scopeLogs": [
+                    {
+                        "scope": {
+                            "name": OTLP_SCOPE_NAME,
+                            "version": str(SCHEMA_VERSION),
+                        },
+                        "logRecords": log_records,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def to_otlp_metrics_json(report):
+    """Encode observable Metrics as ExportMetricsServiceRequest JSON."""
+    resource_attrs = [
+        _otlp_attr(key, value) for key, value in report.get("resource", {}).items()
+    ]
+    metrics = []
+    for item in (report.get("signals") or {}).get("metrics") or []:
+        gauge = item["gauge"]
+        metrics.append(
+            {
+                "name": item["name"],
+                "description": item.get("description") or "",
+                "unit": item.get("unit") or "",
+                "gauge": {
+                    "dataPoints": [
+                        {
+                            "asDouble": gauge["as_double"],
+                            "timeUnixNano": str(gauge["time_unix_nano"]),
+                            "attributes": [
+                                _otlp_attr(key, value)
+                                for key, value in gauge["attributes"].items()
+                                if value is not None
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+    return {
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": resource_attrs},
+                "scopeMetrics": [
+                    {
+                        "scope": {
+                            "name": OTLP_SCOPE_NAME,
+                            "version": str(SCHEMA_VERSION),
+                        },
+                        "metrics": metrics,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def write_otlp_logs_json(report, path):
+    if not report.get("otlp_logs_json"):
+        raise TelemetryError("otlp_logs_unavailable")
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = (
+            json.dumps(report["otlp_logs_json"], indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        path.write_bytes(body)
+    except OSError as error:
+        report["claims"]["otlp_logs_exported"] = False
+        raise TelemetryError("otlp_logs_flush_failed") from error
+    report["claims"]["otlp_logs_exported"] = True
+    report["claims"]["otlp_logs_path"] = str(path)
+    report["claims"]["otlp_logs_sha256"] = hashlib.sha256(body).hexdigest()
+    return path
+
+
+def write_otlp_metrics_json(report, path):
+    if not report.get("otlp_metrics_json"):
+        raise TelemetryError("otlp_metrics_unavailable")
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = (
+            json.dumps(report["otlp_metrics_json"], indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        path.write_bytes(body)
+    except OSError as error:
+        report["claims"]["otlp_metrics_exported"] = False
+        raise TelemetryError("otlp_metrics_flush_failed") from error
+    report["claims"]["otlp_metrics_exported"] = True
+    report["claims"]["otlp_metrics_path"] = str(path)
+    report["claims"]["otlp_metrics_sha256"] = hashlib.sha256(body).hexdigest()
+    return path
 
 
 def otlp_wire_to_protobuf_json(payload):
@@ -1358,6 +1657,16 @@ def main(argv=None):
         help="Write OTLP/JSON ExportTraceServiceRequest body (file flush only)",
     )
     parser.add_argument(
+        "--otlp-logs-json",
+        type=Path,
+        help="Write OTLP/JSON ExportLogsServiceRequest from Job-terminal LogRecords",
+    )
+    parser.add_argument(
+        "--otlp-metrics-json",
+        type=Path,
+        help="Write OTLP/JSON ExportMetricsServiceRequest when Metrics are observable",
+    )
+    parser.add_argument(
         "--otlp-endpoint",
         help="OTLP/gRPC host:port for TraceService.Export (ACK ≠ Weaver PASS)",
     )
@@ -1471,6 +1780,7 @@ def main(argv=None):
         event_conclusion=args.event_conclusion,
         expected_job_stubs=expected_job_stubs,
     )
+    attach_signal_candidates(report)
     attach_otlp_json(report)
     export_error = None
     if args.otlp_json is not None:
@@ -1479,6 +1789,18 @@ def main(argv=None):
         except TelemetryError as error:
             export_error = error
             sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+    if args.otlp_logs_json is not None and export_error is None:
+        try:
+            write_otlp_logs_json(report, args.otlp_logs_json)
+        except TelemetryError as error:
+            export_error = error
+            sys.stderr.write(f"cicd-telemetry logs export failed: {error.code}\n")
+    if args.otlp_metrics_json is not None and export_error is None:
+        try:
+            write_otlp_metrics_json(report, args.otlp_metrics_json)
+        except TelemetryError as error:
+            export_error = error
+            sys.stderr.write(f"cicd-telemetry metrics export failed: {error.code}\n")
     if args.otlp_endpoint is not None and export_error is None:
         try:
             export_otlp_grpc(
@@ -1497,8 +1819,11 @@ def main(argv=None):
     if export_error is not None:
         return 3
     if args.json:
-        printable = {key: value for key, value in report.items() if key != "otlp_json"}
+        skip = {"otlp_json", "otlp_logs_json", "otlp_metrics_json"}
+        printable = {key: value for key, value in report.items() if key not in skip}
         printable["otlp_json_present"] = report.get("otlp_json") is not None
+        printable["otlp_logs_present"] = report.get("otlp_logs_json") is not None
+        printable["otlp_metrics_present"] = report.get("otlp_metrics_json") is not None
         _print(printable)
     else:
         print(f"status: {report['status']}")

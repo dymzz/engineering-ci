@@ -130,8 +130,13 @@ secrets / dispatch inputs; absence of a receiver leaves `rpc_accepted=false`.
 
 | Signal | Source → producer → OTLP | Status |
 | --- | --- | --- |
-| LogRecord | Native Job logs / Check artifacts → later `ExportLogsServiceRequest` | `not_observable` in this commit until a real Job-log → LogRecord path lands with receiver evidence |
-| Metrics (`pending`/`executing`/`finalizing`, duration/active) | Only when real state intervals exist | `not_observable` until native state intervals are proven; do not invent queue/finalization duration from Trace alone |
+| LogRecord | Attempt Job API terminal mapped into Task Spans → `ExportLogsServiceRequest` (`eci.log.source=github_job_terminal`) | Emitted for each Task Span; full Job stdout/stderr archives stay on GitHub Actions |
+| `cicd.pipeline.run.duration` | Exact proven Run start/end only | Emitted when `exact_run_duration=true`; otherwise `not_observable` (`exact_run_duration_unproven`) |
+| `cicd.pipeline.run.active` / pending / finalizing intervals | Native state transition intervals | `not_observable` (`state_intervals_unproven` / `*_interval_unproven`); never invented from `updated_at` or observed upper bound |
+
+Controlled live OTLP/gRPC receiver evidence (ACK + receiver-observed Span IDs,
+logs/metrics artifacts) lives under
+[cicd-telemetry-otlp-grpc-evidence](../verification/cicd-telemetry-otlp-grpc-evidence/README.md).
 
 When GitHub reports `total_count`, a short/empty page before that count is
 `jobs_page_incomplete`. Missing `gh` or API timeouts map to
@@ -144,10 +149,12 @@ Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
 Baseline after PR #76/#77/#78/#80/#81: candidate Pipeline/Task construction,
 Attempt API/OTLP file export, full completed-Job Task coverage, observed
 upper-bound Root mode (API `status=completed` gated), Expected Job inventory,
-terminal provenance, and OTLP/gRPC Export ACK client live under
-`engineering_ci.cicd_telemetry`. **Live receiver network evidence is not yet
-accepted for this PR** (endpoint optional via `ECI_OTLP_ENDPOINT`); O2/O3
-native Log/Metric emission and trusted admission remain open on Issue #75.
+terminal provenance, OTLP/gRPC Export with controlled receiver observation,
+Job-terminal LogRecords, and exact-duration Metrics (when proven) live under
+`engineering_ci.cicd_telemetry`. Production Collector endpoint remains optional
+via `ECI_OTLP_ENDPOINT`. Trusted admission (#63) and Required (#61) stay outside
+this Issue's producer claims; Issue #75 stays Open until its remaining
+acceptance items are separately confirmed.
 
 ## Related
 

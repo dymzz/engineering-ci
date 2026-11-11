@@ -1,0 +1,89 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "cicd.pipeline.name",
+            "value": {
+              "stringValue": "Engineering CI"
+            }
+          },
+          {
+            "key": "cicd.pipeline.run.id",
+            "value": {
+              "stringValue": "42627302972/1"
+            }
+          },
+          {
+            "key": "github.actions.run_attempt",
+            "value": {
+              "intValue": "1"
+            }
+          },
+          {
+            "key": "github.repository",
+            "value": {
+              "stringValue": "dymzz/engineering-ci"
+            }
+          },
+          {
+            "key": "vcs.ref.head.revision",
+            "value": {
+              "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "description": "Exact Pipeline Run duration from proven bounds",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 120.0,
+                    "attributes": [
+                      {
+                        "key": "cicd.pipeline.name",
+                        "value": {
+                          "stringValue": "Engineering CI"
+                        }
+                      },
+                      {
+                        "key": "cicd.pipeline.run.id",
+                        "value": {
+                          "stringValue": "42627302972/1"
+                        }
+                      },
+                      {
+                        "key": "cicd.pipeline.result",
+                        "value": {
+                          "stringValue": "success"
+                        }
+                      },
+                      {
+                        "key": "cicd.pipeline.run.state",
+                        "value": {
+                          "stringValue": "finalizing"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1700000120000000000"
+                  }
+                ]
+              },
+              "name": "cicd.pipeline.run.duration",
+              "unit": "s"
+            }
+          ],
+          "scope": {
+            "name": "eci_core.cicd_telemetry",
+            "version": "5"
+          }
+        }
+      ]
+    }
+  ]
+}

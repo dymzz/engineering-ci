@@ -1,0 +1,24 @@
+{
+  "claims": {
+    "otlp_delivered": false,
+    "receiver_observed": true,
+    "rpc_accepted": true,
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "endpoint": "127.0.0.1:5518",
+  "insecure": true,
+  "observed_spans": [
+    {
+      "name": "RUN Engineering CI",
+      "span_id": "99e59e4635e01286",
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
+    },
+    {
+      "name": "task:python-ci / checks",
+      "span_id": "f39fadb5c353c887",
+      "trace_id": "7a39047f8e25a08789d7b936cd9517f8"
+    }
+  ],
+  "protocol": "otlp/grpc"
+}
