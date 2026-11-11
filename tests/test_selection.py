@@ -484,6 +484,38 @@ def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
     assert "weaver_terminal" not in scope
 
 
+def test_weaver_terminal_waits_for_terminal_evidence(repo):
+    from dataclasses import replace
+
+    path, base = repo
+    (path / "telemetry").mkdir()
+    (path / "telemetry/capture.json").write_text("{}")
+    cfg = replace(
+        config(path), checks=("weaver_registry", "weaver_live", "weaver_terminal")
+    )
+    capture_plan = selection.plan(
+        selection.select(selection.changeset(path, base=base), cfg, root=path),
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    capture_scope = {item["name"]: item for item in capture_plan["check_scope"]}
+    assert capture_scope["weaver_live"]["status"] == "selected"
+    assert capture_scope["weaver_terminal"]["status"] == "not_applicable"
+    assert capture_scope["weaver_terminal"]["reason"] == "terminal evidence not ready"
+
+    (path / "telemetry/expected.json").write_text("{}")
+    ready_plan = selection.plan(
+        selection.select(selection.changeset(path, base=base), cfg, root=path),
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    ready_scope = {item["name"]: item for item in ready_plan["check_scope"]}
+    assert ready_scope["weaver_terminal"]["status"] == "selected"
+    assert ready_scope["weaver_terminal"]["inputs"] == ["telemetry/expected.json"]
+
+
 def test_directory_content_id_uses_platform_independent_path_order(tmp_path):
     import hashlib
 

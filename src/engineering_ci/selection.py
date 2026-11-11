@@ -1018,18 +1018,43 @@ def _check_scope(selection, config, root):
     weaver_inputs = [
         path for path in paths if path.startswith(config.check_scope.weaver_prefixes)
     ]
-    scopes.extend(
-        {
-            "name": name,
-            "status": "selected" if weaver_inputs else "not_applicable",
-            "inputs": weaver_inputs,
-            "reason": "Weaver inputs changed"
-            if weaver_inputs
-            else "no Weaver input changes",
-        }
-        for name in config.checks
-        if name in {"weaver_registry", "weaver_live", "weaver_terminal"}
-    )
+    # Terminal is post-completion only: require terminal evidence paths in the
+    # changeset. Registry/Live may select on Weaver definition or capture churn;
+    # Terminal must not PASS-select from those alone (PR #78 P2-1).
+    terminal_inputs = [
+        path
+        for path in weaver_inputs
+        if Path(path).name == "expected.json" or "terminal" in Path(path).name
+    ]
+    for name in config.checks:
+        if name not in {"weaver_registry", "weaver_live", "weaver_terminal"}:
+            continue
+        if name == "weaver_terminal":
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "selected" if terminal_inputs else "not_applicable",
+                    "inputs": terminal_inputs,
+                    "reason": (
+                        "terminal evidence changed"
+                        if terminal_inputs
+                        else "terminal evidence not ready"
+                    ),
+                }
+            )
+            continue
+        scopes.append(
+            {
+                "name": name,
+                "status": "selected" if weaver_inputs else "not_applicable",
+                "inputs": weaver_inputs,
+                "reason": (
+                    "Weaver inputs changed"
+                    if weaver_inputs
+                    else "no Weaver input changes"
+                ),
+            }
+        )
     return scopes
 
 

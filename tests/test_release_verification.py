@@ -72,7 +72,7 @@ class API(FakeGitHub):
                 if name.startswith(".dagger/") and self.shared_version is not None:
                     text += (
                         'dependencies=[{name="engineering-ci"}]\n'
-                        '[package.metadata]\n'
+                        "[package.metadata]\n"
                         'requires-dist=[{name="engineering-ci",directory="../"}]\n'
                         '[[package]]\nname="engineering-ci"\n'
                         f'version="{self.shared_version}"\n'
@@ -81,13 +81,23 @@ class API(FakeGitHub):
             if name.startswith(".dagger/") and hasattr(self, "invalid_module"):
                 if name.endswith("pyproject.toml"):
                     if self.invalid_module == "missing_dependency":
-                        text = text.replace('dependencies=["engineering-ci"]', 'dependencies=[]')
+                        text = text.replace(
+                            'dependencies=["engineering-ci"]', "dependencies=[]"
+                        )
                     elif self.invalid_module == "wrong_source":
-                        text = text.replace('engineering-ci={path=".."}', 'engineering-ci={path="../elsewhere"}')
+                        text = text.replace(
+                            'engineering-ci={path=".."}',
+                            'engineering-ci={path="../elsewhere"}',
+                        )
                 elif self.invalid_module == "missing_lock_link":
-                    text = text.replace('dependencies=[{name="engineering-ci"}]', 'dependencies=[]')
+                    text = text.replace(
+                        'dependencies=[{name="engineering-ci"}]', "dependencies=[]"
+                    )
                 elif self.invalid_module == "wrong_lock_source":
-                    text = text.replace('source={directory="../"}', 'source={registry="https://example.invalid"}')
+                    text = text.replace(
+                        'source={directory="../"}',
+                        'source={registry="https://example.invalid"}',
+                    )
             result = {
                 "path": name,
                 "encoding": "base64",
@@ -156,7 +166,10 @@ def test_historical_same_name_module_metadata_remains_readable():
     assert verification.target(api, "main", "0.4.11") == identity()
 
 
-@pytest.mark.parametrize("invalid", ["missing_dependency", "wrong_source", "missing_lock_link", "wrong_lock_source"])
+@pytest.mark.parametrize(
+    "invalid",
+    ["missing_dependency", "wrong_source", "missing_lock_link", "wrong_lock_source"],
+)
 def test_remote_module_requires_local_shared_package(invalid):
     api = API()
     api.invalid_module = invalid

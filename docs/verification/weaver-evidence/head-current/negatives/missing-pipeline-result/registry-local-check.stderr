@@ -1,0 +1,7 @@
+⚠ Experimental! - Found config: /check/empty.toml
+Weaver Registry Check
+Checking registry `/out/registry-package`
+ℹ Found registry manifest: /out/registry-package/manifest.yaml
+✔ No `after_resolution` policy violation
+
+Total execution time: 0.154994703s

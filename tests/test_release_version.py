@@ -51,21 +51,32 @@ def test_set_version_updates_module_and_its_shared_dependency(tmp_path, monkeypa
     module.mkdir(parents=True)
     for project, name in ((root, "engineering-ci"), (module, "engineering-ci-module")):
         (project / "pyproject.toml").write_text(
-            (f'[project]\nname = "{name}"\nversion = "0.7.0"\n'
-             + ('dependencies = ["engineering-ci"]\n'
-                '[tool.uv.sources]\nengineering-ci = { path = ".." }\n'
-                if project == module else "")),
+            (
+                f'[project]\nname = "{name}"\nversion = "0.7.0"\n'
+                + (
+                    'dependencies = ["engineering-ci"]\n'
+                    '[tool.uv.sources]\nengineering-ci = { path = ".." }\n'
+                    if project == module
+                    else ""
+                )
+            ),
             encoding="utf-8",
         )
         packages = [name] if project == root else ["engineering-ci", name]
         lock_text = "\n".join(
             f'[[package]]\nname = "{package}"\nversion = "0.7.0"\n'
-            + ('source = { directory = "../" }\n'
-               if project == module and package == "engineering-ci" else "")
-            + ('dependencies = [{ name = "engineering-ci" }]\n'
-               '[package.metadata]\n'
-               'requires-dist = [{ name = "engineering-ci", directory = "../" }]\n'
-               if project == module and package == "engineering-ci-module" else "")
+            + (
+                'source = { directory = "../" }\n'
+                if project == module and package == "engineering-ci"
+                else ""
+            )
+            + (
+                'dependencies = [{ name = "engineering-ci" }]\n'
+                "[package.metadata]\n"
+                'requires-dist = [{ name = "engineering-ci", directory = "../" }]\n'
+                if project == module and package == "engineering-ci-module"
+                else ""
+            )
             for package in packages
         )
         (project / "uv.lock").write_text(lock_text, encoding="utf-8")

@@ -35,65 +35,86 @@ def content(api, path, head):
 def version_at(api, head):
     if not manifest.SHA.fullmatch(head):
         raise ValueError("Remote commit identity unavailable")
+    # Parse/structure failures map to missing/invalid; already-read version
+    # disagreement stays a distinct project-metadata mismatch (PR #78 P1-2).
+    try:
+        versions = _remote_versions(api, head)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise ValueError("Remote version metadata is missing or invalid") from error
+    if len(set(versions)) != 1:
+        raise ValueError("Remote version does not match all project metadata fields")
+    return versions[0]
+
+
+def _remote_versions(api, head):
     paths = (
         "pyproject.toml",
         "uv.lock",
         ".dagger/pyproject.toml",
         ".dagger/uv.lock",
     )
-    try:
-        data = {path: tomllib.loads(content(api, path, head)) for path in paths}
-        root_project = data["pyproject.toml"]["project"]
-        module_project = data[".dagger/pyproject.toml"]["project"]
-        if root_project["name"] != "engineering-ci":
-            raise ValueError("Remote root package identity unavailable")
-        versions = [normalize(root_project["version"])]
-        root_packages = [
-            item for item in data["uv.lock"]["package"]
+    data = {path: tomllib.loads(content(api, path, head)) for path in paths}
+    root_project = data["pyproject.toml"]["project"]
+    module_project = data[".dagger/pyproject.toml"]["project"]
+    if root_project["name"] != "engineering-ci":
+        raise ValueError("Remote root package identity unavailable")
+    versions = [normalize(root_project["version"])]
+    root_packages = [
+        item for item in data["uv.lock"]["package"] if item["name"] == "engineering-ci"
+    ]
+    if len(root_packages) != 1:
+        raise ValueError("Remote root lock package identity unavailable")
+    versions.append(normalize(root_packages[0]["version"]))
+
+    module_name = module_project["name"]
+    if module_name not in ("engineering-ci", "engineering-ci-module"):
+        raise ValueError("Remote module package identity unavailable")
+    versions.append(normalize(module_project["version"]))
+    module_packages = [
+        item
+        for item in data[".dagger/uv.lock"]["package"]
+        if item["name"] == module_name
+    ]
+    if len(module_packages) != 1:
+        raise ValueError("Remote module lock package identity unavailable")
+    versions.append(normalize(module_packages[0]["version"]))
+
+    if module_name == "engineering-ci-module":
+        # Current package layout: both dependency declaration and lock
+        # source must identify the root project, not a registry wheel.
+        if module_project.get("dependencies", []).count("engineering-ci") != 1:
+            raise ValueError("Remote module shared dependency unavailable")
+        sources = (
+            data[".dagger/pyproject.toml"]
+            .get("tool", {})
+            .get("uv", {})
+            .get("sources", {})
+        )
+        if sources.get("engineering-ci") != {"path": ".."}:
+            raise ValueError("Remote module dependency source differs")
+        shared_packages = [
+            item
+            for item in data[".dagger/uv.lock"]["package"]
             if item["name"] == "engineering-ci"
         ]
-        if len(root_packages) != 1:
-            raise ValueError("Remote root lock package identity unavailable")
-        versions.append(normalize(root_packages[0]["version"]))
-
-        module_name = module_project["name"]
-        if module_name not in ("engineering-ci", "engineering-ci-module"):
-            raise ValueError("Remote module package identity unavailable")
-        versions.append(normalize(module_project["version"]))
-        module_packages = [
-            item for item in data[".dagger/uv.lock"]["package"]
-            if item["name"] == module_name
-        ]
-        if len(module_packages) != 1:
-            raise ValueError("Remote module lock package identity unavailable")
-        versions.append(normalize(module_packages[0]["version"]))
-
-        if module_name == "engineering-ci-module":
-            # Current package layout: both dependency declaration and lock
-            # source must identify the root project, not a registry wheel.
-            if module_project.get("dependencies", []).count("engineering-ci") != 1:
-                raise ValueError("Remote module shared dependency unavailable")
-            sources = data[".dagger/pyproject.toml"].get("tool", {}).get("uv", {}).get("sources", {})
-            if sources.get("engineering-ci") != {"path": ".."}:
-                raise ValueError("Remote module dependency source differs")
-            shared_packages = [
-                item for item in data[".dagger/uv.lock"]["package"]
-                if item["name"] == "engineering-ci"
-            ]
-            if len(shared_packages) != 1 or shared_packages[0].get("source") != {"directory": "../"}:
-                raise ValueError("Remote module lock source differs")
-            module_deps = module_packages[0].get("dependencies", [])
-            if sum(item.get("name") == "engineering-ci" for item in module_deps) != 1:
-                raise ValueError("Remote module lock dependency missing")
-            requires_dist = module_packages[0].get("metadata", {}).get("requires-dist", [])
-            if sum(item.get("name") == "engineering-ci" and item.get("directory") == "../" for item in requires_dist) != 1:
-                raise ValueError("Remote module lock dependency source missing")
-            versions.append(normalize(shared_packages[0]["version"]))
-        if len(set(versions)) != 1:
-            raise ValueError("Remote version does not match all project metadata fields")
-        return versions[0]
-    except (ValueError, KeyError, TypeError, AttributeError) as error:
-        raise ValueError("Remote version metadata is missing or invalid") from error
+        if len(shared_packages) != 1 or shared_packages[0].get("source") != {
+            "directory": "../"
+        }:
+            raise ValueError("Remote module lock source differs")
+        module_deps = module_packages[0].get("dependencies", [])
+        if sum(item.get("name") == "engineering-ci" for item in module_deps) != 1:
+            raise ValueError("Remote module lock dependency missing")
+        requires_dist = module_packages[0].get("metadata", {}).get("requires-dist", [])
+        if (
+            sum(
+                item.get("name") == "engineering-ci" and item.get("directory") == "../"
+                for item in requires_dist
+            )
+            != 1
+        ):
+            raise ValueError("Remote module lock dependency source missing")
+        versions.append(normalize(shared_packages[0]["version"]))
+    return versions
 
 
 def target(api, ref, version):

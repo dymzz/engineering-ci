@@ -208,11 +208,16 @@ the checker does not claim to prove every normative SemConv condition.
 In `ci-selection.toml`, explicitly include applicable `weaver_registry`,
 `weaver_live`, or `weaver_terminal` in `checks`, and set
 `check_scope.weaver_prefixes` to the actual Registry/config/capture paths.
-Incomplete Git scope stays `unknown`. Dagger `execute-plan` executes these
-entries and appends native reports to its existing `checks` collection. The
-host executor leaves them `not_executed` and blocks rather than bypassing the
-Dagger tool boundary. `execute-plan --weaver-config` selects the Source-relative
-configuration path. Terminal selection belongs in the post-completion plan.
+Incomplete Git scope stays `unknown`. `weaver_registry` / `weaver_live` select
+when Weaver inputs under those prefixes change. `weaver_terminal` selects only
+when a terminal evidence path changes (`expected.json` or a path whose name
+contains `terminal`); otherwise it stays `not_applicable` with
+`terminal evidence not ready` and must not be treated as PASS. Dagger
+`execute-plan` executes selected entries and appends native reports to its
+existing `checks` collection. The host executor leaves them `not_executed` and
+blocks rather than bypassing the Dagger tool boundary.
+`execute-plan --weaver-config` selects the Source-relative configuration path.
+Terminal execution belongs in the post-completion plan.
 
 During this integration, identical Windows and Linux Source bytes exposed an
 existing snapshot-id ordering bug: native `Path` ordering case-folds on Windows.
@@ -230,9 +235,32 @@ on `cicd.pipeline.result` / `cicd.pipeline.task.run.result`: non-string values
 yield `result_type_invalid`; correctly typed custom strings may PASS. Ordinary
 string attribute type errors still produce native `type_mismatch` / exit 1.
 
+Native CI/CD negatives under `tests/fixtures/weaver-cicd/negatives/` show:
+missing Pipeline `cicd.pipeline.result` and missing Task
+`cicd.pipeline.task.run.url.full` produce native `required_attribute_not_present`
+violations (`gate_exit_code=1`); wrong JSON type for `cicd.pipeline.result` is
+rejected by ECI as `result_type_invalid` while native exit stays 0. For
+Pipeline `result=failure` without `error.type`, Weaver 0.28.0 currently emits
+only information-level `conditionally_required_attribute_not_present` and the
+Live gate PASSes — that Conditionally Required path is **not accepted** under
+the current builtin policy (do not invent a parallel SemConv judge).
+
 Committed cart fixtures prove Weaver execution and matcher policy only — not
 full CI/CD v1.45.0 Pipeline/Task Required / Conditionally Required coverage.
-That bounded native CI/CD fixture evidence remains a follow-up on this Issue.
+Bounded CI/CD SemConv v1.45.0 native Live/Terminal positives, Attempt-absent
+Terminal FAIL, and Required/type negatives are archived under
+[weaver-evidence/head-current](weaver-evidence/README.md). Conditionally
+Required `error.type` on `failure` remains **not accepted** with Weaver 0.28.0
+builtin policy (see negatives).
+
+## Package integration with #75 / PR #77
+
+PR #79 unified the installable business package as **`engineering_ci` only**.
+#74 / PR #78 must not restore `eci_core`. After #78 merges, rebase #77 onto the
+unified tree and port its SCHEMA_VERSION=4 Attempt/OTLP producer increments onto
+`src/engineering_ci/cicd_telemetry.py` (and `engineering_ci.cli` / tests). Keep a
+single `engineering-ci cicd-telemetry` entrypoint; do not reintroduce an
+`eci_core` import path or compatibility shim.
 
 Dagger v1.0.0-beta.16 emitted `core.repositoryformatversion does not support
 extension: worktreeconfig` in this managed worktree while calls still completed.

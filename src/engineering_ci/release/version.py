@@ -36,21 +36,28 @@ def module_shared_version(project: dict, lock: dict) -> str:
         raise ValueError("Dagger module must depend on engineering-ci")
     sources = project.get("tool", {}).get("uv", {}).get("sources", {})
     if sources.get("engineering-ci") != {"path": ".."}:
-        raise ValueError("Dagger module must source engineering-ci from repository root")
+        raise ValueError(
+            "Dagger module must source engineering-ci from repository root"
+        )
     packages = [item for item in lock["package"] if item["name"] == "engineering-ci"]
     if len(packages) != 1 or packages[0].get("source") != {"directory": "../"}:
         raise ValueError("Dagger lock must source engineering-ci from repository root")
-    modules = [item for item in lock["package"] if item["name"] == "engineering-ci-module"]
+    modules = [
+        item for item in lock["package"] if item["name"] == "engineering-ci-module"
+    ]
     if len(modules) != 1:
         raise ValueError("Expected exactly one Dagger module in lock")
     dependencies = modules[0].get("dependencies", [])
     if sum(item.get("name") == "engineering-ci" for item in dependencies) != 1:
         raise ValueError("Dagger lock must declare the engineering-ci dependency")
     metadata = modules[0].get("metadata", {}).get("requires-dist", [])
-    if sum(
-        item.get("name") == "engineering-ci" and item.get("directory") == "../"
-        for item in metadata
-    ) != 1:
+    if (
+        sum(
+            item.get("name") == "engineering-ci" and item.get("directory") == "../"
+            for item in metadata
+        )
+        != 1
+    ):
         raise ValueError("Dagger lock dependency metadata must point to root")
     return packages[0]["version"]
 
