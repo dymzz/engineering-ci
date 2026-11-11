@@ -5,6 +5,10 @@ Date: 2026-11-08; host: Windows 11, CPython 3.14.3, Git for Windows.
 
 Contract: [hygiene checks](../architecture/hygiene.md).
 
+Historical scope: `eci_core.*` below names the modules used in this original
+run. Current callers use `engineering_ci.hygiene` / `engineering_ci.sources`;
+see [the current package contract](../architecture/selection.md#shared-implementation-and-dagger-import-p1-3).
+
 ## What ran
 
 ```sh

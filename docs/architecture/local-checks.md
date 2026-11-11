@@ -13,7 +13,7 @@ dagger check --engineering-ci --check=tests
 dagger check --engineering-ci --check=version --check=lock
 ```
 
-默认五项检查针对根仓实际源码：Ruff Lint、Ruff Format、核心 pytest、四处版本一致性、
+默认五项检查针对根仓实际源码：Ruff Lint、Ruff Format、核心 pytest、第一方版本一致性（含模块共享依赖）、
 两份 uv.lock 完整性。单项筛选使用 Dagger 原生选择器，不存在宿主 `checks` 命令、
 Profile 注册表、`--reuse` 或历史 passed JSON 准入。
 

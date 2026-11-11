@@ -32,7 +32,8 @@ Dagger SDK 使用独立模块环境；消费者私有源码的读取权限由调
 
 ## 版本与演进
 
-当前采用 `vMAJOR.MINOR.PATCH` Tag，对应四处项目元数据和不可变提交。
+当前采用 `vMAJOR.MINOR.PATCH` Tag，对应四份文件中的第一方版本与不可变提交；
+模块锁文件还需核对其 `engineering-ci` 共享依赖版本。
 可使用经过验证的固定 SHA 验收候选，但该 SHA 不是已发布版本；正式升级必须核对 Release Manifest。
 同时更新消费者的 Workflow 引用、Dagger 模块引用和原生锁文件，审查生成的差异后运行消费者 CI。
 Renovate 更新仍由现有配置负责，不增加跨仓库编排。
@@ -44,5 +45,10 @@ Git 安全策略是显式启用的已知 Commit 漏洞查询，不是私有源�
 固定版本及 Dagger beta 本身的已知限制见[配置](../configuration/dagger.md)。
 
 v0.7.0 删除旧 execution Python API、下载 Backend 和本地 Git/PR 自动交付接口，不提供兼容层。
+
+当前候选将 `eci_core.selection/execution/hygiene/sources/cicd_telemetry` 移入
+`engineering_ci`，移除旧 Python 导入路径。调用方同步修改 `import` 和
+`python -m` 路径；既有 CLI 子命令、Plan/Report schema 与 Dagger 函数名保持原契约。
+此调整尚未发布为新的正式版本，详见[共享实现](../architecture/selection.md#shared-implementation-and-dagger-import-p1-3)。
 一般下载使用原生 gh；跨 Run 的版本、Tag、SHA、attempt 与 Manifest 证据核验继续由发布层负责。
 本轮候选身份、实际消费验证与 C1–C8 结论保存在 PR 交付记录，缺少证据的路径明确记为 NOT VERIFIED。

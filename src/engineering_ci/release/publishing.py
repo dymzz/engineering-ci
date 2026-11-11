@@ -48,7 +48,7 @@ def tag_commit(api, tag):
 def request(environment, head):
     version = normalize(environment["RELEASE_VERSION"])
     if version != checked_version():
-        raise ValueError("Requested version does not match all four metadata fields")
+        raise ValueError("Requested version does not match all project metadata fields")
     if not SHA.fullmatch(head) or head != environment["GITHUB_SHA"]:
         raise ValueError("Checkout differs from workflow candidate SHA")
     publish = environment["RELEASE_PUBLISH"]

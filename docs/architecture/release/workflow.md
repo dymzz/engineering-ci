@@ -10,7 +10,7 @@
 
 | 触发 | 实际执行 | 发布 |
 |---|---|---|
-| PR / push 到 main | 原生 Lint/Format、核心 pytest、四处版本检查、两份 uv.lock 完整性 | 不发布 |
+| PR / push 到 main | 原生 Lint/Format、核心 pytest、第一方版本检查（含模块共享依赖）、两份 uv.lock 完整性 | 不发布 |
 | 手动 Release，publish=false | 上述检查加 Coverage 证据、完整 Dagger checks、既有质量与 Matrix fixture、真实根项目安全 enforce、报告下载核验 | 不创建 Tag/Release |
 | 手动 Release，publish=true | 同一完整验收；main SHA 与版本检查通过后才发布 | 精确提交 |
 
@@ -29,7 +29,7 @@ GitHub Actions 继续拥有 Job DAG、权限、Artifact 上传和发布条件。
 
 ## 发布 Run 的身份与执行范围
 
-正式发布要求 workflow_dispatch、refs/heads/main、pass 场景，并核对实际提交及四处版本元数据。
+正式发布要求 workflow_dispatch、refs/heads/main、pass 场景，并核对实际提交及四份文件中的第一方版本（含模块共享依赖）。
 完整检查、Manifest 与正式发布均关联同一个 Release Run 的原生执行证据；
 PR 轻量通过和本地历史通过记录不能替代这些门禁。
 必需检查失败、跳过、证据缺失或上传失败均不发布。
@@ -89,7 +89,7 @@ Job Summary 同时显示版本、SHA、验证 Run 链接与各检查状态。
 机器可读结构见 [JSON Schema](manifest.schema.json)。
 同一组输入产生相同核心 JSON；不复制日志、环境变量、Token 或临时下载 URL。
 
-身份来自实际 checkout、四处版本元数据、GitHub Run API 与当前 attempt 的
+身份来自实际 checkout、第一方版本元数据、GitHub Run API 与当前 attempt 的
 Jobs API。Manifest 的 `result=passed` 表示必需验证结果与证据齐全，
 不是进行中的整个 Workflow 已结束，也不是已经发布成功。
 `mode=validation` 时 `release.release_url=null`：没有虚构 Release URL。

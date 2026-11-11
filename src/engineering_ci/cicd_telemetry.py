@@ -293,6 +293,7 @@ def _stable_ids(run_id, attempt, job_id=None):
 
 def produce(facts, *, producer="eci_core.cicd_telemetry"):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial."""
+    # Persisted producer identity predates the package move; it is not an import path.
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,

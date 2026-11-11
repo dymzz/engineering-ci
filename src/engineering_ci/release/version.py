@@ -27,17 +27,48 @@ def normalize(raw: str) -> str:
     return match.group(1)
 
 
+def module_shared_version(project: dict, lock: dict) -> str:
+    """Require the Dagger module to install the shared package from this checkout."""
+    module = project["project"]
+    if module["name"] != "engineering-ci-module":
+        raise ValueError("Unexpected Dagger module project identity")
+    if module.get("dependencies", []).count("engineering-ci") != 1:
+        raise ValueError("Dagger module must depend on engineering-ci")
+    sources = project.get("tool", {}).get("uv", {}).get("sources", {})
+    if sources.get("engineering-ci") != {"path": ".."}:
+        raise ValueError("Dagger module must source engineering-ci from repository root")
+    packages = [item for item in lock["package"] if item["name"] == "engineering-ci"]
+    if len(packages) != 1 or packages[0].get("source") != {"directory": "../"}:
+        raise ValueError("Dagger lock must source engineering-ci from repository root")
+    modules = [item for item in lock["package"] if item["name"] == "engineering-ci-module"]
+    if len(modules) != 1:
+        raise ValueError("Expected exactly one Dagger module in lock")
+    dependencies = modules[0].get("dependencies", [])
+    if sum(item.get("name") == "engineering-ci" for item in dependencies) != 1:
+        raise ValueError("Dagger lock must declare the engineering-ci dependency")
+    metadata = modules[0].get("metadata", {}).get("requires-dist", [])
+    if sum(
+        item.get("name") == "engineering-ci" and item.get("directory") == "../"
+        for item in metadata
+    ) != 1:
+        raise ValueError("Dagger lock dependency metadata must point to root")
+    return packages[0]["version"]
+
+
 def versions() -> dict[str, str]:
     found: dict[str, str] = {}
     for project in PROJECTS:
         label = str(project.relative_to(ROOT)) or "."
         expected = PROJECT_NAMES[project]
+        module_project = None
         for name in ("pyproject.toml", "uv.lock"):
             data = tomllib.loads((project / name).read_text(encoding="utf-8"))
             if name == "pyproject.toml":
                 if data["project"]["name"] != expected:
                     raise ValueError(f"Unexpected project name in {label}/{name}")
                 version = data["project"]["version"]
+                if project != ROOT:
+                    module_project = data
             else:
                 matches = [
                     pkg["version"] for pkg in data["package"] if pkg["name"] == expected
@@ -47,6 +78,10 @@ def versions() -> dict[str, str]:
                         f"Expected one {expected} package in {label}/{name}"
                     )
                 version = matches[0]
+                if project != ROOT:
+                    found[f"{label}/{name}:{PROJECT_NAMES[ROOT]}"] = (
+                        module_shared_version(module_project, data)
+                    )
             found[f"{label}/{name}"] = version
     return found
 
@@ -61,8 +96,8 @@ def checked_version() -> str:
 
 def set_version(raw: str) -> None:
     version = normalize(raw)
-    # The Dagger SDK is generated only by `dagger develop`; running
-    # `uv lock` against .dagger independently fails without its local sdk/.
+    # SDK/lock generation uses the native Dagger API; independently resolving
+    # .dagger requires that generated local sdk/ to be present.
     # Update only the first-party version metadata in all four files.
     for project in PROJECTS:
         project_file = project / "pyproject.toml"
@@ -77,20 +112,27 @@ def set_version(raw: str) -> None:
         if count != 1:
             raise ValueError(f"Could not locate project version in {project_file}")
         lock_text = lock_file.read_text(encoding="utf-8")
-        new_lock, count = re.subn(
-            r'(?m)^(name = "engineering-ci"\nversion = ")[^"]+(")$',
-            lambda m: m.group(1) + version + m.group(2),
-            lock_text,
-            count=1,
-        )
-        if count != 1:
-            raise ValueError(f"Could not locate lock version in {lock_file}")
+        package_names = {PROJECT_NAMES[project]}
+        if project != ROOT:
+            package_names.add(PROJECT_NAMES[ROOT])
+        new_lock = lock_text
+        for package_name in sorted(package_names):
+            new_lock, count = re.subn(
+                rf'(?m)^(name = "{re.escape(package_name)}"\nversion = ")[^"]+(")$',
+                lambda m: m.group(1) + version + m.group(2),
+                new_lock,
+                count=1,
+            )
+            if count != 1:
+                raise ValueError(
+                    f"Could not locate {package_name} lock version in {lock_file}"
+                )
         project_file.write_text(new_project, encoding="utf-8", newline="\n")
         lock_file.write_text(new_lock, encoding="utf-8", newline="\n")
     actual = checked_version()
     if actual != version:
         raise ValueError(f"Expected {version}, got {actual}")
-    print(f"Aligned both pyproject.toml and uv.lock files to v{version}")
+    print(f"Aligned project metadata and first-party lock entries to v{version}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "show":
                 print(version)
             else:
-                print(f"PASS: all four project version fields match v{version}")
+                print(f"PASS: all project version fields match v{version}")
         return 0
     except (ValueError, KeyError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -5,6 +5,11 @@ Date: 2026-11-08; host: Windows 11, CPython 3.14.3, Git for Windows.
 
 Contract: [selection and plan](../architecture/selection.md).
 
+Historical scope: the `eci_core` imports and two-package wheel below describe
+the original verification. Current imports use `engineering_ci.<module>`;
+the Dagger module now installs the root package as a declared path dependency.
+See [the current shared implementation contract](../architecture/selection.md#shared-implementation-and-dagger-import-p1-3).
+
 ## What ran
 
 ```sh
@@ -80,9 +85,13 @@ The fixture plan is disposable and is not committed.
 ## Dagger shared implementation
 
 `uv build --wheel` produced one wheel containing both `engineering_ci/` and
-`eci_core/`. The Dagger module project is `engineering-ci-module` (package
-`engineering_ci_module`) and depends on that wheel via a path source; its
-`dagger-module.toml` includes the root metadata and `src/eci_core/**`.
+`eci_core/`. The Dagger module project was `engineering-ci-module` (package
+`engineering_ci_module`). The original description attributed its imports to
+a wheel path dependency, but that baseline's manifests only included
+`src/eci_core/**` and the module inserted its source directory into `sys.path`.
+The commands below proved shared-source imports and calls, not an installed
+root-package dependency. [Current package verification](python-package.md)
+covers the replacement declared dependency and single-package wheel.
 
 ```text
 dagger call shared-identity

@@ -16,7 +16,7 @@ class ReleaseVersionTests(unittest.TestCase):
 
     def test_repository_versions_consistent(self):
         found = mod.versions()
-        self.assertEqual(len(found), 4)
+        self.assertEqual(len(found), 5)
         self.assertEqual(set(found.values()), {mod.checked_version()})
         self.assertEqual(mod.normalize(mod.checked_version()), mod.checked_version())
 
@@ -43,6 +43,49 @@ class ReleaseVersionTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             mod.checked_version()
+
+
+def test_set_version_updates_module_and_its_shared_dependency(tmp_path, monkeypatch):
+    root = tmp_path / "release"
+    module = root / ".dagger"
+    module.mkdir(parents=True)
+    for project, name in ((root, "engineering-ci"), (module, "engineering-ci-module")):
+        (project / "pyproject.toml").write_text(
+            (f'[project]\nname = "{name}"\nversion = "0.7.0"\n'
+             + ('dependencies = ["engineering-ci"]\n'
+                '[tool.uv.sources]\nengineering-ci = { path = ".." }\n'
+                if project == module else "")),
+            encoding="utf-8",
+        )
+        packages = [name] if project == root else ["engineering-ci", name]
+        lock_text = "\n".join(
+            f'[[package]]\nname = "{package}"\nversion = "0.7.0"\n'
+            + ('source = { directory = "../" }\n'
+               if project == module and package == "engineering-ci" else "")
+            + ('dependencies = [{ name = "engineering-ci" }]\n'
+               '[package.metadata]\n'
+               'requires-dist = [{ name = "engineering-ci", directory = "../" }]\n'
+               if project == module and package == "engineering-ci-module" else "")
+            for package in packages
+        )
+        (project / "uv.lock").write_text(lock_text, encoding="utf-8")
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "PROJECTS", (root, module))
+    monkeypatch.setattr(
+        mod, "PROJECT_NAMES", {root: "engineering-ci", module: "engineering-ci-module"}
+    )
+    mod.set_version("v0.8.0")
+    assert set(mod.versions().values()) == {"0.8.0"}
+    lock = module / "uv.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(
+            'name = "engineering-ci"\nversion = "0.8.0"',
+            'name = "engineering-ci"\nversion = "0.7.0"',
+        ),
+        encoding="utf-8",
+    )
+    with unittest.TestCase().assertRaisesRegex(ValueError, "Release version mismatch"):
+        mod.checked_version()
 
 
 if __name__ == "__main__":
