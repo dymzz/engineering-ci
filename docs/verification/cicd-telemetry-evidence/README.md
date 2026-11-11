@@ -73,6 +73,7 @@ Current digests are in `SHA256SUMS`. Module path is
 `engineering_ci.cicd_telemetry` after #78 package unify; evidence producer
 label remains `eci_core.cicd_telemetry`.
 
-Single-Job `--job-id` coverage is intentionally **partial**. Exact post-run
-Pipeline Root, multi-Job Task emission, and live OTLP/gRPC remain Issue #75
-follow-through outside this PR slice.
+Single-Job `--job-id` coverage is intentionally **partial**. Full Attempt
+multi-Job Task emission evidence (no `--job-id`) is recorded separately under
+[cicd-telemetry-evidence-all-completed](../cicd-telemetry-evidence-all-completed/README.md).
+Exact post-run Pipeline Root and live OTLP/gRPC remain Issue #75 follow-through.

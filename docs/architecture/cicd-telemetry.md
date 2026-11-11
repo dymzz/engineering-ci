@@ -51,16 +51,32 @@ Span kinds follow public CI/CD SemConv: Pipeline Run `SERVER`, Task Run
 `INTERNAL`. Only justified GitHub conclusions map to SemConv results
 (`success` / `failure` / `cancellation` / `skip` / `timeout`);
 `neutral` / `action_required` / `stale` stay unsupported until a fixed registry
-mapping is cited. `error.type` is set only when the SemConv result is `failure`
-or `error`.
+mapping is cited. `error.type` is set for SemConv `failure` / `error` and for
+GitHub `timed_out` → `timeout` (Recording Errors); cancellation/skip leave
+Status UNSET without `error.type`.
 
 When both candidate spans are emitted for the same completed Run/Attempt, a Job
 that starts or finishes after the Run completed-at is `partial`
 (`inconsistent_run_job_timestamps`); individually valid spans are kept.
 
-`--job-id` is a deliberate single-Job diagnostic slice. When the Attempt has
-more completed Jobs than emitted Task spans, status is `partial`
+Without `--job-id`, the producer emits Task Spans for **every completed Job**
+on the Attempt (`job_selection=all_completed`) and records omitted Jobs under
+`coverage.tasks_omitted`. Completed Jobs are counted by `status == "completed"`
+without requiring an ID; a missing ID is an omission located by source index,
+never dropped from the denominator. Coverage also records
+`jobs_observed_total` and `noncompleted_jobs_total`. For
+`job_selection=all_completed` with a valid source snapshot, every completed Job
+has exactly one Task or omission:
+`completed_jobs_total == task_spans_emitted + len(tasks_omitted)`.
+`--job-id` remains a deliberate single-Job diagnostic slice
+(`job_selection=job_id`): unselected completed Jobs are a coverage gap signaled
+by `partial_job_coverage`, not fabricated `tasks_omitted` entries. When
+completed Jobs exceed emitted Task spans, status is `partial`
 (`partial_job_coverage`).
+
+Job pagination refuses an inconsistent snapshot: shifting page `total_count` or
+duplicate Job IDs across the Attempt raise `jobs_snapshot_inconsistent`
+(rather than silently deduplicating).
 
 ## Export
 
@@ -94,12 +110,14 @@ When GitHub reports `total_count`, a short/empty page before that count is
 `jobs_page_incomplete`. Missing `gh` or API timeouts map to
 `github_cli_unavailable` / `github_api_timeout` (no retry engine).
 
-One native API → candidate/OTLP evidence bundle for this PR slice lives under
+Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
-Baseline after PR #76/#77 and #78 merge: candidate Pipeline/Task construction
-and Attempt API/OTLP file export live under `engineering_ci.cicd_telemetry`;
-exact post-run Root, full multi-Job Task set, live OTLP/gRPC, and trusted
-admission remain open on Issue #75.
+Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
+[cicd-telemetry-evidence-all-completed](../verification/cicd-telemetry-evidence-all-completed/README.md).
+Baseline after PR #76/#77/#78/#80: candidate Pipeline/Task construction, Attempt
+API/OTLP file export, and full completed-Job Task coverage live under
+`engineering_ci.cicd_telemetry`. Exact post-run Pipeline Root, live OTLP/gRPC,
+and trusted admission remain open on Issue #75.
 
 ## Related
 
