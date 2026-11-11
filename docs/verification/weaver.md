@@ -65,6 +65,23 @@ a different commit — stops the run before native validation. A Source that
 declares a different upstream repository is not verified and says so
 (`origin_not_pinned_official_source`); it makes no official claim.
 
+The declared `origin.version` is part of that claimed identity and is verified
+against the pinned release, so a Source may not present a version the pinned
+upstream release does not carry: `official_source_version_mismatch` (also for a
+missing version) stops the run before native validation. On a verified Source
+the Report carries the certified identity — `coverage.official_registry_verified`,
+`coverage.registry_version`, `coverage.registry_commit` and
+`coverage.official_registry_tree_sha256` — taken from the pin rather than from
+the Source's own declaration. Consumers must read that identity instead of
+treating a plain `weaver-enforce` PASS as proof of official provenance.
+
+`coverage.official_source_reason` names every outcome: `official_registry_bytes_mismatch`
+and `official_source_commit_unverified` and `official_source_version_mismatch`
+and `official_source_pin_unavailable` are refusals that stop the run;
+`origin_not_pinned_official_source` (a different upstream repository) and
+`origin_repository_undeclared` (a Source with no `[origin]`) make no official
+claim and let the native Check run.
+
 The current input contract accepts self-contained definition registries and
 local resolved publications. A manifest declaring dependencies is rejected
 with `registry_dependencies_require_local_materialization`; the caller must
@@ -237,13 +254,18 @@ Reports stay `trusted:false`.
 
 Upstream SemConv 1.45.0 declares no entity association for
 `span.cicd.pipeline.run.server`, so it defines no Resource Required obligation
-for the Pipeline span. `coverage.resource_required` is therefore
-`not_applicable`, and the native finding `entity_required_attribute_not_present`
-must not be reported as an upstream Required attribute. The ECI requirement that
-a capture identifies its Pipeline Run is the correlation rule
-`eci_terminal_run_id_correlation` (`coverage.eci_run_id_correlation`), enforced
-by `weaver-terminal` with failures `terminal_observed_identity_missing`,
-`terminal_run_id_mismatch` and `terminal_run_id_conflict`. Do not re-add a local
+for the Pipeline span. Whether such an obligation exists is derived from the
+Registry that was read, not assumed for every Source:
+`coverage.resource_required` is `executed` only when that Registry binds the
+matched Pipeline span to an entity, and `coverage.resource_required_basis`
+records which case applies. The native finding
+`entity_required_attribute_not_present` must not be reported as an upstream
+Required attribute. The ECI requirement that a capture identifies its Pipeline
+Run is the correlation rule `eci_terminal_run_id_correlation`
+(`coverage.eci_run_id_correlation`), enforced by `weaver-terminal` with
+failures `terminal_observed_identity_missing`, `terminal_run_id_mismatch` and
+`terminal_run_id_conflict`; `coverage.terminal_gate_failure_reasons` lists
+every reason the Terminal gate itself can fail with. Do not re-add a local
 `entity_associations` block to the pinned Registry to satisfy an older
 expectation: that would present a local edit as an upstream SemConv
 requirement.

@@ -7,7 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-from engineering_ci import semconv_registry, weaver_tool
+from engineering_ci import selection, semconv_registry, weaver_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 path = ROOT / ".dagger/src/engineering_ci_module/weaver.py"
@@ -448,6 +448,78 @@ def test_container_runtime_uses_the_same_registry_digest():
     )
 
 
+def test_selection_registry_closure_uses_the_pinned_digest_implementation():
+    # The Plan's Registry closure digest and the pinned official tree digest
+    # must be produced by one implementation, or they drift apart silently.
+    files = _registry_files(ROOT / "tests/fixtures/weaver-cicd/registry")
+    assert selection._stable_digest(files) == semconv_registry.registry_tree_digest(
+        files
+    )
+    assert semconv_registry.registry_tree_digest(files) == semconv_registry.TREE_SHA256
+
+
+def test_resource_required_is_derived_from_the_registry_that_was_read():
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    passed = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    base = {
+        "origin": {"version": "1.45.0"},
+        "expected_matchers": ["pipeline"],
+    }
+    without_association = weaver_runtime.coverage_from_execution(
+        config=base,
+        evaluation=passed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        entity_associations={},
+    )
+    assert without_association["resource_required"] == "not_applicable"
+    assert without_association["resource_required_basis"] == (
+        "registry_declares_no_entity_association_for_pipeline_span"
+    )
+    assert without_association["resource_required_entities"] == []
+
+    # A Registry that does bind the Pipeline span to an entity has a Resource
+    # Required obligation, and the coverage matrix must report it as executed.
+    with_association = weaver_runtime.coverage_from_execution(
+        config=base,
+        evaluation=passed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+    )
+    assert with_association["resource_required"] == "executed"
+    assert with_association["resource_required_basis"] == (
+        "registry_declares_entity_association:cicd.pipeline.run"
+    )
+    assert with_association["resource_required_entities"] == ["cicd.pipeline.run"]
+
+
+def test_time_provenance_separates_absent_timestamps_from_whole_seconds():
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    passed = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert passed["time_provenance"]["sample_time_fraction_digits"] == [0]
+    assert passed["time_provenance"]["sample_time_missing"] == 0
+
+    # Fractional seconds are what the real pipeline produces.
+    payload = json.loads(json.dumps(report))
+    payload["samples"][0]["span"]["start_time"] = "2026-11-10T00:00:00.500+00:00"
+    payload["samples"][0]["span"]["end_time"] = "2026-11-10T00:00:01.500+00:00"
+    fractional = weaver.otlp_result(
+        0, json.dumps(payload), expected, terminal=True, capture=capture
+    )
+    assert fractional["time_provenance"]["sample_time_fraction_digits"] == [3]
+    assert fractional["time_provenance"]["sample_time_missing"] == 0
+
+    # An absent timestamp is not an observed whole-second timestamp.
+    assert weaver._time_fraction_digits(None) is None
+    assert weaver._time_fraction_digits("2026-11-10T00:00:00Z") == 0
+    assert weaver._time_fraction_digits("2026-11-10T00:00:00.500+00:00") == 3
+
+
 def test_official_registry_pin_matches_the_fixture_bytes():
     registry = ROOT / "tests/fixtures/weaver-cicd/registry"
     files = _registry_files(registry)
@@ -487,13 +559,15 @@ def test_official_source_status_verifies_the_pinned_registry():
         origin={
             "repository": semconv_registry.REPOSITORY,
             "commit": semconv_registry.COMMIT,
+            "version": semconv_registry.VERSION,
         },
         pin=semconv_registry.RECORD,
     )
     assert status["verified"] is True
     assert status["fatal"] is False
     assert status["tree_sha256"] == semconv_registry.TREE_SHA256
-    assert status["git_tree_sha1"] == semconv_registry.GIT_TREE_SHA1
+    # The upstream tree object is the pinned identity, not a local measurement.
+    assert status["pinned_upstream_git_tree_sha1"] == semconv_registry.GIT_TREE_SHA1
 
 
 def test_official_source_status_rejects_registry_and_manifest_edited_together():
@@ -508,6 +582,7 @@ def test_official_source_status_rejects_registry_and_manifest_edited_together():
         origin={
             "repository": semconv_registry.REPOSITORY,
             "commit": semconv_registry.COMMIT,
+            "version": semconv_registry.VERSION,
         },
         pin=semconv_registry.RECORD,
     )
@@ -540,6 +615,77 @@ def test_official_source_status_requires_the_pin_and_the_pinned_commit():
     assert other_source["verified"] is False
     assert other_source["fatal"] is False
     assert other_source["reason"] == "origin_not_pinned_official_source"
+
+
+def test_official_source_status_rejects_a_source_version_that_is_not_the_pinned_one():
+    files = _registry_files(ROOT / "tests/fixtures/weaver-cicd/registry")
+    origin = {
+        "repository": semconv_registry.REPOSITORY,
+        "commit": semconv_registry.COMMIT,
+        "version": semconv_registry.VERSION,
+    }
+    verified = weaver_runtime.official_source_status(
+        files=files, origin=origin, pin=semconv_registry.RECORD
+    )
+    assert verified["verified"] is True
+    assert verified["version"] == semconv_registry.VERSION
+
+    # The declared Source version is part of the claimed official identity.
+    wrong = weaver_runtime.official_source_status(
+        files=files, origin={**origin, "version": "9.9.9"}, pin=semconv_registry.RECORD
+    )
+    assert wrong["verified"] is False
+    assert wrong["fatal"] is True
+    assert wrong["reason"] == "official_source_version_mismatch"
+    assert wrong["declared_version"] == "9.9.9"
+    assert wrong["pinned_version"] == semconv_registry.VERSION
+
+    absent = weaver_runtime.official_source_status(
+        files=files,
+        origin={
+            "repository": semconv_registry.REPOSITORY,
+            "commit": semconv_registry.COMMIT,
+        },
+        pin=semconv_registry.RECORD,
+    )
+    assert absent["verified"] is False
+    assert absent["fatal"] is True
+    assert absent["reason"] == "official_source_version_mismatch"
+
+
+def test_coverage_reports_the_certified_version_not_the_declared_one():
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    passed = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    coverage = weaver_runtime.coverage_from_execution(
+        config={
+            "origin": {
+                "repository": semconv_registry.REPOSITORY,
+                "commit": semconv_registry.COMMIT,
+                "version": semconv_registry.VERSION,
+            },
+            "expected_matchers": ["pipeline"],
+        },
+        evaluation=passed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        official_source={
+            "verified": True,
+            "reason": None,
+            "repository": semconv_registry.REPOSITORY,
+            "commit": semconv_registry.COMMIT,
+            "version": semconv_registry.VERSION,
+            "tree_sha256": semconv_registry.TREE_SHA256,
+            "git_tree_sha1": semconv_registry.GIT_TREE_SHA1,
+        },
+    )
+    # Certified identity: version, commit and bytes come from the pin.
+    assert coverage["official_registry_verified"] is True
+    assert coverage["registry_version"] == semconv_registry.VERSION
+    assert coverage["registry_commit"] == semconv_registry.COMMIT
+    assert coverage["official_registry_tree_sha256"] == semconv_registry.TREE_SHA256
+    assert coverage["official_source_reason"] is None
 
 
 def test_coverage_separates_official_registry_from_eci_policy():

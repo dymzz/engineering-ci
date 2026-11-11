@@ -14,8 +14,8 @@ copy over the locked upstream.
 hashes to upstream git tree `b9a819cdbafe936394bd596bb27c3d929ba24ff4`, and
 `registry/cicd/spans.yaml` hashes to upstream blob `ed203885c005ab2462bb0d72f5c28c8fbad19d15`
 (SHA-256 `10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86`).
-`.gitattributes` marks `registry/**` and the manifest as `-text` so checkout
-cannot rewrite those bytes. `engineering_ci.semconv_registry` pins the same
+`.gitattributes` marks the whole fixture `* -text` so checkout cannot rewrite
+any of its bytes. `engineering_ci.semconv_registry` pins the same
 identity for runtime verification; the pinned upstream tree digest is
 `85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963`.
 

@@ -61,13 +61,20 @@ Coverage matrix fields are recorded on each `report.json` under `coverage`
 and are **derived from matched signals** (Registry pin, matchers, Required,
 Rego Advisor digest, Result type, Terminal correlation). `official_registry_verified`
 records whether the Registry bytes reproduce the pinned upstream SemConv tree,
-and `eci_policy_evaluated` records whether ECI's own policies ran. Upstream
-SemConv 1.45.0 declares no Resource Required obligation for the Pipeline span,
-so `resource_required` is `not_applicable` and the Run-ID requirement is
-reported under `eci_run_id_correlation`. `time_provenance` records the observed
-capture and native-sample time sources and precisions; it claims no exact end
-time and no duration. Non-CI/CD fixtures report those obligations as
-`not_applicable`. `passed` applies only to executed applicable obligations.
+together with the certified identity (`registry_version`, `registry_commit`,
+`official_registry_tree_sha256`) taken from the pin rather than from the
+Source's own declaration; a Source that declares a version the pinned release
+does not carry is refused with `official_source_version_mismatch`.
+`eci_policy_evaluated` records whether ECI's own policies ran. Whether a
+Resource Required obligation exists is derived from the Registry that was read,
+so `resource_required` is `not_applicable` for this fixture (upstream SemConv
+1.45.0 declares no entity association for the Pipeline span) and the Run-ID
+requirement is reported under `eci_run_id_correlation`;
+`terminal_gate_failure_reasons` lists every Terminal gate failure reason.
+`time_provenance` records the observed capture and native-sample time sources
+and precisions; it claims no exact end time and no duration. Non-CI/CD fixtures
+report those obligations as `not_applicable`. `passed` applies only to executed
+applicable obligations.
 
 ### Post-completion Plan → `execute-plan` E2E
 

@@ -34,8 +34,14 @@ def _invalid_extensible_result_type(samples):
 
 
 def _time_fraction_digits(value):
-    """Fractional-second digits in a native RFC 3339 timestamp (0 = whole second)."""
-    if not isinstance(value, str) or "." not in value:
+    """Fractional-second digits in a native RFC 3339 timestamp.
+
+    ``None`` means the timestamp was absent. That is not the same as an
+    observed whole-second timestamp, which is ``0``.
+    """
+    if not isinstance(value, str):
+        return None
+    if "." not in value:
         return 0
     digits = 0
     for char in value.split(".", 1)[1]:
@@ -53,16 +59,52 @@ def _time_provenance(items, *, capture_source):
     duration, so no such claim is made here.
     """
     digits = set()
+    missing = 0
     for item in items:
         for key in ("start_time", "end_time"):
-            digits.add(_time_fraction_digits((item or {}).get(key)))
+            observed = _time_fraction_digits((item or {}).get(key))
+            if observed is None:
+                missing += 1
+            else:
+                digits.add(observed)
     return {
+        "status": "recorded",
         "capture_time_source": capture_source,
         "native_sample_time_source": ("weaver_live_check_start_time_end_time_rfc3339"),
         "sample_time_fraction_digits": sorted(digits),
+        "sample_time_missing": missing,
         "exact_end_time_claimed": False,
         "duration_claimed": False,
     }
+
+
+# Every reason the Terminal correlation gate can fail with. The Run-ID
+# correlation subset is reported separately in the coverage matrix.
+TERMINAL_GATE_FAILURE_REASONS = (
+    "terminal_capture_required",
+    "missing_capture_span",
+    "duplicate_capture_span",
+    "terminal_observed_identity_missing",
+    "terminal_run_id_conflict",
+    "terminal_observed_result_missing",
+    "terminal_run_id_mismatch",
+    "terminal_evidence_missing_or_mismatched",
+    "terminal_result_mismatch",
+    "terminal_result_conflict",
+    "terminal_capture_sample_conflict",
+    "terminal_span_not_root",
+    "terminal_attempt_correlation_unverified",
+    "terminal_attempt_extension_invalid",
+    "terminal_attempt_mismatch",
+    "terminal_pipeline_signal_missing",
+)
+
+# The subset of Terminal failures that is the Run-ID correlation itself.
+RUN_ID_CORRELATION_FAILURE_REASONS = (
+    "terminal_observed_identity_missing",
+    "terminal_run_id_mismatch",
+    "terminal_run_id_conflict",
+)
 
 
 def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -> dict:

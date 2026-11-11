@@ -91,9 +91,9 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "47185",
+        "44869",
         "--admin-port",
-        "44191"
+        "36957"
       ],
       "exit_code": 0,
       "stderr": "live.stderr",
@@ -133,6 +133,7 @@
       "cicd.pipeline.task.internal"
     ],
     "matched_spans": 2,
+    "official_registry_tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
     "official_registry_verified": true,
     "official_source_reason": null,
     "passed_means": "only executed applicable obligations above; not full SemConv; official Registry bytes are verified separately from eci_policy_evaluated",
@@ -142,9 +143,28 @@
     "registry_version": "1.45.0",
     "resource_required": "not_applicable",
     "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
+    "resource_required_entities": [],
     "result_type_gate": "executed",
     "scope": "declared_expected_set",
     "terminal_correlation": "executed",
+    "terminal_gate_failure_reasons": [
+      "terminal_capture_required",
+      "missing_capture_span",
+      "duplicate_capture_span",
+      "terminal_observed_identity_missing",
+      "terminal_run_id_conflict",
+      "terminal_observed_result_missing",
+      "terminal_run_id_mismatch",
+      "terminal_evidence_missing_or_mismatched",
+      "terminal_result_mismatch",
+      "terminal_result_conflict",
+      "terminal_capture_sample_conflict",
+      "terminal_span_not_root",
+      "terminal_attempt_correlation_unverified",
+      "terminal_attempt_extension_invalid",
+      "terminal_attempt_mismatch",
+      "terminal_pipeline_signal_missing"
+    ],
     "time_provenance": {
       "capture_time_source": "otlp_span_startTimeUnixNano_endTimeUnixNano",
       "duration_claimed": false,
@@ -153,7 +173,9 @@
       "sample_time_fraction_digits": [
         0,
         3
-      ]
+      ],
+      "sample_time_missing": 0,
+      "status": "recorded"
     }
   },
   "eci_policy_evaluated": true,
@@ -448,7 +470,7 @@
       "official_source": {
         "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
         "fatal": false,
-        "git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
+        "pinned_upstream_git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
         "reason": null,
         "repository": "https://github.com/open-telemetry/semantic-conventions",
         "tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
@@ -2125,7 +2147,7 @@
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:ec49445ddf794621a85c8377f239911c8b3096a471c4b5e0c34db03bac14793d",
+  "source_digest": "sha256:c24fbb0a01a9238d367ad809a2f0cdeb23e853d36e50082a1aea74b8628f43ae",
   "status": "passed",
   "terminal_correlation_status": "passed",
   "time_provenance": {
@@ -2136,7 +2158,9 @@
     "sample_time_fraction_digits": [
       0,
       3
-    ]
+    ],
+    "sample_time_missing": 0,
+    "status": "recorded"
   },
   "tool": "weaver",
   "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",

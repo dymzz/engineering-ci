@@ -70,6 +70,7 @@ def official_source_pin():
         not isinstance(pin, dict)
         or not pin.get("repository")
         or not pin.get("commit")
+        or not pin.get("version")
         or not pin.get("tree_sha256")
     ):
         return None
@@ -108,6 +109,17 @@ def official_source_status(*, files, origin, pin):
             "fatal": True,
             "reason": "official_source_commit_unverified",
         }
+    # The declared Source version is part of the claimed official identity.
+    # A Source may not present a version the pinned upstream release does not
+    # carry, so the bytes and the version are verified together.
+    if (origin or {}).get("version") != pin["version"]:
+        return {
+            "verified": False,
+            "fatal": True,
+            "reason": "official_source_version_mismatch",
+            "declared_version": (origin or {}).get("version"),
+            "pinned_version": pin["version"],
+        }
     actual = registry_tree_digest(files)
     if actual != pin["tree_sha256"]:
         return {
@@ -124,8 +136,36 @@ def official_source_status(*, files, origin, pin):
         "commit": pin["commit"],
         "version": pin.get("version"),
         "tree_sha256": actual,
-        "git_tree_sha1": pin.get("git_tree_sha1"),
+        # The upstream tree object the pinned digest corresponds to. The
+        # runtime recomputes the canonical SHA-256 map, not a git tree object,
+        # so this is the pinned upstream identity and not a local measurement.
+        "pinned_upstream_git_tree_sha1": pin.get("git_tree_sha1"),
     }
+
+
+def _collect_entity_associations(manifest, declared):
+    """Record the entity associations a Registry file declares, keyed by signal.
+
+    Binding a Span Group to an entity is what makes a Resource attribute
+    obligation enforceable, so the coverage matrix is derived from the
+    Registry that was read rather than assumed for every Source.
+    """
+    for group in manifest.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        associations = group.get("entity_associations")
+        group_id = group.get("id")
+        if (
+            not isinstance(associations, list)
+            or not associations
+            or not isinstance(group_id, str)
+            or not group_id
+        ):
+            continue
+        # Native packaging resolves ``span.<signal>`` to the v2 signal type
+        # ``<signal>``.
+        signal = group_id.removeprefix("span.")
+        declared.setdefault(signal, set()).update(str(item) for item in associations)
 
 
 def registry_inputs(config, key="registry", *, verify_official=True):
@@ -135,6 +175,7 @@ def registry_inputs(config, key="registry", *, verify_official=True):
     if not isinstance(expected, dict) or not expected:
         raise ValueError("registry_manifest_invalid")
     actual = {}
+    entity_associations = {}
     for path in sorted(registry.rglob("*")):
         if path.is_symlink():
             raise ValueError("registry_symlink")
@@ -144,6 +185,7 @@ def registry_inputs(config, key="registry", *, verify_official=True):
                 manifest = yaml.safe_load(path.read_text())
                 if not isinstance(manifest, dict):
                     continue
+                _collect_entity_associations(manifest, entity_associations)
                 if manifest.get("dependencies"):
                     raise ValueError(
                         "registry_dependencies_require_local_materialization"
@@ -166,9 +208,14 @@ def registry_inputs(config, key="registry", *, verify_official=True):
         origin=config.get("origin") or {},
         pin=official_source_pin(),
     )
-    if verify_official and official["fatal"]:
-        raise ValueError(official["reason"])
+    if not verify_official:
+        # A derived comparison Registry never gates the run, so it must not
+        # carry a fatal verdict for a run that deliberately continues.
+        official = {**official, "fatal": False, "role": "comparison_baseline"}
     identity["official_source"] = official
+    identity["entity_associations"] = {
+        signal: sorted(items) for signal, items in entity_associations.items()
+    }
     return registry, identity
 
 
@@ -266,7 +313,13 @@ def validate_matcher_config(path):
 
 
 def coverage_from_execution(
-    *, config, evaluation, advice_meta, kind, official_source=None
+    *,
+    config,
+    evaluation,
+    advice_meta,
+    kind,
+    official_source=None,
+    entity_associations=None,
 ):
     """Derive coverage statuses from this run's matched signals and advisors.
 
@@ -275,10 +328,9 @@ def coverage_from_execution(
     ``executed`` for fixtures that did not match Pipeline/Task groups.
 
     Official SemConv obligations and ECI-owned obligations are reported
-    separately. The pinned upstream Registry declares no entity association
-    for ``span.cicd.pipeline.run.server``, so it defines no Resource Required
-    obligation; ECI's own Run-ID requirement is a correlation rule enforced by
-    ``weaver-terminal`` and is reported under its own rule ID.
+    separately. Whether a Resource Required obligation exists is derived from
+    the Registry that was read; ECI's own Run-ID requirement is a correlation
+    rule enforced by ``weaver-terminal`` and is reported under its own rule ID.
     """
     matched_signals = set()
     matched_matchers = set()
@@ -299,17 +351,32 @@ def coverage_from_execution(
     cicd_pipeline = "cicd.pipeline.run.server" in matched_signals
     cicd_task = "cicd.pipeline.task.internal" in matched_signals
     cicd_applicable = cicd_pipeline or cicd_task
+    official_verified = bool((official_source or {}).get("verified"))
     if cicd_applicable:
         required_status = "executed"
         result_status = "executed"
     else:
         required_status = "not_applicable"
         result_status = "not_applicable"
-    # The pinned upstream SemConv Registry declares no entity association for
-    # span.cicd.pipeline.run.server, so it defines no Resource Required
-    # obligation to execute. ECI's own Run-ID requirement is a correlation
-    # rule reported under eci_run_id_correlation, not a SemConv obligation.
-    resource_status = "not_applicable"
+    # A Resource Required obligation exists only when the Registry binds the
+    # matched Span Group to an entity. Derive it from the Registry that was
+    # read: the pinned upstream SemConv Registry declares no such binding for
+    # the Pipeline span, but another Registry may.
+    pipeline_entities = (entity_associations or {}).get("cicd.pipeline.run.server")
+    if cicd_pipeline and pipeline_entities:
+        resource_status = "executed"
+        resource_entities = list(pipeline_entities)
+        resource_basis = "registry_declares_entity_association:" + ",".join(
+            pipeline_entities
+        )
+    else:
+        resource_status = "not_applicable"
+        resource_entities = []
+        resource_basis = (
+            "pinned_semconv_declares_no_entity_association_for_pipeline_span"
+            if official_verified
+            else "registry_declares_no_entity_association_for_pipeline_span"
+        )
     if not cicd_applicable:
         advice_status = "not_applicable"
     elif advice_meta:
@@ -326,11 +393,29 @@ def coverage_from_execution(
             terminal_status = "executed"
         else:
             terminal_status = "not_verified"
-    official_verified = bool((official_source or {}).get("verified"))
+    provenance = (evaluation or {}).get("time_provenance")
+    if not isinstance(provenance, dict):
+        provenance = {
+            "status": "not_applicable",
+            "reason": "no_observed_span_time_source",
+        }
+    # On a verified Source the certified identity comes from the pin, so the
+    # Report never presents a Source-declared version as officially certified.
     return {
-        "registry_version": (config.get("origin") or {}).get("version"),
-        "registry_commit": (config.get("origin") or {}).get("commit"),
+        "registry_version": (
+            (official_source or {}).get("version")
+            if official_verified
+            else (config.get("origin") or {}).get("version")
+        ),
+        "registry_commit": (
+            (official_source or {}).get("commit")
+            if official_verified
+            else (config.get("origin") or {}).get("commit")
+        ),
         "official_registry_verified": official_verified,
+        # Certified identity in one place: version, commit and the canonical
+        # digest of the verified Registry bytes.
+        "official_registry_tree_sha256": (official_source or {}).get("tree_sha256"),
         "official_source_reason": (official_source or {}).get("reason"),
         "expected_matchers": list(config.get("expected_matchers") or []),
         "matched_matchers": sorted(matched_matchers),
@@ -344,24 +429,21 @@ def coverage_from_execution(
         },
         "result_type_gate": result_status,
         "resource_required": resource_status,
-        "resource_required_basis": (
-            "pinned_semconv_declares_no_entity_association_for_pipeline_span"
-        ),
+        "resource_required_basis": resource_basis,
+        "resource_required_entities": resource_entities,
         "eci_run_id_correlation": {
             "rule_id": "eci_terminal_run_id_correlation",
             "status": terminal_status,
             "attribute": "cicd.pipeline.run.id",
             "enforced_by": "weaver-terminal",
-            "failure_reasons": [
-                "terminal_observed_identity_missing",
-                "terminal_run_id_mismatch",
-                "terminal_run_id_conflict",
-            ],
+            "failure_reasons": list(weaver.RUN_ID_CORRELATION_FAILURE_REASONS),
         },
         "terminal_correlation": terminal_status,
-        # Time source and precision are recorded separately: a Terminal PASS
-        # does not prove an exact end time or a duration.
-        "time_provenance": (evaluation or {}).get("time_provenance"),
+        "terminal_gate_failure_reasons": list(weaver.TERMINAL_GATE_FAILURE_REASONS),
+        # Always a structured record, so a consumer can read it without
+        # special-casing a missing or absent observation. A Terminal PASS does
+        # not prove an exact end time or a duration.
+        "time_provenance": provenance,
         "eci_policy_evaluated": (
             advice_status == "executed"
             or result_status == "executed"
@@ -557,7 +639,8 @@ def run(kind, config_path):
         "commands": [],
         "inputs": {},
         # Official upstream Registry bytes and ECI-owned policy evaluation are
-        # separate facts; a failed run claims neither.
+        # independent of the gate result: a run can evaluate ECI policies and
+        # fail, and a run can fail before any policy was evaluated.
         "official_registry_verified": False,
         "eci_policy_evaluated": False,
     }
@@ -575,10 +658,17 @@ def run(kind, config_path):
         report["inputs"]["config_sha256"] = digest(config_file)
         report["origin"] = config.get("origin", {})
         registry, identity = registry_inputs(config)
+        # The declared entity associations are an internal input to the
+        # coverage decision; the Report carries the decision, not every
+        # metric group's bindings.
+        entity_associations = identity.pop("entity_associations", None)
+        # Record the Registry identity before any refusal, so the Report still
+        # carries the computed digests that explain the refusal.
         report["inputs"]["registry"] = identity
-        report["official_registry_verified"] = bool(
-            (identity.get("official_source") or {}).get("verified")
-        )
+        official = identity.get("official_source") or {}
+        report["official_registry_verified"] = bool(official.get("verified"))
+        if official.get("fatal"):
+            raise ValueError(official["reason"])
         packaged = package_registry(report, registry)
         if kind == "registry":
             if "baseline" in config:
@@ -686,6 +776,7 @@ def run(kind, config_path):
                 advice_meta=advice_meta,
                 kind=kind,
                 official_source=identity.get("official_source"),
+                entity_associations=entity_associations,
             )
         )
         report["coverage"] = coverage
