@@ -31,10 +31,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
+# End-time quality for Pipeline Root (PR #81 / Issue #75).
+END_TIME_EXACT = "exact"
+END_TIME_OBSERVED_UPPER_BOUND = "observed_upper_bound"
+END_TIME_UNPROVEN = "unproven"
 # OTLP SpanKind numeric values.
 SPAN_KIND_INTERNAL = 1
 SPAN_KIND_SERVER = 2
@@ -370,12 +374,21 @@ def produce(
     task_facts=None,
     jobs_observed_total=None,
     noncompleted_jobs_total=None,
+    terminal_status=None,
+    terminal_observed_at_ns=None,
+    end_time_mode=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
     ``task_facts`` (optional) is the Attempt's Job set to emit as Task Spans.
     When omitted, a single Job carried on ``facts`` is used (mapping/env/diagnostic
     ``--job-id`` path). Full Attempt coverage passes every completed Job here.
+
+    Pipeline Root end-time modes (PR #81):
+    - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is proven
+    - ``observed_upper_bound``: post-run observer may emit Root ending at
+      ``terminal_observed_at_ns`` with ``end_time_quality=observed_upper_bound``;
+      this never claims exact native Run duration.
     """
     # Persisted producer identity predates the package move; it is not an import path.
     report = {
@@ -387,7 +400,10 @@ def produce(
             "otlp_delivered": False,
             "otlp_json_prepared": False,
             "otlp_json_exported": False,
+            "rpc_accepted": False,
+            "receiver_observed": False,
             "weaver_pass": False,
+            "trusted": False,
             "github_api_fetched": bool(github_api_fetched),
             # API fetch is not full #75 trusted provenance / Weaver evidence.
             "github_authenticated": False,
@@ -405,6 +421,15 @@ def produce(
         "status": "incomplete",
         "reason": None,
         "facts": asdict(facts),
+        "terminal": {
+            "status": terminal_status,
+            "conclusion": facts.run_conclusion,
+            "observed_at_ns": terminal_observed_at_ns,
+            "run_completed_at_ns": facts.run_completed_at_ns,
+            "end_time_source": None,
+            "end_time_quality": END_TIME_UNPROVEN,
+            "exact_run_duration": False,
+        },
         "coverage": {
             "jobs_observed_total": jobs_observed_total,
             "completed_jobs_total": completed_jobs_total,
@@ -412,6 +437,8 @@ def produce(
             "job_selection": job_selection,
             "task_spans_emitted": 0,
             "tasks_omitted": [],
+            "pipeline_terminal_covered": False,
+            "task_coverage": "none",
         },
         "resource": {},
         "spans": [],
@@ -439,11 +466,53 @@ def produce(
     spans = []
     reasons = []
 
+    if task_facts is not None:
+        # Entries are GitHubRunFacts or (source_index, GitHubRunFacts).
+        job_sources = []
+        for entry in task_facts:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                job_sources.append(entry)
+            else:
+                job_sources.append((None, entry))
+    elif facts.job_id or facts.job_name or facts.job_conclusion is not None:
+        job_sources = [(None, facts)]
+    else:
+        job_sources = []
+
     run_result, run_error_type = map_github_result(facts.run_conclusion)
+    root_end_ns = None
+    end_time_quality = END_TIME_UNPROVEN
+    end_time_source = None
     if run_result is None and facts.run_conclusion is not None:
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
+    elif facts.run_bounds_state == "ok":
+        root_end_ns = facts.run_completed_at_ns
+        end_time_quality = END_TIME_EXACT
+        end_time_source = "run_completed_at"
+    elif end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
+        if facts.run_started_at_ns is None:
+            reasons.append("missing_run_timestamps")
+        elif terminal_observed_at_ns is None:
+            reasons.append("missing_terminal_observed_at")
+        elif terminal_observed_at_ns < facts.run_started_at_ns:
+            reasons.append("invalid_terminal_observed_at")
+        else:
+            # Observed upper bound must not precede any emitted Job end.
+            max_job_end = None
+            for _, job_facts in job_sources:
+                if job_facts.job_completed_at_ns is None:
+                    continue
+                if max_job_end is None or job_facts.job_completed_at_ns > max_job_end:
+                    max_job_end = job_facts.job_completed_at_ns
+            if max_job_end is not None and terminal_observed_at_ns < max_job_end:
+                reasons.append("terminal_observed_before_jobs")
+            else:
+                root_end_ns = terminal_observed_at_ns
+                end_time_quality = END_TIME_OBSERVED_UPPER_BOUND
+                end_time_source = "terminal_observed_at"
+                reasons.append("temporal_precision_unverified")
     elif facts.run_bounds_state == "missing":
         # Prefer explicit missing completed-at over fabricating from updated_at.
         if facts.run_updated_at_ns is not None and facts.run_completed_at_ns is None:
@@ -452,7 +521,12 @@ def produce(
             reasons.append("missing_run_timestamps")
     elif facts.run_bounds_state == "invalid":
         reasons.append("invalid_run_timestamps")
-    else:
+
+    report["terminal"]["end_time_quality"] = end_time_quality
+    report["terminal"]["end_time_source"] = end_time_source
+    report["terminal"]["exact_run_duration"] = end_time_quality == END_TIME_EXACT
+
+    if root_end_ns is not None and facts.run_started_at_ns is not None:
         pipeline_attrs = {
             ATTR_PIPELINE_NAME: facts.workflow_name,
             ATTR_PIPELINE_RUN_ID: pipeline_run_id,
@@ -470,23 +544,10 @@ def produce(
                 span_id=pipeline_span_id,
                 parent_span_id=None,
                 start_ns=facts.run_started_at_ns,
-                end_ns=facts.run_completed_at_ns,
+                end_ns=root_end_ns,
                 attributes=pipeline_attrs,
             )
         )
-
-    if task_facts is not None:
-        # Entries are GitHubRunFacts or (source_index, GitHubRunFacts).
-        job_sources = []
-        for entry in task_facts:
-            if isinstance(entry, tuple) and len(entry) == 2:
-                job_sources.append(entry)
-            else:
-                job_sources.append((None, entry))
-    elif facts.job_id or facts.job_name or facts.job_conclusion is not None:
-        job_sources = [(None, facts)]
-    else:
-        job_sources = []
 
     omitted = []
     for source_index, job_facts in job_sources:
@@ -526,11 +587,13 @@ def produce(
                 attributes=task_attrs,
             )
         )
+        # Exact Run bounds: Job after completed Run is inconsistent.
+        # Observed upper-bound Root already refused earlier if observed < job end.
         if (
-            run_job_temporal_inconsistency(job_facts)
+            end_time_quality == END_TIME_EXACT
+            and run_job_temporal_inconsistency(job_facts)
             and "inconsistent_run_job_timestamps" not in reasons
         ):
-            # Keep individually valid candidate spans; do not claim produced.
             reasons.append("inconsistent_run_job_timestamps")
 
     report["spans"] = spans
@@ -548,14 +611,36 @@ def produce(
         # --job-id is a diagnostic slice; all_completed may omit incomplete Jobs.
         reasons.append("partial_job_coverage")
 
+    pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
+    task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
+    report["coverage"]["pipeline_terminal_covered"] = pipeline_ok
+    if completed_jobs_total == 0 and not job_sources:
+        report["coverage"]["task_coverage"] = "empty"
+    elif (
+        completed_jobs_total is not None
+        and completed_jobs_total == emitted
+        and not omitted
+        and job_selection == "all_completed"
+    ):
+        report["coverage"]["task_coverage"] = "complete"
+    elif task_ok or omitted:
+        report["coverage"]["task_coverage"] = "partial"
+    else:
+        report["coverage"]["task_coverage"] = "none"
+
     if not spans:
         report["status"] = "incomplete"
         report["reason"] = reasons[0] if reasons else "no_candidate_spans"
         return report
 
-    pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
-    task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
+    # Pipeline-only Root is valid when the Attempt has no Task obligation
+    # (e.g. cancelled before Jobs). Exact dual coverage without reasons → produced.
+    no_task_obligation = not job_sources and completed_jobs_total in {None, 0}
     if pipeline_ok and task_ok and not reasons:
+        report["status"] = "produced"
+        report["reason"] = None
+        return report
+    if pipeline_ok and no_task_obligation and not reasons:
         report["status"] = "produced"
         report["reason"] = None
         return report
@@ -669,6 +754,87 @@ def write_otlp_json(report, path):
     # File artifact only — not live OTLP/gRPC delivery.
     report["claims"]["otlp_delivered"] = False
     return path
+
+
+def export_otlp_grpc(
+    report,
+    endpoint,
+    *,
+    insecure=False,
+    timeout=30.0,
+    channel_factory=None,
+    stub_factory=None,
+):
+    """Export prepared OTLP spans via TraceService.Export (OTLP/gRPC).
+
+    Sets ``claims.rpc_accepted`` only when the RPC returns without rejected
+    spans. Does **not** set ``receiver_observed``, ``otlp_delivered``,
+    ``weaver_pass``, or ``trusted`` — those require separate evidence.
+    """
+    if not report.get("otlp_json"):
+        raise TelemetryError("otlp_json_unavailable")
+    if not endpoint or not str(endpoint).strip():
+        raise TelemetryError("otlp_endpoint_invalid")
+    endpoint = str(endpoint).strip()
+    request = decode_otlp_export_request(report["otlp_json"])
+    try:
+        import grpc
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
+            TraceServiceStub,
+        )
+    except ImportError as error:
+        raise TelemetryError("otlp_grpc_unavailable") from error
+
+    channel = None
+    close_channel = False
+    try:
+        if channel_factory is not None:
+            channel = channel_factory(endpoint, insecure=insecure)
+        elif insecure:
+            channel = grpc.insecure_channel(endpoint)
+            close_channel = True
+        else:
+            channel = grpc.secure_channel(endpoint, grpc.ssl_channel_credentials())
+            close_channel = True
+        stub = (
+            stub_factory(channel)
+            if stub_factory is not None
+            else TraceServiceStub(channel)
+        )
+        response = stub.Export(request, timeout=timeout)
+    except TelemetryError:
+        raise
+    except Exception as error:
+        report["claims"]["rpc_accepted"] = False
+        report["claims"]["otlp_delivered"] = False
+        code = getattr(error, "code", None)
+        detail = code() if callable(code) else None
+        name = getattr(detail, "name", None) if detail is not None else None
+        if name == "DEADLINE_EXCEEDED":
+            raise TelemetryError("otlp_grpc_timeout") from error
+        if name in {"UNAVAILABLE", "FAILED_PRECONDITION"}:
+            raise TelemetryError("otlp_grpc_unavailable_endpoint") from error
+        raise TelemetryError("otlp_grpc_failed") from error
+    finally:
+        if close_channel and channel is not None:
+            channel.close()
+
+    partial = getattr(response, "partial_success", None)
+    rejected = int(getattr(partial, "rejected_spans", 0) or 0) if partial else 0
+    warning = str(getattr(partial, "error_message", "") or "") if partial else ""
+    report["claims"]["otlp_rpc_endpoint"] = endpoint
+    report["claims"]["otlp_rpc_rejected_spans"] = rejected
+    if warning:
+        report["claims"]["otlp_rpc_warning"] = warning
+    if rejected > 0:
+        report["claims"]["rpc_accepted"] = False
+        report["claims"]["otlp_delivered"] = False
+        raise TelemetryError("otlp_grpc_partial_reject")
+    report["claims"]["rpc_accepted"] = True
+    # ACK ≠ downstream persistence or Weaver PASS.
+    report["claims"]["otlp_delivered"] = False
+    report["claims"]["receiver_observed"] = False
+    return response
 
 
 def otlp_wire_to_protobuf_json(payload):
@@ -1051,6 +1217,31 @@ def main(argv=None):
         type=Path,
         help="Write OTLP/JSON ExportTraceServiceRequest body (file flush only)",
     )
+    parser.add_argument(
+        "--otlp-endpoint",
+        help="OTLP/gRPC host:port for TraceService.Export (ACK ≠ Weaver PASS)",
+    )
+    parser.add_argument(
+        "--otlp-insecure",
+        action="store_true",
+        help="Use insecure gRPC channel (controlled local receivers only)",
+    )
+    parser.add_argument(
+        "--end-time-mode",
+        choices=[END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND],
+        help=(
+            "Pipeline Root end-time mode; observed_upper_bound requires "
+            "--terminal-observed-at and never claims exact Run duration"
+        ),
+    )
+    parser.add_argument(
+        "--terminal-observed-at",
+        help="RFC3339 / unix-ns observation time for post-run Root upper bound",
+    )
+    parser.add_argument(
+        "--terminal-status",
+        help="Native Run status at observation (e.g. completed)",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     source = "env"
@@ -1095,6 +1286,9 @@ def main(argv=None):
     else:
         facts = facts_from_actions_env()
         source = "env"
+    terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
+    if args.terminal_observed_at and terminal_observed_at_ns is None:
+        parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
     report = produce(
         facts,
         source=source,
@@ -1104,6 +1298,9 @@ def main(argv=None):
         task_facts=task_facts,
         jobs_observed_total=jobs_observed_total,
         noncompleted_jobs_total=noncompleted_jobs_total,
+        terminal_status=args.terminal_status,
+        terminal_observed_at_ns=terminal_observed_at_ns,
+        end_time_mode=args.end_time_mode,
     )
     attach_otlp_json(report)
     export_error = None
@@ -1113,6 +1310,16 @@ def main(argv=None):
         except TelemetryError as error:
             export_error = error
             sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+    if args.otlp_endpoint is not None and export_error is None:
+        try:
+            export_otlp_grpc(
+                report,
+                args.otlp_endpoint,
+                insecure=args.otlp_insecure,
+            )
+        except TelemetryError as error:
+            export_error = error
+            sys.stderr.write(f"cicd-telemetry grpc failed: {error.code}\n")
     # Persist candidate after export attempt so claims match actual flush outcome.
     try:
         write_artifact(report, args.output)
@@ -1134,6 +1341,9 @@ def main(argv=None):
         if args.otlp_json is not None:
             print(f"otlp_json: {args.otlp_json}")
             print(f"otlp_json_exported: {report['claims']['otlp_json_exported']}")
+        if args.otlp_endpoint is not None:
+            print(f"otlp_endpoint: {args.otlp_endpoint}")
+            print(f"rpc_accepted: {report['claims'].get('rpc_accepted')}")
     if report["status"] in {"produced", "partial"}:
         return 0
     return 3

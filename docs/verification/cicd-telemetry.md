@@ -35,6 +35,11 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
 | Native API evidence (single Job) | Fixed Run `42821429094` Attempt 1 + `--job-id` | See [cicd-telemetry-evidence](./cicd-telemetry-evidence/README.md) |
 | Native API evidence (`all_completed`) | Same Run, no `--job-id`, 3 Task Spans | See [cicd-telemetry-evidence-all-completed](./cicd-telemetry-evidence-all-completed/README.md) |
+| Observed upper-bound Root | `--end-time-mode observed_upper_bound` + observation ≥ Job ends | SERVER Root emitted; `temporal_precision_unverified`; `exact_run_duration=false` |
+| Observation before Job end | Observed timestamp `<` max Job `completed_at` | No Root; `terminal_observed_before_jobs` |
+| Pipeline-only Root | Exact bounds, `completed_jobs_total=0`, empty tasks | `produced` with SERVER only; `task_coverage=empty` |
+| OTLP/gRPC ACK | `--otlp-endpoint` Export success, zero rejects | `rpc_accepted=true`; still `otlp_delivered=false` |
+| OTLP/gRPC partial reject | `partial_success.rejected_spans > 0` | `otlp_grpc_partial_reject`; `rpc_accepted=false` |
 
 Run:
 

@@ -1080,3 +1080,120 @@ def test_cli_otlp_unavailable_for_incomplete_exits_3(tmp_path):
     assert not (tmp_path / "otel.json").exists()
     payload = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert payload["otlp_json_exported"] is False
+
+
+def test_observed_upper_bound_emits_root_with_unverified_precision():
+    facts = complete_facts(run_completed_at_ns=None)
+    observed = JOB_END + 5_000_000_000
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        terminal_status="completed",
+    )
+    assert report["status"] == "partial"
+    assert report["reason"] == "temporal_precision_unverified"
+    assert report["terminal"]["end_time_quality"] == (
+        cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND
+    )
+    assert report["terminal"]["exact_run_duration"] is False
+    assert report["coverage"]["pipeline_terminal_covered"] is True
+    pipeline = next(
+        span
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_SERVER
+    )
+    assert pipeline["end_time_unix_nano"] == observed
+
+
+def test_observed_upper_bound_rejects_observation_before_jobs():
+    facts = complete_facts(run_completed_at_ns=None)
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=JOB_END - 1,
+        terminal_status="completed",
+    )
+    assert report["coverage"]["pipeline_terminal_covered"] is False
+    assert report["reason"] == "terminal_observed_before_jobs"
+    assert not any(
+        span["kind"] == cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
+    )
+
+
+def test_pipeline_only_root_when_no_task_obligation():
+    facts = complete_facts(
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+        job_started_at_ns=None,
+        job_completed_at_ns=None,
+    )
+    report = cicd_telemetry.produce(facts, completed_jobs_total=0, task_facts=[])
+    assert report["coverage"]["pipeline_terminal_covered"] is True
+    assert report["coverage"]["task_coverage"] == "empty"
+    assert report["status"] == "produced"
+    assert len(report["spans"]) == 1
+    assert report["spans"][0]["kind"] == cicd_telemetry.SPAN_KIND_SERVER
+
+
+def test_export_otlp_grpc_sets_rpc_accepted_without_delivered():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_otlp_json(report)
+
+    class _Response:
+        partial_success = None
+
+    class _Stub:
+        def __init__(self, channel):
+            self.channel = channel
+
+        def Export(self, request, timeout=None):
+            assert request.resource_spans
+            return _Response()
+
+    cicd_telemetry.export_otlp_grpc(
+        report,
+        "localhost:4317",
+        insecure=True,
+        channel_factory=lambda endpoint, insecure=False: object(),
+        stub_factory=_Stub,
+    )
+    assert report["claims"]["rpc_accepted"] is True
+    assert report["claims"]["otlp_delivered"] is False
+    assert report["claims"]["receiver_observed"] is False
+    assert report["claims"]["weaver_pass"] is False
+    assert report["claims"]["trusted"] is False
+
+
+def test_export_otlp_grpc_partial_reject_fails():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_otlp_json(report)
+
+    class _Partial:
+        rejected_spans = 2
+        error_message = "dropped"
+
+    class _Response:
+        partial_success = _Partial()
+
+    class _Stub:
+        def __init__(self, channel):
+            pass
+
+        def Export(self, request, timeout=None):
+            return _Response()
+
+    try:
+        cicd_telemetry.export_otlp_grpc(
+            report,
+            "localhost:4317",
+            insecure=True,
+            channel_factory=lambda endpoint, insecure=False: object(),
+            stub_factory=_Stub,
+        )
+        raise AssertionError("expected otlp_grpc_partial_reject")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_grpc_partial_reject"
+    assert report["claims"]["rpc_accepted"] is False

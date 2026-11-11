@@ -25,13 +25,19 @@ Inputs (first → second slice):
 | Field | Source | Role |
 | --- | --- | --- |
 | Run start | GitHub `run_started_at` / explicit mapping | Exact Pipeline start when present |
-| Run end | Explicit `run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT` only | Exact Pipeline end bound |
+| Run end (exact) | Explicit `run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT` only | Exact Pipeline end bound (`end_time_quality=exact`) |
+| Terminal observed | Post-run `--terminal-observed-at` | Observation upper bound only (`end_time_quality=observed_upper_bound`); never renamed to native `completed_at` |
 | Run `updated_at` | GitHub Workflow Run object update time | Provenance / estimate only (`run_updated_at_ns`); **not** a proven Attempt completed-at |
 | Job bounds | Job `started_at` / `completed_at` | Exact Task bounds |
 
 Without a proven Run completed-at the producer reports
 `run_completed_at_unproven` (when `updated_at` is present) or
-`missing_run_timestamps` and does **not** emit a completed Pipeline Span end.
+`missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
+With `--end-time-mode observed_upper_bound` and a valid observation time that is
+not earlier than Job ends, a SERVER Root may be emitted with
+`temporal_precision_unverified` and `exact_run_duration=false`. Coverage records
+`pipeline_terminal_covered` separately from `task_coverage` so cancelled Runs
+with zero Jobs can still carry a Pipeline-only Root.
 
 ### Pipeline Run identity (cross-PR with #74)
 
@@ -95,16 +101,32 @@ Caller `--facts` JSON is untrusted input, not authenticated GitHub provenance.
 `claims.otlp_json_prepared` means an in-memory OTLP body exists.
 `claims.otlp_json_exported` becomes true **only** after a successful file
 flush (path + sha256 recorded when asserted; file bytes use LF so digests
-match on Windows). The candidate artifact is written **after** the export
-attempt so top-level mirrors match claims. `claims.otlp_delivered` stays
-false until a later live OTLP/gRPC slice. `github_api_fetched` records an
-API read; it is **not** a Weaver/trusted provenance claim. Flush failures
-exit 3 with `otlp_json_flush_failed` / `otlp_json_unavailable` and do not
+match on Windows). `--otlp-endpoint` performs OTLP/gRPC `TraceService.Export`;
+`claims.rpc_accepted` is true only when the RPC returns with zero
+`rejected_spans`. `rpc_accepted` is **not** `receiver_observed`,
+`otlp_delivered`, `weaver_pass`, or `trusted`. The candidate artifact is
+written **after** the export attempt so top-level mirrors match claims.
+`github_api_fetched` records an API read; it is **not** a Weaver/trusted
+provenance claim. Flush / gRPC failures exit 3 with stable codes and do not
 invent spans. CLI exit 0 for `partial` is candidate-generator only —
 consumers must read `report.status` / coverage, not promote exit 0 to
 terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
 or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
 emitted).
+
+Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
+`workflow_run` completion of `Engineering CI` (and supports
+`workflow_dispatch`). It reads the source Run via Attempt API using the event
+identity, never executes the source PR head, and uploads candidate/OTLP
+artifacts. Live Collector endpoint wiring remains optional via repository
+secrets / dispatch inputs; absence of a receiver leaves `rpc_accepted=false`.
+
+### O2 Logs / O3 Metrics (PR #81 decisions)
+
+| Signal | Source → producer → OTLP | Status |
+| --- | --- | --- |
+| LogRecord | Native Job logs / Check artifacts → later `ExportLogsServiceRequest` | `not_observable` in this commit until a real Job-log → LogRecord path lands with receiver evidence |
+| Metrics (`pending`/`executing`/`finalizing`, duration/active) | Only when real state intervals exist | `not_observable` until native state intervals are proven; do not invent queue/finalization duration from Trace alone |
 
 When GitHub reports `total_count`, a short/empty page before that count is
 `jobs_page_incomplete`. Missing `gh` or API timeouts map to
@@ -114,10 +136,11 @@ Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
 Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
 [cicd-telemetry-evidence-all-completed](../verification/cicd-telemetry-evidence-all-completed/README.md).
-Baseline after PR #76/#77/#78/#80: candidate Pipeline/Task construction, Attempt
-API/OTLP file export, and full completed-Job Task coverage live under
-`engineering_ci.cicd_telemetry`. Exact post-run Pipeline Root, live OTLP/gRPC,
-and trusted admission remain open on Issue #75.
+Baseline after PR #76/#77/#78/#80/#81: candidate Pipeline/Task construction,
+Attempt API/OTLP file export, full completed-Job Task coverage, observed
+upper-bound Root mode, and OTLP/gRPC Export ACK claims live under
+`engineering_ci.cicd_telemetry`. Receiver-observed evidence, O2/O3 signal
+emission, and trusted admission remain open on Issue #75.
 
 ## Related
 
