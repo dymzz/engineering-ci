@@ -1,0 +1,5 @@
+# The CI/CD Registry is a byte-exact copy of the pinned upstream SemConv
+# model/ tree. Checkout must not rewrite its bytes, so the official source
+# identity stays verifiable on every platform.
+registry/** -text
+registry-sha256.json -text

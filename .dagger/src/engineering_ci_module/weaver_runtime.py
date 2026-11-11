@@ -46,7 +46,88 @@ def local_path(root, value):
     return path
 
 
-def registry_inputs(config, key="registry"):
+def registry_tree_digest(files):
+    """Canonical digest over a Registry-relative path -> file SHA-256 map.
+
+    Must stay identical to ``engineering_ci.semconv_registry.registry_tree_digest``:
+    the pinned official tree digest is compared against this value.
+    """
+    return hashlib.sha256(
+        json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def official_source_pin():
+    """Read the pinned official upstream identity injected by the Dagger module."""
+    raw = os.environ.get("ECI_SEMCONV_OFFICIAL_SOURCE")
+    if not raw:
+        return None
+    try:
+        pin = json.loads(raw)
+    except ValueError:
+        return None
+    if (
+        not isinstance(pin, dict)
+        or not pin.get("repository")
+        or not pin.get("tree_sha256")
+    ):
+        return None
+    return pin
+
+
+def official_source_status(*, files, origin, pin):
+    """Decide whether the Registry bytes match the pinned official upstream source.
+
+    The pin lives outside the Source Directory, so editing the Registry and its
+    manifest together cannot satisfy it. ``fatal`` marks a claimed official
+    identity that could not be verified; the caller must refuse to continue.
+    """
+    if not pin:
+        return {
+            "verified": False,
+            "fatal": True,
+            "reason": "official_source_pin_unavailable",
+        }
+    claimed = (origin or {}).get("repository")
+    if not claimed:
+        return {
+            "verified": False,
+            "fatal": False,
+            "reason": "origin_repository_undeclared",
+        }
+    if claimed != pin["repository"]:
+        return {
+            "verified": False,
+            "fatal": False,
+            "reason": "origin_not_pinned_official_source",
+        }
+    if (origin or {}).get("commit") != pin["commit"]:
+        return {
+            "verified": False,
+            "fatal": True,
+            "reason": "official_source_commit_unverified",
+        }
+    actual = registry_tree_digest(files)
+    if actual != pin["tree_sha256"]:
+        return {
+            "verified": False,
+            "fatal": True,
+            "reason": "official_registry_bytes_mismatch",
+            "actual_tree_sha256": actual,
+        }
+    return {
+        "verified": True,
+        "fatal": False,
+        "reason": None,
+        "repository": pin["repository"],
+        "commit": pin["commit"],
+        "version": pin.get("version"),
+        "tree_sha256": actual,
+        "git_tree_sha1": pin.get("git_tree_sha1"),
+    }
+
+
+def registry_inputs(config, key="registry", *, verify_official=True):
     registry = local_path(ROOT, config[key])
     expected_path = local_path(ROOT, config[key + "_manifest"])
     expected = json.loads(expected_path.read_text())
@@ -76,7 +157,18 @@ def registry_inputs(config, key="registry"):
                         raise ValueError("publication_not_in_registry_closure")
     if actual != expected:
         raise ValueError("registry_bytes_mismatch")
-    return registry, {"manifest_sha256": digest(expected_path), "files": actual}
+    identity = {"manifest_sha256": digest(expected_path), "files": actual}
+    # A baseline Registry is an optional derived comparison input; only the
+    # packaged Registry itself is claimed against the pinned official source.
+    official = official_source_status(
+        files=actual,
+        origin=config.get("origin") or {},
+        pin=official_source_pin(),
+    )
+    if verify_official and official["fatal"]:
+        raise ValueError(official["reason"])
+    identity["official_source"] = official
+    return registry, identity
 
 
 def command(report, name, argv):
@@ -172,12 +264,20 @@ def validate_matcher_config(path):
         raise ValueError("policy_external_inputs_unsupported")
 
 
-def coverage_from_execution(*, config, evaluation, advice_meta, kind):
+def coverage_from_execution(
+    *, config, evaluation, advice_meta, kind, official_source=None
+):
     """Derive coverage statuses from this run's matched signals and advisors.
 
     Obligations without an applicable CI/CD signal stay ``not_applicable``.
     Applicable but unloaded Advisors stay ``not_verified``. Never hard-code
     ``executed`` for fixtures that did not match Pipeline/Task groups.
+
+    Official SemConv obligations and ECI-owned obligations are reported
+    separately. The pinned upstream Registry declares no entity association
+    for ``span.cicd.pipeline.run.server``, so it defines no Resource Required
+    obligation; ECI's own Run-ID requirement is a correlation rule enforced by
+    ``weaver-terminal`` and is reported under its own rule ID.
     """
     matched_signals = set()
     matched_matchers = set()
@@ -204,10 +304,11 @@ def coverage_from_execution(*, config, evaluation, advice_meta, kind):
     else:
         required_status = "not_applicable"
         result_status = "not_applicable"
-    if cicd_pipeline:
-        resource_status = "executed"
-    else:
-        resource_status = "not_applicable"
+    # The pinned upstream SemConv Registry declares no entity association for
+    # span.cicd.pipeline.run.server, so it defines no Resource Required
+    # obligation to execute. ECI's own Run-ID requirement is a correlation
+    # rule reported under eci_run_id_correlation, not a SemConv obligation.
+    resource_status = "not_applicable"
     if not cicd_applicable:
         advice_status = "not_applicable"
     elif advice_meta:
@@ -224,9 +325,12 @@ def coverage_from_execution(*, config, evaluation, advice_meta, kind):
             terminal_status = "executed"
         else:
             terminal_status = "not_verified"
+    official_verified = bool((official_source or {}).get("verified"))
     return {
         "registry_version": (config.get("origin") or {}).get("version"),
         "registry_commit": (config.get("origin") or {}).get("commit"),
+        "official_registry_verified": official_verified,
+        "official_source_reason": (official_source or {}).get("reason"),
         "expected_matchers": list(config.get("expected_matchers") or []),
         "matched_matchers": sorted(matched_matchers),
         "matched_signals": sorted(matched_signals),
@@ -239,9 +343,30 @@ def coverage_from_execution(*, config, evaluation, advice_meta, kind):
         },
         "result_type_gate": result_status,
         "resource_required": resource_status,
+        "resource_required_basis": (
+            "pinned_semconv_declares_no_entity_association_for_pipeline_span"
+        ),
+        "eci_run_id_correlation": {
+            "rule_id": "eci_terminal_run_id_correlation",
+            "status": terminal_status,
+            "attribute": "cicd.pipeline.run.id",
+            "enforced_by": "weaver-terminal",
+            "failure_reasons": [
+                "terminal_observed_identity_missing",
+                "terminal_run_id_mismatch",
+                "terminal_run_id_conflict",
+            ],
+        },
         "terminal_correlation": terminal_status,
+        "eci_policy_evaluated": (
+            advice_status == "executed"
+            or result_status == "executed"
+            or terminal_status == "executed"
+        ),
         "passed_means": (
-            "only executed applicable obligations above; not full SemConv"
+            "only executed applicable obligations above; not full SemConv; "
+            "official Registry bytes are verified separately from "
+            "eci_policy_evaluated"
         ),
     }
 
@@ -427,6 +552,10 @@ def run(kind, config_path):
         "trusted": False,
         "commands": [],
         "inputs": {},
+        # Official upstream Registry bytes and ECI-owned policy evaluation are
+        # separate facts; a failed run claims neither.
+        "official_registry_verified": False,
+        "eci_policy_evaluated": False,
     }
     report["source_digest"] = os.environ.get("ECI_SOURCE_DIGEST")
     report["tool_asset_sha256"] = os.environ.get("ECI_WEAVER_ASSET_SHA256")
@@ -443,10 +572,15 @@ def run(kind, config_path):
         report["origin"] = config.get("origin", {})
         registry, identity = registry_inputs(config)
         report["inputs"]["registry"] = identity
+        report["official_registry_verified"] = bool(
+            (identity.get("official_source") or {}).get("verified")
+        )
         packaged = package_registry(report, registry)
         if kind == "registry":
             if "baseline" in config:
-                baseline, baseline_identity = registry_inputs(config, "baseline")
+                baseline, baseline_identity = registry_inputs(
+                    config, "baseline", verify_official=False
+                )
                 report["inputs"]["baseline"] = baseline_identity
                 baseline_package = package_registry(report, baseline, "baseline")
                 command(
@@ -547,9 +681,11 @@ def run(kind, config_path):
                 evaluation=evaluation,
                 advice_meta=advice_meta,
                 kind=kind,
+                official_source=identity.get("official_source"),
             )
         )
         report["coverage"] = coverage
+        report["eci_policy_evaluated"] = bool(coverage.get("eci_policy_evaluated"))
         report["gate_exit_code"] = 0 if report["status"] == "passed" else 1
         return report
     except (

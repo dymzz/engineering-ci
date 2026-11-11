@@ -12,45 +12,98 @@ Packaging registry `/workspace/registry`
   │ definition_manifest/2.0' to the manifest.
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ destination/common.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/client/
+  │ registry.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/battery-metrics.yaml
+  ⚠ The signal group `event.session.start` does not set `requirement_level`.
+  │ This will be required in the future.
+  │ Provenance: "/workspace/registry/session/events.yaml"
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ couchdb.yaml
+  ⚠ The signal group `event.session.end` does not set `requirement_level`.
+  │ This will be required in the future.
+  │ Provenance: "/workspace/registry/session/events.yaml"
 
 
-  ⚠ The signal group `event.db.client.operation.exception` does not set
-  │ `requirement_level`. This will be required in the future.
-  │ Provenance: "/workspace/registry/db/events.yaml"
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
   │ events.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
-  │ connect-rpc.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/common.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ common.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ exceptions/common.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/azure/
   │ cosmosdb-spans.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/gcp.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/aws/
+  │ lambda-spans.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/aws.yaml
+  │ microsoft/spans.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ messaging/spans.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ postgresql/spans.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
   │ elasticsearch/spans.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/thread/
+  │ registry.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/server/
+  │ common.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ destination/registry.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
+  │ registry.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/power-supply-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/fan-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/network-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ redis.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
+  │ connect-rpc.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ messaging/kafka.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/server/
@@ -58,24 +111,20 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/memory-metrics.yaml
-
-
-  ⚠ The signal group `event.faas.invocation.exception` does not set
-  │ `requirement_level`. This will be required in the future.
-  │ Provenance: "/workspace/registry/faas/events.yaml"
+  │ hardware/battery-metrics.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/faas/
-  │ events.yaml
+  │ spans.yaml
+
+
+  ⚠ The signal group `span.db.client` does not set `requirement_level`. This
+  │ will be required in the future.
+  │ Provenance: "/workspace/registry/db/spans.yaml"
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ common.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/network/
-  │ common.yaml
+  │ spans.yaml
 
 
   ⚠ The signal group `event.rpc.client.call.exception` does not set
@@ -96,12 +145,8 @@ Packaging registry `/workspace/registry`
   │ grpc.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/azure/
-  │ common.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/android/
-  │ resources.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
+  │ dubbo.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
@@ -109,7 +154,7 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/thread/
-  │ registry.yaml
+  │ common.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/client/
@@ -117,38 +162,10 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/tape-drive-metrics.yaml
+  │ destination/common.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/fan-metrics.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/mariadb/
-  │ spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ redis.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
-  │ json-rpc.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ cloudevents/common.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/aws/
-  │ dynamodb-spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/source/
-  │ registry.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/server/
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
   │ common.yaml
 
 
@@ -161,6 +178,49 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/logical-disk-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/physical-disk-metrics.yaml
+
+
+  ⚠ The signal group `event.faas.invocation.exception` does not set
+  │ `requirement_level`. This will be required in the future.
+  │ Provenance: "/workspace/registry/faas/events.yaml"
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/faas/
+  │ events.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ hbase.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ messaging/rocketmq.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/mysql/
+  │ spans.yaml
+
+
+  ⚠ The signal group `event.http.client.request.exception` does not set
+  │ `requirement_level`. This will be required in the future.
+  │ Provenance: "/workspace/registry/http/events.yaml"
+
+
+  ⚠ The signal group `event.http.server.request.exception` does not set
+  │ `requirement_level`. This will be required in the future.
+  │ Provenance: "/workspace/registry/http/events.yaml"
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/http/
+  │ events.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
   │ hardware/voltage-metrics.yaml
 
 
@@ -168,17 +228,41 @@ Packaging registry `/workspace/registry`
   │ hardware/temperature-metrics.yaml
 
 
-  ⚠ The signal group `event.exception` does not set `requirement_level`. This
-  │ will be required in the future.
-  │ Provenance: "/workspace/registry/exceptions/events.yaml"
+  ⚠ Invalid attribute definition detected while resolving '"/
+  │ workspace/registry/faas/deprecated/registry-deprecated.yaml"'
+  │ (group_id='registry.faas.deprecated', attribute_id='faas.invocation_id').
+  │ Missing stability field.
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ exceptions/events.yaml
+  ⚠ Invalid attribute definition detected while resolving '"/
+  │ workspace/registry/faas/deprecated/registry-deprecated.yaml"'
+  │ (group_id='registry.faas.deprecated', attribute_id='faas.time'). Missing
+  │ stability field.
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/mariadb/
+  │ spans.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ mongodb.yaml
+
+
+  ⚠ The signal group `event.db.client.operation.exception` does not set
+  │ `requirement_level`. This will be required in the future.
+  │ Provenance: "/workspace/registry/db/events.yaml"
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ events.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
+  │ json-rpc.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/aws/
-  │ lambda-spans.yaml
+  │ dynamodb-spans.yaml
 
 
   ⚠ The signal group `event.messaging.create.exception` does not set
@@ -210,40 +294,37 @@ Packaging registry `/workspace/registry`
   │ messaging/events.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ postgresql/spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ opentracing/deprecated/registry-deprecated.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/source/
   │ common.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
-  │ registry.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/cpu-metrics.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/common.yaml
+  │ hardware/gpu-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/network/
+  │ common.yaml
+
+
+  ⚠ The signal group `event.exception` does not set `requirement_level`. This
+  │ will be required in the future.
+  │ Provenance: "/workspace/registry/exceptions/events.yaml"
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/logical-disk-metrics.yaml
+  │ exceptions/events.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/azure/
+  │ common.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/common-metrics.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/faas/
-  │ spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ hbase.yaml
+  │ cloudevents/common.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/aws/
@@ -251,53 +332,15 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ microsoft/spans.yaml
+  │ opentracing/deprecated/registry-deprecated.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/spans.yaml
+  │ oracledb/spans.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/rocketmq.yaml
-
-
-  ⚠ The signal group `event.http.client.request.exception` does not set
-  │ `requirement_level`. This will be required in the future.
-  │ Provenance: "/workspace/registry/http/events.yaml"
-
-
-  ⚠ The signal group `event.http.server.request.exception` does not set
-  │ `requirement_level`. This will be required in the future.
-  │ Provenance: "/workspace/registry/http/events.yaml"
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/http/
-  │ events.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/client/
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/source/
   │ registry.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/power-supply-metrics.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/network-metrics.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ mongodb.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/azure.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ destination/registry.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
@@ -305,15 +348,19 @@ Packaging registry `/workspace/registry`
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/gpu-metrics.yaml
+  │ hardware/common-metrics.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/rpc/
-  │ dubbo.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
+  │ couchdb.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ exceptions/common.yaml
+  │ hardware/tape-drive-metrics.yaml
+
+
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
+  │ hardware/memory-metrics.yaml
 
 
   ⚠ The signal group `event.azure.resource.log` does not set
@@ -325,68 +372,21 @@ Packaging registry `/workspace/registry`
   │ events.yaml
 
 
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/thread/
-  │ common.yaml
-
-
-  ⚠ The signal group `event.session.start` does not set `requirement_level`.
-  │ This will be required in the future.
-  │ Provenance: "/workspace/registry/session/events.yaml"
-
-
-  ⚠ The signal group `event.session.end` does not set `requirement_level`.
-  │ This will be required in the future.
-  │ Provenance: "/workspace/registry/session/events.yaml"
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/session/
-  │ events.yaml
+  ⚠ File format `definition/2` is not yet stable: /workspace/registry/android/
+  │ resources.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/cpu-metrics.yaml
+  │ messaging/gcp.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ hardware/physical-disk-metrics.yaml
-
-
-  ⚠ Invalid attribute definition detected while resolving '"/
-  │ workspace/registry/faas/deprecated/registry-deprecated.yaml"'
-  │ (group_id='registry.faas.deprecated', attribute_id='faas.invocation_id').
-  │ Missing stability field.
-
-
-  ⚠ Invalid attribute definition detected while resolving '"/
-  │ workspace/registry/faas/deprecated/registry-deprecated.yaml"'
-  │ (group_id='registry.faas.deprecated', attribute_id='faas.time'). Missing
-  │ stability field.
-
-
-  ⚠ The signal group `span.db.client` does not set `requirement_level`. This
-  │ will be required in the future.
-  │ Provenance: "/workspace/registry/db/spans.yaml"
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/db/
-  │ spans.yaml
+  │ messaging/aws.yaml
 
 
   ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ messaging/kafka.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/mysql/
-  │ spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/
-  │ oracledb/spans.yaml
-
-
-  ⚠ File format `definition/2` is not yet stable: /workspace/registry/source/
-  │ common.yaml
+  │ messaging/azure.yaml
 
 
 
-Total execution time: 0.251234992s
+Total execution time: 0.258753762s

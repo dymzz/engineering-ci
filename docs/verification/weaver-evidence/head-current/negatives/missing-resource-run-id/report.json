@@ -84,11 +84,11 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "36487",
+        "43193",
         "--admin-port",
-        "59121"
+        "56203"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": "live.stderr",
       "stdout": "live.stdout"
     }
@@ -97,21 +97,46 @@
     "conditionally_required_advice": {
       "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
       "loaded": true,
-      "policy_id": "cicd_conditional_error_type_required"
+      "policy_id": "cicd_conditional_error_type_required",
+      "status": "executed"
+    },
+    "eci_policy_evaluated": true,
+    "eci_run_id_correlation": {
+      "attribute": "cicd.pipeline.run.id",
+      "enforced_by": "weaver-terminal",
+      "failure_reasons": [
+        "terminal_observed_identity_missing",
+        "terminal_run_id_mismatch",
+        "terminal_run_id_conflict"
+      ],
+      "rule_id": "eci_terminal_run_id_correlation",
+      "status": "executed"
     },
     "expected_matchers": [
       "eci.pipeline",
       "eci.task"
     ],
-    "passed_means": "only executed applicable obligations above; not full SemConv",
+    "matched_matchers": [
+      "eci.pipeline",
+      "eci.task"
+    ],
+    "matched_signals": [
+      "cicd.pipeline.run.server",
+      "cicd.pipeline.task.internal"
+    ],
+    "official_registry_verified": true,
+    "official_source_reason": null,
+    "passed_means": "only executed applicable obligations above; not full SemConv; official Registry bytes are verified separately from eci_policy_evaluated",
     "pipeline_task_required": "executed",
     "registry_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
     "registry_version": "1.45.0",
-    "resource_required": "executed_via_pipeline_entity_association",
+    "resource_required": "not_applicable",
+    "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
     "result_type_gate": "executed",
-    "terminal_correlation": "not_applicable"
+    "terminal_correlation": "executed"
   },
-  "exit_code": 1,
+  "eci_policy_evaluated": true,
+  "exit_code": 0,
   "gate_exit_code": 1,
   "inputs": {
     "advice_policies": {
@@ -122,7 +147,7 @@
       "path": "advice-policies",
       "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
     },
-    "config_sha256": "556d1b33c10c337591e74d7bbca021b95aa74b5a292c1ba087f22c88370d488a",
+    "config_sha256": "9af6c5e07dfba757194a087d6e1e466ec3a689a775145925e63d6afcb3c167b4",
     "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
     "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
     "otlp_sha256": "ef5ad1b80c9d17ecd81118a35822aa3185be2e703dfbb0f479bf04a805d7e012",
@@ -160,7 +185,7 @@
         "cicd/entities.yaml": "0a58df92273bc4202b559529a87077db71cb6a3fd1e7e68e6affab8a436fb7cd",
         "cicd/metrics.yaml": "dc2b6eafd6225868ce73da685a3486ca8e6a5ad65b6c6d81dafdb907e1ddb9d1",
         "cicd/registry.yaml": "435a0325fd7f0ab5b387184b3dafc71134b3067bc6894846936d1649d919573b",
-        "cicd/spans.yaml": "018657008072ff2a9f72ed9021b9d20c52384815a5e9c0705c733fdd71c7e2d7",
+        "cicd/spans.yaml": "10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86",
         "cli/spans.yaml": "5986a74e5e910f3ab4cca75ea9bbb2706748c43185fee8660302577781b86560",
         "client/common.yaml": "7bf4e8f3990007a0356674181027d5321b119748d0b3adb4e001415c88b53b19",
         "client/registry.yaml": "1099ae555a40ce17e9e8a4d22f75dcb25aaa84cb22e3f6738554d7c700210386",
@@ -398,8 +423,18 @@
         "webengine/registry.yaml": "4c4b0d1c027bee1bfac5cd70b3632102947ca753ff5497e2e5e4ef1b71b410ec",
         "zos/deprecated/registry-deprecated.yaml": "d65e37265a3258533681ee59b8022495e6867815083014247e27769546803b03"
       },
-      "manifest_sha256": "b0aa2e583d810e5c0137b1e87fd4f927e7bf9a33a60572688dd439b0b111dd99",
-      "resolved_sha256": "6a9ac0b5d5672d0bb3c09167708a74e50bcc8b26b67e7a6ae44c8350e01ed45c"
+      "manifest_sha256": "fe63fb6d71c6d61d4c75816c1614618f2b1f9748e3f20b379a80d297489bdcbf",
+      "official_source": {
+        "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+        "fatal": false,
+        "git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
+        "reason": null,
+        "repository": "https://github.com/open-telemetry/semantic-conventions",
+        "tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+        "verified": true,
+        "version": "1.45.0"
+      },
+      "resolved_sha256": "60a17319b9597218f972ce5cd55904736386e4e8ec18da951fb9a708cc431422"
     }
   },
   "lifecycle": {
@@ -409,7 +444,8 @@
     "shutdown": true,
     "stopped": true
   },
-  "name": "weaver_live",
+  "name": "weaver_terminal",
+  "native_live_status": "passed",
   "native_report": {
     "samples": [
       {
@@ -550,18 +586,6 @@
               },
               {
                 "context": {
-                  "attribute_key": "cicd.pipeline.run.id",
-                  "entity_type": "cicd.pipeline.run"
-                },
-                "id": "entity_required_attribute_not_present",
-                "level": "violation",
-                "message": "Required attribute 'cicd.pipeline.run.id' for entity 'cicd.pipeline.run' is not present in the resource.",
-                "signal_name": "eci pipeline",
-                "signal_type": "span",
-                "type": "PolicyFinding"
-              },
-              {
-                "context": {
                   "attribute_key": "github.actions.run_attempt"
                 },
                 "id": "unexpected_attribute",
@@ -572,7 +596,7 @@
                 "type": "PolicyFinding"
               }
             ],
-            "highest_advice_level": "violation",
+            "highest_advice_level": "improvement",
             "match_info": {
               "entries": [
                 {
@@ -731,8 +755,7 @@
     "statistics": {
       "advice_level_counts": {
         "improvement": 8,
-        "information": 3,
-        "violation": 1
+        "information": 3
       },
       "advice_message_counts": {
         "Attribute 'cicd.pipeline.name' is not stable; stability = release_candidate.": 1,
@@ -744,20 +767,17 @@
         "Attribute 'cicd.pipeline.task.run.url.full' is not stable; stability = release_candidate.": 1,
         "Attribute 'github.actions.run_attempt' is not in the matched signal or attribute groups.": 1,
         "Conditionally required attribute 'error.type' is not present.": 2,
-        "Opt-in attribute 'cicd.pipeline.action.name' is not present.": 1,
-        "Required attribute 'cicd.pipeline.run.id' for entity 'cicd.pipeline.run' is not present in the resource.": 1
+        "Opt-in attribute 'cicd.pipeline.action.name' is not present.": 1
       },
       "advice_type_counts": {
         "conditionally_required_attribute_not_present": 2,
-        "entity_required_attribute_not_present": 1,
         "not_stable": 7,
         "opt_in_attribute_not_present": 1,
         "unexpected_attribute": 1
       },
       "highest_advice_level_counts": {
-        "improvement": 7,
-        "information": 1,
-        "violation": 1
+        "improvement": 8,
+        "information": 1
       },
       "matchers": [
         {
@@ -2040,7 +2060,7 @@
         "vcs.ref.time": 0,
         "vcs.repository.count": 0
       },
-      "total_advisories": 12,
+      "total_advisories": 11,
       "total_entities": 12,
       "total_entities_by_type": {
         "attribute": 8,
@@ -2050,18 +2070,20 @@
       }
     }
   },
+  "official_registry_verified": true,
   "origin": {
     "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
     "repository": "https://github.com/open-telemetry/semantic-conventions",
     "version": "1.45.0"
   },
-  "reason": "findings",
+  "reason": "terminal_observed_identity_missing",
   "source": {
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:0c9500e8b54bff885210d8c8609ad9bbfa01c7e5e3711c3a26df60eaa58c5fd9",
+  "source_digest": "sha256:0d96dab29f335f0dbd16bfa23e736c95dd4b0b74be04c8c85466897d28da037e",
   "status": "failed",
+  "terminal_correlation_status": "failed",
   "tool": "weaver",
   "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",
   "trusted": false,
