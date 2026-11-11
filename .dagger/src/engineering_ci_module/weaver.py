@@ -33,6 +33,38 @@ def _invalid_extensible_result_type(samples):
     return None
 
 
+def _time_fraction_digits(value):
+    """Fractional-second digits in a native RFC 3339 timestamp (0 = whole second)."""
+    if not isinstance(value, str) or "." not in value:
+        return 0
+    digits = 0
+    for char in value.split(".", 1)[1]:
+        if not char.isdigit():
+            break
+        digits += 1
+    return digits
+
+
+def _time_provenance(items, *, capture_source):
+    """Record where the observed span times came from and what they do not prove.
+
+    A Terminal PASS proves the declared Run/Attempt/result binding and a
+    completed Root span. It does not prove an exact pipeline end time or a
+    duration, so no such claim is made here.
+    """
+    digits = set()
+    for item in items:
+        for key in ("start_time", "end_time"):
+            digits.add(_time_fraction_digits((item or {}).get(key)))
+    return {
+        "capture_time_source": capture_source,
+        "native_sample_time_source": ("weaver_live_check_start_time_end_time_rfc3339"),
+        "sample_time_fraction_digits": sorted(digits),
+        "exact_end_time_claimed": False,
+        "duration_claimed": False,
+    }
+
+
 def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -> dict:
     """Keep the native exit and require explicit sample and matcher coverage."""
     result = {"status": "failed", "exit_code": exit_code, "reason": "report_invalid"}
@@ -346,6 +378,10 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                 result.update(status="failed", reason="span_not_completed")
                 return result
             matched_items.append((wanted, item))
+        result["time_provenance"] = _time_provenance(
+            [item for _, item in matched_items],
+            capture_source="otlp_span_startTimeUnixNano_endTimeUnixNano",
+        )
         if terminal:
             evidence = expected.get("terminal_evidence", {})
             if (

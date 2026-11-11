@@ -64,9 +64,10 @@ records whether the Registry bytes reproduce the pinned upstream SemConv tree,
 and `eci_policy_evaluated` records whether ECI's own policies ran. Upstream
 SemConv 1.45.0 declares no Resource Required obligation for the Pipeline span,
 so `resource_required` is `not_applicable` and the Run-ID requirement is
-reported under `eci_run_id_correlation`. Non-CI/CD fixtures report those
-obligations as `not_applicable`. `passed` applies only to executed applicable
-obligations.
+reported under `eci_run_id_correlation`. `time_provenance` records the observed
+capture and native-sample time sources and precisions; it claims no exact end
+time and no duration. Non-CI/CD fixtures report those obligations as
+`not_applicable`. `passed` applies only to executed applicable obligations.
 
 ### Post-completion Plan → `execute-plan` E2E
 

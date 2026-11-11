@@ -358,6 +358,9 @@ def coverage_from_execution(
             ],
         },
         "terminal_correlation": terminal_status,
+        # Time source and precision are recorded separately: a Terminal PASS
+        # does not prove an exact end time or a duration.
+        "time_provenance": (evaluation or {}).get("time_provenance"),
         "eci_policy_evaluated": (
             advice_status == "executed"
             or result_status == "executed"

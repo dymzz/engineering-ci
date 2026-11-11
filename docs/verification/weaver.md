@@ -161,6 +161,16 @@ result and disagree, the terminal bind fails (`terminal_result_conflict`).
 The capture must contain exactly one matching Trace/Span; only then is an
 absent `parentSpanId` accepted as Root.
 
+Live semantics, Terminal correlation and the time source are recorded
+separately, in `coverage.time_provenance`: the capture time source
+(`otlp_span_startTimeUnixNano_endTimeUnixNano`), the native sample time source
+(`weaver_live_check_start_time_end_time_rfc3339`), and the observed fractional
+digits of the native timestamps. A Terminal PASS proves the declared
+Run/Attempt/result binding and a completed Root span — it does **not** prove an
+exact pipeline end time or a duration, and no such claim is made. #75 produces
+the time facts; #52 consumes the error budget and source it actually uses and
+binds that provenance.
+
 `github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
 SemConv Required attribute. A SemConv-only Live Check may PASS without it.
 An explicitly requested `weaver-terminal` Run/Attempt correlation gate must
@@ -310,8 +320,13 @@ revision of this fixture carried a local `entity_associations:
 [cicd.pipeline.run]` block on `span.cicd.pipeline.run.server`; that block is
 not upstream SemConv and was removed to restore the official bytes. The
 `entity.cicd.pipeline.run` entity in `cicd/entities.yaml` is upstream and stays.
+
 Because the fixture must keep those bytes, `tests/fixtures/weaver-cicd/.gitattributes`
-marks `registry/**` and the manifest as `-text`.
+marks the whole fixture as `-text`. Checkout then reproduces the published
+bytes on every platform, so the Registry stays equal to the upstream tree and
+the Plan closure digests (`source_tree_id`, per-file digests, closure digest)
+stay reproducible instead of depending on the generating machine's line
+endings.
 
 ## Package integration with #75 / PR #77
 

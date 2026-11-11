@@ -468,6 +468,18 @@ def test_fixture_registry_carries_no_local_entity_association():
     assert "entity.cicd.pipeline.run" in entities
 
 
+def test_fixture_bytes_are_platform_independent():
+    # The fixture is a byte-stable input closure: checkout must not rewrite its
+    # bytes, or the Plan closure digests stop being reproducible.
+    fixture = ROOT / "tests/fixtures/weaver-cicd"
+    attributes = (fixture / ".gitattributes").read_text(encoding="utf-8")
+    assert "* -text" in attributes
+    for path in sorted(fixture.rglob("*")):
+        if not path.is_file():
+            continue
+        assert b"\r\n" not in path.read_bytes(), path
+
+
 def test_official_source_status_verifies_the_pinned_registry():
     files = _registry_files(ROOT / "tests/fixtures/weaver-cicd/registry")
     status = weaver_runtime.official_source_status(
@@ -574,3 +586,28 @@ def test_coverage_does_not_claim_official_verification_without_the_pin():
     assert coverage["official_registry_verified"] is False
     assert coverage["official_source_reason"] == "official_source_pin_unavailable"
     assert coverage["eci_policy_evaluated"] is True
+
+
+def test_time_provenance_records_source_without_claiming_duration():
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    passed = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    provenance = passed["time_provenance"]
+    assert provenance["capture_time_source"] == (
+        "otlp_span_startTimeUnixNano_endTimeUnixNano"
+    )
+    assert provenance["native_sample_time_source"] == (
+        "weaver_live_check_start_time_end_time_rfc3339"
+    )
+    # A Terminal PASS must not be read as an exact end time or a duration.
+    assert provenance["exact_end_time_claimed"] is False
+    assert provenance["duration_claimed"] is False
+    assert provenance["sample_time_fraction_digits"] == [0]
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {}, "expected_matchers": ["pipeline"]},
+        evaluation=passed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+    )
+    assert coverage["time_provenance"] == provenance

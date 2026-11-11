@@ -84,9 +84,9 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "44697",
+        "45869",
         "--admin-port",
-        "37175"
+        "41477"
       ],
       "exit_code": 1,
       "stderr": "live.stderr",
@@ -95,7 +95,7 @@
   ],
   "coverage": {
     "conditionally_required_advice": {
-      "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
+      "digest": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718",
       "loaded": true,
       "policy_id": "cicd_conditional_error_type_required",
       "status": "executed"
@@ -133,7 +133,8 @@
     "resource_required": "not_applicable",
     "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
     "result_type_gate": "executed",
-    "terminal_correlation": "not_applicable"
+    "terminal_correlation": "not_applicable",
+    "time_provenance": null
   },
   "eci_policy_evaluated": true,
   "exit_code": 1,
@@ -141,16 +142,16 @@
   "inputs": {
     "advice_policies": {
       "files": {
-        "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+        "cicd-error-type.rego": "ccd04b0de169014fe769a70214c4cd5b7af7a7a086ea509f819b5bd97f3df056",
         "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
       },
       "path": "advice-policies",
-      "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
+      "sha256": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718"
     },
-    "config_sha256": "e29f4f4dee953b713df2e7f4578c17163537a1af25c8e16e4805ff51989b6ace",
-    "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
-    "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
-    "otlp_sha256": "edd2e6972331bf7794d71f6cf312378bff65fd42e7570b685d6deb076593f7c1",
+    "config_sha256": "2efe1da8c8e6d6db1100d32a9f6115bc761beaba565cf23e0b811168e4421780",
+    "expectations_sha256": "b1f7fbbbe51e68f232ab0a74fbf72ef5a4000a3dde8eed11b3ff7e9aaada7920",
+    "matcher_sha256": "ce831748e16c6d27264de5bdf4b4857f00ca7c68d619f2e6f8f595f66f359a5c",
+    "otlp_sha256": "ecbbea40a35a2b562e9fc2935b5ceeb4a182f9d5700ffa4851adcf362bfa59ed",
     "registry": {
       "files": {
         "README.md": "477fedb015c089eddd1ac1d06c11539013610aefe3b78e969322f11d705f5a7d",
@@ -2114,7 +2115,7 @@
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:0d96dab29f335f0dbd16bfa23e736c95dd4b0b74be04c8c85466897d28da037e",
+  "source_digest": "sha256:ec49445ddf794621a85c8377f239911c8b3096a471c4b5e0c34db03bac14793d",
   "status": "failed",
   "tool": "weaver",
   "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",

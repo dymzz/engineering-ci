@@ -1,8 +1,8 @@
 {
-  "actual_closure_digest": "7bc63fc51d59f9e6546bd0c2b2acfc11a55f1c24826d8cf38aa81ee82e36da30",
+  "actual_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
   "checks": [
     {
-      "actual_closure_digest": "7bc63fc51d59f9e6546bd0c2b2acfc11a55f1c24826d8cf38aa81ee82e36da30",
+      "actual_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
       "attempt_correlation": {
         "attempt": 1,
         "authenticated": false,
@@ -95,9 +95,9 @@
             "--otlp-grpc-address",
             "127.0.0.1",
             "--otlp-grpc-port",
-            "45463",
+            "47185",
             "--admin-port",
-            "34387"
+            "44191"
           ],
           "exit_code": 0,
           "stderr": "live.stderr",
@@ -106,7 +106,7 @@
       ],
       "coverage": {
         "conditionally_required_advice": {
-          "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
+          "digest": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718",
           "loaded": true,
           "policy_id": "cicd_conditional_error_type_required",
           "status": "executed"
@@ -148,7 +148,17 @@
         "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
         "result_type_gate": "executed",
         "scope": "declared_expected_set",
-        "terminal_correlation": "executed"
+        "terminal_correlation": "executed",
+        "time_provenance": {
+          "capture_time_source": "otlp_span_startTimeUnixNano_endTimeUnixNano",
+          "duration_claimed": false,
+          "exact_end_time_claimed": false,
+          "native_sample_time_source": "weaver_live_check_start_time_end_time_rfc3339",
+          "sample_time_fraction_digits": [
+            0,
+            3
+          ]
+        }
       },
       "eci_policy_evaluated": true,
       "exit_code": 0,
@@ -157,16 +167,16 @@
       "inputs": {
         "advice_policies": {
           "files": {
-            "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+            "cicd-error-type.rego": "ccd04b0de169014fe769a70214c4cd5b7af7a7a086ea509f819b5bd97f3df056",
             "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
           },
           "path": "advice-policies",
-          "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
+          "sha256": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718"
         },
-        "config_sha256": "fa48a2272ce2e394db50d734df209d81b8e78beb7282740941373b7417f0eb91",
-        "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
-        "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
-        "otlp_sha256": "b598e795ffebc39c2d6f9aaf5c35187aa0d4562104233547e0ee74910bb2bcac",
+        "config_sha256": "eaae711ad215a2b6a5edf5c19e04904c9669146c6e001261a13b7ab23ca98c70",
+        "expectations_sha256": "b1f7fbbbe51e68f232ab0a74fbf72ef5a4000a3dde8eed11b3ff7e9aaada7920",
+        "matcher_sha256": "ce831748e16c6d27264de5bdf4b4857f00ca7c68d619f2e6f8f595f66f359a5c",
+        "otlp_sha256": "41edb0ba10e1ae4e3d34dd94b9b12f5d17e759edce4bfc2c24d3c2ed2f534cf7",
         "registry": {
           "files": {
             "README.md": "477fedb015c089eddd1ac1d06c11539013610aefe3b78e969322f11d705f5a7d",
@@ -1791,17 +1801,27 @@
         "version": "1.45.0"
       },
       "phase": "post_completion",
-      "plan_closure_digest": "7bc63fc51d59f9e6546bd0c2b2acfc11a55f1c24826d8cf38aa81ee82e36da30",
+      "plan_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
       "reason": null,
       "selected": "selected",
       "source": {
         "attempt": 1,
         "run_id": "controlled-42/1"
       },
-      "source_digest": "sha256:0d96dab29f335f0dbd16bfa23e736c95dd4b0b74be04c8c85466897d28da037e",
+      "source_digest": "sha256:ec49445ddf794621a85c8377f239911c8b3096a471c4b5e0c34db03bac14793d",
       "source_tree_verified": "verified",
       "status": "passed",
       "terminal_correlation_status": "passed",
+      "time_provenance": {
+        "capture_time_source": "otlp_span_startTimeUnixNano_endTimeUnixNano",
+        "duration_claimed": false,
+        "exact_end_time_claimed": false,
+        "native_sample_time_source": "weaver_live_check_start_time_end_time_rfc3339",
+        "sample_time_fraction_digits": [
+          0,
+          3
+        ]
+      },
       "tool": "weaver",
       "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",
       "trusted": false,
@@ -1812,13 +1832,13 @@
   "framework": "unittest",
   "input_closure_verified": "verified",
   "kind": "engineering-ci-execution-report",
-  "plan_closure_digest": "7bc63fc51d59f9e6546bd0c2b2acfc11a55f1c24826d8cf38aa81ee82e36da30",
+  "plan_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
   "plan_execution_tree": null,
   "prerequisites": [],
   "reason": null,
   "schema_version": 1,
-  "source_digest": "6df54894949a6466467f0d6087ebe9824e32a7a2b3adddd11fd2e9aa9b907338",
-  "source_tree_id": "6df54894949a6466467f0d6087ebe9824e32a7a2b3adddd11fd2e9aa9b907338",
+  "source_digest": "36ec577513f9439fe02b22ee8e1eeeabd451ac46a57b9233590e0545224914d4",
+  "source_tree_id": "36ec577513f9439fe02b22ee8e1eeeabd451ac46a57b9233590e0545224914d4",
   "source_tree_verified": "verified",
   "status": "passed",
   "targets": [],
