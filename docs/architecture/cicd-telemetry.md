@@ -33,11 +33,16 @@ Inputs (first → second slice):
 Without a proven Run completed-at the producer reports
 `run_completed_at_unproven` (when `updated_at` is present) or
 `missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
-With `--end-time-mode observed_upper_bound` and a valid observation time that is
-not earlier than Job ends, a SERVER Root may be emitted with
-`temporal_precision_unverified` and `exact_run_duration=false`. Coverage records
-`pipeline_terminal_covered` separately from `task_coverage` so cancelled Runs
-with zero Jobs can still carry a Pipeline-only Root.
+With `--end-time-mode observed_upper_bound`, native Attempt API
+`run_status=completed`, a mapped terminal conclusion, and a valid observation
+time that is not earlier than Job ends, a SERVER Root may be emitted with
+`temporal_precision_unverified` and `exact_run_duration=false`. Event hints are
+conflict-checked against the Attempt API and never substitute for API status.
+Coverage records `pipeline_terminal_covered` separately from `task_coverage`,
+plus a machine-readable `expected_completed_jobs` inventory for #52 hand-off.
+`terminal_provenance` (and ECI extension Span attrs `eci.cicd.end_time_quality`
+/ `eci.cicd.exact_run_duration`) carry Root identity and time quality so #74
+Terminal consumers cannot treat an observed upper bound as exact duration.
 
 ### Pipeline Run identity (cross-PR with #74)
 
@@ -138,9 +143,11 @@ Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
 [cicd-telemetry-evidence-all-completed](../verification/cicd-telemetry-evidence-all-completed/README.md).
 Baseline after PR #76/#77/#78/#80/#81: candidate Pipeline/Task construction,
 Attempt API/OTLP file export, full completed-Job Task coverage, observed
-upper-bound Root mode, and OTLP/gRPC Export ACK claims live under
-`engineering_ci.cicd_telemetry`. Receiver-observed evidence, O2/O3 signal
-emission, and trusted admission remain open on Issue #75.
+upper-bound Root mode (API `status=completed` gated), Expected Job inventory,
+terminal provenance, and OTLP/gRPC Export ACK client live under
+`engineering_ci.cicd_telemetry`. **Live receiver network evidence is not yet
+accepted for this PR** (endpoint optional via `ECI_OTLP_ENDPOINT`); O2/O3
+native Log/Metric emission and trusted admission remain open on Issue #75.
 
 ## Related
 

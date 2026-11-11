@@ -1083,7 +1083,7 @@ def test_cli_otlp_unavailable_for_incomplete_exits_3(tmp_path):
 
 
 def test_observed_upper_bound_emits_root_with_unverified_precision():
-    facts = complete_facts(run_completed_at_ns=None)
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
     observed = JOB_END + 5_000_000_000
     report = cicd_telemetry.produce(
         facts,
@@ -1107,7 +1107,7 @@ def test_observed_upper_bound_emits_root_with_unverified_precision():
 
 
 def test_observed_upper_bound_rejects_observation_before_jobs():
-    facts = complete_facts(run_completed_at_ns=None)
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
     report = cicd_telemetry.produce(
         facts,
         end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
@@ -1197,3 +1197,64 @@ def test_export_otlp_grpc_partial_reject_fails():
     except cicd_telemetry.TelemetryError as error:
         assert error.code == "otlp_grpc_partial_reject"
     assert report["claims"]["rpc_accepted"] is False
+
+
+def test_observed_root_requires_api_completed_status():
+    facts = complete_facts(
+        run_completed_at_ns=None,
+        run_status="in_progress",
+        run_conclusion="success",
+    )
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=JOB_END + 5_000_000_000,
+        terminal_status="completed",
+    )
+    assert report["reason"] == "run_not_completed"
+    assert report["coverage"]["pipeline_terminal_covered"] is False
+
+
+def test_event_api_status_conflict_blocks_observed_root():
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=JOB_END + 5_000_000_000,
+        event_status="in_progress",
+    )
+    assert report["reason"] == "event_api_status_conflict"
+
+
+def test_expected_completed_jobs_inventory_tracks_omission():
+    run_facts = complete_facts(
+        job_id=None, job_name=None, job_url=None, job_conclusion=None
+    )
+    good = complete_facts(job_id="1", job_name="ok", job_url="https://example.test/1")
+    bad = complete_facts(
+        job_id="2",
+        job_name="bad",
+        job_url=None,
+        job_conclusion="success",
+    )
+    stubs = [
+        {"source_index": 0, "job_id": "1", "job_url": "https://example.test/1"},
+        {"source_index": 1, "job_id": "2", "job_url": None},
+        {"source_index": 2, "job_id": "3", "job_url": "https://example.test/3"},
+    ]
+    report = cicd_telemetry.produce(
+        run_facts,
+        task_facts=[(0, good), (1, bad)],
+        completed_jobs_total=3,
+        job_selection="job_id",
+        expected_job_stubs=stubs,
+    )
+    expected = report["coverage"]["expected_completed_jobs"]
+    assert len(expected) == 3
+    assert expected[0]["emitted"] is True
+    assert expected[1]["omitted"] is True
+    assert expected[2]["omit_reason"] == "not_selected_job_id_slice"
+    assert (
+        report["terminal_provenance"]["end_time_quality"]
+        == cicd_telemetry.END_TIME_EXACT
+    )

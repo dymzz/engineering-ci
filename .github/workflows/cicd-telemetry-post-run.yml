@@ -78,53 +78,92 @@ jobs:
             RUN_ID="${INPUT_RUN_ID}"
             ATTEMPT="${INPUT_ATTEMPT}"
             REPO="${INPUT_REPO:-$FALLBACK_REPO}"
-            STATUS="completed"
-            CONCLUSION=""
+            # Do not invent completed; Attempt API is authoritative.
+            EVENT_STATUS=""
+            EVENT_CONCLUSION=""
             HEAD_SHA=""
           else
             RUN_ID="${WR_ID}"
             ATTEMPT="${WR_ATTEMPT}"
             REPO="${WR_REPO:-$FALLBACK_REPO}"
-            STATUS="${WR_STATUS}"
-            CONCLUSION="${WR_CONCLUSION}"
+            EVENT_STATUS="${WR_STATUS}"
+            EVENT_CONCLUSION="${WR_CONCLUSION}"
             HEAD_SHA="${WR_SHA}"
           fi
-          if [[ -z "${RUN_ID}" || -z "${ATTEMPT}" || "${ATTEMPT}" -lt 1 ]]; then
-            echo "missing or invalid source Run/Attempt" >&2
+          if [[ ! "${RUN_ID}" =~ ^[0-9]+$ ]] || [[ ! "${ATTEMPT}" =~ ^[0-9]+$ ]]; then
+            echo "RUN_ID/ATTEMPT must be positive integers" >&2
+            exit 1
+          fi
+          if [[ "${ATTEMPT}" -lt 1 ]]; then
+            echo "attempt must be >= 1" >&2
             exit 1
           fi
           {
             echo "run_id=${RUN_ID}"
             echo "attempt=${ATTEMPT}"
             echo "repository=${REPO}"
-            echo "status=${STATUS}"
-            echo "conclusion=${CONCLUSION}"
+            echo "event_status=${EVENT_STATUS}"
+            echo "event_conclusion=${EVENT_CONCLUSION}"
             echo "head_sha=${HEAD_SHA}"
-            echo "observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Produce all_completed candidate + OTLP/JSON
+        id: produce
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ steps.source.outputs.repository }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+          EVENT_STATUS: ${{ steps.source.outputs.event_status }}
+          EVENT_CONCLUSION: ${{ steps.source.outputs.event_conclusion }}
+          EVENT_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+          OTLP_ENDPOINT: ${{ vars.ECI_OTLP_ENDPOINT }}
+          OTLP_INSECURE: ${{ vars.ECI_OTLP_INSECURE }}
         run: |
           set -euo pipefail
           uv sync
           mkdir -p artifacts/cicd-telemetry
+          EXTRA=()
+          if [[ -n "${EVENT_STATUS}" ]]; then
+            EXTRA+=(--event-status "${EVENT_STATUS}")
+          fi
+          if [[ -n "${EVENT_CONCLUSION}" ]]; then
+            EXTRA+=(--event-conclusion "${EVENT_CONCLUSION}")
+          fi
+          if [[ -n "${EVENT_HEAD_SHA}" ]]; then
+            EXTRA+=(--event-head-sha "${EVENT_HEAD_SHA}")
+          fi
+          if [[ -n "${OTLP_ENDPOINT}" ]]; then
+            EXTRA+=(--otlp-endpoint "${OTLP_ENDPOINT}")
+            if [[ "${OTLP_INSECURE}" == "true" ]]; then
+              EXTRA+=(--otlp-insecure)
+            fi
+          fi
+          set +e
           uv run python -m engineering_ci.cicd_telemetry \
-            --repository "${{ steps.source.outputs.repository }}" \
-            --run-id "${{ steps.source.outputs.run_id }}" \
-            --attempt "${{ steps.source.outputs.attempt }}" \
+            --repository "${SOURCE_REPO}" \
+            --run-id "${SOURCE_RUN_ID}" \
+            --attempt "${SOURCE_ATTEMPT}" \
             --end-time-mode observed_upper_bound \
-            --terminal-observed-at "${{ steps.source.outputs.observed_at }}" \
-            --terminal-status "${{ steps.source.outputs.status }}" \
             --output artifacts/cicd-telemetry/candidate.json \
             --otlp-json artifacts/cicd-telemetry/otel.json \
-            --json | tee artifacts/cicd-telemetry/cli.stdout.json
+            --json \
+            "${EXTRA[@]}" \
+            > artifacts/cicd-telemetry/cli.stdout.json \
+            2> artifacts/cicd-telemetry/stderr.log
+          code=$?
+          set -e
+          printf '%s\n' "${code}" > artifacts/cicd-telemetry/producer.exit
+          if [[ ! -s artifacts/cicd-telemetry/cli.stdout.json ]]; then
+            printf '{}\n' > artifacts/cicd-telemetry/cli.stdout.json
+          fi
+          exit "${code}"
 
       - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() }}
         with:
           name: cicd-telemetry-${{ steps.source.outputs.run_id }}-${{ steps.source.outputs.attempt }}
           path: artifacts/cicd-telemetry/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14

@@ -62,6 +62,9 @@ ATTR_VCS_HEAD_REVISION = "vcs.ref.head.revision"
 # GitHub-native fact until the fixed SemConv registry confirms an official key.
 ATTR_GITHUB_RUN_ATTEMPT = "github.actions.run_attempt"
 ATTR_GITHUB_REPOSITORY = "github.repository"
+# ECI extension attributes (not official SemConv Required keys).
+ATTR_ECI_END_TIME_QUALITY = "eci.cicd.end_time_quality"
+ATTR_ECI_EXACT_RUN_DURATION = "eci.cicd.exact_run_duration"
 
 # Justified GitHub conclusion → SemConv cicd.*.result only.
 # Native GitHub values remain in facts.*; neutral/action_required/stale stay
@@ -105,6 +108,9 @@ class GitHubRunFacts:
     # not a proven exact Attempt completed-at (PR #77 P1-2).
     run_updated_at_ns: int | None = None
     run_url: str | None = None
+    # Native Attempt `status` from GitHub API (e.g. completed / in_progress).
+    # Required for observed_upper_bound Root; never invent from conclusion alone.
+    run_status: str | None = None
 
     @property
     def has_run_identity(self):
@@ -256,6 +262,7 @@ def facts_from_actions_env(env=None):
         ),
         run_updated_at_ns=parse_time_ns(_text(env, "ENGINEERING_CI_RUN_UPDATED_AT")),
         run_url=_text(env, "ENGINEERING_CI_RUN_URL"),
+        run_status=_text(env, "ENGINEERING_CI_RUN_STATUS"),
     )
 
 
@@ -300,6 +307,7 @@ def facts_from_mapping(value):
             value.get("run_updated_at_ns", value.get("run_updated_at"))
         ),
         run_url=_text(value, "run_url"),
+        run_status=_text(value, "run_status"),
     )
 
 
@@ -377,6 +385,9 @@ def produce(
     terminal_status=None,
     terminal_observed_at_ns=None,
     end_time_mode=None,
+    event_status=None,
+    event_conclusion=None,
+    expected_job_stubs=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
@@ -387,8 +398,10 @@ def produce(
     Pipeline Root end-time modes (PR #81):
     - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is proven
     - ``observed_upper_bound``: post-run observer may emit Root ending at
-      ``terminal_observed_at_ns`` with ``end_time_quality=observed_upper_bound``;
-      this never claims exact native Run duration.
+      ``terminal_observed_at_ns`` with ``end_time_quality=observed_upper_bound``
+      only when native Attempt ``run_status == "completed"``; this never claims
+      exact native Run duration. ``terminal_status`` / event fields are not
+      substitutes for API status.
     """
     # Persisted producer identity predates the package move; it is not an import path.
     report = {
@@ -439,11 +452,15 @@ def produce(
             "tasks_omitted": [],
             "pipeline_terminal_covered": False,
             "task_coverage": "none",
+            "expected_completed_jobs": [],
         },
+        "terminal_provenance": None,
         "resource": {},
         "spans": [],
         "otlp_json": None,
     }
+    # Authoritative terminal status is native Attempt status on facts, not CLI hints.
+    report["terminal"]["status"] = facts.run_status or terminal_status
     if not facts.has_run_identity:
         report["reason"] = "missing_run_identity"
         return report
@@ -492,14 +509,27 @@ def produce(
         end_time_quality = END_TIME_EXACT
         end_time_source = "run_completed_at"
     elif end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
-        if facts.run_started_at_ns is None:
+        api_status = facts.run_status
+        if api_status is None:
+            reasons.append("terminal_status_unverified")
+        elif api_status != "completed":
+            reasons.append("run_not_completed")
+        elif event_status is not None and event_status != api_status:
+            reasons.append("event_api_status_conflict")
+        elif (
+            event_conclusion is not None
+            and facts.run_conclusion is not None
+            and event_conclusion != facts.run_conclusion
+        ):
+            reasons.append("event_api_conclusion_conflict")
+        elif facts.run_started_at_ns is None:
             reasons.append("missing_run_timestamps")
         elif terminal_observed_at_ns is None:
             reasons.append("missing_terminal_observed_at")
         elif terminal_observed_at_ns < facts.run_started_at_ns:
             reasons.append("invalid_terminal_observed_at")
         else:
-            # Observed upper bound must not precede any emitted Job end.
+            # Observed upper bound must not precede any Job end in the set.
             max_job_end = None
             for _, job_facts in job_sources:
                 if job_facts.job_completed_at_ns is None:
@@ -535,6 +565,9 @@ def produce(
             ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
             ATTR_VCS_HEAD_REVISION: facts.head_sha,
             ATTR_ERROR_TYPE: run_error_type,
+            # ECI extensions for Terminal consumers; not official SemConv.
+            ATTR_ECI_END_TIME_QUALITY: end_time_quality,
+            ATTR_ECI_EXACT_RUN_DURATION: end_time_quality == END_TIME_EXACT,
         }
         spans.append(
             _span(
@@ -550,8 +583,14 @@ def produce(
         )
 
     omitted = []
+    expected_by_key = {}
     for source_index, job_facts in job_sources:
         omit = _task_omit_reason(job_facts)
+        expected_key = (
+            ("id", job_facts.job_id)
+            if job_facts.job_id is not None
+            else ("index", source_index)
+        )
         if omit is not None:
             entry = {"reason": omit}
             if job_facts.job_id is not None:
@@ -561,6 +600,15 @@ def produce(
             omitted.append(entry)
             if omit not in reasons:
                 reasons.append(omit)
+            expected_by_key[expected_key] = {
+                "source_index": source_index,
+                "job_id": job_facts.job_id,
+                "job_url": job_facts.job_url,
+                "expected_task_span_id": None,
+                "emitted": False,
+                "omitted": True,
+                "omit_reason": omit,
+            }
             continue
         job_result, job_error_type = map_github_result(job_facts.job_conclusion)
         _, _, task_span_id = _stable_ids(
@@ -587,6 +635,15 @@ def produce(
                 attributes=task_attrs,
             )
         )
+        expected_by_key[expected_key] = {
+            "source_index": source_index,
+            "job_id": job_facts.job_id,
+            "job_url": job_facts.job_url,
+            "expected_task_span_id": task_span_id,
+            "emitted": True,
+            "omitted": False,
+            "omit_reason": None,
+        }
         # Exact Run bounds: Job after completed Run is inconsistent.
         # Observed upper-bound Root already refused earlier if observed < job end.
         if (
@@ -596,8 +653,38 @@ def produce(
         ):
             reasons.append("inconsistent_run_job_timestamps")
 
+    expected_completed = []
+    if expected_job_stubs:
+        for stub in expected_job_stubs:
+            source_index = stub.get("source_index")
+            job_id = stub.get("job_id")
+            key = ("id", job_id) if job_id is not None else ("index", source_index)
+            detail = expected_by_key.get(key)
+            if detail is None:
+                # Diagnostic --job-id path: unselected completed Jobs are coverage
+                # gaps, not fabricated omissions.
+                _, _, expected_span = _stable_ids(
+                    facts.run_id, facts.run_attempt, job_id
+                )
+                expected_completed.append(
+                    {
+                        "source_index": source_index,
+                        "job_id": job_id,
+                        "job_url": stub.get("job_url"),
+                        "expected_task_span_id": expected_span,
+                        "emitted": False,
+                        "omitted": False,
+                        "omit_reason": "not_selected_job_id_slice",
+                    }
+                )
+            else:
+                expected_completed.append(detail)
+    else:
+        expected_completed = list(expected_by_key.values())
+
     report["spans"] = spans
     report["coverage"]["tasks_omitted"] = omitted
+    report["coverage"]["expected_completed_jobs"] = expected_completed
     report["coverage"]["task_spans_emitted"] = sum(
         1 for span in spans if span["kind"] == SPAN_KIND_INTERNAL
     )
@@ -627,6 +714,23 @@ def produce(
         report["coverage"]["task_coverage"] = "partial"
     else:
         report["coverage"]["task_coverage"] = "none"
+
+    if pipeline_ok:
+        report["terminal_provenance"] = {
+            "repository": facts.repository,
+            "run_id": facts.run_id,
+            "attempt": facts.run_attempt,
+            "root_trace_id": trace_id,
+            "root_span_id": pipeline_span_id,
+            "terminal_source": "github_attempt_api",
+            "terminal_status": facts.run_status,
+            "terminal_conclusion": facts.run_conclusion,
+            "terminal_observed_at_ns": terminal_observed_at_ns,
+            "end_time_source": end_time_source,
+            "end_time_quality": end_time_quality,
+            "exact_run_duration": end_time_quality == END_TIME_EXACT,
+            "otlp_sha256": None,
+        }
 
     if not spans:
         report["status"] = "incomplete"
@@ -751,6 +855,9 @@ def write_otlp_json(report, path):
     report["claims"]["otlp_json_exported"] = True
     report["claims"]["otlp_json_path"] = str(path)
     report["claims"]["otlp_json_sha256"] = digest
+    provenance = report.get("terminal_provenance")
+    if isinstance(provenance, dict):
+        provenance["otlp_sha256"] = digest
     # File artifact only — not live OTLP/gRPC delivery.
     report["claims"]["otlp_delivered"] = False
     return path
@@ -952,6 +1059,7 @@ def facts_from_github_api_objects(run, job=None):
         job_completed_at_ns=job_completed,
         run_updated_at_ns=parse_time_ns(run.get("updated_at")),
         run_url=html if isinstance(html, str) else None,
+        run_status=run.get("status") if isinstance(run.get("status"), str) else None,
     )
 
 
@@ -1063,6 +1171,9 @@ def fetch_github_run_job(
     job_id=None,
     attempt=None,
     api_get=None,
+    event_status=None,
+    event_conclusion=None,
+    event_head_sha=None,
 ):
     """Fetch matching Run Attempt (+ Job) facts from GitHub Actions API via gh.
 
@@ -1073,6 +1184,9 @@ def fetch_github_run_job(
     Coverage denominators use the raw paginated snapshot: completed Jobs are
     counted by ``status == "completed"`` without requiring an ID. Missing IDs
     become omissions located by source index (PR #80 P2-1).
+
+    Optional ``event_*`` values from workflow_run are compared to the Attempt
+    API payload; conflicts refuse the fetch rather than trust the event alone.
     """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
         raise TelemetryError("repository_invalid")
@@ -1128,6 +1242,17 @@ def fetch_github_run_job(
             raise TelemetryError("run_attempt_invalid") from None
     if observed_attempt != run_attempt:
         raise TelemetryError("run_attempt_mismatch")
+    api_status = run.get("status") if isinstance(run.get("status"), str) else None
+    api_conclusion = (
+        run.get("conclusion") if isinstance(run.get("conclusion"), str) else None
+    )
+    api_head = run.get("head_sha") if isinstance(run.get("head_sha"), str) else None
+    if event_status and api_status and event_status != api_status:
+        raise TelemetryError("event_api_status_conflict")
+    if event_conclusion and api_conclusion and event_conclusion != api_conclusion:
+        raise TelemetryError("event_api_conclusion_conflict")
+    if event_head_sha and api_head and event_head_sha.lower() != api_head.lower():
+        raise TelemetryError("event_api_head_sha_conflict")
 
     jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
     jobs = fetch_attempt_jobs(api_get, jobs_path)
@@ -1139,6 +1264,18 @@ def fetch_github_run_job(
     ]
     completed_total = len(completed_indexes)
     noncompleted_total = jobs_observed_total - completed_total
+    expected_job_stubs = []
+    for index in completed_indexes:
+        job = jobs[index]
+        job_id_value = job.get("id")
+        job_url = job.get("html_url")
+        expected_job_stubs.append(
+            {
+                "source_index": index,
+                "job_id": str(job_id_value) if job_id_value is not None else None,
+                "job_url": job_url if isinstance(job_url, str) else None,
+            }
+        )
 
     def _validate_job_membership(job):
         if job.get("run_id") is not None and int(job["run_id"]) != run_id:
@@ -1178,6 +1315,9 @@ def fetch_github_run_job(
         "noncompleted_jobs_total": noncompleted_total,
         "job_selection": selection,
         "task_facts": task_facts,
+        "expected_job_stubs": expected_job_stubs,
+        "api_run_status": api_status,
+        "api_run_conclusion": api_conclusion,
     }
 
 
@@ -1240,7 +1380,22 @@ def main(argv=None):
     )
     parser.add_argument(
         "--terminal-status",
-        help="Native Run status at observation (e.g. completed)",
+        help=(
+            "Optional event hint only; observed Root requires Attempt API "
+            "run_status=completed (not this flag alone)"
+        ),
+    )
+    parser.add_argument(
+        "--event-status",
+        help="workflow_run event status for conflict check against Attempt API",
+    )
+    parser.add_argument(
+        "--event-conclusion",
+        help="workflow_run event conclusion for conflict check against Attempt API",
+    )
+    parser.add_argument(
+        "--event-head-sha",
+        help="workflow_run event head_sha for conflict check against Attempt API",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -1251,6 +1406,7 @@ def main(argv=None):
     task_facts = None
     jobs_observed_total = None
     noncompleted_jobs_total = None
+    expected_job_stubs = None
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -1273,6 +1429,9 @@ def main(argv=None):
                 args.run_id,
                 job_id=args.job_id,
                 attempt=args.attempt,
+                event_status=args.event_status,
+                event_conclusion=args.event_conclusion,
+                event_head_sha=args.event_head_sha,
             )
         except TelemetryError as error:
             parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
@@ -1283,12 +1442,19 @@ def main(argv=None):
         task_facts = coverage.get("task_facts")
         jobs_observed_total = coverage.get("jobs_observed_total")
         noncompleted_jobs_total = coverage.get("noncompleted_jobs_total")
+        expected_job_stubs = coverage.get("expected_job_stubs")
     else:
         facts = facts_from_actions_env()
         source = "env"
-    terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
-    if args.terminal_observed_at and terminal_observed_at_ns is None:
-        parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
+    # Prefer observation time after API terminal verification when auto-now.
+    if args.terminal_observed_at:
+        terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
+        if terminal_observed_at_ns is None:
+            parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
+    elif args.end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
+        terminal_observed_at_ns = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
+    else:
+        terminal_observed_at_ns = None
     report = produce(
         facts,
         source=source,
@@ -1301,6 +1467,9 @@ def main(argv=None):
         terminal_status=args.terminal_status,
         terminal_observed_at_ns=terminal_observed_at_ns,
         end_time_mode=args.end_time_mode,
+        event_status=args.event_status,
+        event_conclusion=args.event_conclusion,
+        expected_job_stubs=expected_job_stubs,
     )
     attach_otlp_json(report)
     export_error = None
