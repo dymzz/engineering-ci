@@ -69,6 +69,7 @@ def official_source_pin():
     if (
         not isinstance(pin, dict)
         or not pin.get("repository")
+        or not pin.get("commit")
         or not pin.get("tree_sha256")
     ):
         return None
