@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from eci_core import cicd_telemetry
+from engineering_ci import cicd_telemetry
 
 RUN_START = 1_700_000_000_000_000_000
 RUN_END = 1_700_000_120_000_000_000
@@ -39,6 +39,7 @@ def test_produce_emits_pipeline_and_task_spans():
     report = cicd_telemetry.produce(complete_facts())
     assert report["status"] == "produced"
     assert report["evidence_class"] == "candidate_record"
+    assert report["producer"]["name"] == "eci_core.cicd_telemetry"
     assert report["claims"]["candidate_record_only"] is True
     assert report["claims"]["otlp_delivered"] is False
     assert report["reason"] is None

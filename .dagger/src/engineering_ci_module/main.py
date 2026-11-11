@@ -1,7 +1,6 @@
 import asyncio
 import json
 import re
-import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -10,10 +9,6 @@ from typing import Annotated
 
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
-
-_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
-if str(_SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SOURCE_ROOT))
 
 from . import python_static as static
 from . import repository, tooling
@@ -77,18 +72,137 @@ _READ_OPTIONAL = (
 
 @object_type
 class EngineeringCi:
+    weaver_source: dagger.Directory | None = dagger.field(default=None)
+
+    def _weaver_container(self) -> dagger.Container:
+        # Verify the complete release asset before extracting its one executable.
+        install = (
+            "import hashlib,io,os,tarfile,urllib.request;"
+            f"data=urllib.request.urlopen({tooling.WEAVER_LINUX_ASSET!r},timeout=60).read();"
+            f"assert hashlib.sha256(data).hexdigest()=={tooling.WEAVER_LINUX_SHA256!r},'Weaver checksum mismatch';"
+            "archive=tarfile.open(fileobj=io.BytesIO(data),mode='r:xz');"
+            "members=[m for m in archive.getmembers() if m.isfile() and m.name.split('/')[-1]=='weaver'];"
+            "assert len(members)==1,'Weaver executable missing or ambiguous';"
+            "open('/usr/local/bin/weaver','wb').write(archive.extractfile(members[0]).read());"
+            "os.chmod('/usr/local/bin/weaver',0o755)"
+        )
+        return (
+            dag.container(platform=dagger.Platform("linux/amd64"))
+            .from_(tooling.UV_IMAGE)
+            .with_exec(["python", "-c", install])
+            .with_new_file(
+                "/check/requirements.txt",
+                Path(__file__).with_name("weaver-requirements.txt").read_text(),
+            )
+            .with_exec(
+                ["uv", "pip", "install", "--system", "-r", "/check/requirements.txt"]
+            )
+            .with_new_file(
+                "/check/weaver.py", Path(__file__).with_name("weaver.py").read_text()
+            )
+            .with_new_file(
+                "/check/runtime.py",
+                Path(__file__).with_name("weaver_runtime.py").read_text(),
+            )
+            .with_new_file("/check/empty.toml", "")
+            .with_workdir("/workspace")
+        )
+
+    @function
+    async def weaver_artifacts(
+        self,
+        source: dagger.Directory,
+        kind: str = "registry",
+        config_path: str = "ci-weaver.toml",
+    ) -> dagger.Directory:
+        """Export one Weaver execution, its native logs, package and report."""
+        if kind not in {"registry", "sample", "live", "terminal"}:
+            raise ValueError("Unknown Weaver check")
+        bound = dag.directory().with_directory(
+            "/", source, exclude=list(tooling.SOURCE_NOISE)
+        )
+        result = (
+            self._weaver_container()
+            .with_directory("/workspace", bound)
+            .with_env_variable("ECI_SOURCE_DIGEST", await bound.digest())
+            .with_env_variable("ECI_WEAVER_ASSET_SHA256", tooling.WEAVER_LINUX_SHA256)
+            .with_exec(["python", "/check/runtime.py", kind, "--config", config_path])
+        )
+        return result.directory("/out")
+
+    @function
+    async def weaver_report(
+        self,
+        source: dagger.Directory,
+        kind: str = "registry",
+        config_path: str = "ci-weaver.toml",
+    ) -> str:
+        """Read the same native execution used by the artifact and strict checks."""
+        artifacts = await self.weaver_artifacts(source, kind, config_path)
+        return await artifacts.file("report.json").contents()
+
+    async def _require_weaver(self, source, kind, config_path):
+        report = json.loads(await self.weaver_report(source, kind, config_path))
+        if report["status"] != "passed":
+            raise ValueError(f"{report['name']}: {report['reason']}")
+
+    @function
+    async def weaver_enforce(
+        self,
+        source: dagger.Directory,
+        kind: str = "live",
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """API gate: fail the call when the selected native Weaver report fails."""
+        await self._require_weaver(source, kind, config_path)
+
+    @function
+    @check
+    async def weaver_registry(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Check and package an explicitly selected, fixed local Registry."""
+        await self._require_weaver(
+            self.weaver_source or source, "registry", config_path
+        )
+
+    @function
+    @check
+    async def weaver_live(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Validate a completed OTLP capture through Weaver's gRPC receiver."""
+        await self._require_weaver(self.weaver_source or source, "live", config_path)
+
+    @function
+    @check
+    async def weaver_terminal(
+        self,
+        source: Annotated[dagger.Directory, DefaultPath("/")],
+        config_path: str = "ci-weaver.toml",
+    ) -> None:
+        """Post-completion Pipeline validation; requires explicit terminal evidence."""
+        await self._require_weaver(
+            self.weaver_source or source, "terminal", config_path
+        )
+
     @function
     async def execute_plan(
         self,
         plan: dagger.File,
         source: dagger.Directory,
         python_version: str = "3.14",
+        weaver_config: str = "ci-weaver.toml",
     ) -> str:
         """Execute plan targets in-container; host-run selected checks/prereqs."""
         import copy
         import tempfile
 
-        from eci_core import execution, selection
+        from engineering_ci import execution, selection
 
         raw = await plan.contents()
         try:
@@ -105,7 +219,9 @@ class EngineeringCi:
             for item in value.get("check_scope", chosen.get("check_scope", []))
             if item.get("status") in {"selected", "unknown"}
         ]
-        if not selected_checks and chosen.get("checks"):
+        if ("check_scope" not in value and "check_scope" not in chosen) and chosen.get(
+            "checks"
+        ):
             selected_checks = [
                 {"name": name, "status": "unknown"} for name in chosen["checks"]
             ]
@@ -123,12 +239,15 @@ class EngineeringCi:
         source_tree_id = git.get("source_tree_id")
         execution_tree = git.get("execution_tree")
         tree_verified = False
+        source_tree_state = "not_requested"
         source_digest = None
+        input_closure_verified = "not_requested"
         with tempfile.TemporaryDirectory() as directory:
             await source.export(directory)
             if source_tree_id and execution_tree:
                 source_digest = selection.directory_content_id(directory)
                 tree_verified = source_digest == source_tree_id
+                source_tree_state = "verified" if tree_verified else "failed"
                 if not tree_verified:
                     return json.dumps(
                         {
@@ -138,6 +257,8 @@ class EngineeringCi:
                             "reason": "source_tree_mismatch",
                             "exit_code": 4,
                             "tree_verified": False,
+                            "source_tree_verified": source_tree_state,
+                            "input_closure_verified": input_closure_verified,
                             "trusted": False,
                             "plan_execution_tree": execution_tree,
                             "source_tree_id": source_tree_id,
@@ -153,8 +274,13 @@ class EngineeringCi:
                 "exit_code": 0,
                 "targets": targets,
                 "framework": framework,
+                # tree_verified is whole-tree Source-byte equivalence only when
+                # that check ran. Post-completion uses input_closure_verified.
+                # Neither field is #63 Check-evidence admission.
                 "tree_verified": tree_verified,
-                "trusted": tree_verified,
+                "source_tree_verified": source_tree_state,
+                "input_closure_verified": input_closure_verified,
+                "trusted": False,
                 "plan_execution_tree": execution_tree,
                 "source_tree_id": source_tree_id,
                 "source_digest": source_digest,
@@ -214,13 +340,117 @@ class EngineeringCi:
                 check_plan["git"]["index_tree"] = None
                 check_plan["git"]["content_binding"] = None
                 check_plan["git"]["snapshot"] = "worktree"
-                host = execution.execute(check_plan, root=directory)
+                weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
+                selected_weaver = [
+                    item
+                    for item in selected_checks
+                    if item.get("name") in weaver_checks
+                ]
+                check_plan["check_scope"] = [
+                    item
+                    for item in selected_checks
+                    if item.get("name") not in weaver_checks
+                ]
+                check_plan["selection"]["checks"] = [
+                    name
+                    for name in check_plan["selection"].get("checks", [])
+                    if name not in weaver_checks
+                ]
+                host = (
+                    execution.execute(check_plan, root=directory)
+                    if check_plan["check_scope"] or prerequisites
+                    else {
+                        "status": "passed",
+                        "exit_code": 0,
+                        "checks": [],
+                        "prerequisites": [],
+                    }
+                )
                 report["checks"] = host.get("checks") or []
                 report["prerequisites"] = host.get("prerequisites") or []
                 if report["status"] == "passed":
                     report["status"] = host.get("status", "blocked")
                     report["reason"] = host.get("reason")
                     report["exit_code"] = host.get("exit_code", 5)
+                terminal_config = weaver_config
+                binding = value.get("post_completion")
+                if isinstance(binding, dict):
+                    declared = (binding.get("weaver_config") or {}).get("path")
+                    if isinstance(declared, str) and declared:
+                        terminal_config = declared
+                for item in selected_weaver:
+                    kind = item["name"].removeprefix("weaver_")
+                    if kind == "terminal":
+                        gate = selection.validate_post_completion_binding(
+                            value, directory
+                        )
+                        report["input_closure_verified"] = gate.get(
+                            "input_closure_verified", "failed"
+                        )
+                        report["plan_closure_digest"] = gate.get("plan_closure_digest")
+                        report["actual_closure_digest"] = gate.get(
+                            "actual_closure_digest"
+                        )
+                        if gate.get("source_tree_verified") != "not_requested":
+                            report["source_tree_verified"] = gate[
+                                "source_tree_verified"
+                            ]
+                            report["tree_verified"] = (
+                                gate["source_tree_verified"] == "verified"
+                            )
+                            if gate.get("source_digest"):
+                                report["source_digest"] = gate["source_digest"]
+                        if not gate.get("ok"):
+                            native = {
+                                "name": "weaver_terminal",
+                                "status": "not_executed",
+                                "reason": gate.get("reason")
+                                or "post_completion_binding_invalid",
+                                "gate_exit_code": 1,
+                                "trusted": False,
+                                "authenticated": False,
+                                "selected": item.get("status"),
+                                "input_closure_verified": gate.get(
+                                    "input_closure_verified"
+                                ),
+                                "source_tree_verified": report["source_tree_verified"],
+                                "plan_closure_digest": gate.get("plan_closure_digest"),
+                                "actual_closure_digest": gate.get(
+                                    "actual_closure_digest"
+                                ),
+                            }
+                            report["checks"].append(native)
+                            if report["status"] == "passed":
+                                report.update(
+                                    status="blocked",
+                                    exit_code=1,
+                                    reason=native["reason"],
+                                )
+                            continue
+                        config_path = terminal_config
+                    else:
+                        config_path = weaver_config
+                    native = json.loads(
+                        await self.weaver_report(source, kind, config_path)
+                    )
+                    native["selected"] = item.get("status")
+                    native["source_tree_verified"] = report["source_tree_verified"]
+                    if kind == "terminal":
+                        native["phase"] = selection.POST_COMPLETION_PHASE
+                        native["input_closure_verified"] = report[
+                            "input_closure_verified"
+                        ]
+                        native["plan_closure_digest"] = report.get(
+                            "plan_closure_digest"
+                        )
+                        native["actual_closure_digest"] = report.get(
+                            "actual_closure_digest"
+                        )
+                    report["checks"].append(native)
+                    if native["status"] != "passed" and report["status"] == "passed":
+                        report.update(
+                            status="failed", exit_code=1, reason="checks_failed"
+                        )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
     @function
@@ -231,7 +461,7 @@ class EngineeringCi:
         import tempfile
         from pathlib import Path
 
-        from eci_core import sources
+        from engineering_ci import sources
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -269,7 +499,7 @@ class EngineeringCi:
         import tempfile
         from pathlib import Path
 
-        from eci_core import selection
+        from engineering_ci import selection
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -308,13 +538,12 @@ class EngineeringCi:
 
     @function
     async def shared_identity(self) -> str:
-        """Import the included common package; proves one source implementation."""
-        import eci_core
-        from eci_core import selection
+        """Identify the installed shared package used by CLI and Dagger."""
+        from importlib.metadata import version
 
-        return (
-            f"{eci_core.__version__}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
-        )
+        from engineering_ci import selection
+
+        return f"{version('engineering-ci')}:{selection.SCHEMA_VERSION}:{selection.PLAN_KIND}"
 
     repository_coverage: bool = dagger.field(default=False)
 

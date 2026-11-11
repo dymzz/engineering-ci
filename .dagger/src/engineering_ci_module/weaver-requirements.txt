@@ -1,0 +1,4 @@
+PyYAML==6.0.3
+grpcio==1.76.0
+opentelemetry-proto==1.39.1
+protobuf==6.33.0

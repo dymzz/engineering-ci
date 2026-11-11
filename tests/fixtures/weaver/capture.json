@@ -1,0 +1,44 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "eci.controlled.checker",
+            "version": "1"
+          },
+          "spans": [
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "2222222222222222",
+              "name": "cart",
+              "kind": 1,
+              "startTimeUnixNano": "1794268800000000000",
+              "endTimeUnixNano": "1794268801000000000",
+              "attributes": [
+                {
+                  "key": "acme.cart.item.count",
+                  "value": {
+                    "intValue": "3"
+                  }
+                },
+                {
+                  "key": "acme.checkout.stage",
+                  "value": {
+                    "stringValue": "payment"
+                  }
+                },
+                {
+                  "key": "acme.session.id",
+                  "value": {
+                    "stringValue": "s-9"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

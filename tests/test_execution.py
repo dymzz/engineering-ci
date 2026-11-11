@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from eci_core import execution, hygiene, selection
+from engineering_ci import execution, hygiene, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -73,6 +73,30 @@ def plan(tests, *, tree=None, framework="unittest", git=None, check_scope=None):
     if check_scope is not None:
         value["check_scope"] = check_scope
     return value
+
+
+def test_host_does_not_bypass_weaver_dagger_boundary(tmp_path):
+    value = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "weaver_live", "status": "selected"}],
+    )
+    runner = FakeRunner()
+    result = execution.execute(value, root=tmp_path, runner=runner)
+    assert result["status"] == "blocked"
+    assert result["checks"][0]["status"] == "not_executed"
+    assert not runner.calls
+
+
+def test_explicit_not_applicable_scope_does_not_fall_back_to_check_names(tmp_path):
+    value = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "weaver_live", "status": "not_applicable"}],
+    )
+    value["selection"]["checks"] = ["weaver_live"]
+    assert execution._selected_checks(value) == []
+    assert execution.execute(value, root=tmp_path)["status"] == "not_executed"
 
 
 def docs_only_plan(base, head, *, paths=("docs/guide.md",)):

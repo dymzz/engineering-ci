@@ -55,6 +55,12 @@ Engine 由 Dagger 原生启动，不再在宿主探测、计算身份或持久�
 
 SDK 生成与模块锁文件校验：
 
+模块项目 `engineering-ci-module` 通过本地路径依赖安装根项目
+`engineering-ci`，从其 `engineering_ci` 包导入共享实现；不注入 checkout
+路径到 `sys.path`。模块上下文包含根 `pyproject.toml`、README 和包源码。
+包中不保留指向外部 agent hooks 的链接或自动注册入口。
+根包不依赖 Dagger SDK；SDK 仍由模块环境管理。
+
 ```sh
 dagger api call --no-load-module module-source --ref-string . \
   generated-context-directory directory --path .dagger export --path .dagger

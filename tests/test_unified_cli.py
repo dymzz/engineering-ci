@@ -26,10 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
         ("download", "engineering_ci.cli.download"),
         ("version", "engineering_ci.release.version"),
         ("policy", "engineering_ci.security_policy"),
-        ("select", "eci_core.selection"),
-        ("hygiene", "eci_core.hygiene"),
-        ("sources", "eci_core.sources"),
-        ("execute", "eci_core.execution"),
+        ("select", "engineering_ci.selection"),
+        ("hygiene", "engineering_ci.hygiene"),
+        ("sources", "engineering_ci.sources"),
+        ("execute", "engineering_ci.execution"),
+        ("cicd-telemetry", "engineering_ci.cicd_telemetry"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):

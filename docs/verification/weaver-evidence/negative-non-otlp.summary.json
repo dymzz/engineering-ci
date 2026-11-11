@@ -1,0 +1,26 @@
+{
+  "exit_code": null,
+  "gate_exit_code": 1,
+  "head_note": "Captured against PR #78 HEAD bd3ebe17 before observed-span terminal binding fix",
+  "inputs": {
+    "config_sha256": "80f2fec71d664d2a47e3d5d112aa1213ced57dc7bd42dc76f4c31c30c8a4c623",
+    "expectations_sha256": "3d055b947332bc4a3905f842556fee111df886a241bf0140b021de22aaeb6b2f",
+    "otlp_sha256": "6fa6a6714de956f106fe86a0f98c0fc54d92101e89bbde88c74dba605b6615c6",
+    "registry": {
+      "files": {
+        "manifest.yaml": "d98e084d41524fda806c6c2c47dee72085f61af05812c080d3f71c74774f8bbe",
+        "semconv.yaml": "1860a160e68287387e88e0eb43e55f053b3c0cb4051bf83041cd3d3caa5df391"
+      },
+      "manifest_sha256": "8b95ab1c0c1a8a7b30e1efbd8234f7528d99736d33cfbfbdc71a638f0f5dab07",
+      "resolved_sha256": "1e470fffdfdb009a968ed575478ce1ea5dbd5edc8493fb0aca772a0e84401e30"
+    }
+  },
+  "label": "negative-non-otlp",
+  "lifecycle": null,
+  "name": "weaver_live",
+  "reason": "otlp_json_invalid: Message type \"opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest\" has no field named \"schema_version\" at \"ExportTraceServiceRequest\".\n Available Fields(except extensions): \"['resourceSpans']\"",
+  "source_dir": "verified-candidate-invalid",
+  "status": "failed",
+  "trusted": false,
+  "unsigned_local_evidence": true
+}

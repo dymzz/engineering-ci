@@ -1,0 +1,111 @@
+groups:
+
+  - id: rpc
+    type: attribute_group
+    brief: 'This document defines semantic conventions for remote procedure calls.'
+    extends: common.rpc.attributes
+    attributes:
+      - ref: server.address
+        sampling_relevant: true
+      - ref: server.port
+        sampling_relevant: true
+      - ref: network.peer.address
+        requirement_level: recommended
+        note: >
+          If a RPC involved multiple network calls (for example retries), the
+          last contacted address SHOULD be used.
+      - ref: network.peer.port
+        requirement_level:
+          recommended: If `network.peer.address` is set.
+      - ref: rpc.method
+        requirement_level:
+          conditionally_required: if available.
+        sampling_relevant: true
+      - ref: rpc.method_original
+        requirement_level:
+          conditionally_required: If and only if it's different than `rpc.method`.
+
+  - id: attributes.rpc.server.server
+    type: attribute_group
+    extends: rpc
+    brief: >
+      `server.address` and `server.port` for RPC server spans.
+    attributes:
+      - ref: server.address
+        requirement_level:
+          recommended: when available.
+        note: >
+          `server.address` and `server.port` describe the address the client
+          used to reach this server, as reported by the transport or RPC
+          framework. Instrumentations SHOULD NOT use actual network-level
+          connection information to populate these attributes. If the address
+          used by the client is unavailable, instrumentations SHOULD NOT set
+          these attributes.
+      - ref: server.port
+        requirement_level:
+          conditionally_required: if applicable and if `server.address` is set.
+
+  - id: span.rpc.call.client
+    type: span
+    stability: stable
+    brief: This span represents an outgoing Remote Procedure Call (RPC).
+    note: |
+      RPC client spans SHOULD cover the entire client-side lifecycle of an RPC,
+      starting when the RPC is initiated and ending when the response is received
+      or the RPC is terminated due to an error or cancellation.
+
+      For streaming RPCs, the span covers the full lifetime of the request and/or
+      response streams until they are closed or terminated.
+
+      If a transient issue happened and was retried within this RPC, the corresponding
+      span SHOULD cover the duration of the logical call with all retries.
+
+      **Span name:** refer to the [Span Name](/docs/rpc/rpc-spans.md#name) section.
+
+      **Span kind** MUST be `CLIENT`.
+
+      **Span status**: refer to the [Recording Errors](/docs/general/recording-errors.md)
+      document for details on how to record span status.
+    extends: rpc
+    span_kind: client
+    attributes:
+      - ref: rpc.system.name
+        requirement_level: required
+        sampling_relevant: true
+      - ref: rpc.request.header
+        requirement_level: opt_in
+      - ref: rpc.response.header
+        requirement_level: opt_in
+      - ref: rpc.response.trailer
+        requirement_level: opt_in
+
+  - id: span.rpc.call.server
+    type: span
+    stability: stable
+    extends: attributes.rpc.server.server
+    span_kind: server
+    brief: This span represents an incoming Remote Procedure Call (RPC).
+    note: |
+      RPC server spans SHOULD cover the entire server-side lifecycle of an RPC,
+      starting when the request is received and ending when the response is sent
+      or the RPC is terminated due to an error or cancellation.
+
+      For streaming RPCs, the span SHOULD cover the full lifetime of the request
+      and/or response streams until they are closed or terminated.
+
+      **Span name:** refer to the [Span Name](/docs/rpc/rpc-spans.md#name) section.
+
+      **Span kind** MUST be `SERVER`.
+
+      **Span status**: refer to the [Recording Errors](/docs/general/recording-errors.md)
+      document for details on how to record span status.
+    attributes:
+      - ref: rpc.system.name
+        requirement_level: required
+        sampling_relevant: true
+      - ref: rpc.request.header
+        requirement_level: opt_in
+      - ref: rpc.response.header
+        requirement_level: opt_in
+      - ref: rpc.response.trailer
+        requirement_level: opt_in

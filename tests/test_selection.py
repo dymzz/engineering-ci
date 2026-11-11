@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from eci_core import execution, selection
+from engineering_ci import execution, selection, weaver_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -464,6 +464,127 @@ def test_check_scope_separates_documents_from_business_tests(repo):
     assert scope["docs"]["status"] == "selected"
     assert "docs/guide.md" in scope["docs"]["inputs"]
     assert scope["tach"]["status"] == "not_applicable"
+
+
+def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
+    from dataclasses import replace
+
+    path, base = repo
+    (path / "telemetry").mkdir()
+    (path / "telemetry/capture.json").write_text("{}")
+    cfg = replace(config(path), checks=("weaver_registry", "weaver_live"))
+    changes = selection.changeset(path, base=base)
+    chosen = selection.select(changes, cfg, root=path)
+    value = selection.plan(
+        chosen, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    scope = {item["name"]: item for item in value["check_scope"]}
+    assert scope["weaver_registry"]["status"] == "selected"
+    assert scope["weaver_live"]["inputs"] == ["telemetry/capture.json"]
+    assert "weaver_terminal" not in scope
+
+
+def test_weaver_terminal_requires_post_completion_plan(repo):
+    from dataclasses import replace
+
+    path, base = repo
+    (path / "telemetry").mkdir()
+    (path / "telemetry/capture.json").write_text("{}")
+    (path / "telemetry/expected.json").write_text("{}")
+    cfg = replace(
+        config(path), checks=("weaver_registry", "weaver_live", "weaver_terminal")
+    )
+    capture_plan = selection.plan(
+        selection.select(selection.changeset(path, base=base), cfg, root=path),
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    capture_scope = {item["name"]: item for item in capture_plan["check_scope"]}
+    assert capture_scope["weaver_live"]["status"] == "selected"
+    assert capture_scope["weaver_terminal"]["status"] == "not_applicable"
+    assert capture_scope["weaver_terminal"]["reason"] == "requires post-completion plan"
+    assert capture_scope["weaver_terminal"]["inputs"] == []
+
+
+def test_post_completion_plan_binds_terminal_inputs(tmp_path):
+    fixture = ROOT / "tests/fixtures/weaver-cicd"
+    if not fixture.is_dir():
+        pytest.skip("weaver-cicd fixture unavailable")
+    root = tmp_path / "src"
+    shutil.copytree(fixture, root)
+    plan = selection.post_completion_plan(
+        root=root,
+        config_path=root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+    )
+    assert plan["phase"] == selection.POST_COMPLETION_PHASE
+    assert plan["check_scope"][0]["name"] == "weaver_terminal"
+    assert plan["check_scope"][0]["status"] == "selected"
+    binding = plan["post_completion"]
+    assert binding["run_id"] == "controlled-42/1"
+    assert binding["otlp"]["path"] == "capture.json"
+    assert binding["expectations"]["path"] == "expected.json"
+    assert binding["registry"]["sha256"]
+    assert binding["advice_policies"]["files"]["cicd-error-type.rego"]
+    assert binding["sha256"]
+    # Plan closure and Dagger download share engineering_ci.weaver_tool.
+    assert binding["weaver_tool"] == weaver_tool.RECORD
+    gate = selection.validate_post_completion_binding(plan, root)
+    assert gate["ok"] and gate["input_closure_verified"] == "verified"
+    assert gate["plan_closure_digest"] == binding["sha256"]
+
+    blocked = dict(plan)
+    blocked["phase"] = None
+    gate = selection.validate_post_completion_binding(blocked, root)
+    assert not gate["ok"] and gate["reason"] == "post_completion_phase_required"
+
+    missing = dict(plan)
+    missing["post_completion"] = dict(plan["post_completion"])
+    del missing["post_completion"]["otlp"]
+    gate = selection.validate_post_completion_binding(missing, root)
+    assert not gate["ok"] and gate["reason"] == "post_completion_binding_incomplete"
+
+    drifted = dict(plan)
+    drifted["post_completion"] = dict(plan["post_completion"])
+    (root / "advice-policies/cicd-error-type.rego").write_text(
+        (root / "advice-policies/cicd-error-type.rego").read_text() + "\n# drift\n"
+    )
+    gate = selection.validate_post_completion_binding(drifted, root)
+    assert not gate["ok"]
+    assert gate["reason"] == "post_completion_closure_digest_mismatch"
+
+
+def test_directory_content_id_uses_platform_independent_path_order(tmp_path):
+    import hashlib
+
+    files = {"Z.txt": b"upper", "a-b.txt": b"dash", "a/child.txt": b"child"}
+    for name, data in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    expected = hashlib.sha256()
+    for name in sorted(files):
+        expected.update(name.encode() + b"\0" + files[name] + b"\0")
+    assert selection.directory_content_id(tmp_path) == expected.hexdigest()
+
+
+def test_incomplete_weaver_scope_remains_unknown(repo):
+    from dataclasses import replace
+
+    path, _ = repo
+    cfg = replace(config(path), checks=("weaver_terminal",))
+    chosen = selection.select(
+        selection.changeset(path, base="missing-base"), cfg, root=path
+    )
+    value = selection.plan(
+        chosen, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    scope = {item["name"]: item for item in value["check_scope"]}
+    assert scope["weaver_terminal"]["status"] == "unknown"
 
 
 def test_check_scope_rechecks_all_documents_after_deletion(repo):

@@ -1,0 +1,109 @@
+{
+  "check_scope": [
+    {
+      "inputs": [
+        "capture.json",
+        "expected.json",
+        "ci-weaver.toml",
+        ".weaver.toml",
+        "advice-policies",
+        "registry"
+      ],
+      "name": "weaver_terminal",
+      "reason": "post-completion binding",
+      "status": "selected"
+    }
+  ],
+  "generator": {
+    "config_sha256": null,
+    "name": "engineering-ci",
+    "version": "0.7.0"
+  },
+  "git": {
+    "changed_paths": [],
+    "execution_tree": null,
+    "snapshot": "worktree",
+    "source_tree_id": "aa2f4cba173a5d85b0e205edd9ff8ee502ce5be6882807fc834c0316fd0e4164",
+    "worktree_dirty": true
+  },
+  "inputs": {
+    "closure_sha256": "a044923fae489eade0d938bb699cc6e653b3487273367392388120ef41d43f56",
+    "config": {
+      "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-074-weaver\\engineering-ci\\tests\\fixtures\\weaver-cicd\\ci-selection.toml",
+      "sha256": null
+    },
+    "weaver": {
+      "path": "ci-weaver.toml",
+      "sha256": "fa48a2272ce2e394db50d734df209d81b8e78beb7282740941373b7417f0eb91"
+    }
+  },
+  "kind": "engineering-ci-selection-plan",
+  "phase": "post_completion",
+  "post_completion": {
+    "advice_policies": {
+      "files": {
+        "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+        "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
+      },
+      "path": "advice-policies",
+      "sha256": "737c099f1998154e946a95f7290c4d1fbf531ca560774b6d64c6a32c5269e2cf"
+    },
+    "attempt": 1,
+    "expectations": {
+      "path": "expected.json",
+      "sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b"
+    },
+    "expected_matchers": [
+      "eci.pipeline",
+      "eci.task"
+    ],
+    "matcher_config": {
+      "path": ".weaver.toml",
+      "sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594"
+    },
+    "origin": {
+      "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+      "repository": "https://github.com/open-telemetry/semantic-conventions",
+      "version": "1.45.0"
+    },
+    "otlp": {
+      "path": "capture.json",
+      "sha256": "b598e795ffebc39c2d6f9aaf5c35187aa0d4562104233547e0ee74910bb2bcac"
+    },
+    "registry": {
+      "file_count": 269,
+      "files_omitted": true,
+      "manifest": {
+        "path": "registry-sha256.json",
+        "sha256": "b0aa2e583d810e5c0137b1e87fd4f927e7bf9a33a60572688dd439b0b111dd99"
+      },
+      "path": "registry",
+      "sha256": "4af4d633bde1d1a532e19ab27d3c4a3a3642ea68fcf35259434c1cf363da2474"
+    },
+    "result": "success",
+    "run_id": "controlled-42/1",
+    "sha256": "a044923fae489eade0d938bb699cc6e653b3487273367392388120ef41d43f56",
+    "status": "completed",
+    "weaver_config": {
+      "path": "ci-weaver.toml",
+      "sha256": "fa48a2272ce2e394db50d734df209d81b8e78beb7282740941373b7417f0eb91"
+    },
+    "weaver_tool": {
+      "asset": "https://github.com/open-telemetry/weaver/releases/download/v0.28.0/weaver-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",
+      "version": "0.28.0"
+    }
+  },
+  "schema_version": 1,
+  "selection": {
+    "checks": [
+      "weaver_terminal"
+    ],
+    "framework": "unittest",
+    "prerequisites": [],
+    "src_root": "src",
+    "status": "selected",
+    "tests": [],
+    "tests_dir": "tests"
+  }
+}

@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/open-telemetry/weaver/v0.28.0/schemas/semconv.schema.v2.json
+file_format: definition/2
+events:
+  - name: azure.resource.log
+    stability: development
+    brief: >
+      Describes Azure Resource Log event, see
+      [Azure Resource Log Top-level Schema](https://learn.microsoft.com/azure/azure-monitor/essentials/resource-logs-schema#top-level-common-schema)
+      for more details.
+    attributes:
+      - ref: azure.service.request.id
+      - ref: cloud.resource_id
+        brief: The [Fully Qualified Azure Resource ID](https://learn.microsoft.com/rest/api/resources/resources/get-by-id) the log is emitted for.
+        note: ""

@@ -34,6 +34,7 @@ dist/
 *.local
 
 # Local logs and temporary files
+/.tmp/
 /.log/
 /.artifacts/
 *.log

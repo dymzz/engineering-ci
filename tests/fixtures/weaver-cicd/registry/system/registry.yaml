@@ -1,0 +1,189 @@
+groups:
+  # General system attributes
+  - id: registry.system
+    type: attribute_group
+    display_name: General System Attributes
+    brief: "Describes System attributes"
+    attributes:
+      - id: system.device.name
+        type: string
+        stability: release_candidate
+        brief: >
+          The OS level identifier for a device, such as disk,
+          partition or network interface.
+        examples: ["/dev/sda", "eth0", "\\network-drive"]
+  # system.memory.* attribute group
+  - id: registry.system.memory
+    type: attribute_group
+    display_name: System Memory Attributes
+    brief: "Describes System Memory attributes"
+    attributes:
+      - id: system.memory.state
+        type:
+          members:
+            - id: used
+              value: 'used'
+              stability: release_candidate
+              brief: Actual used virtual memory in bytes.
+              note: >
+                Calculation based on the operating system metrics.
+                On Linux, this corresponds to "MemTotal - MemAvailable" from /proc/meminfo, which
+                more accurately reflects memory in active use by applications compared to older
+                formulas based on free, cached, and buffers. If MemAvailable is not available,
+                a fallback to those older formulas may be used.
+            - id: available
+              value: 'available'
+              stability: development
+              brief: >
+                An estimate of how much memory is available for starting new applications,
+                without causing swapping.
+              note: >
+                Calculation based on the operating system metrics.
+                On Linux, this corresponds to "MemAvailable" from /proc/meminfo.
+            - id: free
+              value: 'free'
+              stability: development
+              deprecated:
+                reason: obsoleted
+                note: "Removed, report memory usage with the `used` and `available` states instead."
+            - id: shared
+              value: 'shared'
+              stability: development
+              deprecated:
+                reason: uncategorized
+                note: "Removed, report shared memory usage with `metric.system.memory.linux.shared` metric"
+            - id: buffers
+              value: 'buffers'
+              stability: development
+              deprecated:
+                reason: obsoleted
+                note: "Removed, report memory usage with the `used` and `available` states instead."
+            - id: cached
+              value: 'cached'
+              stability: development
+              deprecated:
+                reason: obsoleted
+                note: "Removed, report memory usage with the `used` and `available` states instead."
+        stability: development
+        brief: "The memory state"
+        examples: ["used", "available"]
+      - id: system.memory.linux.slab.state
+        type:
+          members:
+            - id: reclaimable
+              value: 'reclaimable'
+              stability: release_candidate
+            - id: unreclaimable
+              value: 'unreclaimable'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The Linux Slab memory state"
+        examples: ["reclaimable", "unreclaimable"]
+      - id: system.memory.linux.hugepages.state
+        type:
+          members:
+            - id: free
+              value: 'free'
+              stability: release_candidate
+            - id: used
+              value: 'used'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The Linux HugePages memory state"
+        examples: ["free", "used"]
+  # system.paging.* attribute group
+  - id: registry.system.paging
+    type: attribute_group
+    display_name: System Paging Attributes
+    brief: "Describes System Memory Paging attributes"
+    attributes:
+      - id: system.paging.state
+        type:
+          members:
+            - id: used
+              value: 'used'
+              stability: release_candidate
+            - id: free
+              value: 'free'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The memory paging state"
+        examples: ["free"]
+      - id: system.paging.fault.type
+        type:
+          members:
+            - id: major
+              value: 'major'
+              stability: release_candidate
+            - id: minor
+              value: 'minor'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The paging fault type"
+        examples: ["minor"]
+      - id: system.paging.direction
+        type:
+          members:
+            - id: in
+              value: 'in'
+              stability: release_candidate
+            - id: out
+              value: 'out'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The paging access direction"
+        examples: ["in"]
+  - id: registry.system.filesystem
+    type: attribute_group
+    display_name: Filesystem Attributes
+    brief: "Describes Filesystem attributes"
+    attributes:
+      - id: system.filesystem.state
+        brief: "The filesystem state"
+        type:
+          members:
+            - id: used
+              value: 'used'
+              stability: release_candidate
+            - id: free
+              value: 'free'
+              stability: release_candidate
+            - id: reserved
+              value: 'reserved'
+              stability: release_candidate
+        stability: release_candidate
+        examples: ["used"]
+      - id: system.filesystem.type
+        type:
+          members:
+            - id: fat32
+              value: 'fat32'
+              stability: release_candidate
+            - id: exfat
+              value: 'exfat'
+              stability: release_candidate
+            - id: ntfs
+              value: 'ntfs'
+              stability: release_candidate
+            - id: refs
+              value: 'refs'
+              stability: release_candidate
+            - id: hfsplus
+              value: 'hfsplus'
+              stability: release_candidate
+            - id: ext4
+              value: 'ext4'
+              stability: release_candidate
+        stability: release_candidate
+        brief: "The filesystem type"
+        examples: ["ext4"]
+      - id: system.filesystem.mode
+        type: string
+        stability: release_candidate
+        brief: "The filesystem mode"
+        examples: ["rw, ro"]
+      - id: system.filesystem.mountpoint
+        type: string
+        stability: release_candidate
+        brief: "The filesystem mount path"
+        examples: ["/mnt/data"]

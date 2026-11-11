@@ -83,7 +83,7 @@ engineering-ci sources --root . --config ci-sources.toml --json
 The report is `engineering-ci-sources-report` schema 1 with `status`, `counts`
 and `failures[]`; exit `1` on failure.
 
-Dagger imports the same `eci_core.sources` implementation. Verified:
+Dagger imports the same `engineering_ci.sources` implementation. Verified:
 
 ```text
 dagger call sources-self-test

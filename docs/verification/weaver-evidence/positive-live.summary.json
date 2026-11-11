@@ -1,0 +1,32 @@
+{
+  "exit_code": 0,
+  "gate_exit_code": 0,
+  "head_note": "Captured against PR #78 HEAD bd3ebe17 before observed-span terminal binding fix",
+  "inputs": {
+    "config_sha256": "80f2fec71d664d2a47e3d5d112aa1213ced57dc7bd42dc76f4c31c30c8a4c623",
+    "expectations_sha256": "3d055b947332bc4a3905f842556fee111df886a241bf0140b021de22aaeb6b2f",
+    "otlp_sha256": "4600159609164ac2c6ec420dbff7bc7339dd38b891fadda2064c0e8f8d415cb1",
+    "registry": {
+      "files": {
+        "manifest.yaml": "d98e084d41524fda806c6c2c47dee72085f61af05812c080d3f71c74774f8bbe",
+        "semconv.yaml": "1860a160e68287387e88e0eb43e55f053b3c0cb4051bf83041cd3d3caa5df391"
+      },
+      "manifest_sha256": "8b95ab1c0c1a8a7b30e1efbd8234f7528d99736d33cfbfbdc71a638f0f5dab07",
+      "resolved_sha256": "64688d0618ff48bcbff6dc08ad6c9004103c8f0ed5bf774cdae4686af4f7acc3"
+    }
+  },
+  "label": "positive-live",
+  "lifecycle": {
+    "export_acknowledged": true,
+    "ready": true,
+    "report_received": true,
+    "shutdown": true,
+    "stopped": true
+  },
+  "name": "weaver_live",
+  "reason": null,
+  "source_dir": "verified-current-fixture",
+  "status": "passed",
+  "trusted": false,
+  "unsigned_local_evidence": true
+}

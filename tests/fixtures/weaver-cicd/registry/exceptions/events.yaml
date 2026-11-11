@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/open-telemetry/weaver/v0.28.0/schemas/semconv.schema.v2.json
+file_format: definition/2
+events:
+  - name: exception
+    stability: stable
+    brief: >
+      This event describes a single exception.
+    attributes:
+      - ref_group: exception
+      - ref: exception.escaped
