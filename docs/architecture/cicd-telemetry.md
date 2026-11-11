@@ -51,16 +51,19 @@ Span kinds follow public CI/CD SemConv: Pipeline Run `SERVER`, Task Run
 `INTERNAL`. Only justified GitHub conclusions map to SemConv results
 (`success` / `failure` / `cancellation` / `skip` / `timeout`);
 `neutral` / `action_required` / `stale` stay unsupported until a fixed registry
-mapping is cited. `error.type` is set only when the SemConv result is `failure`
-or `error`.
+mapping is cited. `error.type` is set for SemConv `failure` / `error` and for
+GitHub `timed_out` → `timeout` (Recording Errors); cancellation/skip leave
+Status UNSET without `error.type`.
 
 When both candidate spans are emitted for the same completed Run/Attempt, a Job
 that starts or finishes after the Run completed-at is `partial`
 (`inconsistent_run_job_timestamps`); individually valid spans are kept.
 
-`--job-id` is a deliberate single-Job diagnostic slice. When the Attempt has
-more completed Jobs than emitted Task spans, status is `partial`
-(`partial_job_coverage`).
+Without `--job-id`, the producer emits Task Spans for **every completed Job**
+on the Attempt (`job_selection=all_completed`) and records omitted Jobs under
+`coverage.tasks_omitted`. `--job-id` remains a deliberate single-Job diagnostic
+slice (`job_selection=job_id`). When completed Jobs exceed emitted Task spans,
+status is `partial` (`partial_job_coverage`).
 
 ## Export
 
@@ -96,10 +99,10 @@ When GitHub reports `total_count`, a short/empty page before that count is
 
 One native API → candidate/OTLP evidence bundle for this PR slice lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
-Baseline after PR #76/#77 and #78 merge: candidate Pipeline/Task construction
-and Attempt API/OTLP file export live under `engineering_ci.cicd_telemetry`;
-exact post-run Root, full multi-Job Task set, live OTLP/gRPC, and trusted
-admission remain open on Issue #75.
+Baseline after PR #76/#77/#78: candidate Pipeline/Task construction, Attempt
+API/OTLP file export, and full completed-Job Task coverage live under
+`engineering_ci.cicd_telemetry`. Exact post-run Pipeline Root, live OTLP/gRPC,
+and trusted admission remain open on Issue #75.
 
 ## Related
 

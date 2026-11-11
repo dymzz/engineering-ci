@@ -595,6 +595,108 @@ def test_fetch_rejects_job_not_in_attempt_jobs():
         assert error.code == "job_not_found"
 
 
+def test_fetch_without_job_id_emits_all_completed_tasks():
+    run, job = _api_run_job_fixture()
+    run["run_attempt"] = 1
+    jobs = [
+        {
+            **job,
+            "id": 101,
+            "name": "checks",
+            "run_id": run["id"],
+            "run_attempt": 1,
+            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/101",
+        },
+        {
+            **job,
+            "id": 102,
+            "name": "lint",
+            "run_id": run["id"],
+            "run_attempt": 1,
+            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/102",
+        },
+        {
+            **job,
+            "id": 103,
+            "name": "still-running",
+            "status": "in_progress",
+            "conclusion": None,
+            "run_id": run["id"],
+            "run_attempt": 1,
+            "completed_at": None,
+        },
+    ]
+
+    def api_get(path):
+        if "/jobs" in path:
+            return {"total_count": 3, "jobs": jobs}
+        if "/attempts/1" in path:
+            return run
+        raise AssertionError(path)
+
+    facts, coverage = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        42769746408,
+        attempt=1,
+        api_get=api_get,
+    )
+    assert coverage["job_selection"] == "all_completed"
+    assert coverage["completed_jobs_total"] == 2
+    assert len(coverage["task_facts"]) == 2
+    report = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        completed_jobs_total=coverage["completed_jobs_total"],
+        job_selection=coverage["job_selection"],
+        task_facts=coverage["task_facts"],
+    )
+    tasks = [
+        span
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
+    ]
+    assert len(tasks) == 2
+    assert report["coverage"]["task_spans_emitted"] == 2
+    assert report["coverage"]["tasks_omitted"] == []
+    assert {span["attributes"]["cicd.pipeline.task.run.id"] for span in tasks} == {
+        "101",
+        "102",
+    }
+    # No proven Run completed-at → partial Task-only; not partial_job_coverage.
+    assert report["status"] == "partial"
+    assert report["reason"] == "run_completed_at_unproven"
+    assert "partial_job_coverage" not in (report["reason"],)
+
+
+def test_all_completed_omits_incomplete_job_and_marks_partial_coverage():
+    run_facts = complete_facts(
+        job_id=None, job_name=None, job_url=None, job_conclusion=None
+    )
+    good = complete_facts(job_id="1", job_name="ok", job_url="https://example.test/1")
+    bad = complete_facts(
+        job_id="2",
+        job_name="bad",
+        job_url=None,
+        job_conclusion="success",
+    )
+    report = cicd_telemetry.produce(
+        run_facts,
+        task_facts=[good, bad],
+        completed_jobs_total=2,
+        job_selection="all_completed",
+    )
+    assert report["coverage"]["task_spans_emitted"] == 1
+    assert report["coverage"]["tasks_omitted"] == [
+        {"job_id": "2", "reason": "missing_task_required_identity"}
+    ]
+    assert report["status"] == "partial"
+    assert report["reason"] in {
+        "missing_task_required_identity",
+        "partial_job_coverage",
+    }
+
+
 def test_fetch_paginates_jobs_across_pages():
     run, job = _api_run_job_fixture()
     run["run_attempt"] = 1
