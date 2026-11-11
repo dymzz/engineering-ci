@@ -34,10 +34,18 @@ Without a proven Run completed-at the producer reports
 `run_completed_at_unproven` (when `updated_at` is present) or
 `missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
 With `--end-time-mode observed_upper_bound`, native Attempt API
-`run_status=completed`, a mapped terminal conclusion, and a valid observation
-time that is not earlier than Job ends, a SERVER Root may be emitted with
-`temporal_precision_unverified` and `exact_run_duration=false`. Event hints are
-conflict-checked against the Attempt API and never substitute for API status.
+`run_status=completed` confirms the terminal and records a constraint interval:
+last completed Job end (or Run start when there are no Jobs) through the
+observation time. That interval is not a proven end. An approximate Root is
+emitted only when `--max-end-uncertainty-ns` is set and the uncertainty fits
+that budget; `duration_valid_for_metrics` stays false. A late observation does
+not become the standard Root end. Tasks and Job-terminal logs stay. A withheld Root is recorded as
+`terminal_check=not_verified` and, when an observation time exists, as one
+Attempt-terminal LogRecord. That log is not a Run duration, and it is not a
+Weaver result.
+Event hints are conflict-checked against the Attempt API and never substitute
+for API status. A Job start/end envelope is coverage metadata
+(`job_execution_envelope`), not `cicd.pipeline.run.duration`.
 Coverage records `pipeline_terminal_covered` separately from `task_coverage`,
 plus a machine-readable `expected_completed_jobs` inventory for #52 hand-off.
 `terminal_provenance.terminal_source` is the facts source that was actually
@@ -123,8 +131,11 @@ and (for Traces and Logs) the same Trace ID. It reconciles
 `expected` / `matched` / `missing` / `duplicate` / `unexpected`.
 `candidate_record_only` stays true: network receipt is a transport claim,
 not a change of source class. The persisted candidate sets top-level trace
-`receiver_observed` and `otlp_delivered` only when `snapshot_phase` is
-`receiver_confirmed` for every prepared signal. The candidate artifact is
+`otlp_delivered` is the historical name for whole-bundle delivery: it is true
+only when every prepared signal was observed. `bundle_delivery_complete` is
+the same fact. Per-signal delivery is `transport.traces`, `transport.logs`,
+and `transport.metrics`. `snapshot_phase` is `before_receiver_confirmation`,
+`partial_receiver_confirmation`, or `receiver_confirmed`. The candidate artifact is
 written **after** the export attempt so top-level mirrors match claims.
 `github_api_fetched` records an API read; it is **not** a Weaver/trusted
 provenance claim. Flush / gRPC failures exit 3 with stable codes and do not

@@ -35,7 +35,9 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
 | Native API evidence (single Job) | Fixed Run `42821429094` Attempt 1 + `--job-id` | See [cicd-telemetry-evidence](./cicd-telemetry-evidence/README.md) |
 | Native API evidence (`all_completed`) | Same Run, no `--job-id`, 3 Task Spans | See [cicd-telemetry-evidence-all-completed](./cicd-telemetry-evidence-all-completed/README.md) |
-| Observed upper-bound Root | API `run_status=completed` + observation ≥ Job ends | SERVER Root emitted; `temporal_precision_unverified`; provenance + ECI attrs |
+| Observed upper bound, no budget | API `run_status=completed` + observation ≥ Job ends | Interval recorded; Root not emitted; Tasks remain; `end_time_uncertain` |
+| Approximate Root | Same, plus `--max-end-uncertainty-ns` covering the interval | Root end is the observation; `duration_valid_for_metrics=false` |
+| Late observation | Upper bound far after the last Job, budget too small | No Root; no proven multi-hour Run duration |
 | Observed Root without API completed | `run_status=in_progress` even with conclusion | No Root; `run_not_completed` |
 | Event/API status conflict | event status ≠ Attempt API status | No Root / fetch refuse |
 | Observation before Job end | Observed timestamp `<` max Job `completed_at` | No Root; `terminal_observed_before_jobs` |

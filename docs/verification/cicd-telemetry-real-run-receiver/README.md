@@ -12,10 +12,11 @@ python -m engineering_ci.cicd_telemetry ^
   --otlp-insecure
 ```
 
-The source is GitHub Attempt API for Run `42821429094` Attempt 1
+No `--max-end-uncertainty-ns` was passed. The source is GitHub Attempt API for
+Run `42821429094` Attempt 1
 (`head_sha=7ea85c24a62e65a9384a0abe9eb541ca54064cbc`, three completed Jobs).
 The receiver is an in-process OTLP/gRPC server on `127.0.0.1`. Producer exit
-is 0. Report status stays `partial` / `temporal_precision_unverified`.
+is 0. Report status stays `partial` / `end_time_uncertain`.
 
 | Fact | Value |
 | --- | --- |
@@ -23,17 +24,23 @@ is 0. Report status stays `partial` / `temporal_precision_unverified`.
 | `github_api_fetched` | `true` |
 | `github_authenticated` / `trusted` / `weaver_pass` | `false` |
 | `candidate_record_only` | `true` |
-| `end_time_source` | `terminal_observed_at` |
+| `terminal_confirmed` | `true` (`run_status=completed`) |
+| `root_emission` | `not_emitted` |
+| `end_lower_bound_source` | `last_completed_job_end` |
+| `end_upper_bound_source` | `terminal_observed_at` |
 | `time_precision` | `observed_upper_bound` |
-| `time_source_verified` | `false` (`run_completed_at_ns` is null; `updated_at` was not renamed) |
-| Traces | 1 Pipeline Root + 3 Task Spans received; `otlp_delivered=true` only after the receipt matched |
-| Logs | 3 Job-terminal LogRecords on `LogsService.Export`; separate `otlp_logs_delivered=true` |
-| Metrics | `otlp_metrics_skip=not_observable`. GitHub does not provide pending/executing/finalizing windows, so no Histogram was emitted |
+| `time_source_verified` / `exact_run_duration` / `duration_valid_for_metrics` | `false` |
+| `run_completed_at_ns` | null. `updated_at` was not used as the span end |
+| Traces | 3 Task Spans received. No Pipeline Root, so the trace does not show a multi-hour Run duration |
+| Logs | 3 Job-terminal LogRecords plus 1 Attempt-terminal LogRecord (`time_role=terminal_observed_at`, not a Run duration); `otlp_logs_delivered=true` |
+| `terminal_check` | `not_verified` while the Root span is withheld. `weaver_pass` stays false |
+| Metrics | `otlp_metrics_skip=not_observable`. The Job envelope is coverage metadata, not `cicd.pipeline.run.duration` |
 | `snapshot_phase` | `receiver_confirmed` for the prepared Traces and Logs |
 
-This is not a `workflow_run` of `.github/workflows/cicd-telemetry-post-run.yml`
-on the default branch. That workflow is not on `main` until this PR is
-merged, so that post-run execution is still absent. It is not a Weaver match.
+The uncertainty between the last Job end and this observation is many hours.
+That interval is a constraint, not a proven workflow end. This is not a
+`workflow_run` of `.github/workflows/cicd-telemetry-post-run.yml` on the
+default branch, and it is not a Weaver match.
 
 ## Files
 

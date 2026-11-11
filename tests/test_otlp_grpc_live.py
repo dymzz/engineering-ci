@@ -169,8 +169,11 @@ def test_live_otlp_grpc_receiver_observes_traces_logs_and_metrics():
             trace_id=trace_id,
             repository=facts["repository"],
         )
-        assert report["claims"]["snapshot_phase"] == "before_receiver_confirmation"
+        assert report["claims"]["snapshot_phase"] == "partial_receiver_confirmation"
+        assert report["claims"]["transport"]["traces"]["otlp_delivered"] is True
         assert report["claims"]["otlp_delivered"] is False
+        assert report["claims"]["bundle_delivery_complete"] is False
+        assert report["claims"]["all_prepared_signals_delivered"] is False
         cicd_telemetry.mark_receiver_observed(
             report,
             signal="logs",

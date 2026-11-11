@@ -141,6 +141,10 @@ jobs:
             fi
           fi
           set +e
+          # Precision policy is explicit: no uncertainty budget, so a late
+          # observation is recorded and is not used as the Root span end.
+          printf '%s\n' 'mode=observed_upper_bound' 'max_end_uncertainty_ns=' \
+            > artifacts/cicd-telemetry/end-time-policy.txt
           uv run python -m engineering_ci.cicd_telemetry \
             --repository "${SOURCE_REPO}" \
             --run-id "${SOURCE_RUN_ID}" \

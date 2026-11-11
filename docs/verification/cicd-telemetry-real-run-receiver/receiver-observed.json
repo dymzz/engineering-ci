@@ -31,12 +31,12 @@
     "--otlp-metrics-json",
     "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-metrics.json",
     "--otlp-endpoint",
-    "127.0.0.1:59569",
+    "127.0.0.1:18404",
     "--otlp-insecure",
     "--json"
   ],
-  "end_time_source": "terminal_observed_at",
-  "endpoint": "127.0.0.1:59569",
+  "end_time_source": null,
+  "endpoint": "127.0.0.1:18404",
   "expected_completed_jobs": [
     {
       "emitted": true,
@@ -73,15 +73,11 @@
   "observed_log_span_ids": [
     "7d2f4e7f18a603cd",
     "a7263c2e65a30498",
-    "7d98cbfec3f44c1a"
+    "7d98cbfec3f44c1a",
+    "093c00d57bcc226c"
   ],
   "observed_metric_ids": [],
   "observed_spans": [
-    {
-      "name": "RUN Engineering CI",
-      "span_id": "093c00d57bcc226c",
-      "trace_id": "21ee8206fe06a4879580f60591a3014f"
-    },
     {
       "name": "task:sync-tool-tests",
       "span_id": "7d2f4e7f18a603cd",
@@ -113,9 +109,11 @@
       "expected": [
         "7d2f4e7f18a603cd",
         "a7263c2e65a30498",
-        "7d98cbfec3f44c1a"
+        "7d98cbfec3f44c1a",
+        "093c00d57bcc226c"
       ],
       "matched": [
+        "093c00d57bcc226c",
         "7d2f4e7f18a603cd",
         "7d98cbfec3f44c1a",
         "a7263c2e65a30498"
@@ -135,13 +133,11 @@
       "attempt": 1,
       "duplicate": [],
       "expected": [
-        "093c00d57bcc226c",
         "7d2f4e7f18a603cd",
         "a7263c2e65a30498",
         "7d98cbfec3f44c1a"
       ],
       "matched": [
-        "093c00d57bcc226c",
         "7d2f4e7f18a603cd",
         "7d98cbfec3f44c1a",
         "a7263c2e65a30498"

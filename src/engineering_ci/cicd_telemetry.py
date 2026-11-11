@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
@@ -80,6 +80,8 @@ ATTR_GITHUB_REPOSITORY = "github.repository"
 # ECI extension attributes (not official SemConv Required keys).
 ATTR_ECI_END_TIME_QUALITY = "eci.cicd.end_time_quality"
 ATTR_ECI_EXACT_RUN_DURATION = "eci.cicd.exact_run_duration"
+ATTR_ECI_DURATION_VALID_FOR_METRICS = "eci.cicd.duration_valid_for_metrics"
+ATTR_ECI_ROOT_EMISSION = "eci.cicd.root_emission"
 
 # Justified GitHub conclusion → SemConv cicd.*.result only.
 # Native GitHub values remain in facts.*; neutral/action_required/stale stay
@@ -389,11 +391,188 @@ def _normalize_phase_intervals(value):
             "start_ns": start,
             "end_ns": end,
             "valid": end >= start,
+            "source": item.get("source"),
+            "run_id": item.get("run_id"),
+            "attempt": item.get("attempt"),
+            "quality": item.get("quality"),
         }
         if item.get("result") is not None:
             entry["result"] = item["result"]
         cleaned.append(entry)
     return cleaned
+
+
+def _bind_phase_intervals(intervals, facts, source):
+    """Attach provenance. GitHub API facts do not invent SemConv phases."""
+    bound = []
+    for item in intervals:
+        entry = dict(item)
+        entry["source"] = entry.get("source") or source
+        entry["run_id"] = entry.get("run_id") or facts.run_id
+        entry["attempt"] = (
+            facts.run_attempt if entry.get("attempt") is None else entry["attempt"]
+        )
+        entry["quality"] = entry.get("quality") or "explicit_phase_input"
+        reject = None
+        if source == "github_api" and entry["quality"] != "native_phase_transition":
+            reject = "phase_source_not_native"
+        elif (
+            entry["source"] != source
+            or str(entry["run_id"]) != str(facts.run_id)
+            or entry["attempt"] != facts.run_attempt
+        ):
+            reject = "phase_source_mismatch"
+        elif entry["quality"] == "job_execution_envelope":
+            reject = "job_envelope_is_not_pipeline_phase"
+        if reject:
+            entry["valid"] = False
+            entry["reject"] = reject
+        bound.append(entry)
+    return bound
+
+
+def _job_set_complete(job_sources, completed_jobs_total, job_selection, omitted_count):
+    if job_selection == "job_id" or omitted_count:
+        return False
+    if completed_jobs_total is not None and completed_jobs_total != len(job_sources):
+        return False
+    return all(
+        job.job_started_at_ns is not None and job.job_completed_at_ns is not None
+        for _, job in job_sources
+    )
+
+
+def _job_execution_envelope(
+    job_sources,
+    *,
+    source,
+    facts,
+    completed_jobs_total,
+    job_selection,
+    omitted_count,
+):
+    """Job start/end envelope. This is not a SemConv pipeline phase."""
+    starts = []
+    ends = []
+    for _, job in job_sources:
+        if job.job_started_at_ns is not None:
+            starts.append(job.job_started_at_ns)
+        if job.job_completed_at_ns is not None:
+            ends.append(job.job_completed_at_ns)
+    if not starts or not ends:
+        return None
+    complete = (
+        _job_set_complete(
+            job_sources, completed_jobs_total, job_selection, omitted_count
+        )
+        and len(starts) == len(job_sources)
+        and len(ends) == len(job_sources)
+    )
+    return {
+        "start_ns": min(starts),
+        "end_ns": max(ends),
+        "quality": "job_execution_envelope",
+        "source": source,
+        "run_id": facts.run_id,
+        "attempt": facts.run_attempt,
+        "complete": complete,
+        "semconv_phase": None,
+    }
+
+
+def _observation_interval(
+    job_sources,
+    *,
+    observed_ns,
+    run_started_ns,
+    completed_jobs_total,
+    job_selection,
+    omitted_count,
+):
+    """Constraint range for a confirmed terminal. Not a proven end instant."""
+    ends = []
+    missing_end = False
+    for _, job in job_sources:
+        if job.job_completed_at_ns is None:
+            missing_end = True
+        else:
+            ends.append(job.job_completed_at_ns)
+    job_count = len(job_sources)
+    lower = None
+    lower_source = None
+    invalid = None
+    if job_count == 0 and completed_jobs_total in {None, 0}:
+        lower = run_started_ns
+        lower_source = "weak_run_start"
+    elif (
+        job_selection == "job_id"
+        or (completed_jobs_total is not None and completed_jobs_total != job_count)
+        or omitted_count
+        or missing_end
+        or not ends
+    ):
+        invalid = "incomplete_job_set"
+    else:
+        lower = max(ends)
+        lower_source = "last_completed_job_end"
+    if invalid:
+        return _bound_fields(
+            valid=False,
+            reason=invalid,
+            lower=None,
+            lower_source=None,
+            upper=observed_ns,
+            uncertainty=None,
+            job_set_complete=False,
+            clock_quality="not_assessed",
+        )
+    if lower is None or observed_ns < lower:
+        return _bound_fields(
+            valid=False,
+            reason="end_bounds_unverified",
+            lower=lower,
+            lower_source=lower_source,
+            upper=observed_ns,
+            uncertainty=None,
+            job_set_complete=True,
+            clock_quality="rejected",
+        )
+    return _bound_fields(
+        valid=True,
+        reason=None,
+        lower=lower,
+        lower_source=lower_source,
+        upper=observed_ns,
+        uncertainty=observed_ns - lower,
+        job_set_complete=True,
+        clock_quality="ordered",
+    )
+
+
+def _bound_fields(
+    *,
+    valid,
+    reason,
+    lower,
+    lower_source,
+    upper,
+    uncertainty,
+    job_set_complete,
+    clock_quality,
+):
+    return {
+        "bounds_valid": valid,
+        "bounds_invalid_reason": reason,
+        "end_lower_bound_ns": lower,
+        "end_lower_bound_source": lower_source,
+        "lower_source": lower_source,
+        "end_upper_bound_ns": upper,
+        "end_upper_bound_source": "terminal_observed_at",
+        "upper_source": "terminal_observed_at",
+        "uncertainty_ns": uncertainty,
+        "job_set_complete": job_set_complete,
+        "clock_quality": clock_quality,
+    }
 
 
 def _histogram_buckets(duration_s):
@@ -456,6 +635,7 @@ def produce(
     expected_job_stubs=None,
     phase_intervals=None,
     include_run_entity_metrics=False,
+    max_end_uncertainty_ns=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
@@ -467,11 +647,12 @@ def produce(
     - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is an
       explicit input. Recorded precision is ``exact_input``. That closed numeric
       bound is not a verified GitHub completion timestamp.
-    - ``observed_upper_bound``: post-run observer may emit Root ending at
-      ``terminal_observed_at_ns`` with ``time_precision=observed_upper_bound``
-      only when native Attempt ``run_status == "completed"``; this never claims
-      exact native Run duration. ``terminal_status`` / event fields are not
-      substitutes for API status.
+    - ``observed_upper_bound``: after Attempt ``run_status=completed``, record a
+      constraint interval (last Job end or weak Run start, through the
+      observation time). That interval is not a proven end. An approximate Root
+      is emitted only when ``max_end_uncertainty_ns`` is set and the interval
+      fits that budget. A late observation is not written as the standard Root
+      end. ``terminal_status`` / event fields are not substitutes for API status.
 
     ``phase_intervals`` are already-proven ``pending`` / ``executing`` /
     ``finalizing`` windows. Missing windows stay ``not_observable``.
@@ -500,6 +681,8 @@ def produce(
             "rpc_accepted": False,
             "receiver_observed": False,
             "snapshot_phase": "before_receiver_confirmation",
+            "all_prepared_signals_delivered": False,
+            "bundle_delivery_complete": False,
             "transport": {},
             "weaver_pass": False,
             "trusted": False,
@@ -530,6 +713,19 @@ def produce(
             "time_precision": TIME_PRECISION_UNPROVEN,
             "time_source_verified": False,
             "exact_run_duration": False,
+            "duration_valid_for_metrics": False,
+            "terminal_confirmed": False,
+            "root_emission": "not_emitted",
+            "root_emission_reason": None,
+            "end_lower_bound_ns": None,
+            "end_lower_bound_source": None,
+            "end_upper_bound_ns": None,
+            "end_upper_bound_source": None,
+            "uncertainty_ns": None,
+            "bounds_valid": False,
+            "bounds_invalid_reason": None,
+            "max_end_uncertainty_ns": max_end_uncertainty_ns,
+            "reviewed_at_ns": terminal_observed_at_ns,
         },
         "phase_intervals": _normalize_phase_intervals(phase_intervals),
         "include_run_entity_metrics": bool(include_run_entity_metrics),
@@ -559,6 +755,10 @@ def produce(
     }
     # Authoritative terminal status is native Attempt status on facts, not CLI hints.
     report["terminal"]["status"] = facts.run_status or terminal_status
+    if facts.has_run_identity:
+        report["phase_intervals"] = _bind_phase_intervals(
+            report["phase_intervals"], facts, source
+        )
     if not facts.has_run_identity:
         report["reason"] = "missing_run_identity"
         return report
@@ -596,6 +796,10 @@ def produce(
 
     run_result, run_error_type = map_github_result(facts.run_conclusion)
     root_end_ns = None
+    root_emission = "not_emitted"
+    root_emission_reason = None
+    duration_valid_for_metrics = False
+    observation_ready = False
     time_precision = TIME_PRECISION_UNPROVEN
     # Numeric closure and native-source verification are separate facts.
     time_source_verified = False
@@ -609,6 +813,8 @@ def produce(
         time_precision = TIME_PRECISION_EXACT_INPUT
         time_source_verified = False
         run_end_source = _explicit_run_end_source(source)
+        root_emission = "explicit_end"
+        duration_valid_for_metrics = True
     elif end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
         api_status = facts.run_status
         if api_status is None:
@@ -639,12 +845,15 @@ def produce(
                     max_job_end = job_facts.job_completed_at_ns
             if max_job_end is not None and terminal_observed_at_ns < max_job_end:
                 reasons.append("terminal_observed_before_jobs")
+                reasons.append("end_bounds_unverified")
+                report["terminal"]["bounds_valid"] = False
+                report["terminal"]["bounds_invalid_reason"] = "end_bounds_unverified"
+                report["terminal"]["clock_quality"] = "rejected"
+                report["terminal"]["job_set_complete"] = True
             else:
-                root_end_ns = terminal_observed_at_ns
-                time_precision = TIME_PRECISION_OBSERVED_UPPER_BOUND
-                time_source_verified = False
-                run_end_source = "terminal_observed_at"
-                reasons.append("temporal_precision_unverified")
+                # Confirmed terminal only. The observation is not a span end yet.
+                observation_ready = True
+                report["terminal"]["terminal_confirmed"] = True
     elif facts.run_bounds_state == "missing":
         # Prefer explicit missing completed-at over fabricating from updated_at.
         if facts.run_updated_at_ns is not None and facts.run_completed_at_ns is None:
@@ -674,6 +883,8 @@ def produce(
             # ECI extensions for Terminal consumers; not official SemConv.
             ATTR_ECI_END_TIME_QUALITY: time_precision,
             ATTR_ECI_EXACT_RUN_DURATION: time_precision == TIME_PRECISION_EXACT_INPUT,
+            ATTR_ECI_DURATION_VALID_FOR_METRICS: duration_valid_for_metrics,
+            ATTR_ECI_ROOT_EMISSION: root_emission,
         }
         spans.append(
             _span(
@@ -804,9 +1015,98 @@ def produce(
         # --job-id is a diagnostic slice; all_completed may omit incomplete Jobs.
         reasons.append("partial_job_coverage")
 
+    if observation_ready:
+        time_precision = TIME_PRECISION_OBSERVED_UPPER_BOUND
+        time_source_verified = False
+        interval = _observation_interval(
+            job_sources,
+            observed_ns=terminal_observed_at_ns,
+            run_started_ns=facts.run_started_at_ns,
+            completed_jobs_total=completed_jobs_total,
+            job_selection=job_selection,
+            omitted_count=len(omitted),
+        )
+        report["terminal"].update(interval)
+        if not interval["bounds_valid"]:
+            root_emission = "not_emitted"
+            root_emission_reason = interval["bounds_invalid_reason"]
+            reasons.append("end_time_uncertain")
+        elif max_end_uncertainty_ns is None:
+            root_emission = "not_emitted"
+            root_emission_reason = "end_time_uncertain"
+            reasons.append("end_time_uncertain")
+        elif interval["uncertainty_ns"] > max_end_uncertainty_ns:
+            root_emission = "not_emitted"
+            root_emission_reason = "uncertainty_exceeds_budget"
+            reasons.append("end_time_uncertain")
+        else:
+            root_end_ns = interval["end_upper_bound_ns"]
+            root_emission = "approximate_root"
+            run_end_source = "terminal_observed_at"
+            duration_valid_for_metrics = False
+            reasons.append("temporal_precision_unverified")
+            spans.insert(
+                0,
+                _span(
+                    f"RUN {facts.workflow_name}",
+                    kind=SPAN_KIND_SERVER,
+                    trace_id=trace_id,
+                    span_id=pipeline_span_id,
+                    parent_span_id=None,
+                    start_ns=facts.run_started_at_ns,
+                    end_ns=root_end_ns,
+                    attributes={
+                        ATTR_PIPELINE_NAME: facts.workflow_name,
+                        ATTR_PIPELINE_RUN_ID: pipeline_run_id,
+                        ATTR_PIPELINE_RUN_URL: facts.run_url,
+                        ATTR_PIPELINE_RESULT: run_result,
+                        ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
+                        ATTR_VCS_HEAD_REVISION: facts.head_sha,
+                        ATTR_ERROR_TYPE: run_error_type,
+                        ATTR_ECI_END_TIME_QUALITY: time_precision,
+                        ATTR_ECI_EXACT_RUN_DURATION: False,
+                        ATTR_ECI_DURATION_VALID_FOR_METRICS: False,
+                        ATTR_ECI_ROOT_EMISSION: "approximate_root",
+                    },
+                ),
+            )
+    report["terminal"]["root_emission"] = root_emission
+    report["terminal"]["root_emission_reason"] = root_emission_reason
+    report["terminal"]["duration_valid_for_metrics"] = duration_valid_for_metrics
+    report["terminal"]["end_time_quality"] = time_precision
+    report["terminal"]["end_time_source"] = run_end_source
+    report["terminal"]["time_precision"] = time_precision
+    report["terminal"]["time_source_verified"] = time_source_verified
+    report["terminal"]["exact_run_duration"] = (
+        time_precision == TIME_PRECISION_EXACT_INPUT
+    )
+    report["coverage"]["job_execution_envelope"] = _job_execution_envelope(
+        job_sources,
+        source=source,
+        facts=facts,
+        completed_jobs_total=completed_jobs_total,
+        job_selection=job_selection,
+        omitted_count=len(omitted),
+    )
+
     pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
     task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
     report["coverage"]["pipeline_terminal_covered"] = pipeline_ok
+    if task_ok and not pipeline_ok:
+        report["coverage"]["withheld_parent_span"] = {
+            "trace_id": trace_id,
+            "span_id": pipeline_span_id,
+            "exported": False,
+            "reason": root_emission_reason or "root_not_emitted",
+        }
+    else:
+        report["coverage"]["withheld_parent_span"] = None
+    if pipeline_ok:
+        report["coverage"]["terminal_check"] = "not_checked"
+    elif report["terminal"].get("terminal_confirmed"):
+        report["coverage"]["terminal_check"] = "not_verified"
+    else:
+        report["coverage"]["terminal_check"] = "not_applicable"
     if completed_jobs_total == 0 and not job_sources:
         report["coverage"]["task_coverage"] = "empty"
     elif (
@@ -821,13 +1121,14 @@ def produce(
     else:
         report["coverage"]["task_coverage"] = "none"
 
-    if pipeline_ok:
+    if pipeline_ok or report["terminal"].get("terminal_confirmed"):
         report["terminal_provenance"] = {
             "repository": facts.repository,
             "run_id": facts.run_id,
             "attempt": facts.run_attempt,
             "root_trace_id": trace_id,
-            "root_span_id": pipeline_span_id,
+            "root_span_id": pipeline_span_id if pipeline_ok else None,
+            "root_emitted": pipeline_ok,
             "terminal_source": source,
             "terminal_status": facts.run_status,
             "terminal_conclusion": facts.run_conclusion,
@@ -837,6 +1138,13 @@ def produce(
             "time_precision": time_precision,
             "time_source_verified": time_source_verified,
             "exact_run_duration": time_precision == TIME_PRECISION_EXACT_INPUT,
+            "duration_valid_for_metrics": duration_valid_for_metrics,
+            "root_emission": root_emission,
+            "root_emission_reason": root_emission_reason,
+            "end_lower_bound_ns": report["terminal"].get("end_lower_bound_ns"),
+            "end_upper_bound_ns": report["terminal"].get("end_upper_bound_ns"),
+            "uncertainty_ns": report["terminal"].get("uncertainty_ns"),
+            "bounds_valid": report["terminal"].get("bounds_valid"),
             "otlp_sha256": None,
         }
 
@@ -972,7 +1280,7 @@ def write_otlp_json(report, path):
     if isinstance(provenance, dict):
         provenance["otlp_sha256"] = digest
     # File artifact only — not live OTLP/gRPC delivery.
-    if report["claims"].get("snapshot_phase") != "receiver_confirmed":
+    if report["claims"].get("snapshot_phase") == "before_receiver_confirmation":
         report["claims"]["otlp_delivered"] = False
     return path
 
@@ -1226,22 +1534,35 @@ def _prepared_signals(report):
 
 
 def _sync_delivery_claims(report):
-    """Top-level trace delivery follows a consistent post-receipt snapshot."""
+    """Top-level ``otlp_delivered`` is the historical whole-bundle aggregate.
+
+    It is true only when every prepared signal was observed. Per-signal
+    delivery remains ``transport.<signal>.otlp_delivered``.
+    ``bundle_delivery_complete`` is the explicit name for the same aggregate.
+    """
     claims = report["claims"]
     transport = claims.setdefault("transport", {})
     prepared = _prepared_signals(report)
-    complete = bool(prepared) and all(
-        (transport.get(name) or {}).get("receiver_observed") for name in prepared
-    )
-    claims["snapshot_phase"] = (
-        "receiver_confirmed" if complete else "before_receiver_confirmation"
-    )
+    confirmed = [
+        name
+        for name in prepared
+        if (transport.get(name) or {}).get("receiver_observed")
+    ]
+    all_delivered = bool(prepared) and len(confirmed) == len(prepared)
+    claims["all_prepared_signals_delivered"] = all_delivered
+    claims["bundle_delivery_complete"] = all_delivered
+    claims["otlp_delivered"] = all_delivered
+    if not confirmed:
+        claims["snapshot_phase"] = "before_receiver_confirmation"
+    elif all_delivered:
+        claims["snapshot_phase"] = "receiver_confirmed"
+    else:
+        claims["snapshot_phase"] = "partial_receiver_confirmation"
     traces = transport.get("traces") or {}
     if "traces" in prepared:
-        confirmed = complete and bool(traces.get("otlp_delivered"))
-        claims["receiver_observed"] = confirmed
-        claims["otlp_delivered"] = confirmed
-    # Network receipt does not change the candidate-record source class.
+        claims["receiver_observed"] = all_delivered and bool(
+            traces.get("receiver_observed")
+        )
     claims["candidate_record_only"] = True
     claims["trusted"] = False
     claims["weaver_pass"] = False
@@ -1342,6 +1663,8 @@ def build_job_terminal_log_records(report):
 
     Source is the Attempt Job API terminal already mapped into Task Spans — not
     a fabricated stdout stream. Full Job log archives remain on GitHub Actions.
+    When the Pipeline Root span is withheld, one Attempt-terminal LogRecord
+    carries the confirmed status and the end-time bounds. It is not a duration.
     """
     records = []
     for span in report.get("spans") or []:
@@ -1370,7 +1693,47 @@ def build_job_terminal_log_records(report):
                 "span_id": span.get("span_id"),
             }
         )
+    records.extend(_attempt_terminal_log(report))
     return records
+
+
+def _attempt_terminal_log(report):
+    """One correlated terminal fact when no Root span was exported."""
+    terminal = report.get("terminal") or {}
+    if terminal.get("root_emission") != "not_emitted":
+        return []
+    if not terminal.get("terminal_confirmed"):
+        return []
+    observed = terminal.get("observed_at_ns")
+    if type(observed) is not int:
+        return []
+    facts = report.get("facts") or {}
+    trace_id, span_id, _ = _stable_ids(facts.get("run_id"), facts.get("run_attempt"))
+    resource = report.get("resource") or {}
+    return [
+        {
+            "time_unix_nano": observed,
+            "severity_number": 9,
+            "severity_text": "INFO",
+            "body": (
+                "GitHub Attempt terminal confirmed; "
+                "pipeline end time is an unbound observation, not a span end"
+            ),
+            "attributes": {
+                ATTR_PIPELINE_RUN_ID: resource.get(ATTR_PIPELINE_RUN_ID),
+                ATTR_GITHUB_RUN_ATTEMPT: facts.get("run_attempt"),
+                "eci.log.source": "github_attempt_terminal",
+                "eci.cicd.time_role": "terminal_observed_at",
+                "eci.cicd.root_emission": "not_emitted",
+                "eci.cicd.end_lower_bound_ns": terminal.get("end_lower_bound_ns"),
+                "eci.cicd.end_upper_bound_ns": terminal.get("end_upper_bound_ns"),
+                "eci.cicd.uncertainty_ns": terminal.get("uncertainty_ns"),
+                "eci.cicd.parent_span_exported": False,
+            },
+            "trace_id": trace_id,
+            "span_id": span_id,
+        }
+    ]
 
 
 def _pipeline_span(report):
@@ -1415,6 +1778,12 @@ def build_metrics_plan(report):
             not_observable.append(
                 _duration_not_observable(state, "phase_interval_unproven")
             )
+            continue
+        rejected = next(
+            (item.get("reject") for item in group if item.get("reject")), None
+        )
+        if rejected:
+            not_observable.append(_duration_not_observable(state, rejected))
             continue
         if any(not item.get("valid") for item in group):
             not_observable.append(
@@ -2126,8 +2495,17 @@ def main(argv=None):
         "--end-time-mode",
         choices=[END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND],
         help=(
-            "Pipeline Root end-time mode; observed_upper_bound requires "
-            "--terminal-observed-at and never claims exact Run duration"
+            "exact uses an explicit completed-at. observed_upper_bound records "
+            "a constraint interval and emits an approximate Root only when "
+            "--max-end-uncertainty-ns covers that interval"
+        ),
+    )
+    parser.add_argument(
+        "--max-end-uncertainty-ns",
+        type=int,
+        help=(
+            "Acceptance budget for an approximate observed Root. "
+            "Omitted means the Root is not emitted"
         ),
     )
     parser.add_argument(
@@ -2211,6 +2589,8 @@ def main(argv=None):
         terminal_observed_at_ns = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
     else:
         terminal_observed_at_ns = None
+    if args.max_end_uncertainty_ns is not None and args.max_end_uncertainty_ns < 0:
+        parser.exit(2, "cicd-telemetry rejected: max_end_uncertainty_invalid\n")
     report = produce(
         facts,
         source=source,
@@ -2226,6 +2606,7 @@ def main(argv=None):
         event_status=args.event_status,
         event_conclusion=args.event_conclusion,
         expected_job_stubs=expected_job_stubs,
+        max_end_uncertainty_ns=args.max_end_uncertainty_ns,
     )
     attach_signal_candidates(report)
     attach_otlp_json(report)

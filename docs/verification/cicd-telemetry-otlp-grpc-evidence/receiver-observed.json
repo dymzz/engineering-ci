@@ -13,7 +13,7 @@
     "trusted": false,
     "weaver_pass": false
   },
-  "endpoint": "127.0.0.1:11243",
+  "endpoint": "127.0.0.1:18402",
   "github_authenticated": false,
   "insecure": true,
   "observed_log_span_ids": [

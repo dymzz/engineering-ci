@@ -205,11 +205,77 @@
               "spanId": "7d98cbfec3f44c1a",
               "timeUnixNano": "1794316058000000000",
               "traceId": "21ee8206fe06a4879580f60591a3014f"
+            },
+            {
+              "attributes": [
+                {
+                  "key": "cicd.pipeline.run.id",
+                  "value": {
+                    "stringValue": "42821429094/1"
+                  }
+                },
+                {
+                  "key": "github.actions.run_attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "eci.log.source",
+                  "value": {
+                    "stringValue": "github_attempt_terminal"
+                  }
+                },
+                {
+                  "key": "eci.cicd.time_role",
+                  "value": {
+                    "stringValue": "terminal_observed_at"
+                  }
+                },
+                {
+                  "key": "eci.cicd.root_emission",
+                  "value": {
+                    "stringValue": "not_emitted"
+                  }
+                },
+                {
+                  "key": "eci.cicd.end_lower_bound_ns",
+                  "value": {
+                    "intValue": "1794316079000000000"
+                  }
+                },
+                {
+                  "key": "eci.cicd.end_upper_bound_ns",
+                  "value": {
+                    "intValue": "1794402286346617088"
+                  }
+                },
+                {
+                  "key": "eci.cicd.uncertainty_ns",
+                  "value": {
+                    "intValue": "86207346617088"
+                  }
+                },
+                {
+                  "key": "eci.cicd.parent_span_exported",
+                  "value": {
+                    "boolValue": false
+                  }
+                }
+              ],
+              "body": {
+                "stringValue": "GitHub Attempt terminal confirmed; pipeline end time is an unbound observation, not a span end"
+              },
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "spanId": "093c00d57bcc226c",
+              "timeUnixNano": "1794402286346617088",
+              "traceId": "21ee8206fe06a4879580f60591a3014f"
             }
           ],
           "scope": {
             "name": "eci_core.cicd_telemetry",
-            "version": "6"
+            "version": "7"
           }
         }
       ]

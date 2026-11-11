@@ -39,7 +39,7 @@
         {
           "scope": {
             "name": "eci_core.cicd_telemetry",
-            "version": "6"
+            "version": "7"
           },
           "spans": [
             {
@@ -84,6 +84,18 @@
                   "key": "eci.cicd.exact_run_duration",
                   "value": {
                     "boolValue": true
+                  }
+                },
+                {
+                  "key": "eci.cicd.duration_valid_for_metrics",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "eci.cicd.root_emission",
+                  "value": {
+                    "stringValue": "explicit_end"
                   }
                 }
               ],

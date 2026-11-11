@@ -86,7 +86,7 @@
           ],
           "scope": {
             "name": "eci_core.cicd_telemetry",
-            "version": "6"
+            "version": "7"
           }
         }
       ]

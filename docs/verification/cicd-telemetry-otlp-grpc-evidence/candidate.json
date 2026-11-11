@@ -1,5 +1,7 @@
 {
   "claims": {
+    "all_prepared_signals_delivered": true,
+    "bundle_delivery_complete": true,
     "candidate_record_only": true,
     "github_api_fetched": false,
     "github_authenticated": false,
@@ -7,26 +9,26 @@
     "otlp_json_exported": true,
     "otlp_json_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-traces.json",
     "otlp_json_prepared": true,
-    "otlp_json_sha256": "f7e8d611bf2368a6078941926b8a2dbe26a9d9cf07d64c4202f3ebf4183140dd",
+    "otlp_json_sha256": "5ed8f22cdcd2d07f6307813d79196b3f731e7ebf3b2d2753431a75cad56d100e",
     "otlp_logs_delivered": true,
     "otlp_logs_exported": true,
     "otlp_logs_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-logs.json",
     "otlp_logs_prepared": true,
     "otlp_logs_receiver_observed": true,
     "otlp_logs_rpc_accepted": true,
-    "otlp_logs_rpc_endpoint": "127.0.0.1:11243",
+    "otlp_logs_rpc_endpoint": "127.0.0.1:18402",
     "otlp_logs_rpc_rejected": 0,
-    "otlp_logs_sha256": "526643be16ec63224361bfa4e7a0918f6a2776828083ea8093194d1afa2b690b",
+    "otlp_logs_sha256": "a2e65deb5f3dc374c791078221c8114a17a1e070707da8f6503a653396e441f8",
     "otlp_metrics_delivered": true,
     "otlp_metrics_exported": true,
     "otlp_metrics_path": "docs\\verification\\cicd-telemetry-otlp-grpc-evidence\\otel-metrics.json",
     "otlp_metrics_prepared": true,
     "otlp_metrics_receiver_observed": true,
     "otlp_metrics_rpc_accepted": true,
-    "otlp_metrics_rpc_endpoint": "127.0.0.1:11243",
+    "otlp_metrics_rpc_endpoint": "127.0.0.1:18402",
     "otlp_metrics_rpc_rejected": 0,
-    "otlp_metrics_sha256": "74622786a494855e3b14bddc9a97c0824c76937bda7ec4e13c39117ea81f0f19",
-    "otlp_rpc_endpoint": "127.0.0.1:11243",
+    "otlp_metrics_sha256": "5d4cf4b251b7f58e0bd99a4e5230c835063e82154434ea17068f162c49272a72",
+    "otlp_rpc_endpoint": "127.0.0.1:18402",
     "otlp_rpc_rejected_spans": 0,
     "receiver_observed": true,
     "rpc_accepted": true,
@@ -111,13 +113,25 @@
         "source_index": null
       }
     ],
+    "job_execution_envelope": {
+      "attempt": 1,
+      "complete": true,
+      "end_ns": 1700000090000000000,
+      "quality": "job_execution_envelope",
+      "run_id": "42627302972",
+      "semconv_phase": null,
+      "source": "mapping",
+      "start_ns": 1700000010000000000
+    },
     "job_selection": null,
     "jobs_observed_total": null,
     "noncompleted_jobs_total": null,
     "pipeline_terminal_covered": true,
     "task_coverage": "partial",
     "task_spans_emitted": 1,
-    "tasks_omitted": []
+    "tasks_omitted": [],
+    "terminal_check": "not_checked",
+    "withheld_parent_span": null
   },
   "evidence_class": "candidate_record",
   "facts": {
@@ -150,7 +164,11 @@
   "otlp_metrics_prepared": true,
   "phase_intervals": [
     {
+      "attempt": 1,
       "end_ns": 1700000090000000000,
+      "quality": "explicit_phase_input",
+      "run_id": "42627302972",
+      "source": "mapping",
       "start_ns": 1700000010000000000,
       "state": "executing",
       "valid": true
@@ -170,7 +188,7 @@
     "github.repository": "dymzz/engineering-ci",
     "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
-  "schema_version": 6,
+  "schema_version": 7,
   "signals": {
     "logs": [
       {
@@ -274,8 +292,10 @@
         "cicd.pipeline.name": "Engineering CI",
         "cicd.pipeline.result": "success",
         "cicd.pipeline.run.id": "42627302972/1",
+        "eci.cicd.duration_valid_for_metrics": true,
         "eci.cicd.end_time_quality": "exact_input",
         "eci.cicd.exact_run_duration": true,
+        "eci.cicd.root_emission": "explicit_end",
         "github.actions.run_attempt": 1,
         "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
@@ -313,23 +333,43 @@
   ],
   "status": "produced",
   "terminal": {
+    "bounds_invalid_reason": null,
+    "bounds_valid": false,
     "conclusion": "success",
+    "duration_valid_for_metrics": true,
+    "end_lower_bound_ns": null,
+    "end_lower_bound_source": null,
     "end_time_quality": "exact_input",
     "end_time_source": "explicit_mapping",
+    "end_upper_bound_ns": null,
+    "end_upper_bound_source": null,
     "exact_run_duration": true,
+    "max_end_uncertainty_ns": null,
     "observed_at_ns": null,
+    "reviewed_at_ns": null,
+    "root_emission": "explicit_end",
+    "root_emission_reason": null,
     "run_completed_at_ns": 1700000120000000000,
     "status": "completed",
+    "terminal_confirmed": false,
     "time_precision": "exact_input",
-    "time_source_verified": false
+    "time_source_verified": false,
+    "uncertainty_ns": null
   },
   "terminal_provenance": {
     "attempt": 1,
+    "bounds_valid": false,
+    "duration_valid_for_metrics": true,
+    "end_lower_bound_ns": null,
     "end_time_quality": "exact_input",
     "end_time_source": "explicit_mapping",
+    "end_upper_bound_ns": null,
     "exact_run_duration": true,
-    "otlp_sha256": "f7e8d611bf2368a6078941926b8a2dbe26a9d9cf07d64c4202f3ebf4183140dd",
+    "otlp_sha256": "5ed8f22cdcd2d07f6307813d79196b3f731e7ebf3b2d2753431a75cad56d100e",
     "repository": "dymzz/engineering-ci",
+    "root_emission": "explicit_end",
+    "root_emission_reason": null,
+    "root_emitted": true,
     "root_span_id": "99e59e4635e01286",
     "root_trace_id": "7a39047f8e25a08789d7b936cd9517f8",
     "run_id": "42627302972",
@@ -338,6 +378,7 @@
     "terminal_source": "mapping",
     "terminal_status": "completed",
     "time_precision": "exact_input",
-    "time_source_verified": false
+    "time_source_verified": false,
+    "uncertainty_ns": null
   }
 }

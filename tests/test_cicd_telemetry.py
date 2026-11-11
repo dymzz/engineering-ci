@@ -1082,7 +1082,7 @@ def test_cli_otlp_unavailable_for_incomplete_exits_3(tmp_path):
     assert payload["otlp_json_exported"] is False
 
 
-def test_observed_upper_bound_emits_root_with_unverified_precision():
+def test_observed_upper_bound_without_budget_keeps_tasks_and_withholds_root():
     facts = complete_facts(run_completed_at_ns=None, run_status="completed")
     observed = JOB_END + 5_000_000_000
     report = cicd_telemetry.produce(
@@ -1092,23 +1092,65 @@ def test_observed_upper_bound_emits_root_with_unverified_precision():
         terminal_status="completed",
     )
     assert report["status"] == "partial"
-    assert report["reason"] == "temporal_precision_unverified"
-    assert report["terminal"]["end_time_quality"] == (
-        cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND
-    )
-    assert report["terminal"]["exact_run_duration"] is False
+    assert report["reason"] == "end_time_uncertain"
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["terminal"]["root_emission"] == "not_emitted"
     assert report["terminal"]["time_precision"] == "observed_upper_bound"
+    assert report["terminal"]["exact_run_duration"] is False
+    assert report["terminal"]["duration_valid_for_metrics"] is False
     assert report["terminal"]["time_source_verified"] is False
-    assert report["terminal_provenance"]["terminal_source"] == "mapping"
-    assert report["terminal_provenance"]["end_time_source"] == "terminal_observed_at"
-    assert "run_completed_at" not in report["terminal"]["end_time_source"]
+    assert report["terminal"]["bounds_valid"] is True
+    assert report["terminal"]["end_lower_bound_ns"] == JOB_END
+    assert report["terminal"]["end_upper_bound_ns"] == observed
+    assert report["terminal"]["uncertainty_ns"] == 5_000_000_000
+    assert report["terminal"]["end_time_source"] is None
+    assert report["coverage"]["pipeline_terminal_covered"] is False
+    assert report["coverage"]["task_spans_emitted"] == 1
+    assert not any(
+        span["kind"] == cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
+    )
+    task = next(
+        span
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
+    )
+    assert task["end_time_unix_nano"] == JOB_END
+    assert task["end_time_unix_nano"] - task["start_time_unix_nano"] == 80_000_000_000
+    withheld = report["coverage"]["withheld_parent_span"]
+    assert withheld["exported"] is False
+    assert withheld["span_id"] == task["parent_span_id"]
+    envelope = report["coverage"]["job_execution_envelope"]
+    assert envelope["quality"] == "job_execution_envelope"
+    assert envelope["semconv_phase"] is None
+
+
+def test_approximate_root_requires_an_uncertainty_budget():
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
+    observed = JOB_END + 5_000_000_000
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        max_end_uncertainty_ns=5_000_000_000,
+    )
+    assert report["reason"] == "temporal_precision_unverified"
+    assert report["terminal"]["root_emission"] == "approximate_root"
+    assert report["terminal"]["duration_valid_for_metrics"] is False
+    assert report["terminal"]["exact_run_duration"] is False
     assert report["coverage"]["pipeline_terminal_covered"] is True
     pipeline = next(
         span
         for span in report["spans"]
         if span["kind"] == cicd_telemetry.SPAN_KIND_SERVER
     )
+    assert pipeline["start_time_unix_nano"] == facts.run_started_at_ns
     assert pipeline["end_time_unix_nano"] == observed
+    assert pipeline["end_time_unix_nano"] - pipeline["start_time_unix_nano"] == (
+        observed - facts.run_started_at_ns
+    )
+    assert pipeline["attributes"]["eci.cicd.duration_valid_for_metrics"] is False
+    assert pipeline["attributes"]["eci.cicd.exact_run_duration"] is False
+    assert pipeline["attributes"]["eci.cicd.end_time_quality"] == "observed_upper_bound"
 
 
 def test_observed_upper_bound_rejects_observation_before_jobs():
@@ -1121,9 +1163,55 @@ def test_observed_upper_bound_rejects_observation_before_jobs():
     )
     assert report["coverage"]["pipeline_terminal_covered"] is False
     assert report["reason"] == "terminal_observed_before_jobs"
+    assert report["terminal"]["bounds_invalid_reason"] == "end_bounds_unverified"
+    assert report["terminal"]["clock_quality"] == "rejected"
     assert not any(
         span["kind"] == cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
     )
+
+
+def test_observed_attempt_without_jobs_records_a_weak_lower_bound():
+    start = 1_700_000_000_000_000_000
+    observed = start + 2_000_000_000
+    facts = complete_facts(
+        run_started_at_ns=start,
+        run_completed_at_ns=None,
+        run_status="completed",
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+        job_started_at_ns=None,
+        job_completed_at_ns=None,
+    )
+    withheld = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=0,
+        task_facts=[],
+    )
+    assert withheld["terminal"]["root_emission"] == "not_emitted"
+    assert withheld["terminal"]["lower_source"] == "weak_run_start"
+    assert withheld["terminal"]["end_lower_bound_ns"] == start
+    assert withheld["terminal"]["uncertainty_ns"] == 2_000_000_000
+    assert withheld["coverage"]["terminal_check"] == "not_verified"
+    assert withheld["spans"] == []
+    allowed = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=0,
+        task_facts=[],
+        max_end_uncertainty_ns=2_000_000_000,
+    )
+    root = allowed["spans"][0]
+    assert root["kind"] == cicd_telemetry.SPAN_KIND_SERVER
+    assert root["start_time_unix_nano"] == start
+    assert root["end_time_unix_nano"] == observed
+    assert root["attributes"]["eci.cicd.duration_valid_for_metrics"] is False
+    assert allowed["coverage"]["terminal_check"] == "not_checked"
+    assert allowed["claims"]["weaver_pass"] is False
 
 
 def test_pipeline_only_root_when_no_task_obligation():
@@ -1281,11 +1369,14 @@ def test_api_observed_root_does_not_claim_native_completed_at():
     )
     provenance = report["terminal_provenance"]
     assert provenance["terminal_source"] == "github_api"
-    assert provenance["end_time_source"] == "terminal_observed_at"
+    assert provenance["root_emitted"] is False
+    assert provenance["root_emission"] == "not_emitted"
+    assert provenance["end_time_source"] is None
     assert provenance["time_precision"] == "observed_upper_bound"
     assert provenance["time_source_verified"] is False
     assert provenance["exact_run_duration"] is False
     assert report["facts"]["run_completed_at_ns"] is None
+    assert report["coverage"]["task_spans_emitted"] == 1
 
 
 def test_env_explicit_end_is_not_labeled_as_github_api():
@@ -1454,3 +1545,139 @@ def test_receiver_mark_checks_set_identity_and_duplicates():
     assert transport["missing"] == []
     assert transport["unexpected"] == []
     assert transport["duplicate"] == []
+
+
+def test_late_observation_does_not_become_a_proven_root_duration():
+    start = cicd_telemetry.parse_time_ns("2026-11-10T13:06:02Z")
+    job_end = cicd_telemetry.parse_time_ns("2026-11-10T13:07:59Z")
+    observed = cicd_telemetry.parse_time_ns("2026-11-11T11:37:15.574469Z")
+    run = complete_facts(
+        run_started_at_ns=start,
+        run_completed_at_ns=None,
+        run_status="completed",
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+        job_started_at_ns=None,
+        job_completed_at_ns=None,
+    )
+    jobs = []
+    for index, offset in enumerate((30, 60, 117)):
+        jobs.append(
+            complete_facts(
+                run_started_at_ns=start,
+                run_completed_at_ns=None,
+                run_status="completed",
+                job_id=str(index + 1),
+                job_name=f"job-{index}",
+                job_url=f"https://example.test/job/{index}",
+                job_started_at_ns=start + offset * 1_000_000_000,
+                job_completed_at_ns=job_end if index == 2 else job_end - 20_000_000_000,
+            )
+        )
+    report = cicd_telemetry.produce(
+        run,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=3,
+        job_selection="all_completed",
+        task_facts=jobs,
+        max_end_uncertainty_ns=10 * 60 * 1_000_000_000,
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["terminal"]["root_emission"] == "not_emitted"
+    assert report["terminal"]["root_emission_reason"] == "uncertainty_exceeds_budget"
+    assert report["terminal"]["job_set_complete"] is True
+    assert report["terminal"]["clock_quality"] == "ordered"
+    assert report["terminal"]["lower_source"] == "last_completed_job_end"
+    assert report["terminal"]["end_lower_bound_ns"] == job_end
+    assert report["terminal"]["end_upper_bound_ns"] == observed
+    assert report["coverage"]["pipeline_terminal_covered"] is False
+    assert report["coverage"]["task_spans_emitted"] == 3
+    assert report["coverage"]["terminal_check"] == "not_verified"
+    assert report["claims"]["weaver_pass"] is False
+    sources = [
+        item["attributes"]["eci.log.source"] for item in report["signals"]["logs"]
+    ]
+    assert sources.count("github_job_terminal") == 3
+    assert sources.count("github_attempt_terminal") == 1
+    attempt_log = next(
+        item
+        for item in report["signals"]["logs"]
+        if item["attributes"]["eci.log.source"] == "github_attempt_terminal"
+    )
+    assert attempt_log["time_unix_nano"] == observed
+    assert attempt_log["attributes"]["eci.cicd.time_role"] == "terminal_observed_at"
+    assert (
+        attempt_log["span_id"] == report["coverage"]["withheld_parent_span"]["span_id"]
+    )
+    forbidden = 22 * 60 * 60 * 1_000_000_000
+    for span in report["spans"]:
+        assert span["kind"] != cicd_telemetry.SPAN_KIND_SERVER
+        assert span["end_time_unix_nano"] != observed
+        assert span["end_time_unix_nano"] - span["start_time_unix_nano"] < forbidden
+    assert report["coverage"]["withheld_parent_span"]["exported"] is False
+
+
+def test_github_api_does_not_promote_job_envelope_to_phase_histogram():
+    report = cicd_telemetry.produce(
+        complete_facts(),
+        source="github_api",
+        github_api_fetched=True,
+        phase_intervals=[
+            {"state": "executing", "start_ns": JOB_START, "end_ns": JOB_END}
+        ],
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["signals"]["metrics"] == []
+    assert any(
+        item["reason"] == "phase_source_not_native"
+        for item in report["signals"]["metrics_not_observable"]
+    )
+    envelope = report["coverage"]["job_execution_envelope"]
+    assert envelope["start_ns"] == JOB_START
+    assert envelope["end_ns"] == JOB_END
+    assert envelope["semconv_phase"] is None
+
+
+def test_trace_delivery_survives_a_rejected_log_receipt():
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_signal_candidates(report)
+    cicd_telemetry.attach_otlp_json(report)
+    report["claims"]["rpc_accepted"] = True
+    report["claims"]["otlp_logs_rpc_accepted"] = True
+    facts = report["facts"]
+    cicd_telemetry.mark_receiver_observed(
+        report,
+        signal="traces",
+        observed_ids=[item["span_id"] for item in report["spans"]],
+        rpc_accepted=True,
+        run_id=facts["run_id"],
+        attempt=facts["run_attempt"],
+        trace_id=report["spans"][0]["trace_id"],
+        repository=facts["repository"],
+    )
+    try:
+        cicd_telemetry.mark_receiver_observed(
+            report,
+            signal="logs",
+            observed_ids=[],
+            rpc_accepted=True,
+            run_id=facts["run_id"],
+            attempt=facts["run_attempt"],
+            trace_id=report["spans"][0]["trace_id"],
+            repository=facts["repository"],
+        )
+        raise AssertionError("expected incomplete logs")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_receiver_incomplete"
+    assert report["claims"]["transport"]["traces"]["otlp_delivered"] is True
+    assert report["claims"]["otlp_delivered"] is False
+    assert report["claims"]["bundle_delivery_complete"] is False
+    assert report["claims"]["receiver_observed"] is False
+    assert report["claims"]["otlp_logs_delivered"] is False
+    assert report["claims"]["all_prepared_signals_delivered"] is False
+    assert report["claims"]["snapshot_phase"] == "partial_receiver_confirmation"
