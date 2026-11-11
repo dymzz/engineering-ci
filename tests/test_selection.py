@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import execution, selection
+from engineering_ci import execution, selection, weaver_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -531,6 +531,8 @@ def test_post_completion_plan_binds_terminal_inputs(tmp_path):
     assert binding["registry"]["sha256"]
     assert binding["advice_policies"]["files"]["cicd-error-type.rego"]
     assert binding["sha256"]
+    # Plan closure and Dagger download share engineering_ci.weaver_tool.
+    assert binding["weaver_tool"] == weaver_tool.RECORD
     gate = selection.validate_post_completion_binding(plan, root)
     assert gate["ok"] and gate["input_closure_verified"] == "verified"
     assert gate["plan_closure_digest"] == binding["sha256"]

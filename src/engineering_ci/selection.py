@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
+
 SCHEMA_VERSION = 1
 PLAN_KIND = "engineering-ci-selection-plan"
 POST_COMPLETION_PHASE = "post_completion"
@@ -1167,18 +1169,6 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     }
 
 
-# Pinned Weaver asset identity recorded in post-completion closures (matches
-# engineering_ci_module.tooling). Selection does not download the binary.
-_WEAVER_TOOL = {
-    "version": "0.28.0",
-    "sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",
-    "asset": (
-        "https://github.com/open-telemetry/weaver/releases/download/"
-        "v0.28.0/weaver-x86_64-unknown-linux-gnu.tar.xz"
-    ),
-}
-
-
 def _relative_source_path(root, path):
     root = Path(root).resolve()
     value = Path(path)
@@ -1544,10 +1534,9 @@ def validate_post_completion_binding(plan, root):
         result["reason"] = "post_completion_registry_digest_mismatch"
         return result
     # Optional full file map: when present it must match; digest is authoritative.
-    if (
-        planned_registry.get("files") is not None
-        and planned_registry.get("files") != actual_registry.get("files")
-    ):
+    if planned_registry.get("files") is not None and planned_registry.get(
+        "files"
+    ) != actual_registry.get("files"):
         result["reason"] = "post_completion_registry_files_mismatch"
         return result
     if binding.get("weaver_tool") != actual.get("weaver_tool"):

@@ -304,6 +304,10 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
             return failure
         result = live_result(exit_code, raw_report, list(dict.fromkeys(matchers)))
         result["source"] = source
+        # Terminal correlation is a separate phase. Until it runs, mark it
+        # not_executed so coverage does not invent "executed" from Check kind.
+        if terminal:
+            result["terminal_correlation_status"] = "not_executed"
         if result["status"] != "passed":
             return result
         actual = [
@@ -352,7 +356,10 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                 or evidence.get("attempt") != source["attempt"]
             ):
                 result.update(
-                    status="failed", reason="terminal_evidence_missing_or_mismatched"
+                    status="failed",
+                    reason="terminal_evidence_missing_or_mismatched",
+                    native_live_status="passed",
+                    terminal_correlation_status="failed",
                 )
                 return result
             pipeline = [
@@ -362,7 +369,10 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
             ]
             if not pipeline:
                 result.update(
-                    status="failed", reason="terminal_pipeline_signal_missing"
+                    status="failed",
+                    reason="terminal_pipeline_signal_missing",
+                    native_live_status="passed",
+                    terminal_correlation_status="failed",
                 )
                 return result
             correlations = []

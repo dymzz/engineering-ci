@@ -2,14 +2,33 @@
 
 import importlib.util
 import json
+import sys
+import types
 from pathlib import Path
 
-path = (
-    Path(__file__).resolve().parents[1] / ".dagger/src/engineering_ci_module/weaver.py"
-)
+from engineering_ci import weaver_tool
+
+ROOT = Path(__file__).resolve().parents[1]
+path = ROOT / ".dagger/src/engineering_ci_module/weaver.py"
 spec = importlib.util.spec_from_file_location("weaver_unit", path)
 weaver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(weaver)
+# Container runtime does `import weaver`; reuse the unit module under that name.
+sys.modules.setdefault("weaver", weaver)
+# Host unit tests do not install container-only deps (PyYAML).
+sys.modules.setdefault("yaml", types.ModuleType("yaml"))
+
+runtime_path = ROOT / ".dagger/src/engineering_ci_module/weaver_runtime.py"
+runtime_spec = importlib.util.spec_from_file_location(
+    "weaver_runtime_unit", runtime_path
+)
+weaver_runtime = importlib.util.module_from_spec(runtime_spec)
+runtime_spec.loader.exec_module(weaver_runtime)
+
+tooling_path = ROOT / ".dagger/src/engineering_ci_module/tooling.py"
+tooling_spec = importlib.util.spec_from_file_location("tooling_unit", tooling_path)
+tooling = importlib.util.module_from_spec(tooling_spec)
+tooling_spec.loader.exec_module(tooling)
 
 
 def payload(matched=1, errors=0, violations=0, spans=1):
@@ -349,3 +368,52 @@ def test_terminal_requires_root_and_completed_evidence():
         )["status"]
         == "failed"
     )
+
+
+def test_terminal_native_live_failure_does_not_claim_correlation_executed():
+    # Terminal requested, but Native Live fails first — correlation never runs.
+    report, expected, capture = otlp_payload()
+    expected["spans"][0]["signal"] = "wrong"
+    failed_live = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert failed_live["status"] == "failed"
+    assert failed_live["reason"] == "expected_span_match_mismatch"
+    assert failed_live["terminal_correlation_status"] == "not_executed"
+    assert failed_live.get("native_live_status") != "passed"
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {}, "expected_matchers": []},
+        evaluation=failed_live,
+        advice_meta=None,
+        kind="terminal",
+    )
+    assert coverage["terminal_correlation"] == "not_verified"
+
+
+def test_terminal_correlation_failure_still_counts_as_executed_coverage():
+    report, expected, capture = otlp_payload()
+    failed = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert failed["terminal_correlation_status"] == "failed"
+    coverage = weaver_runtime.coverage_from_execution(
+        config={
+            "origin": {"version": "1.45.0", "commit": "x"},
+            "expected_matchers": ["pipeline"],
+        },
+        evaluation=failed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+    )
+    assert coverage["terminal_correlation"] == "executed"
+
+
+def test_weaver_tool_pin_is_single_authority():
+    assert tooling.WEAVER_VERSION == weaver_tool.VERSION
+    assert tooling.WEAVER_LINUX_SHA256 == weaver_tool.LINUX_SHA256
+    assert tooling.WEAVER_LINUX_ASSET == weaver_tool.LINUX_ASSET
+    assert weaver_tool.RECORD == {
+        "version": weaver_tool.VERSION,
+        "sha256": weaver_tool.LINUX_SHA256,
+        "asset": weaver_tool.LINUX_ASSET,
+    }

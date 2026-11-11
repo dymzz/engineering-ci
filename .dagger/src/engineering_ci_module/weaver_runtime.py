@@ -214,10 +214,16 @@ def coverage_from_execution(*, config, evaluation, advice_meta, kind):
         advice_status = "executed"
     else:
         advice_status = "not_verified"
-    if kind == "terminal":
-        terminal_status = "executed"
-    else:
+    # Coverage records whether terminal correlation ran, not merely whether the
+    # Check kind requested it. Failed correlation still counts as executed.
+    if kind != "terminal":
         terminal_status = "not_applicable"
+    else:
+        correlation = (evaluation or {}).get("terminal_correlation_status")
+        if correlation in {"passed", "failed"}:
+            terminal_status = "executed"
+        else:
+            terminal_status = "not_verified"
     return {
         "registry_version": (config.get("origin") or {}).get("version"),
         "registry_commit": (config.get("origin") or {}).get("commit"),
