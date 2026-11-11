@@ -368,6 +368,8 @@ def produce(
     completed_jobs_total=None,
     job_selection=None,
     task_facts=None,
+    jobs_observed_total=None,
+    noncompleted_jobs_total=None,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
@@ -404,7 +406,9 @@ def produce(
         "reason": None,
         "facts": asdict(facts),
         "coverage": {
+            "jobs_observed_total": jobs_observed_total,
             "completed_jobs_total": completed_jobs_total,
+            "noncompleted_jobs_total": noncompleted_jobs_total,
             "job_selection": job_selection,
             "task_spans_emitted": 0,
             "tasks_omitted": [],
@@ -472,17 +476,28 @@ def produce(
         )
 
     if task_facts is not None:
-        job_sources = list(task_facts)
+        # Entries are GitHubRunFacts or (source_index, GitHubRunFacts).
+        job_sources = []
+        for entry in task_facts:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                job_sources.append(entry)
+            else:
+                job_sources.append((None, entry))
     elif facts.job_id or facts.job_name or facts.job_conclusion is not None:
-        job_sources = [facts]
+        job_sources = [(None, facts)]
     else:
         job_sources = []
 
     omitted = []
-    for job_facts in job_sources:
+    for source_index, job_facts in job_sources:
         omit = _task_omit_reason(job_facts)
         if omit is not None:
-            omitted.append({"job_id": job_facts.job_id, "reason": omit})
+            entry = {"reason": omit}
+            if job_facts.job_id is not None:
+                entry["job_id"] = job_facts.job_id
+            elif source_index is not None:
+                entry["source_index"] = source_index
+            omitted.append(entry)
             if omit not in reasons:
                 reasons.append(omit)
             continue
@@ -833,9 +848,9 @@ def _jobs_path_page(base_path, page):
 def fetch_attempt_jobs(api_get, jobs_path):
     """Fetch the complete Job list for one Attempt using GitHub pagination.
 
-    When GitHub provides ``total_count``, a short/empty page before that count
-    is reached is an incomplete snapshot — not a complete Job set
-    (PR #77 P2-1).
+    Validates page ``total_count`` stability and Job ID uniqueness across the
+    snapshot. Duplicate IDs or shifting totals refuse the snapshot rather than
+    silently deduplicating (PR #80 P2-2).
     """
     page = 1
     jobs = []
@@ -847,8 +862,12 @@ def fetch_attempt_jobs(api_get, jobs_path):
         batch = payload.get("jobs")
         if not isinstance(batch, list):
             raise TelemetryError("jobs_payload_invalid")
-        if total_count is None and type(payload.get("total_count")) is int:
-            total_count = payload["total_count"]
+        page_total = payload.get("total_count")
+        if type(page_total) is int:
+            if total_count is None:
+                total_count = page_total
+            elif page_total != total_count:
+                raise TelemetryError("jobs_snapshot_inconsistent")
         jobs.extend(batch)
         if total_count is not None and len(jobs) >= total_count:
             break
@@ -857,6 +876,17 @@ def fetch_attempt_jobs(api_get, jobs_path):
         page += 1
     if total_count is not None and len(jobs) != total_count:
         raise TelemetryError("jobs_page_incomplete")
+    seen_ids = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = job.get("id")
+        if job_id is None:
+            continue
+        key = str(job_id)
+        if key in seen_ids:
+            raise TelemetryError("jobs_snapshot_inconsistent")
+        seen_ids.add(key)
     return jobs
 
 
@@ -873,6 +903,10 @@ def fetch_github_run_job(
     Always loads `GET .../runs/{id}/attempts/{N}` together with that Attempt's
     Jobs. Never mixes the latest Run view with an older Attempt's Jobs
     (PR #77 P1-1).
+
+    Coverage denominators use the raw paginated snapshot: completed Jobs are
+    counted by ``status == "completed"`` without requiring an ID. Missing IDs
+    become omissions located by source index (PR #80 P2-1).
     """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
         raise TelemetryError("repository_invalid")
@@ -931,7 +965,14 @@ def fetch_github_run_job(
 
     jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
     jobs = fetch_attempt_jobs(api_get, jobs_path)
-    completed = _completed_jobs(jobs)
+    jobs_observed_total = len(jobs)
+    completed_indexes = [
+        index
+        for index, job in enumerate(jobs)
+        if isinstance(job, dict) and job.get("status") == "completed"
+    ]
+    completed_total = len(completed_indexes)
+    noncompleted_total = jobs_observed_total - completed_total
 
     def _validate_job_membership(job):
         if job.get("run_id") is not None and int(job["run_id"]) != run_id:
@@ -949,17 +990,26 @@ def fetch_github_run_job(
         task_facts = [facts]
         selection = "job_id"
     else:
-        # Full Attempt coverage: every completed Job becomes a Task candidate.
+        # Full Attempt coverage: every completed Job enters the same
+        # facts → omit-reason → Task/omission pipeline. Missing ID stays an
+        # omission located by source index — never dropped from the denominator.
         task_facts = []
-        for job in completed:
-            _validate_job_membership(job)
-            task_facts.append(facts_from_github_api_objects(run, job))
-        facts = facts_from_github_api_objects(
-            run, completed[0] if len(completed) == 1 else None
-        )
-        selection = "all_completed" if completed else "none"
+        for index in completed_indexes:
+            job = jobs[index]
+            if job.get("id") is not None:
+                _validate_job_membership(job)
+            task_facts.append(
+                (
+                    index,
+                    facts_from_github_api_objects(run, job),
+                )
+            )
+        facts = facts_from_github_api_objects(run, None)
+        selection = "all_completed" if completed_total else "none"
     return facts, {
-        "completed_jobs_total": len(completed),
+        "jobs_observed_total": jobs_observed_total,
+        "completed_jobs_total": completed_total,
+        "noncompleted_jobs_total": noncompleted_total,
         "job_selection": selection,
         "task_facts": task_facts,
     }
@@ -1007,6 +1057,9 @@ def main(argv=None):
     github_api_fetched = False
     completed_jobs_total = None
     job_selection = None
+    task_facts = None
+    jobs_observed_total = None
+    noncompleted_jobs_total = None
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -1019,7 +1072,6 @@ def main(argv=None):
         except TelemetryError as error:
             parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
         source = "mapping"
-        task_facts = None
     elif args.run_id is not None:
         repository = args.repository
         if not repository:
@@ -1038,10 +1090,11 @@ def main(argv=None):
         completed_jobs_total = coverage["completed_jobs_total"]
         job_selection = coverage["job_selection"]
         task_facts = coverage.get("task_facts")
+        jobs_observed_total = coverage.get("jobs_observed_total")
+        noncompleted_jobs_total = coverage.get("noncompleted_jobs_total")
     else:
         facts = facts_from_actions_env()
         source = "env"
-        task_facts = None
     report = produce(
         facts,
         source=source,
@@ -1049,6 +1102,8 @@ def main(argv=None):
         completed_jobs_total=completed_jobs_total,
         job_selection=job_selection,
         task_facts=task_facts,
+        jobs_observed_total=jobs_observed_total,
+        noncompleted_jobs_total=noncompleted_jobs_total,
     )
     attach_otlp_json(report)
     export_error = None

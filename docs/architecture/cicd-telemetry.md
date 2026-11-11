@@ -61,9 +61,18 @@ that starts or finishes after the Run completed-at is `partial`
 
 Without `--job-id`, the producer emits Task Spans for **every completed Job**
 on the Attempt (`job_selection=all_completed`) and records omitted Jobs under
-`coverage.tasks_omitted`. `--job-id` remains a deliberate single-Job diagnostic
-slice (`job_selection=job_id`). When completed Jobs exceed emitted Task spans,
+`coverage.tasks_omitted`. Completed Jobs are counted by `status == "completed"`
+without requiring an ID; a missing ID is an omission located by source index,
+never dropped from the denominator. Coverage also records
+`jobs_observed_total` and `noncompleted_jobs_total`. The invariant is
+`completed_jobs_total == task_spans_emitted + len(tasks_omitted)`.
+`--job-id` remains a deliberate single-Job diagnostic slice
+(`job_selection=job_id`). When completed Jobs exceed emitted Task spans,
 status is `partial` (`partial_job_coverage`).
+
+Job pagination refuses an inconsistent snapshot: shifting page `total_count` or
+duplicate Job IDs across the Attempt raise `jobs_snapshot_inconsistent`
+(rather than silently deduplicating).
 
 ## Export
 
@@ -97,9 +106,11 @@ When GitHub reports `total_count`, a short/empty page before that count is
 `jobs_page_incomplete`. Missing `gh` or API timeouts map to
 `github_cli_unavailable` / `github_api_timeout` (no retry engine).
 
-One native API → candidate/OTLP evidence bundle for this PR slice lives under
+Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
-Baseline after PR #76/#77/#78: candidate Pipeline/Task construction, Attempt
+Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
+[cicd-telemetry-evidence-all-completed](../verification/cicd-telemetry-evidence-all-completed/README.md).
+Baseline after PR #76/#77/#78/#80: candidate Pipeline/Task construction, Attempt
 API/OTLP file export, and full completed-Job Task coverage live under
 `engineering_ci.cicd_telemetry`. Exact post-run Pipeline Root, live OTLP/gRPC,
 and trusted admission remain open on Issue #75.

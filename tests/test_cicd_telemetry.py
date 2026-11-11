@@ -595,29 +595,141 @@ def test_fetch_rejects_job_not_in_attempt_jobs():
         assert error.code == "job_not_found"
 
 
-def test_fetch_without_job_id_emits_all_completed_tasks():
+def test_jobs_snapshot_consistency_and_coverage_denominator_matrix():
+    """Single matrix for P2-1 denominator + P2-2 snapshot consistency."""
     run, job = _api_run_job_fixture()
     run["run_attempt"] = 1
-    jobs = [
+
+    def api_for(jobs_payload):
+        def api_get(path):
+            if "/jobs" in path:
+                if callable(jobs_payload):
+                    return jobs_payload(path)
+                return jobs_payload
+            if "/attempts/1" in path:
+                return run
+            raise AssertionError(path)
+
+        return api_get
+
+    # Same-page duplicate Job ID → refuse snapshot.
+    try:
+        cicd_telemetry.fetch_github_run_job(
+            "dymzz/engineering-ci",
+            42769746408,
+            attempt=1,
+            api_get=api_for(
+                {
+                    "total_count": 2,
+                    "jobs": [
+                        {**job, "id": 101, "name": "a", "run_attempt": 1},
+                        {**job, "id": 101, "name": "dup", "run_attempt": 1},
+                    ],
+                }
+            ),
+        )
+        raise AssertionError("expected jobs_snapshot_inconsistent")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "jobs_snapshot_inconsistent"
+
+    # Cross-page duplicate ID with matching total → still refuse.
+    def cross_page(path):
+        if "page=2" in path:
+            return {
+                "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+                "jobs": [{**job, "id": 1, "name": "dup-cross", "run_attempt": 1}],
+            }
+        return {
+            "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+            "jobs": [
+                {
+                    **job,
+                    "id": index,
+                    "name": f"job-{index}",
+                    "run_id": run["id"],
+                    "run_attempt": 1,
+                }
+                for index in range(1, cicd_telemetry._JOBS_PAGE_SIZE + 1)
+            ],
+        }
+
+    try:
+        cicd_telemetry.fetch_github_run_job(
+            "dymzz/engineering-ci",
+            42769746408,
+            attempt=1,
+            api_get=api_for(cross_page),
+        )
+        raise AssertionError("expected jobs_snapshot_inconsistent")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "jobs_snapshot_inconsistent"
+
+    # Page total_count changes across pages → refuse snapshot.
+    def shifting_total(path):
+        if "page=2" in path:
+            return {
+                "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 2,
+                "jobs": [
+                    {**job, "id": 999, "name": "extra", "run_attempt": 1},
+                    {**job, "id": 1000, "name": "extra2", "run_attempt": 1},
+                ],
+            }
+        return {
+            "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+            "jobs": [
+                {
+                    **job,
+                    "id": index,
+                    "name": f"job-{index}",
+                    "run_id": run["id"],
+                    "run_attempt": 1,
+                }
+                for index in range(1, cicd_telemetry._JOBS_PAGE_SIZE + 1)
+            ],
+        }
+
+    try:
+        cicd_telemetry.fetch_github_run_job(
+            "dymzz/engineering-ci",
+            42769746408,
+            attempt=1,
+            api_get=api_for(shifting_total),
+        )
+        raise AssertionError("expected jobs_snapshot_inconsistent")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "jobs_snapshot_inconsistent"
+
+    # 2 complete + 1 completed missing ID + 1 in_progress.
+    mixed = [
         {
             **job,
-            "id": 101,
+            "id": 201,
             "name": "checks",
             "run_id": run["id"],
             "run_attempt": 1,
-            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/101",
+            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/201",
         },
         {
             **job,
-            "id": 102,
+            "id": 202,
             "name": "lint",
             "run_id": run["id"],
             "run_attempt": 1,
-            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/102",
+            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/202",
         },
         {
             **job,
-            "id": 103,
+            "id": None,
+            "name": "no-id",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": run["id"],
+            "run_attempt": 1,
+            "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/1/job/missing",
+        },
+        {
+            **job,
+            "id": 204,
             "name": "still-running",
             "status": "in_progress",
             "conclusion": None,
@@ -626,23 +738,17 @@ def test_fetch_without_job_id_emits_all_completed_tasks():
             "completed_at": None,
         },
     ]
-
-    def api_get(path):
-        if "/jobs" in path:
-            return {"total_count": 3, "jobs": jobs}
-        if "/attempts/1" in path:
-            return run
-        raise AssertionError(path)
-
     facts, coverage = cicd_telemetry.fetch_github_run_job(
         "dymzz/engineering-ci",
         42769746408,
         attempt=1,
-        api_get=api_get,
+        api_get=api_for({"total_count": 4, "jobs": mixed}),
     )
+    assert coverage["jobs_observed_total"] == 4
+    assert coverage["completed_jobs_total"] == 3
+    assert coverage["noncompleted_jobs_total"] == 1
     assert coverage["job_selection"] == "all_completed"
-    assert coverage["completed_jobs_total"] == 2
-    assert len(coverage["task_facts"]) == 2
+    assert len(coverage["task_facts"]) == 3
     report = cicd_telemetry.produce(
         facts,
         source="github_api",
@@ -650,23 +756,30 @@ def test_fetch_without_job_id_emits_all_completed_tasks():
         completed_jobs_total=coverage["completed_jobs_total"],
         job_selection=coverage["job_selection"],
         task_facts=coverage["task_facts"],
+        jobs_observed_total=coverage["jobs_observed_total"],
+        noncompleted_jobs_total=coverage["noncompleted_jobs_total"],
     )
-    tasks = [
-        span
-        for span in report["spans"]
-        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
-    ]
-    assert len(tasks) == 2
+    assert report["coverage"]["jobs_observed_total"] == 4
+    assert report["coverage"]["completed_jobs_total"] == 3
+    assert report["coverage"]["noncompleted_jobs_total"] == 1
     assert report["coverage"]["task_spans_emitted"] == 2
-    assert report["coverage"]["tasks_omitted"] == []
-    assert {span["attributes"]["cicd.pipeline.task.run.id"] for span in tasks} == {
-        "101",
-        "102",
-    }
-    # No proven Run completed-at → partial Task-only; not partial_job_coverage.
+    assert len(report["coverage"]["tasks_omitted"]) == 1
+    assert report["coverage"]["tasks_omitted"][0]["reason"] == (
+        "missing_task_required_identity"
+    )
+    assert "source_index" in report["coverage"]["tasks_omitted"][0]
+    assert "job_id" not in report["coverage"]["tasks_omitted"][0]
+    assert (
+        report["coverage"]["completed_jobs_total"]
+        == report["coverage"]["task_spans_emitted"]
+        + len(report["coverage"]["tasks_omitted"])
+    )
     assert report["status"] == "partial"
-    assert report["reason"] == "run_completed_at_unproven"
-    assert "partial_job_coverage" not in (report["reason"],)
+    assert report["reason"] in {
+        "missing_task_required_identity",
+        "partial_job_coverage",
+        "run_completed_at_unproven",
+    }
 
 
 def test_all_completed_omits_incomplete_job_and_marks_partial_coverage():
