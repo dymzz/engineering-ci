@@ -168,6 +168,49 @@ def _collect_entity_associations(manifest, declared):
         declared.setdefault(signal, set()).update(str(item) for item in associations)
 
 
+# Native advice id Weaver emits when an Entity Required attribute is absent.
+_NATIVE_ENTITY_REQUIRED_FINDING = "entity_required_attribute_not_present"
+
+
+def native_entity_rule_evidence(native_report, entities, matched_signals):
+    """Native findings proving a declared Entity Required rule actually ran.
+
+    Weaver reports an Entity Required rule only when it is violated, so that
+    finding is the native evidence that the rule was applied to the matched
+    signal. Its absence proves nothing: the rule may have run and passed.
+    This never re-implements the SemConv Required judgement.
+    """
+    found = []
+    for sample in (native_report or {}).get("samples") or []:
+        body = sample.get("span") if isinstance(sample, dict) else None
+        if not isinstance(body, dict):
+            continue
+        result = body.get("live_check_result") or {}
+        match = result.get("match_info") or {}
+        signal = match.get("signal")
+        if not isinstance(signal, str) or signal not in matched_signals:
+            continue
+        for advice in result.get("all_advice") or []:
+            if not isinstance(advice, dict):
+                continue
+            if advice.get("id") != _NATIVE_ENTITY_REQUIRED_FINDING:
+                continue
+            context = advice.get("context") or {}
+            entity = context.get("entity_type")
+            if entity not in entities:
+                continue
+            found.append(
+                {
+                    "signal": signal,
+                    "entity_type": entity,
+                    "attribute_key": context.get("attribute_key"),
+                    "level": advice.get("level"),
+                    "message": advice.get("message"),
+                }
+            )
+    return found
+
+
 def registry_inputs(config, key="registry", *, verify_official=True):
     registry = local_path(ROOT, config[key])
     expected_path = local_path(ROOT, config[key + "_manifest"])
@@ -358,25 +401,35 @@ def coverage_from_execution(
     else:
         required_status = "not_applicable"
         result_status = "not_applicable"
-    # A Resource Required obligation exists only when the Registry binds the
-    # matched Span Group to an entity. Derive it from the Registry that was
-    # read: the pinned upstream SemConv Registry declares no such binding for
-    # the Pipeline span, but another Registry may.
+    # Two separate propositions. The Registry *declares* which entities a Span
+    # Group is bound to; that declaration is not proof that native Weaver
+    # *executed* the Entity Required rule. Only native evidence from this run
+    # admits ``executed``; a declared association without such evidence is
+    # ``not_verified``, never ``executed`` and never wrongly ``not_applicable``.
     pipeline_entities = (entity_associations or {}).get("cicd.pipeline.run.server")
-    if cicd_pipeline and pipeline_entities:
-        resource_status = "executed"
-        resource_entities = list(pipeline_entities)
-        resource_basis = "registry_declares_entity_association:" + ",".join(
-            pipeline_entities
-        )
-    else:
+    native_report = (evaluation or {}).get("native_report") or {}
+    resource_evidence = []
+    if not cicd_pipeline or not pipeline_entities:
         resource_status = "not_applicable"
-        resource_entities = []
+        resource_entities = list(pipeline_entities or [])
         resource_basis = (
             "pinned_semconv_declares_no_entity_association_for_pipeline_span"
             if official_verified
             else "registry_declares_no_entity_association_for_pipeline_span"
         )
+    else:
+        resource_entities = list(pipeline_entities)
+        resource_evidence = native_entity_rule_evidence(
+            native_report, pipeline_entities, matched_signals
+        )
+        if resource_evidence:
+            resource_status = "executed"
+            resource_basis = "native_entity_required_finding_observed"
+        else:
+            resource_status = "not_verified"
+            resource_basis = (
+                "entity_association_declared_without_native_execution_evidence"
+            )
     if not cicd_applicable:
         advice_status = "not_applicable"
     elif advice_meta:
@@ -430,7 +483,10 @@ def coverage_from_execution(
         "result_type_gate": result_status,
         "resource_required": resource_status,
         "resource_required_basis": resource_basis,
+        # The Registry's declaration, and the native evidence that the rule
+        # actually ran. The declaration alone never means ``executed``.
         "resource_required_entities": resource_entities,
+        "resource_required_native_evidence": resource_evidence,
         "eci_run_id_correlation": {
             "rule_id": "eci_terminal_run_id_correlation",
             "status": terminal_status,

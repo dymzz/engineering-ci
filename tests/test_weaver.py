@@ -458,7 +458,25 @@ def test_selection_registry_closure_uses_the_pinned_digest_implementation():
     assert semconv_registry.registry_tree_digest(files) == semconv_registry.TREE_SHA256
 
 
-def test_resource_required_is_derived_from_the_registry_that_was_read():
+def _entity_required_advice(
+    entity="cicd.pipeline.run", attribute="cicd.pipeline.run.id"
+):
+    """Native Entity Required finding, in the shape Weaver emits."""
+    return {
+        "type": "PolicyFinding",
+        "id": "entity_required_attribute_not_present",
+        "context": {"attribute_key": attribute, "entity_type": entity},
+        "message": (
+            f"Required attribute '{attribute}' for entity '{entity}' "
+            "is not present in the resource."
+        ),
+        "level": "violation",
+        "signal_type": "span",
+        "signal_name": "eci pipeline",
+    }
+
+
+def test_resource_required_execution_needs_native_evidence():
     report, expected, capture = otlp_payload(attempt_attr=1)
     passed = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
@@ -467,33 +485,85 @@ def test_resource_required_is_derived_from_the_registry_that_was_read():
         "origin": {"version": "1.45.0"},
         "expected_matchers": ["pipeline"],
     }
-    without_association = weaver_runtime.coverage_from_execution(
+    association = {"cicd.pipeline.run.server": ["cicd.pipeline.run"]}
+
+    # (i) The fixed official Registry declares no association for the Pipeline
+    # span, so there is no Resource Required obligation to execute.
+    without = weaver_runtime.coverage_from_execution(
         config=base,
         evaluation=passed,
         advice_meta={"sha256": "abc"},
         kind="terminal",
         entity_associations={},
     )
-    assert without_association["resource_required"] == "not_applicable"
-    assert without_association["resource_required_basis"] == (
-        "registry_declares_no_entity_association_for_pipeline_span"
-    )
-    assert without_association["resource_required_entities"] == []
+    assert without["resource_required"] == "not_applicable"
+    assert without["resource_required_entities"] == []
+    assert without["resource_required_native_evidence"] == []
 
-    # A Registry that does bind the Pipeline span to an entity has a Resource
-    # Required obligation, and the coverage matrix must report it as executed.
-    with_association = weaver_runtime.coverage_from_execution(
+    # (ii) A declared association is not execution. Without native evidence
+    # from this run the obligation is not_verified — never "executed", and
+    # never wrongly "not_applicable".
+    declared_only = weaver_runtime.coverage_from_execution(
         config=base,
         evaluation=passed,
         advice_meta={"sha256": "abc"},
         kind="terminal",
-        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+        entity_associations=association,
     )
-    assert with_association["resource_required"] == "executed"
-    assert with_association["resource_required_basis"] == (
-        "registry_declares_entity_association:cicd.pipeline.run"
+    assert declared_only["resource_required"] == "not_verified"
+    assert declared_only["resource_required_basis"] == (
+        "entity_association_declared_without_native_execution_evidence"
     )
-    assert with_association["resource_required_entities"] == ["cicd.pipeline.run"]
+    assert declared_only["resource_required_entities"] == ["cicd.pipeline.run"]
+    assert declared_only["resource_required_native_evidence"] == []
+
+    # (iii) Only a native Entity Required finding from the same run admits
+    # "executed", and the failing native finding is preserved. This exercises
+    # the evidence detector with a synthetic native report; it is NOT a native
+    # acceptance for a Registry that declares an association — no such real
+    # fixture exists in this repository, so that path has no native evidence.
+    violated = json.loads(json.dumps(report))
+    violated["samples"][0]["span"]["live_check_result"]["all_advice"] = [
+        _entity_required_advice()
+    ]
+    violated["statistics"]["advice_level_counts"]["violation"] = 1
+    failed = weaver.otlp_result(
+        0, json.dumps(violated), expected, terminal=True, capture=capture
+    )
+    assert failed["status"] == "failed"
+    assert failed["reason"] == "findings"
+    executed = weaver_runtime.coverage_from_execution(
+        config=base,
+        evaluation=failed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        entity_associations=association,
+    )
+    assert executed["resource_required"] == "executed"
+    assert (
+        executed["resource_required_basis"] == "native_entity_required_finding_observed"
+    )
+    evidence = executed["resource_required_native_evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["signal"] == "cicd.pipeline.run.server"
+    assert evidence[0]["entity_type"] == "cicd.pipeline.run"
+    assert evidence[0]["attribute_key"] == "cicd.pipeline.run.id"
+
+
+def test_native_entity_evidence_ignores_a_finding_for_another_entity():
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    violated = json.loads(json.dumps(report))
+    violated["samples"][0]["span"]["live_check_result"]["all_advice"] = [
+        _entity_required_advice(entity="service.other")
+    ]
+    violated["statistics"]["advice_level_counts"]["violation"] = 1
+    failed = weaver.otlp_result(
+        0, json.dumps(violated), expected, terminal=True, capture=capture
+    )
+    evidence = weaver_runtime.native_entity_rule_evidence(
+        failed["native_report"], ["cicd.pipeline.run"], {"cicd.pipeline.run.server"}
+    )
+    assert evidence == []
 
 
 def test_time_provenance_separates_absent_timestamps_from_whole_seconds():

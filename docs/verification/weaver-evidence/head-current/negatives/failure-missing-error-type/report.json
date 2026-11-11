@@ -84,9 +84,9 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "44865",
+        "57105",
         "--admin-port",
-        "54969"
+        "59833"
       ],
       "exit_code": 1,
       "stderr": "live.stderr",
@@ -134,6 +134,7 @@
     "resource_required": "not_applicable",
     "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
     "resource_required_entities": [],
+    "resource_required_native_evidence": [],
     "result_type_gate": "executed",
     "terminal_correlation": "not_applicable",
     "terminal_gate_failure_reasons": [

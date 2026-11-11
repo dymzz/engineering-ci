@@ -65,16 +65,19 @@ together with the certified identity (`registry_version`, `registry_commit`,
 `official_registry_tree_sha256`) taken from the pin rather than from the
 Source's own declaration; a Source that declares a version the pinned release
 does not carry is refused with `official_source_version_mismatch`.
-`eci_policy_evaluated` records whether ECI's own policies ran. Whether a
-Resource Required obligation exists is derived from the Registry that was read,
-so `resource_required` is `not_applicable` for this fixture (upstream SemConv
-1.45.0 declares no entity association for the Pipeline span) and the Run-ID
-requirement is reported under `eci_run_id_correlation`;
-`terminal_gate_failure_reasons` lists every Terminal gate failure reason.
-`time_provenance` records the observed capture and native-sample time sources
-and precisions; it claims no exact end time and no duration. Non-CI/CD fixtures
-report those obligations as `not_applicable`. `passed` applies only to executed
-applicable obligations.
+`eci_policy_evaluated` records whether ECI's own policies ran. A Registry
+**declaration** is not proof that a rule was **executed**, so the two are
+reported separately: `resource_required_entities` is what the Registry declares
+and `resource_required` is whether the native check actually executed the rule
+in this run (`not_applicable` / `not_verified` / `executed`), with
+`resource_required_native_evidence` carrying the native evidence. For this
+fixture it is `not_applicable`, because upstream SemConv 1.45.0 declares no
+entity association for the Pipeline span; the Run-ID requirement is reported
+under `eci_run_id_correlation`, and `terminal_gate_failure_reasons` lists every
+Terminal gate failure reason. `time_provenance` records the observed capture
+and native-sample time sources and precisions; it claims no exact end time and
+no duration. Non-CI/CD fixtures report those obligations as `not_applicable`.
+`passed` applies only to executed applicable obligations.
 
 ### Post-completion Plan → `execute-plan` E2E
 

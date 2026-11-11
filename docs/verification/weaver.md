@@ -254,21 +254,35 @@ Reports stay `trusted:false`.
 
 Upstream SemConv 1.45.0 declares no entity association for
 `span.cicd.pipeline.run.server`, so it defines no Resource Required obligation
-for the Pipeline span. Whether such an obligation exists is derived from the
-Registry that was read, not assumed for every Source:
-`coverage.resource_required` is `executed` only when that Registry binds the
-matched Pipeline span to an entity, and `coverage.resource_required_basis`
-records which case applies. The native finding
-`entity_required_attribute_not_present` must not be reported as an upstream
-Required attribute. The ECI requirement that a capture identifies its Pipeline
-Run is the correlation rule `eci_terminal_run_id_correlation`
-(`coverage.eci_run_id_correlation`), enforced by `weaver-terminal` with
-failures `terminal_observed_identity_missing`, `terminal_run_id_mismatch` and
-`terminal_run_id_conflict`; `coverage.terminal_gate_failure_reasons` lists
-every reason the Terminal gate itself can fail with. Do not re-add a local
-`entity_associations` block to the pinned Registry to satisfy an older
-expectation: that would present a local edit as an upstream SemConv
-requirement.
+for the Pipeline span. Two propositions are reported separately, because a
+Registry **declaration** is not proof that the rule was **executed**:
+
+- `coverage.resource_required_entities` — what the Registry that was read
+  declares, keyed by the matched Pipeline span.
+- `coverage.resource_required` — whether the applicable rule was actually
+  executed by the native check in this run: `not_applicable` when no
+  association is declared (or no Pipeline signal matched), `not_verified` when
+  an association is declared but this run produced no native evidence that the
+  rule was applied, and `executed` only when native evidence from the same run
+  shows the Entity Required rule ran. `coverage.resource_required_native_evidence`
+  carries that native evidence, and `coverage.resource_required_basis` records
+  which case applies.
+
+Weaver reports an Entity Required rule only when it is violated, so that
+finding is the native evidence; its absence proves nothing, and ECI does not
+re-implement the SemConv Required judgement in Python. The native finding and
+exit code are preserved, so an executed-but-failed rule still fails the gate.
+
+The native finding `entity_required_attribute_not_present` must not be reported
+as an upstream Required attribute. The ECI requirement that a capture
+identifies its Pipeline Run is the correlation rule
+`eci_terminal_run_id_correlation` (`coverage.eci_run_id_correlation`), enforced
+by `weaver-terminal` with failures `terminal_observed_identity_missing`,
+`terminal_run_id_mismatch` and `terminal_run_id_conflict`;
+`coverage.terminal_gate_failure_reasons` lists every reason the Terminal gate
+itself can fail with. Do not re-add a local `entity_associations` block to the
+pinned Registry to satisfy an older expectation: that would present a local
+edit as an upstream SemConv requirement.
 
 In `ci-selection.toml`, explicitly include applicable `weaver_registry`,
 `weaver_live`, or `weaver_terminal` in `checks`, and set
