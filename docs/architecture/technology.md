@@ -34,7 +34,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
-| OpenTelemetry CI/CD SemConv attributes | experimental | GitHub Run/Job → Pipeline/Task artifact producer (`engineering_ci.cicd_telemetry`); registry pin tracked with Knowledge #80/#81; live OTLP/Weaver later | [cicd-telemetry](cicd-telemetry.md) |
+| OpenTelemetry CI/CD SemConv attributes | experimental | GitHub Run/Job API or facts → Pipeline/Task candidate records + optional OTLP/JSON file (`engineering_ci.cicd_telemetry`); registry pin tracked with Knowledge #80/#81; live OTLP/gRPC later | [cicd-telemetry](cicd-telemetry.md) |
 
 ## Verification notes
 

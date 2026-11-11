@@ -1,6 +1,7 @@
 """GitHub Run/Job facts → CI/CD candidate telemetry records (ECI #75)."""
 
 import json
+import subprocess
 from pathlib import Path
 
 from engineering_ci import cicd_telemetry
@@ -51,8 +52,11 @@ def test_produce_emits_pipeline_and_task_spans():
     assert pipeline["end_time_unix_nano"] == RUN_END
     assert task["start_time_unix_nano"] == JOB_START
     assert task["end_time_unix_nano"] == JOB_END
-    assert pipeline["attributes"]["cicd.pipeline.run.id"] == "42627302972"
+    assert pipeline["attributes"]["cicd.pipeline.run.id"] == "42627302972/1"
+    assert report["resource"]["cicd.pipeline.run.id"] == "42627302972/1"
     assert pipeline["attributes"]["cicd.pipeline.result"] == "success"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
     assert task["parent_span_id"] == pipeline["span_id"]
     assert task["attributes"]["cicd.pipeline.task.run.id"] == "129194268575"
     assert task["attributes"]["cicd.pipeline.task.run.url.full"]
@@ -66,8 +70,75 @@ def test_job_success_does_not_imply_pipeline_success():
     pipeline, task = report["spans"]
     assert pipeline["attributes"]["cicd.pipeline.result"] == "failure"
     assert pipeline["attributes"]["error.type"] == "failure"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
     assert task["attributes"]["cicd.pipeline.task.run.result"] == "success"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
     assert "error.type" not in task["attributes"]
+
+
+def test_non_error_terminals_leave_span_status_unset():
+    for conclusion in ("cancelled", "skipped"):
+        report = cicd_telemetry.produce(
+            complete_facts(run_conclusion=conclusion, job_conclusion=conclusion)
+        )
+        assert report["status"] == "produced"
+        for span in report["spans"]:
+            assert span["status"]["code"] == cicd_telemetry.STATUS_UNSET
+            assert "error.type" not in span["attributes"]
+
+
+def test_timed_out_keeps_timeout_result_and_records_error():
+    report = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="timed_out")
+    )
+    assert report["status"] == "produced"
+    pipeline, task = report["spans"]
+    assert pipeline["attributes"]["cicd.pipeline.result"] == "timeout"
+    assert pipeline["attributes"]["error.type"] == "timeout"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert task["attributes"]["cicd.pipeline.task.run.result"] == "timeout"
+    assert task["attributes"]["error.type"] == "timeout"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_ERROR
+
+
+def test_mixed_run_timeout_job_success_keeps_separate_terminals():
+    report = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="success")
+    )
+    assert report["status"] == "produced"
+    pipeline, task = report["spans"]
+    assert pipeline["attributes"]["cicd.pipeline.result"] == "timeout"
+    assert pipeline["attributes"]["error.type"] == "timeout"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert task["attributes"]["cicd.pipeline.task.run.result"] == "success"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert "error.type" not in task["attributes"]
+
+
+def test_mapping_and_env_reject_non_positive_attempt():
+    for attempt in (0, -1):
+        try:
+            cicd_telemetry.facts_from_mapping(
+                {
+                    "workflow_name": "Engineering CI",
+                    "run_id": "1",
+                    "run_attempt": attempt,
+                }
+            )
+            raise AssertionError("expected run_attempt_invalid")
+        except cicd_telemetry.TelemetryError as error:
+            assert error.code == "run_attempt_invalid"
+        facts = cicd_telemetry.facts_from_actions_env(
+            {
+                "GITHUB_WORKFLOW": "Engineering CI",
+                "GITHUB_RUN_ID": "1",
+                "GITHUB_RUN_ATTEMPT": str(attempt),
+            }
+        )
+        assert facts.run_attempt is None
+        assert not facts.has_run_identity
+        report = cicd_telemetry.produce(facts)
+        assert report["status"] == "incomplete"
 
 
 def test_job_success_with_run_in_progress_is_partial_task_only():
@@ -235,6 +306,8 @@ def test_result_mapping_preserves_semconv_values():
         assert result == expected
         if expected in {"failure", "error"}:
             assert error_type == github
+        elif expected == "timeout":
+            assert error_type == "timeout"
         else:
             assert error_type is None
         report = cicd_telemetry.produce(
@@ -246,9 +319,16 @@ def test_result_mapping_preserves_semconv_values():
         if expected in {"failure", "error"}:
             assert report["spans"][0]["attributes"]["error.type"] == github
             assert task["attributes"]["error.type"] == github
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_ERROR
+        elif expected == "timeout":
+            assert report["spans"][0]["attributes"]["error.type"] == "timeout"
+            assert task["attributes"]["error.type"] == "timeout"
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_ERROR
+            assert task["status"]["code"] == cicd_telemetry.STATUS_ERROR
         else:
             assert "error.type" not in report["spans"][0]["attributes"]
             assert "error.type" not in task["attributes"]
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_UNSET
 
 
 def test_task_span_ids_differ_across_jobs_same_run():
@@ -342,3 +422,448 @@ def test_cli_incomplete_exits_3(tmp_path):
     )
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["status"] == "incomplete"
+
+
+def _api_run_job_fixture():
+    run = {
+        "id": 42769746408,
+        "name": "Engineering CI",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "e" * 40,
+        "run_started_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:02:00Z",
+        "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/42769746408",
+        "repository": {"full_name": "dymzz/engineering-ci"},
+    }
+    job = {
+        "id": 129674497066,
+        "name": "python-ci / checks",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2024-01-01T00:00:10Z",
+        "completed_at": "2024-01-01T00:01:40Z",
+        "html_url": (
+            "https://github.com/dymzz/engineering-ci/actions/runs/"
+            "42769746408/job/129674497066"
+        ),
+    }
+    return run, job
+
+
+def test_facts_from_github_api_objects_separate_terminals():
+    run, job = _api_run_job_fixture()
+    run["conclusion"] = "failure"
+    job["conclusion"] = "success"
+    facts = cicd_telemetry.facts_from_github_api_objects(run, job)
+    assert facts.run_conclusion == "failure"
+    assert facts.job_conclusion == "success"
+    assert facts.run_started_at_ns is not None
+    assert facts.run_completed_at_ns is None
+    assert facts.run_updated_at_ns is not None
+    assert facts.run_url.endswith("/42769746408")
+    assert facts.job_url.endswith("129674497066")
+
+
+def test_api_updated_at_is_not_exact_completed_at():
+    run, job = _api_run_job_fixture()
+    # updated_at intentionally later than job end (metadata change / rerun noise).
+    run["updated_at"] = "2024-01-01T12:00:00Z"
+    facts = cicd_telemetry.facts_from_github_api_objects(run, job)
+    assert facts.run_completed_at_ns is None
+    assert facts.run_updated_at_ns == cicd_telemetry.parse_time_ns(
+        "2024-01-01T12:00:00Z"
+    )
+    report = cicd_telemetry.produce(facts, source="github_api", github_api_fetched=True)
+    assert report["status"] == "partial"
+    assert report["reason"] == "run_completed_at_unproven"
+    assert all(
+        span["kind"] != cicd_telemetry.SPAN_KIND_SERVER for span in report["spans"]
+    )
+
+
+def test_fetch_github_run_job_uses_matching_attempt():
+    run1, job1 = _api_run_job_fixture()
+    run1["run_attempt"] = 1
+    run1["conclusion"] = "failure"
+    job1["run_id"] = run1["id"]
+    job1["run_attempt"] = 1
+    job1["conclusion"] = "failure"
+    run2 = {
+        **run1,
+        "run_attempt": 2,
+        "conclusion": "success",
+        "updated_at": "2024-01-01T00:05:00Z",
+        "html_url": run1["html_url"] + "/attempts/2",
+    }
+    job2 = {
+        **job1,
+        "id": 222,
+        "run_attempt": 2,
+        "conclusion": "success",
+        "name": "python-ci / checks",
+        "html_url": job1["html_url"].replace("129674497066", "222"),
+    }
+
+    def api_get(path):
+        if "/attempts/1/jobs" in path:
+            page = 1
+            if "page=2" in path:
+                page = 2
+            if page == 1:
+                return {"total_count": 1, "jobs": [job1]}
+            return {"total_count": 1, "jobs": []}
+        if "/attempts/2/jobs" in path:
+            return {
+                "total_count": 2,
+                "jobs": [job2, {**job2, "id": 333, "name": "other"}],
+            }
+        if path.endswith("/attempts/1"):
+            return run1
+        if path.endswith("/attempts/2"):
+            return run2
+        if path.endswith(f"/runs/{run1['id']}"):
+            # Latest view would lie if mixed with attempt-1 jobs.
+            return run2
+        raise AssertionError(path)
+
+    facts, coverage = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        42769746408,
+        attempt=1,
+        job_id=129674497066,
+        api_get=api_get,
+    )
+    assert facts.run_attempt == 1
+    assert facts.run_conclusion == "failure"
+    assert facts.job_conclusion == "failure"
+    assert coverage["completed_jobs_total"] == 1
+    assert coverage["job_selection"] == "job_id"
+
+    facts2, coverage2 = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        42769746408,
+        attempt=2,
+        job_id=222,
+        api_get=api_get,
+    )
+    assert facts2.run_attempt == 2
+    assert facts2.run_conclusion == "success"
+    assert facts2.job_id == "222"
+    assert coverage2["completed_jobs_total"] == 2
+    report = cicd_telemetry.produce(
+        facts2,
+        source="github_api",
+        github_api_fetched=True,
+        completed_jobs_total=coverage2["completed_jobs_total"],
+        job_selection=coverage2["job_selection"],
+    )
+    assert report["claims"]["github_api_fetched"] is True
+    assert report["claims"]["otlp_delivered"] is False
+    assert report["claims"]["github_authenticated"] is False
+    assert report["resource"]["cicd.pipeline.run.id"] == "42769746408/2"
+    assert report["reason"] in {
+        "run_completed_at_unproven",
+        "partial_job_coverage",
+    }
+    assert report["status"] == "partial"
+
+
+def test_fetch_rejects_job_not_in_attempt_jobs():
+    run, job = _api_run_job_fixture()
+    job["run_id"] = run["id"]
+    job["run_attempt"] = 1
+
+    def api_get(path):
+        if "/jobs" in path:
+            return {"total_count": 1, "jobs": [job]}
+        if "/attempts/" in path:
+            return run
+        return run
+
+    try:
+        cicd_telemetry.fetch_github_run_job(
+            "dymzz/engineering-ci",
+            42769746408,
+            attempt=1,
+            job_id=999999,
+            api_get=api_get,
+        )
+        raise AssertionError("expected job_not_found")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "job_not_found"
+
+
+def test_fetch_paginates_jobs_across_pages():
+    run, job = _api_run_job_fixture()
+    run["run_attempt"] = 1
+    page1_jobs = [
+        {
+            **job,
+            "id": index,
+            "name": f"job-{index}",
+            "run_id": run["id"],
+            "run_attempt": 1,
+        }
+        for index in range(1, cicd_telemetry._JOBS_PAGE_SIZE + 1)
+    ]
+    target = {
+        **job,
+        "id": 4242,
+        "name": "page-two",
+        "run_id": run["id"],
+        "run_attempt": 1,
+    }
+
+    def api_get(path):
+        if "/jobs" in path:
+            if "page=2" in path:
+                return {
+                    "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+                    "jobs": [target],
+                }
+            return {
+                "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+                "jobs": page1_jobs,
+            }
+        if "/attempts/1" in path:
+            return run
+        raise AssertionError(path)
+
+    facts, coverage = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        42769746408,
+        attempt=1,
+        job_id=4242,
+        api_get=api_get,
+    )
+    assert facts.job_id == "4242"
+    assert facts.job_name == "page-two"
+    assert coverage["completed_jobs_total"] == cicd_telemetry._JOBS_PAGE_SIZE + 1
+
+
+def test_fetch_rejects_short_page_before_total_count():
+    def api_get(path):
+        if "page=2" in path:
+            return {"total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1, "jobs": []}
+        return {
+            "total_count": cicd_telemetry._JOBS_PAGE_SIZE + 1,
+            "jobs": [{"id": index, "status": "completed"} for index in range(100)],
+        }
+
+    try:
+        cicd_telemetry.fetch_attempt_jobs(
+            api_get, "repos/x/y/actions/runs/1/attempts/1/jobs"
+        )
+        raise AssertionError("expected jobs_page_incomplete")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "jobs_page_incomplete"
+
+
+def test_gh_api_get_maps_timeout_and_missing_cli():
+    def timeout_runner(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=60)
+
+    def missing_runner(*_args, **_kwargs):
+        raise FileNotFoundError("gh")
+
+    try:
+        cicd_telemetry.gh_api_get("repos/x/y", runner=timeout_runner)
+        raise AssertionError("expected timeout")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "github_api_timeout"
+    try:
+        cicd_telemetry.gh_api_get("repos/x/y", runner=missing_runner)
+        raise AssertionError("expected unavailable")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "github_cli_unavailable"
+
+
+def test_in_progress_run_has_no_completed_bound():
+    run, job = _api_run_job_fixture()
+    run["status"] = "in_progress"
+    run["conclusion"] = None
+    run["updated_at"] = None
+    facts = cicd_telemetry.facts_from_github_api_objects(run, job)
+    assert facts.run_conclusion is None
+    assert facts.run_completed_at_ns is None
+    report = cicd_telemetry.produce(facts, source="github_api", github_api_fetched=True)
+    assert report["status"] == "partial"
+    assert report["reason"] == "missing_run_terminal_result"
+
+
+def test_otlp_json_export_and_flush_failure(tmp_path):
+    report = cicd_telemetry.produce(complete_facts())
+    cicd_telemetry.attach_otlp_json(report)
+    assert report["claims"]["otlp_json_prepared"] is True
+    assert report["claims"]["otlp_json_exported"] is False
+    assert report["otlp_json"]["resourceSpans"]
+    span = report["otlp_json"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    assert span["kind"] == cicd_telemetry.SPAN_KIND_SERVER
+    assert "attributes" in span
+    out = tmp_path / "otel.json"
+    cicd_telemetry.write_otlp_json(report, out)
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert report["claims"]["otlp_json_exported"] is True
+    assert report["claims"]["otlp_json_sha256"]
+    assert report["claims"]["otlp_delivered"] is False
+    decoded = cicd_telemetry.decode_otlp_export_request(body)
+    assert len(decoded.resource_spans) == 1
+    resource_attrs = {
+        item.key: item.value.string_value
+        for item in decoded.resource_spans[0].resource.attributes
+    }
+    assert resource_attrs["cicd.pipeline.run.id"] == "42627302972/1"
+    wire_span = body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    proto_span = decoded.resource_spans[0].scope_spans[0].spans[0]
+    assert proto_span.trace_id == bytes.fromhex(wire_span["traceId"])
+    assert proto_span.span_id == bytes.fromhex(wire_span["spanId"])
+    assert proto_span.start_time_unix_nano == RUN_START
+    assert proto_span.end_time_unix_nano == RUN_END
+    assert wire_span["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert proto_span.status.code == cicd_telemetry.STATUS_UNSET
+    task = next(
+        item
+        for item in decoded.resource_spans[0].scope_spans[0].spans
+        if item.name.startswith("task:")
+    )
+    task_attrs = {item.key: item.value.string_value for item in task.attributes}
+    assert task_attrs["cicd.pipeline.task.run.url.full"]
+
+    timed = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="timed_out")
+    )
+    cicd_telemetry.attach_otlp_json(timed)
+    timed_body = timed["otlp_json"]
+    timed_decoded = cicd_telemetry.decode_otlp_export_request(timed_body)
+    timed_pipeline = next(
+        item
+        for item in timed_decoded.resource_spans[0].scope_spans[0].spans
+        if not item.name.startswith("task:")
+    )
+    timed_attrs = {
+        item.key: item.value.string_value for item in timed_pipeline.attributes
+    }
+    assert timed_attrs["cicd.pipeline.result"] == "timeout"
+    assert timed_attrs["error.type"] == "timeout"
+    assert timed_pipeline.status.code == cicd_telemetry.STATUS_ERROR
+    timed_wire = next(
+        item
+        for item in timed_body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        if not item["name"].startswith("task:")
+    )
+    assert timed_wire["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert any(
+        attr["key"] == "cicd.pipeline.result"
+        and attr["value"]["stringValue"] == "timeout"
+        for attr in timed_wire["attributes"]
+    )
+
+    # File-as-directory makes mkdir(parents=True) fail on Windows/POSIX alike.
+    file_parent = tmp_path / "not-a-dir"
+    file_parent.write_text("x", encoding="utf-8")
+    bad = file_parent / "otel.json"
+    try:
+        cicd_telemetry.write_otlp_json(report, bad)
+        raise AssertionError("expected flush failure")
+    except cicd_telemetry.TelemetryError as error:
+        assert error.code == "otlp_json_flush_failed"
+        assert report["claims"]["otlp_json_exported"] is False
+
+
+def test_cli_otlp_prepared_without_export_request(tmp_path):
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "workflow_name": "Engineering CI",
+                "run_id": "1",
+                "run_attempt": 1,
+                "job_id": "2",
+                "job_name": "checks",
+                "job_url": "https://example.test/job/2",
+                "run_conclusion": "success",
+                "job_conclusion": "success",
+                "head_sha": "f" * 40,
+                "repository": "dymzz/engineering-ci",
+                "run_started_at_ns": RUN_START,
+                "run_completed_at_ns": RUN_END,
+                "job_started_at_ns": JOB_START,
+                "job_completed_at_ns": JOB_END,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "out.json"
+    assert (
+        cicd_telemetry.main(["--facts", str(facts_path), "--output", str(output)]) == 0
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["otlp_json_prepared"] is True
+    assert payload["otlp_json_exported"] is False
+    assert payload["claims"]["otlp_json_prepared"] is True
+    assert payload["claims"]["otlp_json_exported"] is False
+
+
+def test_cli_otlp_json_flush_failure_exits_3(tmp_path):
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "workflow_name": "Engineering CI",
+                "run_id": "1",
+                "run_attempt": 1,
+                "job_id": "2",
+                "job_name": "checks",
+                "job_url": "https://example.test/job/2",
+                "run_conclusion": "success",
+                "job_conclusion": "success",
+                "head_sha": "f" * 40,
+                "repository": "dymzz/engineering-ci",
+                "run_started_at_ns": RUN_START,
+                "run_completed_at_ns": RUN_END,
+                "job_started_at_ns": JOB_START,
+                "job_completed_at_ns": JOB_END,
+            }
+        ),
+        encoding="utf-8",
+    )
+    file_parent = tmp_path / "blocked"
+    file_parent.write_text("x", encoding="utf-8")
+    output = tmp_path / "out.json"
+    code = cicd_telemetry.main(
+        [
+            "--facts",
+            str(facts_path),
+            "--output",
+            str(output),
+            "--otlp-json",
+            str(file_parent / "otel.json"),
+        ]
+    )
+    assert code == 3
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["otlp_json_prepared"] is True
+    assert payload["otlp_json_exported"] is False
+    assert payload["claims"]["otlp_json_exported"] is False
+
+
+def test_cli_otlp_unavailable_for_incomplete_exits_3(tmp_path):
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps({"workflow_name": "x"}), encoding="utf-8")
+    code = cicd_telemetry.main(
+        [
+            "--facts",
+            str(facts_path),
+            "--output",
+            str(tmp_path / "out.json"),
+            "--otlp-json",
+            str(tmp_path / "otel.json"),
+        ]
+    )
+    assert code == 3
+    assert not (tmp_path / "otel.json").exists()
+    payload = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert payload["otlp_json_exported"] is False

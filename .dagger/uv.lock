@@ -218,6 +218,7 @@ source = { directory = "../" }
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "opentelemetry-proto", specifier = ">=1.45.0" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
     { name = "ruff", specifier = "==0.16.10" },
