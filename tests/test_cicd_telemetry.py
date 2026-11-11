@@ -77,13 +77,42 @@ def test_job_success_does_not_imply_pipeline_success():
 
 
 def test_non_error_terminals_leave_span_status_unset():
-    for conclusion in ("cancelled", "skipped", "timed_out"):
+    for conclusion in ("cancelled", "skipped"):
         report = cicd_telemetry.produce(
             complete_facts(run_conclusion=conclusion, job_conclusion=conclusion)
         )
         assert report["status"] == "produced"
         for span in report["spans"]:
             assert span["status"]["code"] == cicd_telemetry.STATUS_UNSET
+            assert "error.type" not in span["attributes"]
+
+
+def test_timed_out_keeps_timeout_result_and_records_error():
+    report = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="timed_out")
+    )
+    assert report["status"] == "produced"
+    pipeline, task = report["spans"]
+    assert pipeline["attributes"]["cicd.pipeline.result"] == "timeout"
+    assert pipeline["attributes"]["error.type"] == "timeout"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert task["attributes"]["cicd.pipeline.task.run.result"] == "timeout"
+    assert task["attributes"]["error.type"] == "timeout"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_ERROR
+
+
+def test_mixed_run_timeout_job_success_keeps_separate_terminals():
+    report = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="success")
+    )
+    assert report["status"] == "produced"
+    pipeline, task = report["spans"]
+    assert pipeline["attributes"]["cicd.pipeline.result"] == "timeout"
+    assert pipeline["attributes"]["error.type"] == "timeout"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert task["attributes"]["cicd.pipeline.task.run.result"] == "success"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert "error.type" not in task["attributes"]
 
 
 def test_mapping_and_env_reject_non_positive_attempt():
@@ -277,6 +306,8 @@ def test_result_mapping_preserves_semconv_values():
         assert result == expected
         if expected in {"failure", "error"}:
             assert error_type == github
+        elif expected == "timeout":
+            assert error_type == "timeout"
         else:
             assert error_type is None
         report = cicd_telemetry.produce(
@@ -288,9 +319,16 @@ def test_result_mapping_preserves_semconv_values():
         if expected in {"failure", "error"}:
             assert report["spans"][0]["attributes"]["error.type"] == github
             assert task["attributes"]["error.type"] == github
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_ERROR
+        elif expected == "timeout":
+            assert report["spans"][0]["attributes"]["error.type"] == "timeout"
+            assert task["attributes"]["error.type"] == "timeout"
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_ERROR
+            assert task["status"]["code"] == cicd_telemetry.STATUS_ERROR
         else:
             assert "error.type" not in report["spans"][0]["attributes"]
             assert "error.type" not in task["attributes"]
+            assert report["spans"][0]["status"]["code"] == cicd_telemetry.STATUS_UNSET
 
 
 def test_task_span_ids_differ_across_jobs_same_run():
@@ -693,6 +731,35 @@ def test_otlp_json_export_and_flush_failure(tmp_path):
     )
     task_attrs = {item.key: item.value.string_value for item in task.attributes}
     assert task_attrs["cicd.pipeline.task.run.url.full"]
+
+    timed = cicd_telemetry.produce(
+        complete_facts(run_conclusion="timed_out", job_conclusion="timed_out")
+    )
+    cicd_telemetry.attach_otlp_json(timed)
+    timed_body = timed["otlp_json"]
+    timed_decoded = cicd_telemetry.decode_otlp_export_request(timed_body)
+    timed_pipeline = next(
+        item
+        for item in timed_decoded.resource_spans[0].scope_spans[0].spans
+        if not item.name.startswith("task:")
+    )
+    timed_attrs = {
+        item.key: item.value.string_value for item in timed_pipeline.attributes
+    }
+    assert timed_attrs["cicd.pipeline.result"] == "timeout"
+    assert timed_attrs["error.type"] == "timeout"
+    assert timed_pipeline.status.code == cicd_telemetry.STATUS_ERROR
+    timed_wire = next(
+        item
+        for item in timed_body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        if not item["name"].startswith("task:")
+    )
+    assert timed_wire["status"]["code"] == cicd_telemetry.STATUS_ERROR
+    assert any(
+        attr["key"] == "cicd.pipeline.result"
+        and attr["value"]["stringValue"] == "timeout"
+        for attr in timed_wire["attributes"]
+    )
 
     # File-as-directory makes mkdir(parents=True) fail on Windows/POSIX alike.
     file_parent = tmp_path / "not-a-dir"

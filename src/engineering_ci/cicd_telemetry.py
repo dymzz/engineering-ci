@@ -193,6 +193,10 @@ def map_github_result(conclusion):
         return None, None
     if result in {"failure", "error"}:
         return result, conclusion
+    # GitHub timed_out is an interrupted/error operation; keep SemConv result
+    # "timeout" and record error.type (Recording Errors), never rewrite as failure.
+    if result == "timeout":
+        return result, "timeout"
     return result, None
 
 
@@ -298,11 +302,12 @@ def facts_from_mapping(value):
 def _status_code(result):
     """OTel Span Status for CI/CD operations (Recording Errors).
 
-    Success and non-error terminals (cancellation/skip/timeout) leave Status
-    UNSET. Only confirmed error operations use STATUS_ERROR. Business results
-    stay on cicd.pipeline(.task.run).result — never encode success as OK.
+    Success and non-error terminals (cancellation/skip) leave Status UNSET.
+    Confirmed error operations — failure, error, and GitHub timed_out → timeout —
+    use STATUS_ERROR. Business results stay on cicd.pipeline(.task.run).result
+    — never encode success as OK or rewrite timeout as failure.
     """
-    if result in {"failure", "error"}:
+    if result in {"failure", "error", "timeout"}:
         return STATUS_ERROR
     return STATUS_UNSET
 
