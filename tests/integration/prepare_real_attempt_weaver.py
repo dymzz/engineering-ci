@@ -85,16 +85,20 @@ def prepare(destination: Path) -> dict:
         or facts.get("run_id") != run["run_id"]
         or facts.get("run_attempt") != run["attempt"]
         or facts.get("head_sha") != run["head_sha"]
+        or facts.get("repository") != run["repository"]
         or coverage.get("job_selection") != "all_completed"
         or coverage.get("completed_jobs_total") != len(witness["jobs"])
         or coverage.get("task_spans_emitted") != len(witness["jobs"])
         or coverage.get("tasks_omitted") != []
         or claims.get("github_authenticated") is not False
+        or claims.get("otlp_delivered") is not False
+        or claims.get("candidate_record_only") is not True
         or claims.get("weaver_pass") is not False
         or claims.get("otlp_json_exported") is not True
         or resource.get("cicd.pipeline.run.id", {}).get("stringValue") != expected_run
         or resource.get("github.actions.run_attempt", {}).get("intValue") != str(run["attempt"])
         or resource.get("vcs.ref.head.revision", {}).get("stringValue") != run["head_sha"]
+        or resource.get("github.repository", {}).get("stringValue") != run["repository"]
     ):
         raise InputMismatch("candidate_or_resource_provenance_mismatch")
 
