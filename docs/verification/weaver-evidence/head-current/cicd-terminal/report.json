@@ -82,6 +82,8 @@
         "--fail-on",
         "violation",
         "--emit-otlp-logs=false",
+        "--advice-policies",
+        "/out/advice-policies",
         "--input-source",
         "otlp",
         "--output",
@@ -89,9 +91,9 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "46749",
+        "46007",
         "--admin-port",
-        "54099"
+        "40043"
       ],
       "exit_code": 0,
       "stderr": "live.stderr",
@@ -99,15 +101,39 @@
     }
   ],
   "coverage": {
+    "conditionally_required_advice": {
+      "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
+      "loaded": true,
+      "policy_id": "cicd_conditional_error_type_required"
+    },
+    "expected_matchers": [
+      "eci.pipeline",
+      "eci.task"
+    ],
     "expected_spans": 2,
     "matched_spans": 2,
+    "passed_means": "only executed applicable obligations above; not full SemConv",
+    "pipeline_task_required": "executed",
     "received_spans": 2,
-    "scope": "declared_expected_set"
+    "registry_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+    "registry_version": "1.45.0",
+    "resource_required": "executed_via_pipeline_entity_association",
+    "result_type_gate": "executed",
+    "scope": "declared_expected_set",
+    "terminal_correlation": "executed"
   },
   "exit_code": 0,
   "gate_exit_code": 0,
   "inputs": {
-    "config_sha256": "a471fa9152e68355326edc5548b7e0176ef73b7472509ef0d3969558a30bb91a",
+    "advice_policies": {
+      "files": {
+        "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+        "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
+      },
+      "path": "advice-policies",
+      "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
+    },
+    "config_sha256": "fa48a2272ce2e394db50d734df209d81b8e78beb7282740941373b7417f0eb91",
     "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
     "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
     "otlp_sha256": "b598e795ffebc39c2d6f9aaf5c35187aa0d4562104233547e0ee74910bb2bcac",
@@ -145,7 +171,7 @@
         "cicd/entities.yaml": "0a58df92273bc4202b559529a87077db71cb6a3fd1e7e68e6affab8a436fb7cd",
         "cicd/metrics.yaml": "dc2b6eafd6225868ce73da685a3486ca8e6a5ad65b6c6d81dafdb907e1ddb9d1",
         "cicd/registry.yaml": "435a0325fd7f0ab5b387184b3dafc71134b3067bc6894846936d1649d919573b",
-        "cicd/spans.yaml": "10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86",
+        "cicd/spans.yaml": "018657008072ff2a9f72ed9021b9d20c52384815a5e9c0705c733fdd71c7e2d7",
         "cli/spans.yaml": "5986a74e5e910f3ab4cca75ea9bbb2706748c43185fee8660302577781b86560",
         "client/common.yaml": "7bf4e8f3990007a0356674181027d5321b119748d0b3adb4e001415c88b53b19",
         "client/registry.yaml": "1099ae555a40ce17e9e8a4d22f75dcb25aaa84cb22e3f6738554d7c700210386",
@@ -383,8 +409,8 @@
         "webengine/registry.yaml": "4c4b0d1c027bee1bfac5cd70b3632102947ca753ff5497e2e5e4ef1b71b410ec",
         "zos/deprecated/registry-deprecated.yaml": "d65e37265a3258533681ee59b8022495e6867815083014247e27769546803b03"
       },
-      "manifest_sha256": "570c6ce8c3b936edc417fb4a4a38c44482e8d572cd8a9bbe478de54aaba52a36",
-      "resolved_sha256": "60a17319b9597218f972ce5cd55904736386e4e8ec18da951fb9a708cc431422"
+      "manifest_sha256": "b0aa2e583d810e5c0137b1e87fd4f927e7bf9a33a60572688dd439b0b111dd99",
+      "resolved_sha256": "6a9ac0b5d5672d0bb3c09167708a74e50bcc8b26b67e7a6ae44c8350e01ed45c"
     }
   },
   "lifecycle": {
@@ -2053,7 +2079,7 @@
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:5d5f73023eb18f76d424d17e5780a2893ddfa76df30a74d0d52724d3765a4a35",
+  "source_digest": "sha256:0c9500e8b54bff885210d8c8609ad9bbfa01c7e5e3711c3a26df60eaa58c5fd9",
   "status": "passed",
   "terminal_correlation_status": "passed",
   "tool": "weaver",

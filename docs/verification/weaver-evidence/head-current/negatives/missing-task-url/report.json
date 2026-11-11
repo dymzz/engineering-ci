@@ -75,6 +75,8 @@
         "--fail-on",
         "violation",
         "--emit-otlp-logs=false",
+        "--advice-policies",
+        "/out/advice-policies",
         "--input-source",
         "otlp",
         "--output",
@@ -82,19 +84,45 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "34457",
+        "55131",
         "--admin-port",
-        "46991"
+        "47451"
       ],
       "exit_code": 1,
       "stderr": "live.stderr",
       "stdout": "live.stdout"
     }
   ],
+  "coverage": {
+    "conditionally_required_advice": {
+      "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
+      "loaded": true,
+      "policy_id": "cicd_conditional_error_type_required"
+    },
+    "expected_matchers": [
+      "eci.pipeline",
+      "eci.task"
+    ],
+    "passed_means": "only executed applicable obligations above; not full SemConv",
+    "pipeline_task_required": "executed",
+    "registry_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+    "registry_version": "1.45.0",
+    "resource_required": "executed_via_pipeline_entity_association",
+    "result_type_gate": "executed",
+    "terminal_correlation": "not_applicable"
+  },
   "exit_code": 1,
   "gate_exit_code": 1,
   "inputs": {
-    "config_sha256": "b2f62a1ec53455e420bb911964a0363961d3148277041c12f2ee23a775a1a0cd",
+    "advice_policies": {
+      "files": {
+        "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+        "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
+      },
+      "path": "advice-policies",
+      "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
+    },
+    "config_sha256": "201abb36adfbc1f166a1565e07eacab4a6b00d0561cba324c2c37cc1d112dc37",
     "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
     "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
     "otlp_sha256": "567c56a76914f0d1dda7db166c42793a84c481eeb1a802e1e45258be78c890e9",
@@ -132,7 +160,7 @@
         "cicd/entities.yaml": "0a58df92273bc4202b559529a87077db71cb6a3fd1e7e68e6affab8a436fb7cd",
         "cicd/metrics.yaml": "dc2b6eafd6225868ce73da685a3486ca8e6a5ad65b6c6d81dafdb907e1ddb9d1",
         "cicd/registry.yaml": "435a0325fd7f0ab5b387184b3dafc71134b3067bc6894846936d1649d919573b",
-        "cicd/spans.yaml": "10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86",
+        "cicd/spans.yaml": "018657008072ff2a9f72ed9021b9d20c52384815a5e9c0705c733fdd71c7e2d7",
         "cli/spans.yaml": "5986a74e5e910f3ab4cca75ea9bbb2706748c43185fee8660302577781b86560",
         "client/common.yaml": "7bf4e8f3990007a0356674181027d5321b119748d0b3adb4e001415c88b53b19",
         "client/registry.yaml": "1099ae555a40ce17e9e8a4d22f75dcb25aaa84cb22e3f6738554d7c700210386",
@@ -370,8 +398,8 @@
         "webengine/registry.yaml": "4c4b0d1c027bee1bfac5cd70b3632102947ca753ff5497e2e5e4ef1b71b410ec",
         "zos/deprecated/registry-deprecated.yaml": "d65e37265a3258533681ee59b8022495e6867815083014247e27769546803b03"
       },
-      "manifest_sha256": "570c6ce8c3b936edc417fb4a4a38c44482e8d572cd8a9bbe478de54aaba52a36",
-      "resolved_sha256": "60a17319b9597218f972ce5cd55904736386e4e8ec18da951fb9a708cc431422"
+      "manifest_sha256": "b0aa2e583d810e5c0137b1e87fd4f927e7bf9a33a60572688dd439b0b111dd99",
+      "resolved_sha256": "6a9ac0b5d5672d0bb3c09167708a74e50bcc8b26b67e7a6ae44c8350e01ed45c"
     }
   },
   "lifecycle": {
@@ -516,6 +544,18 @@
                 "id": "conditionally_required_attribute_not_present",
                 "level": "information",
                 "message": "Conditionally required attribute 'error.type' is not present.",
+                "signal_name": "eci pipeline",
+                "signal_type": "span",
+                "type": "PolicyFinding"
+              },
+              {
+                "context": {
+                  "attribute_key": "cicd.pipeline.run.url.full",
+                  "entity_type": "cicd.pipeline.run"
+                },
+                "id": "entity_recommended_attribute_not_present",
+                "level": "improvement",
+                "message": "Recommended attribute 'cicd.pipeline.run.url.full' for entity 'cicd.pipeline.run' is not present in the resource.",
                 "signal_name": "eci pipeline",
                 "signal_type": "span",
                 "type": "PolicyFinding"
@@ -679,7 +719,7 @@
     ],
     "statistics": {
       "advice_level_counts": {
-        "improvement": 7,
+        "improvement": 8,
         "information": 3,
         "violation": 1
       },
@@ -693,10 +733,12 @@
         "Attribute 'github.actions.run_attempt' is not in the matched signal or attribute groups.": 1,
         "Conditionally required attribute 'error.type' is not present.": 2,
         "Opt-in attribute 'cicd.pipeline.action.name' is not present.": 1,
+        "Recommended attribute 'cicd.pipeline.run.url.full' for entity 'cicd.pipeline.run' is not present in the resource.": 1,
         "Required attribute 'cicd.pipeline.task.run.url.full' is not present.": 1
       },
       "advice_type_counts": {
         "conditionally_required_attribute_not_present": 2,
+        "entity_recommended_attribute_not_present": 1,
         "not_stable": 6,
         "opt_in_attribute_not_present": 1,
         "required_attribute_not_present": 1,
@@ -1987,7 +2029,7 @@
         "vcs.ref.time": 0,
         "vcs.repository.count": 0
       },
-      "total_advisories": 11,
+      "total_advisories": 12,
       "total_entities": 11,
       "total_entities_by_type": {
         "attribute": 7,
@@ -2007,7 +2049,7 @@
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:c5a39aa574352dc27110b9836dac2ecce3047ce7f2dfb3d27b557109429a9518",
+  "source_digest": "sha256:0c9500e8b54bff885210d8c8609ad9bbfa01c7e5e3711c3a26df60eaa58c5fd9",
   "status": "failed",
   "tool": "weaver",
   "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",

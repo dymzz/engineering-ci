@@ -21,6 +21,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 PLAN_KIND = "engineering-ci-selection-plan"
+POST_COMPLETION_PHASE = "post_completion"
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_TEXT = 512
 
@@ -1018,14 +1019,8 @@ def _check_scope(selection, config, root):
     weaver_inputs = [
         path for path in paths if path.startswith(config.check_scope.weaver_prefixes)
     ]
-    # Terminal is post-completion only: require terminal evidence paths in the
-    # changeset. Registry/Live may select on Weaver definition or capture churn;
-    # Terminal must not PASS-select from those alone (PR #78 P2-1).
-    terminal_inputs = [
-        path
-        for path in weaver_inputs
-        if Path(path).name == "expected.json" or "terminal" in Path(path).name
-    ]
+    # Incremental Git impact never claims Terminal readiness from filenames.
+    # weaver_terminal runs only via an explicit post-completion Plan (PR #78 P1-2).
     for name in config.checks:
         if name not in {"weaver_registry", "weaver_live", "weaver_terminal"}:
             continue
@@ -1033,13 +1028,9 @@ def _check_scope(selection, config, root):
             scopes.append(
                 {
                     "name": name,
-                    "status": "selected" if terminal_inputs else "not_applicable",
-                    "inputs": terminal_inputs,
-                    "reason": (
-                        "terminal evidence changed"
-                        if terminal_inputs
-                        else "terminal evidence not ready"
-                    ),
+                    "status": "not_applicable",
+                    "inputs": [],
+                    "reason": "requires post-completion plan",
                 }
             )
             continue
@@ -1174,6 +1165,250 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "tach": {"path": config.tach, "sha256": _digest(tach_path)},
         },
     }
+
+
+def _relative_source_path(root, path):
+    root = Path(root).resolve()
+    value = Path(path)
+    resolved = value.resolve() if value.is_absolute() else (root / value).resolve()
+    if not resolved.is_relative_to(root):
+        raise SelectionError("post_completion_path_escapes_source")
+    return resolved.relative_to(root).as_posix(), resolved
+
+
+def _file_binding(root, path):
+    relative, resolved = _relative_source_path(root, path)
+    if not resolved.is_file():
+        raise SelectionError("post_completion_input_missing")
+    return {"path": relative, "sha256": _digest(resolved)}
+
+
+def post_completion_plan(
+    *,
+    root,
+    config_path,
+    weaver_config,
+    run_id,
+    attempt,
+    result,
+    otlp,
+    expectations,
+    registry=None,
+    matcher_config=None,
+    source_tree_id=None,
+):
+    """Explicit Terminal Plan; never inferred from Git filenames or diffs.
+
+    Callers supply completed Run/Attempt identity and Source-relative Capture /
+    expectation paths. ``execute-plan`` validates this binding before Native
+    Terminal; incremental selection never selects ``weaver_terminal``.
+    """
+    root = Path(root)
+    config_path = Path(config_path)
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or type(attempt) is not int
+        or attempt < 1
+        or not isinstance(result, str)
+        or not result
+    ):
+        raise SelectionError("post_completion_identity_invalid")
+    weaver_rel, weaver_path = _relative_source_path(root, weaver_config)
+    if not weaver_path.is_file():
+        raise SelectionError("post_completion_input_missing")
+    otlp_binding = _file_binding(root, otlp)
+    expectations_binding = _file_binding(root, expectations)
+    try:
+        expected = json.loads((root / expectations_binding["path"]).read_text())
+    except (OSError, ValueError, UnicodeError):
+        raise SelectionError("post_completion_expectations_invalid") from None
+    source = expected.get("source") if isinstance(expected, dict) else None
+    evidence = expected.get("terminal_evidence") if isinstance(expected, dict) else None
+    if (
+        not isinstance(source, dict)
+        or source.get("run_id") != run_id
+        or source.get("attempt") != attempt
+        or not isinstance(evidence, dict)
+        or evidence.get("status") != "completed"
+        or evidence.get("run_id") != run_id
+        or evidence.get("attempt") != attempt
+        or evidence.get("result") != result
+    ):
+        raise SelectionError("post_completion_evidence_mismatch")
+    try:
+        capture = json.loads((root / otlp_binding["path"]).read_text())
+    except (OSError, ValueError, UnicodeError):
+        raise SelectionError("post_completion_otlp_invalid") from None
+    spans = expected.get("spans") if isinstance(expected, dict) else None
+    if not isinstance(spans, list) or not spans:
+        raise SelectionError("post_completion_expectations_invalid")
+    for span in spans:
+        if not isinstance(span, dict):
+            raise SelectionError("post_completion_expectations_invalid")
+        # Presence only; Native Terminal still binds observed Run/Result/Attempt.
+        matches = 0
+        for resource in capture.get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                for item in scope.get("spans") or []:
+                    if item.get("traceId") == span.get("trace_id") and item.get(
+                        "spanId"
+                    ) == span.get("span_id"):
+                        matches += 1
+        if matches == 0:
+            raise SelectionError("post_completion_missing_capture_span")
+        if matches > 1:
+            raise SelectionError("post_completion_duplicate_capture_span")
+    try:
+        weaver_data = tomllib.loads(weaver_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError, tomllib.TOMLDecodeError):
+        weaver_data = {}
+    registry_binding = _file_binding(root, registry) if registry is not None else None
+    if registry_binding is None:
+        declared = weaver_data.get("registry")
+        if isinstance(declared, str) and declared:
+            reg_rel, reg_path = _relative_source_path(root, declared)
+            if not reg_path.exists():
+                raise SelectionError("post_completion_input_missing")
+            # Directory registry: path identity only; Weaver verifies bytes.
+            registry_binding = {"path": reg_rel, "sha256": None}
+    matcher_binding = None
+    if matcher_config is not None:
+        matcher_binding = _file_binding(root, matcher_config)
+    else:
+        declared = weaver_data.get("matcher_config")
+        if isinstance(declared, str) and declared:
+            matcher_binding = _file_binding(root, declared)
+    binding = {
+        "run_id": run_id,
+        "attempt": attempt,
+        "status": "completed",
+        "result": result,
+        "weaver_config": {
+            "path": weaver_rel,
+            "sha256": _digest(weaver_path),
+        },
+        "otlp": otlp_binding,
+        "expectations": expectations_binding,
+        "registry": registry_binding,
+        "matcher_config": matcher_binding,
+    }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": PLAN_KIND,
+        "phase": POST_COMPLETION_PHASE,
+        "generator": {
+            "name": "engineering-ci",
+            "version": _version(),
+            "config_sha256": _digest(config_path) if config_path.is_file() else None,
+        },
+        "git": {
+            "snapshot": "worktree",
+            "changed_paths": [],
+            "source_tree_id": source_tree_id,
+            "execution_tree": None,
+            "worktree_dirty": True,
+        },
+        "selection": {
+            "status": "selected",
+            "tests": [],
+            "checks": ["weaver_terminal"],
+            "prerequisites": [],
+            "framework": "unittest",
+            "tests_dir": "tests",
+            "src_root": "src",
+        },
+        "check_scope": [
+            {
+                "name": "weaver_terminal",
+                "status": "selected",
+                "inputs": [
+                    binding["otlp"]["path"],
+                    binding["expectations"]["path"],
+                    binding["weaver_config"]["path"],
+                ],
+                "reason": "post-completion binding",
+            }
+        ],
+        "post_completion": binding,
+        "inputs": {
+            "config": {
+                "path": str(config_path),
+                "sha256": _digest(config_path) if config_path.is_file() else None,
+            },
+            "weaver": binding["weaver_config"],
+        },
+    }
+
+
+def validate_post_completion_binding(plan, root):
+    """Fail closed before Native Terminal when post-completion inputs are incomplete."""
+    root = Path(root)
+    if plan.get("phase") != POST_COMPLETION_PHASE:
+        return False, "post_completion_phase_required"
+    binding = plan.get("post_completion")
+    if not isinstance(binding, dict):
+        return False, "post_completion_binding_missing"
+    required = ("run_id", "attempt", "status", "result", "otlp", "expectations")
+    if any(key not in binding for key in required):
+        return False, "post_completion_binding_incomplete"
+    if binding.get("status") != "completed":
+        return False, "post_completion_not_completed"
+    if type(binding.get("attempt")) is not int or binding["attempt"] < 1:
+        return False, "post_completion_attempt_invalid"
+    if not isinstance(binding.get("run_id"), str) or not binding["run_id"]:
+        return False, "post_completion_run_id_invalid"
+    if not isinstance(binding.get("result"), str) or not binding["result"]:
+        return False, "post_completion_result_invalid"
+    for key in ("otlp", "expectations", "weaver_config"):
+        item = binding.get(key)
+        if key == "weaver_config" and item is None:
+            continue
+        if not isinstance(item, dict) or not item.get("path") or not item.get("sha256"):
+            return False, f"post_completion_{key}_invalid"
+        path = root / item["path"]
+        if not path.is_file():
+            return False, f"post_completion_{key}_missing"
+        if _digest(path) != item["sha256"]:
+            return False, f"post_completion_{key}_digest_mismatch"
+    try:
+        expected = json.loads((root / binding["expectations"]["path"]).read_text())
+        capture = json.loads((root / binding["otlp"]["path"]).read_text())
+    except (OSError, ValueError, UnicodeError):
+        return False, "post_completion_inputs_unreadable"
+    source = expected.get("source") if isinstance(expected, dict) else None
+    evidence = expected.get("terminal_evidence") if isinstance(expected, dict) else None
+    if (
+        not isinstance(source, dict)
+        or source.get("run_id") != binding["run_id"]
+        or source.get("attempt") != binding["attempt"]
+        or not isinstance(evidence, dict)
+        or evidence.get("status") != "completed"
+        or evidence.get("run_id") != binding["run_id"]
+        or evidence.get("attempt") != binding["attempt"]
+        or evidence.get("result") != binding["result"]
+    ):
+        return False, "post_completion_evidence_mismatch"
+    spans = expected.get("spans") if isinstance(expected, dict) else None
+    if not isinstance(spans, list) or not spans:
+        return False, "post_completion_spans_missing"
+    for span in spans:
+        if not isinstance(span, dict):
+            return False, "post_completion_spans_invalid"
+        matches = 0
+        for resource in capture.get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                for item in scope.get("spans") or []:
+                    if item.get("traceId") == span.get("trace_id") and item.get(
+                        "spanId"
+                    ) == span.get("span_id"):
+                        matches += 1
+        if matches != 1:
+            return False, "post_completion_capture_span_mismatch"
+    source_tree_id = (plan.get("git") or {}).get("source_tree_id")
+    if source_tree_id and directory_content_id(root) != source_tree_id:
+        return False, "source_tree_mismatch"
+    return True, None
 
 
 def run_tests(

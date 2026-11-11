@@ -365,14 +365,47 @@ class EngineeringCi:
                     report["status"] = host.get("status", "blocked")
                     report["reason"] = host.get("reason")
                     report["exit_code"] = host.get("exit_code", 5)
+                terminal_config = weaver_config
+                binding = value.get("post_completion")
+                if isinstance(binding, dict):
+                    declared = (binding.get("weaver_config") or {}).get("path")
+                    if isinstance(declared, str) and declared:
+                        terminal_config = declared
                 for item in selected_weaver:
-                    native = json.loads(
-                        await self.weaver_report(
-                            source, item["name"].removeprefix("weaver_"), weaver_config
+                    kind = item["name"].removeprefix("weaver_")
+                    if kind == "terminal":
+                        ok, reason = selection.validate_post_completion_binding(
+                            value, directory
                         )
+                        if not ok:
+                            native = {
+                                "name": "weaver_terminal",
+                                "status": "not_executed",
+                                "reason": reason or "post_completion_binding_invalid",
+                                "gate_exit_code": 1,
+                                "trusted": False,
+                                "authenticated": False,
+                                "selected": item.get("status"),
+                                "source_tree_verified": tree_verified,
+                            }
+                            report["checks"].append(native)
+                            if report["status"] == "passed":
+                                report.update(
+                                    status="blocked",
+                                    exit_code=1,
+                                    reason=native["reason"],
+                                )
+                            continue
+                        config_path = terminal_config
+                    else:
+                        config_path = weaver_config
+                    native = json.loads(
+                        await self.weaver_report(source, kind, config_path)
                     )
                     native["selected"] = item.get("status")
                     native["source_tree_verified"] = tree_verified
+                    if kind == "terminal":
+                        native["phase"] = selection.POST_COMPLETION_PHASE
                     report["checks"].append(native)
                     if native["status"] != "passed" and report["status"] == "passed":
                         report.update(

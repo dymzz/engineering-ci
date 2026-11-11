@@ -21,8 +21,10 @@ makes Weaver exit before the OTLP receiver is ready.
 
 This proves native Weaver Required enforcement for the selected CI/CD signals —
 not the cart matcher fixture and not a GitHub producer. Conditionally Required
-`error.type` on `failure` is recorded as **not accepted** under Weaver 0.28.0
-builtin policy (information-only finding; see evidence negatives).
+`error.type` on `failure`/`error` is enforced by Source-local Advice Policy
+`advice-policies/cicd-error-type.rego` (plus vendored `otel.rego`). Pipeline
+Span declares `entity_associations: [cicd.pipeline.run]` so Resource Required
+`cicd.pipeline.run.id` is checked via Weaver's entity association chain.
 
 ```sh
 dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live export --path .artifacts/weaver-cicd-live

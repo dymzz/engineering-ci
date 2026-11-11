@@ -154,6 +154,8 @@ def validate_matcher_config(path):
         raise ValueError("matcher_config_external_inputs_unsupported")
     # Allow native search_all_attributes / finding_filters; reject other
     # live-check overrides (advice paths, exporters, unbound inputs).
+    # Advice policy directories are declared on ci-weaver.toml and passed via
+    # --advice-policies after Source-local materialization (PR #78 P1-1).
     if set(config.get("live-check", {})) - {
         "matchers",
         "search_all_attributes",
@@ -168,6 +170,51 @@ def validate_matcher_config(path):
         raise ValueError("live_config_override_unsupported")
     if set(config.get("policy", {})) - {"finding_filters"}:
         raise ValueError("policy_external_inputs_unsupported")
+
+
+def materialize_advice_policies(config, report):
+    """Copy Source-local Rego Advice into /out and record digests.
+
+    ``--advice-policies`` replaces Weaver defaults, so the Source tree must
+    include the pinned default ``otel.rego`` plus ECI extensions.
+    """
+    relative = config.get("advice_policies")
+    if relative is None:
+        return None
+    source = local_path(ROOT, relative)
+    if not source.is_dir():
+        raise ValueError("advice_policies_missing")
+    files = sorted(
+        path
+        for path in source.rglob("*.rego")
+        if path.is_file() and not path.is_symlink()
+    )
+    if not files:
+        raise ValueError("advice_policies_empty")
+    target = OUT / "advice-policies"
+    target.mkdir(parents=True, exist_ok=True)
+    digests = {}
+    for path in files:
+        rel = path.relative_to(source).as_posix()
+        if ".." in Path(rel).parts:
+            raise ValueError("advice_policies_path_invalid")
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        data = path.read_bytes()
+        dest.write_bytes(data)
+        digests[rel] = hashlib.sha256(data).hexdigest()
+    if "otel.rego" not in digests:
+        raise ValueError("advice_policies_default_missing")
+    if "cicd-error-type.rego" not in digests:
+        raise ValueError("advice_policies_conditional_missing")
+    report["inputs"]["advice_policies"] = {
+        "path": relative,
+        "sha256": hashlib.sha256(
+            json.dumps(digests, sort_keys=True).encode()
+        ).hexdigest(),
+        "files": digests,
+    }
+    return target
 
 
 def ports():
@@ -354,6 +401,7 @@ def run(kind, config_path):
         matcher = local_path(ROOT, config["matcher_config"])
         validate_matcher_config(matcher)
         report["inputs"]["matcher_sha256"] = digest(matcher)
+        advice = materialize_advice_policies(config, report)
         argv = [
             "weaver",
             "registry",
@@ -371,6 +419,8 @@ def run(kind, config_path):
             "violation",
             "--emit-otlp-logs=false",
         ]
+        if advice is not None:
+            argv.extend(["--advice-policies", str(advice)])
         if kind == "sample":
             sample = local_path(ROOT, config["sample"])
             report["inputs"]["sample_sha256"] = digest(sample)
@@ -415,6 +465,30 @@ def run(kind, config_path):
                 capture=capture,
             )
         report.update(evaluation)
+        advice_meta = (report.get("inputs") or {}).get("advice_policies")
+        coverage = dict(report.get("coverage") or {})
+        coverage.update(
+            {
+                "registry_version": (config.get("origin") or {}).get("version"),
+                "registry_commit": (config.get("origin") or {}).get("commit"),
+                "expected_matchers": list(config.get("expected_matchers") or []),
+                "pipeline_task_required": "executed",
+                "conditionally_required_advice": {
+                    "policy_id": "cicd_conditional_error_type_required",
+                    "loaded": bool(advice_meta),
+                    "digest": (advice_meta or {}).get("sha256"),
+                },
+                "result_type_gate": "executed",
+                "resource_required": "executed_via_pipeline_entity_association",
+                "terminal_correlation": (
+                    "executed" if kind == "terminal" else "not_applicable"
+                ),
+                "passed_means": (
+                    "only executed applicable obligations above; not full SemConv"
+                ),
+            }
+        )
+        report["coverage"] = coverage
         report["gate_exit_code"] = 0 if report["status"] == "passed" else 1
         return report
     except (

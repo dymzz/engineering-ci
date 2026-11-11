@@ -33,6 +33,8 @@ registry_manifest = "registry-sha256.json"
 matcher_config = ".weaver.toml"
 otlp = "capture.json"
 expectations = "expected.json"
+# Replaces Weaver defaults: vendored otel.rego + cicd-error-type.rego.
+advice_policies = "advice-policies"
 
 # Optional native sample-JSON diagnostics, separate from OTLP.
 sample = "sample.json"
@@ -201,23 +203,26 @@ Weaver `live_check.json`, the local package and optional diff. The ECI report
 keeps native `exit_code` separate from `gate_exit_code`: zero native exit with
 zero coverage still fails the gate. Original native findings remain intact.
 
-A passing result covers the configured native violation policy and declared
-expected set. Conditional advice and informational findings remain visible;
-the checker does not claim to prove every normative SemConv condition.
+A passing result covers only the executed applicable obligations recorded in
+report `coverage` (Registry pin, Pipeline/Task Required, Conditionally
+Required Rego Advisor `cicd_conditional_error_type_required`, Result type gate,
+Resource Required via Pipeline↔`cicd.pipeline.run` entity association, and —
+for Terminal — identity correlation). Informational findings remain visible;
+`passed` is not a claim of full SemConv compliance. Reports stay
+`trusted:false`.
 
 In `ci-selection.toml`, explicitly include applicable `weaver_registry`,
 `weaver_live`, or `weaver_terminal` in `checks`, and set
 `check_scope.weaver_prefixes` to the actual Registry/config/capture paths.
 Incomplete Git scope stays `unknown`. `weaver_registry` / `weaver_live` select
-when Weaver inputs under those prefixes change. `weaver_terminal` selects only
-when a terminal evidence path changes (`expected.json` or a path whose name
-contains `terminal`); otherwise it stays `not_applicable` with
-`terminal evidence not ready` and must not be treated as PASS. Dagger
-`execute-plan` executes selected entries and appends native reports to its
-existing `checks` collection. The host executor leaves them `not_executed` and
-blocks rather than bypassing the Dagger tool boundary.
+when Weaver inputs under those prefixes change. Incremental selection never
+claims Terminal readiness from filenames: `weaver_terminal` stays
+`not_applicable` with `requires post-completion plan`. Callers build an
+explicit `selection.post_completion_plan(...)` (phase `post_completion` plus
+Run/Attempt/result and Capture/expectation digests). Dagger `execute-plan`
+validates that binding before Native Terminal; missing or mismatched inputs
+yield `not_executed` / `blocked` with non-zero gate — never PASS.
 `execute-plan --weaver-config` selects the Source-relative configuration path.
-Terminal execution belongs in the post-completion plan.
 
 During this integration, identical Windows and Linux Source bytes exposed an
 existing snapshot-id ordering bug: native `Path` ordering case-folds on Windows.
@@ -239,19 +244,20 @@ Native CI/CD negatives under `tests/fixtures/weaver-cicd/negatives/` show:
 missing Pipeline `cicd.pipeline.result` and missing Task
 `cicd.pipeline.task.run.url.full` produce native `required_attribute_not_present`
 violations (`gate_exit_code=1`); wrong JSON type for `cicd.pipeline.result` is
-rejected by ECI as `result_type_invalid` while native exit stays 0. For
-Pipeline `result=failure` without `error.type`, Weaver 0.28.0 currently emits
-only information-level `conditionally_required_attribute_not_present` and the
-Live gate PASSes — that Conditionally Required path is **not accepted** under
-the current builtin policy (do not invent a parallel SemConv judge).
+rejected by ECI as `result_type_invalid` while native exit stays 0; missing
+Resource `cicd.pipeline.run.id` produces native
+`entity_required_attribute_not_present` via the Pipeline entity association.
+Conditionally Required `error.type` when Pipeline/Task result is `failure` or
+`error` is enforced by the Source-local Weaver Advice Policy
+`cicd-error-type.rego` (`policy_id=cicd_conditional_error_type_required`,
+level=violation); the same failure result with a present `error.type` PASSes,
+as does success without `error.type`. Builtin Weaver information-only
+`conditionally_required_attribute_not_present` is retained but no longer the
+gate.
 
-Committed cart fixtures prove Weaver execution and matcher policy only — not
-full CI/CD v1.45.0 Pipeline/Task Required / Conditionally Required coverage.
 Bounded CI/CD SemConv v1.45.0 native Live/Terminal positives, Attempt-absent
-Terminal FAIL, and Required/type negatives are archived under
-[weaver-evidence/head-current](weaver-evidence/README.md). Conditionally
-Required `error.type` on `failure` remains **not accepted** with Weaver 0.28.0
-builtin policy (see negatives).
+Terminal FAIL, Required/type/conditional/Resource negatives are archived under
+[weaver-evidence/head-current](weaver-evidence/README.md).
 
 ## Package integration with #75 / PR #77
 

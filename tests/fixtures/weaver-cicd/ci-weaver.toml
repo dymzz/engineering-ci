@@ -6,6 +6,8 @@ sample = "sample.json"
 expected_matchers = ["eci.pipeline", "eci.task"]
 otlp = "capture.json"
 expectations = "expected.json"
+# Replaces Weaver defaults: must include vendored otel.rego + cicd-error-type.rego.
+advice_policies = "advice-policies"
 
 [origin]
 repository = "https://github.com/open-telemetry/semantic-conventions"

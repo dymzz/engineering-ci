@@ -484,12 +484,13 @@ def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
     assert "weaver_terminal" not in scope
 
 
-def test_weaver_terminal_waits_for_terminal_evidence(repo):
+def test_weaver_terminal_requires_post_completion_plan(repo):
     from dataclasses import replace
 
     path, base = repo
     (path / "telemetry").mkdir()
     (path / "telemetry/capture.json").write_text("{}")
+    (path / "telemetry/expected.json").write_text("{}")
     cfg = replace(
         config(path), checks=("weaver_registry", "weaver_live", "weaver_terminal")
     )
@@ -502,18 +503,43 @@ def test_weaver_terminal_waits_for_terminal_evidence(repo):
     capture_scope = {item["name"]: item for item in capture_plan["check_scope"]}
     assert capture_scope["weaver_live"]["status"] == "selected"
     assert capture_scope["weaver_terminal"]["status"] == "not_applicable"
-    assert capture_scope["weaver_terminal"]["reason"] == "terminal evidence not ready"
+    assert capture_scope["weaver_terminal"]["reason"] == "requires post-completion plan"
+    assert capture_scope["weaver_terminal"]["inputs"] == []
 
-    (path / "telemetry/expected.json").write_text("{}")
-    ready_plan = selection.plan(
-        selection.select(selection.changeset(path, base=base), cfg, root=path),
-        config=cfg,
-        config_path=path / "ci-selection.toml",
-        root=path,
+
+def test_post_completion_plan_binds_terminal_inputs(tmp_path):
+    fixture = ROOT / "tests/fixtures/weaver-cicd"
+    if not fixture.is_dir():
+        pytest.skip("weaver-cicd fixture unavailable")
+    root = tmp_path / "src"
+    shutil.copytree(fixture, root)
+    plan = selection.post_completion_plan(
+        root=root,
+        config_path=root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+        otlp="capture.json",
+        expectations="expected.json",
     )
-    ready_scope = {item["name"]: item for item in ready_plan["check_scope"]}
-    assert ready_scope["weaver_terminal"]["status"] == "selected"
-    assert ready_scope["weaver_terminal"]["inputs"] == ["telemetry/expected.json"]
+    assert plan["phase"] == selection.POST_COMPLETION_PHASE
+    assert plan["check_scope"][0]["name"] == "weaver_terminal"
+    assert plan["check_scope"][0]["status"] == "selected"
+    assert plan["post_completion"]["run_id"] == "controlled-42/1"
+    ok, reason = selection.validate_post_completion_binding(plan, root)
+    assert ok and reason is None
+
+    blocked = dict(plan)
+    blocked["phase"] = None
+    ok, reason = selection.validate_post_completion_binding(blocked, root)
+    assert not ok and reason == "post_completion_phase_required"
+
+    missing = dict(plan)
+    missing["post_completion"] = dict(plan["post_completion"])
+    del missing["post_completion"]["otlp"]
+    ok, reason = selection.validate_post_completion_binding(missing, root)
+    assert not ok and reason == "post_completion_binding_incomplete"
 
 
 def test_directory_content_id_uses_platform_independent_path_order(tmp_path):

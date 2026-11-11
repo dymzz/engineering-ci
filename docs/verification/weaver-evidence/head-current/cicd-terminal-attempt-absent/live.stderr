@@ -4,12 +4,12 @@ Resolving registry `/out/registry-package`
 ℹ Found registry manifest: /out/registry-package/manifest.yaml
 ✔ No `after_resolution` policy violation
 ⚠ --inactivity-timeout is ignored with --output http; the run stops on POST /stop
-ℹ OTLP gRPC listener started on 127.0.0.1:42809
+ℹ OTLP gRPC listener started on 127.0.0.1:40895
 To stop the OTLP receiver:
   - press CTRL+C,
   - run kill -HUP 45,
-  - or POST to http://127.0.0.1:38259/stop
-With --output http: GET http://127.0.0.1:38259/report returns the report and POST http://127.0.0.1:38259/shutdown ends the process.
+  - or POST to http://127.0.0.1:52467/stop
+With --output http: GET http://127.0.0.1:52467/report returns the report and POST http://127.0.0.1:52467/shutdown ends the process.
 The OTLP receiver will run indefinitely until stopped manually.
 POST /stop: stopping, waiting for the report
 POST /stop: stopped, report available at GET /report
@@ -17,4 +17,4 @@ GET /report: serving 58128 bytes as application/json
 POST /shutdown: shutting down
 ✔ Performed live check for registry `/out/registry-package`
 
-Total execution time: 0.642412187s
+Total execution time: 0.859442077s
