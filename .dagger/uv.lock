@@ -210,11 +210,26 @@ dev = [
 ]
 
 [[package]]
+name = "engineering-ci"
+version = "0.7.0"
+source = { directory = "../" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = "==9.0.3" },
+    { name = "pytest-cov", specifier = "==7.0.0" },
+    { name = "ruff", specifier = "==0.16.10" },
+]
+
+[[package]]
 name = "engineering-ci-module"
 version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "dagger-io" },
+    { name = "engineering-ci" },
     { name = "packaging" },
 ]
 
@@ -227,6 +242,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dagger-io", editable = "sdk" },
+    { name = "engineering-ci", directory = "../" },
     { name = "packaging", specifier = ">=24.2" },
 ]
 

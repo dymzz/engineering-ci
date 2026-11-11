@@ -7,7 +7,7 @@ Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span | `eci_core.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
+| Pipeline Run Span | `engineering_ci.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
 | Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
@@ -64,12 +64,18 @@ more completed Jobs than emitted Task spans, status is `partial`
 
 ## Export
 
+The default report producer name remains `eci_core.cicd_telemetry` for persisted
+evidence compatibility. This is an evidence label, not an import path; Python
+callers use `engineering_ci.cicd_telemetry` (post-#78 / package unify).
+
 `engineering-ci cicd-telemetry` writes:
 
-- a **candidate-record** JSON artifact (`evidence_class=candidate_record`);
+- a **candidate-record** JSON artifact (`kind=engineering-ci-cicd-telemetry`,
+  `evidence_class=candidate_record`);
 - optional **`--otlp-json`** file in OTLP/JSON `resourceSpans` shape for a
   neutral receiver or replay path.
 
+Caller `--facts` JSON is untrusted input, not authenticated GitHub provenance.
 `claims.otlp_json_prepared` means an in-memory OTLP body exists.
 `claims.otlp_json_exported` becomes true **only** after a successful file
 flush (path + sha256 recorded when asserted; file bytes use LF so digests
@@ -80,7 +86,9 @@ API read; it is **not** a Weaver/trusted provenance claim. Flush failures
 exit 3 with `otlp_json_flush_failed` / `otlp_json_unavailable` and do not
 invent spans. CLI exit 0 for `partial` is candidate-generator only —
 consumers must read `report.status` / coverage, not promote exit 0 to
-terminal PASS.
+terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
+or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
+emitted).
 
 When GitHub reports `total_count`, a short/empty page before that count is
 `jobs_page_incomplete`. Missing `gh` or API timeouts map to
@@ -88,9 +96,10 @@ When GitHub reports `total_count`, a short/empty page before that count is
 
 One native API → candidate/OTLP evidence bundle for this PR slice lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
-Baseline after PR #76/#77: candidate Pipeline/Task construction and Attempt
-API/OTLP file export exist; exact post-run Root, full multi-Job Task set,
-live OTLP/gRPC, and trusted admission remain open on Issue #75.
+Baseline after PR #76/#77 and #78 merge: candidate Pipeline/Task construction
+and Attempt API/OTLP file export live under `engineering_ci.cicd_telemetry`;
+exact post-run Root, full multi-Job Task set, live OTLP/gRPC, and trusted
+admission remain open on Issue #75.
 
 ## Related
 

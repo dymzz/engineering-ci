@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from eci_core import cicd_telemetry
+from engineering_ci import cicd_telemetry
 
 RUN_START = 1_700_000_000_000_000_000
 RUN_END = 1_700_000_120_000_000_000
@@ -40,6 +40,7 @@ def test_produce_emits_pipeline_and_task_spans():
     report = cicd_telemetry.produce(complete_facts())
     assert report["status"] == "produced"
     assert report["evidence_class"] == "candidate_record"
+    assert report["producer"]["name"] == "eci_core.cicd_telemetry"
     assert report["claims"]["candidate_record_only"] is True
     assert report["claims"]["otlp_delivered"] is False
     assert report["reason"] is None
@@ -54,6 +55,8 @@ def test_produce_emits_pipeline_and_task_spans():
     assert pipeline["attributes"]["cicd.pipeline.run.id"] == "42627302972/1"
     assert report["resource"]["cicd.pipeline.run.id"] == "42627302972/1"
     assert pipeline["attributes"]["cicd.pipeline.result"] == "success"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
     assert task["parent_span_id"] == pipeline["span_id"]
     assert task["attributes"]["cicd.pipeline.task.run.id"] == "129194268575"
     assert task["attributes"]["cicd.pipeline.task.run.url.full"]
@@ -67,8 +70,46 @@ def test_job_success_does_not_imply_pipeline_success():
     pipeline, task = report["spans"]
     assert pipeline["attributes"]["cicd.pipeline.result"] == "failure"
     assert pipeline["attributes"]["error.type"] == "failure"
+    assert pipeline["status"]["code"] == cicd_telemetry.STATUS_ERROR
     assert task["attributes"]["cicd.pipeline.task.run.result"] == "success"
+    assert task["status"]["code"] == cicd_telemetry.STATUS_UNSET
     assert "error.type" not in task["attributes"]
+
+
+def test_non_error_terminals_leave_span_status_unset():
+    for conclusion in ("cancelled", "skipped", "timed_out"):
+        report = cicd_telemetry.produce(
+            complete_facts(run_conclusion=conclusion, job_conclusion=conclusion)
+        )
+        assert report["status"] == "produced"
+        for span in report["spans"]:
+            assert span["status"]["code"] == cicd_telemetry.STATUS_UNSET
+
+
+def test_mapping_and_env_reject_non_positive_attempt():
+    for attempt in (0, -1):
+        try:
+            cicd_telemetry.facts_from_mapping(
+                {
+                    "workflow_name": "Engineering CI",
+                    "run_id": "1",
+                    "run_attempt": attempt,
+                }
+            )
+            raise AssertionError("expected run_attempt_invalid")
+        except cicd_telemetry.TelemetryError as error:
+            assert error.code == "run_attempt_invalid"
+        facts = cicd_telemetry.facts_from_actions_env(
+            {
+                "GITHUB_WORKFLOW": "Engineering CI",
+                "GITHUB_RUN_ID": "1",
+                "GITHUB_RUN_ATTEMPT": str(attempt),
+            }
+        )
+        assert facts.run_attempt is None
+        assert not facts.has_run_identity
+        report = cicd_telemetry.produce(facts)
+        assert report["status"] == "incomplete"
 
 
 def test_job_success_with_run_in_progress_is_partial_task_only():
@@ -643,6 +684,8 @@ def test_otlp_json_export_and_flush_failure(tmp_path):
     assert proto_span.span_id == bytes.fromhex(wire_span["spanId"])
     assert proto_span.start_time_unix_nano == RUN_START
     assert proto_span.end_time_unix_nano == RUN_END
+    assert wire_span["status"]["code"] == cicd_telemetry.STATUS_UNSET
+    assert proto_span.status.code == cicd_telemetry.STATUS_UNSET
     task = next(
         item
         for item in decoded.resource_spans[0].scope_spans[0].spans

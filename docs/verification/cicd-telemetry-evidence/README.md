@@ -19,7 +19,7 @@ Engineering CI Workflow. **Not** #63 trusted admission and **not** Weaver PASS.
 ## Command
 
 ```text
-uv run python -m eci_core.cicd_telemetry \
+uv run python -m engineering_ci.cicd_telemetry \
   --repository dymzz/engineering-ci \
   --run-id 42821429094 \
   --attempt 1 \
@@ -45,6 +45,7 @@ CLI exit code: **0** (candidate generator; status is `partial`, not complete PAS
 | `claims.otlp_json_exported` | `true` |
 | `claims.otlp_delivered` | `false` |
 | Resource `cicd.pipeline.run.id` | `42821429094/1` |
+| Task Span `status.code` | `0` (UNSET; success must not set OK) |
 
 ## Files
 
@@ -53,7 +54,24 @@ CLI exit code: **0** (candidate generator; status is `partial`, not complete PAS
 | `candidate-42821429094.json` | Candidate report artifact |
 | `otel-42821429094.json` | OTLP/JSON ExportTraceServiceRequest body |
 | `cli-42821429094.stdout.json` | CLI `--json` stdout capture |
-| `SHA256SUMS` | Digests of the two artifacts |
+| `SHA256SUMS` | Digests of the three artifacts |
+
+## Status-code rebuild (post-#78 / review P1)
+
+Rebuilt from the **same saved Run facts** in the prior candidate (no new
+`gh api` fetch). Only Span Status changed: success Task `status.code` `1`→`0`
+(UNSET). Historical digests from HEAD `a32e278` (do not rewrite as if the
+original native run emitted UNSET):
+
+| File | Historical SHA-256 (`a32e278`) |
+| --- | --- |
+| `candidate-42821429094.json` | `882b536389171a13d2b8259918bbbbc89b7a0c5360ac7fe7c4ab35bc16fab658` |
+| `otel-42821429094.json` | `4cf1627395205dacd76b7f3c01af154065fc842dc0839cd6977fdf47b374d4e8` |
+| `cli-42821429094.stdout.json` | `c6b8fcbc1e89eddb2f4ac55a78bfc3b07763fe51a8f1b38a2cbd11e354dfe936` |
+
+Current digests are in `SHA256SUMS`. Module path is
+`engineering_ci.cicd_telemetry` after #78 package unify; evidence producer
+label remains `eci_core.cicd_telemetry`.
 
 Single-Job `--job-id` coverage is intentionally **partial**. Exact post-run
 Pipeline Root, multi-Job Task emission, and live OTLP/gRPC remain Issue #75

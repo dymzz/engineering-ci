@@ -1,0 +1,6 @@
+[[live-check.matchers]]
+id = "fixture.cart"
+sample_type = "span"
+when = 'name == "cart"'
+signal = "acme.cart"
+strict_attribute_groups = ["acme.step"]

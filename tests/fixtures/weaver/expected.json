@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": {
+    "run_id": "controlled-fixture",
+    "attempt": 1
+  },
+  "spans": [
+    {
+      "trace_id": "11111111111111111111111111111111",
+      "span_id": "2222222222222222",
+      "matcher": "fixture.cart",
+      "signal": "acme.cart"
+    }
+  ]
+}

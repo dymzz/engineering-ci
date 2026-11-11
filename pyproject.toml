@@ -29,7 +29,7 @@ requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = ["engineering_ci", "eci_core"]
+module-name = "engineering_ci"
 wheel-exclude = ["**/AGENTS.md"]
 
 

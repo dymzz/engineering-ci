@@ -94,7 +94,7 @@
               "spanId": "7d98cbfec3f44c1a",
               "startTimeUnixNano": "1794315965000000000",
               "status": {
-                "code": 1
+                "code": 0
               },
               "traceId": "21ee8206fe06a4879580f60591a3014f"
             }

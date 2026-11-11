@@ -130,7 +130,7 @@ The report is native host evidence for local runs and #63 can consume its
 identities/statuses. Dagger's `tach-check` / `lychee-check` are native building
 blocks, but the plan-to-Dagger orchestration (source identity validation,
 check list, aggregated evidence) is not wired yet. Source-manifest
-reconciliation is implemented in `eci_core.sources`; its Knowledge
+reconciliation is implemented in `engineering_ci.sources`; its Knowledge
 configuration is verified separately.
 
 ## Verification

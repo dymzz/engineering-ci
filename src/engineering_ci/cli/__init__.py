@@ -37,15 +37,15 @@ def main(argv=None):
     elif namespace.command == "policy":
         from ..security_policy import main as invoke
     elif namespace.command == "select":
-        from eci_core.selection import main as invoke
+        from engineering_ci.selection import main as invoke
     elif namespace.command == "hygiene":
-        from eci_core.hygiene import main as invoke
+        from engineering_ci.hygiene import main as invoke
     elif namespace.command == "sources":
-        from eci_core.sources import main as invoke
+        from engineering_ci.sources import main as invoke
     elif namespace.command == "execute":
-        from eci_core.execution import main as invoke
+        from engineering_ci.execution import main as invoke
     elif namespace.command == "cicd-telemetry":
-        from eci_core.cicd_telemetry import main as invoke
+        from engineering_ci.cicd_telemetry import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

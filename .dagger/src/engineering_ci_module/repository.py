@@ -9,6 +9,7 @@ SOURCE_EXCLUDES = [
     "**/.venv",
     ".test-tools",
     ".test-deps",
+    ".tmp",
     ".log",
     ".artifacts",
     "**/__pycache__",

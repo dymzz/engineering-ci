@@ -1,0 +1,26 @@
+# Resource-level SemConv attributes (cicd.pipeline.*) are not on the
+# Pipeline/Task span signals; search the packaged attribute catalog so
+# they resolve. Signal binding still enforces each Span Group's own
+# Required / Conditionally Required attributes.
+#
+# github.actions.run_attempt is an ECI/GitHub Attempt-correlation extension
+# (not SemConv). Filter only that attribute sample's missing_attribute so
+# Terminal can still bind declared Attempt without failing SemConv Live.
+[live-check]
+search_all_attributes = true
+
+[[live-check.matchers]]
+id = "eci.pipeline"
+sample_type = "span"
+when = 'name == "eci pipeline"'
+signal = "cicd.pipeline.run.server"
+
+[[live-check.matchers]]
+id = "eci.task"
+sample_type = "span"
+when = 'name == "eci task"'
+signal = "cicd.pipeline.task.internal"
+
+[[live-check.finding_filters]]
+exclude = ["missing_attribute"]
+sample_names = ["github.actions.run_attempt"]

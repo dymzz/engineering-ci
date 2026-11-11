@@ -7,7 +7,7 @@
     "otlp_json_exported": true,
     "otlp_json_path": "docs\\verification\\cicd-telemetry-evidence\\otel-42821429094.json",
     "otlp_json_prepared": true,
-    "otlp_json_sha256": "4cf1627395205dacd76b7f3c01af154065fc842dc0839cd6977fdf47b374d4e8",
+    "otlp_json_sha256": "a1fa5bda0ca7fa4a3e85264f45a1b96a69e5655b5ba3e7b9e41ca3c35d579722",
     "weaver_pass": false
   },
   "coverage": {
@@ -72,7 +72,7 @@
       "span_id": "7d98cbfec3f44c1a",
       "start_time_unix_nano": 1794315965000000000,
       "status": {
-        "code": 1
+        "code": 0
       },
       "trace_id": "21ee8206fe06a4879580f60591a3014f"
     }
