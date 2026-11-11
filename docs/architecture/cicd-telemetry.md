@@ -48,6 +48,11 @@ for API status. A Job start/end envelope is coverage metadata
 (`job_execution_envelope`), not `cicd.pipeline.run.duration`.
 Coverage records `pipeline_terminal_covered` separately from `task_coverage`,
 plus a machine-readable `expected_completed_jobs` inventory for #52 hand-off.
+`coverage.expected_trace` publishes the same Attempt's expected Trace ID and
+Pipeline Span ID. `parent_exported` is false when that parent span is withheld;
+the withheld id is `coverage.withheld_parent_span`, not a second list.
+`expected_completed_jobs[].expected_task_span_id` is the Job mapping.
+These IDs are not trusted admission.
 `terminal_provenance.terminal_source` is the facts source that was actually
 used (`github_api`, `mapping`, or `env`). `end_time_source` is
 `explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`.
@@ -58,6 +63,22 @@ does not prove an official run-completed timestamp, so
 `eci.cicd.end_time_quality` and `eci.cicd.exact_run_duration` match those
 candidate fields. `exact_run_duration` means the numeric interval is closed
 by an explicit input, not that GitHub certified the end instant.
+
+### Expected Trace identity (`github-actions-attempt-sha256-v1`)
+
+#52 rebuilds the expected Trace from the Run/Attempt/Job witness. It does not
+copy `traceId` from the first span in a capture. The producer uses one
+function, `_stable_ids`, and records `producer.id_scheme`.
+
+| ID | Seed (UTF-8) | SHA-256 hex |
+| --- | --- | --- |
+| `expected_trace_id` | `pipeline:{run_id}:{attempt}` | first 32 hex characters (16 bytes) |
+| `expected_pipeline_span_id` | same pipeline seed | next 16 hex characters (8 bytes) |
+| `expected_task_span_id` | `task:{run_id}:{attempt}:{job_id}` | first 16 hex characters (8 bytes) |
+
+`run_id` and `job_id` are their decimal text. `attempt` is the integer rendered
+in decimal. A withheld Root still has this expected parent id, with
+`parent_exported=false`.
 
 ### Pipeline Run identity (cross-PR with #74)
 

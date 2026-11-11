@@ -31,7 +31,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+# Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
+ID_SCHEME = "github-actions-attempt-sha256-v1"
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
@@ -600,6 +602,48 @@ def _stable_ids(run_id, attempt, job_id=None):
     return trace_id, pipeline_span_id, task_span_id
 
 
+def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
+    """Match observed Task Spans to IDs rebuilt from a Run/Attempt/Job witness.
+
+    The expectation comes from ``_stable_ids``, not from an ID copied out of
+    the capture. A matching ID is not source authentication.
+    """
+    trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
+    expected_ids = set()
+    for job_id in job_ids:
+        _, _, task_span_id = _stable_ids(str(run_id), int(attempt), str(job_id))
+        expected_ids.add(task_span_id)
+    trace_mismatch = []
+    parent_mismatch = []
+    seen = {}
+    for span in observed_spans:
+        if span.get("kind") != SPAN_KIND_INTERNAL:
+            continue
+        span_id = span.get("span_id")
+        seen[span_id] = seen.get(span_id, 0) + 1
+        if span.get("trace_id") != trace_id:
+            trace_mismatch.append(span_id)
+        if span.get("parent_span_id") != pipeline_span_id:
+            parent_mismatch.append(span_id)
+    observed_ids = set(seen)
+    missing = sorted(expected_ids - observed_ids)
+    unexpected = sorted(item for item in observed_ids if item not in expected_ids)
+    duplicate = sorted(item for item, count in seen.items() if count > 1)
+    ok = not (trace_mismatch or parent_mismatch or missing or unexpected or duplicate)
+    return {
+        "id_scheme": ID_SCHEME,
+        "trusted": False,
+        "expected_trace_id": trace_id,
+        "expected_pipeline_span_id": pipeline_span_id,
+        "ok": ok,
+        "trace_mismatch": trace_mismatch,
+        "parent_mismatch": parent_mismatch,
+        "missing": missing,
+        "unexpected": unexpected,
+        "duplicate": duplicate,
+    }
+
+
 def _task_omit_reason(job_facts):
     """Return omission reason for one Job, or None when a Task Span can be emitted."""
     job_result, _error = map_github_result(job_facts.job_conclusion)
@@ -699,6 +743,7 @@ def produce(
                 "registry version pin is tracked with Knowledge #80/#81"
             ),
             "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
+            "id_scheme": ID_SCHEME,
         },
         "status": "incomplete",
         "reason": None,
@@ -1107,6 +1152,15 @@ def produce(
         report["coverage"]["terminal_check"] = "not_verified"
     else:
         report["coverage"]["terminal_check"] = "not_applicable"
+    report["coverage"]["expected_trace"] = {
+        "id_scheme": ID_SCHEME,
+        "run_id": facts.run_id,
+        "run_attempt": facts.run_attempt,
+        "expected_trace_id": trace_id,
+        "expected_pipeline_span_id": pipeline_span_id,
+        "parent_exported": pipeline_ok,
+        "trusted": False,
+    }
     if completed_jobs_total == 0 and not job_sources:
         report["coverage"]["task_coverage"] = "empty"
     elif (

@@ -1681,3 +1681,137 @@ def test_trace_delivery_survives_a_rejected_log_receipt():
     assert report["claims"]["otlp_logs_delivered"] is False
     assert report["claims"]["all_prepared_signals_delivered"] is False
     assert report["claims"]["snapshot_phase"] == "partial_receiver_confirmation"
+
+
+def _three_job_witness():
+    start = cicd_telemetry.parse_time_ns("2026-11-10T13:06:02Z")
+    job_end = cicd_telemetry.parse_time_ns("2026-11-10T13:07:59Z")
+    observed = cicd_telemetry.parse_time_ns("2026-11-11T11:37:15.574469Z")
+    run = complete_facts(
+        run_id="42821429094",
+        run_attempt=1,
+        run_started_at_ns=start,
+        run_completed_at_ns=None,
+        run_status="completed",
+        job_id=None,
+        job_name=None,
+        job_url=None,
+        job_conclusion=None,
+        job_started_at_ns=None,
+        job_completed_at_ns=None,
+    )
+    jobs = []
+    for index in range(3):
+        jobs.append(
+            complete_facts(
+                run_id="42821429094",
+                run_attempt=1,
+                run_started_at_ns=start,
+                run_completed_at_ns=None,
+                run_status="completed",
+                job_id=str(129847643854 + index),
+                job_name=f"job-{index}",
+                job_url=f"https://example.test/job/{index}",
+                job_started_at_ns=start,
+                job_completed_at_ns=job_end,
+            )
+        )
+    report = cicd_telemetry.produce(
+        run,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=3,
+        job_selection="all_completed",
+        task_facts=jobs,
+    )
+    return report, [job.job_id for job in jobs]
+
+
+def test_expected_trace_is_rebuilt_from_the_run_attempt_job_witness():
+    report, job_ids = _three_job_witness()
+    expected = report["coverage"]["expected_trace"]
+    trace_id, pipeline_span_id, _ = cicd_telemetry._stable_ids("42821429094", 1)
+    assert report["producer"]["id_scheme"] == cicd_telemetry.ID_SCHEME
+    assert expected["id_scheme"] == cicd_telemetry.ID_SCHEME
+    assert expected["trusted"] is False
+    assert expected["expected_trace_id"] == trace_id
+    assert expected["expected_pipeline_span_id"] == pipeline_span_id
+    assert expected["parent_exported"] is False
+    withheld = report["coverage"]["withheld_parent_span"]
+    assert withheld["span_id"] == pipeline_span_id
+    assert withheld["exported"] is False
+    tasks = [
+        span
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
+    ]
+    assert len(tasks) == 3
+    for job_id, span in zip(job_ids, tasks, strict=True):
+        _, _, task_span_id = cicd_telemetry._stable_ids("42821429094", 1, job_id)
+        assert span["span_id"] == task_span_id
+        assert span["trace_id"] == trace_id
+        assert span["parent_span_id"] == pipeline_span_id
+    listed = {
+        item["job_id"]: item["expected_task_span_id"]
+        for item in report["coverage"]["expected_completed_jobs"]
+    }
+    assert listed[job_ids[0]] == tasks[0]["span_id"]
+    matched = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=job_ids,
+        observed_spans=tasks,
+    )
+    assert matched["ok"] is True
+    assert matched["trusted"] is False
+
+
+def test_expected_trace_reconciliation_rejects_capture_substitutes():
+    report, job_ids = _three_job_witness()
+    tasks = [
+        dict(span)
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
+    ]
+    wrong_trace = ["ab" * 16 for _ in tasks]
+    for span, trace_id in zip(tasks, wrong_trace, strict=True):
+        span["trace_id"] = trace_id
+    rejected = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=job_ids,
+        observed_spans=tasks,
+    )
+    assert rejected["ok"] is False
+    assert len(rejected["trace_mismatch"]) == 3
+
+    tasks[0]["trace_id"] = rejected["expected_trace_id"]
+    tasks[1]["trace_id"] = rejected["expected_trace_id"]
+    tasks[2]["trace_id"] = rejected["expected_trace_id"]
+    tasks[1]["span_id"] = "0123456789abcdef"
+    one_wrong = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=1,
+        job_ids=job_ids,
+        observed_spans=tasks,
+    )
+    assert one_wrong["ok"] is False
+    assert one_wrong["missing"]
+    assert "0123456789abcdef" in one_wrong["unexpected"]
+
+    original = [
+        span
+        for span in report["spans"]
+        if span["kind"] == cicd_telemetry.SPAN_KIND_INTERNAL
+    ]
+    wrong_attempt = cicd_telemetry.reconcile_expected_trace(
+        run_id="42821429094",
+        attempt=2,
+        job_ids=job_ids,
+        observed_spans=original,
+    )
+    assert wrong_attempt["ok"] is False
+    assert wrong_attempt["expected_trace_id"] != original[0]["trace_id"]
+    assert wrong_attempt["trace_mismatch"]
