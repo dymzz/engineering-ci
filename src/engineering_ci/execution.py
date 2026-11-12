@@ -53,6 +53,8 @@ def plan_rejection(error):
         "tests": {"status": "not_executed"},
         "checks": [],
         "prerequisites": [],
+        "plan_declaration_consistent": False,
+        "source_binding_verified": "unknown",
         "trusted": False,
     }
 
@@ -434,6 +436,12 @@ def execute(
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
         "dependency_contract": plan.get("dependency_contract"),
+        "plan_declaration_consistent": True
+        if plan["schema_version"] == plan_contract.PLAN_VERSION
+        else None,
+        # Contract validation does not verify actual config bytes or a #66
+        # Source/Prerequisite receipt. Narrow Git checks below remain separate.
+        "source_binding_verified": "unknown",
         "execution_context": execution_context,
         "plan": {
             "generator": plan.get("generator"),

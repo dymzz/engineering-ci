@@ -202,7 +202,7 @@ class EngineeringCi:
         import copy
         import tempfile
 
-        from engineering_ci import execution, selection
+        from engineering_ci import execution, plan_contract, selection
 
         raw = await plan.contents()
         try:
@@ -215,6 +215,9 @@ class EngineeringCi:
             execution.validate_plan(value)
         except execution.ExecutionError as error:
             return json.dumps(execution.plan_rejection(error))
+        declaration_consistent = (
+            True if value["schema_version"] == plan_contract.PLAN_VERSION else None
+        )
         chosen = value.get("selection") or {}
         targets = chosen.get("tests") or []
         framework = chosen.get("framework", "unittest")
@@ -258,6 +261,8 @@ class EngineeringCi:
                         {
                             "kind": execution.REPORT_KIND,
                             "schema_version": execution.SCHEMA_VERSION,
+                            "plan_declaration_consistent": declaration_consistent,
+                            "source_binding_verified": "unknown",
                             "status": "not_executed",
                             "reason": "source_tree_mismatch",
                             "exit_code": 4,
@@ -276,6 +281,10 @@ class EngineeringCi:
                 "kind": execution.REPORT_KIND,
                 "schema_version": execution.SCHEMA_VERSION,
                 "dependency_contract": value.get("dependency_contract"),
+                "plan_declaration_consistent": declaration_consistent,
+                # Preserved metadata/export identity is not a verified #66
+                # Source/Prerequisite receipt or actual-config binding.
+                "source_binding_verified": "unknown",
                 "plan": {"generator": value.get("generator"), "git": git},
                 "execution_context": "dagger_export",
                 "status": "passed",

@@ -20,15 +20,106 @@ class PlanError(ValueError):
         super().__init__(code)
 
 
+def _supported_action(spec):
+    return (
+        isinstance(spec, dict)
+        and isinstance(spec.get("type"), str)
+        and spec["type"] in {"command", "git_commit_present"}
+    )
+
+
+def _string_list(value):
+    return isinstance(value, list) and all(isinstance(s, str) and s for s in value)
+
+
+def _validate_consumer_fields(value, chosen, git):
+    """Validate nested shapes before consumers dereference them or start tools."""
+    for container in (value, chosen):
+        if "check_scope" in container:
+            scope = container["check_scope"]
+            if not isinstance(scope, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not item["name"]
+                or not isinstance(item.get("status"), str)
+                or not item["status"]
+                for item in scope
+            ):
+                raise PlanError("check_scope_invalid")
+    if "checks" in chosen and not _string_list(chosen["checks"]):
+        raise PlanError("checks_invalid")
+    if not _string_list(chosen.get("prerequisites", [])):
+        raise PlanError("dependency_prerequisites_invalid")
+    if chosen.get("tach_graph_validation") is not None and not isinstance(
+        chosen["tach_graph_validation"], dict
+    ):
+        raise PlanError("tach_graph_validation_invalid")
+    if "src_root" in chosen and not isinstance(chosen["src_root"], str):
+        raise PlanError("src_root_invalid")
+    for key in (
+        "snapshot",
+        "execution_tree",
+        "index_tree",
+        "head_commit",
+        "base_commit",
+        "source_tree_id",
+        "tree",
+        "merge_tree",
+        "base_tip",
+        "base_ref",
+        "head_ref",
+    ):
+        if git.get(key) is not None and not isinstance(git[key], str):
+            raise PlanError("git_invalid")
+    if "changed_paths" in git and not _string_list(git["changed_paths"]):
+        raise PlanError("git_invalid")
+    content = git.get("content_binding")
+    if content is not None and (
+        not isinstance(content, dict)
+        or (
+            content.get("digest") is not None and not isinstance(content["digest"], str)
+        )
+    ):
+        raise PlanError("git_invalid")
+    inputs = value.get("inputs")
+    if inputs is not None and not isinstance(inputs, dict):
+        raise PlanError("inputs_invalid")
+    for key in ("hygiene", "sources"):
+        declared = (inputs or {}).get(key)
+        if declared is not None and (
+            not isinstance(declared, dict)
+            or ("path" in declared and not isinstance(declared["path"], str))
+        ):
+            raise PlanError("inputs_invalid")
+    binding = value.get("post_completion")
+    if binding is not None:
+        if not isinstance(binding, dict):
+            raise PlanError("post_completion_invalid")
+        for key in (
+            "weaver_config",
+            "otlp",
+            "expectations",
+            "registry",
+            "matcher_config",
+            "advice_policies",
+        ):
+            declared = binding.get(key)
+            if declared is not None and (
+                not isinstance(declared, dict)
+                or ("path" in declared and not isinstance(declared["path"], str))
+            ):
+                raise PlanError("post_completion_invalid")
+        manifest = (binding.get("registry") or {}).get("manifest")
+        if manifest is not None and not isinstance(manifest, dict):
+            raise PlanError("post_completion_invalid")
+
+
 def prerequisite_contract(names, actions, *, declaration, selected_by, reason=None):
     """Describe the existing action -> final Report relation, without inference."""
     edges = []
     for name in sorted(names):
         spec = actions.get(name)
-        resolved = isinstance(spec, dict) and spec.get("type") in {
-            "command",
-            "git_commit_present",
-        }
+        resolved = _supported_action(spec)
         edges.append(
             {
                 "producer_ref": {"kind": "prerequisite_action", "name": name},
@@ -67,8 +158,10 @@ def validate(value):
     tests = chosen.get("tests")
     if not isinstance(tests, list) or any(not isinstance(t, str) for t in tests):
         raise PlanError("tests_invalid")
-    if chosen.get("framework", "unittest") not in {"pytest", "unittest"}:
+    framework = chosen.get("framework", "unittest")
+    if not isinstance(framework, str) or framework not in {"pytest", "unittest"}:
         raise PlanError("framework_invalid")
+    _validate_consumer_fields(value, chosen, git)
     contract = value.get("dependency_contract")
     if version == 1:
         if "dependency_contract" in value:
@@ -134,10 +227,7 @@ def validate(value):
         if edge.get("execution_phase") != "post_check":
             raise PlanError("dependency_phase_unsupported")
         spec = actions.get(producer["name"])
-        resolved = isinstance(spec, dict) and spec.get("type") in {
-            "command",
-            "git_commit_present",
-        }
+        resolved = _supported_action(spec)
         if spec is not None and not resolved:
             raise PlanError("dependency_action_unsupported")
         if resolved:

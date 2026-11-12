@@ -1,6 +1,7 @@
 """Shared Plan version/refusal boundary; no dependency scheduling is inferred."""
 
 import copy
+import hashlib
 import json
 import sys
 
@@ -92,7 +93,75 @@ def invalid_cases():
     ]
 
 
-@pytest.mark.parametrize("change,reason", invalid_cases())
+def malformed_consumer_cases():
+    # JSON scalar/container categories, including nonempty containers. Expected
+    # reasons and zero consumer starts constrain more than just "doesn't crash".
+    cases = []
+    for bad in (None, False, 1, 1.5, [], {}, ["pytest"], {"type": "command"}):
+        cases.extend(
+            [
+                (
+                    lambda p, bad=bad: p["selection"].update(framework=bad),
+                    "framework_invalid",
+                ),
+                (
+                    lambda p, bad=bad: p["prerequisite_actions"]["probe"].update(
+                        type=bad
+                    ),
+                    "dependency_action_unsupported",
+                ),
+            ]
+        )
+    for bad in (
+        None,
+        False,
+        "checks",
+        {},
+        [[]],
+        [None],
+        [{}],
+        [{"name": [], "status": "selected"}],
+        [{"name": "probe", "status": {}}],
+    ):
+        for nested in (False, True):
+            cases.append(
+                (
+                    lambda p, bad=bad, nested=nested: (
+                        p["selection"] if nested else p
+                    ).update(check_scope=bad),
+                    "check_scope_invalid",
+                )
+            )
+    cases.extend(
+        [
+            (lambda p: p["selection"].update(checks=[{}]), "checks_invalid"),
+            (lambda p: p["selection"].update(src_root={}), "src_root_invalid"),
+            (
+                lambda p: p["selection"].update(tach_graph_validation=[{}]),
+                "tach_graph_validation_invalid",
+            ),
+            (lambda p: p["git"].update(snapshot=[]), "git_invalid"),
+            (lambda p: p["git"].update(changed_paths=[{}]), "git_invalid"),
+            (lambda p: p["git"].update(content_binding=[{}]), "git_invalid"),
+            (lambda p: p.update(inputs=[{}]), "inputs_invalid"),
+            (
+                lambda p: p.update(inputs={"hygiene": {"path": []}}),
+                "inputs_invalid",
+            ),
+            (
+                lambda p: p.update(post_completion={"weaver_config": [{}]}),
+                "post_completion_invalid",
+            ),
+            (
+                lambda p: p.update(post_completion={"registry": {"manifest": []}}),
+                "post_completion_invalid",
+            ),
+        ]
+    )
+    return cases
+
+
+@pytest.mark.parametrize("change,reason", invalid_cases() + malformed_consumer_cases())
 def test_all_host_entry_points_refuse_before_a_consumer_starts(
     tmp_path, monkeypatch, capsys, change, reason
 ):
@@ -113,6 +182,9 @@ def test_all_host_entry_points_refuse_before_a_consumer_starts(
     )
     assert report["status"] == "not_executed" and report["reason"] == reason
     assert report["exit_code"] == 2 and report["checks"] == [] and calls == []
+    assert report["prerequisites"] == []
+    assert report["plan_declaration_consistent"] is False
+    assert report["source_binding_verified"] == "unknown"
     with pytest.raises(SystemExit) as rejected:
         execution.main(["--plan", str(path), "--root", str(tmp_path), "--json"])
     assert rejected.value.code == 2
@@ -137,6 +209,60 @@ def test_supported_policy_executes_in_its_existing_post_check_phase(
     )
     assert report["status"] == "passed" and order == ["tests", "policy"]
     assert report["dependency_contract"] == value["dependency_contract"]
+    assert report["plan_declaration_consistent"] is True
+    assert report["source_binding_verified"] == "unknown"
+
+
+@pytest.mark.parametrize("bad", [[], {}, ["command"], {"type": "command"}])
+def test_contract_producer_does_not_hash_a_non_string_action_type(bad):
+    value = policy_plan()
+    value["prerequisite_actions"]["probe"]["type"] = bad
+    value["dependency_contract"] = plan_contract.prerequisite_contract(
+        ["probe"],
+        value["prerequisite_actions"],
+        declaration={"path": "ci-selection.toml", "sha256": "a" * 64},
+        selected_by="targeted",
+    )
+    assert value["dependency_contract"]["edges"][0]["resolution"] == "unresolved"
+    with pytest.raises(execution.ExecutionError, match="dependency_action_unsupported"):
+        execution.validate_plan(value)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_actual_config_drift_cannot_be_claimed_as_verified_source(tmp_path, version):
+    from subprocess import CompletedProcess
+
+    value = policy_plan()
+    value["schema_version"] = version
+    declared = hashlib.sha256(b"config A").hexdigest()
+    value["generator"]["config_sha256"] = declared
+    value["dependency_contract"]["edges"][0]["declaration_ref"]["sha256"] = declared
+    if version == 1:
+        value.pop("dependency_contract")
+    (tmp_path / "ci-selection.toml").write_bytes(b"config B")
+    assert (
+        hashlib.sha256((tmp_path / "ci-selection.toml").read_bytes()).hexdigest()
+        != declared
+    )
+    report = execution.execute(
+        value, root=tmp_path, runner=lambda *a: CompletedProcess(a[0], 0)
+    )
+    # This slice reports declaration consistency only, not the #66 receipt or
+    # actual-config verification required for B's strict source consumers.
+    assert report["plan_declaration_consistent"] is (True if version == 2 else None)
+    assert report["source_binding_verified"] == "unknown"
+
+
+def test_legacy_plan_cannot_bypass_nested_scope_validation(tmp_path):
+    value = policy_plan()
+    value["schema_version"] = 1
+    value.pop("dependency_contract")
+    value["selection"]["check_scope"] = [{"name": "probe", "status": []}]
+    report = execution.execute(value, root=tmp_path)
+    assert (
+        report["status"] == "not_executed" and report["reason"] == "check_scope_invalid"
+    )
+    assert report["checks"] == [] and report["prerequisites"] == []
 
 
 def test_missing_action_stays_unresolved_and_blocks_the_final_report(tmp_path):
