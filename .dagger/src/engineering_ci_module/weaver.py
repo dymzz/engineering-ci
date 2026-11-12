@@ -250,11 +250,40 @@ def lookup_capture_span(capture, trace_id, span_id):
     return matches[0], None
 
 
+_ATTEMPT_SUFFIX = re.compile(r"/([1-9][0-9]*)$")
+
+
+def _attempt_suffix(run_id):
+    """Trailing positive-decimal Attempt on a pipeline run id, if present.
+
+    The whole string remains the Run identity. The suffix is only an Attempt
+    claim that must agree with the declared Attempt.
+    """
+    if not isinstance(run_id, str):
+        return None
+    match = _ATTEMPT_SUFFIX.search(run_id)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extension_attempt(value):
+    """Integer Attempt from a leftover extension attribute, or None if illegal."""
+    if type(value) is bool:
+        return None
+    if type(value) is int and value >= 1:
+        return value
+    if type(value) is str and value.isdigit() and not value.startswith("0"):
+        return int(value)
+    return None
+
+
 def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     """Bind observed Pipeline Root to declared provenance using SemConv fields.
 
     Canonical Run ID comes from the enclosing OTLP Resource. Pipeline result
-    comes from the Span. Attempt is ECI/GitHub correlation, not SemConv Required.
+    comes from the Span. Attempt is the trailing positive decimal of that
+    Run ID, checked against the declared Attempt. It is not SemConv Required.
     """
     if capture is None:
         return "terminal_capture_required", None
@@ -308,34 +337,41 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     if not _absent_parent(sample_parent) or not _absent_parent(capture_parent):
         return "terminal_span_not_root", None
 
-    # github.actions.run_attempt is ECI/GitHub correlation, not SemConv Required.
-    # weaver-terminal still cannot PASS a Run/Attempt gate without verified
-    # Attempt evidence bound to the matched capture (PR #78 P1-1).
-    attempt_attr = span_attrs.get("github.actions.run_attempt")
-    if attempt_attr is None:
-        attempt_attr = sample_attrs.get("github.actions.run_attempt")
-    if attempt_attr is None:
+    # Attempt comes from the suffix of cicd.pipeline.run.id. The full string
+    # was already compared to source/evidence run_id. The suffix must also
+    # agree with the declared Attempt integer; the two claims are not rewritten
+    # into each other. A missing suffix stays unverified and cannot PASS.
+    # github.actions.run_attempt is not required. A leftover value that is
+    # illegal or disagrees still fails. This is in-capture consistency, not a
+    # GitHub witness and not trusted admission.
+    observed_attempt = _attempt_suffix(str(run_id))
+    if observed_attempt is None:
         return "terminal_attempt_correlation_unverified", {
             "status": "unverified",
-            "reason": "attempt_extension_absent",
-            "scope": "capture_extension_vs_declared",
-            "source": "otlp_capture_or_sample",
+            "reason": "attempt_not_in_pipeline_run_id",
+            "scope": "pipeline_run_id_suffix_vs_declared",
+            "source": "cicd.pipeline.run.id",
             "declared_attempt": source["attempt"],
-            # Not #75/#63 GitHub authentication or admission.
             "authenticated": False,
         }
-    try:
-        attempt_value = int(attempt_attr)
-    except (TypeError, ValueError):
-        return "terminal_attempt_extension_invalid", None
-    if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
+    extension = span_attrs.get("github.actions.run_attempt")
+    if extension is None:
+        extension = sample_attrs.get("github.actions.run_attempt")
+    if extension is not None:
+        extension_attempt = _extension_attempt(extension)
+        if extension_attempt is None:
+            return "terminal_attempt_extension_invalid", None
+        if extension_attempt != observed_attempt:
+            return "terminal_attempt_mismatch", None
+    if observed_attempt != source["attempt"] or observed_attempt != evidence.get(
+        "attempt"
+    ):
         return "terminal_attempt_mismatch", None
     return None, {
-        # Capture/sample attribute matched declared Attempt — not provenance auth.
         "status": "capture_attempt_matched",
-        "attempt": attempt_value,
-        "scope": "capture_extension_vs_declared",
-        "source": "otlp_capture_or_sample",
+        "attempt": observed_attempt,
+        "scope": "pipeline_run_id_suffix_vs_declared",
+        "source": "cicd.pipeline.run.id",
         "authenticated": False,
     }
 

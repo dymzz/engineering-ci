@@ -115,9 +115,9 @@ part of the pinned tool execution. CI/CD SemConv fixtures that carry
 Resource-level `cicd.pipeline.run.id` (and related identity attrs) set
 `search_all_attributes = true` so those attributes resolve against the packaged
 catalog; Pipeline/Task Required attributes are still enforced by signal binding.
-The Attempt-correlation extension `github.actions.run_attempt` may be filtered
-as a scoped `missing_attribute` so Terminal can bind declared Attempt without
-treating a non-SemConv key as a SemConv Live violation.
+The CI/CD fixture does not whitelist unknown attributes. `github.repository`
+and `github.actions.run_attempt` remain native `missing_attribute` violations.
+Attempt correlation does not need that extension.
 
 For the fixed SemConv candidate, the raw Group
 `span.cicd.pipeline.run.server` resolves to v2 signal type
@@ -188,20 +188,28 @@ exact pipeline end time or a duration, and no such claim is made. #75 produces
 the time facts; #52 consumes the error budget and source it actually uses and
 binds that provenance.
 
-`github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
-SemConv Required attribute. A SemConv-only Live Check may PASS without it.
-An explicitly requested `weaver-terminal` Run/Attempt correlation gate must
-**not** PASS while Attempt correlation remains `unverified`; absence yields
-`terminal_attempt_correlation_unverified` with `native_live_status=passed` and
-`terminal_correlation_status=failed`. `native_live_status` covers only the
-declared Matcher / finding-policy set for that run — not full CI/CD SemConv
-Required coverage.
+Attempt correlation reads the trailing positive decimal of Resource
+`cicd.pipeline.run.id` (for example `42821429094/1`). The whole string is
+still the Run identity. The suffix is a separate Attempt claim and must equal
+the declared `source.attempt` and `terminal_evidence.attempt`. A Run ID with
+no such suffix stays `terminal_attempt_correlation_unverified` and cannot
+PASS the terminal gate. The same Run number with a different Attempt is a
+different Run ID (`terminal_run_id_mismatch`) or, when the full ID matches
+and the declared Attempt does not, `terminal_attempt_mismatch`. A SemConv-only
+Live Check may PASS without an Attempt suffix. `native_live_status` covers
+only the declared Matcher / finding-policy set for that run.
 
-When the capture/sample carries `github.actions.run_attempt` matching the
-declared Attempt, `attempt_correlation.status` is `capture_attempt_matched`
-(`authenticated=false`). That is an in-capture consistency check only; it is
-**not** #75 GitHub provenance authentication or #63 admission. Top-level
-`trusted` stays `false`.
+`attempt_correlation.status=capture_attempt_matched` means the suffix agreed
+with the declared Attempt (`authenticated=false`,
+`source=cicd.pipeline.run.id`). That is in-capture consistency with the
+caller-supplied expected Attempt. It is not agreement with an independent
+GitHub witness, and it is not #63 trusted admission. A leftover
+`github.actions.run_attempt` is not required. If one is present and disagrees
+with the suffix, or is not a positive decimal, the bind fails
+(`terminal_attempt_mismatch` or `terminal_attempt_extension_invalid`). #75
+still emits that extension and `github.repository`; this checker does not
+whitelist either. A later producer change has to stop emitting them before a
+strict Live gate can accept that capture. Top-level `trusted` stays `false`.
 
 Matching caller assertions alone cannot pass against a different observed
 Resource Run ID or SemConv result. External GitHub provenance authentication

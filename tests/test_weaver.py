@@ -126,12 +126,11 @@ def test_known_cancellation_result_passes_with_enum_advice_count():
 
 
 def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
+    pipeline_run_id = resource_run_id
+    if attempt_attr is not None:
+        pipeline_run_id = f"{resource_run_id}/{attempt_attr}"
     report = json.loads(payload())
     sample_attrs = [{"name": "cicd.pipeline.result", "value": result}]
-    if attempt_attr is not None:
-        sample_attrs.append(
-            {"name": "github.actions.run_attempt", "value": attempt_attr}
-        )
     report["samples"][0]["span"].update(
         trace_id="1" * 32,
         span_id="2" * 16,
@@ -141,7 +140,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
     )
     expected = {
         "schema_version": 1,
-        "source": {"run_id": "42", "attempt": 1},
+        "source": {"run_id": pipeline_run_id, "attempt": 1},
         "spans": [
             {
                 "trace_id": "1" * 32,
@@ -151,7 +150,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
             }
         ],
         "terminal_evidence": {
-            "run_id": "42",
+            "run_id": pipeline_run_id,
             "attempt": 1,
             "status": "completed",
             "result": result,
@@ -160,13 +159,6 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
     span_attrs = [
         {"key": "cicd.pipeline.result", "value": {"stringValue": result}},
     ]
-    if attempt_attr is not None:
-        span_attrs.append(
-            {
-                "key": "github.actions.run_attempt",
-                "value": {"intValue": str(attempt_attr)},
-            }
-        )
     capture = {
         "resourceSpans": [
             {
@@ -174,7 +166,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
                     "attributes": [
                         {
                             "key": "cicd.pipeline.run.id",
-                            "value": {"stringValue": resource_run_id},
+                            "value": {"stringValue": pipeline_run_id},
                         }
                     ]
                 },
@@ -220,6 +212,12 @@ def test_otlp_exact_identity_and_terminal_evidence():
     assert again["reason"] == "terminal_attempt_correlation_unverified"
 
 
+def test_cicd_fixture_does_not_whitelist_unknown_attributes():
+    text = Path("tests/fixtures/weaver-cicd/.weaver.toml").read_text(encoding="utf-8")
+    assert "finding_filters" not in text
+    assert "sample_names" not in text
+
+
 def test_terminal_resource_only_run_id_passes():
     report, expected, capture = otlp_payload(attempt_attr=1)
     result = weaver.otlp_result(
@@ -262,6 +260,42 @@ def test_terminal_attempt_extension_cross_check():
     )
     assert bad["status"] == "failed"
     assert bad["reason"] == "terminal_attempt_mismatch"
+    # Same full Run ID, different declared Attempt. The suffix is not rewritten
+    # to match the declaration.
+    same_id, same_expected, same_capture = otlp_payload(attempt_attr=1)
+    same_expected["source"]["attempt"] = 2
+    same_expected["terminal_evidence"]["attempt"] = 2
+    disagreed = weaver.otlp_result(
+        0, json.dumps(same_id), same_expected, terminal=True, capture=same_capture
+    )
+    assert disagreed["status"] == "failed"
+    assert disagreed["reason"] == "terminal_attempt_mismatch"
+    # A different full id for the other Attempt is a Run identity mismatch.
+    other = weaver.otlp_result(
+        0,
+        json.dumps(otlp_payload(attempt_attr=1)[0]),
+        otlp_payload(attempt_attr=2)[1],
+        terminal=True,
+        capture=otlp_payload(attempt_attr=1)[2],
+    )
+    assert other["reason"] == "terminal_run_id_mismatch"
+    # A leftover extension that disagrees with the suffix still fails.
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"].append(
+        {"key": "github.actions.run_attempt", "value": {"intValue": "2"}}
+    )
+    conflict = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert conflict["reason"] == "terminal_attempt_mismatch"
+    capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"][-1] = {
+        "key": "github.actions.run_attempt",
+        "value": {"stringValue": "nope"},
+    }
+    invalid = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert invalid["reason"] == "terminal_attempt_extension_invalid"
 
 
 def test_terminal_semconv_results_and_mismatch():
@@ -286,7 +320,6 @@ def test_terminal_capture_sample_result_conflict():
     report, expected, capture = otlp_payload(result="success", attempt_attr=1)
     report["samples"][0]["span"]["attributes"] = [
         {"name": "cicd.pipeline.result", "value": "failure"},
-        {"name": "github.actions.run_attempt", "value": 1},
     ]
     conflict = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture

@@ -4,8 +4,10 @@
       "name": "eci pipeline",
       "kind": "server",
       "attributes": [
-        { "name": "cicd.pipeline.result", "value": "success" },
-        { "name": "github.actions.run_attempt", "value": 1 }
+        {
+          "name": "cicd.pipeline.result",
+          "value": "success"
+        }
       ]
     }
   },
@@ -14,9 +16,18 @@
       "name": "eci task",
       "kind": "internal",
       "attributes": [
-        { "name": "cicd.pipeline.task.name", "value": "checks" },
-        { "name": "cicd.pipeline.task.run.id", "value": "job-9" },
-        { "name": "cicd.pipeline.task.run.result", "value": "success" },
+        {
+          "name": "cicd.pipeline.task.name",
+          "value": "checks"
+        },
+        {
+          "name": "cicd.pipeline.task.run.id",
+          "value": "job-9"
+        },
+        {
+          "name": "cicd.pipeline.task.run.result",
+          "value": "success"
+        },
         {
           "name": "cicd.pipeline.task.run.url.full",
           "value": "https://example.test/actions/runs/controlled-42/job/job-9"
