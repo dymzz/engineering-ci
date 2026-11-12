@@ -69,7 +69,7 @@ engineering-ci hooks run pre-push --repo .
 2. **Hook 机制选择**：原生薄入口作为成本/正确性基线；仅当固定版本 Lefthook 在项目实际需要的生命周期、并发或诊断上提供额外收益，且能保留单事件 Source、stdin、Index/Push 身份和安装卸载恢复时采用；只批准其中一个安装所有者。子命令和配置字段在接线实施 PR 对照现有 CLI 核准，本文不能宣称接口存在。
 3. **合入与归档**：#66 已吸收的通用生产方需求不再被此草案复制成新的长期规范。待 Hook 接线实施的具体方案确认后，此 Draft 可作为历史设计说明合并，或在结论已全部归入 #66 时关闭为 superseded；不直接转 Ready，不要求 #66 因本 Draft 仍在审阅而停止公共 Source/Check 实施。Knowledge PR #78 只同步其消费者差分。
 
-## 6. 批量工具接入与生命周期策略（第二轮审定）
+## 6. 跨生态原生工具接入与 Hook 生命周期（可扩展候选与职责）
 
 **实施裁定：一次设计公共接线，按实际仓库的适用工具矩阵成批实现，按执行类别集中验收；不采取一个工具一个 PR、一个全量 CI 验收，也不把全部候选默认配置成每次提交的 Required。** 已合并 ECI PR #67 的选择/Hygiene/CLI、ECI #52 的现有 Check/Actions/工具资产和原生 Dagger Checks 作为基线，先核对现有能力，只补实际缺口。
 
@@ -113,9 +113,9 @@ engineering-ci hooks run pre-push --repo .
 4. **公共路径一次验证，新增风险定向验证**：Index/Worktree/Push、安装生命周期、Source/环境版本/缺工具/失败/skip 的公共证据已有有效则复用；仅对新适用命令和真正独特的风险补原生正反用例。测量有代表性的同范围成本、适用测试规模和重复扫描，不将跳过相关检查冒充性能收益。
 5. **#86/#63/#61 边界不转移**：依赖产物闭包和 Dagger DAG 是 #86；历史有效覆盖接纳是 #63；Required/Release 仍由 #61。Hook 声称“选中/运行”不能替代任何一项来源/结果证明。
 
-## 7. 工具触发与执行作用域的正交分类（第三轮审定）
+## 7. 工具触发、分析与失效的正交关系（当前可执行设计要求）
 
-**必须从现有 ECI 配置、Source、Selection Plan 和原生 Check 结果中推导出** Trigger / Analysis / Invalidation 三类关系，不得另建三套配置表或规则引擎。它们分别描述唤醒、真实读取/覆盖、旧结果何时失效；`glob`、`root` 和 `{staged_files}` 仅提供 Lefthook 粗过滤，不能证明暂存 Tree 受检。原有 `eci_core.selection`、`execution`、Hygiene/Sources、Plan/Report 是实施位置。
+**必须从现有 ECI 配置、Source、Selection Plan 和原生 Check 结果中推导出** Trigger / Analysis / Invalidation 三类关系，不得另建三套配置表或规则引擎。它们分别描述唤醒、真实读取/覆盖、旧结果何时失效；`glob`、`root` 和 `{staged_files}` 仅提供 Lefthook 粗过滤，不能证明暂存 Tree 受检。现有 `engineering_ci.selection`、`execution`、`hygiene`、`sources`、`plan_contract` 及原生 Report 是实施位置。
 
 ### 7.0 每个 Check 的三类输入集合（规范性要求）
 
