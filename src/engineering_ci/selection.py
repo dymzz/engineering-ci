@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+from engineering_ci import plan_contract
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -1106,8 +1107,19 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     tach_path = root / config.tach
     graph = _graph_validation(selection, config, root, tach_validation)
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
+        "dependency_contract": plan_contract.prerequisite_contract(
+            selection.prerequisites,
+            config.prerequisite_actions,
+            declaration={"path": str(config_path), "sha256": _digest(config_path)},
+            selected_by="full"
+            if selection.full_tests
+            else "escalated"
+            if selection.escalated
+            else "targeted",
+            reason=selection.escalation_reason,
+        ),
         "generator": {
             "name": "engineering-ci",
             "version": _version(),
@@ -1389,8 +1401,14 @@ def post_completion_plan(
         **closure,
     }
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
+        "dependency_contract": plan_contract.prerequisite_contract(
+            (),
+            {},
+            declaration={},
+            selected_by="post_completion",
+        ),
         "phase": POST_COMPLETION_PHASE,
         "generator": {
             "name": "engineering-ci",

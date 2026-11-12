@@ -207,7 +207,7 @@ def test_plan_records_git_config_and_tach_identity(repo):
         config_path=path / "ci-selection.toml",
         root=path,
     )
-    assert plan["schema_version"] == 1
+    assert plan["schema_version"] == 2
     assert plan["kind"] == "engineering-ci-selection-plan"
     assert plan["git"]["base_commit"] is not None
     assert plan["git"]["head_commit"] == base
@@ -321,6 +321,32 @@ argv = ["python", "-c", "raise SystemExit(0)"]
     }
     assert plan["prerequisite_actions"]["wheel_smoke"]["type"] == "command"
     assert plan["prerequisite_actions"]["wheel_smoke"]["argv"][0] == "python"
+
+
+@pytest.mark.parametrize("mode", ["targeted", "full", "escalated"])
+def test_dependency_contract_records_actual_selection_without_inventing_actions(
+    repo, mode
+):
+    path, base = repo
+    changed = path / ("pyproject.toml" if mode == "escalated" else "src/pkg/other.py")
+    changed.write_text(
+        changed.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    selected = select(path, base, full=mode == "full")
+    value = selection.plan(
+        selected, config=config(path), config_path=path / "ci-selection.toml", root=path
+    )
+    execution.validate_plan(value)
+    edges = value["dependency_contract"]["edges"]
+    assert {edge["producer_ref"]["name"] for edge in edges} == set(
+        value["selection"]["prerequisites"]
+    )
+    assert {edge["selection"]["selected_by"] for edge in edges} == {mode}
+    assert all(
+        edge["resolution"] == "unresolved"
+        and edge["unresolved_reason"] == "action_parameters_missing"
+        for edge in edges
+    )
 
 
 def test_changeset_includes_renames_and_untracked_paths(repo):
