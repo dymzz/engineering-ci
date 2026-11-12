@@ -2,6 +2,8 @@
 
 > **审计范围：S0 架构裁决 + S0.5 已应用 Issue 文本差分 + S1 待实施机制设计要求。** 实际仅直接更新了 [ECI Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 正文；**Knowledge #68、ECI PR #72、Knowledge PR #78 均未在本轮修改**。此文件不是规范性定义，不表示任何 Hooks 运行时代码已交付；完整 PR #72/#78 设计继续有效。
 
+> **后续审阅修订（ECI #66 `2026-11-12T16:36:27Z`）：** 本文 S1 预期记录、路由绑定、状态/验收描述已同步，线上 Issue 正文 35,333 字符 / 292 行。S0.5 的九处 applied Diff 仍专门记录 `16:06:06Z` 的历史变更；后续 S1 条款更新不追加到那九个 hunk。旧 56/63/94/95/105/127/170/172/219 行号均指 `14:46:03Z` 的 276 行**基线文本**，不是当前 Issue 行号。
+
 ## 1. 审阅基线
 
 - ECI #66 读取时间戳 `2026-11-12T14:46:03Z`，正文 28542 字符、276 行；见同 PR 的 [S0.5 已应用九处 Diff 审计](./issue-66-hook-routing-applied.diff)。
@@ -49,10 +51,10 @@
 
 ### S1 准入与设计完成核对（接口要求，不是运行时已交付）
 
-1. **Expected Check owner / versioned Plan。** 复用已有 `selection.Config` / `plan_contract`，#52/Runtime 管 Check 身份与受信 Profile，消费者管规则，#66 按 Git Event/每 Ref 在实际 Job Result 产生前投影 Expected Check。最小逻辑字段：`event_ref`、`source_ref`、`check_id`、`applicability`/原因、`rule_ref`、`job_ref`、`requirement_ref`。Required 是独立策略，不是 `applicability` 枚举。如何进入现有 schema 由 S1 版本化，不新增平行 Registry。
+1. **Expected Check 独立于调度器路由。** #52/Runtime 提供稳定 Check 身份与受信 Profile；[Runtime #27](https://github.com/dymzz/vesryn-tool-runtime/issues/27) 已定义 `ToolAsset.tool_id`、`ToolGroup.group_id`、`ToolAccess.access_id`，但三者都不等同 `check_id`，也不等同 Job/Requirement ID；#52 若尚无稳定版本化 Check ID 需在既有 Check/Result 契约扩展。消费者管版本化项目适用规则，#66 按 Git Event/每 Ref 在相关 Job 执行前以现有 Selection/Plan 产生不依赖调度器和已执行结果的 Expected Check：`event_ref`、`source_ref`、`check_id`、`applicability`/原因、`rule_ref`、可选 `requirement_ref`；**绝不包含 `job_ref`**。路由确定之后再建立独立 Routing Binding：`expected_check_ref`、`scheduler_ref`、`effective_config_ref`、可为空的 `job_refs[]`、`mapping_status`。Check↔Job 为多对多；无路由也必须保留预期 Check。Required 是独立策略，版本化接口由 S1 决定，不另造平行 Registry/schema。
 2. **执行权威与 Direct Tool 结果。** #66 已交付的公共 `execute()` 不迁走或重建；#52/Runtime 负责新原生 Check/适配和 Report/Enforce。Direct Tool 仅通过现有 Check/Result 适配后按实际 Check ID、Source/配置/输入、退出与范围计入覆盖；无适配的诊断不构成 Required PASS。
-3. **Event Prepare 与漏激活证据。** 固定版本实际核验 Lefthook `setup`/`dump`、静态 `jobs/group/parallel`、pre-push stdin 唯一可靠接收、有效本地/extends 配置。不得假定动态 Job 注入。按独立 Expected 集合与生效路由、原生 Result 对账；被过滤的 Job 不能靠自己的 wrapper 记录跳过。Hook 完全被绕过时，本地无法证明它被绕过，服务端 #63/#61 独立判断覆盖。
-4. **冻结真实可运行的最小矩阵。** pre-commit Index/临时 Index、pre-push 多 Ref/首次/强推/删除/非 HEAD、三个不同触发机制的适用 Job、独立 Job 并行与依赖、Windows/Unix/Linked Worktree、install/status/update/uninstall、第三方 Hook 共存、直接 Tool Native Failure/缺席、Source/Result 身份、时延与日志。Source P0 可独立实施；矩阵是 S1 机制设计完成条件，不是开始 S1 研究前必须已运行的门槛；完整候选工具家族继续保留。
+3. **Event Prepare 与路由/执行/门禁三层状态。** 固定版本实测 Lefthook `setup`/`dump`、静态 `jobs/group/parallel`、pre-push stdin 唯一可靠接收、实际有效配置；不假定动态 Job 注入。Expected Check 独立产生后，再与 Routing Binding/原生 Result 对账：无 Job → 路由 `unrouted`、检查 `not_executed`，如 Required 才阻断；已证明不适用 → `not_applicable`；缺事实 → `unknown`，不得 PASS。`blocked` 是最终门禁层结果，不要塞进路由或 Check 状态枚举。被条件过滤的 Job 不能通过内部 wrapper 自报 skipped。Hook 完全绕过时本地无检测能力，服务器 #63/#61 独立核验。
+4. **冻结真实可运行的最小矩阵与 Required 责任。** pre-commit Index/临时 Index、pre-push 多 Ref/首次/强推/删除/非 HEAD；采用三个明确 Job：Tach `tach check`（按需 `tach check-external`）、Lychee `lychee`、Sources `sources.reconcile`，检查源码/图、Markdown 链接、来源 manifest/配置或锁文件下的条件唤醒、独立并行与真实原生失败；再覆盖 Windows/Unix/Linked Worktree、install/status/update/uninstall、第三方 Hook 共存、Direct Tool 结果/缺失、诊断、时延。#63 保留 Required 覆盖/原生证据有效性，**不重复构建最终 Required 聚合器**；#61 消费可信事实完成最终 Required/服务端/Release，**不再重算证据真实性**。矩阵是 S1 机制设计完成与实施选型的条件，不是 S1 启动门槛；长期跨生态候选矩阵不因此缩减。
 
 > 唯一权威和完整条款见 [ECI #66](https://github.com/dymzz/engineering-ci/issues/66) `S1 机制接口与冻结验收基线`（2026-11-12T16:23:28Z）。本段只是 S0/S1 审阅导航，不另建一份规范性 Schema。
 
