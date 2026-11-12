@@ -1,0 +1,408 @@
+{
+  "claims": {
+    "all_prepared_signals_delivered": true,
+    "bundle_delivery_complete": true,
+    "candidate_record_only": true,
+    "github_api_fetched": true,
+    "github_authenticated": false,
+    "otlp_delivered": true,
+    "otlp_json_exported": true,
+    "otlp_json_path": "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-traces.json",
+    "otlp_json_prepared": true,
+    "otlp_json_sha256": "043a22887dc99214e84e9e63ca2a6db15a075bcad8b4a59c693d9488cb7a833a",
+    "otlp_logs_delivered": true,
+    "otlp_logs_exported": true,
+    "otlp_logs_path": "docs\\verification\\cicd-telemetry-real-run-receiver\\otel-logs.json",
+    "otlp_logs_prepared": true,
+    "otlp_logs_receiver_observed": true,
+    "otlp_logs_rpc_accepted": true,
+    "otlp_logs_rpc_endpoint": "127.0.0.1:18404",
+    "otlp_logs_rpc_rejected": 0,
+    "otlp_logs_sha256": "886d2a47fb9a7db3d6ece5b8914a70dc705e2fd388c749c9645aaa1e76561a02",
+    "otlp_metrics_delivered": false,
+    "otlp_metrics_exported": false,
+    "otlp_metrics_prepared": false,
+    "otlp_metrics_receiver_observed": false,
+    "otlp_metrics_rpc_accepted": false,
+    "otlp_metrics_skip": "not_observable",
+    "otlp_rpc_endpoint": "127.0.0.1:18404",
+    "otlp_rpc_rejected_spans": 0,
+    "receiver_observed": true,
+    "rpc_accepted": true,
+    "snapshot_phase": "receiver_confirmed",
+    "transport": {
+      "logs": {
+        "attempt": 1,
+        "duplicate": [],
+        "expected": [
+          "7d2f4e7f18a603cd",
+          "a7263c2e65a30498",
+          "7d98cbfec3f44c1a",
+          "093c00d57bcc226c"
+        ],
+        "matched": [
+          "093c00d57bcc226c",
+          "7d2f4e7f18a603cd",
+          "7d98cbfec3f44c1a",
+          "a7263c2e65a30498"
+        ],
+        "missing": [],
+        "otlp_delivered": true,
+        "reason": null,
+        "receiver_observed": true,
+        "rejected": 0,
+        "rpc_accepted": true,
+        "run_id": "42821429094",
+        "snapshot_phase": "receiver_confirmed",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f",
+        "unexpected": []
+      },
+      "traces": {
+        "attempt": 1,
+        "duplicate": [],
+        "expected": [
+          "7d2f4e7f18a603cd",
+          "a7263c2e65a30498",
+          "7d98cbfec3f44c1a"
+        ],
+        "matched": [
+          "7d2f4e7f18a603cd",
+          "7d98cbfec3f44c1a",
+          "a7263c2e65a30498"
+        ],
+        "missing": [],
+        "otlp_delivered": true,
+        "reason": null,
+        "receiver_observed": true,
+        "rejected": 0,
+        "rpc_accepted": true,
+        "run_id": "42821429094",
+        "snapshot_phase": "receiver_confirmed",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f",
+        "unexpected": []
+      }
+    },
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "coverage": {
+    "completed_jobs_total": 3,
+    "expected_completed_jobs": [
+      {
+        "emitted": true,
+        "expected_task_span_id": "7d2f4e7f18a603cd",
+        "job_id": "129847643854",
+        "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854",
+        "omit_reason": null,
+        "omitted": false,
+        "source_index": 0
+      },
+      {
+        "emitted": true,
+        "expected_task_span_id": "a7263c2e65a30498",
+        "job_id": "129847644372",
+        "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372",
+        "omit_reason": null,
+        "omitted": false,
+        "source_index": 1
+      },
+      {
+        "emitted": true,
+        "expected_task_span_id": "7d98cbfec3f44c1a",
+        "job_id": "129847644459",
+        "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459",
+        "omit_reason": null,
+        "omitted": false,
+        "source_index": 2
+      }
+    ],
+    "job_execution_envelope": {
+      "attempt": 1,
+      "complete": true,
+      "end_ns": 1794316079000000000,
+      "quality": "job_execution_envelope",
+      "run_id": "42821429094",
+      "semconv_phase": null,
+      "source": "github_api",
+      "start_ns": 1794315965000000000
+    },
+    "job_selection": "all_completed",
+    "jobs_observed_total": 3,
+    "noncompleted_jobs_total": 0,
+    "pipeline_terminal_covered": false,
+    "task_coverage": "complete",
+    "task_spans_emitted": 3,
+    "tasks_omitted": [],
+    "terminal_check": "not_verified",
+    "withheld_parent_span": {
+      "exported": false,
+      "reason": "end_time_uncertain",
+      "span_id": "093c00d57bcc226c",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    }
+  },
+  "evidence_class": "candidate_record",
+  "facts": {
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "job_completed_at_ns": null,
+    "job_conclusion": null,
+    "job_id": null,
+    "job_name": null,
+    "job_started_at_ns": null,
+    "job_url": null,
+    "repository": "dymzz/engineering-ci",
+    "run_attempt": 1,
+    "run_completed_at_ns": null,
+    "run_conclusion": "success",
+    "run_id": "42821429094",
+    "run_started_at_ns": 1794315962000000000,
+    "run_status": "completed",
+    "run_updated_at_ns": 1794316080000000000,
+    "run_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094",
+    "server_url": "https://github.com",
+    "workflow_name": "Engineering CI"
+  },
+  "include_run_entity_metrics": false,
+  "kind": "engineering-ci-cicd-telemetry",
+  "otlp_json_exported": true,
+  "otlp_json_prepared": true,
+  "otlp_logs_exported": true,
+  "otlp_logs_prepared": true,
+  "otlp_metrics_exported": false,
+  "otlp_metrics_prepared": false,
+  "phase_intervals": [],
+  "producer": {
+    "decision": "github_actions_env_or_api_adapter",
+    "name": "eci_core.cicd_telemetry",
+    "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
+    "semconv_note": "Attribute names follow public CI/CD SemConv Pipeline/Task Run; registry version pin is tracked with Knowledge #80/#81"
+  },
+  "reason": "end_time_uncertain",
+  "resource": {
+    "cicd.pipeline.name": "Engineering CI",
+    "cicd.pipeline.run.id": "42821429094/1",
+    "cicd.pipeline.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094",
+    "github.actions.run_attempt": 1,
+    "github.repository": "dymzz/engineering-ci",
+    "vcs.ref.head.revision": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc"
+  },
+  "schema_version": 7,
+  "signals": {
+    "logs": [
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "42821429094/1",
+          "cicd.pipeline.task.name": "sync-tool-tests",
+          "cicd.pipeline.task.run.id": "129847643854",
+          "cicd.pipeline.task.run.result": "success",
+          "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854",
+          "eci.log.source": "github_job_terminal",
+          "github.actions.run_attempt": 1
+        },
+        "body": "GitHub Job terminal sync-tool-tests conclusion=success",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "span_id": "7d2f4e7f18a603cd",
+        "time_unix_nano": 1794316079000000000,
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "42821429094/1",
+          "cicd.pipeline.task.name": "version-metadata",
+          "cicd.pipeline.task.run.id": "129847644372",
+          "cicd.pipeline.task.run.result": "success",
+          "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372",
+          "eci.log.source": "github_job_terminal",
+          "github.actions.run_attempt": 1
+        },
+        "body": "GitHub Job terminal version-metadata conclusion=success",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "span_id": "a7263c2e65a30498",
+        "time_unix_nano": 1794316053000000000,
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "42821429094/1",
+          "cicd.pipeline.task.name": "python-ci / checks",
+          "cicd.pipeline.task.run.id": "129847644459",
+          "cicd.pipeline.task.run.result": "success",
+          "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459",
+          "eci.log.source": "github_job_terminal",
+          "github.actions.run_attempt": 1
+        },
+        "body": "GitHub Job terminal python-ci / checks conclusion=success",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "span_id": "7d98cbfec3f44c1a",
+        "time_unix_nano": 1794316058000000000,
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "42821429094/1",
+          "eci.cicd.end_lower_bound_ns": 1794316079000000000,
+          "eci.cicd.end_upper_bound_ns": 1794402286346617088,
+          "eci.cicd.parent_span_exported": false,
+          "eci.cicd.root_emission": "not_emitted",
+          "eci.cicd.time_role": "terminal_observed_at",
+          "eci.cicd.uncertainty_ns": 86207346617088,
+          "eci.log.source": "github_attempt_terminal",
+          "github.actions.run_attempt": 1
+        },
+        "body": "GitHub Attempt terminal confirmed; pipeline end time is an unbound observation, not a span end",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "span_id": "093c00d57bcc226c",
+        "time_unix_nano": 1794402286346617088,
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      }
+    ],
+    "logs_source": "github_job_terminal",
+    "metrics": [],
+    "metrics_not_observable": [
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "pending",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "executing",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "finalizing",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.active",
+        "reason": "active_count_unproven",
+        "status": "not_observable"
+      }
+    ]
+  },
+  "source": "github_api",
+  "spans": [
+    {
+      "attributes": {
+        "cicd.pipeline.run.id": "42821429094/1",
+        "cicd.pipeline.task.name": "sync-tool-tests",
+        "cicd.pipeline.task.run.id": "129847643854",
+        "cicd.pipeline.task.run.result": "success",
+        "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854",
+        "github.actions.run_attempt": 1
+      },
+      "end_time_unix_nano": 1794316079000000000,
+      "kind": 1,
+      "name": "task:sync-tool-tests",
+      "parent_span_id": "093c00d57bcc226c",
+      "span_id": "7d2f4e7f18a603cd",
+      "start_time_unix_nano": 1794315965000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    },
+    {
+      "attributes": {
+        "cicd.pipeline.run.id": "42821429094/1",
+        "cicd.pipeline.task.name": "version-metadata",
+        "cicd.pipeline.task.run.id": "129847644372",
+        "cicd.pipeline.task.run.result": "success",
+        "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372",
+        "github.actions.run_attempt": 1
+      },
+      "end_time_unix_nano": 1794316053000000000,
+      "kind": 1,
+      "name": "task:version-metadata",
+      "parent_span_id": "093c00d57bcc226c",
+      "span_id": "a7263c2e65a30498",
+      "start_time_unix_nano": 1794315966000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    },
+    {
+      "attributes": {
+        "cicd.pipeline.run.id": "42821429094/1",
+        "cicd.pipeline.task.name": "python-ci / checks",
+        "cicd.pipeline.task.run.id": "129847644459",
+        "cicd.pipeline.task.run.result": "success",
+        "cicd.pipeline.task.run.url.full": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459",
+        "github.actions.run_attempt": 1
+      },
+      "end_time_unix_nano": 1794316058000000000,
+      "kind": 1,
+      "name": "task:python-ci / checks",
+      "parent_span_id": "093c00d57bcc226c",
+      "span_id": "7d98cbfec3f44c1a",
+      "start_time_unix_nano": 1794315965000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "21ee8206fe06a4879580f60591a3014f"
+    }
+  ],
+  "status": "partial",
+  "terminal": {
+    "bounds_invalid_reason": null,
+    "bounds_valid": true,
+    "clock_quality": "ordered",
+    "conclusion": "success",
+    "duration_valid_for_metrics": false,
+    "end_lower_bound_ns": 1794316079000000000,
+    "end_lower_bound_source": "last_completed_job_end",
+    "end_time_quality": "observed_upper_bound",
+    "end_time_source": null,
+    "end_upper_bound_ns": 1794402286346617088,
+    "end_upper_bound_source": "terminal_observed_at",
+    "exact_run_duration": false,
+    "job_set_complete": true,
+    "lower_source": "last_completed_job_end",
+    "max_end_uncertainty_ns": null,
+    "observed_at_ns": 1794402286346617088,
+    "reviewed_at_ns": 1794402286346617088,
+    "root_emission": "not_emitted",
+    "root_emission_reason": "end_time_uncertain",
+    "run_completed_at_ns": null,
+    "status": "completed",
+    "terminal_confirmed": true,
+    "time_precision": "observed_upper_bound",
+    "time_source_verified": false,
+    "uncertainty_ns": 86207346617088,
+    "upper_source": "terminal_observed_at"
+  },
+  "terminal_provenance": {
+    "attempt": 1,
+    "bounds_valid": true,
+    "duration_valid_for_metrics": false,
+    "end_lower_bound_ns": 1794316079000000000,
+    "end_time_quality": "observed_upper_bound",
+    "end_time_source": null,
+    "end_upper_bound_ns": 1794402286346617088,
+    "exact_run_duration": false,
+    "otlp_sha256": "043a22887dc99214e84e9e63ca2a6db15a075bcad8b4a59c693d9488cb7a833a",
+    "repository": "dymzz/engineering-ci",
+    "root_emission": "not_emitted",
+    "root_emission_reason": "end_time_uncertain",
+    "root_emitted": false,
+    "root_span_id": null,
+    "root_trace_id": "21ee8206fe06a4879580f60591a3014f",
+    "run_id": "42821429094",
+    "terminal_conclusion": "success",
+    "terminal_observed_at_ns": 1794402286346617088,
+    "terminal_source": "github_api",
+    "terminal_status": "completed",
+    "time_precision": "observed_upper_bound",
+    "time_source_verified": false,
+    "uncertainty_ns": 86207346617088
+  }
+}
