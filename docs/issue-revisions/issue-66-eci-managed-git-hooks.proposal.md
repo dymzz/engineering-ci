@@ -1,87 +1,85 @@
-# ECI #66 — ECI-managed Git Hooks（需求补充提案，待审定）
+# ECI #66 — ECI-managed Git Hooks（增量设计提案与复审裁决）
 
-> 目标 Issue：[ECI #66](https://github.com/dymzz/engineering-ci/issues/66)。这是**增量需求草案**，不是另一个 Issue 全文版本，也不是实施代码。审定后将有效条款并入 #66 §3「同源本地、Dagger、Actions 入口」和验收清单。已有 ECI PR #67 已合并的 `eci_core` 选择/Hygiene/CLI 为基础，不能重新实现一套。
+> **权威来源：** [ECI Issue #66](https://github.com/dymzz/engineering-ci/issues/66)（2026-11-12 已纳入真实 Source/Execution/Hook 生产方契约），以及已合并 #67/#70/#71/#73/#79/#88 的实际公共实现。本 PR #72 仍是 **Draft 的增量设计/决策记录**，不作为第二份长期规范、独立实现要求或 Git Hooks 已交付声明。关联 [Knowledge #68](https://github.com/dymzz/engineering-knowledge/issues/68) / [PR #78](https://github.com/dymzz/engineering-knowledge/pull/78) 属消费者端迁移。
+
+**本次裁决（针对 2026-11-12 Review）：** 保留通用 Git Hooks 生命周期、Source/事件/输入失效契约，以及广泛的跨语言原生工具适用性规划；撤销“默认强制 Lefthook”“一次实施所有候选工具”的未证实前提。当前最高优先级是 #66 P0 **实际工具读取目标 Index/Commit/Push Source 字节**与 P1 CLI/Dagger/Actions 的一致生产事实，不能以 `git write-tree` 相等、`glob` 触发或 Plan 字段相等冒充真实执行。Hook 选择与本地工具扩展不阻断该生产方的独立验收。
+
+**阅读原则：** 下列 CLI/YAML 名称为拟议接口/示意；以实际合并代码为准。审定后只把仍未纳入 #66 的增量条款回写权威 Issue，不在两个文件长期维护相同需求。
 
 ## 1. 工程目标与责任裁定
 
 - **ECI 拥有 Git Hook 的通用实现和分发**：pre-commit/pre-push 原生入口、安装/升级/诊断/卸载、Git 事件与受检 Source 适配、原生检查/前置条件执行、结构化结果和失败传播。下游不得继续维护独立的通用 `hook_adapter.py`、Index/Push 快照引擎、独立 Check 调度/报告判定器。
-- **下游拥有项目策略**：使用哪些 Git 事件、哪些实际适用 Checks、代码/非代码测试映射、全量升级条件、Identity Commit、wheel/CLI 命令及配置、特定工具版本。ECI 仅消费配置和执行公共机制，不嵌入 Knowledge 的 RDF/Manifest/业务数据语义。
+- **下游拥有项目策略**：使用哪些 Git 事件、哪些实际适用 Checks、代码/非代码测试映射、全量升级条件、Identity Commit、wheel/CLI 命令及配置、特定工具版本。ECI 仅消费配置和执行公共机制，不嵌入 Knowledge 的 RDF/Manifest/业务数据语义。通用身份、真实执行输入、适用性与 Tool Result 由已有 `src/engineering_ci` 公共包生产，不能复制旧 `eci_core` 实现。
 - **统一消费约定**：采用 ECI Hooks 的仓库由 ECI 安装器管理公共入口，不能要求每仓复制/维护 800 行适配代码。仓库可以保留自己的声明性配置和确有证据必要的项目专用 Hook；不得与 ECI 通用入口重复运行同一验证。
 - **强制性分层**：在仓库的工程策略中可把安装并运行 ECI Hooks 定为开发工作流要求；但本地 `core.hooksPath`、`--no-verify` 和用户配置使 Hooks 不具备安全意义上的不可绕过性。合并/Release 真正强制性仍由原生 Actions、ECI #61 的 Required 完整性和经过核实的 GitHub 保护设置实现，不由 Hook 成功与否伪造 GitHub Required 状态。
 
-## 2. ECI 交付接口（CLI 命名待实现期核对；不视为已存在）
+## 2. ECI 交付接口（候选 CLI，尚未实施）
 
-推荐复用现有 `engineering-ci = engineering_ci:main` 包入口，提供如下统一子命令，而不是建立新框架：
+统一使用现有 `engineering-ci` CLI/包和 `src/engineering_ci/{selection,execution,hygiene,sources,plan_contract}.py`，在真实缺口处扩展，不创建第二套 Hook Runner、Check Registry 或重复执行算法。用户可见接口候选：
 
 ```text
 engineering-ci hooks install --repo .
 engineering-ci hooks status --repo .
+engineering-ci hooks update --repo .
 engineering-ci hooks uninstall --repo .
 engineering-ci hooks run pre-commit --repo .
 engineering-ci hooks run pre-push --repo .
 ```
 
-### 2.1 安装与生命周期
+### 2.1 生命周期生产与调度器选择
 
-1. 安装器核对 ECI 可执行文件及**能力合格**的固定包/Commit 版本、项目规则版本，创建可复用的薄 Hook 启动入口，通过仓库本地 `core.hooksPath` 或等效 Git 原生机制接线。可选 ECI 自管薄入口文件须明确所有权，不得让下游维护逻辑副本。
-2. 不静默覆盖、删除已有第三方 Hook 或 `core.hooksPath`；检测冲突并给出显式的保留、链式调用或经确认的迁移决议。安装幂等；`status` 证明当前仓库真实生效的 Git Hook 路径、入口和 ECI 来源；`uninstall` 仅撤销自身变更，恢复已记录的旧设置，不修改不属于 ECI 的文件。
-3. 同一入口在 Git for Windows / Unix 工作，尊重仓库实际 Git 顶层、worktree 的 Git config 作用域、路径/空格及原生退出码。调用已安装的固定 ECI，不在每次 Git 事件中运行 `uv sync`、重新安装 CLI、拉取 Dagger Engine 或重新生成 SDK。
-4. 不能因为安装过就声称用户所有 Git 操作必经 Hook；检查、报告、Actions 和真实服务端 Required 状态分别记账。
+- **职责先于产品：** ECI 的 `hooks install/status/update/uninstall` 是面向消费仓库的公共管理接口，负责固定实际可执行来源、安装路径、冲突诊断、配置状态、升级与恢复；Git 原生薄 Hook 或 Lefthook 只负责事件传递。唯一实际管理者必须可核对，不同时让 ECI 与 Lefthook 独立覆写同一 Git Hook 文件。
+- **两个候选，不双重安装：** (a) ECI 管理的零逻辑 Git 原生薄入口，直接传递 pre-commit 的 `GIT_INDEX_FILE` 与 pre-push 的完整 stdin；(b) ECI 管理配置/版本、由 Lefthook 负责 Hook 文件安装/生命周期，**每次事件仅一个** ECI Source/Selection 入口。先以原生薄入口作为不增加额外运行时依赖的比较基线；当可证实 Lefthook 的过滤、诊断或独立只读任务并发在实际消费者上具有净收益且无输入语义损失时，才选择 Lefthook。prek 不与上述方案并存，可按同一准则比较。
+- **必须完成的选择证据：** 固定版本与安装来源、Windows/Git for Windows/Unix、普通/链接 worktree、存在第三方 Hook 或 `core.hooksPath`、幂等安装与更新/卸载恢复、事件参数/stdin 保真、执行启动/依赖成本、可定位诊断。Lefthook 的 `core.hooksPath` 冲突和 `--force` / `--reset-hooks-path` 仅为显式迁移选择，不能自动覆盖用户原配置。
+- Hook 配置更改不等于 ECI 版本升级。安装状态须识别当前真实生效的 Hook 路径/来源，已有 Hooks 共存通过明确的链式调用或迁移决议，不静默删除/覆盖。下游无需复制通用 Hook 适配器或每次事件执行 `uv sync`、SDK 生成、Engine 启动；确实需要的 Dagger Check 才使用现有原生调用入口。
+- `--no-verify`、禁用 Hook 及用户 Git 配置会绕过本地 Hook；GitHub Required/Release 的不可绕过要求由 #61/服务器原生规则和受信原生证据承担，不由 Hooks 模拟。
 
-### 2.2 Git 事件到真实执行对象
+### 2.2 Git 事件、受检对象与实际执行字节
 
-- **pre-commit** 保留 Git 传入的 `GIT_INDEX_FILE` 等原始事件上下文，读取本次 Index Tree；选择与原生执行必须在可验证的**同一 staged Tree** 上发生（例如以临时 Commit/隔离 worktree 执行），不得在未暂存的不同工作树上冒充已验证暂存内容。构造与清理隔离 worktree 是 ECI 的公共责任。
-- **pre-push** 读取 Git 实际提供的全部 `local_ref local_sha remote_ref remote_sha`，逐个验证待推目标。保留有效提交内容身份；既有目标使用真实 old→new（包括强制推送的移除项）；新分支、缺失基线/对象和多引用应给出可核查的扩大检查或阻断，不能 `origin/main == HEAD` 空差异通过。变更中断或缺前置事实不得假 PASS。
-- `select`、`execute`、Hygiene、Sources、Tach/工具及前置条件必须消费同一 Source/配置/工具身份；测试目标为空不代表其他工程 Checks 不适用。未执行、失败、未知、不适用与复用结果保持分离。默认只使用必要本地进程；确实需要 Dagger 时才进入对应原生执行路径。
+- **pre-commit：** 读取 Git 实际 `GIT_INDEX_FILE` 与本次 Index Tree，原生工具须从该 Index 物化出的 Source 执行，或有可核验的读取字节等价证明。Index=B、默认 Index=A、Worktree=C 时，`git write-tree(B)` 正确不意味着普通根目录下的工具读了 B；这正是 #66 P0 未完成的现有缺口。
+- **pre-push：** 一个原生 stdin 消费者读取全部 `local_ref local_oid remote_ref remote_oid`；保留每个 ref 的待推目标、真实 old→new 及来源。首次推送（旧 OID 全零）、强推、非 HEAD、多引用、缺远端对象均需正确扩大相关适用性或拒绝，不回退硬编码 `origin/main`。**删除远端 ref**（本地 OID 全零）单独裁决：没有待推的新 Commit，不能伪造 Source 执行或误当文件删除，按真实策略/删除影响检查并输出状态。
+- **复用不是按 Tree 相等粗合并：** 两个 ref 的新 Tree 可以相同，但旧对象不同，old→new 变更/删除/兼容性义务不同；只有对具体 Check 的 Trigger、Analysis、Invalidation、配置/环境和执行对象均具有有效等价证明时才可复用结果。不引入 #66 自己的可信历史接纳（#63 负责）。
+- Source/Config/Tool/Rule identity、实际执行内容、原生退出、`not_executed`、`blocked`、`not_applicable` 等结果复用既有 Plan/Report。某类业务测试为空不代表 Sources/Hygiene/前置或其他 Required Check 不适用。
+- 单事件共同 Source/Plan 仅生成和核验必要次数；项目级分析按其真实 import/build/关系闭包运行；同源 Tach 原生执行只有一个有效生产者。调用已安装的固定公共包；不是在 Lefthook 的每个文件命令里再次创建一个 ECI worktree。
 
-### 2.3 成本与重复消除（避免 Hook 变成全量 CI）
+## 3. 现有职责与依赖（以最新 #66 为准）
 
-- 分别为 pre-commit / pre-push 声明适用检查及真正的升级规则；Hook 本身变更应有**真实 Hook/事件契约测试映射**，不因未映射而无依据每次运行所有 Knowledge unittest + wheel；未知影响仍需可靠升级，不允许简单忽略 Hook 文件。
-- `select --validate-tach` 产生的原始 Tach 事实，输入/工具/配置相同且范围有效时应被后续 Hygiene 直接消费，不得仅为第二份报告再跑 `tach check`；`tach check-external` 是不同检查，按适用范围保留。
-- Identity Commit、wheel 构建和仓外 CLI Smoke 是类型化前置条件：只在实际影响/策略要求时运行或**有真实有效证据**时复用；覆盖缺失或无法确定必须阻断适用最终结论，不以降级为「无测试」规避。
-- 为独立 worktree、select、execute、Hygiene/Sources、前置条件、清理提供轻量**阶段耗时**及原生诊断；即使子进程输出需保持机器可读，也要有可见阶段进度与最终耗时分解。不得再建第二个缓存/结果数据库或全量性能平台。
-
-## 3. 与现有 Issues 的接口
-
-| 责任 | Owner / 现有资产 |
+| 责任 | 当前权威 / 已有资产 |
 | --- | --- |
-| 公共 Hooks CLI、Git Index/Push 事件适配、Source-bound 执行及定向结果/时长 | **ECI #66**，扩展已合并 PR #67 的 `eci_core` / CLI |
-| 原生 Check Report/Enforce、Actions 执行结果出口 | **ECI #52**，不重建 Check Runner |
-| 历史结果 T1-b PR→main 与 T2 本地→Actions 受信接纳 | **ECI #63**，本地 Hook 成功不等于已可受信复用 |
-| 最终 Required/Release、真实 GitHub Ruleset/Branch Protection | **ECI #61**，不建平行 Gate |
-| `ci-selection.toml` 等领域规则、安装消费、PR #73 旧适配器迁移/删除及验收 | **Knowledge #68** |
+| Hook 公共生命周期与 Git Index/Push 实际对象、Source 物化、适用检查选择、生产方原生结果 | **ECI #66**；已有 `engineering_ci` CLI/Selection/Execution/Plan；#67/#70/#71/#73/#79/#88 已完成部分必须复用 |
+| Native Check、工具资产、报告/Enforce 与 Actions 结果出口 | **ECI #52** 及既有 Tool Runtime/原生 Checks；新增具体扫描器不以 #66 Hook 交付为阻断前提 |
+| 真正的 Data/PASS 前置 Dagger DAG、产物闭包、同次 Result 共享 | **ECI #86** 消费 #66 Source/Prerequisite 生产事实；#66 不再发明一套 DAG |
+| 历史检查结果可信接纳、输入/范围有效覆盖和跨 Run 复用 | **ECI #63**；Hook 原生 PASS 不等于历史 Trusted |
+| 最终 Required/Release、GitHub Ruleset/Branch Protection | **ECI #61**；本地 Hook 不能伪造服务端 Required |
+| 项目领域规则/安装消费/真实 PR/main 工作流与旧适配器迁移 | **Knowledge #68**，复用 PR #73 的已有有效行为；PR #78 为同步草案 |
 
-上述公共 Hooks 生产能力可与 #66 的 Source/Check 修复、#52 Actions、#63 历史接纳并行推进；只有某条路径的集成验收才需要对应已完成的公共接口，**不得设置全 Issue 串行等待**。
+**交接不要求全 Issue 串行：** #66 P0 Source 与 P1 Host/Dagger 检查许可可并行；#86 独立接 Dagger DAG；#52/#63/#61 在各自实际事实成熟时消费。外部消费者可先配置项目规则，不因 #66 的 Hook 框架未选型而阻止已经可用的公共 Source/Check 接口。OTel/Weaver 已由 Knowledge PR #79 及 ECI #74/#75/#87 等专题管理，不回写本 Hook 草案。
 
-## 4. 可执行验收与反例
+## 4. 分层定向验收（保留已有效证据）
 
-- [ ] 干净的 **Knowledge** 和至少一个**非 Knowledge** 消费仓库，安装同一固定 ECI Hooks 包、配置并实际触发 pre-commit/pre-push；验证 `status`、重复安装、更新、卸载/恢复、已有第三方 Hook 以及 Windows/Unix 必要路径。
-- [ ] 临时 `GIT_INDEX_FILE=B`、默认 Index=A、未暂存工作区=C 时，只验证 B 的原生事实；准确保留 Git 事件原始身份及隔离执行 Tree，非零原生失败阻断提交。
-- [ ] 非 HEAD 推送、多引用、旧→新强推包含删除、首次推送、缺失远端对象：正确执行目标内容及有效输入覆盖；不可解析时扩大范围或阻断，不出现空差异成功。
-- [ ] 测试目标为空但 docs/source/Tach 适用时真实执行对应原生 Checks；不因 `no_selected_tests` 跳过。
-- [ ] Hook 脚本/配置变更选中相关公共/消费者测试；证明**不相关**业务全集和 wheel 不会被误触发，同时相关影响不漏测。
-- [ ] 同源 `tach check` 单次执行并复用其有效原生事实；不同的 `check-external`、Sources 和适用 Identity/Wheel 仍如实执行。
-- [ ] 记录一次有代表性的真实 pre-commit 耗时分段、适用测试数和重复检查数；无效/缺工具不标 PASS。
-- [ ] 安装/运行 Hooks 不能替代 GitHub 端 Required；`--no-verify` 的本地绕过路径在实际服务端验证策略中按其风险独立处理，不宣称无法绕过。
+- **#66 P0 首先成立：** 临时 `GIT_INDEX_FILE=B`、默认 Index=A、Worktree=C（内容与结果相反），原生工具确实读取 B 或准确拒绝；无业务测试而有 Lychee/Sources 适用时同样成立。非 HEAD Commit/PR Merge 与本地 Worktree 不同则使用真正目标对象；Git ODB 不可用与 Commit 不存在分离。利用 #66 已有验证结果，不重跑所有工具。
+- **Git 事件适配：** pre-commit 保留原事件；pre-push 首次、多 ref、非 HEAD、强推、缺旧对象、删除远端 ref；同新 Tree 但不同 old→new 的输入不得误复用受影响检查。真实 Source、Plan、原生执行与 Check 覆盖逐项对应。
+- **Hook 生命周期：** 一份 ECI 公共安装/status/update/uninstall 契约，干净 Knowledge 与一个非 Knowledge 消费仓库；安装幂等、固定版本、第三方 Hook/`core.hooksPath` 共存、普通与 linked worktree、Windows/Unix 必要路径。记录真实选择依据；本地可绕过性与服务端 Required 分离。
+- **Trigger/Analysis/Invalidation：** 改共享配置/工具规则/锁文件、改/删引用目标、Git 无变化但外部漏洞/链接状态失效，相关 Check 进入实际分析/失效处理，不相关语言工具或无依据的全部业务测试/wheel/fuzz 不启动。无法证实有效性时只对相关检查扩大/拒绝，不能凭未触发声称 PASS。
+- **结果/成本：** 只对新增或改变的事件/工具行为补正反场景；在同一 Source/Check/版本下复用有效 Tach/扫描结果，记录 native exit、范围、选测数、一次代表性时间分段与去重次数。Hook 成功不得冒充 #61 Required、#63 可信历史复用或 #86 DAG 闭环。
 
-## 5. 待审决策与合入步骤
+## 5. 剩余设计决策与提案退出
 
-1. 公共安装是采用 ECI 自管稳定 Hook 目录，还是 ECI 安装时创建**零逻辑薄转发入口**：以 Git for Windows/多 worktree 的可复现性、已有 Hook 兼容和版本升级成本比较，**不提前制造两套实现**。
-2. 确认 CLI 子命令名称及配置字段后再进行代码实施，避免在本需求 PR 中宣称现成接口。
-3. 审定后将**仅新增/冲突的条款**并入 ECI #66；保留其已交付 PR #67 事实、现有来源/Hygiene/选择器接口及 #52/#61/#63 职责，不复制本草案成另一个常驻规范源。
-
+1. **优先交付 Source 而不是先选 Hook 产品：** #66 已纳入的 P0 真实消费字节、P1 共同 Tach 许可及生产回执先按原任务实施。无论使用原生薄入口还是 Lefthook 都必须调用该公共契约；禁止以 Hook 框架安装验证代替 Source 验证。
+2. **Hook 机制选择**：原生薄入口作为成本/正确性基线；仅当固定版本 Lefthook 在项目实际需要的生命周期、并发或诊断上提供额外收益，且能保留单事件 Source、stdin、Index/Push 身份和安装卸载恢复时采用；只批准其中一个安装所有者。子命令和配置字段在接线实施 PR 对照现有 CLI 核准，本文不能宣称接口存在。
+3. **合入与归档**：#66 已吸收的通用生产方需求不再被此草案复制成新的长期规范。待 Hook 接线实施的具体方案确认后，此 Draft 可作为历史设计说明合并，或在结论已全部归入 #66 时关闭为 superseded；不直接转 Ready，不要求 #66 因本 Draft 仍在审阅而停止公共 Source/Check 实施。Knowledge PR #78 只同步其消费者差分。
 
 ## 6. 批量工具接入与生命周期策略（第二轮审定）
 
 **实施裁定：一次设计公共接线，按实际仓库的适用工具矩阵成批实现，按执行类别集中验收；不采取一个工具一个 PR、一个全量 CI 验收，也不把全部候选默认配置成每次提交的 Required。** 已合并 ECI PR #67 的选择/Hygiene/CLI、ECI #52 的现有 Check/Actions/工具资产和原生 Dagger Checks 作为基线，先核对现有能力，只补实际缺口。
 
-### 6.1 采用一个成熟 Hook 调度器，而不是两套
+### 6.1 单事件生命周期实现的决策条件
 
-- **Lefthook 为默认候选**：使用其 Git 生命周期入口、文件 glob、适用并发和 commit-msg 转发。ECI 保有事件 Source、Index/Push Git 对象、影响选择、原生 Check、身份和结果判定；glob / staged_files / push_files 是调度输入，不能代替 ECI 的真实 Tree 证明。
-- **prek 是备选、不是同时启用的第二套**：其 Rust/uv 环境和内置快检有价值，但截至本次核查，公开文档明确指出 pre-push 默认只检查第一个 ref，且可能在当前工作树上执行。除非由 ECI 独立接管所有 Git 原始 ref 及目标提交快照，否则不满足 #66 的多引用和非 HEAD 保真要求。
-- **Lefthook 的 use_stdin 有一个关键约束**：即使有多个命令开启 use_stdin，只有一个接收 Git pre-push 的完整 stdin。将 Git 原生 ref 元组交给一个 ECI 入口，使用现有 ECI 选择/执行器对适用检查分发；其余独立工具不能按 HEAD 或 origin/main 结果冒充特定 old→new 推送验证。避免在 ECI 里再建立一个与 Lefthook 并行的生命周期调度器。
-- **只读检查可以并发，写 Index 的检查不能无条件并发**。Lefthook stage_fixed 会调用 git add；Ruff/shfmt/taplo 自动修复若与部分暂存或不同 GIT_INDEX_FILE 叠加，可把未暂存字节纳入提交，或使先前验证的 Tree 失效。pre-commit 门禁默认 check-only；自动修复由显式命令或能核验真正 Index 更新的独立流程完成。
-- **工具包及缓存不双建**：继续复用现有 ECI/Runtime 的可安装工具、原生结果、版本和制品来源；Hook 管理仅负责触发与接线，不为每项扫描器复制安装器、下载器、结果解释器和状态数据库。
+- **原生零逻辑 Hook（首选比较基线）**：Git 本身已经提供 pre-commit/pre-push 事件、`GIT_INDEX_FILE` 与 stdin；薄入口调用一次 ECI Hooks CLI，能够在最少额外安装依赖下复用已存在的 ECI Source/Selection/Check。它不需要在 ECI 重建“工具生命周期调度框架”。
+- **Lefthook（条件候选）**：适合真实需要独立只读工具并发、文件快速唤醒或成熟诊断的仓库；但 `glob`、`root`、`{staged_files}` 均非 Index/Push 真实字节证明，且多个 `use_stdin: true` 命令只有一个会收到完整 stdin。采用时，一个 ECI 入口独占 pre-push stdin，一次事件仅构建一次有来源的公共 Source/Plan，不由多个 ECI Profile 分别创建 worktree/重复 Tach。
+- **prek（替代比较项）**：不能与 Lefthook 双安装；需对固定版本的多 ref stdin、目标快照与现有 Hook 兼容性做相同事实核验，不能由工具宣传或默认行为推断。
+- **写入安全**：pre-commit 默认只读，任何工具通过路径读取的实际 staged 字节需由 #66 P0 闭合。Lefthook `stage_fixed` 或自动 `git add` 可能卷入未暂存工作树修改，不能作为默认自动修复模式；明确的 fix 命令另行执行并重新核验受检 Tree。
+- **不重复安装/调度**：已存在的 ECI/Tool Runtime 原生工具与 Check 结果继续消费；Hook 管理不成为二次下载器、二次任务图、重复 Report 解释器或缓存账本。单一事件能并发无冲突的原生 Checks，但真正 Data/PASS 计算依赖、局部失败及同次产物共享由 #86 Dagger DAG/现有执行机制负责。
 
 ### 6.2 全阶段工具候选目录及按仓库启用策略
 
@@ -107,16 +105,13 @@ engineering-ci hooks run pre-push --repo .
 4. **原示例中多个命令需修正**：Gitleaks protect 已弃用；Schemathesis --app 已移除；oasdiff breaking 要求真实旧/新规范；cargo-mutants --in-diff 要求实际 diff 文件；griffe check 必须绑定真实包及 Git 对照。版本固定后据原生 help/doc 核实各项命令，不得通过错误命令的跳过冒充 PASS。
 5. **parallel=true 不代表任意检查可安全并行**：只有不冲突的只读任务可并行；变更 Index/依赖环境/同一输出目录、或依赖同源原始 Check 的任务，必须依次消费有效结果并避免同样工具重复扫描。
 
-### 6.4 一批接线，按公共路径和新增风险集中验收
+### 6.4 批量工具接入的正确交付范围
 
-1. **一次资产与已有证据盘点**：查看 ECI/Runtime tool_id、入口、版本/OS、原生 Checks、可用失败/跳过状态和现存验证；不用再逐工具设计 Schema、重新安装或跑全套正反例。
-2. **一个公共适配 PR 批量接入所有对目标仓库确实适用的工具**：先确定唯一 Hook 调度器、统一 Source/Config/Result、工具执行组及前置关系；静态基础、架构/文档、依赖/API、动态/形式检查可分组并行配置。其他语言/未使用的 API 协议保留在 ECI 能力目录，真实消费者出现时再启用，不降低长期需求范围。
-3. **按公共执行类别共享验收**：Index≠Worktree、临时 GIT_INDEX_FILE、真实多引用/强推、工具未安装/真实非零失败/跳过/不适用、Source/配置不匹配及原始结果复用，各用代表场景验证**公共路径一次**；对新命令、独特语义或尚无有效证据的 adapter 补其必要原生正反例。已有同输入/同版本证据直接复用，不要求每项都重复完整 CI。
-4. **Required 与性能分别验收**：Required 使用现有 ECI #52/#61/原始事实，Hook 汇总 PASS 不取代服务端完备；选择一组文档、Python、Hook/配置、依赖、未映射、push old→new 变更记录墙钟、重复扫描、选测规模和覆盖。只比较相同有效输入/检查范围的成本，不靠漏跑项目提高速度。
-5. **独立消费者收口**：ECI #66 证明一个 Knowledge 与至少一个非 Knowledge 消费者、公共 Hook 与原生结果可用；Knowledge #68 在有效固定版本接入并删除重复的 hook_adapter.py / 安装器。#63 历史可信接纳与 #61 Required/Release 继续按各自实际契约验收，不阻断新检查执行。
-
-**审定重点**：选择 Lefthook 作单一生命周期调度层，但不要另起 ECI 并行事件调度；一次批量接入不是让每次 Git 事件都运行所有候选；本需求 PR 不宣称工具均已成功运行或已修改 Ruleset。审定后仅同步到 Issue #66 的有效新增条款，不把此文件留下作为第二份长期规范。
-
+1. **一次盘点已有事实、按适用能力组实施**：本节完整目录保留 Python、Rust、Java、SAST、API、形式化、fuzz/mutation、依赖和在线检查的候选能力，不把目录当作“本批全部必须安装/运行/Required”。以当前已合并原生 Check、版本、Source/Report/Enforce 为基线，明确 `already-delivered`、`needs-event-binding`、`needs-native-check`、`not-applicable`。
+2. **#66 只交付公共 Hook/Source/触发/失效接口和已有检查的接线**；新扫描器的真实命令、原生 Exit/诊断、Report/Enforce 按 #52 及已有 Tool Runtime/Check 机制接入。可以在同一有意义的实施批次中并行处理对应功能，但不能以“一个 Hook PR 一次交付所有候选工具族”为 #66 的退出条件，也不强制每项工具单独开 PR。
+3. **按真实消费者启用**：Knowledge 当前有 Python、RDF/Sources、TOML、Shell/Workflow、文档及依赖图输入，就在该消费端成批落地适用 Checks；无实际 Rust/Proto/OpenAPI/运行 API 的仓库不安装其运行时，也不新建空 Required。未来消费者出现真实输入时能直接使用相同公共 Source/Check 接口，不需要重新发明 Registry/任务调度。
+4. **公共路径一次验证，新增风险定向验证**：Index/Worktree/Push、安装生命周期、Source/环境版本/缺工具/失败/skip 的公共证据已有有效则复用；仅对新适用命令和真正独特的风险补原生正反用例。测量有代表性的同范围成本、适用测试规模和重复扫描，不将跳过相关检查冒充性能收益。
+5. **#86/#63/#61 边界不转移**：依赖产物闭包和 Dagger DAG 是 #86；历史有效覆盖接纳是 #63；Required/Release 仍由 #61。Hook 声称“选中/运行”不能替代任何一项来源/结果证明。
 
 ## 7. 工具触发与执行作用域的正交分类（第三轮审定）
 
@@ -153,68 +148,26 @@ engineering-ci hooks run pre-push --repo .
 
 **重要的唤醒条件补足**：`Cargo.toml`/`Cargo.lock`、`pom.xml`/`build.gradle*`、`pyproject.toml`/`uv.lock`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 `glob: "*.rs"` 或 `glob: "*.py"` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
 
-### 7.3 Lefthook 配置语义、共享配置及根目录过滤（示意）
+### 7.3 事件入口与共享配置：以单次 Source/Plan 为准（非可执行示意）
 
-- `glob` 决定是否唤醒相应命令；`{staged_files}` 和 `{push_files}` 只提供路径而非保证读取了暂存 Tree/正确推送 refs。`root` 设置子目录并可能进一步限制候选文件；`glob` 仍按**仓库根**路径解释。没有匹配路径时省去工具进程启动，但不等于没有调度器/Git 固定成本。
-- **P/R/D/E 的项目级入口必须同时考虑全局配置/锁文件和依赖输入**。例如 Java 子项目 `root: "services/java/"` 即使其 `glob` 列了仓根 `settings.gradle`，仍可能因 `root` 范围筛选而失去唤醒。对消费仓根共享配置的模块检查，优先让触发入口运行在仓根，由 ECI 按 `--project` 或配置指向实际目标；仅在证明完全独立时使用 `root` 做窄化过滤。共享配置影响哪些子项目，需要受信依赖映射或适当扩大，不是盲目全部运行。
-- `src/**/*.js` 等递归 glob 在不同匹配模式下可能漏根层直接子文件；匹配模式须以安装的 Lefthook 版本及实际路径测试固定。删除/重命名、带空格/特殊字符的路径仍由 ECI 的原生 Git 事件与 NUL 安全解析覆盖。
-- **Read-only pre-commit 默认**：文件级 Check 也要基于本次 `GIT_INDEX_FILE` 对应的 Index Tree，不能直接用未暂存工作区内容伪造 PASS；`stage_fixed: true` 的 git add 可能改变部分暂存内容，不能默认作为验证模式。
-- **Pre-push 单一 stdin 消费者**：从 Git 提供的完整 ref old/new 元组生成 Source/Plan；ECI 复用现有选择/执行，不允许以硬编码 `origin/main` 或单个 HEAD 的结果覆盖所有引用。
-
-以下 YAML **仅是触发与执行范围关系的设计示意，非可部署的已实现 CLI**；命令 `engineering-ci hooks run ... --profile` 仍待审定。需要精确覆盖的条件、缺失 glob、真实版本参数必须在实施 PR 中定向验证。
+- 若采用 Lefthook，`glob` 在 Git 仓根路径上匹配，`root` 还会过滤文件并改变执行目录；共享构建输入不能因仅处在根目录而被子项目 `root` 静默丢失。文件/路径过滤属于保守唤醒，不属于被验证 Source、完整 Analysis Set 或跨 ref 的可信适用性结论。
+- 多语言包可在消费配置中声明 F/P/R/D/E 和全局配置/锁文件影响；由一次公共事件入口生成/核验 Git Source 与 Plan，再按受影响的原生 Check 分发。**不得**让不同 `--profile` 入口各自重复物化 Index、重新算 Plan 或重复执行 Tach；只有确实独立且不会冒充 ECI Source/Check 覆盖的只读工具，才考虑由 Lefthook 直接管理。
+- 下列 YAML 是 **候选 Lefthook 模式示意**，不是可部署命令，`engineering-ci hooks` 目前不是已交付 CLI：
 
 ```yaml
 pre-commit:
   commands:
-    python-file:
-      glob:
-        - "*.py"
-        - "*.pyi"
-        - "pyproject.toml"
-        - "ruff.toml"
-        - ".ruff.toml"
-      run: engineering-ci hooks run pre-commit --profile python-file
-    python-project:
-      glob:
-        - "*.py"
-        - "*.pyi"
-        - "pyproject.toml"
-        - "uv.lock"
-        - "tach.toml"
-        - "pyrightconfig.json"
-        - "ci-*.toml"
-      run: engineering-ci hooks run pre-commit --profile python-project
-    rust-package:
-      glob:
-        - "*.rs"
-        - "Cargo.toml"
-        - "Cargo.lock"
-        - "build.rs"
-        - ".cargo/**"
-        - "rust-toolchain.toml"
-      run: engineering-ci hooks run pre-commit --profile rust-package
-    java-package:
-      # No root here: root-scoping may hide shared repository build inputs.
-      glob:
-        - "services/java/*.java"
-        - "services/java/**/*.java"
-        - "services/java/pom.xml"
-        - "services/java/build.gradle"
-        - "services/java/build.gradle.kts"
-        - "pom.xml"
-        - "settings.gradle"
-        - "settings.gradle.kts"
-        - "gradle.properties"
-        - "gradle/libs.versions.toml"
-      run: engineering-ci hooks run pre-commit --profile java-package --project services/java
+    eci-source-bound-checks:
+      run: engineering-ci hooks run pre-commit --repo .
 pre-push:
   commands:
     eci-all-ref-checks:
       use_stdin: true
-      run: engineering-ci hooks run pre-push
+      run: engineering-ci hooks run pre-push --repo .
 ```
 
-**示例的 `glob` 不是规范性完整 Trigger Set**：消费其他脚本、父 POM、共享插件、Git attributes、构建源码或动态配置时应扩展相应触发规则。ECI 可把候选事件统一交给一个 Source/Impact Plan，从而让多个 Check 复用同一 staged Tree 及 Tach 原生结果，避免按每个 Lefthook Job 再建一个无关临时 worktree。不存在相关项目输入的语言工具不应启动。
+- 这个设计仍必须在 ECI 内正确解释 `GIT_INDEX_FILE` 和完整 pre-push stdin；不允许用本工作树文件路径或固定 `origin/main` 补足这些输入。Lefthook 可能在过滤后不调用某命令，因此承载全量事件/适用性判定的入口不能依赖会遗漏必要输入的 `glob`/子目录 `root`。
+- 如果最终采用 Git 原生薄 Hook，同样通过单一 `hooks run` 消费事件；两者是生命周期接线替代项，不是两层必须同时存在的控制器。
 
 ### 7.4 配置与判定数据（复用已有 ECI 公共契约）
 
@@ -224,32 +177,33 @@ pre-push:
 - Check ID/适用规则、原生运行输入、实际 Source Tree、受影响模块或旧新契约、工具/规则/锁版本、必要环境与前置条件及真实执行状态。
 - 复用的原始 Check 及其有效覆盖/身份，工具进程是否启动、单项耗时、并行或写入冲突。`skipped`、`not_applicable`、`not_executed`、`blocked` 和 `passed` 不得互相代替。
 
-### 7.5 定向验收：同时检验唤醒、分析覆盖与失效
+### 7.5 定向验收：验证唤醒、分析范围、失效与结果来源
 
-- [ ] 仅变更 Python 文件：适用 Python F/P Checks 运行；无对应 Rust/Java 输入时其原生命令**不启动**。
-- [ ] 只修改 `ruff.toml` / `.ruff.toml` / `pyproject.toml`：唤醒对应文件/项目检查，并扩大到受配置影响的分析集合，不能仅检查本次改动的 TOML 文件；无依据不升级所有业务测试/所有 wheel。
-- [ ] 只修改 `pyrightconfig.json` 或类型存根/依赖版本：类型检查覆盖其受影响模块；只改 `Cargo.lock`、Cargo workspace 配置或共享 Gradle/POM：唤醒相关包，包括 `root` 限制外的共享配置来源。
-- [ ] 只删除/重命名某文档引用的目标或 Sources/RDF 资源：Lychee/Sources/消费者反向依赖按适用关系验证；不能仅因没有 Markdown 改动就跳过。
-- [ ] 单独更新工具规则/版本、CI Workflow、构建定义：受影响 Check 旧 PASS 失效或由可信等价证据保留，不以 Hook 空唤醒或文件扩展名匹配代替原生覆盖。
-- [ ] 在线链接或漏洞数据库在 Git 无变更时发生有效变化：适用的计划/Release 检查重新判定，或明确既有结果有效期和未验证状态；不能宣称文件过滤已经充分保障。
-- [ ] 原始 Git Index 与 Worktree 不同、临时 `GIT_INDEX_FILE`、多引用/强推/非 HEAD 目标及共享根配置均按真实被检对象和依赖范围判定。
-- [ ] 公共 Source/失效/范围规则只做一次组合正反验收；新增工具仅补真实命令与特有风险，已有同输入/同版本 Check 成果不重跑全量 CI。
+- [ ] Index=B、默认 Index=A、Worktree=C，实际工具（包含零业务测试时适用的 Lychee/Sources）读取 B 字节或明确拒绝，不仅核验 `git write-tree` 或只比较 Plan 元数据。
+- [ ] 同一事件只有一个有效 Source/Impact/Selection 事实，Tach 和适用 Native Check 不为多个 Hook Profile 重复执行；工具出错、不可用、not_executed/advisory 区别保留。
+- [ ] 只修改 Python/其工具配置：受影响 F/P Checks 唤醒，相关配置触发相应完整包/模块 Analysis Set；Rust/Java/未适用生态不启动。只改 `Cargo.lock`、共享 Gradle/POM 或 Pyright/Tach 配置也能唤醒相关 Check。
+- [ ] 删除/重命名被引用文档目标或 RDF/Sources 资源时检查反向影响；仅改变工具、规则、环境版本或 CI Workflow 时，旧 Check 覆盖按真实 Invalidation 失效或有有效受信等价证据。
+- [ ] 首次推送、多 ref、强推、非 HEAD、远端删除 ref 和缺旧对象各按真实 Git 事件裁决；**同 Tree 不同 before→after** 不得误用相同的比较 Check/选择范围。
+- [ ] Git 无变化但网络/漏洞/在线链接数据实际失效时，有真实独立的适用检查时点/有效期规则或明确未验证状态；Hook file glob 不保证外部状态新鲜。
+- [ ] 只对公共 Source、Git 事件、Hook 生命周期的新增路径做代表性验收，额外工具只验证其原生命令特有风险，不重跑 PR #67–#88 已有效的全部工程检查。
 
-### 7.6 对应现有 ECI Source/Selection/Check（实施映射）
+### 7.6 现有 ECI 对象与待补的具体实现缺口（按当前 main）
 
-| 现有对象 | 已实现的事实 | 应扩展的缺口 |
+| 现有对象 | 已交付的事实 | 本 Hook/Source 提案尚须消费或补齐 |
 | --- | --- | --- |
-| `selection.ChangeSet` / `changeset_multi` | `snapshot`、`index_tree`、`execution_tree`、`references`、`changed_paths` 和 Git 完整性 | 让 Hook Index 和每个 Push ref 复用现有 Source；glob 不得变成第二份最终影响判定 |
-| `selection.Config` / `load_config` | `escalation_files/prefixes`、`ignored_files/prefixes`、`module_tests`、`non_code_rules`、`prerequisites`、`check_scope` | 将配置、锁文件、工具规则、非代码依赖的触发与失效关系写入已有消费者规则；不能用新的 Hook-only TOML 重复定义 |
-| `select()` / `_reverse_closure()` / `_check_scope()` | Python 反向依赖、非代码映射、逐 Check `selected`/`unknown`/`not_applicable` | 按 Check 扩大实际受影响范围，取代把所有配置变更一律升级为全部单测和所有前置条件 |
-| 既有 `plan()` 的 `generator/git/selection/check_scope/inputs` | Git Tree、ECI 版本、选择原因、Tach 和部分规则摘要 | 在 `inputs` / 相关 Check 节点补充真实消费的 Hygiene、Sources、工具规则、依赖和环境身份；不重复一个新 Plan |
-| `execution._verify_execution_binding()` / `execute()` 与 Hygiene/Sources | Git 输入绑定、原生 Check 和前置条件结果、失败/未执行状态 | 执行前核实相应规则/环境身份；消除 Hygiene 用独立 `code_changed` 路径再次决定 Selection 已裁定的同一 Check 适用性 |
-| ECI #63 和 #61 | 分别负责旧证据受信、最终 Required/Release 完备 | 扩展既有接纳/覆盖证据消费，不在 #66 新增受信引擎、最终 Gate 或缓存账本 |
+| `engineering_ci.selection.ChangeSet` / `changeset_multi` | Index/Worktree/PR/Push 的对象、引用与变化路径，#73 已加快照校验 | Hook 真实事件进入同一 Selector；对所有 Push ref 保留各自 old→new；读取字节需走 #66 P0 物化 |
+| `engineering_ci.selection.Config` / `load_config` / `select()` | 现有模块测试、非代码消费者、Check Scope、工具及必要前置的选测规则 | 按 Trigger/Analysis/Invalidation 准确表达共享锁、规则、版本、反向引用，不增加 Hook-only TOML |
+| `engineering_ci.selection.plan()` + `plan_contract` | PR #88 已交付 schema 2、依赖声明/拒绝与 `source_binding_verified=unknown` | 记录/消费真实 Source/Config/Check/Prerequisite 同源事实，不能把 unknown 升格为已验证 |
+| `engineering_ci.execution._verify_execution_binding()` / `execute()` + Hygiene/Sources | #70/#71 已修无业务测试而适用 Check 的执行、Tach external 与类型化前置；#73 有 Index Tree 核对 | 工具真实读取 Index/Commit/Push 目标字节；共同 Tach 子集许可，实际 Native Result/失败归因；Host/Dagger 一致 |
+| Dagger `execute_plan()`、Source handoff | #88 给出待消费的 Plan 依赖与原 Source 身份引用 | #66 保证真实生产输入；#86 建原生 DAG/Artifact Closure/Result Sharing；不由 Hook 调度器重复实现 |
+| ECI #52/#63/#61 | 原生 Report/Enforce、历史可信接纳、最终 Required 分有权威职责 | Hook 只提供真实 Producer/Source/Check 事实，不制造平行 Gate/历史受信结果 |
 
-**规则**：对真实输入/Check 的新增需求直接补现有 Selection、Plan、Execution 或原生 Report；若已具备充分数据就只修改使用逻辑。没有证据的旧 PASS 不可复用，但也不能为一个相关 Check 的失效无依据重跑所有业务测试与 wheel。
+若现有 Schema 足够，只改使用方式；实际欠缺字段按其已存在的 Source/Plan/Report 扩展，不维护第二份同义 Registry。无有效证据时不复用旧 PASS，但也不能因为一个相关 Check 失效便无依据重跑所有业务测试和 Wheel。
 
-### 7.7 OTel 专题已迁移（本 Git Hook 提案暂缓）
+### 7.7 OTel 专题独立，不再形成当前设计依赖
 
-OTel CI/CD/VCS Semantic Conventions、Weaver 原生 Registry、Knowledge F0 来源、ECI 检查及真实 OTLP 验收和下游 Issue 跟踪已统一迁移到 Knowledge [OTel/Weaver 统一总控 PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) 的 `design/engineering-verification/opentelemetry-weaver-delivery.md`；原有 OTel 专属字段映射、Span/Exporter/Trace Context 和 OTel 验收要求**不在本 PR 独立维护或审批**。本 PR 只保存独立的 Git Hook/Source/Selection/执行范围要求，**维持 Draft、暂缓 Git Hook 审定与实施**。OTel 原生实施可独立推进，不等待本 Git Hook PR。
+Knowledge [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) **已经合并**，其 `design/engineering-verification/opentelemetry-weaver-delivery.md` 是 OTel/Weaver 专题设计来源；具体实施按 ECI #74/#75/#87 和消费者独立开展，不在此复制 Span/Exporter/Root 或 Trace Context 的完整规范。
 
-上述条款审定后仅同步 ECI #66 的实际新增部分，避免把提案长期保留为第二套规范；无需新建缓存层、框架或 Required 判定器。
+PR #72 保持 Draft 的原因是 **Hook 机制选择和消费迁移仍有待确认**，并非 OTel 尚未完成阻断 Hook。#66 的 Source/Check 生产方实施、#86 DAG 和 OTel 工作均可按真实接口独立推进；不因暂停此 Draft 而等待。
+
+**收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
