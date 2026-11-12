@@ -102,7 +102,11 @@ def _verify_execution_binding(plan, root):
     git = plan["git"]
     expected_tree = git.get("execution_tree")
     snapshot = git.get("snapshot")
-    if not snapshot:
+    if snapshot is not None and (
+        not isinstance(snapshot, str) or snapshot not in plan_contract.GIT_SNAPSHOTS
+    ):
+        return False, "git_snapshot_unsupported", expected_tree
+    if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
         expected_tree = expected_tree or git.get("index_tree")

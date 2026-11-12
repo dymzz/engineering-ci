@@ -167,6 +167,10 @@ def test_all_host_entry_points_refuse_before_a_consumer_starts(
 ):
     value = policy_plan()
     change(value)
+    _assert_refused_before_consumers(value, reason, tmp_path, monkeypatch, capsys)
+
+
+def _assert_refused_before_consumers(value, reason, tmp_path, monkeypatch, capsys):
     path = tmp_path / "plan.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     calls = []
@@ -189,6 +193,93 @@ def test_all_host_entry_points_refuse_before_a_consumer_starts(
         execution.main(["--plan", str(path), "--root", str(tmp_path), "--json"])
     assert rejected.value.code == 2
     assert reason in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("case", ["root_scope", "selection_scope", "snapshot"])
+def test_unknown_execution_semantics_refuse_even_with_test_targets(
+    tmp_path, monkeypatch, capsys, version, case
+):
+    value = policy_plan()
+    value["schema_version"] = version
+    value["selection"]["tests"] = ["tests.test_pkg"]
+    if version == 1:
+        value.pop("dependency_contract")
+    if case == "snapshot":
+        value["git"] = {"snapshot": "future_snapshot"}
+        reason = "git_snapshot_unsupported"
+    else:
+        container = value if case == "root_scope" else value["selection"]
+        container["check_scope"] = [{"name": "source", "status": "future_required"}]
+        reason = "check_scope_status_unsupported"
+    _assert_refused_before_consumers(value, reason, tmp_path, monkeypatch, capsys)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "selected",
+        "unknown",
+        "not_applicable",
+        "targeted",
+        "escalated",
+        "no_tests",
+        "no_changes",
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_current_scope_statuses_remain_readable(tmp_path, status, nested):
+    value = policy_plan()
+    container = value["selection"] if nested else value
+    container["check_scope"] = [{"name": "unittest", "status": status}]
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    assert execution.load_plan(path) == value
+
+
+@pytest.mark.parametrize(
+    "snapshot", ["worktree", "index", "commit", "push", "pr_merge", "multi"]
+)
+def test_current_snapshot_identities_remain_readable(tmp_path, snapshot):
+    value = policy_plan()
+    value["git"]["snapshot"] = snapshot
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    assert execution.load_plan(path) == value
+
+
+@pytest.mark.parametrize("snapshot", ["future_snapshot", "", [], {}])
+def test_binding_helper_itself_refuses_unknown_snapshot(
+    tmp_path, monkeypatch, snapshot
+):
+    value = policy_plan()
+    value["git"] = {"snapshot": snapshot}
+    calls = []
+    monkeypatch.setattr(execution.selection, "_git", lambda *a: calls.append("git"))
+    assert execution._verify_execution_binding(value, tmp_path) == (
+        False,
+        "git_snapshot_unsupported",
+        None,
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("explicit_null", [False, True])
+@pytest.mark.parametrize("tree", [None, "known-tree"])
+def test_optional_legacy_snapshot_keeps_the_existing_binding_default(
+    tmp_path, monkeypatch, version, explicit_null, tree
+):
+    value = policy_plan()
+    value["schema_version"] = version
+    value["git"] = {"execution_tree": tree}
+    if version == 1:
+        value.pop("dependency_contract")
+    if explicit_null:
+        value["git"]["snapshot"] = None
+    execution.validate_plan(value)
+    monkeypatch.setattr(execution.selection, "_tree_of", lambda *a: "known-tree")
+    assert execution._verify_execution_binding(value, tmp_path) == (True, None, tree)
 
 
 def test_supported_policy_executes_in_its_existing_post_check_phase(

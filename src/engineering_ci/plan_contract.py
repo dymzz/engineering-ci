@@ -12,6 +12,21 @@ PLAN_KIND = "engineering-ci-selection-plan"
 PLAN_VERSION = 2
 DEPENDENCY_VERSION = 1
 SEMANTIC = "prerequisite_policy_aggregation"
+# selection._check_scope emits applicability states and the test Selection's
+# status. Explicit full selection is currently represented as escalated.
+CHECK_SCOPE_STATUSES = frozenset(
+    {
+        "selected",
+        "unknown",
+        "not_applicable",
+        "targeted",
+        "escalated",
+        "no_tests",
+        "no_changes",
+    }
+)
+# CLI mode "pr" produces the execution identity "pr_merge", not "pr".
+GIT_SNAPSHOTS = frozenset({"worktree", "index", "commit", "push", "pr_merge", "multi"})
 
 
 class PlanError(ValueError):
@@ -46,6 +61,8 @@ def _validate_consumer_fields(value, chosen, git):
                 for item in scope
             ):
                 raise PlanError("check_scope_invalid")
+            if any(item["status"] not in CHECK_SCOPE_STATUSES for item in scope):
+                raise PlanError("check_scope_status_unsupported")
     if "checks" in chosen and not _string_list(chosen["checks"]):
         raise PlanError("checks_invalid")
     if not _string_list(chosen.get("prerequisites", [])):
@@ -71,6 +88,8 @@ def _validate_consumer_fields(value, chosen, git):
     ):
         if git.get(key) is not None and not isinstance(git[key], str):
             raise PlanError("git_invalid")
+    if git.get("snapshot") is not None and git["snapshot"] not in GIT_SNAPSHOTS:
+        raise PlanError("git_snapshot_unsupported")
     if "changed_paths" in git and not _string_list(git["changed_paths"]):
         raise PlanError("git_invalid")
     content = git.get("content_binding")
