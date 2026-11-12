@@ -2,7 +2,7 @@
 
 > **审计范围：S0 架构裁决 + S0.5 已应用 Issue 文本差分 + S1 待实施机制设计要求。** 实际仅直接更新了 [ECI Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 正文；**Knowledge #68、ECI PR #72、Knowledge PR #78 均未在本轮修改**。此文件不是规范性定义，不表示任何 Hooks 运行时代码已交付；完整 PR #72/#78 设计继续有效。
 
-> **S1 本轮定点复审（ECI #66 `2026-11-12T16:48:41Z`）：** S1-A/B/D/E 依据当前 `engineering_ci` 代码修订，线上 Issue 正文 **36,506 字符 / 292 行**。先前 16:36 的 **35,333 字符**为历史快照，非现行版本。S0.5 applied Diff 仍专门记录 16:06 的九项历史替换，**不**混入 16:23、16:36 或 16:48 的 S1 追加/修订。旧 L56/63/94/95/105/127/170/172/219 属于 14:46 的 276 行基线，不能作为当前 Issue 行号。
+> **最新审计基线（ECI #66 `2026-11-12T16:57:49Z`）：** 正文 **37,562 字符 / 292 行**。S0.5 `applied.diff` 是 **14:46 的 28,542 字符/276 行基线**上的 C01–C09 九行，在 **16:06:06Z** 应用；**S1-A～F 于 16:23:28Z 追加**，后于 **16:36:27Z**、**16:48:41Z** 定向修订。最新 **16:57:49Z** 再修 C01、S1-A、S1-E。每个时间点是独立的 Issue 编辑，不能以任一旧 Review 覆盖之后的正文，也不能改写已封存的 S0.5 九行审计。原行号 L56/63/94/95/105/127/170/172/219 仅对 **14:46 基线**有效。
 
 ## 1. 审阅基线
 
@@ -40,7 +40,7 @@
 | C08 | 172 | 不重建调度器被误读成禁用 Lefthook | 保留成熟调度与多文档设计，单一规范性维护来源 |
 | C09 | 219 | 反重复 Runner 被误读为否定成熟调度 | 保留 #66 不新增独立工程检查器，仍可跨 Issue 批量接入 Native Checks |
 
-**S0.5：** 九项原句于 16:06 定点替换并有独立审计；16:23 的 S1 机制接口、16:36 的 Expected/Routing 解耦及 **16:48 的 S1-A/B/D/E 定点修订**均属于后续独立修改。现行 Issue #66 为 **36,506 字符 / 292 行**，审计文件没有也不应伪称记录了后续 S1 Diff。保留原 Issue 的 Source P0、Hook 生命周期与多工具能力、#52/#63/#61/#86 职责和完整跨生态矩阵；PR #72/#78 不得再被压缩或当成历史冗余。
+**S0.5：** 16:06 的九项原句替换和独立审计已完成；16:23 S1-A～F 追加、16:36 和 16:48 的机制合同修订、16:57 的 C01/S1-A/S1-E 修订均**不属于** `issue-66-hook-routing-applied.diff`。当前 Issue #66 为 **37,562 字符 / 292 行**。不要把 14:46 基线 L105（现行正文其他行）误认成当前定位；相关 S1 文本以 Issue 最新正文和本审阅索引为准。PR #72/#78 的完整架构与跨生态矩阵继续有效。
 
 ## 4. 尚需独立技术裁决的真实接口
 
@@ -60,6 +60,16 @@
 
 **设计审批口径：** 以上四项修订已进入 #66 的 S1-A/B/D/E，是可实施合同和验证要求，**不是已交付接口**。S0.5 历史审计不受影响。独立 Expected、Routing、Native Result、Source 真实字节和最终 Gate 的运行时证据仍须在 #72/#52/#66/#61 对应实施中分别提供。
 
+### 2026-11-12 16:57 P2 定向修订和审计链验收
+
+- **P1 审计时间线已闭合，不重复提交旧版本 Review。** PR #91 先前关于 `16:38` 是最后 Review 的判断已过时：Review [#5878488293](https://github.com/dymzz/engineering-ci/pull/91#pullrequestreview-5878488293) 于 **16:51:14Z** 审阅 Issue **16:48:41Z / 36,506 字符 / 292 行**。当前 **16:57:49Z / 37,562 字符**属于本轮独立的新改动，须以最新文本重新 Review。不得拿 16:38 或 16:51 的审阅涵盖 16:57 的变更。
+- **C01 / Native 结果职责（当前 Issue L56）：** #66 负责 Source/Selection 与已经存在的公共 `execution.execute()` 输入/执行事实关联；新增 Native Tool/Check 身份、适配和原生 Report/Enforce 属 #52/Runtime。保留原公共执行器，不建立第二执行器。
+- **C01“完整多工具能力”范围（当前 L56）：** 是条件路由、并行/必要顺序、Expected→Job→Result、冻结代表性矩阵和安装/维护/诊断生命周期的公共能力，不是一次性接入全部生态工具或将全部候选设为 Required；#66 Source P0 的独立验收继续有效。
+- **S1-A Check/Profile 契约核对（当前 L106）：** 已知 [Runtime #27](https://github.com/dymzz/vesryn-tool-runtime/issues/27) 定义 `tool_id/group_id/access_id`；现有 `selection._check_scope()` 的 `name` 和 Plan Schema 2 不等于稳定 `check_id`。[#52](https://github.com/dymzz/engineering-ci/issues/52) 是需核对/必要时扩展的原生 Check/Result 契约，**目前未获得可以正式引用的独立版本化 Check ID / Profile / Result Schema**。冻结前须记录实际版本、公开实现路径/链接及缺项字段清单；不得伪造版本号，或在 #66 新建平行 Registry。
+- **S1-E 唯一矩阵权威（当前 L114）：** 在 Issue #66 的 S1-E 登记候选 `matrix_version=eci-66-s1-hooks-v1`，**仅为待审版本，不代表已批准或运行通过**。PR #72 应引用此版本并提供可运行配置/证据，不另起第二个规范性矩阵；扩大或改变适用范围须在 #66 提升版本/说明修订理由，已有证据明确关联原版本。
+- **C01–C09 历史行号：** 对应 14:46 的 28,542 字符/276 行基线。当前 292 行正文不具备同一定位，特别是 C05 原 L105 已非有效当前地址。审计文档不得拿旧行号定位现行语句。
+- **Review 身份：** 本轮与早先 Review 可能来自同一 GitHub 帐号；提交新的审阅不等于第三方独立审计或 S1 运行时验收。合并 PR #91 仅可保存文档审阅/历史审计，不替代 #66 当前文本、#72 实施或 #61/#63 门禁证据。
+
 ### S1 准入与设计完成核对（接口要求，不是运行时已交付）
 
 1. **Expected Check 独立于调度器路由。** #52/Runtime 提供稳定 Check 身份与受信 Profile；[Runtime #27](https://github.com/dymzz/vesryn-tool-runtime/issues/27) 已定义 `ToolAsset.tool_id`、`ToolGroup.group_id`、`ToolAccess.access_id`，但三者都不等同 `check_id`，也不等同 Job/Requirement ID；#52 若尚无稳定版本化 Check ID 需在既有 Check/Result 契约扩展。消费者管版本化项目适用规则，#66 按 Git Event/每 Ref 在相关 Job 执行前以现有 Selection/Plan 产生不依赖调度器和已执行结果的 Expected Check：`event_ref`、`source_ref`、`check_id`、`applicability`/原因、`rule_ref`、可选 `requirement_ref`；**绝不包含 `job_ref`**。路由确定之后再建立独立 Routing Binding：`expected_check_ref`、`scheduler_ref`、`effective_config_ref`、可为空的 `job_refs[]`、`mapping_status`。Check↔Job 为多对多；无路由也必须保留预期 Check。Required 是独立策略，版本化接口由 S1 决定，不另造平行 Registry/schema。
@@ -67,7 +77,7 @@
 3. **Event Prepare、有效配置及四类事实状态。** 固定 Lefthook 版本核实 `setup`/`dump`、合成配置、真实生效环境和 pre-push 原始 stdin；不可宣称静态 dump 与运行配置自动一致或虚构动态 Job 注入。Expected 独立于 Job/Result 产生，与同次有效配置的 Routing Binding 和原生 Result 对账；无 Job → Routing `unrouted`、Check `not_executed`；证明不适用 → `not_applicable`；缺事实 → `unknown`，不得 PASS。**已有 `execution.execute()` 的 Execution Report `blocked` 属执行层拒绝事实，不是 #61 最终 Required Gate 的 `blocked`；二者分层但都保留。** Job 在启动前过滤，内部 wrapper 不会自行报告跳过；本地完全绕过 Hook 时只能由适用服务器事实核验，不能本地臆造检测。
 4. **冻结基础三 Job、D/E 及平台验收范围。** Tach（含适用的 `check-external`）、Lychee、Sources 是 F/P/R 的可执行调度样本，**并不宣称已证明 D/E 或全部生态能力**。D 类复用真实多 Ref old→new 和不同比较基线下的选择/复用；E 类复用已有 pytest/原生执行/必要前置与环境范围核对，非 Git 动态变化归定期/CI/Release。另保留 Index/临时 Index、强推/新建/删除/非 HEAD、Windows/Unix/Linked Worktree、install/status/update/uninstall、第三方 Hook、直接 Tool Result 及诊断/并行成本。仅补未覆盖的跨 Ref/跨 Job 反例，现有可信单项证据不重验。#63 维护证据/覆盖有效性，#61 负责最终 Required 聚合；矩阵是批准 S1 实施方案的依据，不是开始设计的门槛，也不缩减 #72 完整工具目录。
 
-> 唯一权威和完整条款见 [ECI #66](https://github.com/dymzz/engineering-ci/issues/66) `S1 机制接口与冻结验收基线`（2026-11-12T16:23:28Z）。本段只是 S0/S1 审阅导航，不另建一份规范性 Schema。
+> **当前唯一需求权威：** [ECI #66](https://github.com/dymzz/engineering-ci/issues/66) S1-A～F（自 16:23 新增，经 16:36、16:48、16:57 定向修订），以及现有 #52/Runtime Check 身份/结果契约。此 PR 是 S0/S0.5/S1 的导航和审阅依据，**不是第二份冻结 Schema 或运行时交付记录**。
 
 ## 5. 分阶段 PR / 审阅计划
 
