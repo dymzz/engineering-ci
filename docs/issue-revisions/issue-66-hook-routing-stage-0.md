@@ -13,29 +13,36 @@
 
 **唯一规范性权威 ≠ 单一文档。** 同一概念、语义与契约有一个权威定义/维护源；不同设计方案、实施说明、项目规则与验收证据可各有独立文档，并应以引用代替复制同义规范。ECI #66 承担公共 Hook/Source 工程契约，Knowledge #68 承担项目特有规则与消费者验收；已有上游 standards/semantics 定义必须引用，不能借 Hook 设计再造。
 
-**Lefthook 是受规范约束的成熟工具调度器，不是规范来源。** 它可以按阶段、路径、项目/工具条件判断、路由、分配并激活多个 Tool Jobs，安排安全并行/必要顺序、生命周期与诊断。ECI 负责**被激活的** Check 所需实际 Git Source、每 Ref 输入、细粒度 Selection、原生结果与失败归因。必要时 Job 直接调用 Tool/ECI Check/Dagger Function；**不能每次 Git Hook 先无条件调用“所有工具”再由单个 ECI 入口逐项跳过**。
+**Lefthook 是受规范约束的成熟工具调度器，不是规范来源。** 它可以按阶段、路径、项目/工具条件路由、分配并激活多个 Tool Jobs，安排安全并行、必要顺序、生命周期与诊断。**公共 Check 契约由 ECI 维护，项目适用规则由 Knowledge 等消费者维护；Lefthook Job 配置是该权威契约的可检查路由映射。** ECI 对已激活 Check 的实际 Git Source、每 Ref 输入、细粒度 Analysis、原生结果与失败归因负责；必要时 Job 直接调用 Tool/ECI Check/Dagger Function，但计入 ECI 结果时必须具备完整原生 Source/Check/Exit 关联。既不默认启动全部工具再在单个 ECI 入口跳过，也不允许漏唤醒必要 Job 后仍宣称 PASS。
 
-**Lefthook 优先评估，不提前宣称选型定案。** PR #72 必须对固定版 `jobs/group`、条件与扩展配置、`use_stdin`、Windows/Linked Worktree、第三方 Hook 共存和原生结果归因做真实适配验证。Lefthook 若无运行时动态插入 Jobs API，不能虚构该能力；可比较固定 Jobs + ECI 细粒度参数/事件准备、prek 或真正功能等价的方案。单一 pre-push stdin 接收者不是单 Plan 或单进程。
+**Lefthook 优先评估，不提前宣称选型定案。** PR #72 必须核实固定版 `jobs/group`、条件与扩展配置、`use_stdin`、Windows/Git for Windows/Unix/Linked Worktree、`core.hooksPath` 第三方 Hook 共存、安装幂等、升级/卸载恢复、诊断与原生结果归因。不可假设存在未核实的运行时动态 Job 注入 API；可比较声明式 Jobs + ECI 真实适用性判定、事件准备和共享结果、prek 或具有同等多工具能力的方案。**完整事件输入接收≠单个 Source/Plan/串行 Job**。#66 Source/Execution 生产方的独立验收不等待 Hook 框架最终选型，完整公共 Hooks 验收仍须覆盖这些成熟调度功能。
+
+### 唯一权威的可执行完整性条件
+
+- **规范来源不重叠：** ECI 公共 Check/Source 及输入规则、Knowledge 等消费者项目适用性、Lefthook 运行配置各有确定角色；Job 路由不是第二份规范性 Check 定义，设计文档可各自保留具体方案和验收证据。
+- **必要 Job 覆盖：** 对一次事件/每个推送 Ref 的预期适用 Check，要能核对哪些 Job 应被唤醒、哪些实际被激活、哪些产生具有 Source/Check/原生退出身份的结果；漏执行不得成为 `passed`。这可以由已有 ECI 计划/报告及适用门禁实现，**不预设新的数据存储、全局调度器或动态 Job 接口**。
+- **原生能力保持：** 独立可并行 Job 不因共享 Source/Plan/Tach 被强制串行；Direct Tool/ECI Check/Dagger Function 只要报告要求的真实 Source、覆盖与原生结果，即可纳入同一 Check 结论。
+- **完成边界分离：** #66 Source P0 可独立验收；Hook 完整交付才要求成熟工具路由、安装生命周期和多工具故障诊断。#66 不负责新增独立工程检查器；新 Native Tool/Check 沿用 #52/现有 Runtime 的交付。
 
 ## 3. 逐条冲突索引（精确旧句和新句见 .diff）
 
 | 编号 | ECI #66 原文行 | 问题 | 定点目标 |
 | --- | ---: | --- | --- |
-| C01 | 56 | 将多工具路由/生命周期放入可选附件 | 明确工具路由必需，不预选产品 |
-| C02 | 63 | Trigger/Analysis/Invalidation 与 Lefthook Job 可能双重维护 | 单一 Check 输入规范，Job 配置为执行投影 |
-| C03 | 94 | 虽说多工具，却可能退回 ECI 单入口 | Lefthook Tool Job 激活 vs ECI 已激活 Check 范围 |
-| C04 | 95 | 漏触发共享配置、删除引用目标时只依赖事后选择 | 保证相关 Job 已唤醒且受检输入一致 |
-| C05 | 105 | 执行顺序仍指向薄 Hook | 改为成熟多工具调度接线 |
-| C06 | 127 | 将 Required/Release 混写给 #63 | #52 原生 Check、#63 受信复用、#61 最终 Required |
-| C07 | 170 | “Git Hook 仅触发 ECI CLI”与多 Job 冲突 | 允许 Lefthook 各 Job 条件启动、并行 |
-| C08 | 172 | “不增建调度器”可被误读为不能使用 Lefthook | 禁自建重复调度器，保留成熟能力 |
-| C09 | 219 | 排除通用 Runner 可能变成整体否定调度 | 明确反重复建设并非反成熟工具 |
+| C01 | 56 | 多工具路由弱化 | 恢复路由并保留 Source 切片独立验收、安装与平台条件 |
+| C02 | 63 | Check 输入/Job 配置可能分叉 | ECI 公共规则 + 消费者项目规则唯一维护，Lefthook 路由映射可核对 |
+| C03 | 94 | 多工具被单个全量入口替代 | 保留完整 Job 并行、安装/更新/卸载、跨平台、原生结果和 Required 边界 |
+| C04 | 95 | 必要 Job 可能漏唤醒 | 事件预期 Check→Job 激活→原生结果可核对，缺失不冒充 PASS |
+| C05 | 105 | 执行顺序默认薄 Hook | 改为成熟调度适配，与 Source P0 独立并行 |
+| C06 | 127 | Required/Release 职责表达混乱 | #52/#61 交付边界明确，但完整保留 #63 证据/Required/Release 要求 |
+| C07 | 170 | Git Hook 只能触发单个 ECI CLI | 支持多 Job 和直接 Tool，但执行结果必须遵守 Source/Check/Exit 契约 |
+| C08 | 172 | 不重建调度器被误读成禁用 Lefthook | 保留成熟调度与多文档设计，单一规范性维护来源 |
+| C09 | 219 | 反重复 Runner 被误读为否定成熟调度 | 保留 #66 不新增独立工程检查器，仍可跨 Issue 批量接入 Native Checks |
 
-**本轮提案不修改以上九个位置以外的 Issue 正文。** 每项保留原有验收、工具范围、Source P0、多 Ref/Index/Worktree/Actions、Dagger 和可信证据边界。不得再次将完整 PR #72 压缩为概要。
+**本轮提案仅拟替换上述九个 Issue 句子，不直接修改线上 Issue。** 每个新句必须同时保留原句已有效的独立验收、安装/平台、Check 范围、Source P0、多 Ref/Index/Worktree/Actions、Dagger、#63 证据和 #66 不新增独立检查器等约束。不得再次压缩完整 PR #72/#78；不因设计文档较多就宣称存在多个规范权威。
 
 ## 4. 尚需独立技术裁决的真实接口
 
-1. **规则权威与 Lefthook 路由投影。** 统一 Check 输入/适用性要求；实际 Lefthook `glob/only/skip` 等是工具配置。若仅靠路径无法表达共享配置、锁、引用关系和动态外部输入，须通过定向反例验证保守 Job 唤醒与 ECI 内部细粒度 Analysis，不另写平行影响引擎。
+1. **规则权威与 Lefthook 路由投影。** ECI 的公共 Check 契约和消费者领域规则各有唯一规范性维护来源，Lefthook 的 `glob/only/skip` 等仅是路由实现。必须明确 Job→Check 追溯，验证共享配置/锁/反向引用变化时必要 Job 确实唤醒；无法表达精确条件时采用保守相关 Job 激活 + ECI 内部细粒度 Analysis，并让漏执行或未覆盖状态可见。先复用现有 Plan/Report/门禁，而非新建另一套检查影响引擎。
 2. **先处理事件还是先激活 Job。** pre-commit 的 `GIT_INDEX_FILE`、pre-push 唯一原始 stdin 接收与逐 Ref old→new 不等于 Lefthook 能动态按 ECI 计算结果生成 Jobs。PR #72 要提供固定版本真实可执行的方案，证明条件分发、共享 Source/Plan、并行、不重复 Tach/原始 Check，不能只画概念图。
 3. **受检字节和结果归因。** #66 Source P0 保留 Index=A/Worktree=B/临时 Index=C、Linked Worktree、不同 Git Commit/Tree；不存在正确执行/输入证据时不得产生 PASS。#52 Native Check/Report/Enforce；#63 历史受信复用；#61 Required/Release；#86 真正 Dagger DAG/Artifact；Knowledge #68 领域规则和消费者接线。
 4. **Knowledge 实际输入与成本。** PR #73 的 `dagger.lock`/Dagger 输入过滤、Hook 文件变更误触发全部测试、旧 `hook_adapter.py` 清理时机，以及本地与 Actions 的真实事件覆盖，应在 Knowledge 自己的 PR 内定点调整，不把领域特例写死进 ECI。
@@ -54,8 +61,8 @@
 ## 6. Review 验收清单
 
 - [ ] 逐项审阅 C01–C09 的“旧句 → 新句”，确认没有遗漏任何有效需求或引入相反职责。
-- [ ] 确认 Lefthook 真实工具级路由/激活/并行在设计中保留，且不默认由单一 ECI 全量入口接管。
-- [ ] 确认“统一规范权威”未被理解成只能有一份文档，Lefthook 未被称作规范。
+- [ ] 保留 Lefthook 成熟条件路由/激活/并行、完整安装生命周期，不被单个 ECI 全量入口或串行化替代；同时不强制 #66 Source P0 等待完整调度方案。
+- [ ] 检查 ECI 公共规则、Knowledge 项目规则、Lefthook 路由映射和预期 Check→激活 Job→原生 Result 的完整性，统一规范权威不等于单文档。
 - [ ] 未虚构 Lefthook 动态 API，也未把单一 Git stdin 接收简化为单 Plan/单 Job。
-- [ ] #52/#61/#63/#66/#86/Knowledge #68 责任与现行仓库代码一致，原有完整工具矩阵和验收保存。
+- [ ] #52/#61/#63/#66/#86/Knowledge #68 的完整职责仍有效，特别是 #63 的证据完整性/Required/Release 主题和 #66 不新增独立工程检查器；所有原工具矩阵与验收保留。
 - [ ] 审阅通过后再提出 S1、S2 精确修改；**未经再次对照实时 Issue 全文，不把这个文件当作可盲目应用的补丁**。
