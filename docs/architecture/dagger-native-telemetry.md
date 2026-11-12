@@ -28,7 +28,8 @@ ECI 只**读取**原生 Span 与原生结果，不生成、不改写、不补造
 | 导出端点 | 可用 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 或 `OTEL_EXPORTER_OTLP_ENDPOINT`；两者都为空时导出**不启动** | `engine/telemetry/workload_export.go` |
 | 导出信号范围 | 可用 | Spans + workload readings；**不导出 logs** | `engine/telemetry/workload_export.go` |
 | 导出持久性 | 部分 | 接收端接受不等于 Engine 侧持久保证；有界队列 + BatchSpanProcessor | `engine/telemetry/workload_export.go::WorkloadExport` |
-| Check 身份属性 | 可用 | Span 携带 `dagger.io/check.name` 与 `dagger.io/check.passed` | `core/checks.go`（`CheckNameAttr`/`CheckPassedAttr`） |
+| Check 身份属性 | 部分 | 固定源码在 Check Span 上写 `dagger.io/check.name` 与 `dagger.io/check.passed`（`core/checks.go`），但**实测运行一次都没有发出**；Check 身份实际由 Span 名承载 | `core/checks.go`；实测见[验证记录](../verification/dagger-native-telemetry.md) |
+| Check 身份的 Span 名 | 可用 | CLI 选择器 `dag://?check=<name>`、模块函数调用 `<module>:<object>.<function>`、调用本体 `<object>.<function>` | 实测见[验证记录](../verification/dagger-native-telemetry.md) |
 | 缓存观察属性 | 可用 | `dagger.io/cache.contract`、`dagger.io/cache.outcome`（`hit`/`executed`/`joined`/`uncached`）、`dagger.io/cache.hit.route` | `engine/telemetryattrs/attrs.go` |
 | Module Client 遥测 | 可用 | 固定 SDK 依 `OTEL_*` 环境变量初始化 OTel，仅导出 traces | `.dagger/sdk/src/dagger/telemetry.py` |
 | Module Client 传输 | 可用 | SDK 依赖 `opentelemetry-exporter-otlp-proto-http`，即 OTLP/HTTP + protobuf；`OTEL_EXPORTER_OTLP_PROTOCOL` 对固定 SDK 无效 | `.dagger/sdk/pyproject.toml` |
@@ -76,17 +77,52 @@ Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Functi
 | 键 | 来源 | 归因强度 |
 | --- | --- | --- |
 | `w3c_traceparent_propagation` | SDK 注入的 `traceparent` 与捕获 Span 的父 Span 关系 | 强：捕获 Span 直接携带被传播的父 Span ID |
-| `engine_check_attribute` | 捕获 Span 的 `dagger.io/check.name` 等于本次调用的 Check 名，且捕获落在同一个 Engine session | 中：Engine 自身的 Check 身份 + 同源引用 |
-| `engine_check_attribute_in_propagated_trace` | 两者同时成立 | 最强 |
+| `engine_check_attribute` | 捕获 Span 的 `dagger.io/check.name` 等于本次调用的 Check 名 | 中：固定源码有，**实测未发出** |
+| `engine_check_selector` | 捕获 Span 名为 `dag://?check=<name>` | 中：CLI 选择的 Check |
+| `engine_check_function` | 捕获 Span 名为 `<module>:<object>.<function>` 或 `<object>.<function>` | 中：被观察到的 Function |
+| `engine_check_in_propagated_trace` | Check 键落在传播 Trace 内 | 强：键与上下文同时成立 |
 
+同一捕获里若同时出现多个键，回执记录全部（`binding.keys`）与最强的一个（`binding.basis`）。
 **不足以归因：** 相同 Trace ID、相同 Check 名、近似时间窗口、相同 Scope 名。共享 Trace ID 必须再核对实际
 Span 的 Function/Check 与调用上下文；无法唯一判定时返回 `unbound` 或 `ambiguous` 并保留各自原始事实，
 不拼接、不伪造父 Span。
 
+## 原执行来源（Origin Execution）
+
+复审要求区分两件事：**本次有没有发生新的工具执行**，和**本次结果能不能引用一个既有 Origin Execution**。
+回执把两者分开记录：
+
+| 字段 | 含义 |
+| --- | --- |
+| `invocation.actual_invocation_ref` | 本次实际请求的引用 |
+| `origin_execution.ref` | 本次结果的**原始工具执行来源**引用；无来源证明时为空 |
+| `origin_execution.status` | `current_execution`（本次就是原执行）/ `existing_execution`（引用到已证实的既有执行）/ `unknown` |
+| `origin_execution.new_tool_execution` | 本次是否真的跑了工具 |
+| `origin_execution.cache_result_id` | 原生同源引用：同一条缓存项的调用共享同一原执行 |
+| `origin_execution.reason` | 判定依据与缺失原因 |
+
+判定规则：
+
+- `dagger.io/cache.outcome=executed`（或 `uncached`）→ 本次调用**就是**原工具执行：`status=current_execution`，
+  `new_tool_execution=true`，`ref` 指向该调用 Span。
+- `hit` → 本次**没有新的工具执行**；捕获里没有原执行的引用时 `status=unknown`、`ref` 为空。
+  只有缓存命中或结果内容相同，**不足以**推断原执行身份。
+- `joined` → 并发去重到另一次进行中的执行；该执行属于另一次调用，本捕获无法证明，`status=unknown`。
+- 未观察到缓存事实 → `status=unknown`，`reason=cache_outcome_not_observed`。
+
+`resolve_origin_execution(receipts)` 在同一观察集合内解析：命中缓存的调用若与另一条**已证明执行**的回执
+共享同一个 `cache_result_id`，则指向那条**既有** Origin（`status=existing_execution`）；否则保持
+`unknown`。两种情况下**都不会**被统计成两次独立工具执行——计数依据是 `new_tool_execution`。
+
+Trace 绑定只说明它证明了什么：`binding.proves` 记录 `invocation_call_and_cache_outcome`，只有当本次调用
+确为原执行时才追加 `origin_tool_execution`。收到本次调用 Span **不**表示工具本次重新运行；仅在实际取得
+原执行 Trace 时才引用其原始来源，不把旧 Span 改写成当前 Trace。
+
 ## 缓存观察范围
 
 Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outcome` 是 `hit`、`executed`、`joined`
-还是 `uncached`，`dagger.io/cache.hit.route` 说明命中路径。回执只记录**实际观察到的范围**
+还是 `uncached`，`dagger.io/cache.hit.route` 说明命中路径，`dagger.io/cache.result.id` 命名同一条缓存项
+（两次调用共享它，即共享同一原执行）。回执只记录**实际观察到的范围**
 （`coverage.cache_outcomes`），不把单个节点的命中上升为整个 Check 的状态；准备节点命中与工具实际执行
 必须分别记录。
 
@@ -118,8 +154,8 @@ Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outc
 | 清单来源 | 上表每行都绑定到 `v1.0.0-beta.16` 的固定源码；标 `unknown` 的三项是**源码未证明**，不是"文档没有"。较新 Dagger 文档不构成证据。 |
 | 静态清单 ≠ 运行时验证 | 上表是**源码级**能力清单。A.1 的真实路径（实际调用 → 原生结果 → 接收端收到的 Span）只能由 CI 产生：起固定 Engine、开 `telemetry.workloadExport`、把 OTLP 端点指向 runner 本机接收端，产出 capture 与回执工件。本机没有可用的 Engine 会话。 |
 | 现有 Receiver 的限制 | 仓库内已固定的原生 Receiver 是 Weaver 自身的 live-check 接收端，语义是 **replay**（`weaver_runtime.py` 每次导出后立即 `/stop`），不是常驻推送目标。本文件**没有**改它；A.1 用的是 runner 本机临时接收端，属于 CI 验证辅助，不是包内组件，也不是 Telemetry Store。 |
-| 判定强度 | `engine_check_attribute` 必须在**同一个 Engine session**（`dagger.io/session.id`）的捕获里成立，否则 `unbound`（`engine_session_not_observed`）。Check 名相同但来源不同不构成同源引用。相同 Trace ID 单独出现时永远是 `ambiguous`。 |
-| A → B 交接 | `binding.basis` 的取值（`w3c_traceparent_propagation` / `engine_check_attribute` / `engine_check_attribute_in_propagated_trace`）就是交给 B.1 的 `correlation_basis` 结论来源；B.1 消费它，不需要重新推导阶段。 |
+| 判定强度 | Check 键必须在**同一个 Engine session**（`dagger.io/session.id`）的捕获里成立，否则 `unbound`（`engine_session_not_observed`）。Check 名相同但来源不同不构成同源引用。相同 Trace ID 单独出现时永远是 `ambiguous`。 |
+| A → B 交接 | `binding.basis` 的取值（`w3c_traceparent_propagation` / `engine_check_attribute` / `engine_check_selector` / `engine_check_function` / `engine_check_in_propagated_trace`）就是交给 B.1 的 `correlation_basis` 结论来源；`origin_execution` 就是 B.1 的 `origin_execution_ref` 语义来源。两者都不需要重新推导阶段。 |
 | 缓存观察 | 回执只记录 `dagger.io/cache.outcome` 的**实际观察值**。准备节点命中与工具实际执行必须分别记录，不得把单个节点的命中上升为整个 Check 的状态。 |
 | 接收端接受 | Engine 侧明确声明"接收端接受不是 Engine 侧持久保证"；`sent=sent` 的依据是接收端确实收到，不是引擎的 flush 承诺。 |
 

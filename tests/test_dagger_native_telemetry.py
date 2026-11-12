@@ -51,6 +51,7 @@ def span(
     name="dagger.io/engine",
     check_name=None,
     cache_outcome=None,
+    cache_result_id=None,
 ):
     attributes = []
     if check_name is not None:
@@ -62,6 +63,13 @@ def span(
             {
                 "key": "dagger.io/cache.outcome",
                 "value": {"stringValue": cache_outcome},
+            }
+        )
+    if cache_result_id is not None:
+        attributes.append(
+            {
+                "key": "dagger.io/cache.result.id",
+                "value": {"stringValue": cache_result_id},
             }
         )
     return {
@@ -218,7 +226,39 @@ def test_check_name_in_the_same_trace_binds_on_the_engine_attribute(tmp_path):
     )
     record = receipt(capture=capture, check_name="lint")
     assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "engine_check_attribute_in_propagated_trace"
+    assert record["binding"]["basis"] == "engine_check_in_propagated_trace"
+
+
+def test_check_selector_span_name_binds_the_check(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="dag://?check=lint", span_id="3333333333333333")
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint", correlation=None)
+    assert record["binding"]["status"] == "bound"
+    assert record["binding"]["basis"] == "engine_check_selector"
+    assert record["binding"]["keys"] == ["check_selector"]
+
+
+def test_module_function_call_span_name_binds_the_check(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="engineering-ci:EngineeringCi.lint", span_id="4444444444444444"
+                )
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint", correlation=None)
+    assert record["binding"]["status"] == "bound"
+    assert record["binding"]["basis"] == "engine_check_function"
+    assert record["binding"]["keys"] == ["check_function"]
 
 
 def test_check_name_without_a_correlation_key_binds_on_the_attribute(tmp_path):
@@ -281,6 +321,111 @@ def test_cache_outcome_is_recorded_as_observed_scope(tmp_path):
     )
     record = receipt(capture=capture)
     assert record["coverage"]["cache_outcomes"] == ["hit"]
+
+
+def test_executed_call_proves_the_origin_tool_execution(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="executed",
+                    cache_result_id="7921",
+                )
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint")
+    assert record["origin_execution"]["status"] == "current_execution"
+    assert record["origin_execution"]["new_tool_execution"] is True
+    assert record["origin_execution"]["ref"] == "2222222222222222"
+    assert record["origin_execution"]["cache_result_id"] == "7921"
+    assert "origin_tool_execution" in record["binding"]["proves"]
+
+
+def test_cache_hit_ran_no_tool_and_leaves_the_origin_unknown(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="hit",
+                    cache_result_id="7921",
+                )
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint")
+    origin = record["origin_execution"]
+    assert origin["status"] == "unknown"
+    assert origin["new_tool_execution"] is False
+    assert origin["ref"] is None
+    assert origin["reason"] == "cache_outcome_hit_without_prior_execution_reference"
+    assert origin["cache_result_id"] == "7921"
+    assert "origin_tool_execution" not in record["binding"]["proves"]
+    # The cache observation itself survives.
+    assert record["coverage"]["cache_outcomes"] == ["hit"]
+
+
+def test_cache_reuse_points_at_the_existing_origin_when_it_is_proven(tmp_path):
+    first = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="executed",
+                    cache_result_id="7921",
+                )
+            ),
+            "first.json",
+        )
+    )
+    second = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="hit",
+                    cache_result_id="7921",
+                )
+            ),
+            "second.json",
+        )
+    )
+    records = [
+        receipt(capture=first, check_name="lint"),
+        receipt(capture=second, check_name="lint"),
+    ]
+    origins = dagger_telemetry.resolve_origin_execution(records)
+    assert origins[0]["status"] == "current_execution"
+    assert origins[1]["status"] == "existing_execution"
+    assert origins[1]["ref"] == origins[0]["ref"]
+    # Two invocations, one tool execution.
+    assert sum(1 for origin in origins if origin["new_tool_execution"]) == 1
+
+
+def test_cache_reuse_without_the_prior_execution_stays_unknown(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="hit",
+                    cache_result_id="7921",
+                )
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint")
+    origins = dagger_telemetry.resolve_origin_execution([record])
+    assert origins[0]["status"] == "unknown"
+    assert origins[0]["ref"] is None
+    assert origins[0]["new_tool_execution"] is False
 
 
 def test_shared_trace_id_without_the_propagated_parent_stays_ambiguous(tmp_path):
@@ -359,7 +504,8 @@ def test_capability_inventory_is_bound_to_pinned_sources():
         for capability in dagger_telemetry.capability_inventory()
     }
     assert inventory["engine_workload_export"].status == "available"
-    assert inventory["engine_check_attribute"].status == "available"
+    assert inventory["engine_check_attribute"].status == "partial"
+    assert inventory["engine_check_identity_by_span_name"].status == "available"
     assert inventory["engine_cache_observation"].status == "available"
     assert inventory["sdk_context_propagation"].status == "available"
     assert inventory["sdk_metric_and_log_export"].status == "not_available"

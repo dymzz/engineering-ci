@@ -208,6 +208,8 @@ jobs:
           # The native result stands on its own; the receipt records it and
           # the Job still fails when the check itself failed.
           printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/check.exit
+          printf '%s\n' '{"check": "lint", "exit_code": '"${code}"', "invocation": "dagger check --engineering-ci --check=lint"}' \
+            > artifacts/dagger-native-telemetry/native-result.json
           exit 0
       - name: Record the native trace observation
         if: ${{ always() }}
@@ -222,6 +224,7 @@ jobs:
           uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
             --capture artifacts/dagger-native-telemetry/capture.json \
             --capture-ref "otlp-http-receiver:4318" \
+            --native-result artifacts/dagger-native-telemetry/native-result.json \
             --engine-config "$RUNNER_TEMP/engine.json" \
             --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
             --engine-protocol http/protobuf \

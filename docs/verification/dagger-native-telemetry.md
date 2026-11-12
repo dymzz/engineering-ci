@@ -23,7 +23,13 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | 场景 | 输入 | 期望 |
 | --- | --- | --- |
 | 传播绑定 | 捕获 Span 携带传播的父 Span ID | `bound`、`basis=w3c_traceparent_propagation`、`status=produced`、退出 0 |
-| Engine Check 属性绑定 | 捕获 Span 携带 `dagger.io/check.name` | `bound`、`basis=engine_check_attribute` 或 `engine_check_attribute_in_propagated_trace` |
+| Engine Check 属性绑定 | 捕获 Span 携带 `dagger.io/check.name` | `bound`、`basis=engine_check_attribute`（实测该属性未发出，见下） |
+| Check 选择器绑定 | 捕获 Span 名为 `dag://?check=lint` | `bound`、`basis=engine_check_selector` |
+| 模块函数调用绑定 | 捕获 Span 名为 `engineering-ci:EngineeringCi.lint` | `bound`、`basis=engine_check_function` |
+| 本次执行了工具 | 捕获 Span 携带 `cache.outcome=executed` | `origin_execution.status=current_execution`、`new_tool_execution=true`、`binding.proves` 含 `origin_tool_execution` |
+| 命中缓存 | 捕获 Span 携带 `cache.outcome=hit` | `origin_execution.status=unknown`、`new_tool_execution=false`、缓存观察保留 |
+| 复用指向既有原执行 | 两条回执共享同一 `cache.result.id`，一条为 `executed` | 命中那条 `status=existing_execution` 且 `ref` 指向已证明的那次；两次调用只算一次工具执行 |
+| 复用无既有原执行 | 只有 `hit` 一条回执 | `status=unknown`、`ref` 为空、`new_tool_execution=false` |
 | 缓存观察范围 | 捕获 Span 携带 `dagger.io/cache.outcome` | `coverage.cache_outcomes` 记录实际观察值，不上升为整个 Check 状态 |
 
 ## 本地运行

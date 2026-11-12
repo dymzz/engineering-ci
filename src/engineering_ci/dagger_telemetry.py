@@ -96,6 +96,25 @@ ATTR_CACHED = "dagger.io/dag.cached"
 ATTR_SESSION_ID = "dagger.io/session.id"
 ATTR_ENGINE_INSTANCE_ID = "dagger.io/engine.instance.id"
 ATTR_SERVICE_NAME = "service.name"
+# The cache entry a call resolved to. It names one entry of one cache for the
+# cache's lifetime, so two invocations that share it share one origin.
+ATTR_CACHE_RESULT_ID = "dagger.io/cache.result.id"
+
+# The cache outcome the engine recorded for a call.
+CACHE_OUTCOME_EXECUTED = "executed"
+CACHE_OUTCOME_HIT = "hit"
+CACHE_OUTCOME_JOINED = "joined"
+CACHE_OUTCOME_UNCACHED = "uncached"
+
+# Origin execution states (ECI #87 review: a missing new tool execution is
+# not the same as an unusable origin reference).
+ORIGIN_CURRENT_EXECUTION = "current_execution"
+ORIGIN_EXISTING_EXECUTION = "existing_execution"
+ORIGIN_UNKNOWN = "unknown"
+
+# What a bound trace proves.
+PROVES_INVOCATION = "invocation_call_and_cache_outcome"
+PROVES_ORIGIN_EXECUTION = "origin_tool_execution"
 
 # The five separate facts of ECI #87 A.2. None of them covers another.
 CLAIM_EXPORTER_CONFIGURED = "exporter_configured"
@@ -119,8 +138,20 @@ STATUS_INCOMPLETE = "incomplete"
 # Correlation bases a real native propagation can prove.
 BASIS_TRACEPARENT = "w3c_traceparent_propagation"
 BASIS_CHECK_ATTRIBUTE = "engine_check_attribute"
-BASIS_CHECK_ATTRIBUTE_IN_TRACE = "engine_check_attribute_in_propagated_trace"
+BASIS_CHECK_SELECTOR = "engine_check_selector"
+BASIS_CHECK_FUNCTION = "engine_check_function"
+BASIS_CHECK_IN_TRACE = "engine_check_in_propagated_trace"
 BASIS_NONE = "none"
+
+# The native keys that can carry a Check identity in the pinned version. The
+# observed run identified the Check through the Span names; the attribute
+# exists in the pinned sources but did not appear in that run.
+KEY_CHECK_ATTRIBUTE = "check_attribute"
+KEY_CHECK_SELECTOR = "check_selector"
+KEY_CHECK_FUNCTION = "check_function"
+KEY_TRACEPARENT = "traceparent"
+# The engine names the Check it selected as a dagql selector.
+CHECK_SELECTOR_PREFIX = "dag://?check="
 
 # Stable reasons.
 REASON_NO_CAPTURE = "no_capture"
@@ -302,12 +333,28 @@ def capability_inventory() -> tuple[Capability, ...]:
         ),
         Capability(
             key="engine_check_attribute",
+            status="partial",
+            detail=(
+                "The pinned sources set dagger.io/check.name and "
+                "dagger.io/check.passed on the Check span, but the observed "
+                "v1.0.0-beta.16 run emitted neither. The Check identity was "
+                "carried by the Span names instead."
+            ),
+            source=(
+                "dagger/otel-go attrs.go::CheckNameAttr:core/checks.go"
+                ":unresolved:engine_check_attribute_observed"
+            ),
+        ),
+        Capability(
+            key="engine_check_identity_by_span_name",
             status="available",
             detail=(
-                "Engine spans carry the Check identity: dagger.io/check.name "
-                "and dagger.io/check.passed."
+                "The observed run identified the Check through the Span "
+                "names: the CLI selector dag://?check=<name>, the module "
+                "function call <module>:<object>.<function> and the call's "
+                "core span <object>.<function>."
             ),
-            source="dagger/otel-go attrs.go::CheckNameAttr",
+            source="observed:v1.0.0-beta.16-native-capture",
         ),
         Capability(
             key="engine_cache_observation",
@@ -513,6 +560,7 @@ def _capture_spans(payload):
                         "check_passed": attributes.get(ATTR_CHECK_PASSED),
                         "cache_outcome": attributes.get(ATTR_CACHE_OUTCOME, ""),
                         "cache_contract": attributes.get(ATTR_CACHE_CONTRACT, ""),
+                        "cache_result_id": attributes.get(ATTR_CACHE_RESULT_ID, ""),
                         "module_function_name": attributes.get(
                             ATTR_MODULE_FUNCTION_NAME, ""
                         ),
@@ -623,16 +671,139 @@ def read_exporter_error(path):
     }
 
 
+def _check_function_span(span, check_name):
+    """True when the Span name is the module function call of the Check.
+
+    The pinned engine names a module function call `<object>.<function>` or
+    `<module>:<object>.<function>`, so the last segment carries the Check
+    name and the rest carries the module reference.
+    """
+    name = span.get("name") or ""
+    if "." not in name:
+        return False
+    return name.rsplit(".", 1)[1] == check_name
+
+
+def _check_keys(capture, check_name):
+    """Native keys in the capture that carry the declared Check identity."""
+    keys = {}
+    attribute = [span for span in capture.spans if span.get("check_name") == check_name]
+    selector = [
+        span
+        for span in capture.spans
+        if span.get("name") == CHECK_SELECTOR_PREFIX + check_name
+    ]
+    function = [
+        span for span in capture.spans if _check_function_span(span, check_name)
+    ]
+    if attribute:
+        keys[KEY_CHECK_ATTRIBUTE] = attribute
+    if selector:
+        keys[KEY_CHECK_SELECTOR] = selector
+    if function:
+        keys[KEY_CHECK_FUNCTION] = function
+    return keys
+
+
+def _origin_execution(bound_spans):
+    """Derive the origin tool execution of this invocation.
+
+    The distinction the review requires: a call that reused a cached result
+    ran no new tool execution, and that is not the same as having no origin
+    reference at all. Only an executed or uncached call proves that this
+    invocation is the origin; a hit or a join leaves the origin unknown
+    unless the consumer can resolve the shared cache entry.
+    """
+    outcomes = {
+        span.get("cache_outcome") for span in bound_spans if span.get("cache_outcome")
+    }
+    result_ids = {
+        span.get("cache_result_id")
+        for span in bound_spans
+        if span.get("cache_result_id")
+    }
+    cache_result_id = min(result_ids) if result_ids else None
+    span_ref = None
+    for span in bound_spans:
+        if span.get("cache_outcome") in (
+            CACHE_OUTCOME_EXECUTED,
+            CACHE_OUTCOME_UNCACHED,
+        ):
+            span_ref = span.get("span_id") or span_ref
+    if CACHE_OUTCOME_EXECUTED in outcomes or CACHE_OUTCOME_UNCACHED in outcomes:
+        return {
+            "ref": span_ref,
+            "status": ORIGIN_CURRENT_EXECUTION,
+            "reason": "cache_outcome_" + min(outcomes),
+            "cache_outcome": min(outcomes),
+            "cache_result_id": cache_result_id,
+            "new_tool_execution": True,
+        }
+    if CACHE_OUTCOME_HIT in outcomes:
+        return {
+            "ref": None,
+            "status": ORIGIN_UNKNOWN,
+            "reason": "cache_outcome_hit_without_prior_execution_reference",
+            "cache_outcome": CACHE_OUTCOME_HIT,
+            "cache_result_id": cache_result_id,
+            "new_tool_execution": False,
+        }
+    if CACHE_OUTCOME_JOINED in outcomes:
+        return {
+            "ref": None,
+            "status": ORIGIN_UNKNOWN,
+            "reason": "cache_outcome_joined_into_concurrent_execution",
+            "cache_outcome": CACHE_OUTCOME_JOINED,
+            "cache_result_id": cache_result_id,
+            "new_tool_execution": False,
+        }
+    return {
+        "ref": None,
+        "status": ORIGIN_UNKNOWN,
+        "reason": "cache_outcome_not_observed",
+        "cache_outcome": min(outcomes) if outcomes else None,
+        "cache_result_id": cache_result_id,
+        "new_tool_execution": False,
+    }
+
+
+def resolve_origin_execution(receipts):
+    """Resolve the origin execution of every receipt in one observation set.
+
+    A receipt that reused a cached result names the cache entry it resolved
+    to. When another receipt in the set proved the execution of that entry,
+    the reuse points at that existing origin instead of creating one. A
+    reuse whose origin is not in the set stays unknown; it never counts as a
+    second tool execution.
+    """
+    by_result_id = {}
+    for receipt in receipts:
+        origin = receipt.get("origin_execution") or {}
+        if origin.get("new_tool_execution") and origin.get("cache_result_id"):
+            by_result_id.setdefault(origin["cache_result_id"], receipt)
+    resolved = []
+    for receipt in receipts:
+        origin = dict(receipt.get("origin_execution") or {})
+        if origin.get("status") == ORIGIN_UNKNOWN and origin.get("cache_result_id"):
+            source = by_result_id.get(origin["cache_result_id"])
+            if source is not None:
+                origin["ref"] = (source.get("origin_execution") or {}).get("ref")
+                origin["status"] = ORIGIN_EXISTING_EXECUTION
+                origin["reason"] = "cache_result_id_shared_with_proven_execution"
+        resolved.append(origin)
+    return resolved
+
+
 def _bind_capture(capture, parsed, check_name):
     """Bind a capture to one invocation.
 
-    Returns (status, reason, basis, bound_spans). The rules are deliberately
-    strict: a shared trace id is never a correlation on its own, and a
-    declared Check name is only accepted when the engine's own Check
-    attribute confirms it.
+    Returns (status, reason, basis, bound_spans, keys). The rules are
+    deliberately strict: a shared trace id is never a correlation on its own,
+    and a declared Check name is only accepted when the engine's own native
+    key confirms it inside a known engine session.
     """
     if parsed is None and not check_name:
-        return BINDING_UNBOUND, REASON_NO_CORRELATION_KEY, BASIS_NONE, []
+        return BINDING_UNBOUND, REASON_NO_CORRELATION_KEY, BASIS_NONE, [], {}
 
     propagated = []
     if parsed is not None:
@@ -647,47 +818,53 @@ def _bind_capture(capture, parsed, check_name):
             )
         ]
 
-    named = []
-    if check_name:
-        named = [span for span in capture.spans if span["check_name"] == check_name]
-
-    if check_name and not named:
-        # The engine did not report the declared Check in this capture.
-        return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, []
-
-    if check_name and not capture.session_ids:
-        # The Check attribute alone is not a same-source reference: the
-        # capture carries no engine session to bind it to.
-        return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, []
-
-    if check_name and parsed is not None:
-        trace_id, parent_span_id = parsed
-        in_trace = [span for span in named if span["trace_id"] == trace_id]
-        if not in_trace:
+    if not check_name:
+        if propagated:
             return (
-                BINDING_AMBIGUOUS,
-                REASON_CHECK_NAME_OUTSIDE_TRACE,
-                BASIS_NONE,
-                [],
+                BINDING_BOUND,
+                None,
+                BASIS_TRACEPARENT,
+                propagated,
+                {KEY_TRACEPARENT: propagated},
             )
-        if any(
-            span["parent_span_id"] == parent_span_id
-            or span["span_id"] == parent_span_id
-            for span in in_trace
+        if parsed is not None and any(
+            span["trace_id"] == parsed[0] for span in capture.spans
         ):
-            return BINDING_BOUND, None, BASIS_TRACEPARENT, in_trace
-        return BINDING_BOUND, None, BASIS_CHECK_ATTRIBUTE_IN_TRACE, in_trace
+            return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], {}
+        return BINDING_UNBOUND, REASON_NO_CORRELATED_SPAN, BASIS_NONE, [], {}
 
-    if check_name:
-        return BINDING_BOUND, None, BASIS_CHECK_ATTRIBUTE, named
+    keys = _check_keys(capture, check_name)
+    if not keys:
+        # The engine did not report the declared Check in this capture.
+        return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, [], {}
 
-    if propagated:
-        return BINDING_BOUND, None, BASIS_TRACEPARENT, propagated
-    if parsed is not None and any(
-        span["trace_id"] == parsed[0] for span in capture.spans
+    if not capture.session_ids:
+        # A Check name without its engine session is not a same-source
+        # reference.
+        return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, [], keys
+
+    named = [span for spans in keys.values() for span in spans]
+    if parsed is None:
+        basis = BASIS_CHECK_ATTRIBUTE
+        for candidate in (KEY_CHECK_SELECTOR, KEY_CHECK_FUNCTION):
+            if candidate in keys:
+                basis = {
+                    KEY_CHECK_SELECTOR: BASIS_CHECK_SELECTOR,
+                    KEY_CHECK_FUNCTION: BASIS_CHECK_FUNCTION,
+                }[candidate]
+                break
+        return BINDING_BOUND, None, basis, named, keys
+
+    trace_id, parent_span_id = parsed
+    in_trace = [span for span in named if span["trace_id"] == trace_id]
+    if not in_trace:
+        return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
+    if any(
+        span["parent_span_id"] == parent_span_id or span["span_id"] == parent_span_id
+        for span in in_trace
     ):
-        return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, []
-    return BINDING_UNBOUND, REASON_NO_CORRELATED_SPAN, BASIS_NONE, []
+        return BINDING_BOUND, None, BASIS_TRACEPARENT, in_trace, keys
+    return BINDING_BOUND, None, BASIS_CHECK_IN_TRACE, in_trace, keys
 
 
 def build_receipt(
@@ -725,6 +902,7 @@ def build_receipt(
     parsed = parse_traceparent(traceparent)
     basis = BASIS_NONE
     bound_spans: list[dict] = []
+    binding_keys: dict[str, list[dict]] = {}
     reason: str | None = None
     binding_status = BINDING_UNBOUND
     sent = SENT_UNKNOWN
@@ -747,7 +925,7 @@ def build_receipt(
         if sent != SENT_NOT_SENT:
             sent = SENT_SENT
             sent_basis = "receiver_observation"
-        binding_status, reason, basis, bound_spans = _bind_capture(
+        binding_status, reason, basis, bound_spans, binding_keys = _bind_capture(
             capture, parsed, check_name
         )
 
@@ -756,6 +934,11 @@ def build_receipt(
         # The current Required set asks for observability attributes. The
         # coverage stays partial; a native result alone does not close it.
         reason = REASON_REQUIRED_OBSERVABILITY_UNMET
+
+    origin_execution = _origin_execution(bound_spans)
+    proves = [PROVES_INVOCATION] if bound_spans else []
+    if origin_execution["status"] == ORIGIN_CURRENT_EXECUTION:
+        proves.append(PROVES_ORIGIN_EXECUTION)
 
     claims = {
         CLAIM_EXPORTER_CONFIGURED: bool(
@@ -806,6 +989,8 @@ def build_receipt(
             "status": binding_status,
             "reason": reason,
             "basis": basis,
+            "proves": proves,
+            "keys": sorted(binding_keys),
             "correlation_key": traceparent,
             "declared_check_name": check_name,
             "session_ids": list(capture.session_ids) if capture else [],
@@ -813,6 +998,7 @@ def build_receipt(
                 list(capture.engine_instance_ids) if capture else []
             ),
         },
+        "origin_execution": origin_execution,
         "invocation": {
             "actual_invocation_ref": invocation_ref,
             "source_binding_ref": source_binding_ref,
