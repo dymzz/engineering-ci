@@ -19,3 +19,16 @@ dagger api call execute-plan --plan docs/verification/weaver-evidence/head-curre
 `execution-report.json` omits nested native sample bodies for size; keeps
 statistics, coverage, digests, gate, and identity fields. Raw dagger stdout is
 not committed.
+
+The Registry closure digest recomputed here equals the pinned official upstream
+SemConv tree digest
+(`85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963`),
+because the fixture Registry is byte-identical to the upstream `model/` tree. The
+nested Terminal report records `official_registry_verified` and
+`eci_policy_evaluated` separately, and `coverage.resource_required` is
+`not_applicable` because upstream SemConv declares no Resource Required
+obligation for the Pipeline span.
+
+The fixture is marked `-text`, so its `source_tree_id` and closure digests are
+reproducible on every platform. Regenerate the Plans from the fixture Source
+whenever the fixture bytes change; do not hand-edit their digests.

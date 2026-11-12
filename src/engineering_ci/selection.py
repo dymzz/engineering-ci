@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+from engineering_ci import semconv_registry
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -1215,7 +1216,9 @@ def _registry_closure(root, registry_rel, manifest_rel):
         raise SelectionError("post_completion_registry_bytes_mismatch")
     return {
         "path": reg_rel,
-        "sha256": _stable_digest(actual),
+        # The Registry closure digest is the canonical digest of the pinned
+        # official source, so it must use that one implementation.
+        "sha256": semconv_registry.registry_tree_digest(actual),
         "manifest": manifest,
         "files": actual,
     }

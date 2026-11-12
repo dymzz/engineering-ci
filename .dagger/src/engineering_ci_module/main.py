@@ -126,6 +126,10 @@ class EngineeringCi:
             .with_directory("/workspace", bound)
             .with_env_variable("ECI_SOURCE_DIGEST", await bound.digest())
             .with_env_variable("ECI_WEAVER_ASSET_SHA256", tooling.WEAVER_LINUX_SHA256)
+            .with_env_variable(
+                "ECI_SEMCONV_OFFICIAL_SOURCE",
+                json.dumps(tooling.SEMCONV_OFFICIAL_SOURCE, sort_keys=True),
+            )
             .with_exec(["python", "/check/runtime.py", kind, "--config", config_path])
         )
         return result.directory("/out")

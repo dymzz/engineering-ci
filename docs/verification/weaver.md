@@ -53,6 +53,35 @@ the consumer's authorized Source; a self-consistent manifest is not proof of
 upstream authenticity. Reports retain `trusted: false`, exact file hashes and
 the supplied Dagger Source digest for #63 to assess.
 
+For a Source that claims the pinned official SemConv identity, the Dagger
+module injects that authority from outside the Source Directory
+(`engineering_ci.semconv_registry`: repository, commit, version and the
+canonical upstream `model/` tree digest). The runtime recomputes the same
+canonical digest over the Registry it actually read and reports
+`official_registry_verified`. Editing the Registry and its manifest together
+still fails, because neither can reproduce the pinned upstream digest:
+`official_registry_bytes_mismatch` — or `official_source_commit_unverified` for
+a different commit — stops the run before native validation. A Source that
+declares a different upstream repository is not verified and says so
+(`origin_not_pinned_official_source`); it makes no official claim.
+
+The declared `origin.version` is part of that claimed identity and is verified
+against the pinned release, so a Source may not present a version the pinned
+upstream release does not carry: `official_source_version_mismatch` (also for a
+missing version) stops the run before native validation. On a verified Source
+the Report carries the certified identity — `coverage.official_registry_verified`,
+`coverage.registry_version`, `coverage.registry_commit` and
+`coverage.official_registry_tree_sha256` — taken from the pin rather than from
+the Source's own declaration. Consumers must read that identity instead of
+treating a plain `weaver-enforce` PASS as proof of official provenance.
+
+`coverage.official_source_reason` names every outcome: `official_registry_bytes_mismatch`
+and `official_source_commit_unverified` and `official_source_version_mismatch`
+and `official_source_pin_unavailable` are refusals that stop the run;
+`origin_not_pinned_official_source` (a different upstream repository) and
+`origin_repository_undeclared` (a Source with no `[origin]`) make no official
+claim and let the native Check run.
+
 The current input contract accepts self-contained definition registries and
 local resolved publications. A manifest declaring dependencies is rejected
 with `registry_dependencies_require_local_materialization`; the caller must
@@ -149,6 +178,16 @@ result and disagree, the terminal bind fails (`terminal_result_conflict`).
 The capture must contain exactly one matching Trace/Span; only then is an
 absent `parentSpanId` accepted as Root.
 
+Live semantics, Terminal correlation and the time source are recorded
+separately, in `coverage.time_provenance`: the capture time source
+(`otlp_span_startTimeUnixNano_endTimeUnixNano`), the native sample time source
+(`weaver_live_check_start_time_end_time_rfc3339`), and the observed fractional
+digits of the native timestamps. A Terminal PASS proves the declared
+Run/Attempt/result binding and a completed Root span — it does **not** prove an
+exact pipeline end time or a duration, and no such claim is made. #75 produces
+the time facts; #52 consumes the error budget and source it actually uses and
+binds that provenance.
+
 `github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
 SemConv Required attribute. A SemConv-only Live Check may PASS without it.
 An explicitly requested `weaver-terminal` Run/Attempt correlation gate must
@@ -206,10 +245,44 @@ zero coverage still fails the gate. Original native findings remain intact.
 A passing result covers only the executed applicable obligations recorded in
 report `coverage` (Registry pin, Pipeline/Task Required, Conditionally
 Required Rego Advisor `cicd_conditional_error_type_required`, Result type gate,
-Resource Required via Pipeline↔`cicd.pipeline.run` entity association, and —
-for Terminal — identity correlation). Informational findings remain visible;
-`passed` is not a claim of full SemConv compliance. Reports stay
-`trusted:false`.
+and — for Terminal — identity correlation). Official SemConv obligations and
+ECI-owned obligations are reported separately: `official_registry_verified`
+records whether the Registry bytes reproduce the pinned upstream source, and
+`eci_policy_evaluated` records whether ECI's own policies ran. Informational
+findings remain visible; `passed` is not a claim of full SemConv compliance.
+Reports stay `trusted:false`.
+
+Upstream SemConv 1.45.0 declares no entity association for
+`span.cicd.pipeline.run.server`, so it defines no Resource Required obligation
+for the Pipeline span. Two propositions are reported separately, because a
+Registry **declaration** is not proof that the rule was **executed**:
+
+- `coverage.resource_required_entities` — what the Registry that was read
+  declares, keyed by the matched Pipeline span.
+- `coverage.resource_required` — whether the applicable rule was actually
+  executed by the native check in this run: `not_applicable` when no
+  association is declared (or no Pipeline signal matched), `not_verified` when
+  an association is declared but this run produced no native evidence that the
+  rule was applied, and `executed` only when native evidence from the same run
+  shows the Entity Required rule ran. `coverage.resource_required_native_evidence`
+  carries that native evidence, and `coverage.resource_required_basis` records
+  which case applies.
+
+Weaver reports an Entity Required rule only when it is violated, so that
+finding is the native evidence; its absence proves nothing, and ECI does not
+re-implement the SemConv Required judgement in Python. The native finding and
+exit code are preserved, so an executed-but-failed rule still fails the gate.
+
+The native finding `entity_required_attribute_not_present` must not be reported
+as an upstream Required attribute. The ECI requirement that a capture
+identifies its Pipeline Run is the correlation rule
+`eci_terminal_run_id_correlation` (`coverage.eci_run_id_correlation`), enforced
+by `weaver-terminal` with failures `terminal_observed_identity_missing`,
+`terminal_run_id_mismatch` and `terminal_run_id_conflict`;
+`coverage.terminal_gate_failure_reasons` lists every reason the Terminal gate
+itself can fail with. Do not re-add a local `entity_associations` block to the
+pinned Registry to satisfy an older expectation: that would present a local
+edit as an upstream SemConv requirement.
 
 In `ci-selection.toml`, explicitly include applicable `weaver_registry`,
 `weaver_live`, or `weaver_terminal` in `checks`, and set
@@ -248,9 +321,11 @@ Native CI/CD negatives under `tests/fixtures/weaver-cicd/negatives/` show:
 missing Pipeline `cicd.pipeline.result` and missing Task
 `cicd.pipeline.task.run.url.full` produce native `required_attribute_not_present`
 violations (`gate_exit_code=1`); wrong JSON type for `cicd.pipeline.result` is
-rejected by ECI as `result_type_invalid` while native exit stays 0; missing
-Resource `cicd.pipeline.run.id` produces native
-`entity_required_attribute_not_present` via the Pipeline entity association.
+rejected by ECI as `result_type_invalid` while native exit stays 0. A Resource
+without `cicd.pipeline.run.id` produces no native finding, because upstream
+SemConv 1.45.0 binds no entity to `span.cicd.pipeline.run.server`; that capture
+fails `weaver-terminal` with `terminal_observed_identity_missing` under ECI's
+own correlation rule instead.
 Conditionally Required `error.type` when Pipeline/Task result is `failure` or
 `error` is enforced by the Source-local Weaver Advice Policy
 `cicd-error-type.rego` (`policy_id=cicd_conditional_error_type_required`,
@@ -260,8 +335,34 @@ as does success without `error.type`. Builtin Weaver information-only
 gate.
 
 Bounded CI/CD SemConv v1.45.0 native Live/Terminal positives, Attempt-absent
-Terminal FAIL, Required/type/conditional/Resource negatives are archived under
-[weaver-evidence/head-current](weaver-evidence/README.md).
+Terminal FAIL, Run-ID correlation FAIL and Required/type/conditional negatives
+are archived under [weaver-evidence/head-current](weaver-evidence/README.md).
+
+## Official Registry source identity
+
+The CI/CD fixture Registry is a byte-exact copy of the upstream SemConv `model/`
+tree at commit `fb30ca17193b551473b1f43c315482918ab6987c` (version `1.45.0`):
+
+| Fact | Value |
+| --- | --- |
+| Upstream `model/` git tree | `b9a819cdbafe936394bd596bb27c3d929ba24ff4` |
+| Local fixture Registry git tree | `b9a819cdbafe936394bd596bb27c3d929ba24ff4` |
+| Upstream `model/cicd/spans.yaml` blob | `ed203885c005ab2462bb0d72f5c28c8fbad19d15` |
+| `model/cicd/spans.yaml` SHA-256 | `10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86` |
+| Pinned canonical upstream tree digest | `85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963` |
+
+All 269 Registry files match the upstream tree byte for byte. An earlier
+revision of this fixture carried a local `entity_associations:
+[cicd.pipeline.run]` block on `span.cicd.pipeline.run.server`; that block is
+not upstream SemConv and was removed to restore the official bytes. The
+`entity.cicd.pipeline.run` entity in `cicd/entities.yaml` is upstream and stays.
+
+Because the fixture must keep those bytes, `tests/fixtures/weaver-cicd/.gitattributes`
+marks the whole fixture as `-text`. Checkout then reproduces the published
+bytes on every platform, so the Registry stays equal to the upstream tree and
+the Plan closure digests (`source_tree_id`, per-file digests, closure digest)
+stay reproducible instead of depending on the generating machine's line
+endings.
 
 ## Package integration with #75 / PR #77
 
@@ -317,6 +418,8 @@ upstream matcher model through the actual Linux checker container. Verified:
 | Wrong ordinary attribute type | Native exit 1, `type_mismatch` | Failed |
 | Invalid Matcher signal | Receiver exits 1 before ready | Failed, actual child exit retained |
 | Registry byte mismatch | No Registry scan executed | Failed, native exit null |
+| Registry and manifest edited together | No Registry scan executed | Failed, `official_registry_bytes_mismatch` |
+| Registry equal to the pinned upstream SemConv tree | Exit 0 in all three phases | Passed, `official_registry_verified` |
 | Baseline versus derived fixture with one event removed | Native diff records `acme.checkout.abandoned` removed | Diff artifact retained |
 | Real Git Tree Plan, same Source bytes | `tree_verified=true` and native Weaver report passed | Passed |
 | Same Plan with different Source | `source_tree_mismatch`, exit 4 | Not executed |

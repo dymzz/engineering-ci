@@ -17,13 +17,14 @@ Checksums: `SHA256SUMS`.
 
 ## Current HEAD fixture (unit + native replay)
 
-- Code/unit coverage: `tests/test_weaver.py` (Resource Run ID, result conflict,
-  Attempt gate, extensible result typing, `native_live_status` /
+- Code/unit coverage: `tests/test_weaver.py` (Terminal Run-ID correlation, result
+  conflict, Attempt gate, extensible result typing, `native_live_status` /
   `capture_attempt_matched`).
 - Bounded CI/CD SemConv v1.45.0 Source: `tests/fixtures/weaver-cicd/`
-  (Knowledge #80 identity; pinned Registry bytes, Pipeline+Task matchers,
-  Advice Policies `otel.rego` + `cicd-error-type.rego`, positive capture,
-  attempt-absent Terminal variant, SemConv negatives under `negatives/`).
+  (Knowledge #80 identity; pinned official Registry bytes, Pipeline+Task
+  matchers, Advice Policies `otel.rego` + `cicd-error-type.rego`, positive
+  capture, attempt-absent Terminal variant, SemConv negatives under
+  `negatives/`).
 - Post-completion Plan: `selection.post_completion_plan` +
   `execute-plan` binding gate (incremental selection never selects Terminal).
 
@@ -39,7 +40,7 @@ dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live
 dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live --config-path ci-weaver-neg-failure-missing-error-type.toml export --path docs/verification/weaver-evidence/head-current/negatives/failure-missing-error-type
 dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live --config-path ci-weaver-neg-error-missing-error-type.toml export --path docs/verification/weaver-evidence/head-current/negatives/error-missing-error-type
 dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live --config-path ci-weaver-neg-failure-with-error-type.toml export --path docs/verification/weaver-evidence/head-current/negatives/failure-with-error-type
-dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live --config-path ci-weaver-neg-missing-resource-run-id.toml export --path docs/verification/weaver-evidence/head-current/negatives/missing-resource-run-id
+dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind terminal --config-path ci-weaver-terminal-missing-resource-run-id.toml export --path docs/verification/weaver-evidence/head-current/negatives/missing-resource-run-id
 dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live --config-path ci-weaver-neg-wrong-result-type.toml export --path docs/verification/weaver-evidence/head-current/negatives/wrong-result-type
 ```
 
@@ -53,13 +54,29 @@ dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live
 | `head-current/negatives/failure-missing-error-type` | `failure` without `error.type` | `failed` / native violation `cicd_conditional_error_type_required` ×2 (Pipeline+Task) |
 | `head-current/negatives/error-missing-error-type` | `error` without `error.type` | `failed` / native violation `cicd_conditional_error_type_required` ×2 |
 | `head-current/negatives/failure-with-error-type` | `failure` with `error.type` | `passed` |
-| `head-current/negatives/missing-resource-run-id` | Resource missing `cicd.pipeline.run.id` | `failed` / native `entity_required_attribute_not_present` (distinct from Terminal correlation) |
+| `head-current/negatives/missing-resource-run-id` | Resource missing `cicd.pipeline.run.id` | `failed` / `terminal_observed_identity_missing` (ECI correlation rule `eci_terminal_run_id_correlation`); native Live passes |
 | `head-current/negatives/wrong-result-type` | Non-string Pipeline result | `failed` / `result_type_invalid` (ECI type gate); native exit 0 |
 
 Coverage matrix fields are recorded on each `report.json` under `coverage`
 and are **derived from matched signals** (Registry pin, matchers, Required,
-Rego Advisor digest, Result type, Resource entity association, Terminal
-correlation). Non-CI/CD fixtures report those obligations as `not_applicable`.
+Rego Advisor digest, Result type, Terminal correlation). `official_registry_verified`
+records whether the Registry bytes reproduce the pinned upstream SemConv tree,
+together with the certified identity (`registry_version`, `registry_commit`,
+`official_registry_tree_sha256`) taken from the pin rather than from the
+Source's own declaration; a Source that declares a version the pinned release
+does not carry is refused with `official_source_version_mismatch`.
+`eci_policy_evaluated` records whether ECI's own policies ran. A Registry
+**declaration** is not proof that a rule was **executed**, so the two are
+reported separately: `resource_required_entities` is what the Registry declares
+and `resource_required` is whether the native check actually executed the rule
+in this run (`not_applicable` / `not_verified` / `executed`), with
+`resource_required_native_evidence` carrying the native evidence. For this
+fixture it is `not_applicable`, because upstream SemConv 1.45.0 declares no
+entity association for the Pipeline span; the Run-ID requirement is reported
+under `eci_run_id_correlation`, and `terminal_gate_failure_reasons` lists every
+Terminal gate failure reason. `time_provenance` records the observed capture
+and native-sample time sources and precisions; it claims no exact end time and
+no duration. Non-CI/CD fixtures report those obligations as `not_applicable`.
 `passed` applies only to executed applicable obligations.
 
 ### Post-completion Plan → `execute-plan` E2E

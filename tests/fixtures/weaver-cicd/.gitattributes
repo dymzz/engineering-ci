@@ -1,0 +1,4 @@
+# The CI/CD fixture is a byte-stable input closure. Its Registry reproduces the
+# pinned upstream SemConv model/ tree, and its Plan closure digests must stay
+# reproducible on every platform. Checkout must not rewrite any of its bytes.
+* -text

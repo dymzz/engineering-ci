@@ -84,9 +84,9 @@
         "--otlp-grpc-address",
         "127.0.0.1",
         "--otlp-grpc-port",
-        "55131",
+        "40619",
         "--admin-port",
-        "47451"
+        "52105"
       ],
       "exit_code": 1,
       "stderr": "live.stderr",
@@ -95,37 +95,87 @@
   ],
   "coverage": {
     "conditionally_required_advice": {
-      "digest": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f",
+      "digest": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718",
       "loaded": true,
-      "policy_id": "cicd_conditional_error_type_required"
+      "policy_id": "cicd_conditional_error_type_required",
+      "status": "executed"
+    },
+    "eci_policy_evaluated": true,
+    "eci_run_id_correlation": {
+      "attribute": "cicd.pipeline.run.id",
+      "enforced_by": "weaver-terminal",
+      "failure_reasons": [
+        "terminal_observed_identity_missing",
+        "terminal_run_id_mismatch",
+        "terminal_run_id_conflict"
+      ],
+      "rule_id": "eci_terminal_run_id_correlation",
+      "status": "not_applicable"
     },
     "expected_matchers": [
       "eci.pipeline",
       "eci.task"
     ],
-    "passed_means": "only executed applicable obligations above; not full SemConv",
+    "matched_matchers": [
+      "eci.pipeline",
+      "eci.task"
+    ],
+    "matched_signals": [
+      "cicd.pipeline.run.server",
+      "cicd.pipeline.task.internal"
+    ],
+    "official_registry_tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+    "official_registry_verified": true,
+    "official_source_reason": null,
+    "passed_means": "only executed applicable obligations above; not full SemConv; official Registry bytes are verified separately from eci_policy_evaluated",
     "pipeline_task_required": "executed",
     "registry_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
     "registry_version": "1.45.0",
-    "resource_required": "executed_via_pipeline_entity_association",
+    "resource_required": "not_applicable",
+    "resource_required_basis": "pinned_semconv_declares_no_entity_association_for_pipeline_span",
+    "resource_required_entities": [],
+    "resource_required_native_evidence": [],
     "result_type_gate": "executed",
-    "terminal_correlation": "not_applicable"
+    "terminal_correlation": "not_applicable",
+    "terminal_gate_failure_reasons": [
+      "terminal_capture_required",
+      "missing_capture_span",
+      "duplicate_capture_span",
+      "terminal_observed_identity_missing",
+      "terminal_run_id_conflict",
+      "terminal_observed_result_missing",
+      "terminal_run_id_mismatch",
+      "terminal_evidence_missing_or_mismatched",
+      "terminal_result_mismatch",
+      "terminal_result_conflict",
+      "terminal_capture_sample_conflict",
+      "terminal_span_not_root",
+      "terminal_attempt_correlation_unverified",
+      "terminal_attempt_extension_invalid",
+      "terminal_attempt_mismatch",
+      "terminal_pipeline_signal_missing"
+    ],
+    "time_provenance": {
+      "reason": "no_observed_span_time_source",
+      "status": "not_applicable"
+    }
   },
+  "eci_policy_evaluated": true,
   "exit_code": 1,
   "gate_exit_code": 1,
   "inputs": {
     "advice_policies": {
       "files": {
-        "cicd-error-type.rego": "8daef753c97cce67997210188611369fca11b53929e215b9e76fd2bec533544c",
+        "cicd-error-type.rego": "ccd04b0de169014fe769a70214c4cd5b7af7a7a086ea509f819b5bd97f3df056",
         "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
       },
       "path": "advice-policies",
-      "sha256": "4193e0a03699d00ca83cb602f32f439ebdb1bc37f684f0ce6cc4f3f5fdd92c9f"
+      "sha256": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718"
     },
-    "config_sha256": "201abb36adfbc1f166a1565e07eacab4a6b00d0561cba324c2c37cc1d112dc37",
-    "expectations_sha256": "d5739613da42b185cc5d78c8757da1b87d6897325117a58b2a650a8946ca9a3b",
-    "matcher_sha256": "5937adf273155c0523d5aaea912b2af727795b2989a042404af3f7ff837a5594",
-    "otlp_sha256": "567c56a76914f0d1dda7db166c42793a84c481eeb1a802e1e45258be78c890e9",
+    "config_sha256": "55a1d61c7320b16beae0ea55e62bb9e5650a06ff2e0d6b9522865b4e91b72dcb",
+    "expectations_sha256": "b1f7fbbbe51e68f232ab0a74fbf72ef5a4000a3dde8eed11b3ff7e9aaada7920",
+    "matcher_sha256": "ce831748e16c6d27264de5bdf4b4857f00ca7c68d619f2e6f8f595f66f359a5c",
+    "otlp_sha256": "24765639f6ab22c7d7485937399f822472fff1fed78505e39f34aa8ff4b9fdf0",
     "registry": {
       "files": {
         "README.md": "477fedb015c089eddd1ac1d06c11539013610aefe3b78e969322f11d705f5a7d",
@@ -160,7 +210,7 @@
         "cicd/entities.yaml": "0a58df92273bc4202b559529a87077db71cb6a3fd1e7e68e6affab8a436fb7cd",
         "cicd/metrics.yaml": "dc2b6eafd6225868ce73da685a3486ca8e6a5ad65b6c6d81dafdb907e1ddb9d1",
         "cicd/registry.yaml": "435a0325fd7f0ab5b387184b3dafc71134b3067bc6894846936d1649d919573b",
-        "cicd/spans.yaml": "018657008072ff2a9f72ed9021b9d20c52384815a5e9c0705c733fdd71c7e2d7",
+        "cicd/spans.yaml": "10e19a1811af95b033fb8a9e642865f55a1b66718d1935cfb8d6df060e2d7f86",
         "cli/spans.yaml": "5986a74e5e910f3ab4cca75ea9bbb2706748c43185fee8660302577781b86560",
         "client/common.yaml": "7bf4e8f3990007a0356674181027d5321b119748d0b3adb4e001415c88b53b19",
         "client/registry.yaml": "1099ae555a40ce17e9e8a4d22f75dcb25aaa84cb22e3f6738554d7c700210386",
@@ -398,8 +448,18 @@
         "webengine/registry.yaml": "4c4b0d1c027bee1bfac5cd70b3632102947ca753ff5497e2e5e4ef1b71b410ec",
         "zos/deprecated/registry-deprecated.yaml": "d65e37265a3258533681ee59b8022495e6867815083014247e27769546803b03"
       },
-      "manifest_sha256": "b0aa2e583d810e5c0137b1e87fd4f927e7bf9a33a60572688dd439b0b111dd99",
-      "resolved_sha256": "6a9ac0b5d5672d0bb3c09167708a74e50bcc8b26b67e7a6ae44c8350e01ed45c"
+      "manifest_sha256": "fe63fb6d71c6d61d4c75816c1614618f2b1f9748e3f20b379a80d297489bdcbf",
+      "official_source": {
+        "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+        "fatal": false,
+        "pinned_upstream_git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
+        "reason": null,
+        "repository": "https://github.com/open-telemetry/semantic-conventions",
+        "tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+        "verified": true,
+        "version": "1.45.0"
+      },
+      "resolved_sha256": "60a17319b9597218f972ce5cd55904736386e4e8ec18da951fb9a708cc431422"
     }
   },
   "lifecycle": {
@@ -544,18 +604,6 @@
                 "id": "conditionally_required_attribute_not_present",
                 "level": "information",
                 "message": "Conditionally required attribute 'error.type' is not present.",
-                "signal_name": "eci pipeline",
-                "signal_type": "span",
-                "type": "PolicyFinding"
-              },
-              {
-                "context": {
-                  "attribute_key": "cicd.pipeline.run.url.full",
-                  "entity_type": "cicd.pipeline.run"
-                },
-                "id": "entity_recommended_attribute_not_present",
-                "level": "improvement",
-                "message": "Recommended attribute 'cicd.pipeline.run.url.full' for entity 'cicd.pipeline.run' is not present in the resource.",
                 "signal_name": "eci pipeline",
                 "signal_type": "span",
                 "type": "PolicyFinding"
@@ -719,7 +767,7 @@
     ],
     "statistics": {
       "advice_level_counts": {
-        "improvement": 8,
+        "improvement": 7,
         "information": 3,
         "violation": 1
       },
@@ -733,12 +781,10 @@
         "Attribute 'github.actions.run_attempt' is not in the matched signal or attribute groups.": 1,
         "Conditionally required attribute 'error.type' is not present.": 2,
         "Opt-in attribute 'cicd.pipeline.action.name' is not present.": 1,
-        "Recommended attribute 'cicd.pipeline.run.url.full' for entity 'cicd.pipeline.run' is not present in the resource.": 1,
         "Required attribute 'cicd.pipeline.task.run.url.full' is not present.": 1
       },
       "advice_type_counts": {
         "conditionally_required_attribute_not_present": 2,
-        "entity_recommended_attribute_not_present": 1,
         "not_stable": 6,
         "opt_in_attribute_not_present": 1,
         "required_attribute_not_present": 1,
@@ -2029,7 +2075,7 @@
         "vcs.ref.time": 0,
         "vcs.repository.count": 0
       },
-      "total_advisories": 12,
+      "total_advisories": 11,
       "total_entities": 11,
       "total_entities_by_type": {
         "attribute": 7,
@@ -2039,6 +2085,7 @@
       }
     }
   },
+  "official_registry_verified": true,
   "origin": {
     "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
     "repository": "https://github.com/open-telemetry/semantic-conventions",
@@ -2049,7 +2096,7 @@
     "attempt": 1,
     "run_id": "controlled-42/1"
   },
-  "source_digest": "sha256:0c9500e8b54bff885210d8c8609ad9bbfa01c7e5e3711c3a26df60eaa58c5fd9",
+  "source_digest": "sha256:c24fbb0a01a9238d367ad809a2f0cdeb23e853d36e50082a1aea74b8628f43ae",
   "status": "failed",
   "tool": "weaver",
   "tool_asset_sha256": "9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61",

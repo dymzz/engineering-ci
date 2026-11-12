@@ -1,8 +1,8 @@
 {
-  "actual_closure_digest": "a044923fae489eade0d938bb699cc6e653b3487273367392388120ef41d43f56",
+  "actual_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
   "checks": [
     {
-      "actual_closure_digest": "a044923fae489eade0d938bb699cc6e653b3487273367392388120ef41d43f56",
+      "actual_closure_digest": "2d62cd4146651dd7ac6c50f1a021051b5e1c325f19ef34a9187a8145d07339ab",
       "authenticated": false,
       "gate_exit_code": 1,
       "input_closure_verified": "failed",
@@ -25,7 +25,7 @@
   "reason": "post_completion_closure_digest_mismatch",
   "schema_version": 1,
   "source_digest": null,
-  "source_tree_id": "aa2f4cba173a5d85b0e205edd9ff8ee502ce5be6882807fc834c0316fd0e4164",
+  "source_tree_id": "4cf987a62e4b5f66448985f1da492bf2f49bca5201a234922bedb4a1bf71c070",
   "source_tree_verified": "not_requested",
   "status": "blocked",
   "targets": [],
