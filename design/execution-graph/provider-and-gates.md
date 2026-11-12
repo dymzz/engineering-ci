@@ -5,6 +5,23 @@
 ## 1. 权威与接口
 项目/组织的**当前生效工程 Profile** 根据 Context × Action × Target 决定 Required。ECI #63 对账原生执行/可信复用与 Expected Coverage；#61 决定 Required/Release 授权并连接平台保护规则。Selector、Knowledge RDF 查询及 GitHub Job success 不能自行删减 Required。
 
+### 1.1 Profile → Expected Requirements → Plan → Assessment（目标交接）
+
+当前并无已交付的统一 Profile→Expected API；以下是**拟议的跨组件固定交接**，不得写成现有 `selection.plan()` 字段。生产/选取责任与最小核验如下：
+
+| 输入/引用 | 生产者／选择者 | 消费与拒绝规则 |
+|---|---|---|
+| `profile_ref`、`profile_revision`、批准来源 | 项目/组织工程策略权威；项目侧配置或合法授权的选择机制 | 固定版本与批准依据；未知、被撤销或不受信的 Profile 不得授予 Required PASS |
+| `effective_from/to` 或有来源的有效性条件 | 同一策略权威 | 以本次动作对应的有效性时点/条件核验；不得用当前 latest 偷换历史运行策略 |
+| `context / action / target_ref` | 实际调用方、Git Source Binding、Provider（适用时） | 例如 local、PR merge、Run/Attempt、post-completion、Release；目标引用须指向实际被检 Source/制品，不凭 HEAD 名称推断 Merge Tree |
+| `source_ref / provider_run_ref / attempt`（按需） | ECI Git/Source 生产方 #66、实际 Provider #75 等 | Commit/Index/Worktree/Merge Tree 与 Run/Attempt 分别核验；没有 Provider 的本地检查不要求 GitHub ID |
+| `required_obligations` 与 `allowed_inapplicability` | 当前生效的项目 Profile | 包含 Check、被检对象、期望覆盖、条件；不适用必须有明确适用性裁决，不能以 Selector 未选中替代 |
+| `expected_set_ref` / 本次绑定回执 | 负责解析生效策略的 ECI/项目接口（拟议） | 固定实际 Expected 集合及来源，供 Selection/Plan 对账、#63 Coverage 和 #61 Gate 引用同一次要求定义 |
+
+**流程：** 按 Context×Action×Target 选取并验证当前有效 Profile → 确定完整 Expected 集合及允许不适用条件 → 与 `selection.plan()` 的实际 Check/Scope 对账 → 将原生结果/受信复用逐项对应 Expected → #61 对同一 `expected_set_ref` 作最终判定。#63 核验受信与覆盖，不生产项目 Required；Knowledge RDF 查询零行不得删除已生效义务。
+
+**拒绝/降级：** Required Profile 不存在或不可信、有效性/目标绑定无法证明、Expected 缺失、选中集遗漏或不适用无授权时，该动作不能获得完整 Required PASS；局部可执行 Check 可保留自身原生结果，不得全部伪装为失败。Profile 解析或授权状态缺失不强制阻断不依赖该 Profile 的普通本地检查。
+
 Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dispatch`（请求远端执行）、`Observe`（真实平台状态/时间）、`Artifacts`（取得/保存）、`Publish`（发布 Check/Decision）。本地不要求实现远程能力；不同 Provider 不伪造不支持的状态。
 
 ## 2. 执行与结果消费

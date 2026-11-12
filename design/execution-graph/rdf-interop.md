@@ -5,7 +5,9 @@
 **原则：** RDF 增强工程语义与证据关系，不调度 Dagger，也不成为普通 ECI 检查的强制运行依赖。ECI 核心不得依赖 `engineering_knowledge` 包、`ek:` 术语或 RDF4J；领域消费端通过可选只读 Adapter 将固定结果映射为 ECI 输入。来源资源按实际类型采用 DCAT/DCTERMS/PROV，不能把所有 Source 当 Dataset。
 
 ## H-01 Knowledge → ECI 固定只读输入
-**拟议适配入口（非已实现 API）**：消费者侧 `resolve_knowledge_inputs(context, requirements, source_ref)`。以下均为按需交接，真实 RDF Check 才需使用：
+**拟议适配入口（非已实现 API）**：消费者侧 `resolve_knowledge_inputs(context, requirements, source_ref)`。`requirements` 必须由**独立的项目/组织当前生效 Profile** 确定，不能从 Knowledge 查询返回的对象或候选图反推 Required。适配器仅解析这些需求确实使用的固定领域性质。以下均为按需交接，真实 RDF Check 才需使用：
+
+**联合读取不变量：** 一次判定若联合消费 #10 RDF Profile、#11 Capability 或 #12 Evidence，必须绑定**同一个已受控接纳的 DatasetRevision**、明确的默认图/命名图闭包、相容的 Profile/Shape/Query 修订及同一固定读取/接纳回执。不可分别从可变 latest 取得不同 DatasetRevision 的结果后拼接为一次正式判定；没有共同快照或覆盖证明时返回 unresolved/拒绝该 Knowledge-dependent 判定。Candidate 图仅用于候选联调，不能混入已接纳读回。
 
 | 字段族 | 生产权威 | 核验 |
 |---|---|---|

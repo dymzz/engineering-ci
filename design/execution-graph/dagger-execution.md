@@ -21,6 +21,20 @@
 
 已有 `@check` 及原生产物：`_repository_tests()` → `tests()` / `repository_test_artifacts()`；`weaver_artifacts()` → `weaver_report()` / `weaver_enforce()` / `weaver_live()`。复用这些节点，禁止为报告重跑扫描器。
 
+### 2.1 现行 prerequisite 实例到真实依赖的映射（A 的交付）
+
+已核对的生产/执行路径：项目配置 `ci-selection.toml` 的 `prerequisites: name → tests[]` 由 `selection.py` 在受影响测试集合与 `tests[]` 相交时选中；`prerequisite_actions: name → {type, ...}` 被写入 Plan；Host `execution.execute()` 目前先运行 tests、Hygiene/Source，再执行 `_run_prerequisites()`。这说明现有配置表达的是**选中关联**，不是已验证的 Dagger 前置边或成功门禁。
+
+| 现有动作/记录 | 实际生产者和事实 | 需确认的消费方及依赖类别 | 失败与执行时点 |
+|---|---|---|---|
+| `git_commit_present` | 配置指定 Commit，Host `git cat-file -e <commit>^{commit}` 检查是否存在；不生成 Directory | 对应 `prerequisites[name] = tests[]` 只提供候选测试消费集合；需确认该 Check 是否真的要求该 Git 身份在**运行前**存在，还是仅为后置验收 | 真正 Pre-execution 时先核验；未通过只阻断依赖者，其余 Check 仍可运行 |
+| `command` | 配置 `argv[]`，Host 通过原生 Runner 执行并记录退出与 stdout/stderr | 不得按名称推断；逐项裁决为产物生成（Data）、前置 PASS、后置验证或 Policy；若产生文件须声明真实产物/消费路径 | 数据依赖以真实 File/Directory 衔接；前置失败时消费者不启动；后置/Policy 不反向串行 |
+| 缺失参数/未知动作 | 现有 `_run_prerequisites()` 返回 `not_executed` 和具体原因 | 不能据此授予任何 Required 成功；不得造一个空产物满足 Data Dependency | 保留未执行/阻断原因；独立 Check 继续执行 |
+
+**A 阶段必须针对当前真实配置逐项填充：** `prerequisite_name → source_config/ref → action_spec/version → selected_by → consumer_check(s) → edge_kind → requires_pass / output_ref → execution_phase → failure_scope`。现有 `tests[]` 交集是候选消费关系，不得直接上升为“所有 selected Check 的全局前置”。没有足够事实确定类型时，标注 unresolved；不能猜测为 Pre-execution 或在计划里静默删除该要求。
+
+**B 阶段执行不变量：** 真正的前置成功条件必须在其消费者启动前判定；失败时消费者记录 blocked/not_executed 且不会启动其原生工具，独立 Check 仍能实际执行。共享准备和数据生产优先表达为 Dagger 原生函数/产物依赖；Host 前置保持真实来源，不能为表达依赖而实现 ECI 调度器。原生 FAIL、未执行及最终 Gate 判定各自记录。
+
 ## 3. Plan 驱动执行编译
 1. 先独立建立并对账当前 Expected Requirements；不能只凭选中列表确定 Required。
 2. 由 [证据专题](evidence-and-identity.md)核验受信历史结果、计算未满足 Check 和真实产物闭包。
