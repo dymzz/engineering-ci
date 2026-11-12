@@ -15,8 +15,11 @@ adapter = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(adapter)
 
 
-@pytest.fixture
-def attempt():
+@pytest.fixture(params=("original", "registered-attributes"))
+def attempt(request, monkeypatch):
+    if request.param == "registered-attributes":
+        monkeypatch.setattr(adapter, "EVIDENCE", adapter.REGISTERED_EVIDENCE)
+        monkeypatch.setattr(adapter, "EXPECTATION", adapter.REGISTERED_EXPECTATION)
     witness = adapter._json(adapter.EXPECTATION)
     evidence = adapter._evidence(witness)
     return witness, evidence["candidate"]["document"], evidence["otel"]["document"]
@@ -52,7 +55,10 @@ def test_materialized_source_preserves_capture_bytes_and_independent_expected(
         for key in ("missing", "unexpected", "duplicate", "mismatched")
     )
     assert (directory / "capture.json").read_bytes() == (
-        adapter.EVIDENCE / "otel-42821429094-all-completed.json"
+        adapter.EVIDENCE
+        / witness["archive"]
+        .get("roles", {})
+        .get("otel", "otel-42821429094-all-completed.json")
     ).read_bytes()
     expected = adapter._json(directory / "expected.json")
     assert {item["trace_id"] for item in expected["spans"]} == {
@@ -102,7 +108,7 @@ def test_materialized_source_preserves_capture_bytes_and_independent_expected(
         ),
         (
             lambda c: _set_attribute(
-                _spans(c)[0], "github.actions.run_attempt", {"intValue": "2"}
+                _spans(c)[0], "cicd.pipeline.run.id", {"stringValue": "42821429094/2"}
             ),
             "task_identity_or_attributes_mismatch",
             "mismatched",
@@ -143,6 +149,14 @@ def test_every_task_on_the_same_wrong_trace_still_fails(attempt):
 )
 def test_wrong_resource_identity_is_rejected(attempt, key, value):
     witness, candidate, capture = attempt
+    if "producer" in witness:
+        if key == "github.actions.run_attempt":
+            key, value = "cicd.pipeline.run.id", {"stringValue": "42821429094/2"}
+        elif key == "github.repository":
+            key, value = (
+                "vcs.repository.url.full",
+                {"stringValue": "https://github.com/wrong/repository"},
+            )
     _set_attribute(capture["resourceSpans"][0]["resource"], key, value)
     with pytest.raises(
         adapter.InputMismatch, match="candidate_or_resource_provenance_mismatch"
@@ -175,7 +189,9 @@ def test_coordinated_archive_and_local_manifest_tamper_rejected(
     witness, _, _ = attempt
     archive = tmp_path / "archive"
     shutil.copytree(adapter.EVIDENCE, archive)
-    target = archive / "otel-42821429094-all-completed.json"
+    target = archive / witness["archive"].get("roles", {}).get(
+        "otel", "otel-42821429094-all-completed.json"
+    )
     capture = adapter._json(target)
     for span in _spans(capture):
         span["traceId"] = "f" * 32
@@ -261,12 +277,45 @@ def exported_result(tmp_path, attempt):
             {"name": "cicd.pipeline.task.run.id", "value": job["job_id"]},
             {"name": "cicd.pipeline.task.run.url.full", "value": job["url"]},
             {
-                "name": "github.actions.run_attempt",
-                "value": attempt[0]["run"]["attempt"],
+                "name": "cicd.pipeline.run.id",
+                "value": f"{attempt[0]['run']['run_id']}/{attempt[0]['run']['attempt']}",
             },
         ]
+        if "producer" not in attempt[0]:
+            sample["span"]["attributes"].append(
+                {
+                    "name": "github.actions.run_attempt",
+                    "value": attempt[0]["run"]["attempt"],
+                }
+            )
+        else:
+            sample["span"].update(
+                parent_span_id=attempt[0]["run"]["pipeline_span_id"],
+                kind="internal",
+                start_time=job["start_time_unix_nano"],
+                end_time=job["end_time_unix_nano"],
+            )
+            sample["span"]["attributes"].append(
+                {"name": "cicd.pipeline.task.run.result", "value": job["result"]}
+            )
+    if "producer" in attempt[0]:
+        resource = attempt[2]["resourceSpans"][0]["resource"]["attributes"]
+        native["samples"].append(
+            {
+                "resource": {
+                    "attributes": [
+                        {"name": item["key"], "value": item["value"]["stringValue"]}
+                        for item in resource
+                    ]
+                }
+            }
+        )
+    closure = adapter.selection.compute_weaver_input_closure(source, "ci-weaver.toml")
     report = {
         "name": "weaver_live",
+        "tool": "weaver",
+        "version": closure["weaver_tool"]["version"],
+        "tool_asset_sha256": closure["weaver_tool"]["sha256"],
         "status": "passed",
         "exit_code": 0,
         "gate_exit_code": 0,
@@ -277,6 +326,11 @@ def exported_result(tmp_path, attempt):
         "eci_policy_evaluated": True,
         "native_report": native,
         "coverage": {
+            "conditionally_required_advice": {
+                "status": "executed",
+                "loaded": True,
+                "digest": closure["advice_policies"]["sha256"],
+            },
             "official_registry_verified": True,
             "registry_version": adapter.semconv_registry.VERSION,
             "registry_commit": adapter.semconv_registry.COMMIT,
@@ -300,6 +354,11 @@ def exported_result(tmp_path, attempt):
         ],
     }
     adapter._write_json(artifacts / "live_check.json", native)
+    report["inputs"]["registry"] = {
+        "files": closure["registry"]["files"],
+        "manifest_sha256": closure["registry"]["manifest"]["sha256"],
+    }
+    report["inputs"]["advice_policies"] = closure["advice_policies"]
     adapter._write_json(artifacts / "report.json", report)
     (artifacts / "live.stdout").write_text("")
     (artifacts / "live.stderr").write_text("")
@@ -329,6 +388,10 @@ def test_result_consumer_keeps_producer_claims_and_requires_plan_binding(
     policy = source / "advice-policies/cicd-error-type.rego"
     original = policy.read_bytes()
     policy.write_bytes(original + b"\n# changed after execution\n")
+    with pytest.raises(adapter.InputMismatch, match="native_source_closure_mismatch"):
+        adapter.verify_report(source, artifacts, plan)
+    policy.write_bytes(original)
+    (source / "unbound-metadata.json").write_text("{}")
     with pytest.raises(adapter.InputMismatch, match="plan_report_binding_mismatch"):
         adapter.verify_report(source, artifacts, plan)
     policy.write_bytes(original)
@@ -357,6 +420,11 @@ def test_result_consumer_keeps_producer_claims_and_requires_plan_binding(
             "native_input_digest_mismatch",
         ),
         (lambda r: r.update(trusted=True), "unsupported_trust_upgrade"),
+        (lambda r: r.update(version="unknown"), "native_tool_identity_mismatch"),
+        (
+            lambda r: r.update(eci_policy_evaluated=False),
+            "native_policy_coverage_unverified",
+        ),
         (
             lambda r: r["commands"].append(copy.deepcopy(r["commands"][0])),
             "native_execution_count_mismatch",
@@ -401,3 +469,90 @@ def test_forged_coverage_count_cannot_hide_duplicate_received_task(exported_resu
     adapter._write_json(artifacts / "report.json", report)
     with pytest.raises(adapter.InputMismatch, match="native_task_inventory_mismatch"):
         adapter.verify_report(source, artifacts)
+
+
+def test_extra_task_is_rejected_even_when_every_expected_task_is_present(attempt):
+    witness, candidate, capture = attempt
+    extra = copy.deepcopy(_spans(capture)[0])
+    extra["spanId"] = "f" * 16
+    _set_attribute(extra, "cicd.pipeline.task.run.id", {"stringValue": "unknown-job"})
+    _spans(capture).append(extra)
+    with pytest.raises(
+        adapter.InputMismatch, match="unexpected_task_identity"
+    ) as error:
+        adapter.validate_attempt(witness, candidate, capture)
+    assert len(error.value.inventory["matched"]) == 3
+    assert len(error.value.inventory["unexpected"]) == 1
+    assert error.value.inventory["missing"] == []
+
+
+def test_swapped_job_urls_and_wrong_parent_are_rejected(attempt):
+    witness, candidate, capture = attempt
+    first, second = _spans(capture)[:2]
+    _set_attribute(
+        first,
+        "cicd.pipeline.task.run.url.full",
+        {"stringValue": witness["jobs"][1]["url"]},
+    )
+    _set_attribute(
+        second,
+        "cicd.pipeline.task.run.url.full",
+        {"stringValue": witness["jobs"][0]["url"]},
+    )
+    first["parentSpanId"] = "f" * 16
+    with pytest.raises(
+        adapter.InputMismatch, match="task_identity_or_attributes_mismatch"
+    ) as error:
+        adapter.validate_attempt(witness, candidate, capture)
+    assert len(error.value.inventory["mismatched"]) == 2
+    assert "parent_span_id" in error.value.inventory["mismatched"][0]["fields"]
+
+
+def test_expected_attempt_cannot_be_changed_with_a_self_consistent_report(
+    exported_result,
+):
+    source, artifacts, report = exported_result
+    expected = adapter._json(source / "expected.json")
+    expected["source"]["attempt"] = report["source"]["attempt"] = 2
+    adapter._write_json(source / "expected.json", expected)
+    report["inputs"]["expectations_sha256"] = adapter._hash(source / "expected.json")
+    adapter._write_json(artifacts / "report.json", report)
+    with pytest.raises(adapter.InputMismatch, match="result_expectation_mismatch"):
+        adapter.verify_report(source, artifacts)
+
+
+def test_candidate_metadata_cannot_drift_after_native_execution(exported_result):
+    source, artifacts, _ = exported_result
+    candidate = adapter._json(source / "producer-candidate.json")
+    candidate["unverified_extra_claim"] = True
+    adapter._write_json(source / "producer-candidate.json", candidate)
+    with pytest.raises(adapter.InputMismatch, match="result_producer_bytes_mismatch"):
+        adapter.verify_report(source, artifacts)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("run_attempt", 2), ("head_sha", "f" * 40), ("id", 1)]
+)
+def test_registered_api_witness_must_agree_with_the_independent_attempt(field, value):
+    witness = adapter._json(adapter.REGISTERED_EXPECTATION)
+    archived = adapter._evidence(witness, adapter.REGISTERED_EVIDENCE)
+    archived["api"]["document"]["attempt"][field] = value
+    with pytest.raises(adapter.InputMismatch, match="api_witness_identity_mismatch"):
+        adapter._source_witness(witness, archived["candidate"]["document"], archived)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "unknown"])
+def test_registered_api_witness_must_keep_the_complete_job_multiset(change):
+    witness = adapter._json(adapter.REGISTERED_EXPECTATION)
+    archived = adapter._evidence(witness, adapter.REGISTERED_EVIDENCE)
+    jobs = archived["api"]["document"]["job_pages"][0]["jobs"]
+    if change == "missing":
+        jobs.pop()
+    elif change == "duplicate":
+        jobs.append(copy.deepcopy(jobs[0]))
+    else:
+        jobs[0]["id"] = 999
+    with pytest.raises(
+        adapter.InputMismatch, match="api_witness_job_inventory_mismatch"
+    ):
+        adapter._source_witness(witness, archived["candidate"]["document"], archived)

@@ -20,6 +20,10 @@ REPO = Path(__file__).resolve().parents[2]
 EVIDENCE = REPO / "docs/verification/cicd-telemetry-evidence-all-completed"
 FIXTURE = REPO / "tests/fixtures/weaver-cicd"
 EXPECTATION = REPO / "tests/integration/real-attempt-42821429094.json"
+REGISTERED_EVIDENCE = REPO / "tests/fixtures/registered-attempt"
+REGISTERED_EXPECTATION = (
+    REPO / "tests/integration/real-attempt-registered-attributes.json"
+)
 TASK_MATCHER = "eci.task"
 TASK_SIGNAL = "cicd.pipeline.task.internal"
 
@@ -46,10 +50,19 @@ def _write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
-def _evidence(witness: dict) -> dict:
+def _case_paths(case: str | None) -> tuple[Path, Path]:
+    if case == "registered-attributes":
+        return REGISTERED_EVIDENCE, REGISTERED_EXPECTATION
+    if case in {None, "original"}:
+        return EVIDENCE, EXPECTATION
+    raise InputMismatch("unknown_case")
+
+
+def _evidence(witness: dict, directory: Path | None = None) -> dict:
     """Hash and parse the same bytes against the separately committed witness."""
+    directory = EVIDENCE if directory is None else directory
     sums = {}
-    for line in (EVIDENCE / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+    for line in (directory / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
         digest, name = line.split(maxsplit=1)
         name = name.strip().lstrip("*")
         if name in sums or "/" in name or "\\" in name or name in {".", ".."}:
@@ -58,13 +71,74 @@ def _evidence(witness: dict) -> dict:
     pinned = witness["archive"]["files"]
     if set(pinned) != set(sums):
         raise InputMismatch("original_evidence_inventory_mismatch")
+    roles = witness["archive"].get("roles")
+    if roles and (
+        set(roles.values()) != set(pinned) or len(set(roles.values())) != len(roles)
+    ):
+        raise InputMismatch("invalid_evidence_roles")
     result = {}
     for name, digest in pinned.items():
-        raw = (EVIDENCE / name).read_bytes()
+        raw = (directory / name).read_bytes()
         if sums[name] != digest or hashlib.sha256(raw).hexdigest() != digest:
             raise InputMismatch("original_evidence_digest_mismatch")
-        result[name.split("-", 1)[0]] = {"raw": raw, "document": json.loads(raw)}
+        role = (
+            next(key for key, file in roles.items() if file == name)
+            if roles
+            else name.split("-", 1)[0]
+        )
+        result[role] = {"raw": raw, "document": json.loads(raw)}
     return result
+
+
+def _source_witness(witness: dict, candidate: dict, archived: dict) -> None:
+    """Reconcile already pinned #75 source objects, without fetching/encoding."""
+    if "producer" not in witness:
+        return
+    source = archived["api"]["document"]
+    run, expected = source["attempt"], witness["run"]
+    repository = run.get("repository") or {}
+    if (
+        str(run.get("id")) != expected["run_id"]
+        or run.get("run_attempt") != expected["attempt"]
+        or run.get("head_sha") != expected["head_sha"]
+        or repository.get("full_name") != expected["repository"]
+        or repository.get("html_url") != expected["repository_url"]
+    ):
+        raise InputMismatch("api_witness_identity_mismatch")
+    pages = source["job_pages"]
+    # This fixed source has three completed Jobs and no omissions/noncompleted
+    # Jobs. Pagination itself remains the Producer's existing responsibility.
+    jobs = [job for page in pages for job in page["jobs"]]
+    expected_jobs = {job["job_id"]: job for job in witness["jobs"]}
+    if Counter(str(job.get("id")) for job in jobs) != Counter(expected_jobs.keys()):
+        raise InputMismatch("api_witness_job_inventory_mismatch")
+    for job in jobs:
+        wanted = expected_jobs[str(job["id"])]
+        if (
+            job.get("status") != "completed"
+            or job.get("html_url") != wanted["url"]
+            or "task:" + job.get("name", "") != wanted["name"]
+            or job.get("conclusion") != wanted["result"]
+            or str(cicd_telemetry.parse_time_ns(job.get("started_at")))
+            != wanted["start_time_unix_nano"]
+            or str(cicd_telemetry.parse_time_ns(job.get("completed_at")))
+            != wanted["end_time_unix_nano"]
+        ):
+            raise InputMismatch("api_witness_job_attributes_mismatch")
+    receipt, producer = archived["receipt"]["document"], witness["producer"]
+    if (
+        receipt.get("producer_commit") != producer["source_commit"]
+        or receipt.get("producer_source_sha256") != producer["source_sha256"]
+        or receipt.get("producer_schema") != producer["schema_version"]
+        or archived["producer_exit"]["document"] != producer["exit_code"]
+        or any(
+            receipt["files_sha256"].get(witness["archive"]["roles"][role])
+            != hashlib.sha256(archived[role]["raw"]).hexdigest()
+            for role in ("candidate", "otel", "api")
+        )
+        or candidate["claims"].get("trusted") is not False
+    ):
+        raise InputMismatch("producer_source_receipt_mismatch")
 
 
 def _registry_identity(config: dict) -> dict:
@@ -116,6 +190,11 @@ def _span_records(capture: dict) -> tuple[dict, list[dict]]:
 
 def _expected_tasks(witness: dict) -> list[dict]:
     run = witness["run"]
+    if (
+        "producer" in witness
+        and witness["producer"]["id_scheme"] != cicd_telemetry.ID_SCHEME
+    ):
+        raise InputMismatch("producer_id_scheme_mismatch")
     trace, parent, _ = cicd_telemetry._stable_ids(run["run_id"], run["attempt"])
     if trace != run["trace_id"] or parent != run["pipeline_span_id"]:
         raise InputMismatch("expected_trace_witness_mismatch")
@@ -133,6 +212,18 @@ def _expected_tasks(witness: dict) -> list[dict]:
     return expected
 
 
+def _native_expectations(witness: dict) -> list[dict]:
+    return [
+        {
+            "trace_id": item["trace_id"],
+            "span_id": item["span_id"],
+            "matcher": TASK_MATCHER,
+            "signal": TASK_SIGNAL,
+        }
+        for item in _expected_tasks(witness)
+    ]
+
+
 def task_inventory(witness: dict, capture: dict) -> dict:
     """Compare raw OTLP identities to the independent Job/Producer mapping."""
     expected = _expected_tasks(witness)
@@ -145,6 +236,7 @@ def task_inventory(witness: dict, capture: dict) -> dict:
     ]
     counts = Counter(job_ids)
     inventory = {
+        "scope": "complete_task_set_for_pinned_attempt",
         "expected_count": len(expected),
         "observed_count": len(spans),
         "matched": [],
@@ -176,11 +268,24 @@ def task_inventory(witness: dict, capture: dict) -> dict:
             "kind": span.get("kind") == 1,
             "url": attrs.get("cicd.pipeline.task.run.url.full", {}).get("stringValue")
             == wanted["url"],
-            "attempt": attrs.get("github.actions.run_attempt", {}).get("intValue")
-            == str(witness["run"]["attempt"]),
             "run_id": attrs.get("cicd.pipeline.run.id", {}).get("stringValue")
             == f"{witness['run']['run_id']}/{witness['run']['attempt']}",
         }
+        if "producer" not in witness:
+            fields["attempt"] = attrs.get("github.actions.run_attempt", {}).get(
+                "intValue"
+            ) == str(witness["run"]["attempt"])
+        for field, actual in (
+            ("start_time_unix_nano", span.get("startTimeUnixNano")),
+            ("end_time_unix_nano", span.get("endTimeUnixNano")),
+        ):
+            if field in wanted:
+                fields[field] = actual == wanted[field]
+        if "result" in wanted:
+            fields["result"] = (
+                attrs.get("cicd.pipeline.task.run.result", {}).get("stringValue")
+                == wanted["result"]
+            )
         try:
             start, end = int(span["startTimeUnixNano"]), int(span["endTimeUnixNano"])
             fields["completed_time"] = 0 < start <= end
@@ -204,6 +309,9 @@ def validate_attempt(witness: dict, candidate: dict, capture: dict) -> dict:
         candidate["claims"],
         candidate["coverage"],
     )
+    registered = "producer" in witness
+    repository_key = "vcs.repository.url.full" if registered else "github.repository"
+    repository_value = run["repository_url"] if registered else run["repository"]
     if (
         candidate.get("source") != "github_api"
         or any(
@@ -228,13 +336,29 @@ def validate_attempt(witness: dict, candidate: dict, capture: dict) -> dict:
         )
         or resource.get("cicd.pipeline.run.id", {}).get("stringValue")
         != f"{run['run_id']}/{run['attempt']}"
-        or resource.get("github.actions.run_attempt", {}).get("intValue")
-        != str(run["attempt"])
+        or (
+            not registered
+            and resource.get("github.actions.run_attempt", {}).get("intValue")
+            != str(run["attempt"])
+        )
         or resource.get("vcs.ref.head.revision", {}).get("stringValue")
         != run["head_sha"]
-        or resource.get("github.repository", {}).get("stringValue") != run["repository"]
+        or resource.get(repository_key, {}).get("stringValue") != repository_value
     ):
         raise InputMismatch("candidate_or_resource_provenance_mismatch")
+    if registered and (
+        candidate.get("schema_version") != witness["producer"]["schema_version"]
+        or candidate["producer"].get("attribute_contract")
+        != witness["producer"]["attribute_contract"]
+        or candidate["producer"].get("id_scheme") != witness["producer"]["id_scheme"]
+        or candidate.get("repository_identity", {}).get("url") != repository_value
+        or facts.get("repository_url") != repository_value
+        or any(
+            claims.get(key) is not False
+            for key in ("rpc_accepted", "receiver_observed", "trusted")
+        )
+    ):
+        raise InputMismatch("registered_producer_contract_mismatch")
     inventory = task_inventory(witness, capture)
     for category, reason in (
         ("duplicate", "duplicate_task_identity"),
@@ -247,7 +371,7 @@ def validate_attempt(witness: dict, candidate: dict, capture: dict) -> dict:
     return inventory
 
 
-def prepare(destination: Path) -> dict:
+def prepare(destination: Path, *, case: str | None = None) -> dict:
     """Materialize original bytes and independent expectations, without execution."""
     destination = destination.resolve()
     if destination.exists():
@@ -256,14 +380,16 @@ def prepare(destination: Path) -> dict:
         raise InputMismatch("destination_contains_checkout")
     config = tomllib.loads((FIXTURE / "ci-weaver.toml").read_text(encoding="utf-8"))
     official = _registry_identity(config)
-    witness = _json(EXPECTATION)
+    directory, expectation = _case_paths(case)
+    witness = _json(expectation)
     if any(
         witness["upstream"].get(key) != official[key]
         for key in ("repository", "commit", "version")
     ):
         raise InputMismatch("witness_registry_identity_mismatch")
-    archived = _evidence(witness)
+    archived = _evidence(witness, directory)
     candidate, capture = archived["candidate"]["document"], archived["otel"]["document"]
+    _source_witness(witness, candidate, archived)
     inventory = validate_attempt(witness, candidate, capture)
     expected = {
         "schema_version": 1,
@@ -271,18 +397,10 @@ def prepare(destination: Path) -> dict:
             **witness["run"],
             "run_id": f"{witness['run']['run_id']}/{witness['run']['attempt']}",
         },
-        "spans": [
-            {
-                "trace_id": item["trace_id"],
-                "span_id": item["span_id"],
-                "matcher": TASK_MATCHER,
-                "signal": TASK_SIGNAL,
-            }
-            for item in _expected_tasks(witness)
-        ],
+        "spans": _native_expectations(witness),
         "provenance": {
             "archive": witness["archive"],
-            "witness_sha256": _hash(EXPECTATION),
+            "witness_sha256": _hash(expectation),
             "producer_claims": candidate["claims"],
             "official_registry": official,
         },
@@ -292,10 +410,17 @@ def prepare(destination: Path) -> dict:
         (destination / "capture.json").write_bytes(archived["otel"]["raw"])
         _write_json(destination / "expected.json", expected)
         _write_json(destination / "input-inventory.json", inventory)
-        (destination / "attempt-witness.json").write_bytes(EXPECTATION.read_bytes())
+        (destination / "attempt-witness.json").write_bytes(expectation.read_bytes())
         (destination / "producer-candidate.json").write_bytes(
             archived["candidate"]["raw"]
         )
+        for role, filename in (
+            ("api", "producer-api-witness.json"),
+            ("receipt", "producer-receipt.json"),
+            ("producer_exit", "producer.exit"),
+        ):
+            if role in archived:
+                (destination / filename).write_bytes(archived[role]["raw"])
         matcher_path = destination / config["matcher_config"]
         matcher = matcher_path.read_text(encoding="utf-8")
         old = "when = 'name == \"eci task\"'"
@@ -335,12 +460,17 @@ def prepare(destination: Path) -> dict:
 
 
 def verify_report(
-    source: Path, artifacts: Path, plan_report: Path | None = None
+    source: Path,
+    artifacts: Path,
+    plan_report: Path | None = None,
+    *,
+    case: str | None = None,
 ) -> dict:
     """Inspect existing artifacts; never execute or reinterpret native policies."""
     config = tomllib.loads((source / "ci-weaver.toml").read_text(encoding="utf-8"))
     expected = _json(source / config["expectations"])
-    witness = _json(EXPECTATION)
+    directory, expectation = _case_paths(case)
+    witness = _json(expectation)
     inventory = validate_attempt(
         witness,
         _json(source / "producer-candidate.json"),
@@ -348,10 +478,34 @@ def verify_report(
     )
     if (
         source / "attempt-witness.json"
-    ).read_bytes() != EXPECTATION.read_bytes() or expected["provenance"][
+    ).read_bytes() != expectation.read_bytes() or expected["provenance"][
         "witness_sha256"
-    ] != _hash(EXPECTATION):
+    ] != _hash(expectation):
         raise InputMismatch("result_witness_mismatch")
+    if (
+        expected.get("source")
+        != {
+            **witness["run"],
+            "run_id": f"{witness['run']['run_id']}/{witness['run']['attempt']}",
+        }
+        or expected.get("spans") != _native_expectations(witness)
+        or expected["provenance"].get("archive") != witness["archive"]
+    ):
+        raise InputMismatch("result_expectation_mismatch")
+    archived = _evidence(witness, directory)
+    for role, filename in (
+        ("candidate", "producer-candidate.json"),
+        ("otel", config["otlp"]),
+        ("api", "producer-api-witness.json"),
+        ("receipt", "producer-receipt.json"),
+        ("producer_exit", "producer.exit"),
+    ):
+        if (
+            role in archived
+            and (source / filename).read_bytes() != archived[role]["raw"]
+        ):
+            raise InputMismatch("result_producer_bytes_mismatch")
+    _source_witness(witness, archived["candidate"]["document"], archived)
     report = _json(artifacts / "report.json")
     if (
         report.get("name") != "weaver_live"
@@ -397,11 +551,54 @@ def verify_report(
     ):
         if report["inputs"].get(key) != _hash(source / path):
             raise InputMismatch("native_input_digest_mismatch")
+    closure = selection.compute_weaver_input_closure(source, "ci-weaver.toml")
+    if (
+        report.get("tool") != "weaver"
+        or report.get("version") != closure["weaver_tool"]["version"]
+        or report.get("tool_asset_sha256") != closure["weaver_tool"]["sha256"]
+    ):
+        raise InputMismatch("native_tool_identity_mismatch")
+    if (
+        closure["registry"]["sha256"] != pin["tree_sha256"]
+        or report["inputs"].get("registry", {}).get("files")
+        != closure["registry"]["files"]
+        or report["inputs"]["registry"].get("manifest_sha256")
+        != closure["registry"]["manifest"]["sha256"]
+        # Native and Selection currently use different aggregate JSON encodings.
+        # Their exact per-file hashes and paths are the common byte identity;
+        # retain both aggregate digests without pretending they are equal.
+        or any(
+            report["inputs"].get("advice_policies", {}).get(key)
+            != closure["advice_policies"][key]
+            for key in ("path", "files")
+        )
+    ):
+        raise InputMismatch("native_source_closure_mismatch")
+    advice_coverage = coverage.get("conditionally_required_advice") or {}
+    if (
+        report.get("eci_policy_evaluated") is not True
+        or advice_coverage.get("status") != "executed"
+        or advice_coverage.get("loaded") is not True
+        or advice_coverage.get("digest")
+        != report["inputs"]["advice_policies"]["sha256"]
+    ):
+        raise InputMismatch("native_policy_coverage_unverified")
     if not report.get("source_digest") or report.get("source") != expected["source"]:
         raise InputMismatch("native_source_identity_mismatch")
     native = _json(artifacts / "live_check.json")
     if native != report["native_report"]:
         raise InputMismatch("native_artifact_mismatch")
+    if "producer" in witness:
+        resources = [
+            sample["resource"] for sample in native["samples"] if "resource" in sample
+        ]
+        captured_resource, _ = _span_records(_json(source / config["otlp"]))
+        if len(resources) != 1 or {
+            entry["name"]: entry["value"] for entry in resources[0]["attributes"]
+        } != {
+            key: value.get("stringValue") for key, value in captured_resource.items()
+        }:
+            raise InputMismatch("native_resource_identity_mismatch")
     received = [sample["span"] for sample in native["samples"] if "span" in sample]
     tasks = _expected_tasks(witness)
     by_span = {item["span_id"]: item for item in tasks}
@@ -420,9 +617,25 @@ def verify_report(
             item.get("name") != task["name"]
             or attributes.get("cicd.pipeline.task.run.id") != task["job_id"]
             or attributes.get("cicd.pipeline.task.run.url.full") != task["url"]
-            or attributes.get("github.actions.run_attempt") != witness["run"]["attempt"]
+            or attributes.get("cicd.pipeline.run.id")
+            != f"{witness['run']['run_id']}/{witness['run']['attempt']}"
+            or (
+                "producer" not in witness
+                and attributes.get("github.actions.run_attempt")
+                != witness["run"]["attempt"]
+            )
         ):
             raise InputMismatch("native_task_attributes_mismatch")
+        if "producer" in witness and (
+            item.get("parent_span_id") != task["parent_span_id"]
+            or item.get("kind") != "internal"
+            or str(cicd_telemetry.parse_time_ns(item.get("start_time")))
+            != task["start_time_unix_nano"]
+            or str(cicd_telemetry.parse_time_ns(item.get("end_time")))
+            != task["end_time_unix_nano"]
+            or attributes.get("cicd.pipeline.task.run.result") != task["result"]
+        ):
+            raise InputMismatch("native_task_source_facts_mismatch")
         match = item["live_check_result"]["match_info"]
         if (
             match.get("signal_matcher") != TASK_MATCHER
@@ -456,6 +669,7 @@ def verify_report(
         plan_state = "verified"
     return {
         "status": "passed",
+        "scope": "A / Task-only",
         "check_id": report["name"],
         "exit_code": report["exit_code"],
         "gate_exit_code": report["gate_exit_code"],
@@ -466,6 +680,12 @@ def verify_report(
         "registry_tree_sha256": coverage["official_registry_tree_sha256"],
         "eci_policy_evaluated": report["eci_policy_evaluated"],
         "producer_claims": _json(source / "producer-candidate.json")["claims"],
+        "producer_exit_code": archived.get("producer_exit", {}).get("document"),
+        "producer_terminal": archived["candidate"]["document"].get("terminal"),
+        "terminal_check": "not_executed",
+        "producer_metrics_not_observable": archived["candidate"]["document"]
+        .get("signals", {})
+        .get("metrics_not_observable", []),
         "plan_binding": plan_state,
         "checked_signals": ["traces"],
         "trusted": False,
@@ -481,14 +701,19 @@ def main() -> int:
     action.add_argument("--verify-source", type=Path)
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--plan-report", type=Path)
+    parser.add_argument(
+        "--case", choices=("original", "registered-attributes"), default="original"
+    )
     args = parser.parse_args()
     if args.verify_source and not args.artifacts:
         parser.error("--verify-source requires --artifacts")
     try:
         result = (
-            prepare(args.destination)
+            prepare(args.destination, case=args.case)
             if args.destination
-            else verify_report(args.verify_source, args.artifacts, args.plan_report)
+            else verify_report(
+                args.verify_source, args.artifacts, args.plan_report, case=args.case
+            )
         )
         print(json.dumps(result, sort_keys=True))
         return 0
