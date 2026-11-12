@@ -5,6 +5,7 @@
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
 - [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
+- [Plan 依赖盘点](plan-dependencies/README.md) — #86 A 实例矩阵、版本拒绝与 Host/Dagger 上下文证据。
 - [变更影响选择](selection.md) — Git 对象、Tach 闭包、plan 身份与原生 unittest 的本地验证。
 - [Python 包合并](python-package.md) — 单一命名空间、隔离 wheel 安装及 Dagger 共享包接线的验证。
 - [仓库 Hygiene](hygiene.md) — whitespace/forwarding/docs/Vulture/Tach 原生结果与 CLI 的本地验证。

@@ -114,3 +114,10 @@
 - Evidence: exporting DAGGER_MODULE=validation made native Dagger resolve the nonexistent local source path validation before report export. The exact failure was reproduced with local `dagger --env fixtures check --module validation -l --format cli`; removing only that environment variable restored the configured validation alias.
 - Integration: keep the public workflow input dagger_module as a Check filter, map it to the namespaced ECI_CHECK_MODULE shell variable, and pass `check --module` explicitly. Do not use Dagger's native source-selection environment variable for a different purpose.
 - Regression: the existing Workflow subprocess test reads the actual environment binding from YAML; its Dagger substitute rejects a leaked native DAGGER_MODULE, while preserving all check and report failure assertions. Linux CI exercises that shell contract; native discovery provides separate real-Dagger evidence.
+
+## Dagger@1.0.0-beta.16: managed worktree Git discovery warning
+- Status: observed integration limitation; root cause unconfirmed.
+- Seen: 2026-11-12, #86 A controlled Plan API acceptance on Windows.
+- Evidence: native `dagger api call execute-plan` emitted `core.repositoryformatversion does not support extension: worktreeconfig` while opening this managed Git worktree. All eight controlled API calls still returned CLI exit 0 and their actual Report statuses. Captured tool-return chunks are in `docs/verification/plan-dependencies/cases/native-cli.json`.
+- Assessment: a warning from repository discovery, not evidence that Plan consumers or native checks passed. Unsupported Plans still returned refused Reports; exported Source still lacked the original ODB. No specific upstream component or defect is asserted.
+- Workaround: none; retain the warning and native Report separately. No Git configuration, Dagger binary or third-party source was modified, and no upstream tracker search was performed.

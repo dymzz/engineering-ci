@@ -343,3 +343,30 @@ multi-target pytest execution and CLI modes.
 | P2 pytest report/coverage | Local multi-target JUnit and explicit `blocked` coverage gate delivered; actual coverage execution / #63 evidence wiring open |
 | Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions job added but not yet run |
 | Clean-environment install and non-Knowledge consumer | Delivered: wheel install outside checkout; independent fixture `select → execute` passed 3 tests |
+
+
+## Plan dependency contract (schema 2)
+
+New Plan producers emit schema 2 with `dependency_contract.schema_version=1`.
+Configuration and Execution Report schemas remain 1. Version-1 Plans without
+this contract retain legacy behavior. CLI, direct Python and Dagger use the
+same public `execution.validate_plan` rules before starting consumers.
+
+The currently delivered dependency semantic is
+`prerequisite_policy_aggregation`: each selected action contributes its
+post-check result to `report.prerequisites`. References bind the action name,
+Report consumer, configuration path/hash/section and original Git Plan binding.
+Missing action parameters stay unresolved and cannot make the final Report
+pass. These declarations do not turn test selection relations into startup
+preconditions. True `data` or `pre_execution_pass` edges are unsupported until
+B supplies their consumers; all entry points reject them instead of ignoring
+mandatory semantics. Unknown versions, missing references/conditions and
+changed action overrides are likewise refused.
+
+For exported Source, `source_handoff` preserves original Git identity and the
+actual exported content ID. Git-dependent actions require their real ODB:
+missing/unbound context is not a missing Commit verdict. A Host write to
+exported Source invalidates its old binding before downstream consumers; this
+slice delivers no generated output or trust receipt. Detailed instance scope,
+raw results and remaining handoffs are in the
+[dependency inventory](../verification/plan-dependencies/README.md).

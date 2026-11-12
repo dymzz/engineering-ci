@@ -1,0 +1,195 @@
+{
+  "purpose": "Historical controlled acceptance evidence; not runtime admission, a pass cache or production prerequisite authority",
+  "issue": "https://github.com/dymzz/engineering-ci/issues/86",
+  "baseline_commit": "95c70be310053ddb9fcbe12b78a285e56d62b542",
+  "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+  "implementation_git_blob_sha256": {
+    ".dagger/src/engineering_ci_module/main.py": "fdea4209f58f63f3a434999f00908ef1a628a52e2c70aed1e7467aa7cd289619",
+    "src/engineering_ci/execution.py": "59cac60aa9acf5bb39a274d9f9a32e5b29ae5309c32b6457e8f89fa167a6c12c",
+    "src/engineering_ci/plan_contract.py": "6877272e8b55f6fffb77387c6638cd97f725b336b05ee58327e8f11387cc446f",
+    "src/engineering_ci/selection.py": "290a88944af666250300fdfd45e91300c024abbe17f3fbd122a922e1b20febfa",
+    "tests/test_execution.py": "0727df5a52239ec011e9bbf12cff764cceb363ec7645acb188cb01e494ddf353",
+    "tests/test_plan_contract.py": "0e3dff4e28c4713673deea64cf43dd6f657e9ad3ef0de84d886fcbe63136f7f8",
+    "tests/test_selection.py": "450b7cc838f4151c42f313b8a289d450ebe3b5c798741e551e004ccfe4023fbc"
+  },
+  "environment": {
+    "os": "Windows",
+    "python": "3.14",
+    "dagger_cli_engine_sdk": "1.0.0-beta.16",
+    "git_hooks": "disabled"
+  },
+  "scoped_pytest": {
+    "implementation_commit": "7f397eb6ae5ed6e0f327960a51773571ac41a8fe",
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_plan_contract.py tests/test_selection.py tests/test_execution.py -q --tb=short --basetemp .test-tools/pytest-temp",
+    "exit_code": 0,
+    "passed": 92,
+    "skipped": 1,
+    "existing_skip": "tests/test_execution.py:522: merge tree equals feature HEAD tree",
+    "later_change": "d396e07 only retains Dagger report declarations/identity and structured malformed-JSON refusal; verified by native API cases",
+    "fixture_condition": "Existing Windows CRLF fixture checkout was temporarily restored to unchanged HEAD blob bytes for tests; normal checkout restored; no fixture change committed"
+  },
+  "ruff": {
+    "check": "passed",
+    "format_check": "passed",
+    "scope": [
+      ".dagger/src/engineering_ci_module/main.py",
+      "src/engineering_ci/execution.py",
+      "src/engineering_ci/plan_contract.py",
+      "src/engineering_ci/selection.py",
+      "tests/test_execution.py",
+      "tests/test_plan_contract.py",
+      "tests/test_selection.py"
+    ]
+  },
+  "controlled_cases": {
+    "plan-version": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 2,
+      "reason": "plan_schema_unsupported",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/plan-version-plan.json",
+      "report": "cases/plan-version-report.json"
+    },
+    "dependency-version": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 2,
+      "reason": "dependency_schema_unsupported",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/dependency-version-plan.json",
+      "report": "cases/dependency-version-report.json"
+    },
+    "pass-precondition": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 2,
+      "reason": "dependency_kind_unsupported",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/pass-precondition-plan.json",
+      "report": "cases/pass-precondition-report.json"
+    },
+    "missing-producer": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 2,
+      "reason": "dependency_producer_invalid",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/missing-producer-plan.json",
+      "report": "cases/missing-producer-report.json"
+    },
+    "supported-policy": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "passed",
+      "report_exit_code": 0,
+      "reason": null,
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/supported-policy-plan.json",
+      "report": "cases/supported-policy-report.json"
+    },
+    "exported-git-odb": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "blocked",
+      "report_exit_code": 5,
+      "reason": "required_checks_not_executed",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/exported-git-odb-plan.json",
+      "report": "cases/exported-git-odb-report.json"
+    },
+    "host-write": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 4,
+      "reason": "exported_source_changed",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/host-write-plan.json",
+      "report": "cases/host-write-report.json"
+    },
+    "invalid-json": {
+      "entry_point": "dagger api call execute-plan",
+      "implementation_commit": "d396e076af8dbab2ed970a2a99764737e0ccfe97",
+      "report_status": "not_executed",
+      "report_exit_code": 2,
+      "reason": "plan_invalid",
+      "native_cli_exit_code": 0,
+      "actual_git_action_exit": null,
+      "plan": "cases/invalid-json-plan.json",
+      "report": "cases/invalid-json-report.json"
+    },
+    "host-odb-present": {
+      "entry_point": "engineering_ci.execution.execute",
+      "implementation_commit": "7f397eb6ae5ed6e0f327960a51773571ac41a8fe",
+      "report_status": "passed",
+      "report_exit_code": 0,
+      "reason": null,
+      "native_cli_exit_code": null,
+      "actual_git_action_exit": 0,
+      "plan": "cases/host-odb-present-plan.json",
+      "report": "cases/host-odb-present-report.json"
+    },
+    "host-odb-missing": {
+      "entry_point": "engineering_ci.execution.execute",
+      "implementation_commit": "7f397eb6ae5ed6e0f327960a51773571ac41a8fe",
+      "report_status": "failed",
+      "report_exit_code": 1,
+      "reason": "prerequisites_failed",
+      "native_cli_exit_code": null,
+      "actual_git_action_exit": 128,
+      "plan": "cases/host-odb-missing-plan.json",
+      "report": "cases/host-odb-missing-report.json"
+    }
+  },
+  "source_observation": {
+    "before_content_id": "79a1803d2b2e51df82e82b46a61112c2eb925c7f12279ab4704ed5d79c228eb7",
+    "independently_reconstructed_after_content_id": "4a7842a727092bb35d9f930451ba77f18efa8d357cd3ba42e113c14e3175cfe5",
+    "actual_host_after_content_id": "4a7842a727092bb35d9f930451ba77f18efa8d357cd3ba42e113c14e3175cfe5",
+    "expected_generated_bytes": "actual generated bytes",
+    "expected_output_file": "inputs/expected-generated.txt",
+    "actual_generated_output_delivered": false,
+    "original_plan_git_identity": "Minimal controlled snapshot=worktree only; no production Commit/Index/PR Merge coverage claim"
+  },
+  "production_pre_execution_pass_edges_confirmed": 0,
+  "scope": "Draft first A delivery; not all A.1-A.5, B, D, #63 Trusted/cross-Run acceptance or #61 Required/Release",
+  "artifact_sha256": {
+    "cases/dependency-version-plan.json": "b1a5b285ff5c93e42672c6186719dd335638fa7db8ac9c3f24b23f9deb501588",
+    "cases/dependency-version-report.json": "1c56b3139363cba0d6dcf570cad16ed3c783cbeedbb784687309a4f2615cf571",
+    "cases/exported-git-odb-plan.json": "ba9958320285cc81bf295a111f29b9d527726345c2fce4b80c3f3e2fcf562797",
+    "cases/exported-git-odb-report.json": "85a16a1ec01a9a687bafc98716148dd290b6c6f5fc55755ce3297704bdd398ac",
+    "cases/host-odb-missing-plan.json": "4bf7d9b2fac0f822517273e403d4bf905399406ee2542a1ac6e55e447e3e4d7f",
+    "cases/host-odb-missing-report.json": "45664c11f03fe42662407eb69c1a35bdc015331fa2c81d30d6b1b547a08bbabe",
+    "cases/host-odb-present-plan.json": "efe76843c356fdf5c67b1bbe8971787ffe970cc2bfd702cb8a0b0b7e689c5906",
+    "cases/host-odb-present-report.json": "1d7314d13f22554071e54a82f47d5a5e82ff7619590e3e064143174c049cbd9c",
+    "cases/host-write-plan.json": "a0788e43526fac63dc04f2142ae4988e316f9a639217d109f95206453281c919",
+    "cases/host-write-report.json": "55ae78177f940995a6f2685c3075ce1e0ee54a8d372e0598c5ec80c13e647b5c",
+    "cases/invalid-json-plan.json": "3e50cc60bb91d4883c32909de3ccea07181a3744f0d163fdada16522746fa8f0",
+    "cases/invalid-json-report.json": "7bcd9d1230dc598b542b5b50b68888f832d961a2cc7f3daefc9624f89081c45c",
+    "cases/missing-producer-plan.json": "8218e3d5e34716657b9290720df7a2c8af3c3eab3fdeb1dfb6393fd88d84b1ae",
+    "cases/missing-producer-report.json": "30924df2289b3c92a74366a05aec7cc6f4b8bd5629657f8419df9f6d88c99ade",
+    "cases/native-cli.json": "32ec510969f774a39fe13362ee92d5bef981b955d80348d48c50f7b0622f93c2",
+    "cases/pass-precondition-plan.json": "485ff84dfbe8210a45ddea6a15a205703a3370ec3e8b33436813e262dd2e7373",
+    "cases/pass-precondition-report.json": "b460a59b9ed3f142e31fbcc3d0e01c1d9ad3019007b56922c0d249deb2fc932e",
+    "cases/plan-version-plan.json": "17363d6cecb44e98d484ec0a5c359c056c52f9fdb9dbd59a631752742c0038f6",
+    "cases/plan-version-report.json": "21c36f726b6d3144c067b2c42aeca5d1edc1bc1c5f2c2aadfc861769af0b5e60",
+    "cases/README.md": "d45d7412d6206a3baad4959b1dcf21b32469be2e1256ae3e0e1f2b229a502049",
+    "cases/supported-policy-plan.json": "d69d8c8c20d0f19bd2d9db4996f99ff723bd33b152e164690b34019e4b461fb2",
+    "cases/supported-policy-report.json": "147aa590421b652a0c0082621e211c99690a6d64d3942e905fcd55612419d0bd",
+    "inputs/expected-generated.txt": "17f04eb355ffde311b08443110ff4d17cc440dfa1bfe1b762a249906fa289359",
+    "inputs/README.md": "fb42dfb45af07bc39c39b62a9b85ba8892463e07c18f009808e18a28216f7e03",
+    "inputs/source/ci-selection.toml": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
+    "targeted-tests.txt": "da484458dc179aa3664547b0c2543f87d2d84ae428a70c9f5a08f0cb277e87ff"
+  }
+}
