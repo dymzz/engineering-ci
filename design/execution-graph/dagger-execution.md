@@ -23,7 +23,7 @@
 
 ### 2.1 现行 prerequisite 实例到真实依赖的映射（A 的交付）
 
-已核对的生产/执行路径：项目配置 `ci-selection.toml` 的 `prerequisites: name → tests[]` 由 `selection.py` 在受影响测试集合与 `tests[]` 相交时选中；`prerequisite_actions: name → {type, ...}` 被写入 Plan；Host `execution.execute()` 目前先运行 tests、Hygiene/Source，再执行 `_run_prerequisites()`。这说明现有配置表达的是**选中关联**，不是已验证的 Dagger 前置边或成功门禁。
+已核对的生产/执行路径：项目配置 `ci-selection.toml` 的 `prerequisites: name → tests[]` 由 `selection.py` 按模式选择。**targeted** 路径仅当选中测试集合与配置 `tests[]` 相交时选中对应名称；**full/escalated** 路径通过 `selection._escalated()` 直接选中 `frozenset(config.prerequisites)`（包括显式 `--full`、输入不完整及其他升级情形），不再逐项依赖测试交集。`prerequisite_actions: name → {type, ...}` 被写入 Plan；Host `execution.execute()` 目前先运行 tests、Hygiene/Source，再执行 `_run_prerequisites()`。这说明现有配置表达的是**选择与动作关联**，不是已验证的 Dagger 前置边或成功门禁。
 
 | 现有动作/记录 | 实际生产者和事实 | 需确认的消费方及依赖类别 | 失败与执行时点 |
 |---|---|---|---|
@@ -31,9 +31,9 @@
 | `command` | 配置 `argv[]`，Host 通过原生 Runner 执行并记录退出与 stdout/stderr | 不得按名称推断；逐项裁决为产物生成（Data）、前置 PASS、后置验证或 Policy；若产生文件须声明真实产物/消费路径 | 数据依赖以真实 File/Directory 衔接；前置失败时消费者不启动；后置/Policy 不反向串行 |
 | 缺失参数/未知动作 | 现有 `_run_prerequisites()` 返回 `not_executed` 和具体原因 | 不能据此授予任何 Required 成功；不得造一个空产物满足 Data Dependency | 保留未执行/阻断原因；独立 Check 继续执行 |
 
-**A 阶段必须针对当前真实配置逐项填充：** `prerequisite_name → source_config/ref → action_spec/version → selected_by → consumer_check(s) → edge_kind → requires_pass / output_ref → execution_phase → failure_scope`。现有 `tests[]` 交集是候选消费关系，不得直接上升为“所有 selected Check 的全局前置”。没有足够事实确定类型时，标注 unresolved；不能猜测为 Pre-execution 或在计划里静默删除该要求。
+**A 阶段首项交付：逐真实配置实例填充映射矩阵** `prerequisite_name → source_config/ref → action_spec/version → selected_by → consumer_check(s) → edge_kind → requires_pass / output_ref → execution_phase → failure_scope`。`selected_by` 必须区别 **targeted: selected_tests ∩ config.prerequisites[name].tests** 与 **full/escalated: 全部 config.prerequisites 名称**，并保留具体升级理由；现有 `tests[]` 关联仅提供候选消费关系，不得直接上升为“所有 selected Check 的全局前置”。尚未核实的实际消费者标注 unresolved；不能猜测为 Pre-execution 或在计划里静默删除该要求。
 
-**B 阶段执行不变量：** 真正的前置成功条件必须在其消费者启动前判定；失败时消费者记录 blocked/not_executed 且不会启动其原生工具，独立 Check 仍能实际执行。共享准备和数据生产优先表达为 Dagger 原生函数/产物依赖；Host 前置保持真实来源，不能为表达依赖而实现 ECI 调度器。原生 FAIL、未执行及最终 Gate 判定各自记录。
+**B 阶段执行不变量：** 真正的前置成功条件必须在其消费者启动前判定；失败时消费者记录 blocked/not_executed 且不会启动其原生工具，独立 Check 仍能实际执行。共享准备和数据生产优先表达为 Dagger 原生函数/产物依赖；Host 前置保持真实来源，不能为表达依赖而实现 ECI 调度器。B 仅核对本次原生执行、严格 Check/Enforce 与报告结果；#61 最终 Required/Release 聚合归 [F 阶段](provider-and-gates.md)，不作为 B 的独立验收前置。
 
 ## 3. Plan 驱动执行编译
 1. 先独立建立并对账当前 Expected Requirements；不能只凭选中列表确定 Required。
@@ -41,7 +41,7 @@
 3. 对每项未满足 Check，绑定确实被读取的 Source、工具版本、配置、输入闭包和必需上游产物。
 4. 真实 File/Directory/Container 数据依赖映射为 Dagger 对象引用。独立 Check 不互相等待；Dagger 决定运行次序和并发。
 5. 具有宿主/OS/外部副作用约束的检查和动作保留 Host/Provider 原生入口，输出同构结果但不伪装成 Dagger 节点。
-6. 消费同一原生结果完成 Check、Report、Artifact、Gate；未执行、取消及基础设施错误不得冒充 PASS。
+6. 在同一次共享计算节点/Bundle 范围内，严格 `@check`/Enforce、Report 和 Artifact 消费同一原生结果；其严格失败传播属于 B。#61 的最终 Required/Release Gate 在 F 阶段消费已核验结果，不能在 B 阶段被声明为已交付；未执行、取消及基础设施错误不得冒充 PASS。
 
 **不实现：** 自研 Graph Executor、拓扑调度器、统一 Node FSM、Dagger Cache Key 或镜像计算图。
 

@@ -37,7 +37,7 @@
 
 | 范围 | 可以断言的事实 | 不得断言的事实 / 交付 |
 |---|---|---|
-| **同一 Dagger 计算节点/物化 bundle** | 同一原生工具结果同时供 `@check`、Report、Artifact/Gate 读取；可用原生执行次数、Artifact/退出验证 | 不可由“再次请求同名 Function”直接推定跨会话 100% 共享；**B 验收** |
+| **同一 Dagger 计算节点/物化 bundle** | 同一原生工具结果同时供本次严格 `@check`/Enforce、Report 与 Artifact 读取；可用原生执行次数、原生退出和 Artifact 验证 | B 不验收 #61 的最终 Required/Release 聚合；也不可由“再次请求同名 Function”推定跨会话 100% 共享；**B 验收** |
 | **不同 Dagger Invocation/Session** | 引擎可能命中缓存，须按真实调用、缓存层及原生执行分别归因 | Cache Hit 不自动等于同一个 `origin_execution_id`，也不必然代表没有发生任何工具操作 |
 | **跨 `dagger check` / `execute-plan` / 单独 Artifact Function / 历史 Run** | 通过 `native_result_ref`、来源、输入/Artifact/Bundle 及 #63 接纳建立**可验证时**的结果复用关系 | 两次真正运行的原生工具可以且应有不同 Native Result；不强制为它们伪造同一个结果 ID；**C 验收** |
 
@@ -46,7 +46,7 @@
 ## 4. D-02～D-08
 - **D-02**：Check Input Closure 必须完整；按实际语义选 Dagger Directory.filter 或完整 Source，检查模块自身源码对 Function/Exec Cache 的影响。
 - **D-03**：真实 Check FAIL 与环境/工具/报告失败分离，保留退出和诊断，复用现有 `expect=ANY`。
-- **D-04**：在一次明确共享的原生计算/Bundle 内，由 `@check`、Report、Artifact 和 Gate 消费同一结果；跨调用、跨入口使用则必须按 §3.1 提供可核验结果引用与来源，不假定任何条件下 100% 去重。
+- **D-04**：在一次明确共享的原生计算/Bundle 内，由严格 `@check`/Enforce、Report 和 Artifact 消费同一原生结果；#61 的最终 Required/Release Gate 属于 F 阶段，消费结果但不作为 B 的前置验收。跨调用、跨入口使用须按 §3.1 提供可核验结果引用与来源，不假定任何条件下 100% 去重。
 - **D-05**：计算等价、调用、原始执行、结果、策略评价身份分离；每次变化的 Invocation/Trace 元数据不得无依据进入可缓存计算输入。
 - **D-06**：缓存观察取值 `observed_hit / observed_execution / mixed / unknown / not_applicable`，必须注明**实际观测范围**。这些是设计值，不是现有 Report 字段。
 - **D-07**：Host、Dagger、可核验外部 Check 原生结果可汇总，但保留平台来源，不将 Provider Job success 当原生 PASS。
