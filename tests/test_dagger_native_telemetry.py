@@ -13,11 +13,26 @@ OTHER_SPAN_ID = "1111111111111111"
 TRACEPARENT = f"00-{TRACE_ID}-{PARENT_SPAN_ID}-01"
 
 
-def capture_document(*spans):
+SESSION_ID = "session-0001"
+ENGINE_INSTANCE_ID = "engine-0001"
+
+
+def capture_document(*spans, session_id: str | None = SESSION_ID):
+    resource_attributes = []
+    if session_id is not None:
+        resource_attributes.append(
+            {"key": "dagger.io/session.id", "value": {"stringValue": session_id}}
+        )
+        resource_attributes.append(
+            {
+                "key": "dagger.io/engine.instance.id",
+                "value": {"stringValue": ENGINE_INSTANCE_ID},
+            }
+        )
     return {
         "resourceSpans": [
             {
-                "resource": {"attributes": []},
+                "resource": {"attributes": resource_attributes},
                 "scopeSpans": [
                     {
                         "scope": {"name": "dagger.io/engine"},
@@ -223,6 +238,28 @@ def test_declared_check_name_needs_the_engine_attribute(tmp_path):
     assert record["binding"]["status"] == "unbound"
     assert record["reason"] == "check_name_not_observed"
     assert record["claims"]["source_associated"] is False
+
+
+def test_check_name_without_an_engine_session_is_not_a_same_source_binding(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(span(check_name="lint"), session_id=None),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint")
+    assert record["binding"]["status"] == "unbound"
+    assert record["reason"] == "engine_session_not_observed"
+    assert record["claims"]["source_associated"] is False
+
+
+def test_bound_check_records_the_engine_session_reference(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(tmp_path, capture_document(span(check_name="lint")))
+    )
+    record = receipt(capture=capture, check_name="lint")
+    assert record["binding"]["session_ids"] == [SESSION_ID]
+    assert record["binding"]["engine_instance_ids"] == [ENGINE_INSTANCE_ID]
 
 
 def test_check_name_outside_the_propagated_trace_is_ambiguous(tmp_path):

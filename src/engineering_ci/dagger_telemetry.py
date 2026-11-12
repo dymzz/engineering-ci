@@ -129,6 +129,7 @@ REASON_NO_CORRELATION_KEY = "no_correlation_key"
 REASON_NO_CORRELATED_SPAN = "no_correlated_span"
 REASON_TRACE_ID_ONLY = "trace_id_match_without_propagated_parent"
 REASON_CHECK_NAME_NOT_OBSERVED = "check_name_not_observed"
+REASON_SESSION_NOT_OBSERVED = "engine_session_not_observed"
 REASON_CHECK_NAME_OUTSIDE_TRACE = "check_name_outside_propagated_trace"
 REASON_REQUIRED_OBSERVABILITY_UNMET = "required_observability_unmet"
 REASON_EXPORTER_ERROR = "exporter_reported_failure"
@@ -651,6 +652,11 @@ def _bind_capture(capture, parsed, check_name):
         # The engine did not report the declared Check in this capture.
         return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, []
 
+    if check_name and not capture.session_ids:
+        # The Check attribute alone is not a same-source reference: the
+        # capture carries no engine session to bind it to.
+        return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, []
+
     if check_name and parsed is not None:
         trace_id, parent_span_id = parsed
         in_trace = [span for span in named if span["trace_id"] == trace_id]
@@ -662,7 +668,8 @@ def _bind_capture(capture, parsed, check_name):
                 [],
             )
         if any(
-            span["parent_span_id"] == parsed[1] or span["span_id"] == parsed[1]
+            span["parent_span_id"] == parent_span_id
+            or span["span_id"] == parent_span_id
             for span in in_trace
         ):
             return BINDING_BOUND, None, BASIS_TRACEPARENT, in_trace
@@ -798,6 +805,10 @@ def build_receipt(
             "basis": basis,
             "correlation_key": traceparent,
             "declared_check_name": check_name,
+            "session_ids": list(capture.session_ids) if capture else [],
+            "engine_instance_ids": (
+                list(capture.engine_instance_ids) if capture else []
+            ),
         },
         "invocation": {
             "actual_invocation_ref": invocation_ref,
