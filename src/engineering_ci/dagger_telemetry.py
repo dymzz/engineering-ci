@@ -116,6 +116,14 @@ ORIGIN_UNKNOWN = "unknown"
 PROVES_INVOCATION = "invocation_call_and_cache_outcome"
 PROVES_ORIGIN_EXECUTION = "origin_tool_execution"
 
+# Cache observation vocabulary (design/execution-graph/evidence-and-identity.md
+# D-06). The value always comes with the range it was observed on.
+CACHE_SCOPE_OBSERVED_HIT = "observed_hit"
+CACHE_SCOPE_OBSERVED_EXECUTION = "observed_execution"
+CACHE_SCOPE_MIXED = "mixed"
+CACHE_SCOPE_UNKNOWN = "unknown"
+CACHE_SCOPE_NOT_APPLICABLE = "not_applicable"
+
 # The five separate facts of ECI #87 A.2. None of them covers another.
 CLAIM_EXPORTER_CONFIGURED = "exporter_configured"
 CLAIM_SENT = "sent"
@@ -705,6 +713,50 @@ def _check_keys(capture, check_name):
     return keys
 
 
+def _cache_observation_scope(bound_spans):
+    """Report the cache observation with the range it was observed on.
+
+    The D-06 vocabulary never rises above its range: a hit on one call is
+    never reported as the status of a whole Check, and a mixed range is
+    reported as mixed.
+    """
+    if not bound_spans:
+        return {
+            "status": CACHE_SCOPE_NOT_APPLICABLE,
+            "observed": [],
+            "scope": [],
+            "reason": "no_bound_call_span",
+        }
+    scope = sorted({span.get("name") or "" for span in bound_spans})
+    outcomes = {
+        span.get("cache_outcome") for span in bound_spans if span.get("cache_outcome")
+    }
+    if not outcomes:
+        return {
+            "status": CACHE_SCOPE_UNKNOWN,
+            "observed": [],
+            "scope": scope,
+            "reason": "cache_outcome_not_observed_on_the_bound_call",
+        }
+    observed = sorted(outcomes)
+    hit = CACHE_OUTCOME_HIT in outcomes
+    ran = bool(outcomes & {CACHE_OUTCOME_EXECUTED, CACHE_OUTCOME_UNCACHED})
+    if hit and ran:
+        status = CACHE_SCOPE_MIXED
+    elif hit:
+        status = CACHE_SCOPE_OBSERVED_HIT
+    elif ran:
+        status = CACHE_SCOPE_OBSERVED_EXECUTION
+    else:
+        status = CACHE_SCOPE_UNKNOWN
+    return {
+        "status": status,
+        "observed": observed,
+        "scope": scope,
+        "reason": "cache_outcome_on_the_bound_call_only",
+    }
+
+
 def _origin_execution(bound_spans):
     """Derive the origin tool execution of this invocation.
 
@@ -986,11 +1038,11 @@ def build_receipt(
         "claims": claims,
         "sent_basis": sent_basis,
         "binding": {
-            "status": binding_status,
-            "reason": reason,
-            "basis": basis,
-            "proves": proves,
-            "keys": sorted(binding_keys),
+            "binding_status": binding_status,
+            "binding_reason": reason,
+            "correlation_basis": basis,
+            "binding_proves": proves,
+            "binding_keys": sorted(binding_keys),
             "correlation_key": traceparent,
             "declared_check_name": check_name,
             "session_ids": list(capture.session_ids) if capture else [],
@@ -999,13 +1051,14 @@ def build_receipt(
             ),
         },
         "origin_execution": origin_execution,
+        "cache_observation_scope": _cache_observation_scope(bound_spans),
         "invocation": {
             "actual_invocation_ref": invocation_ref,
             "source_binding_ref": source_binding_ref,
             "check_or_function_ref": check_ref,
         },
         "native_check_result": native_result,
-        "native_result_ref": native_result_ref,
+        "native_result_or_bundle_ref": native_result_ref,
         "raw_trace_ref": (
             {
                 "path": capture.path,
@@ -1185,7 +1238,12 @@ def main(argv=None):
         print(f"receiver_observed: {receipt['claims'][CLAIM_RECEIVER_OBSERVED]}")
         print(f"source_associated: {receipt['claims'][CLAIM_SOURCE_ASSOCIATED]}")
         print(f"native_check_result: {receipt['claims'][CLAIM_NATIVE_CHECK_RESULT]}")
-        print(f"binding_status: {receipt['binding']['status']}")
+        print(f"binding_status: {receipt['binding']['binding_status']}")
+        print(f"correlation_basis: {receipt['binding']['correlation_basis']}")
+        print(
+            f"cache_observation_scope: {receipt['cache_observation_scope']['status']}"
+        )
+        print(f"origin_execution: {receipt['origin_execution']['status']}")
         print(f"artifact: {args.output}")
     if receipt["status"] in {STATUS_PRODUCED, STATUS_PARTIAL}:
         return 0

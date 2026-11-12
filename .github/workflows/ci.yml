@@ -241,6 +241,68 @@ jobs:
             exit "${check_code}"
           fi
           exit "${receipt_code}"
+      - name: Start the OTLP receiver for the failing check
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          nohup .venv/bin/python .github/scripts/otlp_http_receiver.py \
+            --host "${BRIDGE}" \
+            --port 4318 \
+            --output artifacts/dagger-native-telemetry/capture-negative.json \
+            > artifacts/dagger-native-telemetry/receiver-negative.log 2>&1 &
+          echo $! > artifacts/dagger-native-telemetry/receiver-negative.pid
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://${BRIDGE}:4318/health" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "the OTLP receiver did not become ready" >&2
+          exit 1
+      - name: Run a native Dagger check that fails
+        shell: bash
+        run: |
+          set +e
+          export DAGGER_ENGINE=container://dagger-engine
+          # A real failing native Check: the association must survive the
+          # failure and the failure must not be masked by the trace.
+          printf '%s\n' 'import os' > eci_lint_negative.py
+          dagger check --engineering-ci --check=lint
+          code=$?
+          set -e
+          rm -f eci_lint_negative.py
+          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/negative-check.exit
+          printf '%s\n' '{"check": "lint", "exit_code": '"${code}"', "invocation": "dagger check --engineering-ci --check=lint (negative)"}' \
+            > artifacts/dagger-native-telemetry/native-result-negative.json
+          if [[ "${code}" == "0" ]]; then
+            echo "the negative check was expected to fail" >&2
+            exit 1
+          fi
+          exit 0
+      - name: Record the failing native observation
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          kill "$(cat artifacts/dagger-native-telemetry/receiver-negative.pid)" 2>/dev/null || true
+          for _ in $(seq 1 30); do
+            if [[ -s artifacts/dagger-native-telemetry/capture-negative.json ]]; then break; fi
+            sleep 1
+          done
+          uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
+            --capture artifacts/dagger-native-telemetry/capture-negative.json \
+            --capture-ref "otlp-http-receiver:4318 (negative)" \
+            --native-result artifacts/dagger-native-telemetry/native-result-negative.json \
+            --engine-config "$RUNNER_TEMP/engine.json" \
+            --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
+            --engine-protocol http/protobuf \
+            --check-name lint \
+            --invocation-ref "dagger check --engineering-ci --check=lint (negative)" \
+            --output artifacts/dagger-native-telemetry/receipt-negative.json \
+            --json > artifacts/dagger-native-telemetry/receipt-negative.stdout.json
+          code=$?
+          set -e
+          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt-negative.exit
+          exit "${code}"
       - name: Collect the Engine and receiver logs
         if: ${{ failure() }}
         shell: bash

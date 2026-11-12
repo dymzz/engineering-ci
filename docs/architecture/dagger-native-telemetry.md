@@ -70,6 +70,38 @@ Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Functi
 
 `sent=unknown` 与 `receiver_observed=false` 只降低 Trace/缓存归因，不抹除原生工具的成功或失败。
 
+## 原生调用入口
+
+固定版本实际提供的入口，以及各自能给出的原生可关联数据：
+
+| 入口 | 原生可关联数据 | 本仓验证状态 |
+| --- | --- | --- |
+| `dagger check --engineering-ci --check=<name>` | Check 选择器 Span `dag://?check=<name>`；模块函数调用 Span `<module>:<object>.<function>`；调用本体 Span `<object>.<function>`（带 `cache.contract` / `cache.outcome` / `cache.result.id`） | **已实测**：见[验证记录](../verification/dagger-native-telemetry-evidence/README.md) |
+| `dagger call execute-plan` | 函数调用 Span（无 Check 选择器 Span）；原生结果是 Plan 导出 | 未实测；本 PR 未覆盖 |
+| 单独 Report/Artifact Function（如 `dagger api call repository-test-artifacts export`） | 函数调用 Span + Artifact 内容摘要 | 未实测；本 PR 未覆盖 |
+
+入口不同，**可关联的键也不同**：Check 入口有选择器 Span 这一最强键；Plan 与 Artifact 入口只能靠函数调用
+Span 加同源引用。回执按实际观察到的键记录，不假设入口形态。
+
+## 拟议最小交接（逐字段）
+
+Issue #87 P0 要求的最小字段集，逐项写清生产者、消费入口、存在条件、唯一性、原始出处与拒绝原因。
+
+| 字段 | 生产者 | 消费入口 | 存在条件 | 唯一性 | 原始出处 | 拒绝原因 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `actual_invocation_ref` | 实际发起调用的 CLI / ECI 调用端 | 回执消费者 | 有本次真实调用事实时；历史 Verdict 复用不生成新调用 | 1:1（本次请求） | 调用端写入的调用描述 | 无真实调用事实时缺省 |
+| `source_binding_ref` | ECI Plan / Source 生产方 | 回执消费者、被检对象核对 | 有实际 Source 绑定时 | 1:N（一次调用可有多个被检对象） | 既有 `git.execution_tree` / `source_tree_id` / `content_binding` | 绑定不一致时不作 Check 归因 |
+| `check_or_function_ref` | 真实 Check / Function 入口 | 回执消费者 | 观察到被检的 Check 或 Function 时 | 1:N（一次调用可触发多个 Function） | 本次捕获的 Span 名 | 未观察到对应 Span 时不填 |
+| `native_result_or_bundle_ref` | Dagger / 工具原生结果生产者 | 回执消费者、Report 与 Gate | 原生产者给出结果或产物时 | 1:1（一个产物一个引用） | 结果文件路径 + SHA-256 | 无来源时不能据此证明 Trace 与原生执行相同 |
+| `raw_trace_ref` | 原生 Engine/SDK 输出与实际接收端 | 回执消费者 | 接收端确实捕获到内容时 | 1:1（一次捕获一份引用） | 捕获文件路径 + SHA-256 + 接收端标签 | 仅配置了 exporter 不等于已接收 |
+| `observed_trace_span_ids` | 接收的原始 Trace/Span 数据 | 回执消费者 | 存在已绑定 Span 时 | 1:N、N:1、嵌套、并行均可 | 捕获中的原始 Span ID | 只记录实际收到的 ID，不按 Check 名或时间猜测 |
+| `correlation_basis` | 实际 Caller / SDK / Receiver 共同可核对的关联事实 | 回执消费者、B.1 的 `correlation_basis` | 有可核验关联键时 | 1:1（本次绑定依据一个） | 传播的父 Span 关系、Engine 的 Check 键 | 同名或近似时间窗口不充分；无共同键时为 `none` |
+| `cache_observation_scope` | 绑定 Span 上的原生缓存事实 | 回执消费者 | 绑定到带缓存事实的调用 Span 时 | 1:N（按观察到的节点列范围） | `dagger.io/cache.outcome` / `hit.route` | 无缓存事实时为 `unknown`；没有可绑定 Span 时为 `not_applicable` |
+| `binding_status` | 本回执 | 回执消费者 | 总是 | 1:1 | 本次判定 | `unbound`（缺关联依据）/ `ambiguous`（多候选不能唯一判定） |
+
+任何一段缺少可证明对应关系，就保留各自原始事实并返回 `unbound`/`ambiguous`，不拼接、不伪造父 Span、
+不把旧 Span 改写成当前 Trace。真实上下文传播可用时复用其原生关系；不可用时只记录独立可核验引用。
+
 ## 关联键
 
 可核验的原生键：
@@ -122,9 +154,20 @@ Trace 绑定只说明它证明了什么：`binding.proves` 记录 `invocation_ca
 
 Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outcome` 是 `hit`、`executed`、`joined`
 还是 `uncached`，`dagger.io/cache.hit.route` 说明命中路径，`dagger.io/cache.result.id` 命名同一条缓存项
-（两次调用共享它，即共享同一原执行）。回执只记录**实际观察到的范围**
-（`coverage.cache_outcomes`），不把单个节点的命中上升为整个 Check 的状态；准备节点命中与工具实际执行
-必须分别记录。
+（两次调用共享它，即共享同一原执行）。
+
+回执用 D-06 的词表报告**观察范围**（`cache_observation_scope`），取值不越过它的范围：
+
+| 取值 | 条件 |
+| --- | --- |
+| `observed_hit` | 绑定到的调用 Span 全部为 `hit` |
+| `observed_execution` | 绑定到的调用 Span 全部为 `executed`/`uncached` |
+| `mixed` | 同一范围内既有 `hit` 又有实际执行 |
+| `unknown` | 范围内有调用 Span，但没有缓存事实 |
+| `not_applicable` | 没有可绑定的调用 Span（无捕获） |
+
+同时记录 `observed`（实际观察到的取值）、`scope`（观察到的 Span 名）与 `reason`。单个节点的命中**不**
+被上升为整个 Check 的状态；准备节点命中与工具实际执行必须分别记录。
 
 ## 导出产物
 

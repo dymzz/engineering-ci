@@ -198,8 +198,8 @@ def test_capture_binds_through_the_propagated_traceparent(tmp_path):
     )
     record = receipt(capture=capture)
     assert record["status"] == "produced"
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "w3c_traceparent_propagation"
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "w3c_traceparent_propagation"
     assert record["claims"]["sent"] == "sent"
     assert record["claims"]["receiver_observed"] is True
     assert record["claims"]["source_associated"] is True
@@ -212,8 +212,8 @@ def test_declared_check_name_binds_on_the_propagated_parent(tmp_path):
         write_capture(tmp_path, capture_document(span(check_name="lint")))
     )
     record = receipt(capture=capture, check_name="lint")
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "w3c_traceparent_propagation"
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "w3c_traceparent_propagation"
     assert record["coverage"]["check_names"] == ["lint"]
 
 
@@ -225,8 +225,8 @@ def test_check_name_in_the_same_trace_binds_on_the_engine_attribute(tmp_path):
         )
     )
     record = receipt(capture=capture, check_name="lint")
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "engine_check_in_propagated_trace"
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "engine_check_in_propagated_trace"
 
 
 def test_check_selector_span_name_binds_the_check(tmp_path):
@@ -239,9 +239,9 @@ def test_check_selector_span_name_binds_the_check(tmp_path):
         )
     )
     record = receipt(capture=capture, check_name="lint", correlation=None)
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "engine_check_selector"
-    assert record["binding"]["keys"] == ["check_selector"]
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "engine_check_selector"
+    assert record["binding"]["binding_keys"] == ["check_selector"]
 
 
 def test_module_function_call_span_name_binds_the_check(tmp_path):
@@ -256,9 +256,9 @@ def test_module_function_call_span_name_binds_the_check(tmp_path):
         )
     )
     record = receipt(capture=capture, check_name="lint", correlation=None)
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "engine_check_function"
-    assert record["binding"]["keys"] == ["check_function"]
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "engine_check_function"
+    assert record["binding"]["binding_keys"] == ["check_function"]
 
 
 def test_check_name_without_a_correlation_key_binds_on_the_attribute(tmp_path):
@@ -266,8 +266,8 @@ def test_check_name_without_a_correlation_key_binds_on_the_attribute(tmp_path):
         write_capture(tmp_path, capture_document(span(check_name="lint")))
     )
     record = receipt(capture=capture, check_name="lint", correlation=None)
-    assert record["binding"]["status"] == "bound"
-    assert record["binding"]["basis"] == "engine_check_attribute"
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "engine_check_attribute"
 
 
 def test_declared_check_name_needs_the_engine_attribute(tmp_path):
@@ -275,7 +275,7 @@ def test_declared_check_name_needs_the_engine_attribute(tmp_path):
         write_capture(tmp_path, capture_document(span(check_name="tests")))
     )
     record = receipt(capture=other, check_name="lint")
-    assert record["binding"]["status"] == "unbound"
+    assert record["binding"]["binding_status"] == "unbound"
     assert record["reason"] == "check_name_not_observed"
     assert record["claims"]["source_associated"] is False
 
@@ -288,7 +288,7 @@ def test_check_name_without_an_engine_session_is_not_a_same_source_binding(tmp_p
         )
     )
     record = receipt(capture=capture, check_name="lint")
-    assert record["binding"]["status"] == "unbound"
+    assert record["binding"]["binding_status"] == "unbound"
     assert record["reason"] == "engine_session_not_observed"
     assert record["claims"]["source_associated"] is False
 
@@ -310,7 +310,7 @@ def test_check_name_outside_the_propagated_trace_is_ambiguous(tmp_path):
         )
     )
     record = receipt(capture=capture, check_name="lint")
-    assert record["binding"]["status"] == "ambiguous"
+    assert record["binding"]["binding_status"] == "ambiguous"
     assert record["reason"] == "check_name_outside_propagated_trace"
     assert record["claims"]["source_associated"] is False
 
@@ -341,7 +341,7 @@ def test_executed_call_proves_the_origin_tool_execution(tmp_path):
     assert record["origin_execution"]["new_tool_execution"] is True
     assert record["origin_execution"]["ref"] == "2222222222222222"
     assert record["origin_execution"]["cache_result_id"] == "7921"
-    assert "origin_tool_execution" in record["binding"]["proves"]
+    assert "origin_tool_execution" in record["binding"]["binding_proves"]
 
 
 def test_cache_hit_ran_no_tool_and_leaves_the_origin_unknown(tmp_path):
@@ -364,7 +364,7 @@ def test_cache_hit_ran_no_tool_and_leaves_the_origin_unknown(tmp_path):
     assert origin["ref"] is None
     assert origin["reason"] == "cache_outcome_hit_without_prior_execution_reference"
     assert origin["cache_result_id"] == "7921"
-    assert "origin_tool_execution" not in record["binding"]["proves"]
+    assert "origin_tool_execution" not in record["binding"]["binding_proves"]
     # The cache observation itself survives.
     assert record["coverage"]["cache_outcomes"] == ["hit"]
 
@@ -436,7 +436,7 @@ def test_shared_trace_id_without_the_propagated_parent_stays_ambiguous(tmp_path)
         )
     )
     record = receipt(capture=capture)
-    assert record["binding"]["status"] == "ambiguous"
+    assert record["binding"]["binding_status"] == "ambiguous"
     assert record["reason"] == "trace_id_match_without_propagated_parent"
     assert record["claims"]["source_associated"] is False
     assert record["observed_trace_span_ids"] == []
@@ -450,7 +450,7 @@ def test_capture_of_another_trace_stays_unbound(tmp_path):
         )
     )
     record = receipt(capture=capture)
-    assert record["binding"]["status"] == "unbound"
+    assert record["binding"]["binding_status"] == "unbound"
     assert record["reason"] == "no_correlated_span"
     assert record["claims"]["receiver_observed"] is True
 
@@ -460,7 +460,7 @@ def test_capture_without_correlation_key_is_observed_but_unbound(tmp_path):
         write_capture(tmp_path, capture_document(span()))
     )
     record = receipt(capture=capture, correlation=None)
-    assert record["binding"]["status"] == "unbound"
+    assert record["binding"]["binding_status"] == "unbound"
     assert record["reason"] == "no_correlation_key"
     assert record["claims"]["receiver_observed"] is True
     assert record["claims"]["source_associated"] is False
@@ -596,3 +596,147 @@ def test_receipt_file_bytes_use_line_feeds(tmp_path):
     raw = Path(output).read_bytes()
     assert b"\r\n" not in raw
     assert raw.endswith(b"\n")
+
+
+# The directed acceptance of the Issue #87 review.
+
+
+def test_two_invocations_of_the_same_check_name_do_not_merge(tmp_path):
+    first = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="EngineeringCi.lint", span_id="5555555555555555")
+            ),
+            "first.json",
+        )
+    )
+    second = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="EngineeringCi.lint", span_id="6666666666666666")
+            ),
+            "second.json",
+        )
+    )
+    one = receipt(capture=first, check_name="lint", correlation=None)
+    two = receipt(capture=second, check_name="lint", correlation=None)
+    assert one["observed_trace_span_ids"] == ["5555555555555555"]
+    assert two["observed_trace_span_ids"] == ["6666666666666666"]
+    assert one["observed_trace_span_ids"] != two["observed_trace_span_ids"]
+
+
+def test_one_check_with_several_spans_binds_all_of_them(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="dag://?check=lint", span_id="7777777777777777"),
+                span(
+                    name="engineering-ci:EngineeringCi.lint",
+                    span_id="8888888888888888",
+                ),
+                span(name="EngineeringCi.lint", span_id="9999999999999999"),
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint", correlation=None)
+    assert record["binding"]["binding_status"] == "bound"
+    assert len(record["observed_trace_span_ids"]) == 3
+
+
+def test_interleaved_spans_of_concurrent_checks_do_not_cross_bind(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="EngineeringCi.lint", span_id="aaaaaaaaaaaaaaa1"),
+                span(name="EngineeringCi.tests", span_id="bbbbbbbbbbbbbbb2"),
+                span(name="EngineeringCi.lint", span_id="ccccccccccccccc3"),
+            ),
+        )
+    )
+    record = receipt(capture=capture, check_name="lint", correlation=None)
+    assert record["observed_trace_span_ids"] == [
+        "aaaaaaaaaaaaaaa1",
+        "ccccccccccccccc3",
+    ]
+
+
+def test_a_host_check_without_dagger_spans_keeps_its_native_result():
+    record = receipt(
+        native_result={"check": "host hygiene", "exit_code": 0},
+        native_result_ref={"path": "host.json", "sha256": "0" * 64},
+    )
+    assert record["binding"]["binding_status"] == "unbound"
+    assert record["binding"]["binding_reason"] == "no_capture"
+    assert record["claims"]["source_associated"] is False
+    assert record["claims"]["native_check_result"] is True
+    assert record["native_check_result"] == {"check": "host hygiene", "exit_code": 0}
+    assert record["status"] == "partial"
+
+
+def test_a_failing_native_result_still_binds_to_its_trace(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="executed",
+                    cache_result_id="7921",
+                )
+            ),
+        )
+    )
+    record = receipt(
+        capture=capture,
+        check_name="lint",
+        correlation=None,
+        native_result={"check": "lint", "exit_code": 1},
+        native_result_ref={"path": "native.json", "sha256": "0" * 64},
+    )
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["claims"]["native_check_result"] is True
+    assert record["native_check_result"]["exit_code"] == 1
+    assert record["status"] == "produced"
+
+
+def test_cache_observation_scope_reports_its_range(tmp_path):
+    hit = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="EngineeringCi.lint", cache_outcome="hit"),
+            ),
+            "hit.json",
+        )
+    )
+    record = receipt(capture=hit, check_name="lint", correlation=None)
+    scope = record["cache_observation_scope"]
+    assert scope["status"] == "observed_hit"
+    assert scope["observed"] == ["hit"]
+    assert scope["scope"] == ["EngineeringCi.lint"]
+
+    mixed = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(name="EngineeringCi.lint", cache_outcome="hit"),
+                span(name="EngineeringCi.lint", cache_outcome="executed"),
+            ),
+            "mixed.json",
+        )
+    )
+    record = receipt(capture=mixed, check_name="lint", correlation=None)
+    assert record["cache_observation_scope"]["status"] == "mixed"
+
+    none = dagger_telemetry.read_capture(
+        write_capture(tmp_path, capture_document(span(name="EngineeringCi.lint")))
+    )
+    record = receipt(capture=none, check_name="lint", correlation=None)
+    assert record["cache_observation_scope"]["status"] == "unknown"
+
+    record = receipt()
+    assert record["cache_observation_scope"]["status"] == "not_applicable"
