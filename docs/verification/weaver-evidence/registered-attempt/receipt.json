@@ -1,0 +1,224 @@
+{
+  "acceptance": {
+    "checker_registry_live_report_contract": "passed",
+    "default_branch_post_run_workflow": "not_executed",
+    "issue52_other_runtime_actions_work": "not_accepted_by_this_slice",
+    "logs_metrics_semconv": "not_checked",
+    "producer_pinned_trace_witness_contract": "passed",
+    "real_pipeline_root_time": "not_verified",
+    "task_only_technical_e2e": "passed"
+  },
+  "actual_checker_sources": {
+    ".dagger/src/engineering_ci_module/main.py": {
+      "git_blob_sha256": "dd6d6578d96f7afd7c62e60f35ba632009131273576d798093cf8b048372f8d6",
+      "normalized_lines_match": true,
+      "worktree_sha256": "7b8f93c3b86909d13dedbdc39831ae84146054bf8a2515f5803615855c44a8b9"
+    },
+    ".dagger/src/engineering_ci_module/tooling.py": {
+      "git_blob_sha256": "ca40c13074e9b45eac1a137ef4cb388282317f09680c9bd5de3253e63170b4f0",
+      "normalized_lines_match": true,
+      "worktree_sha256": "af07b6b47650a8bffb129d8a40d60f4a653155c257c90c50d0645bd86b9703b8"
+    },
+    ".dagger/src/engineering_ci_module/weaver.py": {
+      "git_blob_sha256": "c40f8cf41d3e60f405ec3b0b2530dbd3c7b3d3c1418b9c59bcb90b5b7776c3db",
+      "normalized_lines_match": true,
+      "worktree_sha256": "a022329035bdf830644aa768cfb578212058ba7011b58e8f7451b665e4657010"
+    },
+    ".dagger/src/engineering_ci_module/weaver_runtime.py": {
+      "git_blob_sha256": "23fb9cf4c122e65500582f1815d1fb57d0a2d6e1843e9f84a39761bf06e49fc0",
+      "normalized_lines_match": true,
+      "worktree_sha256": "a35206ddf6e2e7d55c4ee9aec96956fcf279d647dba8a601d8ab07986b820d50"
+    },
+    "src/engineering_ci/semconv_registry.py": {
+      "git_blob_sha256": "43f71db8e3e0d840ec0283873d1a0f311a805459da2f80293ae4f3b1e90c59ac",
+      "normalized_lines_match": true,
+      "worktree_sha256": "d81007b0703686ca083145a6643d3db7ae5cd5e8b1060a17ffb67a05266a64fc"
+    }
+  },
+  "admitted": false,
+  "advice_identity": {
+    "aggregate_digests_equal": false,
+    "native": {
+      "files": {
+        "cicd-error-type.rego": "ccd04b0de169014fe769a70214c4cd5b7af7a7a086ea509f819b5bd97f3df056",
+        "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
+      },
+      "path": "advice-policies",
+      "sha256": "a34c5847293a32bde9c39fdce2352bc4c88dba48446a01a628aae888b808d718"
+    },
+    "same_exact_file_map": true,
+    "selection": {
+      "files": {
+        "cicd-error-type.rego": "ccd04b0de169014fe769a70214c4cd5b7af7a7a086ea509f819b5bd97f3df056",
+        "otel.rego": "2327607e3a12039affb3332353b74f59f135e118037c665fae41ca74cf04128d"
+      },
+      "path": "advice-policies",
+      "sha256": "9c339d1fed010728ffdb44fbab89abfcc7dd69df89bb606e20ef6eef89298eea"
+    }
+  },
+  "api_fetch_performed_by_consumer": false,
+  "candidate_merges_not_assumed": true,
+  "changed_source": {
+    "exit_code": 4,
+    "native_check_executed": false,
+    "reason": "source_tree_mismatch",
+    "status": "not_executed"
+  },
+  "checker_commit": "94996d6cc28e73a9862003b836a6ad3b3fe9996b",
+  "checker_pr": 83,
+  "consumer_commit": "9b7a1f76e6f5d72cd5538292bd35439ec54f3f6e",
+  "consumer_script_sha256": "867744874b52fa4de8bd2cb57ad514d4185314eedf7b7fcd6ed21aafaf65462f",
+  "consumer_stdout": {
+    "archive": "consumer.stdout.json.gz",
+    "decoded_sha256": "2a9328114da8ad90ba8c3549d6ec81af92e2fb3d49c1f7210cb1a25284f24371",
+    "representation": "original Windows stdout; consumer-result.json is normalized JSON"
+  },
+  "execution_tree": "4ba50d6e74e44b48be9135425492785a4280441b",
+  "finding_filters": [],
+  "independent_jobs": [
+    {
+      "end_time_unix_nano": "1794316079000000000",
+      "job_id": "129847643854",
+      "name": "task:sync-tool-tests",
+      "result": "success",
+      "span_id": "7d2f4e7f18a603cd",
+      "start_time_unix_nano": "1794315965000000000",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854"
+    },
+    {
+      "end_time_unix_nano": "1794316053000000000",
+      "job_id": "129847644372",
+      "name": "task:version-metadata",
+      "result": "success",
+      "span_id": "a7263c2e65a30498",
+      "start_time_unix_nano": "1794315966000000000",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372"
+    },
+    {
+      "end_time_unix_nano": "1794316058000000000",
+      "job_id": "129847644459",
+      "name": "task:python-ci / checks",
+      "result": "success",
+      "span_id": "7d98cbfec3f44c1a",
+      "start_time_unix_nano": "1794315965000000000",
+      "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459"
+    }
+  ],
+  "independent_run": {
+    "attempt": 1,
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "pipeline_span_id": "093c00d57bcc226c",
+    "repository": "dymzz/engineering-ci",
+    "repository_url": "https://github.com/dymzz/engineering-ci",
+    "run_id": "42821429094",
+    "trace_id": "21ee8206fe06a4879580f60591a3014f"
+  },
+  "live_check_command_count": 1,
+  "official_registry_record": {
+    "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+    "git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
+    "repository": "https://github.com/open-telemetry/semantic-conventions",
+    "tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+    "version": "1.45.0"
+  },
+  "official_registry_verified": true,
+  "producer_archive": {
+    "commit": "4a354c9db2506eacde5761e7ee3ede925d743b84",
+    "files": {
+      "candidate.json": "88d4af44974b1619eb4a7c75909256fad308ed1ad404f17c2d30f60bfa3e2b14",
+      "candidate.json.api-pages.json": "e62d425dbf2b6ec6919ea77e78e10a97793eaf3762da081f9ac45e3a96710f32",
+      "otel-traces.json": "50bcf5cfae3050c1a303ae1881a5c0aedb38151e897fcac3da72388d08665d8f",
+      "producer.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "receipt.json": "dafddf671b0c5fd369ea85c87a83e509cbb1482043084647ddc5a921679cd180"
+    },
+    "inventory_basis": "Previously committed independent Job witness cross-checked with the pinned #75 API Source Witness; no Expected IDs copied from Capture",
+    "path": "docs/verification/cicd-telemetry-attribute-mapping",
+    "repository": "https://github.com/dymzz/engineering-ci",
+    "roles": {
+      "api": "candidate.json.api-pages.json",
+      "candidate": "candidate.json",
+      "otel": "otel-traces.json",
+      "producer_exit": "producer.exit",
+      "receipt": "receipt.json"
+    }
+  },
+  "producer_claims": {
+    "all_prepared_signals_delivered": false,
+    "bundle_delivery_complete": false,
+    "candidate_record_only": true,
+    "github_api_fetched": true,
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "otlp_json_exported": true,
+    "otlp_json_path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-traces.json",
+    "otlp_json_prepared": true,
+    "otlp_json_sha256": "50bcf5cfae3050c1a303ae1881a5c0aedb38151e897fcac3da72388d08665d8f",
+    "otlp_logs_delivered": false,
+    "otlp_logs_exported": true,
+    "otlp_logs_path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-logs.json",
+    "otlp_logs_prepared": true,
+    "otlp_logs_receiver_observed": false,
+    "otlp_logs_rpc_accepted": false,
+    "otlp_logs_sha256": "ec5c12a1e784d174b2ebdd8363a7068a0d3e7410b8f8d1802677aea44b6c802a",
+    "otlp_metrics_delivered": false,
+    "otlp_metrics_exported": false,
+    "otlp_metrics_prepared": false,
+    "otlp_metrics_receiver_observed": false,
+    "otlp_metrics_rpc_accepted": false,
+    "receiver_observed": false,
+    "rpc_accepted": false,
+    "snapshot_phase": "before_receiver_confirmation",
+    "transport": {},
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "producer_code": {
+    "attribute_contract": "registered-attributes-with-candidate-provenance-v1",
+    "exit_code": 0,
+    "id_scheme": "github-actions-attempt-sha256-v1",
+    "schema_version": 9,
+    "source_commit": "0e72f14e3bdd13ae6b6a96c41cf2659a85dfeede",
+    "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630"
+  },
+  "producer_pr": 84,
+  "producer_receiver_delivery_not_reexecuted": true,
+  "producer_terminal": {
+    "bounds_invalid_reason": null,
+    "bounds_valid": true,
+    "clock_quality": "ordered",
+    "conclusion": "success",
+    "duration_valid_for_metrics": false,
+    "end_lower_bound_ns": 1794316079000000000,
+    "end_lower_bound_source": "last_completed_job_end",
+    "end_time_quality": "observed_upper_bound",
+    "end_time_source": null,
+    "end_upper_bound_ns": 1794449063813682944,
+    "end_upper_bound_source": "terminal_observed_at",
+    "exact_run_duration": false,
+    "job_set_complete": true,
+    "lower_source": "last_completed_job_end",
+    "max_end_uncertainty_ns": null,
+    "observed_at_ns": 1794449063813682944,
+    "reviewed_at_ns": 1794449063813682944,
+    "root_emission": "not_emitted",
+    "root_emission_reason": "end_time_uncertain",
+    "run_completed_at_ns": null,
+    "status": "completed",
+    "terminal_confirmed": true,
+    "time_precision": "observed_upper_bound",
+    "time_source_verified": false,
+    "uncertainty_ns": 132984813682944,
+    "upper_source": "terminal_observed_at"
+  },
+  "required": false,
+  "same_report_in_artifact_api_and_plan": true,
+  "scope": "#52 Task-only A acceptance of #74/#75 fixed candidates",
+  "source_content_id": "3e8ce27c833dd29b0c7728b8586810ebab393d065117c925513b7f5a7bb94804",
+  "source_digest": "sha256:1c14a83d72abbf84f29af371e358b9af88a8192ad49842291ff05a05cd414523",
+  "targeted_tests": {
+    "file": "tests/test_real_attempt_weaver_e2e.py",
+    "passed": 78
+  },
+  "terminal_check": "not_executed",
+  "trusted": false
+}

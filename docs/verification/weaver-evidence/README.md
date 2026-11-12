@@ -2,6 +2,13 @@
 
 ## Real Attempt Task-only integration (#52)
 
+[Registered Producer acceptance](registered-attempt/README.md): #52 jointly
+accepts fixed #74 `94996d6` / #75 `4a354c9` inputs for Task-only A. Three real
+Tasks, full independent source/object reconciliation and same-execution
+Native/Report/Artifact/Plan pass; eleven isolated negatives and Source drift
+are recorded with Native and Consumer exits separate. Root/Workflow/trust
+properties remain separately unverified; this does not assume candidate merges.
+
 [Task-only bundle](real-attempt-task-only/README.md): Run `42821429094`, Attempt
 `1`, three received/matched Task identities, official Registry verified, but
 strict native `missing_attribute` on Resource `github.repository`.

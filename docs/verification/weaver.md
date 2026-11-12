@@ -406,21 +406,24 @@ minute, independently of the native Weaver execution time.
 [ECI #52](https://github.com/dymzz/engineering-ci/issues/52) owns the consumer-side
 Check/Report/Artifact integration; #74 owns the Checker and #75 the Producer.
 [PR #82](https://github.com/dymzz/engineering-ci/pull/82) is the **A / Task-only**
-slice. It inherits the official-source repair in #74 / PR #83 at fixed candidate
+slice. Its original archived execution inherited the repair in #74 / PR #83 at
+fixed candidate
 `8bf82112fae00e63a796c3de1ca22d254076e631`; that candidate was not merged when
 the execution below was recorded. The case consumes #75's existing Run
 `42821429094`, Attempt `1` archive, rather than fetching a new GitHub Run.
 
-**Current result: blocked, not a technical E2E PASS.** All three Task identities
+### Original archived strict failure
+
+**Original recorded result: blocked, not a technical E2E PASS.** All three Task identities
 were received and matched, but Weaver rejects the Resource attribute
 `github.repository`, which is absent from the official Registry. The exact
 native finding is `missing_attribute`, level `violation`; native exit and
 `gate_exit_code` are both 1. The original capture and strict policy are retained.
 Handling that Producer/Checker extension belongs to #74/#75. The consumer PR
-stays Draft until a valid strict positive is available. This is independent of
+was kept Draft for this recorded failure. This is independent of
 the missing Pipeline Root: A does not select Terminal or claim exact Run time.
 
-### Fixed input and independent coverage
+### Original fixed input and independent coverage
 
 `tests/integration/real-attempt-42821429094.json` contains the separately
 committed Job witness, its #75 archive commit and exact file hashes, and the
@@ -496,9 +499,9 @@ native execution evidence. Ruff passed on the two changed Python files.
 The actual strict native rejection, complete input/output archives and Plan
 results are in [the Task-only evidence bundle](weaver-evidence/real-attempt-task-only/README.md).
 No broad tool/engineering matrix, Root/Terminal, Logs or Metrics check was run.
-Native valid-positive and the corresponding isolated missing-Task/zero-matcher/
-semantic-negative acceptance remain unverified pending the #74/#75 extension
-handoff. Their existing independent results are not substituted for this case.
+No valid-positive is claimed for that original input. The separate registered
+Producer case below completes new native positive and negative acceptance;
+it does not substitute a passing result into the original archive.
 
 B remains a later #52 slice consuming #75's eligible Root/time provenance and
 the existing `post_completion_plan` interface. A does not wait for B's precision
@@ -506,6 +509,51 @@ budget, and does not turn a network ACK into Weaver PASS. Original Producer
 claims stay unchanged (`github_authenticated=false`, `otlp_delivered=false`);
 the checker's replay ACK is recorded separately. #63 owns trusted admission and
 #61 owns Required/Release. Neither is granted by this technical integration.
+
+### Registered Producer contract and joint acceptance
+
+The [registered Attempt bundle](weaver-evidence/registered-attempt/README.md)
+records #52's joint Task-only acceptance of #74 candidate `94996d6` and #75
+PR #84 archive `4a354c9` / Producer code `0e72f14`. The original #52 Expected
+Job identities are cross-checked with #75's already archived independent API
+Witness, source receipt and original exit. No new API call or encoder is used.
+
+```powershell
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --case registered-attributes --destination .artifacts/registered-attempt-source
+dagger api call weaver-artifacts --source .artifacts/registered-attempt-source --kind live export --path .artifacts/registered-attempt-artifacts
+dagger api call weaver-enforce --source .artifacts/registered-attempt-source --kind live
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --case registered-attributes --verify-source .artifacts/registered-attempt-source --artifacts .artifacts/registered-attempt-artifacts --plan-report <execution-report>
+```
+
+The existing Selection/Plan must bind that same Source before execution. The
+actual archived Plan selects only `weaver_live`, passes, and embeds the exact
+Report/Artifact execution. Candidate uncertainty drift invalidates its Source
+binding before a Check is invoked. The Consumer also rejects post-execution
+Registry/Advice drift through `selection.compute_weaver_input_closure`, checks
+the actual Native tool pin and Policy coverage, and matches received Resource,
+Task identities, timestamps and result against the independent source.
+
+The real three-Task positive passed. Eleven isolated native cases cover missing,
+extra and duplicate Tasks, a common wrong Trace, wrong repository/Attempt/Head,
+zero Matcher/zero sample, Required Task URL and Conditional `error.type`.
+Native Live legitimately accepts an extra Task while its declared Expected
+three remain present; #52's complete-source inventory rejects the overall case.
+It likewise rejects well-typed Source identity mismatches that Native SemConv
+does not authenticate. Native exit, native gate and Consumer exit are separate.
+
+The two changed Python files pass Ruff; **78 targeted tests passed**. The
+bundle preserves original native diagnostics, complete Artifact archives,
+one shared full Source plus exact negative deltas, CLI exits and all hashes.
+Native and Selection Advice aggregate hashes use different JSON encodings;
+their exact common path/file hashes are compared and both aggregates retained.
+The old strict-failure archive is unchanged. Default `--case original` remains
+available. These fixed candidate results do not assume #83/#84 have merged.
+
+The Consumer result marks `scope="A / Task-only"` and
+`terminal_check="not_executed"`, retaining Producer terminal and per-signal
+facts. Real Root time properties, default-branch post-run execution, new
+Producer receiver delivery, Logs/Metrics semantic checking, Trusted/Required
+and the rest of Issue #52 remain separately unaccepted.
 
 ## Verification on 2026-11-10
 
