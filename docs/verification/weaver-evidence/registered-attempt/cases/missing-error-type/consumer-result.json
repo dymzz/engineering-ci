@@ -1,0 +1,48 @@
+{
+  "inventory": {
+    "duplicate": [],
+    "expected_count": 3,
+    "matched": [
+      {
+        "job_id": "129847644372",
+        "span_id": "a7263c2e65a30498",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "job_id": "129847644459",
+        "span_id": "7d98cbfec3f44c1a",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      }
+    ],
+    "mismatched": [
+      {
+        "fields": [
+          "result"
+        ],
+        "job_id": "129847643854",
+        "span_id": "7d2f4e7f18a603cd",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      }
+    ],
+    "missing": [
+      {
+        "end_time_unix_nano": "1794316079000000000",
+        "job_id": "129847643854",
+        "name": "task:sync-tool-tests",
+        "parent_span_id": "093c00d57bcc226c",
+        "result": "success",
+        "span_id": "7d2f4e7f18a603cd",
+        "start_time_unix_nano": "1794315965000000000",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f",
+        "url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854"
+      }
+    ],
+    "observed_count": 3,
+    "scope": "complete_task_set_for_pinned_attempt",
+    "unexpected": []
+  },
+  "native": null,
+  "reason": "task_identity_or_attributes_mismatch",
+  "status": "rejected",
+  "trusted": false
+}

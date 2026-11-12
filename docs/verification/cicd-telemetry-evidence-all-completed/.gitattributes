@@ -1,0 +1,2 @@
+# Preserve the original archived bytes and their recorded SHA-256 on checkout.
+*.json -text

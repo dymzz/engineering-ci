@@ -1,4 +1,22 @@
-# Weaver checker evidence summaries (#74 / PR #78)
+# Weaver checker evidence
+
+## Real Attempt Task-only integration (#52)
+
+[Registered Producer acceptance](registered-attempt/README.md): #52 jointly
+accepts fixed #74 `94996d6` / #75 `4a354c9` inputs for Task-only A. Three real
+Tasks, full independent source/object reconciliation and same-execution
+Native/Report/Artifact/Plan pass; eleven isolated negatives and Source drift
+are recorded with Native and Consumer exits separate. Root/Workflow/trust
+properties remain separately unverified; this does not assume candidate merges.
+
+[Task-only bundle](real-attempt-task-only/README.md): Run `42821429094`, Attempt
+`1`, three received/matched Task identities, official Registry verified, but
+strict native `missing_attribute` on Resource `github.repository`.
+`weaver-enforce` exits 1; the same failure is preserved by Report/Artifact/Plan.
+The Source, complete exported native output, original reports and Source-drift
+refusal are retained with their own checksums. This is a blocked integration,
+not a new positive or #63/#61 admission. The controlled #74 cases below remain
+separate evidence.
 
 ## Historical (pre observed-Span bind)
 

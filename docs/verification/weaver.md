@@ -401,6 +401,160 @@ changed. In this Windows host, terminal-mode `dagger version` returned the
 version; `--version` is unsupported. Connection startup sometimes took over a
 minute, independently of the native Weaver execution time.
 
+## #52 real GitHub Attempt → Weaver Live integration
+
+[ECI #52](https://github.com/dymzz/engineering-ci/issues/52) owns the consumer-side
+Check/Report/Artifact integration; #74 owns the Checker and #75 the Producer.
+[PR #82](https://github.com/dymzz/engineering-ci/pull/82) is the **A / Task-only**
+slice. Its original archived execution inherited the repair in #74 / PR #83 at
+fixed candidate
+`8bf82112fae00e63a796c3de1ca22d254076e631`; that candidate was not merged when
+the execution below was recorded. The case consumes #75's existing Run
+`42821429094`, Attempt `1` archive, rather than fetching a new GitHub Run.
+
+### Original archived strict failure
+
+**Original recorded result: blocked, not a technical E2E PASS.** All three Task identities
+were received and matched, but Weaver rejects the Resource attribute
+`github.repository`, which is absent from the official Registry. The exact
+native finding is `missing_attribute`, level `violation`; native exit and
+`gate_exit_code` are both 1. The original capture and strict policy are retained.
+Handling that Producer/Checker extension belongs to #74/#75. The consumer PR
+was kept Draft for this recorded failure. This is independent of
+the missing Pipeline Root: A does not select Terminal or claim exact Run time.
+
+### Original fixed input and independent coverage
+
+`tests/integration/real-attempt-42821429094.json` contains the separately
+committed Job witness, its #75 archive commit and exact file hashes, and the
+expected Trace/Span mapping. The adapter reuses
+`engineering_ci.cicd_telemetry._stable_ids`, checking its output against the
+witness. It never obtains Expected Trace IDs from the replay capture. All Tasks
+moving to the same wrong Trace therefore fail even when the count stays three.
+Raw OTLP identities and Run/Attempt/Head/Repository/Job URLs are compared with
+per-object `matched`, `missing`, `unexpected`, `duplicate` and `mismatched`
+diagnostics.
+
+The Registry is checked against #74's `engineering_ci.semconv_registry` pin,
+outside the supplied Source, as well as its file manifest. A coordinated edit
+of Registry bytes and the local manifest is refused. The same independent
+witness also prevents a coordinated edit of the archive and its own
+`SHA256SUMS`. Archive JSON and witness bytes are protected against checkout
+newline conversion; the original recorded hashes remain unchanged.
+
+The temporary Source preserves the original OTLP bytes and Advice files,
+includes the witness and original Candidate, and selects `eci.task` as its
+expected matcher. Matcher selection uses `name.startsWith("task:")`, so missing
+Required attributes cannot exclude the very spans that must be checked.
+Official Registry identity, ECI policy execution, Producer claims and Check
+outcome are separate facts. No field is stripped or filtered to turn this case
+into a pass.
+
+### Execute and inspect the existing interfaces
+
+From the ECI checkout root on a branch containing this #52 integration:
+
+```powershell
+uv run --locked python -m pytest tests/test_real_attempt_weaver_e2e.py -q
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --destination .artifacts/real-attempt-weaver-source
+dagger api call weaver-report --source .artifacts/real-attempt-weaver-source --kind live
+dagger api call weaver-enforce --source .artifacts/real-attempt-weaver-source --kind live
+dagger api call weaver-artifacts --source .artifacts/real-attempt-weaver-source --kind live export --path .artifacts/real-attempt-weaver-evidence
+```
+
+The destination must be new and exports must remain outside it. Preparation
+returns `prepared_not_executed` with `weaver_pass=false`; it does not invoke
+Weaver. Ordinary preparation does not require a Pipeline Root.
+
+`weaver-report` and artifact export can exit 0 while their Check report fails.
+`weaver-enforce` is the native blocking entry point. The shared Dagger execution
+is reused: the archived API report, exported `report.json` and the native Check
+inside `execute-plan` were equal, including native samples, commands, ports and
+Source digest; each contains one `live-check` command. The Plan was generated
+through existing Selection APIs from a real temporary Git Source snapshot.
+Its selected Check is `weaver_live` and its Source tree was verified, but the
+failed native Check still made the Plan fail. Changing the Source yielded
+`source_tree_mismatch` / `not_executed`, exit 4, before any native scan.
+
+The consumer can inspect these existing outputs without executing a scanner:
+
+```powershell
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --verify-source .artifacts/real-attempt-weaver-source --artifacts .artifacts/real-attempt-weaver-evidence --plan-report .artifacts/real-attempt-plan-result.json
+```
+
+The optional Plan report must bind the same native report and the current
+Source bytes. The consumer checks the exported sample identities, Job fields,
+Matcher/Signal, explicit official-source result and input hashes, rather than
+accepting a successful API response or self-reported coverage count. For this
+blocked case it exits 1 and preserves native failure facts in its rejection.
+
+### Recorded verification and remaining acceptance
+
+2026-11-12: the changed consumer's tests passed (**32 passed**), including wrong
+Trace/Attempt/Head/Job, duplicate/missing/unexpected Task, coordinated byte and
+manifest tampering, absent artifacts, policy/Source drift, forged coverage and
+unsupported trust upgrades. Synthetic result fixtures are unit tests, not
+native execution evidence. Ruff passed on the two changed Python files.
+
+The actual strict native rejection, complete input/output archives and Plan
+results are in [the Task-only evidence bundle](weaver-evidence/real-attempt-task-only/README.md).
+No broad tool/engineering matrix, Root/Terminal, Logs or Metrics check was run.
+No valid-positive is claimed for that original input. The separate registered
+Producer case below completes new native positive and negative acceptance;
+it does not substitute a passing result into the original archive.
+
+B remains a later #52 slice consuming #75's eligible Root/time provenance and
+the existing `post_completion_plan` interface. A does not wait for B's precision
+budget, and does not turn a network ACK into Weaver PASS. Original Producer
+claims stay unchanged (`github_authenticated=false`, `otlp_delivered=false`);
+the checker's replay ACK is recorded separately. #63 owns trusted admission and
+#61 owns Required/Release. Neither is granted by this technical integration.
+
+### Registered Producer contract and joint acceptance
+
+The [registered Attempt bundle](weaver-evidence/registered-attempt/README.md)
+records #52's joint Task-only acceptance of #74 candidate `94996d6` and #75
+PR #84 archive `4a354c9` / Producer code `0e72f14`. The original #52 Expected
+Job identities are cross-checked with #75's already archived independent API
+Witness, source receipt and original exit. No new API call or encoder is used.
+
+```powershell
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --case registered-attributes --destination .artifacts/registered-attempt-source
+dagger api call weaver-artifacts --source .artifacts/registered-attempt-source --kind live export --path .artifacts/registered-attempt-artifacts
+dagger api call weaver-enforce --source .artifacts/registered-attempt-source --kind live
+uv run --locked python tests/integration/prepare_real_attempt_weaver.py --case registered-attributes --verify-source .artifacts/registered-attempt-source --artifacts .artifacts/registered-attempt-artifacts --plan-report <execution-report>
+```
+
+The existing Selection/Plan must bind that same Source before execution. The
+actual archived Plan selects only `weaver_live`, passes, and embeds the exact
+Report/Artifact execution. Candidate uncertainty drift invalidates its Source
+binding before a Check is invoked. The Consumer also rejects post-execution
+Registry/Advice drift through `selection.compute_weaver_input_closure`, checks
+the actual Native tool pin and Policy coverage, and matches received Resource,
+Task identities, timestamps and result against the independent source.
+
+The real three-Task positive passed. Eleven isolated native cases cover missing,
+extra and duplicate Tasks, a common wrong Trace, wrong repository/Attempt/Head,
+zero Matcher/zero sample, Required Task URL and Conditional `error.type`.
+Native Live legitimately accepts an extra Task while its declared Expected
+three remain present; #52's complete-source inventory rejects the overall case.
+It likewise rejects well-typed Source identity mismatches that Native SemConv
+does not authenticate. Native exit, native gate and Consumer exit are separate.
+
+The two changed Python files pass Ruff; **78 targeted tests passed**. The
+bundle preserves original native diagnostics, complete Artifact archives,
+one shared full Source plus exact negative deltas, CLI exits and all hashes.
+Native and Selection Advice aggregate hashes use different JSON encodings;
+their exact common path/file hashes are compared and both aggregates retained.
+The old strict-failure archive is unchanged. Default `--case original` remains
+available. These fixed candidate results do not assume #83/#84 have merged.
+
+The Consumer result marks `scope="A / Task-only"` and
+`terminal_check="not_executed"`, retaining Producer terminal and per-signal
+facts. Real Root time properties, default-branch post-run execution, new
+Producer receiver delivery, Logs/Metrics semantic checking, Trusted/Required
+and the rest of Issue #52 remain separately unaccepted.
+
 ## Verification on 2026-11-10
 
 Dagger v1.0.0-beta.16 executed the fixed SemConv candidate and the pinned

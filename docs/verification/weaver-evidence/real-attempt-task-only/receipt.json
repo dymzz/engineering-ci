@@ -1,0 +1,108 @@
+{
+  "scope": "A / Task-only; blocked, not accepted",
+  "runtime_pr": 83,
+  "runtime_commit": "8bf82112fae00e63a796c3de1ca22d254076e631",
+  "producer_archive": {
+    "repository": "https://github.com/dymzz/engineering-ci",
+    "commit": "f8c31251ac6b4b3277579b40b78827e3bced6c85",
+    "path": "docs/verification/cicd-telemetry-evidence-all-completed",
+    "files": {
+      "candidate-42821429094-all-completed.json": "12f0c4a85c96ea88e7153f7a55840bec9933bc85d443608aae638ccc2754221b",
+      "cli-42821429094-all-completed.stdout.json": "f9287c72827e975fcd925753df459a3ad925ce00de02d80d1042a30e4e3136f4",
+      "otel-42821429094-all-completed.json": "07aa61d36ea8e0a179302ad75d17b1a5ec836e6c8870dd551482b59a759245e5"
+    },
+    "inventory_basis": "Separately committed #75 all_completed Attempt Job witness; no IDs are taken from the replay capture"
+  },
+  "run": {
+    "repository": "dymzz/engineering-ci",
+    "run_id": "42821429094",
+    "attempt": 1,
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "trace_id": "21ee8206fe06a4879580f60591a3014f",
+    "pipeline_span_id": "093c00d57bcc226c"
+  },
+  "source_digest": "sha256:d9fb1c534e30e5196411c08a3ae47ac8bf508c31415d5a47cbc65c004649fcdb",
+  "official_registry_verified": true,
+  "native_task_observations": [
+    {
+      "job_id": "129847643854",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "span_id": "7d2f4e7f18a603cd",
+      "matcher": "eci.task"
+    },
+    {
+      "job_id": "129847644372",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "span_id": "a7263c2e65a30498",
+      "matcher": "eci.task"
+    },
+    {
+      "job_id": "129847644459",
+      "trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "span_id": "7d98cbfec3f44c1a",
+      "matcher": "eci.task"
+    }
+  ],
+  "lifecycle": {
+    "export_acknowledged": true,
+    "ready": true,
+    "report_received": true,
+    "shutdown": true,
+    "stopped": true
+  },
+  "native_status": "failed",
+  "native_exit_code": 1,
+  "gate_exit_code": 1,
+  "violations": [
+    {
+      "id": "missing_attribute",
+      "message": "Attribute 'github.repository' does not exist in the registry.",
+      "context": {
+        "attribute_key": "github.repository"
+      },
+      "level": "violation"
+    }
+  ],
+  "live_check_command_count": 1,
+  "interfaces": [
+    {
+      "command": "dagger api call weaver-artifacts --source .artifacts/issue52/task-source --kind live export --path .artifacts/issue52/task-artifacts",
+      "cli_exit_code": 0
+    },
+    {
+      "command": "dagger api call weaver-enforce --source .artifacts/issue52/task-source --kind live",
+      "cli_exit_code": 1
+    },
+    {
+      "command": "dagger api call weaver-report --source .artifacts/issue52/task-source --kind live",
+      "cli_exit_code": 0,
+      "report_equal_to_artifact": true
+    },
+    {
+      "command": "dagger api call execute-plan --plan .artifacts/issue52/task-plan.json --source .artifacts/issue52/task-source",
+      "cli_exit_code": 0,
+      "report_status": "failed",
+      "report_exit_code": 1,
+      "same_native_report": true
+    },
+    {
+      "command": "dagger api call execute-plan --plan .artifacts/issue52/task-plan.json --source .artifacts/issue52/changed-source",
+      "cli_exit_code": 0,
+      "report_status": "not_executed",
+      "report_reason": "source_tree_mismatch",
+      "report_exit_code": 4
+    }
+  ],
+  "targeted_tests": {
+    "file": "tests/test_real_attempt_weaver_e2e.py",
+    "passed": 32
+  },
+  "acceptance": {
+    "native_positive": "not_verified",
+    "additional_native_boundary_negatives": "deferred_until_valid_positive",
+    "source_and_report_refusal_tests": "passed"
+  },
+  "trusted": false,
+  "admitted": false,
+  "required": false
+}

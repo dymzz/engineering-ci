@@ -1,0 +1,39 @@
+{
+  "inventory": {
+    "duplicate": [],
+    "expected_count": 3,
+    "matched": [
+      {
+        "job_id": "129847643854",
+        "span_id": "7d2f4e7f18a603cd",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "job_id": "129847644372",
+        "span_id": "a7263c2e65a30498",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "job_id": "129847644459",
+        "span_id": "7d98cbfec3f44c1a",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      }
+    ],
+    "mismatched": [],
+    "missing": [],
+    "observed_count": 3,
+    "scope": "complete_task_set_for_pinned_attempt",
+    "unexpected": []
+  },
+  "native": {
+    "exit_code": 0,
+    "gate_exit_code": 1,
+    "name": "weaver_live",
+    "reason": "coverage_missing",
+    "source_digest": "sha256:38dc0f0ab14d1c860a2e9dd963dece197d71e57074cc89f9c33bde67e962727e",
+    "status": "failed"
+  },
+  "reason": "native_check_not_passed",
+  "status": "rejected",
+  "trusted": false
+}

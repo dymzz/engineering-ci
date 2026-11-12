@@ -1,0 +1,168 @@
+[
+  {
+    "case": "positive",
+    "consumer_exit_code": 0,
+    "consumer_reason": null,
+    "consumer_status": "passed",
+    "native_enforce_api_exit_code": 0,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 0,
+    "native_received_spans": 3,
+    "native_status": "passed",
+    "native_violations": []
+  },
+  {
+    "case": "missing-task",
+    "consumer_exit_code": 1,
+    "consumer_reason": "expected_task_missing",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 2,
+    "native_status": "failed",
+    "native_violations": []
+  },
+  {
+    "case": "extra-task",
+    "consumer_exit_code": 1,
+    "consumer_reason": "unexpected_task_identity",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 0,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 0,
+    "native_received_spans": 4,
+    "native_status": "passed",
+    "native_violations": []
+  },
+  {
+    "case": "duplicate-task",
+    "consumer_exit_code": 1,
+    "consumer_reason": "duplicate_task_identity",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 4,
+    "native_status": "failed",
+    "native_violations": []
+  },
+  {
+    "case": "wrong-trace",
+    "consumer_exit_code": 1,
+    "consumer_reason": "task_identity_or_attributes_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 3,
+    "native_status": "failed",
+    "native_violations": []
+  },
+  {
+    "case": "wrong-attempt",
+    "consumer_exit_code": 1,
+    "consumer_reason": "candidate_or_resource_provenance_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 0,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 0,
+    "native_received_spans": 3,
+    "native_status": "passed",
+    "native_violations": []
+  },
+  {
+    "case": "wrong-head",
+    "consumer_exit_code": 1,
+    "consumer_reason": "candidate_or_resource_provenance_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 0,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 0,
+    "native_received_spans": 3,
+    "native_status": "passed",
+    "native_violations": []
+  },
+  {
+    "case": "wrong-repository",
+    "consumer_exit_code": 1,
+    "consumer_reason": "candidate_or_resource_provenance_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 0,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 0,
+    "native_received_spans": 3,
+    "native_status": "passed",
+    "native_violations": []
+  },
+  {
+    "case": "zero-matcher",
+    "consumer_exit_code": 1,
+    "consumer_reason": "native_check_not_passed",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 3,
+    "native_status": "failed",
+    "native_violations": []
+  },
+  {
+    "case": "no-samples",
+    "consumer_exit_code": 1,
+    "consumer_reason": "expected_task_missing",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 0,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 0,
+    "native_status": "failed",
+    "native_violations": []
+  },
+  {
+    "case": "missing-task-url",
+    "consumer_exit_code": 1,
+    "consumer_reason": "task_identity_or_attributes_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 1,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 3,
+    "native_status": "failed",
+    "native_violations": [
+      {
+        "context": {
+          "attribute_key": "cicd.pipeline.task.run.url.full"
+        },
+        "id": "required_attribute_not_present",
+        "level": "violation",
+        "message": "Required attribute 'cicd.pipeline.task.run.url.full' is not present."
+      }
+    ]
+  },
+  {
+    "case": "missing-error-type",
+    "consumer_exit_code": 1,
+    "consumer_reason": "task_identity_or_attributes_mismatch",
+    "consumer_status": "rejected",
+    "native_enforce_api_exit_code": 1,
+    "native_exit_code": 1,
+    "native_gate_exit_code": 1,
+    "native_received_spans": 3,
+    "native_status": "failed",
+    "native_violations": [
+      {
+        "context": {
+          "attribute_key": "error.type",
+          "normative_source": "https://opentelemetry.io/docs/specs/semconv/cicd/cicd-spans/",
+          "result": "failure",
+          "result_attribute": "cicd.pipeline.task.run.result",
+          "signal": "cicd.pipeline.task.internal"
+        },
+        "id": "cicd_conditional_error_type_required",
+        "level": "violation",
+        "message": "Conditionally required attribute 'error.type' is missing when cicd.pipeline.task.run.result is 'failure' (signal cicd.pipeline.task.internal)"
+      }
+    ]
+  }
+]

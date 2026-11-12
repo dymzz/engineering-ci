@@ -1,0 +1,130 @@
+{
+  "admitted": false,
+  "check_id": "weaver_live",
+  "checked_signals": [
+    "traces"
+  ],
+  "eci_policy_evaluated": true,
+  "exit_code": 0,
+  "gate_exit_code": 0,
+  "inventory": {
+    "duplicate": [],
+    "expected_count": 3,
+    "matched": [
+      {
+        "job_id": "129847643854",
+        "span_id": "7d2f4e7f18a603cd",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "job_id": "129847644372",
+        "span_id": "a7263c2e65a30498",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      },
+      {
+        "job_id": "129847644459",
+        "span_id": "7d98cbfec3f44c1a",
+        "trace_id": "21ee8206fe06a4879580f60591a3014f"
+      }
+    ],
+    "mismatched": [],
+    "missing": [],
+    "observed_count": 3,
+    "scope": "complete_task_set_for_pinned_attempt",
+    "unexpected": []
+  },
+  "official_registry_verified": true,
+  "plan_binding": "verified",
+  "producer_claims": {
+    "all_prepared_signals_delivered": false,
+    "bundle_delivery_complete": false,
+    "candidate_record_only": true,
+    "github_api_fetched": true,
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "otlp_json_exported": true,
+    "otlp_json_path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-traces.json",
+    "otlp_json_prepared": true,
+    "otlp_json_sha256": "50bcf5cfae3050c1a303ae1881a5c0aedb38151e897fcac3da72388d08665d8f",
+    "otlp_logs_delivered": false,
+    "otlp_logs_exported": true,
+    "otlp_logs_path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-logs.json",
+    "otlp_logs_prepared": true,
+    "otlp_logs_receiver_observed": false,
+    "otlp_logs_rpc_accepted": false,
+    "otlp_logs_sha256": "ec5c12a1e784d174b2ebdd8363a7068a0d3e7410b8f8d1802677aea44b6c802a",
+    "otlp_metrics_delivered": false,
+    "otlp_metrics_exported": false,
+    "otlp_metrics_prepared": false,
+    "otlp_metrics_receiver_observed": false,
+    "otlp_metrics_rpc_accepted": false,
+    "receiver_observed": false,
+    "rpc_accepted": false,
+    "snapshot_phase": "before_receiver_confirmation",
+    "transport": {},
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "producer_exit_code": 0,
+  "producer_metrics_not_observable": [
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "pending",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "executing",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "finalizing",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.active",
+      "reason": "active_count_unproven",
+      "status": "not_observable"
+    }
+  ],
+  "producer_terminal": {
+    "bounds_invalid_reason": null,
+    "bounds_valid": true,
+    "clock_quality": "ordered",
+    "conclusion": "success",
+    "duration_valid_for_metrics": false,
+    "end_lower_bound_ns": 1794316079000000000,
+    "end_lower_bound_source": "last_completed_job_end",
+    "end_time_quality": "observed_upper_bound",
+    "end_time_source": null,
+    "end_upper_bound_ns": 1794449063813682944,
+    "end_upper_bound_source": "terminal_observed_at",
+    "exact_run_duration": false,
+    "job_set_complete": true,
+    "lower_source": "last_completed_job_end",
+    "max_end_uncertainty_ns": null,
+    "observed_at_ns": 1794449063813682944,
+    "reviewed_at_ns": 1794449063813682944,
+    "root_emission": "not_emitted",
+    "root_emission_reason": "end_time_uncertain",
+    "run_completed_at_ns": null,
+    "status": "completed",
+    "terminal_confirmed": true,
+    "time_precision": "observed_upper_bound",
+    "time_source_verified": false,
+    "uncertainty_ns": 132984813682944,
+    "upper_source": "terminal_observed_at"
+  },
+  "registry_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+  "registry_tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+  "required": false,
+  "scope": "A / Task-only",
+  "source_digest": "sha256:1c14a83d72abbf84f29af371e358b9af88a8192ad49842291ff05a05cd414523",
+  "status": "passed",
+  "terminal_check": "not_executed",
+  "trusted": false
+}

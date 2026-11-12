@@ -1,0 +1,2 @@
+# Preserve raw native artifacts and the case checksums on every checkout.
+* -text

@@ -114,3 +114,10 @@
 - Evidence: exporting DAGGER_MODULE=validation made native Dagger resolve the nonexistent local source path validation before report export. The exact failure was reproduced with local `dagger --env fixtures check --module validation -l --format cli`; removing only that environment variable restored the configured validation alias.
 - Integration: keep the public workflow input dagger_module as a Check filter, map it to the namespaced ECI_CHECK_MODULE shell variable, and pass `check --module` explicitly. Do not use Dagger's native source-selection environment variable for a different purpose.
 - Regression: the existing Workflow subprocess test reads the actual environment binding from YAML; its Dagger substitute rejects a leaked native DAGGER_MODULE, while preserving all check and report failure assertions. Linux CI exercises that shell contract; native discovery provides separate real-Dagger evidence.
+
+
+## Dagger@1.0.0-beta.16: worktree Git metadata warning during explicit Source calls
+- Status: observed integration limitation; no upstream bug diagnosis or patch.
+- Seen: 2026-11-12, #52 fixed #74/#75 Task-only acceptance on Windows.
+- Evidence: native API calls warned `failed to open git repository` with `core.repositoryformatversion does not support extension: worktreeconfig`. The same calls completed; all 12 explicit-Source checks produced reports and the positive Plan passed with its real Git Source tree verified. Raw diagnostics are in `docs/verification/weaver-evidence/registered-attempt/native-cli.json`.
+- Handling: retained the warning, actual source-file hashes, independent Source digest and Git snapshot identity. No repository config, exporter or third-party code was changed, and the warning was not promoted to a failed or successful check result.
