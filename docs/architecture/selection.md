@@ -393,8 +393,44 @@ slice delivers no generated output or trust receipt. Detailed instance scope,
 raw results and remaining handoffs are in the
 [dependency inventory](../verification/plan-dependencies/README.md).
 
-The read-only Dagger API may exit 0 while returning a non-passed Report. Before
-B exposes strict consumers, their native Check/Enforce/CI failure propagation
-must consume both Report status and exit code; an API exit-0/refused-Report
-counterexample must fail that strict entry. A returned Result, especially a
+The read-only Dagger API may exit 0 while returning a non-passed Report.
+`PlanExecution.enforce` now consumes Report status and its original aggregate
+exit code; an API exit-0/refused-Report fails that entry. This is a verdict gate
+on the provided Source computation, not #66 target-Source verification, #63
+evidence admission or #61 Required coverage. A returned Result, especially a
 cached Result, is not proof of a new tool execution in this invocation.
+
+### Native Plan result object (first #86 B delivery)
+
+`plan-execution(plan, source)` returns a `PlanExecution` with one real
+`artifacts` Directory. `report` reads its `report.json`; `enforce` checks the
+Report kind/version, status, integer exit and matching `exit-code.txt`, raising
+on failed/blocked/not-executed results. `execute-plan` remains the convenience
+Report API and does not become a strict process gate.
+
+The collector resolves independent selected tests/Weaver computations
+concurrently through the existing Dagger Container/Directory APIs, retaining
+each native result. Pytest uses `_run_pytest/_pytest_bundle`, with exact Plan
+targets, native exit, stdout/stderr and JUnit; mixed module/file targets use
+`python -m pytest`. Weaver contributes its original `weaver_artifacts` `/out`
+Directory. The existing Host test-only Tach-graph/coverage prerequisite policy
+is shared before the native test branch: unsatisfied requirements block tests
+without cancelling independent Weaver computations. This is the existing
+Plan requirement, not support for new generic PASS/data edge kinds.
+Host checks and legacy prerequisite policies retain their Host
+boundary and run after native collection. A Host source write still refuses
+the old binding; already collected native results describe the immutable input
+before that action, not delivered Host-generated inputs.
+
+Within one composite consumer, hold the object once, retain/export its
+Directory, read its Report, then enforce that same object. A strict call that
+raises cannot simultaneously return an Artifact; retain the earlier reference
+or export before enforcement. Independent CLI calls may receive Engine-cached
+results and are not automatically one execution or one Origin. Root Check
+defaults and lightweight Host execution remain unchanged.
+
+This slice does not implement new PASS/data edge semantics, #66 receipts,
+Host-generated File/Directory materialization, historical Verdict reuse or
+Expected/Required admission. Unknown binding remains explicit. The
+[native result-sharing verification](../verification/plan-result-sharing/README.md)
+records actual scope, native failures, unchanged evidence and remaining B/D work.

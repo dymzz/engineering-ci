@@ -121,3 +121,10 @@
 - Evidence: native `dagger api call execute-plan` emitted `core.repositoryformatversion does not support extension: worktreeconfig` while opening this managed Git worktree. All eight controlled API calls still returned CLI exit 0 and their actual Report statuses. Captured tool-return chunks are in `docs/verification/plan-dependencies/cases/native-cli.json`.
 - Assessment: a warning from repository discovery, not evidence that Plan consumers or native checks passed. Unsupported Plans still returned refused Reports; exported Source still lacked the original ODB. No specific upstream component or defect is asserted.
 - Workaround: none; retain the warning and native Report separately. No Git configuration, Dagger binary or third-party source was modified, and no upstream tracker search was performed.
+
+## Dagger Python SDK@1.0.0-beta.16: Check documentation return example
+- Status: observed documentation ambiguity, not a runtime defect.
+- Seen: 2026-11-12, #86 B interface research.
+- Evidence: `.dagger/sdk/src/dagger/mod/_module.py` at lines 694–706 describes Check functions as returning void/error but its adjacent example declares `-> str`. The fixed upstream source is https://github.com/dagger/dagger/blob/v1.0.0-beta.16/sdk/python/src/dagger/mod/_module.py.
+- Assessment: the wording and example differ; no inference that either return form fails at runtime. Existing root Check signatures remain unchanged. The new result Enforce uses `-> None` and raises on failed verdicts without adding a default Check.
+- Workaround: none; no SDK source or upstream tracker was modified.
