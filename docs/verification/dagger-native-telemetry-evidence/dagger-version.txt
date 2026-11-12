@@ -1,0 +1,5 @@
+version:     v1.0.0-beta.16
+commit:      2d95ef98
+dirty:       no
+platform:    linux/amd64
+runner-host: container://dagger-engine
