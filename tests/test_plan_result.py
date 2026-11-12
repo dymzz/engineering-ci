@@ -244,6 +244,7 @@ def test_independent_native_branches_and_all_readers_share_saved_results(
             "ci-weaver.toml",
         )
         assert native.started == {"tests", "weaver"}
+        assert report["result_sharing"]["origin_execution_attributed"] is False
         assert report["tests"]["exit_code"] == test_code
         assert report["checks"][0]["exit_code"] == (
             17 if weaver_status == "failed" else 0

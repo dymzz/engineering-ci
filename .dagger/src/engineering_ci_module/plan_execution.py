@@ -188,7 +188,7 @@ async def _native_results(
     report["result_sharing"] = {
         "scope": "this_result_bundle",
         "native_branches": [name for name, _ in branches],
-        "separate_api_calls_share_origin": False,
+        "origin_execution_attributed": False,
     }
     return artifacts
 
