@@ -1018,7 +1018,13 @@ class EngineeringCi:
                     selected.append(target)
                 else:
                     selected.extend(["--pyargs", target])
-            arguments = arguments[:-1] + selected
+            # Running pytest as a module keeps the actual workspace on sys.path
+            # for --pyargs targets in projects that do not install their tests.
+            arguments = (
+                ["uv", "run", "--no-sync", "python", "-m", "pytest"]
+                + arguments[4:-1]
+                + selected
+            )
         if _matrix_runtime:
             prepared = prepared.with_new_file(
                 "/tmp/engineering-ci-matrix-runtime.py",
