@@ -70,6 +70,17 @@ Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Functi
 
 `sent=unknown` 与 `receiver_observed=false` 只降低 Trace/缓存归因，不抹除原生工具的成功或失败。
 
+## Span 的生产者
+
+一次真实捕获里的 Scope 分布，区分**谁产生**：
+
+| 生产者 | Scope | 内容 |
+| --- | --- | --- |
+| Engine | `dagger.io/core`、`dagger.io/dagql`、`dagger.io/engine.server`、`dagger.io/engine.buildkit`、`dagger.io/filesync`、`dagger.io/util/parallel` | Function / Exec / Check 的原生 Span；Check 身份与缓存事实都在这一侧 |
+| Client / SDK | `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp`、`go.opentelemetry.io/otel/sdk/tracer` | 客户端 HTTP 与 SDK 自身 Span，**不是** Engine 的 Function Span |
+
+两类 Span 不互相替代：客户端 Span 证明不了 Function/Check 的执行，Engine Span 也不代表客户端上下文。
+
 ## 原生调用入口
 
 固定版本实际提供的入口，以及各自能给出的原生可关联数据：
@@ -198,7 +209,12 @@ Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outc
 | 静态清单 ≠ 运行时验证 | 上表是**源码级**能力清单。A.1 的真实路径（实际调用 → 原生结果 → 接收端收到的 Span）只能由 CI 产生：起固定 Engine、开 `telemetry.workloadExport`、把 OTLP 端点指向 runner 本机接收端，产出 capture 与回执工件。本机没有可用的 Engine 会话。 |
 | 现有 Receiver 的限制 | 仓库内已固定的原生 Receiver 是 Weaver 自身的 live-check 接收端，语义是 **replay**（`weaver_runtime.py` 每次导出后立即 `/stop`），不是常驻推送目标。本文件**没有**改它；A.1 用的是 runner 本机临时接收端，属于 CI 验证辅助，不是包内组件，也不是 Telemetry Store。 |
 | 判定强度 | Check 键必须在**同一个 Engine session**（`dagger.io/session.id`）的捕获里成立，否则 `unbound`（`engine_session_not_observed`）。Check 名相同但来源不同不构成同源引用。相同 Trace ID 单独出现时永远是 `ambiguous`。 |
-| A → B 交接 | `binding.basis` 的取值（`w3c_traceparent_propagation` / `engine_check_attribute` / `engine_check_selector` / `engine_check_function` / `engine_check_in_propagated_trace`）就是交给 B.1 的 `correlation_basis` 结论来源；`origin_execution` 就是 B.1 的 `origin_execution_ref` 语义来源。两者都不需要重新推导阶段。 |
+| 版本事实的出处 | 上表与[验证记录](../verification/dagger-native-telemetry.md)的事实同时写回 [Issue #87](https://github.com/dymzz/engineering-ci/issues/87)（P1-1 要求「将版本特定的事实/不支持项及原生命令写入该 Issue」）。 |
+| A → B 交接 | `binding.correlation_basis` 的取值（`w3c_traceparent_propagation` / `engine_check_attribute` / `engine_check_selector` / `engine_check_function` / `engine_check_in_propagated_trace`）就是交给 B.1 的 `correlation_basis` 结论来源；`origin_execution` 就是 B.1 的 `origin_execution_ref` 语义来源。两者都不需要重新推导阶段。 |
+| 与 #86 的边界 | 本仓**不实现缓存命中检测器**：缓存事实只从引擎原生 `dagger.io/cache.*` 读取。计算输入、失效范围与性能观察归 #86；本仓只做有依据的 Cache Attribution 与结果关联。 |
+| 与 #63 / #61 的边界 | Trace 被收到、Check Span 通过，都**不**成为 #63 的受信结果或 #61 的 Required。OTel 失败只降低相关观察，不覆盖可独立证明的原生工具成功或失败。 |
+| 不注入随机 ID | 为了做关联而把每次变化的 Trace/Invocation ID 注入可缓存的 Dagger Function/Exec 输入，会击穿缓存——本仓不这样做，关联只发生在回执里。 |
+| 与 #75 的边界 | #75 只负责 GitHub Attempt/Task/Terminal Producer；不为 Dagger Span 再埋一套 OTel。 |
 | 缓存观察 | 回执只记录 `dagger.io/cache.outcome` 的**实际观察值**。准备节点命中与工具实际执行必须分别记录，不得把单个节点的命中上升为整个 Check 的状态。 |
 | 接收端接受 | Engine 侧明确声明"接收端接受不是 Engine 侧持久保证"；`sent=sent` 的依据是接收端确实收到，不是引擎的 flush 承诺。 |
 
