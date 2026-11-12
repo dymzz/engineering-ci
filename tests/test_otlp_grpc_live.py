@@ -265,9 +265,7 @@ def test_job_terminal_logs_without_fake_finalizing_metric():
     report = cicd_telemetry.produce(complete_facts())
     cicd_telemetry.attach_signal_candidates(report)
     assert len(report["signals"]["logs"]) == 1
-    assert report["signals"]["logs"][0]["attributes"]["eci.log.source"] == (
-        "github_job_terminal"
-    )
+    assert report["signals"]["logs"][0]["source"] == ("github_job_terminal")
     assert report["otlp_logs_json"] is not None
     cicd_telemetry.decode_otlp_logs_request(report["otlp_logs_json"])
     assert report["signals"]["metrics"] == []

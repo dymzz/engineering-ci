@@ -1474,9 +1474,10 @@ def test_approximate_root_requires_an_uncertainty_budget():
     assert pipeline["end_time_unix_nano"] - pipeline["start_time_unix_nano"] == (
         observed - facts.run_started_at_ns
     )
-    assert pipeline["attributes"]["eci.cicd.duration_valid_for_metrics"] is False
-    assert pipeline["attributes"]["eci.cicd.exact_run_duration"] is False
-    assert pipeline["attributes"]["eci.cicd.end_time_quality"] == "observed_upper_bound"
+    assert report["terminal_provenance"]["duration_valid_for_metrics"] is False
+    assert report["terminal_provenance"]["exact_run_duration"] is False
+    assert report["terminal_provenance"]["end_time_quality"] == "observed_upper_bound"
+    assert not any(key.startswith("eci.") for key in pipeline["attributes"])
 
 
 def test_observed_upper_bound_rejects_observation_before_jobs():
@@ -1535,7 +1536,7 @@ def test_observed_attempt_without_jobs_records_a_weak_lower_bound():
     assert root["kind"] == cicd_telemetry.SPAN_KIND_SERVER
     assert root["start_time_unix_nano"] == start
     assert root["end_time_unix_nano"] == observed
-    assert root["attributes"]["eci.cicd.duration_valid_for_metrics"] is False
+    assert allowed["terminal_provenance"]["duration_valid_for_metrics"] is False
     assert allowed["coverage"]["terminal_check"] == "not_checked"
     assert allowed["claims"]["weaver_pass"] is False
 
@@ -1679,9 +1680,7 @@ def test_expected_completed_jobs_inventory_tracks_omission():
     assert provenance["end_time_source"] == "explicit_mapping"
     assert provenance["time_source_verified"] is False
     assert provenance["time_precision"] == "exact_input"
-    assert report["spans"][0]["attributes"]["eci.cicd.end_time_quality"] == (
-        "exact_input"
-    )
+    assert not any(key.startswith("eci.") for key in report["spans"][0]["attributes"])
 
 
 def test_api_observed_root_does_not_claim_native_completed_at():
@@ -1935,18 +1934,16 @@ def test_late_observation_does_not_become_a_proven_root_duration():
     assert report["coverage"]["task_spans_emitted"] == 3
     assert report["coverage"]["terminal_check"] == "not_verified"
     assert report["claims"]["weaver_pass"] is False
-    sources = [
-        item["attributes"]["eci.log.source"] for item in report["signals"]["logs"]
-    ]
+    sources = [item["source"] for item in report["signals"]["logs"]]
     assert sources.count("github_job_terminal") == 3
     assert sources.count("github_attempt_terminal") == 1
     attempt_log = next(
         item
         for item in report["signals"]["logs"]
-        if item["attributes"]["eci.log.source"] == "github_attempt_terminal"
+        if item["source"] == "github_attempt_terminal"
     )
     assert attempt_log["time_unix_nano"] == observed
-    assert attempt_log["attributes"]["eci.cicd.time_role"] == "terminal_observed_at"
+    assert attempt_log["terminal_provenance"]["time_role"] == "terminal_observed_at"
     assert (
         attempt_log["span_id"] == report["coverage"]["withheld_parent_span"]["span_id"]
     )
@@ -2360,113 +2357,20 @@ def test_post_run_workflow_syncs_with_the_lockfile():
     assert "uv sync\n" not in workflow
 
 
-_ARCHIVED_ATTEMPT_JOBS = (
-    ("sync-tool-tests", "129847643854", 1794315965000000000, 1794316079000000000),
-    ("version-metadata", "129847644372", 1794315966000000000, 1794316053000000000),
-    (
-        "python-ci / checks",
-        "129847644459",
-        1794315965000000000,
-        1794316058000000000,
-    ),
-)
 _ARCHIVED_V8 = Path("docs/verification/cicd-telemetry-real-run-identity-v8")
-_ARCHIVED_V8_NOTE = (
-    "Regenerated from the archived Run 42821429094 Attempt 1 witness "
-    "(head_sha 7ea85c24a62e65a9384a0abe9eb541ca54064cbc). "
-    "File identity check only. Not a receiver ACK. The network receipt stays in "
-    "docs/verification/cicd-telemetry-real-run-receiver."
-)
 
 
-def archived_run_identity_report():
-    base = {
-        "workflow_name": "Engineering CI",
-        "run_id": "42821429094",
-        "run_attempt": 1,
-        "run_conclusion": "success",
-        "run_status": "completed",
-        "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
-        "repository": "dymzz/engineering-ci",
-        "server_url": "https://github.com",
-        "run_started_at_ns": 1794315962000000000,
-        "run_updated_at_ns": 1794316080000000000,
-        "run_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094",
+def test_v8_identity_archive_keeps_its_original_bytes():
+    # Historical evidence is frozen to the original producer, never regenerated
+    # with the current attribute contract. Hash the original LF Git blobs.
+    digests = {
+        "candidate.json": "afa9b3b18b7f5fa2ef154778ba5da8654cfc0889aa1aa0651bd8688b434f5c2c",
+        "otel-logs.json": "555300eedcc0a8433a34871423be7353ca8990780a80c6aeecddfbd7debbc6ef",
+        "otel-traces.json": "67b28c3ab36adb7a7400f4e8233e2d641f7f17b3ce1c7e52dbf5622e6692b60c",
     }
-    facts = cicd_telemetry.facts_from_mapping(base)
-    task_facts = []
-    for index, (name, job_id, start_ns, end_ns) in enumerate(_ARCHIVED_ATTEMPT_JOBS):
-        task_facts.append(
-            (
-                index,
-                cicd_telemetry.facts_from_mapping(
-                    {
-                        **base,
-                        "job_id": job_id,
-                        "job_name": name,
-                        "job_url": (
-                            "https://github.com/dymzz/engineering-ci/actions/runs/"
-                            f"42821429094/job/{job_id}"
-                        ),
-                        "job_conclusion": "success",
-                        "job_started_at_ns": start_ns,
-                        "job_completed_at_ns": end_ns,
-                    }
-                ),
-            )
-        )
-    report = cicd_telemetry.produce(
-        facts,
-        source="github_api",
-        github_api_fetched=True,
-        completed_jobs_total=3,
-        job_selection="all_completed",
-        task_facts=task_facts,
-        jobs_observed_total=3,
-        noncompleted_jobs_total=0,
-        terminal_observed_at_ns=1794402286346617088,
-        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
-    )
-    report["evidence_role"] = "file_identity_check"
-    report["evidence_note"] = _ARCHIVED_V8_NOTE
-    return report
-
-
-def archived_v8_readme_text():
-    return (
-        "# Run 42821429094 Attempt 1 — schema 8 file identity check\n\n"
-        "This directory is a deterministic candidate and OTLP/JSON encoding of the\n"
-        "same fixed Run witness already archived under\n"
-        "`docs/verification/cicd-telemetry-real-run-receiver/`. It records\n"
-        "`schema_version` 8, `id_scheme`, `expected_trace`, and `semconv_source`.\n"
-        "Instrumentation scope has a name and no version.\n\n"
-        "It is not a new network receipt. `rpc_accepted` is false. The schema 7\n"
-        "receiver ACK in the other directory stays the gRPC evidence.\n\n"
-        f"{_ARCHIVED_V8_NOTE}\n"
-    )
-
-
-def write_archived_v8_identity(directory):
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    report = archived_run_identity_report()
-    cicd_telemetry.attach_signal_candidates(report)
-    cicd_telemetry.attach_otlp_json(report)
-    cicd_telemetry.write_artifact(report, directory / "candidate.json")
-    for name, payload in (
-        ("otel-traces.json", report["otlp_json"]),
-        ("otel-logs.json", report["otlp_logs_json"]),
-    ):
-        body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
-        (directory / name).write_bytes(body)
-    (directory / "README.md").write_bytes(archived_v8_readme_text().encode())
-    return report
-
-
-def test_v8_identity_file_matches_archived_witness(tmp_path):
-    write_archived_v8_identity(tmp_path)
-    for name in ("candidate.json", "otel-traces.json", "otel-logs.json"):
-        assert (tmp_path / name).read_bytes() == (_ARCHIVED_V8 / name).read_bytes()
+    for name, digest in digests.items():
+        original = (_ARCHIVED_V8 / name).read_text(encoding="utf-8").encode()
+        assert hashlib.sha256(original).hexdigest() == digest
     saved = json.loads((_ARCHIVED_V8 / "candidate.json").read_text(encoding="utf-8"))
     assert saved["schema_version"] == 8
     assert saved["evidence_role"] == "file_identity_check"
@@ -2485,7 +2389,7 @@ def test_v8_identity_file_matches_archived_witness(tmp_path):
 
 
 def test_v8_identity_readme_is_a_file_check_not_a_receiver_ack():
-    text = archived_v8_readme_text()
+    text = (_ARCHIVED_V8 / "README.md").read_text(encoding="utf-8")
     assert "schema 8 file identity check" in text
     assert "schema_version" in text
     assert "not a new network receipt" in text

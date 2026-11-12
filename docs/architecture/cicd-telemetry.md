@@ -59,9 +59,9 @@ used (`github_api`, `mapping`, or `env`). `end_time_source` is
 `time_precision` (`exact_input` / `observed_upper_bound` / `unproven`) is
 independent of `time_source_verified`. The Attempt API `status=completed`
 does not prove an official run-completed timestamp, so
-`time_source_verified` stays false. ECI Span attrs
-`eci.cicd.end_time_quality` and `eci.cicd.exact_run_duration` match those
-candidate fields. `exact_run_duration` means the numeric interval is closed
+`time_source_verified` stays false. Schema 9 keeps time quality in Candidate
+`terminal` / `terminal_provenance`, rather than unregistered Span attributes.
+`exact_run_duration` means the numeric interval is closed
 by an explicit input, not that GitHub certified the end instant.
 
 ### Expected Trace identity (`github-actions-attempt-sha256-v1`)
@@ -91,9 +91,12 @@ omission coverage stay on the producer candidate, not in this function.
 Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
 SemConv `cicd.pipeline.run.id` is the stable canonical form
 `{github_run_id}/{run_attempt}` on Resource, Pipeline Span, and Task
-correlation. Raw GitHub Run ID and Attempt remain in `facts.*`;
-`github.actions.run_attempt` is an ECI/GitHub correlation extension, **not** a
-Required OTel SemConv attribute. When GitHub provides `html_url`, it is
+correlation. Raw GitHub Run ID and Attempt remain in `facts.*`,
+`coverage.expected_trace`, and the independent API Witness. Schema 9 omits the
+unregistered `github.actions.run_attempt` attribute. Consumers must compare
+the complete composite ID against the independently declared Run and Attempt,
+then reconcile the Trace/Span IDs with that witness; comparing only the Run
+prefix loses Attempt binding. When GitHub provides `html_url`, it is
 emitted as Recommended `cicd.pipeline.run.url.full`.
 
 Job conclusion never becomes Pipeline result. Selection / Required /
@@ -138,6 +141,70 @@ pages are read, every returned Job is checked for a provided `run_id` or
 not skip a mismatched or illegal membership field.
 
 ## Export
+
+### Attribute contract (schema 9)
+
+The upstream identity belongs to #74's shared
+[`engineering_ci.semconv_registry` record](https://github.com/dymzz/engineering-ci/blob/94996d6cc28e73a9862003b836a6ad3b3fe9996b/src/engineering_ci/semconv_registry.py):
+SemConv 1.45.0 at `fb30ca17193b551473b1f43c315482918ab6987c`.
+That record is in unmerged PR #83, outside this Producer's `main` baseline.
+The Producer does not copy its pin, verify a Registry, or elevate its
+`producer.semconv_source.official_registry_verified=false`. The audit below
+uses the original upstream definitions consumed by that existing Checker.
+An OTLP protobuf decode alone proves no SemConv conformity.
+
+R means Resource shared by Traces/Logs and, after the existing Run-identity
+opt-in reduction, Metrics. P/T mean Pipeline/Task Span; L means LogRecord
+attributes; M means Metric datapoint attributes. Attribute presence in the
+catalog does not make it Required on every signal. Native Live validation in
+this repository covers Traces only; it does not establish Logs/Metrics
+semantic validation.
+
+| OTLP field | Location | Native source / mapping | Classification and upstream constraint | Producer handling / consumer |
+| --- | --- | --- | --- | --- |
+| `cicd.pipeline.name` | R, P, M | Attempt API `name` / Actions `GITHUB_WORKFLOW` | Official, string human-readable pipeline name, `cicd/registry.yaml` | Keep; #74 native catalog, #52 source agreement |
+| `cicd.pipeline.run.id` | R, P, T, L; M opt-in | GitHub Run ID + positive Attempt | Official string identifying an execution; upstream does not define GitHub's encoding | Keep existing `{run_id}/{attempt}`; independent Expected/Witness must bind the entire value |
+| `cicd.pipeline.run.url.full` | R, P | Attempt `html_url` / explicit Run URL | Official full Run URL | Keep original; repository path, Run and supplied Attempt suffix must agree |
+| `vcs.repository.url.full` | R | API `repository.html_url`, or supplied server/Run URL origin + `repository.full_name` / `GITHUB_REPOSITORY` | Official string, canonical complete HTTP(S) browser URL; Git URL should omit `.git`, `vcs/registry.yaml` | Use original repository URL when present; verify owner/repo path and all supplied origins; missing origin omits URL with `repository_identity.reason` |
+| `vcs.ref.head.revision` | R, P | API `head_sha` / Actions SHA / explicit mapping | Official string VCS revision, `vcs/registry.yaml` | Keep; source Head SHA remains independently checked; it is not proof of the checked checkout Tree |
+| `cicd.pipeline.result` | P; applicable M | Separate Run `conclusion` | Official enum: success/failure/error/timeout/cancellation/skip | Existing justified mapping; never copy Job or ECI gate state |
+| `cicd.pipeline.task.name` | T, L | Job `name` | Official string human-readable task name | Keep; native Task signal / #52 object agreement |
+| `cicd.pipeline.task.run.id` | T, L | Job `id` | Official string unique within Run | Keep decimal Job identity; missing ID remains explicit omission |
+| `cicd.pipeline.task.run.url.full` | T, L | Job `html_url` | Official complete Task URL; Required on Task Span | Keep source value; missing URL still withholds that Task |
+| `cicd.pipeline.task.run.result` | T, L | Job `conclusion` | Official enum with same six values above | Keep separate Job mapping, no fabricated Run result |
+| `error.type` | P, T; applicable M | Error Run/Job conclusion | Official string, `error/registry.yaml`; conditional error rules apply | Keep for failure/error/timeout; preserve ERROR status and native error-policy findings |
+| `cicd.pipeline.run.state` | M | Explicit phase intervals with Run/Attempt/source | Official enum pending/executing/finalizing | Keep; Job envelope never becomes a phase |
+| `cicd.pipeline.run.duration` | Metric name, Histogram `s` | Proven phase interval end minus start | Official metric, `cicd/metrics.yaml`, duration per state | Existing Histogram/DELTA; absent phases stay `not_observable`; approximate Root never supplies duration |
+| `cicd.pipeline.run.active` | No output | No active-run count source | Official metric, unobservable here | Keep `metrics_not_observable`, emit no invented datapoint |
+| `github.repository` | Former R | Raw owner/repo | Unknown to pinned official catalog; actual Task-only native `missing_attribute` failure | Replace OTLP attribute with sourced URL; preserve raw repository in Candidate/Witness; old Capture remains immutable |
+| `github.actions.run_attempt` | Former R/P/T/L, opt-in Metrics R | Raw Attempt | ECI/GitHub extension, unregistered; #74 historically has a narrowly scoped finding filter | Remove from new OTLP; keep facts, composite Run ID, Expected ID scheme and Source Witness; #74 candidate `94996d6` binds the composite suffix; pre-#83 main Terminal still requires the old extension |
+| `eci.cicd.end_time_quality` | Former P | End precision decision | ECI extension, unregistered; no prior real Root native failure established | Keep `terminal` / `terminal_provenance.end_time_quality`; omit OTLP key |
+| `eci.cicd.exact_run_duration` | Former P | Explicit numeric End vs observation | ECI extension, unregistered | Keep corresponding Candidate/Provenance boolean; no claim of GitHub-certified end |
+| `eci.cicd.duration_valid_for_metrics` | Former P | Root time-quality decision | ECI extension, unregistered | Keep Candidate/Provenance boolean; existing phase-Metric eligibility unchanged |
+| `eci.cicd.root_emission` | Former P/L | explicit_end / approximate_root / not_emitted | ECI extension, unregistered | Keep Terminal/Provenance and rootless log Candidate metadata |
+| `eci.log.source` | Former L | github_job_terminal / github_attempt_terminal | ECI extension, unregistered | Keep `signals.logs[].source` in Candidate; no replacement OTLP attribute |
+| `eci.cicd.time_role` | Former rootless L | terminal_observed_at | ECI extension, unregistered | Keep log Candidate `terminal_provenance.time_role` |
+| `eci.cicd.end_lower_bound_ns` | Former rootless L | Completed Job max end / weak Run start | ECI extension, unregistered | Keep log Candidate and existing Terminal bounds; no exact End invented |
+| `eci.cicd.end_upper_bound_ns` | Former rootless L | Observation after terminal verification | ECI extension, unregistered | Keep log Candidate and existing Terminal bounds |
+| `eci.cicd.uncertainty_ns` | Former rootless L | Upper minus lower bound | ECI extension, unregistered | Keep log Candidate and existing Terminal uncertainty/budget |
+| `eci.cicd.parent_span_exported` | Former rootless L | Root withheld | ECI extension, unregistered | Keep log Candidate boolean and `coverage.withheld_parent_span` |
+| `vcs.repository.name`, `vcs.owner.name` | No output | Splittable owner/repo | Official strings: repository name excludes owner, owner identifies group | Catalog alternatives audited; unnecessary once canonical URL is sourced, so no extra attributes |
+| `traceId`, `spanId`, `parentSpanId`, Span name/kind/start/end/status | Trace protocol fields | Existing stable-ID scheme, real Job bounds, gated Root bounds, result mapping | OTLP protocol fields, not Registry attributes | Encoding unchanged; P=SERVER, T=INTERNAL; success UNSET, errors ERROR; #52 reconciles independent objects |
+| LogRecord body, time, severity, Trace/Span IDs | Logs protocol fields | Existing Job terminal / rootless Attempt observation | OTLP protocol fields; body is bounded event text, not full job output | Same event content/time/association; source and time semantics accompany Candidate rather than custom attributes |
+| Histogram bounds/count/sum/min/max/start/end, scope name | Metrics / instrumentation protocol fields | Existing measured phase and producer label | OTLP protocol fields, not SemConv attribute declarations | Encoding unchanged; persisted scope label `eci_core.cicd_telemetry` has no schema version |
+
+Repository URL validation accepts non-default GitHub Enterprise hosts and ports.
+It rejects credentials, query/fragment-bearing repository origins, malformed
+URLs, conflicting hosts, and a URL path for another repository/Run/Attempt.
+An absent `server_url` never defaults to `github.com`. The raw Source Witness
+is preserved before export and retains its original repository object.
+
+Schema 9's `producer.attribute_contract` names this changed output contract.
+Consumers must bind the Candidate/Terminal Provenance and Capture digests:
+OTLP alone no longer carries ECI time-quality metadata and cannot prove an
+exact Run duration. This introduces no extension Registry, parallel policy,
+or finding filter. It does not change #52's independent Expected/Observed
+reconciliation, #63 admission, or #61 Required authority.
 
 The default report producer name remains `eci_core.cicd_telemetry` for persisted
 evidence compatibility. This is an evidence label, not an import path; Python
@@ -189,7 +256,7 @@ secrets / dispatch inputs; absence of a receiver leaves `rpc_accepted=false`.
 
 | Signal | Source → producer → OTLP | Status |
 | --- | --- | --- |
-| LogRecord | Attempt Job terminal mapped into Task Spans → `ExportLogsServiceRequest` (`eci.log.source=github_job_terminal`) | Emitted for each Task Span; full Job stdout/stderr archives stay on GitHub Actions. gRPC `LogsService.Export` is a separate `otlp_logs_*` claim and does not inherit Trace delivery |
+| LogRecord | Attempt Job terminal mapped into Task Spans → `ExportLogsServiceRequest` (`signals.logs[].source=github_job_terminal` in Candidate) | Emitted for each Task Span; full Job stdout/stderr archives stay on GitHub Actions. gRPC `LogsService.Export` is a separate `otlp_logs_*` claim and does not inherit Trace delivery |
 | `cicd.pipeline.run.duration` | Caller-proven `pending` / `executing` / `finalizing` windows → Histogram, unit `s` | One Histogram datapoint per proven window. A missing window is `not_observable` (`phase_interval_unproven`). The whole Run duration is not recorded as `finalizing`. `cicd.pipeline.run.id` is omitted unless `include_run_entity_metrics` |
 | `cicd.pipeline.run.active` | Current active-run count | `not_observable` (`active_count_unproven`) |
 
