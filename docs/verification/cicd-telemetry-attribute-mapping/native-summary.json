@@ -1,0 +1,112 @@
+{
+  "boundaries": {
+    "issue52_independent_e2e_executed": false,
+    "logs_metrics_semantic_check": false,
+    "post_run_workflow_executed": false,
+    "producer_receiver_delivery": false,
+    "real_root_proven": false,
+    "required": false,
+    "trusted": false
+  },
+  "cases": [
+    {
+      "case": "real-tasks",
+      "gate_exit_code": 0,
+      "kind": "live",
+      "native_exit_code": 0,
+      "native_violations": [],
+      "reason": null,
+      "source_digest": "sha256:5da08f5e432bcae5ef42cb10eccacbeab9941b79684417941fe7e02f02fd5283",
+      "status": "passed",
+      "strict_enforce_api_exit_code": 0
+    },
+    {
+      "case": "unknown-repository",
+      "gate_exit_code": 1,
+      "kind": "live",
+      "native_exit_code": 1,
+      "native_violations": [
+        {
+          "id": "missing_attribute",
+          "message": "Attribute 'github.repository' does not exist in the registry."
+        }
+      ],
+      "reason": "findings",
+      "source_digest": "sha256:3d600021d9ec0918308d2fd7211daeccf66f082abf29524e1f136f0526d43232",
+      "status": "failed",
+      "strict_enforce_api_exit_code": 1
+    },
+    {
+      "case": "unknown-attempt",
+      "gate_exit_code": 1,
+      "kind": "live",
+      "native_exit_code": 1,
+      "native_violations": [
+        {
+          "id": "missing_attribute",
+          "message": "Attribute 'github.actions.run_attempt' does not exist in the registry."
+        }
+      ],
+      "reason": "findings",
+      "source_digest": "sha256:896470ff89908fe67e96b7ca118829db6e92bc4f57b70588ac3469b0ae9b580b",
+      "status": "failed",
+      "strict_enforce_api_exit_code": 1
+    },
+    {
+      "case": "repository-type",
+      "gate_exit_code": 1,
+      "kind": "live",
+      "native_exit_code": 1,
+      "native_violations": [
+        {
+          "id": "type_mismatch",
+          "message": "Attribute 'vcs.repository.url.full' has type 'int'. Type should be 'string'."
+        }
+      ],
+      "reason": "findings",
+      "source_digest": "sha256:60ead895aefd2807cfc807c6e5f6c7d8f312b1f401df34c6bc6992348ad2f2a5",
+      "status": "failed",
+      "strict_enforce_api_exit_code": 1
+    },
+    {
+      "case": "controlled-root",
+      "gate_exit_code": 0,
+      "kind": "terminal",
+      "native_exit_code": 0,
+      "native_violations": [],
+      "reason": null,
+      "source_digest": "sha256:ecbb039f06b9003d76ba11337e5c936718fdb32758c9e5ef4ef6065ac4fa6562",
+      "status": "passed",
+      "strict_enforce_api_exit_code": 0
+    },
+    {
+      "case": "controlled-wrong-attempt",
+      "gate_exit_code": 1,
+      "kind": "terminal",
+      "native_exit_code": 0,
+      "native_violations": [],
+      "reason": "terminal_attempt_mismatch",
+      "source_digest": "sha256:cb24d39d4b97b1f717b5014edb2bcc81de43c1ed04fd3097b014033decba29ef",
+      "status": "failed",
+      "strict_enforce_api_exit_code": 1
+    }
+  ],
+  "checker_commit": "94996d6cc28e73a9862003b836a6ad3b3fe9996b",
+  "checker_git_tree": "d9d9576e6dc4845b5c9038e1455f151ca97c0d78",
+  "checker_source_files_sha256": {
+    ".dagger/src/engineering_ci_module/main.py": "dd6d6578d96f7afd7c62e60f35ba632009131273576d798093cf8b048372f8d6",
+    ".dagger/src/engineering_ci_module/tooling.py": "ca40c13074e9b45eac1a137ef4cb388282317f09680c9bd5de3253e63170b4f0",
+    ".dagger/src/engineering_ci_module/weaver.py": "c40f8cf41d3e60f405ec3b0b2530dbd3c7b3d3c1418b9c59bcb90b5b7776c3db",
+    ".dagger/src/engineering_ci_module/weaver_runtime.py": "23fb9cf4c122e65500582f1815d1fb57d0a2d6e1843e9f84a39761bf06e49fc0",
+    "src/engineering_ci/semconv_registry.py": "43f71db8e3e0d840ec0283873d1a0f311a805459da2f80293ae4f3b1e90c59ac"
+  },
+  "finding_filters": [],
+  "official_registry_record": {
+    "commit": "fb30ca17193b551473b1f43c315482918ab6987c",
+    "git_tree_sha1": "b9a819cdbafe936394bd596bb27c3d929ba24ff4",
+    "repository": "https://github.com/open-telemetry/semantic-conventions",
+    "tree_sha256": "85e58bf616303da0488f2cf86f0bb8f9e91ae5fd45e5b38399fa97a288e10963",
+    "version": "1.45.0"
+  },
+  "real_task_report_api_equals_artifact": true
+}

@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "kind": "live",
+      "mutation": null,
+      "name": "real-tasks",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\real-tasks",
+      "source_archive_sha256": "de9b3a750c83be4869184c08ab5f218f8133b381312b86784bdaf951299cda1a"
+    },
+    {
+      "kind": "live",
+      "mutation": {
+        "added": {
+          "github.repository": {
+            "stringValue": "dymzz/engineering-ci"
+          }
+        },
+        "location": "Resource"
+      },
+      "name": "unknown-repository",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\unknown-repository",
+      "source_archive_sha256": "c39c542da08895ceec078b611de1a3583958cbce9d51f888b72c6358bfc9e003"
+    },
+    {
+      "kind": "live",
+      "mutation": {
+        "added": {
+          "github.actions.run_attempt": {
+            "intValue": "1"
+          }
+        },
+        "location": "Resource"
+      },
+      "name": "unknown-attempt",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\unknown-attempt",
+      "source_archive_sha256": "18643cfe3e0c2bbb95ef163d1325107b70c7e6417a6c09d5cffb43671f7721c3"
+    },
+    {
+      "kind": "live",
+      "mutation": {
+        "location": "Resource",
+        "vcs.repository.url.full": "intValue:75"
+      },
+      "name": "repository-type",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\repository-type",
+      "source_archive_sha256": "0fc7c49ab51525105a3c2e90d3a4a01ff87772c05ecbc3f515bc55704c69cc30"
+    },
+    {
+      "kind": "terminal",
+      "mutation": null,
+      "name": "controlled-root",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\controlled-root",
+      "source_archive_sha256": "938656583f2bad6a464aa3f7b59516bbf63f5524b7babe10fa174b016af8bf09"
+    },
+    {
+      "kind": "terminal",
+      "mutation": {
+        "capture_pipeline_run_id": "75001/1",
+        "declared_attempt": 2
+      },
+      "name": "controlled-wrong-attempt",
+      "source": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\.test-tools\\native-checker\\.artifacts\\producer-attributes\\controlled-wrong-attempt",
+      "source_archive_sha256": "82f1c2b6f0587b82968aa980ca8851243c1382f510b7e355a040f7eb4fd46d1f"
+    }
+  ],
+  "checker_commit": "94996d6cc28e73a9862003b836a6ad3b3fe9996b"
+}
