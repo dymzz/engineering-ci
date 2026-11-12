@@ -50,6 +50,29 @@ engineering-ci hooks run pre-push --repo .
 - **单事件共享不是单 Plan**：一次 pre-push 可有多个独立 Git ref 和 Source/Selection 结果。允许共用事件解析、配置、Source 存储和输入等价的原生 Result，不能将多 ref 简化成只运行一次单 Source Check；结果汇总必须按每 ref/Check 显式保留覆盖关系。
 - **验收衡量整体收益**：真实 Knowledge 与一个非 Knowledge 消费者上比较固定版本 Lefthook、必要时 prek 与原生薄入口；记录检查实际个数、适用集合、并行重叠、总延迟、事件完整性、错误诊断、第三方 Hook 共存和安装可恢复性。不得用跳过检查或牺牲多工具并发换取低延迟。
 
+### 2.4 固定版本成熟调度方案的全局比较（禁止以减少重复为由删除调度能力）
+
+**这是尚未完成的架构决策，不是代码行数、启动依赖或已吸收 Issue 文本所能预先裁决的事项。** 评估对象应是满足相同工程要求的完整端到端方案，而不是“Lefthook 多个独立重建 Source 的错误配置”与“一个薄 Hook 直接调用已优化 ECI”的不对等比较。
+
+| 维度 | A：成熟 Hook 调度器（优先实测 Lefthook）+ ECI | B：prek + ECI | C：Git 原生薄 Hook + ECI |
+| --- | --- | --- | --- |
+| 事件和生命周期 | Lefthook 固定版管理 Hook 安装、条件唤醒、Job 分组/并行/顺序和可视诊断；ECI 管真实 Source/Selection/Result | 核实固定版的 Hook 阶段、文件过滤、环境/并发和安装恢复，再决定任务边界 | Git 只传递事件；多个工具的条件触发、并行、失败汇总、安装恢复必须由**现有**能力或有依据的新增公共机制实现，不能假设天然具备 |
+| 输入身份 | 一次 Event 解析后按 Ref 派生多个 Source/Plan，Job 消费不可变/可核验的同一输入事实 | 同样要求目标 Index/Push Source 与执行字节一致 | 同样要求，薄入口并不能自动保证正确 |
+| 执行拓扑 | 独立读 Check 可并行，真实前置按其产物/状态依赖分组；需要 Dagger DAG 的 Check 交由 #86 | 判断实际并发、顺序与状态回传范围 | 需证明支持全部有效 Check 家族及并行，而不是隐式串行 |
+| 同次去重与跨次复用 | 共享 Source/Config/Plan/Tach 原生结果；对同输入同范围 Check 不重复计算；跨 Run 由 #63 受信 | 同一验证要求 | 同一验证要求 |
+| 运维/风险 | 额外版本/配置/安装成本，已有 Hook/`core.hooksPath` 冲突与误过滤风险需实测 | 工具环境/版本与本项目已有安装器的真实收益和冲突 | 依赖较少但可能把成熟调度功能转化为 ECI 长期维护负担 |
+
+**候选不可被提前排除或默认胜出。** Lefthook 的 `jobs/group.parallel/group.piped` 是成熟的独立执行能力，不代表任意依赖 DAG；Dagger DAG 是计算依赖和原生 Artifact/Cache 的消费拓扑。ECI 不重新实现这些成熟能力，亦不让它们替代 Source/Check 语义。比较中允许多 Check 分发为多个进程；禁止的只是**重复准备相同 Source/选择事实或执行同一 Check**，不是多个 Job 或并行执行。
+
+**必须具体调查的适配协议**（命令/字段在实施 PR 中按真实接口裁决，而非宣布当前已经存在）：
+
+1. **Event prepare：** 唯一消费者读取完整 pre-push stdin 或真实 `GIT_INDEX_FILE`，建立不可变的 Event/逐 Ref Source/Selection/Check 适用结果；独立工作目录/路径/摘要/版本与生命周期需可核验。一次事件 ≠ 一个 Source/Plan。
+2. **Job dispatch：** 成熟调度器可按已准备的适用 Check 描述条件调度互不冲突的 Job；ECI 负责原生命令、Source 绑定和结果内容；Job 可只读共享输入并行，必要前置依赖必须显式。要验证所选 Lefthook 版本是否能原生表达“准备后动态 Job”及其输出传递；**若不具备，则不能虚构动态 API**，应比较静态 Job + ECI 定向适用判断、分组调用和其他成熟替代，而不是直接放弃并行。
+3. **Result collect：** 每个原生 Check 保存 Check ID、被检 Ref/Source、Native Exit、状态、耗时、未运行/不适用原因、输入与结果身份。汇总能展示多 Ref/多 Check 覆盖，不把 Hook 进程 Exit=0 当作所有检查 PASS。
+4. **独立验收/比较：** 用 Knowledge 和至少一个非 Knowledge 真实消费者、相同固定输入与可比较的适用 Tool 矩阵，比较条件唤醒正确性、可并行的实际重叠、关键路径耗时/进程启动成本、Source/Result 复用次数、失败诊断和安装升级卸载。旧结果有效可直接复用；仅为真实新增风险做正反验证。**不以跳过适用检查、减少能力或串行化换取数字更小。**
+
+**来源约束：** Lefthook 官方 `jobs` / `group` 支持并行与 `piped`，但多命令启用 `use_stdin` 时只有一个命令收到完整原始 stdin；必须先消费/持久化原始事件再分发，而非每个独立 Check 自行读 stdin。参考 https://lefthook.dev/configuration/jobs/ 、https://lefthook.dev/configuration/group/ 、https://lefthook.dev/configuration/use_stdin/ 。prek 对比固定版能力参照 https://prek.j178.dev/ 。
+
 ## 3. 现有职责与依赖（以最新 #66 为准）
 
 | 责任 | 当前权威 / 已有资产 |
@@ -156,26 +179,34 @@ engineering-ci hooks run pre-push --repo .
 
 **重要的唤醒条件补足**：`Cargo.toml`/`Cargo.lock`、`pom.xml`/`build.gradle*`、`pyproject.toml`/`uv.lock`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 `glob: "*.rs"` 或 `glob: "*.py"` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
 
-### 7.3 事件入口与共享配置：以单次 Source/Plan 为准（非可执行示意）
+### 7.3 Git Event 与可并行 Check Job 的适配（设计契约；非可部署配置）
 
-- 若采用 Lefthook，`glob` 在 Git 仓根路径上匹配，`root` 还会过滤文件并改变执行目录；共享构建输入不能因仅处在根目录而被子项目 `root` 静默丢失。文件/路径过滤属于保守唤醒，不属于被验证 Source、完整 Analysis Set 或跨 ref 的可信适用性结论。
-- 多语言包可在消费配置中声明 F/P/R/D/E 和全局配置/锁文件影响；从一次公共事件入口接收完整 Git 数据，按真实 ref 分别构造 Source/Selection/Plan，复用等价的输入/原生结果，再由成熟 Hook 调度器与 ECI 原生执行能力按职责分发适用 Checks。**不得**让不同 `--profile` 入口各自重复物化 Index、重新算 Plan 或重复执行 Tach；只有确实独立且不会冒充 ECI Source/Check 覆盖的只读工具，才考虑由 Lefthook 直接管理。
-- 下列 YAML 是 **候选 Lefthook 模式示意**，不是可部署命令，`engineering-ci hooks` 目前不是已交付 CLI：
+**严禁把「单一 Git stdin 接收者」等同于「单一串行 ECI 命令」。** 完整的设计必须评估下列两种可比模式，保持 §6.2 跨生态 Tool 矩阵与 §7.2 各 Check 作用域：
 
-```yaml
-pre-commit:
-  commands:
-    eci-source-bound-checks:
-      run: engineering-ci hooks run pre-commit --repo .
-pre-push:
-  commands:
-    eci-all-ref-checks:
-      use_stdin: true
-      run: engineering-ci hooks run pre-push --repo .
+- **模式 L（优先实测）**：固定版 Lefthook 负责 Hook 生命周期与其可表达的 `jobs`、文件/项目条件触发、互斥/并行分组和可见诊断；ECI 独立提供真实 Git Event/Source、按 Ref 的 Selection/Plan、适用 Check 的原生命令与 Result。各 Job 共享已准备且可核验的 Source/Plan 事实，独立 Check 可以并行；依赖 Check 仅在真实依赖成立时顺序执行。若固定版不支持运行时动态增删 Job，不得自造该功能事实，比较静态 Job + ECI 适用判定、受控 Group 和其他成熟框架。
+- **模式 E（完整对照）**：原生薄 Hook 只传递事件，ECI 负责按 Check 选择/分派并通过现有 Dagger/Host 机制保留必要并行、前置、原生结果和可诊断性。这不是“一个 Python 命令串行跑全部工具”，其并行/生命周期能力及维护成本必须由实测证明。
+- **模式 P（替代）**：prek 的实际固定版本在项目工具管理、批处理并发、过滤和安装恢复上的能力按同一输入/Check 矩阵验证。三者选择的是**一个有效 Hook 生命周期所有者**，不是把调度层与 ECI 检查执行层误认为只能二选一。
+
+预期契约流程（**概念性，不是已实现 CLI/API，也不是宣称 Lefthook 原生支持动态任务注入**）：
+
+```text
+pre-push raw stdin / pre-commit GIT_INDEX_FILE
+       ↓ 单次 Event 解析并保留完整原生输入
+Event Context → 每个 Ref 的 Source / Change / Selection / Check Applicability
+       ↓ 共享已验证的 Source、Config、原生 Tach Result 等
+┌───────────────────────────────────────────────────┐
+│ 成熟 Hook Job 调度：条件唤醒 / 独立 Check 并行        │
+│ 文件级 Tool A  │ 项目级 Tool B │ 关系级 Tool C       │
+│ 需真实 Data/PASS 依赖的 Check → #86 Dagger DAG       │
+└───────────────────────────────────────────────────┘
+       ↓ 各原生 Exit/Report/Artifact + Source/Ref 覆盖身份
+统一结果视图（不合并错误的 Ref 比较输入、不伪造 PASS）
 ```
 
-- 这个设计仍必须在 ECI 内正确解释 `GIT_INDEX_FILE` 和完整 pre-push stdin；不允许用本工作树文件路径或固定 `origin/main` 补足这些输入。Lefthook 可能在过滤后不调用某命令，因此承载全量事件/适用性判定的入口不能依赖会遗漏必要输入的 `glob`/子目录 `root`。
-- 如果最终采用 Git 原生薄 Hook，需要另行证明它如何满足多个 Check 的条件唤醒、并发执行、失败汇总、成本和生命周期要求；若未满足，则不应为了代码少而采用。两种候选的安装权威必须唯一，但 ECI Source/Selection 与成熟 Hook 工具调度可以合理组合。
+**具体限制**：Lefthook `glob/root/staged_files/push_files` 仅是保守唤醒，不能覆盖共享构建配置、锁文件、删除的引用目标和动态数据的完整失效；实际受检字节来自 ECI 目标 Source。一次 pre-push 的原始 stdin 只能由一个 `use_stdin` 接收者可靠取得，其余 Job 消费经核验的 Event/Ref 表示，不允许自行从 HEAD/`origin/main` 推断。并行 Check 只在不会冲突写入同一 Source、结果和文件时启动；格式自动修复与只读验证分开，禁止默认 `stage_fixed` 将 Worktree 字节混入 Index。
+
+**原有单命令 Lefthook YAML** 只能演示事件传递，**不是多工具条件/并行方案的交付设计或推荐最终配置**。下一个实施 PR 必须依据固定版真实支持的选项给出可执行 `lefthook.yml` 与竞争方案的同条件演示，证明各 Tool 被正确唤醒、并行与失败状态可观察、Source/Result 不重复生产，才进行调度器裁决。
+
 
 ### 7.4 配置与判定数据（复用已有 ECI 公共契约）
 
