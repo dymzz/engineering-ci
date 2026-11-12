@@ -7,11 +7,14 @@ authors = [
     { name = "Aurora", email = "dyjane@protonmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "grpcio>=1.70.0",
+    "opentelemetry-proto>=1.45.0",
+    "protobuf>=5.29.0",
+]
 
 [dependency-groups]
 dev = [
-    "opentelemetry-proto>=1.45.0",
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
     "ruff==0.16.10",
