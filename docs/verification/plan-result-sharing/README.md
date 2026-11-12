@@ -6,6 +6,10 @@ Result-sharing implementation: `e71f63eff9368b76016971caa8586c8148c7f350`;
 shared existing test prerequisites: `3b222aac73db11d820b11814bbc88163f68218ba`.
 This is the explicit result-sharing slice, not completion of B or D.
 
+The [aggregation review regression](aggregation/README.md) records the later
+fix for blocked tests combined with an actually failed independent native Check.
+Earlier raw evidence below is retained at its original code revision.
+
 `PlanExecution.artifacts` retains one native Directory. Report and strict
 Enforce only read it. Selected pytest uses the existing execution and bundle
 implementation, replacing the former second Plan-specific pytest runner;

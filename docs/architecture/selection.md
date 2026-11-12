@@ -422,6 +422,14 @@ boundary and run after native collection. A Host source write still refuses
 the old binding; already collected native results describe the immutable input
 before that action, not delivered Host-generated inputs.
 
+After Native and Host collection, the top-level verdict is derived once from
+the retained tests/checks/prerequisites. Actual failure takes precedence over
+local prerequisite blockage; a failed independent Check yields `checks_failed`
+while the unstarted test keeps its own `not_executed` status and reason. Native
+exits, gate exits and artifacts stay in their original child results. Shared
+Source mismatch/write refusals still return through their earlier boundary;
+they are not converted into ordinary local Check aggregation.
+
 Within one composite consumer, hold the object once, retain/export its
 Directory, read its Report, then enforce that same object. A strict call that
 raises cannot simultaneously return an Artifact; retain the earlier reference
