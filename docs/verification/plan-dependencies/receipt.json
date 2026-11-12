@@ -51,7 +51,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/plan-version-plan.json",
-      "report": "cases/plan-version-report.json"
+      "report": "cases/plan-version-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/plan-version.json --source .artifacts/issue86/source --output .artifacts/issue86/plan-version-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "dependency-version": {
       "entry_point": "dagger api call execute-plan",
@@ -62,7 +76,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/dependency-version-plan.json",
-      "report": "cases/dependency-version-report.json"
+      "report": "cases/dependency-version-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/dependency-version.json --source .artifacts/issue86/source --output .artifacts/issue86/dependency-version-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "pass-precondition": {
       "entry_point": "dagger api call execute-plan",
@@ -73,7 +101,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/pass-precondition-plan.json",
-      "report": "cases/pass-precondition-report.json"
+      "report": "cases/pass-precondition-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/pass-precondition.json --source .artifacts/issue86/source --output .artifacts/issue86/pass-precondition-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "missing-producer": {
       "entry_point": "dagger api call execute-plan",
@@ -84,7 +126,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/missing-producer-plan.json",
-      "report": "cases/missing-producer-report.json"
+      "report": "cases/missing-producer-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/missing-producer.json --source .artifacts/issue86/source --output .artifacts/issue86/missing-producer-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "supported-policy": {
       "entry_point": "dagger api call execute-plan",
@@ -95,7 +151,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/supported-policy-plan.json",
-      "report": "cases/supported-policy-report.json"
+      "report": "cases/supported-policy-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/supported-policy.json --source .artifacts/issue86/source --output .artifacts/issue86/supported-policy-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": true,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "exported-git-odb": {
       "entry_point": "dagger api call execute-plan",
@@ -106,7 +176,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/exported-git-odb-plan.json",
-      "report": "cases/exported-git-odb-report.json"
+      "report": "cases/exported-git-odb-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/exported-git-odb.json --source .artifacts/issue86/source --output .artifacts/issue86/exported-git-odb-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "host-write": {
       "entry_point": "dagger api call execute-plan",
@@ -117,7 +201,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/host-write-plan.json",
-      "report": "cases/host-write-report.json"
+      "report": "cases/host-write-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/host-write.json --source .artifacts/issue86/source --output .artifacts/issue86/host-write-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": true,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "invalid-json": {
       "entry_point": "dagger api call execute-plan",
@@ -128,7 +226,21 @@
       "native_cli_exit_code": 0,
       "actual_git_action_exit": null,
       "plan": "cases/invalid-json-plan.json",
-      "report": "cases/invalid-json-report.json"
+      "report": "cases/invalid-json-report.json",
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86/invalid-json.json --source .artifacts/issue86/source --output .artifacts/issue86/invalid-json-result.json",
+        "cli_exit_code": 0
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "execute_plan_cached": false,
+        "interpretation": "returned Result, not proof of fresh tool execution"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      }
     },
     "host-odb-present": {
       "entry_point": "engineering_ci.execution.execute",
@@ -156,11 +268,12 @@
   "source_observation": {
     "before_content_id": "79a1803d2b2e51df82e82b46a61112c2eb925c7f12279ab4704ed5d79c228eb7",
     "independently_reconstructed_after_content_id": "4a7842a727092bb35d9f930451ba77f18efa8d357cd3ba42e113c14e3175cfe5",
-    "actual_host_after_content_id": "4a7842a727092bb35d9f930451ba77f18efa8d357cd3ba42e113c14e3175cfe5",
     "expected_generated_bytes": "actual generated bytes",
     "expected_output_file": "inputs/expected-generated.txt",
     "actual_generated_output_delivered": false,
-    "original_plan_git_identity": "Minimal controlled snapshot=worktree only; no production Commit/Index/PR Merge coverage claim"
+    "original_plan_git_identity": "Minimal controlled snapshot=worktree only; no production Commit/Index/PR Merge coverage claim",
+    "observation_scope": "Returned cached host-write Result and independent byte reconstruction; Origin Execution unattributed",
+    "returned_host_after_content_id": "4a7842a727092bb35d9f930451ba77f18efa8d357cd3ba42e113c14e3175cfe5"
   },
   "production_pre_execution_pass_edges_confirmed": 0,
   "scope": "Draft first A delivery; not all A.1-A.5, B, D, #63 Trusted/cross-Run acceptance or #61 Required/Release",
@@ -184,12 +297,16 @@
     "cases/pass-precondition-report.json": "b460a59b9ed3f142e31fbcc3d0e01c1d9ad3019007b56922c0d249deb2fc932e",
     "cases/plan-version-plan.json": "17363d6cecb44e98d484ec0a5c359c056c52f9fdb9dbd59a631752742c0038f6",
     "cases/plan-version-report.json": "21c36f726b6d3144c067b2c42aeca5d1edc1bc1c5f2c2aadfc861769af0b5e60",
-    "cases/README.md": "d45d7412d6206a3baad4959b1dcf21b32469be2e1256ae3e0e1f2b229a502049",
+    "cases/README.md": "32f731d2ac6a737bf0e0cf18cc7abf3ed485b659d13228058745494bc464f651",
     "cases/supported-policy-plan.json": "d69d8c8c20d0f19bd2d9db4996f99ff723bd33b152e164690b34019e4b461fb2",
     "cases/supported-policy-report.json": "147aa590421b652a0c0082621e211c99690a6d64d3942e905fcd55612419d0bd",
     "inputs/expected-generated.txt": "17f04eb355ffde311b08443110ff4d17cc440dfa1bfe1b762a249906fa289359",
-    "inputs/README.md": "fb42dfb45af07bc39c39b62a9b85ba8892463e07c18f009808e18a28216f7e03",
+    "inputs/README.md": "d29b0451ae99eae921666c806566709471fa584eca81ce56eb1ecf51e046939b",
     "inputs/source/ci-selection.toml": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
     "targeted-tests.txt": "da484458dc179aa3664547b0c2543f87d2d84ae428a70c9f5a08f0cb277e87ff"
+  },
+  "review_correction": {
+    "review": "https://github.com/dymzz/engineering-ci/pull/88#pullrequestreview-5872984551",
+    "meaning": "Separate API invocation, returned Result, cache observation and unattributed Origin Execution; no raw capture rewritten"
   }
 }

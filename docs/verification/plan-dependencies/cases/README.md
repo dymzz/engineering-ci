@@ -13,9 +13,9 @@ does not prove Commit, Index or PR Merge Tree coverage.
 | PASS semantic unsupported in this slice | [Plan](pass-precondition-plan.json) | [Report](pass-precondition-report.json) | `dependency_kind_unsupported`, exit 2; cannot silently ignore the PASS obligation |
 | Missing Producer reference | [Plan](missing-producer-plan.json) | [Report](missing-producer-report.json) | `dependency_producer_invalid`, exit 2 |
 | Malformed JSON | [Input](invalid-json-plan.json) | [Report](invalid-json-report.json) | `plan_invalid`, exit 2 |
-| Supported post-check policy | [Plan](supported-policy-plan.json) | [Report](supported-policy-report.json) | Actual `python -c` command, native exit 0; Report passed |
+| Supported post-check policy | [Plan](supported-policy-plan.json) | [Report](supported-policy-report.json) | Returned native command Result, exit 0; `executePlan` CACHED |
 | Exported Source, original Commit exists | [Plan](exported-git-odb-plan.json) | [Report](exported-git-odb-report.json) | Git action not executed at the export boundary; Report blocked, exit 5 |
-| Host writes source | [Plan](host-write-plan.json) | [Report](host-write-report.json) | Native command exit 0 retained; changed Source refused, Report exit 4 |
+| Host writes source | [Plan](host-write-plan.json) | [Report](host-write-report.json) | Cached `executePlan` Result retains command exit 0 and changed Source refusal, Report exit 4 |
 | Original ODB, Commit present | [Plan](host-odb-present-plan.json) | [Report](host-odb-present-report.json) | Direct Host API, native `git cat-file` exit 0 |
 | Correct ODB, Commit missing | [Plan](host-odb-missing-plan.json) | [Report](host-odb-missing-report.json) | Direct Host API, native `git cat-file` exit 128 and stderr; Report failed |
 
@@ -24,6 +24,12 @@ exit and tool-return terminal chunks for all eight Dagger cases. The output
 reports were copied byte for byte. CLI exit 0 means the API returned a Report;
 its `status` and `exit_code` determine the controlled result. Terminal cursor
 escapes and wrapping are retained. This is not a complete Engine Trace.
+Supported-policy and host-write explicitly show `executePlan` CACHED. These
+API invocations returned native Results; their captures do not prove new
+command executions. Other constructor-level CACHED markers do not establish
+whether a particular tool ran. [receipt.json](../receipt.json) keeps these
+cache observations separate from Origin Execution, which remains unattributed
+here and belongs to #87. Raw Plans, Reports and terminal captures are unedited.
 
 The native calls used this command, with `CASE` replaced by a table entry:
 
@@ -45,8 +51,8 @@ copying the source file there, without silently rewriting the captured Plan.
 Only the Dagger report shape changed at `d396e07`; the Host implementation is
 unchanged. These are not production or trusted prerequisite receipts.
 
-The supported Plan edge maps to the actual native `executePlan` Function,
-then the existing Host adapter's post-check action; its native exit is in
+The supported Plan edge maps to the native `executePlan` Function and the
+existing Host adapter's post-check action Result; the returned native exit is in
 `report.prerequisites[0]`, and the same declaration and original Git binding
 are retained in the outer Report. There is no new data-edge/Artifact node
 claimed by this example. Unsupported PASS declarations do not execute their

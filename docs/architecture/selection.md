@@ -363,6 +363,15 @@ B supplies their consumers; all entry points reject them instead of ignoring
 mandatory semantics. Unknown versions, missing references/conditions and
 changed action overrides are likewise refused.
 
+`plan_declaration_consistent=true` records schema-2 declaration validation
+only. Rejected Plans report false; legacy Plans without the dependency
+contract report null. `source_binding_verified="unknown"` is a separate,
+explicit state: comparing two hashes inside a Plan does not verify the
+configuration bytes, original ODB or Source consumed by a Check. Existing
+tree/input-closure checks retain their narrower meaning. B must consume #66's
+verified Source/Prerequisite handoff and check actual configuration hashes,
+snapshot identity and downstream inputs before claiming that binding.
+
 For exported Source, `source_handoff` preserves original Git identity and the
 actual exported content ID. Git-dependent actions require their real ODB:
 missing/unbound context is not a missing Commit verdict. A Host write to
@@ -370,3 +379,9 @@ exported Source invalidates its old binding before downstream consumers; this
 slice delivers no generated output or trust receipt. Detailed instance scope,
 raw results and remaining handoffs are in the
 [dependency inventory](../verification/plan-dependencies/README.md).
+
+The read-only Dagger API may exit 0 while returning a non-passed Report. Before
+B exposes strict consumers, their native Check/Enforce/CI failure propagation
+must consume both Report status and exit code; an API exit-0/refused-Report
+counterexample must fail that strict entry. A returned Result, especially a
+cached Result, is not proof of a new tool execution in this invocation.
