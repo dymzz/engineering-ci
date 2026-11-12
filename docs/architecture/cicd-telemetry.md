@@ -132,7 +132,10 @@ be a non-negative integer (`bool` is not accepted). A missing, mistyped, or
 negative total is `jobs_total_count_invalid`. A total that changes between
 pages, or a duplicate Job ID, is `jobs_snapshot_inconsistent`. A short page
 that does not reach the declared total is `jobs_page_incomplete`. The producer
-does not declare a complete Attempt Job set without that total.
+does not declare a complete Attempt Job set without that total. After the
+pages are read, every returned Job is checked for a provided `run_id` or
+`run_attempt`. A missing Job ID still enters the omission list, and it does
+not skip a mismatched or illegal membership field.
 
 ## Export
 
@@ -206,11 +209,16 @@ Missing `gh` or API timeouts map to `github_cli_unavailable` /
 
 OTLP `InstrumentationScope` carries the producer name only. `schema_version`
 stays on the candidate report and is not written as `scope.version`.
-`producer.semconv_source` records the Knowledge #80 pin (repository
-`https://github.com/open-telemetry/semantic-conventions`, version `1.45.0`,
-commit `fb30ca17193b551473b1f43c315482918ab6987c`) with `identity_verified`
-false until the registry digest for that same commit is supplied. Changing the
-declared version does not make the citation verified.
+`producer.semconv_source` lists the groups this producer maps
+(`group_ids_role=producer_mapping`). It does not copy a second official
+repository, version, or commit. `official_source_pinned` and
+`official_registry_verified` stay false until the shared registry record from
+the #74 fix is in this baseline and a native check has actually run.
+`job_mapping.verification_scope` is `producer_objects`.
+`source_independence_verified` and `observed_capture_verified` stay false.
+`attempt_coverage=complete` means the completed Job set was emitted or legally
+omitted. `task_coverage` stays partial while any Task was omitted.
+`job_url_verified` covers only rows that carried a URL.
 
 Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).

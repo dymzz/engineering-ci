@@ -34,21 +34,14 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = 8
 # Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
 ID_SCHEME = "github-actions-attempt-sha256-v1"
-# Knowledge #80 pin. identity_verified stays false until #74 supplies the
-# registry tree digest for this same commit. This is not a second registry.
-SEMCONV_SOURCE = {
-    "authority": "knowledge-80",
-    "repository": "https://github.com/open-telemetry/semantic-conventions",
-    "version": "1.45.0",
-    "full_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
-    "group_ids": [
-        "span.cicd.pipeline.run.server",
-        "span.cicd.pipeline.task.internal",
-        "metric.cicd.pipeline.run.duration",
-    ],
-    "registry_identity": None,
-    "identity_verified": False,
-}
+# Groups this producer maps. Not an official Required judgment and not a
+# second copy of the SemConv registry pin. The shared registry record belongs
+# to #74; this baseline does not import it.
+PRODUCER_GROUP_IDS = (
+    "span.cicd.pipeline.run.server",
+    "span.cicd.pipeline.task.internal",
+    "metric.cicd.pipeline.run.duration",
+)
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
@@ -659,31 +652,19 @@ def _audit_job_rows(spans, rows):
     identity_ok = not (identity_mismatch or missing or omitted_emitted)
     return {
         "verification_scope": "producer_objects",
+        "source_independence_verified": False,
+        "observed_capture_verified": False,
         "identity_ok": identity_ok,
         "job_url_verified": bool(url_rows)
         and url_matched == url_rows
         and not url_mismatch,
+        "url_checked": url_rows,
+        "url_matched": url_matched,
         "identity_mismatch": identity_mismatch,
         "url_mismatch": url_mismatch,
         "missing": missing,
         "omitted_emitted": omitted_emitted,
     }
-
-
-def semconv_citation_verified(citation):
-    """True only when the pinned source itself is verified and the citation matches.
-
-    A copied version string is not verification. The pin stays unverified until
-    the registry digest is supplied for this same commit.
-    """
-    pin = SEMCONV_SOURCE
-    if not pin["identity_verified"] or not isinstance(citation, dict):
-        return False
-    return (
-        citation.get("full_commit") == pin["full_commit"]
-        and citation.get("version") == pin["version"]
-        and citation.get("registry_identity") == pin["registry_identity"]
-    )
 
 
 def _otlp_scope():
@@ -874,10 +855,16 @@ def produce(
             "name": producer,
             "decision": "github_actions_env_or_api_adapter",
             "semconv_note": (
-                "Attribute names follow public CI/CD SemConv Pipeline/Task Run; "
-                "registry version pin is tracked with Knowledge #80/#81"
+                "Attribute names follow public CI/CD SemConv Pipeline/Task Run. "
+                "This candidate does not copy or verify the official registry pin."
             ),
-            "semconv_source": dict(SEMCONV_SOURCE),
+            "semconv_source": {
+                "official_source_pinned": False,
+                "official_registry_verified": False,
+                "registry_check": "not_checked",
+                "group_ids": list(PRODUCER_GROUP_IDS),
+                "group_ids_role": "producer_mapping",
+            },
             "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
             "id_scheme": ID_SCHEME,
         },
@@ -2553,6 +2540,38 @@ def fetch_attempt_jobs(api_get, jobs_path):
     }
 
 
+def _membership_int(value):
+    """Parse a provided Run/Attempt membership field.
+
+    ``None`` means the API omitted the field. A present value that is not an
+    integer, or not decimal text, is ``job_membership_invalid`` rather than an
+    omission.
+    """
+    if value is None:
+        return None
+    if type(value) is int:
+        return value
+    if type(value) is str:
+        text = value.strip()
+        if text and (text.isdigit() or (text[0] == "-" and text[1:].isdigit())):
+            return int(text)
+    raise TelemetryError("job_membership_invalid")
+
+
+def _validate_job_membership(job, *, run_id, run_attempt):
+    """Check provided Job run_id/run_attempt against the fetched Attempt.
+
+    Missing Job ID does not skip this check. Absent membership fields are not
+    invented into a conflict.
+    """
+    observed_run = _membership_int(job.get("run_id"))
+    if observed_run is not None and observed_run != run_id:
+        raise TelemetryError("job_run_mismatch")
+    observed_attempt = _membership_int(job.get("run_attempt"))
+    if observed_attempt is not None and observed_attempt != run_attempt:
+        raise TelemetryError("job_attempt_mismatch")
+
+
 def fetch_github_run_job(
     repository,
     run_id,
@@ -2646,6 +2665,9 @@ def fetch_github_run_job(
     jobs_path = f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
     jobs, jobs_snapshot = fetch_attempt_jobs(api_get, jobs_path)
     raw_pages = jobs_snapshot.pop("raw_pages")
+    for job in jobs:
+        if isinstance(job, dict):
+            _validate_job_membership(job, run_id=run_id, run_attempt=run_attempt)
     jobs_observed_total = len(jobs)
     completed_indexes = [
         index
@@ -2667,18 +2689,8 @@ def fetch_github_run_job(
             }
         )
 
-    def _validate_job_membership(job):
-        if job.get("run_id") is not None and int(job["run_id"]) != run_id:
-            raise TelemetryError("job_run_mismatch")
-        if (
-            job.get("run_attempt") is not None
-            and int(job["run_attempt"]) != run_attempt
-        ):
-            raise TelemetryError("job_attempt_mismatch")
-
     if job_id is not None:
         job = _select_job(jobs, job_id=job_id)
-        _validate_job_membership(job)
         facts = facts_from_github_api_objects(run, job)
         task_facts = [facts]
         selection = "job_id"
@@ -2689,8 +2701,6 @@ def fetch_github_run_job(
         task_facts = []
         for index in completed_indexes:
             job = jobs[index]
-            if job.get("id") is not None:
-                _validate_job_membership(job)
             task_facts.append(
                 (
                     index,

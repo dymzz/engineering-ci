@@ -81,7 +81,11 @@
       "identity_ok": true,
       "job_url_verified": true,
       "missing": [],
+      "observed_capture_verified": false,
       "omitted_emitted": [],
+      "source_independence_verified": false,
+      "url_checked": 3,
+      "url_matched": 3,
       "url_mismatch": [],
       "verification_scope": "producer_objects"
     },
@@ -138,19 +142,17 @@
     "id_scheme": "github-actions-attempt-sha256-v1",
     "name": "eci_core.cicd_telemetry",
     "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
-    "semconv_note": "Attribute names follow public CI/CD SemConv Pipeline/Task Run; registry version pin is tracked with Knowledge #80/#81",
+    "semconv_note": "Attribute names follow public CI/CD SemConv Pipeline/Task Run. This candidate does not copy or verify the official registry pin.",
     "semconv_source": {
-      "authority": "knowledge-80",
-      "full_commit": "fb30ca17193b551473b1f43c315482918ab6987c",
       "group_ids": [
         "span.cicd.pipeline.run.server",
         "span.cicd.pipeline.task.internal",
         "metric.cicd.pipeline.run.duration"
       ],
-      "identity_verified": false,
-      "registry_identity": null,
-      "repository": "https://github.com/open-telemetry/semantic-conventions",
-      "version": "1.45.0"
+      "group_ids_role": "producer_mapping",
+      "official_registry_verified": false,
+      "official_source_pinned": false,
+      "registry_check": "not_checked"
     }
   },
   "reason": "end_time_uncertain",
