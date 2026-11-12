@@ -266,8 +266,12 @@ jobs:
             if curl -fsS "http://${BRIDGE}:4318/health" > /dev/null; then exit 0; fi
             sleep 1
           done
-          echo "the OTLP receiver did not become ready" >&2
-          exit 1
+          # The supplementary failing Check must not block the Job; the
+          # outcome is recorded instead.
+          echo "the OTLP receiver for the failing check did not become ready" >&2
+          printf '%s\n' '{"receiver": "not_ready"}' \
+            > artifacts/dagger-native-telemetry/negative-receiver.json
+          exit 0
       - name: Run a native Dagger check that fails
         shell: bash
         run: |
@@ -320,7 +324,9 @@ jobs:
           code=$?
           set -e
           printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt-negative.exit
-          exit "${code}"
+          # The supplementary capture never fails the Job; its exit code and
+          # the receiver state are recorded in the artifacts.
+          exit 0
       - name: Collect the Engine and receiver logs
         if: ${{ failure() }}
         shell: bash

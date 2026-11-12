@@ -54,7 +54,8 @@ uv run --locked --group dev pytest tests/test_dagger_native_telemetry.py -q
 真实的 `dagger check` → Engine 导出 → OTLP 接收端捕获只能在 CI 产生：本机没有可用的 Dagger
 Engine/CLI 会话。该路径的运行与断言见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)
 的 `dagger-native-telemetry` Job；它跑两次真实 Check——一次通过、一次用一个真实的 lint 失败——
-并为两次各产出一份回执（`receipt.json` 与 `receipt-negative.json`）。已提交的证据摘要见
+并为两次各产出一份回执（`receipt.json` 与 `receipt-negative.json`）。**补充的失败捕获是非致命的**：
+它的接收端没就绪或没有捕获时，结果记进工件而不让 Job 失败；主路径（第一次真实捕获）仍然严格。已提交的证据摘要见
 [Dagger 原生 Trace 捕获证据](dagger-native-telemetry-evidence/README.md)。
 
 未观察到的 Span、缓存结果或接收端身份一律记为 `unknown`，不由命令退出码推断。
