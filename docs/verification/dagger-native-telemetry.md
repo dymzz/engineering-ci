@@ -13,6 +13,7 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | 相同 Trace ID、不同父 Span | 捕获 Span 与传播上下文同 Trace 但父 Span 不同 | `ambiguous`、`reason=trace_id_match_without_propagated_parent`，不绑定 |
 | 捕获属于其他 Trace | 与传播上下文无关 | `unbound`、`reason=no_correlated_span`，保留原生结果 |
 | 声明的 Check 未出现 | 捕获没有该 `dagger.io/check.name` | `unbound`、`reason=check_name_not_observed` |
+| Check 出现但无 Engine session | 捕获有该 Check 名但没有 `dagger.io/session.id` | `unbound`、`reason=engine_session_not_observed`，Check 名相同不构成同源引用 |
 | Check 出现在其他 Trace | 捕获有该 Check 名但不在传播 Trace 内 | `ambiguous`、`reason=check_name_outside_propagated_trace` |
 | 导出侧失败记录 | 只有 exporter 失败输出 | `sent=not_sent`、`reason=exporter_reported_failure` |
 | Required 要求可观察性 | 声明 `--required-observability` 且未绑定 | `status=partial`、`required_observability.satisfied=false`，不因原生结果假通过 |

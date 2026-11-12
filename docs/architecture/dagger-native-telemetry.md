@@ -76,7 +76,7 @@ Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Functi
 | 键 | 来源 | 归因强度 |
 | --- | --- | --- |
 | `w3c_traceparent_propagation` | SDK 注入的 `traceparent` 与捕获 Span 的父 Span 关系 | 强：捕获 Span 直接携带被传播的父 Span ID |
-| `engine_check_attribute` | 捕获 Span 的 `dagger.io/check.name` 等于本次调用的 Check 名 | 中：Engine 自身的 Check 身份 |
+| `engine_check_attribute` | 捕获 Span 的 `dagger.io/check.name` 等于本次调用的 Check 名，且捕获落在同一个 Engine session | 中：Engine 自身的 Check 身份 + 同源引用 |
 | `engine_check_attribute_in_propagated_trace` | 两者同时成立 | 最强 |
 
 **不足以归因：** 相同 Trace ID、相同 Check 名、近似时间窗口、相同 Scope 名。共享 Trace ID 必须再核对实际
@@ -108,6 +108,20 @@ Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outc
   [#63](https://github.com/dymzz/engineering-ci/issues/63) 决定。
 - Dagger Span 不因存在就符合 `cicd.pipeline.*` SemConv；官方 Registry 映射不由本仓改写。
 - 本仓不实现 Collector、不实现 exporter、不保存 Trace 原文；接收端与保留策略属接收方权限。
+
+## 边界与已知限制
+
+这一节把本文件能证明什么、不能证明什么写清楚，避免被读成超出证据的结论。
+
+| 边界 | 事实 |
+| --- | --- |
+| 清单来源 | 上表每行都绑定到 `v1.0.0-beta.16` 的固定源码；标 `unknown` 的三项是**源码未证明**，不是"文档没有"。较新 Dagger 文档不构成证据。 |
+| 静态清单 ≠ 运行时验证 | 上表是**源码级**能力清单。A.1 的真实路径（实际调用 → 原生结果 → 接收端收到的 Span）只能由 CI 产生：起固定 Engine、开 `telemetry.workloadExport`、把 OTLP 端点指向 runner 本机接收端，产出 capture 与回执工件。本机没有可用的 Engine 会话。 |
+| 现有 Receiver 的限制 | 仓库内已固定的原生 Receiver 是 Weaver 自身的 live-check 接收端，语义是 **replay**（`weaver_runtime.py` 每次导出后立即 `/stop`），不是常驻推送目标。本文件**没有**改它；A.1 用的是 runner 本机临时接收端，属于 CI 验证辅助，不是包内组件，也不是 Telemetry Store。 |
+| 判定强度 | `engine_check_attribute` 必须在**同一个 Engine session**（`dagger.io/session.id`）的捕获里成立，否则 `unbound`（`engine_session_not_observed`）。Check 名相同但来源不同不构成同源引用。相同 Trace ID 单独出现时永远是 `ambiguous`。 |
+| A → B 交接 | `binding.basis` 的取值（`w3c_traceparent_propagation` / `engine_check_attribute` / `engine_check_attribute_in_propagated_trace`）就是交给 B.1 的 `correlation_basis` 结论来源；B.1 消费它，不需要重新推导阶段。 |
+| 缓存观察 | 回执只记录 `dagger.io/cache.outcome` 的**实际观察值**。准备节点命中与工具实际执行必须分别记录，不得把单个节点的命中上升为整个 Check 的状态。 |
+| 接收端接受 | Engine 侧明确声明"接收端接受不是 Engine 侧持久保证"；`sent=sent` 的依据是接收端确实收到，不是引擎的 flush 承诺。 |
 
 ## 相关
 
