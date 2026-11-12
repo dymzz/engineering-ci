@@ -561,9 +561,78 @@ def test_native_entity_evidence_ignores_a_finding_for_another_entity():
         0, json.dumps(violated), expected, terminal=True, capture=capture
     )
     evidence = weaver_runtime.native_entity_rule_evidence(
-        failed["native_report"], ["cicd.pipeline.run"], {"cicd.pipeline.run.server"}
+        failed["native_report"], ["cicd.pipeline.run"], "cicd.pipeline.run.server"
     )
     assert evidence == []
+
+
+def test_entity_finding_from_another_signal_does_not_prove_pipeline_execution():
+    # A matched Pipeline sample and a matched Task sample; only the Task
+    # carries the Entity Required finding for the Pipeline's entity. The
+    # finding belongs to the Task, so it says nothing about the Pipeline rule.
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    violated = json.loads(json.dumps(report))
+    violated["samples"].append(
+        {
+            "span": {
+                "trace_id": "1" * 32,
+                "span_id": "3" * 16,
+                "start_time": "2026-11-10T00:00:00Z",
+                "end_time": "2026-11-10T00:00:01Z",
+                "live_check_result": {
+                    "match_info": {
+                        "signal_matcher": "task",
+                        "signal": "cicd.pipeline.task.internal",
+                        "unmatched": False,
+                    },
+                    "all_advice": [_entity_required_advice()],
+                },
+            }
+        }
+    )
+    violated["statistics"]["advice_level_counts"]["violation"] = 1
+    failed = weaver.otlp_result(
+        0, json.dumps(violated), expected, terminal=True, capture=capture
+    )
+    # The Task finding still fails the native Gate.
+    assert failed["status"] == "failed"
+    assert failed["reason"] == "findings"
+    evidence = weaver_runtime.native_entity_rule_evidence(
+        failed["native_report"], ["cicd.pipeline.run"], "cicd.pipeline.run.server"
+    )
+    assert evidence == []
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {"version": "1.45.0"}, "expected_matchers": ["pipeline"]},
+        evaluation=failed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+    )
+    assert coverage["resource_required"] == "not_verified"
+    assert coverage["resource_required_native_evidence"] == []
+    assert coverage["resource_required_entities"] == ["cicd.pipeline.run"]
+
+
+def test_declared_association_without_a_matched_pipeline_signal_says_not_matched():
+    # The Registry does declare the association; this run matched only the
+    # Task signal, so the basis must not claim the Registry lacks it.
+    report = json.loads(payload())
+    report["samples"][0]["span"]["live_check_result"]["match_info"] = {
+        "signal_matcher": "task",
+        "signal": "cicd.pipeline.task.internal",
+        "unmatched": False,
+    }
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {"version": "1.45.0"}, "expected_matchers": ["task"]},
+        evaluation={"native_report": report},
+        advice_meta={"sha256": "abc"},
+        kind="live",
+        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+    )
+    assert coverage["resource_required"] == "not_applicable"
+    assert coverage["resource_required_basis"] == "pipeline_signal_not_matched"
+    # The declaration is preserved as read.
+    assert coverage["resource_required_entities"] == ["cicd.pipeline.run"]
 
 
 def test_time_provenance_separates_absent_timestamps_from_whole_seconds():

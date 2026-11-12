@@ -171,14 +171,20 @@ def _collect_entity_associations(manifest, declared):
 # Native advice id Weaver emits when an Entity Required attribute is absent.
 _NATIVE_ENTITY_REQUIRED_FINDING = "entity_required_attribute_not_present"
 
+# The CI/CD Pipeline span group the Resource Required coverage reasons about.
+PIPELINE_SIGNAL = "cicd.pipeline.run.server"
 
-def native_entity_rule_evidence(native_report, entities, matched_signals):
+
+def native_entity_rule_evidence(native_report, entities, expected_signal):
     """Native findings proving a declared Entity Required rule actually ran.
 
     Weaver reports an Entity Required rule only when it is violated, so that
-    finding is the native evidence that the rule was applied to the matched
-    signal. Its absence proves nothing: the rule may have run and passed.
-    This never re-implements the SemConv Required judgement.
+    finding is the native evidence that the rule was applied. Its absence
+    proves nothing: the rule may have run and passed.
+
+    A finding must belong to the target signal itself. A finding on another
+    matched signal says nothing about this rule, even when both signals carry
+    the same entity. This never re-implements the SemConv Required judgement.
     """
     found = []
     for sample in (native_report or {}).get("samples") or []:
@@ -188,7 +194,7 @@ def native_entity_rule_evidence(native_report, entities, matched_signals):
         result = body.get("live_check_result") or {}
         match = result.get("match_info") or {}
         signal = match.get("signal")
-        if not isinstance(signal, str) or signal not in matched_signals:
+        if not isinstance(signal, str) or signal != expected_signal:
             continue
         for advice in result.get("all_advice") or []:
             if not isinstance(advice, dict):
@@ -391,7 +397,7 @@ def coverage_from_execution(
             matched_signals.add(signal)
         if isinstance(matcher, str) and matcher:
             matched_matchers.add(matcher)
-    cicd_pipeline = "cicd.pipeline.run.server" in matched_signals
+    cicd_pipeline = PIPELINE_SIGNAL in matched_signals
     cicd_task = "cicd.pipeline.task.internal" in matched_signals
     cicd_applicable = cicd_pipeline or cicd_task
     official_verified = bool((official_source or {}).get("verified"))
@@ -406,21 +412,28 @@ def coverage_from_execution(
     # *executed* the Entity Required rule. Only native evidence from this run
     # admits ``executed``; a declared association without such evidence is
     # ``not_verified``, never ``executed`` and never wrongly ``not_applicable``.
-    pipeline_entities = (entity_associations or {}).get("cicd.pipeline.run.server")
+    pipeline_entities = (entity_associations or {}).get(PIPELINE_SIGNAL)
     native_report = (evaluation or {}).get("native_report") or {}
     resource_evidence = []
-    if not cicd_pipeline or not pipeline_entities:
+    if not pipeline_entities:
         resource_status = "not_applicable"
-        resource_entities = list(pipeline_entities or [])
+        resource_entities = []
         resource_basis = (
             "pinned_semconv_declares_no_entity_association_for_pipeline_span"
             if official_verified
             else "registry_declares_no_entity_association_for_pipeline_span"
         )
+    elif not cicd_pipeline:
+        # The Registry does declare the association; this run simply did not
+        # match the Pipeline signal, so no rule was applicable here. The
+        # declaration is kept as read.
+        resource_status = "not_applicable"
+        resource_entities = list(pipeline_entities)
+        resource_basis = "pipeline_signal_not_matched"
     else:
         resource_entities = list(pipeline_entities)
         resource_evidence = native_entity_rule_evidence(
-            native_report, pipeline_entities, matched_signals
+            native_report, pipeline_entities, PIPELINE_SIGNAL
         )
         if resource_evidence:
             resource_status = "executed"

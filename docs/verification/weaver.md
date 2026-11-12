@@ -260,13 +260,26 @@ Registry **declaration** is not proof that the rule was **executed**:
 - `coverage.resource_required_entities` — what the Registry that was read
   declares, keyed by the matched Pipeline span.
 - `coverage.resource_required` — whether the applicable rule was actually
-  executed by the native check in this run: `not_applicable` when no
-  association is declared (or no Pipeline signal matched), `not_verified` when
-  an association is declared but this run produced no native evidence that the
-  rule was applied, and `executed` only when native evidence from the same run
-  shows the Entity Required rule ran. `coverage.resource_required_native_evidence`
-  carries that native evidence, and `coverage.resource_required_basis` records
-  which case applies.
+  executed by the native check in this run. The four cases are distinct and
+  `coverage.resource_required_basis` names which one applies:
+  - `not_applicable` + `pinned_semconv_declares_no_entity_association_for_pipeline_span`
+    / `registry_declares_no_entity_association_for_pipeline_span` — the
+    Registry declares no association for the Pipeline span, so there is no
+    rule to execute.
+  - `not_applicable` + `pipeline_signal_not_matched` — the Registry **does**
+    declare the association, but this run did not match the Pipeline signal,
+    so no rule was applicable. The declaration is kept as read in
+    `resource_required_entities`.
+  - `not_verified` + `entity_association_declared_without_native_execution_evidence`
+    — an association is declared and the Pipeline signal matched, but this run
+    produced no native evidence that the rule was applied.
+  - `executed` + `native_entity_required_finding_observed` — native evidence
+    from the same run shows the Entity Required rule ran.
+- `coverage.resource_required_native_evidence` carries that native evidence
+  (`signal`, `entity_type`, `attribute_key`, `level`, `message`). A finding
+  proves the rule ran **for the target Pipeline signal**: a finding on another
+  matched signal says nothing about this rule, even when both carry the same
+  entity.
 
 Weaver reports an Entity Required rule only when it is violated, so that
 finding is the native evidence; its absence proves nothing, and ECI does not
