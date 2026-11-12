@@ -1,0 +1,265 @@
+{
+  "binding": {
+    "binding_keys": [
+      "check_function",
+      "check_selector"
+    ],
+    "binding_proves": [
+      "invocation_call_and_cache_outcome",
+      "origin_tool_execution"
+    ],
+    "binding_reason": null,
+    "binding_status": "bound",
+    "correlation_basis": "engine_check_selector",
+    "correlation_key": null,
+    "declared_check_name": "lint",
+    "engine_instance_ids": [
+      "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+    ],
+    "session_ids": [
+      "0whcnhlz97llmxem55ljcri6s",
+      "e4vn79ztts02a8laajzqpp8d8"
+    ]
+  },
+  "cache_observation_scope": {
+    "observed": [
+      "executed"
+    ],
+    "reason": "cache_outcome_on_the_bound_call_only",
+    "scope": [
+      "EngineeringCi.lint",
+      "dag://?check=lint",
+      "engineering-ci:EngineeringCi.lint"
+    ],
+    "status": "observed_execution"
+  },
+  "capabilities": [
+    {
+      "detail": "dagger-module.toml pins engineVersion; CI derives the CLI version from it and starts registry.dagger.io/engine with it.",
+      "key": "engine_version_pinned",
+      "source": "dagger-module.toml:.github/workflows/ci.yml:.github/workflows/reusable-python-ci.yml",
+      "status": "available"
+    },
+    {
+      "detail": "The generated SDK carries no version marker; its version is the engine that generated it.",
+      "key": "sdk_version_marker",
+      "source": ".dagger/sdk/src/dagger/client/gen.py",
+      "status": "not_available"
+    },
+    {
+      "detail": "The engine exports its own spans when its config file sets telemetry.workloadExport and the standard OTLP environment names an endpoint. Every signal the export carries needs an endpoint of its own, and a missing one is fatal at engine startup rather than a disabled export.",
+      "key": "engine_workload_export",
+      "source": "engine/config/config.go::TelemetryConfig:engine/telemetry/workload_export.go::NewWorkloadExport:cmd/engine/main.go",
+      "status": "available"
+    },
+    {
+      "detail": "The workload export speaks OTLP over grpc or http/protobuf, selected by OTEL_EXPORTER_OTLP_TRACES_PROTOCOL or OTEL_EXPORTER_OTLP_PROTOCOL.",
+      "key": "engine_export_protocol",
+      "source": "engine/telemetry/workload_export.go::workloadExportProtocol",
+      "status": "available"
+    },
+    {
+      "detail": "The workload export carries spans and workload readings. It never exports logs.",
+      "key": "engine_export_signals",
+      "source": "engine/telemetry/workload_export.go",
+      "status": "available"
+    },
+    {
+      "detail": "Receiver acceptance is not an engine-side durability guarantee; the export uses bounded queues and a batch processor.",
+      "key": "engine_export_durability",
+      "source": "engine/telemetry/workload_export.go::WorkloadExport",
+      "status": "partial"
+    },
+    {
+      "detail": "The pinned sources set dagger.io/check.name and dagger.io/check.passed on the Check span, but the observed v1.0.0-beta.16 run emitted neither. The Check identity was carried by the Span names instead.",
+      "key": "engine_check_attribute",
+      "source": "dagger/otel-go attrs.go::CheckNameAttr:core/checks.go:unresolved:engine_check_attribute_observed",
+      "status": "partial"
+    },
+    {
+      "detail": "The observed run identified the Check through the Span names: the CLI selector dag://?check=<name>, the module function call <module>:<object>.<function> and the call's core span <object>.<function>.",
+      "key": "engine_check_identity_by_span_name",
+      "source": "observed:v1.0.0-beta.16-native-capture",
+      "status": "available"
+    },
+    {
+      "detail": "Engine spans carry the cache contract and outcome: dagger.io/cache.contract, dagger.io/cache.outcome (hit/executed/joined/uncached) and dagger.io/cache.hit.route.",
+      "key": "engine_cache_observation",
+      "source": "engine/telemetryattrs/attrs.go",
+      "status": "available"
+    },
+    {
+      "detail": "The pinned generated SDK configures OpenTelemetry from OTEL_* environment variables and exports traces only.",
+      "key": "sdk_module_telemetry",
+      "source": ".dagger/sdk/src/dagger/telemetry.py",
+      "status": "available"
+    },
+    {
+      "detail": "The pinned SDK depends on opentelemetry-exporter-otlp-proto-http, so native trace export is OTLP/HTTP with protobuf encoding.",
+      "key": "sdk_trace_exporter_transport",
+      "source": ".dagger/sdk/pyproject.toml",
+      "status": "available"
+    },
+    {
+      "detail": "The pinned SDK initialises traces exporters only; metrics and logs are skipped on purpose.",
+      "key": "sdk_metric_and_log_export",
+      "source": ".dagger/sdk/src/dagger/telemetry.py::_initialize",
+      "status": "not_available"
+    },
+    {
+      "detail": "The pinned SDK reads TRACEPARENT, attaches that context and injects traceparent into its GraphQL requests.",
+      "key": "sdk_context_propagation",
+      "source": ".dagger/sdk/src/dagger/telemetry.py::_DaggerPropagationConfigurator:.dagger/sdk/src/dagger/client/_session.py::TelemetryTransport",
+      "status": "available"
+    },
+    {
+      "detail": "OTEL_EXPORTER_OTLP_TRACES_LIVE switches the pinned SDK to a span processor that exports on start instead of on end.",
+      "key": "sdk_live_span_export",
+      "source": ".dagger/sdk/src/dagger/telemetry.py::LiveSpanProcessor",
+      "status": "available"
+    }
+  ],
+  "claims": {
+    "exporter_configured": true,
+    "native_check_result": true,
+    "receiver_observed": true,
+    "sent": "sent",
+    "source_associated": true
+  },
+  "coverage": {
+    "cache_outcomes": [
+      "executed",
+      "hit",
+      "uncached"
+    ],
+    "check_names": [],
+    "engine_instance_ids": [
+      "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+    ],
+    "scopes": [
+      "dagger.io/core",
+      "dagger.io/dagql",
+      "dagger.io/engine.buildkit",
+      "dagger.io/engine.server",
+      "dagger.io/filesync",
+      "dagger.io/util/parallel"
+    ],
+    "service_names": [
+      "dagger-engine"
+    ],
+    "session_ids": [
+      "0whcnhlz97llmxem55ljcri6s",
+      "e4vn79ztts02a8laajzqpp8d8"
+    ],
+    "signal_scope": [
+      "traces"
+    ],
+    "span_names": [
+      "EngineeringCi.lint",
+      "dag://?check=lint",
+      "engineering-ci:EngineeringCi.lint"
+    ],
+    "spans_bound": 3,
+    "spans_observed": 1324,
+    "trace_ids": [
+      "17719294ec85ebaab2b4b429028e3e64",
+      "df5438c8966cf89e5776ccb5a705d9b0"
+    ],
+    "unobserved_reason": null
+  },
+  "evidence_class": "candidate_record",
+  "exporter": {
+    "engine": {
+      "configured": true,
+      "detail": {
+        "config_observed": true,
+        "config_path": "/home/runner/work/_temp/engine.json",
+        "endpoint_required": true,
+        "logs_exported": false,
+        "workload_export_enabled": true
+      },
+      "endpoint": "http://172.17.0.1:4318/v1/traces",
+      "endpoint_kind": "explicit",
+      "protocol": "http/protobuf",
+      "scope": "engine_workload",
+      "service_name": "dagger-engine",
+      "signals": [
+        "traces",
+        "metrics"
+      ],
+      "source": "engine_config"
+    },
+    "sdk": {
+      "configured": false,
+      "detail": {
+        "live_export": false,
+        "protocol_variable_ignored": false,
+        "sdk_disabled": false,
+        "traceparent": null
+      },
+      "endpoint": null,
+      "endpoint_kind": "none",
+      "protocol": "http/protobuf",
+      "scope": "sdk_module_client",
+      "service_name": "dagger-python-sdk",
+      "signals": [
+        "traces"
+      ],
+      "source": "process_environment"
+    }
+  },
+  "exporter_error_ref": null,
+  "invocation": {
+    "actual_invocation_ref": "dagger check --engineering-ci --check=lint (negative)",
+    "check_or_function_ref": null,
+    "source_binding_ref": null
+  },
+  "kind": "engineering-ci-dagger-telemetry",
+  "native_check_result": {
+    "check": "lint",
+    "exit_code": 1,
+    "invocation": "dagger check --engineering-ci --check=lint (negative)"
+  },
+  "native_result_or_bundle_ref": {
+    "path": "artifacts/dagger-native-telemetry/native-result-negative.json",
+    "sha256": "e944af4dc41f131f18335eb55e682a50529eda6c569d317b2dbaf6e26f7bcf14",
+    "source": "native_result"
+  },
+  "observed_trace_span_ids": [
+    "1f368915071b7dd4",
+    "64923ea49ad3c3f5",
+    "ce01ac174a5430ec"
+  ],
+  "origin_execution": {
+    "cache_outcome": "executed",
+    "cache_result_id": "8318",
+    "new_tool_execution": true,
+    "reason": "cache_outcome_executed",
+    "ref": "ce01ac174a5430ec",
+    "status": "current_execution"
+  },
+  "pinned": {
+    "engine_version": "v1.0.0-beta.16",
+    "sdk_dependency": "dagger-io (local path .dagger/sdk, editable)",
+    "sdk_source": ".dagger/sdk/src/dagger/telemetry.py",
+    "sdk_version": null
+  },
+  "producer": {
+    "decision": "Record the pinned Dagger native OTel export/receive path for one invocation. No spans are produced here.",
+    "name": "eci_core.dagger_telemetry"
+  },
+  "raw_trace_ref": {
+    "path": "artifacts/dagger-native-telemetry/capture-negative.json",
+    "receiver": "otlp-http-receiver:4318 (negative)",
+    "sha256": "a9f2ba4eb56e2dcd8c1a5fcd5010710f4d0addd716b85eba7f135af7378e93c0"
+  },
+  "reason": null,
+  "required_observability": {
+    "declared": false,
+    "satisfied": true
+  },
+  "schema_version": 1,
+  "sent_basis": "receiver_observation",
+  "source": "dagger_native_otel",
+  "status": "produced"
+}

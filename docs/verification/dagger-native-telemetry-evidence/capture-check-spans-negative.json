@@ -1,0 +1,342 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "0whcnhlz97llmxem55ljcri6s"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/dagql"
+          },
+          "spans": [
+            {
+              "traceId": "df5438c8966cf89e5776ccb5a705d9b0",
+              "spanId": "64923ea49ad3c3f5",
+              "name": "engineering-ci:EngineeringCi.lint",
+              "kind": 1,
+              "startTimeUnixNano": "1794499947282557153",
+              "endTimeUnixNano": "1794499947282579587",
+              "attributes": [
+                {
+                  "key": "wcprof.op.kind",
+                  "value": {
+                    "stringValue": "call_exec"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.digest",
+                  "value": {
+                    "stringValue": "xxh3:4300a349b6320eab"
+                  }
+                },
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "ukosqef672k2t1cs0p791q6zg"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "ce01ac174a5430ec"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "0whcnhlz97llmxem55ljcri6s"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/core"
+          },
+          "spans": [
+            {
+              "traceId": "df5438c8966cf89e5776ccb5a705d9b0",
+              "spanId": "ce01ac174a5430ec",
+              "name": "EngineeringCi.lint",
+              "kind": 1,
+              "startTimeUnixNano": "1794499947282428650",
+              "endTimeUnixNano": "1794499947282817054",
+              "attributes": [
+                {
+                  "key": "dagger.io/dag.digest",
+                  "value": {
+                    "stringValue": "xxh3:4300a349b6320eab"
+                  }
+                },
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "ukosqef672k2t1cs0p791q6zg"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.content_preferred_digest",
+                  "value": {
+                    "stringValue": "xxh3:7f172593699eb495"
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.contract",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.outcome",
+                  "value": {
+                    "stringValue": "executed"
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.result.id",
+                  "value": {
+                    "stringValue": "8318"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "b6af6868fbc84c6b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "0whcnhlz97llmxem55ljcri6s"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/dagql"
+          },
+          "spans": [
+            {
+              "traceId": "df5438c8966cf89e5776ccb5a705d9b0",
+              "spanId": "e7ce001ba41c9a35",
+              "name": "Check.sync",
+              "kind": 1,
+              "startTimeUnixNano": "1794499947282968752",
+              "endTimeUnixNano": "1794499949055989119",
+              "attributes": [
+                {
+                  "key": "wcprof.op.kind",
+                  "value": {
+                    "stringValue": "call_exec"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.digest",
+                  "value": {
+                    "stringValue": "xxh3:0cc919cceff3b0c3"
+                  }
+                },
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "ukosqef672k2t1cs0p791q6zg"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "1f368915071b7dd4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "0whcnhlz97llmxem55ljcri6s"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/util/parallel"
+          },
+          "spans": [
+            {
+              "traceId": "df5438c8966cf89e5776ccb5a705d9b0",
+              "spanId": "1f368915071b7dd4",
+              "name": "dag://?check=lint",
+              "kind": 1,
+              "startTimeUnixNano": "1794499947109009878",
+              "endTimeUnixNano": "1794499949056136270",
+              "attributes": [
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "ukosqef672k2t1cs0p791q6zg"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2
+              },
+              "parentSpanId": "16fd538282cd2a8f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
