@@ -261,11 +261,14 @@ def capability_inventory() -> tuple[Capability, ...]:
             detail=(
                 "The engine exports its own spans when its config file sets "
                 "telemetry.workloadExport and the standard OTLP environment "
-                "names an endpoint."
+                "names an endpoint. Every signal the export carries needs an "
+                "endpoint of its own, and a missing one is fatal at engine "
+                "startup rather than a disabled export."
             ),
             source=(
                 "engine/config/config.go::TelemetryConfig"
                 ":engine/telemetry/workload_export.go::NewWorkloadExport"
+                ":cmd/engine/main.go"
             ),
         ),
         Capability(

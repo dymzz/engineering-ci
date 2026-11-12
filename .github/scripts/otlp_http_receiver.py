@@ -119,6 +119,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
+        if not self.path.endswith("/v1/traces"):
+            # The engine's workload export also pushes metrics. They are not
+            # part of the trace evidence, so they are accepted and ignored.
+            self._respond()
+            return
         request = ExportTraceServiceRequest()
         request.ParseFromString(body)
         with LOCK:
@@ -126,6 +131,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Rewrite the capture after every push, so the recorded spans survive
         # an abrupt end of the process.
         write_output(self.server.output)
+        self._respond()
+
+    def _respond(self):
         payload = ExportTraceServiceResponse().SerializeToString()
         self.send_response(200)
         self.send_header("Content-Type", "application/x-protobuf")

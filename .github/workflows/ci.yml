@@ -172,33 +172,53 @@ jobs:
           printf '%s\n' '{"telemetry": {"workloadExport": true}}' > "$RUNNER_TEMP/engine.json"
           printf '%s\n' "http://${BRIDGE}:4318/v1/traces" > artifacts/dagger-native-telemetry/engine-endpoint.txt
           docker volume create dagger-engine-data
+          # The workload export needs an endpoint for every signal it exports.
+          # A missing one is fatal at engine startup, not a disabled export.
           docker run --pull=missing -d \
             --name dagger-engine \
             --privileged \
             -v dagger-engine-data:/var/lib/dagger \
             -v "$RUNNER_TEMP/engine.json:/etc/dagger/engine.json:ro" \
             -e OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://${BRIDGE}:4318/v1/traces" \
+            -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://${BRIDGE}:4318/v1/metrics" \
             -e OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
             "registry.dagger.io/engine:v${DAGGER_VERSION}"
-      - name: Run a native Dagger check
+      - name: Wait for the Dagger Engine
         shell: bash
         run: |
           set -euo pipefail
           export DAGGER_ENGINE=container://dagger-engine
-          # The installed CLI and the Engine it talks to are the actual
-          # versions behind the pinned engineVersion.
-          dagger version | tee artifacts/dagger-native-telemetry/dagger-version.txt
-          dagger check --engineering-ci --check=lint
-      - name: Record the native trace observation
+          for _ in $(seq 1 60); do
+            if timeout 20 dagger version > artifacts/dagger-native-telemetry/dagger-version.txt 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the Dagger Engine did not become ready" >&2
+          docker logs --tail 100 dagger-engine >&2 || true
+          exit 1
+      - name: Run a native Dagger check
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          export DAGGER_ENGINE=container://dagger-engine
+          dagger check --engineering-ci --check=lint
+          code=$?
+          set -e
+          # The native result stands on its own; the receipt records it and
+          # the Job still fails when the check itself failed.
+          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/check.exit
+          exit 0
+      - name: Record the native trace observation
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
           kill "$(cat artifacts/dagger-native-telemetry/receiver.pid)" 2>/dev/null || true
           for _ in $(seq 1 30); do
             if [[ -s artifacts/dagger-native-telemetry/capture.json ]]; then break; fi
             sleep 1
           done
-          set +e
           uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
             --capture artifacts/dagger-native-telemetry/capture.json \
             --capture-ref "otlp-http-receiver:4318" \
@@ -209,10 +229,24 @@ jobs:
             --invocation-ref "dagger check --engineering-ci --check=lint" \
             --output artifacts/dagger-native-telemetry/receipt.json \
             --json > artifacts/dagger-native-telemetry/receipt.stdout.json
-          code=$?
+          receipt_code=$?
           set -e
-          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt.exit
-          exit "${code}"
+          printf '%s\n' "${receipt_code}" > artifacts/dagger-native-telemetry/receipt.exit
+          check_code="$(cat artifacts/dagger-native-telemetry/check.exit 2>/dev/null || echo 1)"
+          if [[ "${check_code}" != "0" ]]; then
+            echo "the native Dagger check failed with exit ${check_code}" >&2
+            exit "${check_code}"
+          fi
+          exit "${receipt_code}"
+      - name: Collect the Engine and receiver logs
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          docker logs --tail 200 dagger-engine > artifacts/dagger-native-telemetry/engine.log 2>&1
+          docker ps -a --filter name=dagger-engine >> artifacts/dagger-native-telemetry/engine.log 2>&1
+          tail -200 artifacts/dagger-native-telemetry/receiver.log >> artifacts/dagger-native-telemetry/engine.log 2>&1
+          exit 0
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ always() }}
         with:
