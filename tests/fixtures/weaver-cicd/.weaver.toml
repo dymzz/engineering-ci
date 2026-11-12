@@ -3,9 +3,9 @@
 # they resolve. Signal binding still enforces each Span Group's own
 # Required / Conditionally Required attributes.
 #
-# github.actions.run_attempt is an ECI/GitHub Attempt-correlation extension
-# (not SemConv). Filter only that attribute sample's missing_attribute so
-# Terminal can still bind declared Attempt without failing SemConv Live.
+# Attempt correlation uses the suffix of cicd.pipeline.run.id. Do not
+# whitelist unknown attributes. github.repository and
+# github.actions.run_attempt stay native missing_attribute violations.
 [live-check]
 search_all_attributes = true
 
@@ -20,7 +20,3 @@ id = "eci.task"
 sample_type = "span"
 when = 'name == "eci task"'
 signal = "cicd.pipeline.task.internal"
-
-[[live-check.finding_filters]]
-exclude = ["missing_attribute"]
-sample_names = ["github.actions.run_attempt"]

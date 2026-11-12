@@ -54,8 +54,11 @@ dagger api call weaver-artifacts --source tests/fixtures/weaver-cicd --kind live
 ```
 
 `ci-weaver-terminal-attempt-absent.toml` replays the same Registry/matchers with
-`capture-attempt-absent.json` (no `github.actions.run_attempt`) so Terminal fails
+`capture-attempt-absent.json` and `expected-attempt-absent.json`. The Run ID
+is `controlled-42` with no Attempt suffix, so Terminal fails
 `terminal_attempt_correlation_unverified` while native Live can still pass.
+The fixture does not whitelist `github.actions.run_attempt` or
+`github.repository`.
 
 `ci-weaver-terminal-missing-resource-run-id.toml` replays
 `negatives/missing-resource-run-id.json` (Resource without `cicd.pipeline.run.id`)

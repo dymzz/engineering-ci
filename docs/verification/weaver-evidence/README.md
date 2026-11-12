@@ -81,14 +81,18 @@ does not carry is refused with `official_source_version_mismatch`.
 reported separately: `resource_required_entities` is what the Registry declares
 and `resource_required` is whether the native check actually executed the rule
 in this run (`not_applicable` / `not_verified` / `executed`), with
-`resource_required_native_evidence` carrying the native evidence. For this
-fixture it is `not_applicable`, because upstream SemConv 1.45.0 declares no
-entity association for the Pipeline span; the Run-ID requirement is reported
-under `eci_run_id_correlation`, and `terminal_gate_failure_reasons` lists every
-Terminal gate failure reason. `time_provenance` records the observed capture
-and native-sample time sources and precisions; it claims no exact end time and
-no duration. Non-CI/CD fixtures report those obligations as `not_applicable`.
-`passed` applies only to executed applicable obligations.
+`resource_required_native_evidence` carrying the native evidence. The basis
+distinguishes the two `not_applicable` cases: no association declared at all,
+versus an association declared while the Pipeline signal was not matched this
+run (`pipeline_signal_not_matched`). Native evidence must belong to the target
+Pipeline signal — a finding on another matched signal does not prove this rule
+ran. For this fixture it is `not_applicable`, because upstream SemConv 1.45.0
+declares no entity association for the Pipeline span; the Run-ID requirement is
+reported under `eci_run_id_correlation`, and `terminal_gate_failure_reasons`
+lists every Terminal gate failure reason. `time_provenance` records the
+observed capture and native-sample time sources and precisions; it claims no
+exact end time and no duration. Non-CI/CD fixtures report those obligations as
+`not_applicable`. `passed` applies only to executed applicable obligations.
 
 ### Post-completion Plan → `execute-plan` E2E
 

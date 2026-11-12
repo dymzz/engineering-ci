@@ -126,12 +126,11 @@ def test_known_cancellation_result_passes_with_enum_advice_count():
 
 
 def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
+    pipeline_run_id = resource_run_id
+    if attempt_attr is not None:
+        pipeline_run_id = f"{resource_run_id}/{attempt_attr}"
     report = json.loads(payload())
     sample_attrs = [{"name": "cicd.pipeline.result", "value": result}]
-    if attempt_attr is not None:
-        sample_attrs.append(
-            {"name": "github.actions.run_attempt", "value": attempt_attr}
-        )
     report["samples"][0]["span"].update(
         trace_id="1" * 32,
         span_id="2" * 16,
@@ -141,7 +140,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
     )
     expected = {
         "schema_version": 1,
-        "source": {"run_id": "42", "attempt": 1},
+        "source": {"run_id": pipeline_run_id, "attempt": 1},
         "spans": [
             {
                 "trace_id": "1" * 32,
@@ -151,7 +150,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
             }
         ],
         "terminal_evidence": {
-            "run_id": "42",
+            "run_id": pipeline_run_id,
             "attempt": 1,
             "status": "completed",
             "result": result,
@@ -160,13 +159,6 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
     span_attrs = [
         {"key": "cicd.pipeline.result", "value": {"stringValue": result}},
     ]
-    if attempt_attr is not None:
-        span_attrs.append(
-            {
-                "key": "github.actions.run_attempt",
-                "value": {"intValue": str(attempt_attr)},
-            }
-        )
     capture = {
         "resourceSpans": [
             {
@@ -174,7 +166,7 @@ def otlp_payload(*, result="success", attempt_attr=None, resource_run_id="42"):
                     "attributes": [
                         {
                             "key": "cicd.pipeline.run.id",
-                            "value": {"stringValue": resource_run_id},
+                            "value": {"stringValue": pipeline_run_id},
                         }
                     ]
                 },
@@ -220,6 +212,12 @@ def test_otlp_exact_identity_and_terminal_evidence():
     assert again["reason"] == "terminal_attempt_correlation_unverified"
 
 
+def test_cicd_fixture_does_not_whitelist_unknown_attributes():
+    text = Path("tests/fixtures/weaver-cicd/.weaver.toml").read_text(encoding="utf-8")
+    assert "finding_filters" not in text
+    assert "sample_names" not in text
+
+
 def test_terminal_resource_only_run_id_passes():
     report, expected, capture = otlp_payload(attempt_attr=1)
     result = weaver.otlp_result(
@@ -262,6 +260,42 @@ def test_terminal_attempt_extension_cross_check():
     )
     assert bad["status"] == "failed"
     assert bad["reason"] == "terminal_attempt_mismatch"
+    # Same full Run ID, different declared Attempt. The suffix is not rewritten
+    # to match the declaration.
+    same_id, same_expected, same_capture = otlp_payload(attempt_attr=1)
+    same_expected["source"]["attempt"] = 2
+    same_expected["terminal_evidence"]["attempt"] = 2
+    disagreed = weaver.otlp_result(
+        0, json.dumps(same_id), same_expected, terminal=True, capture=same_capture
+    )
+    assert disagreed["status"] == "failed"
+    assert disagreed["reason"] == "terminal_attempt_mismatch"
+    # A different full id for the other Attempt is a Run identity mismatch.
+    other = weaver.otlp_result(
+        0,
+        json.dumps(otlp_payload(attempt_attr=1)[0]),
+        otlp_payload(attempt_attr=2)[1],
+        terminal=True,
+        capture=otlp_payload(attempt_attr=1)[2],
+    )
+    assert other["reason"] == "terminal_run_id_mismatch"
+    # A leftover extension that disagrees with the suffix still fails.
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"].append(
+        {"key": "github.actions.run_attempt", "value": {"intValue": "2"}}
+    )
+    conflict = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert conflict["reason"] == "terminal_attempt_mismatch"
+    capture["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"][-1] = {
+        "key": "github.actions.run_attempt",
+        "value": {"stringValue": "nope"},
+    }
+    invalid = weaver.otlp_result(
+        0, json.dumps(report), expected, terminal=True, capture=capture
+    )
+    assert invalid["reason"] == "terminal_attempt_extension_invalid"
 
 
 def test_terminal_semconv_results_and_mismatch():
@@ -286,7 +320,6 @@ def test_terminal_capture_sample_result_conflict():
     report, expected, capture = otlp_payload(result="success", attempt_attr=1)
     report["samples"][0]["span"]["attributes"] = [
         {"name": "cicd.pipeline.result", "value": "failure"},
-        {"name": "github.actions.run_attempt", "value": 1},
     ]
     conflict = weaver.otlp_result(
         0, json.dumps(report), expected, terminal=True, capture=capture
@@ -561,9 +594,78 @@ def test_native_entity_evidence_ignores_a_finding_for_another_entity():
         0, json.dumps(violated), expected, terminal=True, capture=capture
     )
     evidence = weaver_runtime.native_entity_rule_evidence(
-        failed["native_report"], ["cicd.pipeline.run"], {"cicd.pipeline.run.server"}
+        failed["native_report"], ["cicd.pipeline.run"], "cicd.pipeline.run.server"
     )
     assert evidence == []
+
+
+def test_entity_finding_from_another_signal_does_not_prove_pipeline_execution():
+    # A matched Pipeline sample and a matched Task sample; only the Task
+    # carries the Entity Required finding for the Pipeline's entity. The
+    # finding belongs to the Task, so it says nothing about the Pipeline rule.
+    report, expected, capture = otlp_payload(attempt_attr=1)
+    violated = json.loads(json.dumps(report))
+    violated["samples"].append(
+        {
+            "span": {
+                "trace_id": "1" * 32,
+                "span_id": "3" * 16,
+                "start_time": "2026-11-10T00:00:00Z",
+                "end_time": "2026-11-10T00:00:01Z",
+                "live_check_result": {
+                    "match_info": {
+                        "signal_matcher": "task",
+                        "signal": "cicd.pipeline.task.internal",
+                        "unmatched": False,
+                    },
+                    "all_advice": [_entity_required_advice()],
+                },
+            }
+        }
+    )
+    violated["statistics"]["advice_level_counts"]["violation"] = 1
+    failed = weaver.otlp_result(
+        0, json.dumps(violated), expected, terminal=True, capture=capture
+    )
+    # The Task finding still fails the native Gate.
+    assert failed["status"] == "failed"
+    assert failed["reason"] == "findings"
+    evidence = weaver_runtime.native_entity_rule_evidence(
+        failed["native_report"], ["cicd.pipeline.run"], "cicd.pipeline.run.server"
+    )
+    assert evidence == []
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {"version": "1.45.0"}, "expected_matchers": ["pipeline"]},
+        evaluation=failed,
+        advice_meta={"sha256": "abc"},
+        kind="terminal",
+        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+    )
+    assert coverage["resource_required"] == "not_verified"
+    assert coverage["resource_required_native_evidence"] == []
+    assert coverage["resource_required_entities"] == ["cicd.pipeline.run"]
+
+
+def test_declared_association_without_a_matched_pipeline_signal_says_not_matched():
+    # The Registry does declare the association; this run matched only the
+    # Task signal, so the basis must not claim the Registry lacks it.
+    report = json.loads(payload())
+    report["samples"][0]["span"]["live_check_result"]["match_info"] = {
+        "signal_matcher": "task",
+        "signal": "cicd.pipeline.task.internal",
+        "unmatched": False,
+    }
+    coverage = weaver_runtime.coverage_from_execution(
+        config={"origin": {"version": "1.45.0"}, "expected_matchers": ["task"]},
+        evaluation={"native_report": report},
+        advice_meta={"sha256": "abc"},
+        kind="live",
+        entity_associations={"cicd.pipeline.run.server": ["cicd.pipeline.run"]},
+    )
+    assert coverage["resource_required"] == "not_applicable"
+    assert coverage["resource_required_basis"] == "pipeline_signal_not_matched"
+    # The declaration is preserved as read.
+    assert coverage["resource_required_entities"] == ["cicd.pipeline.run"]
 
 
 def test_time_provenance_separates_absent_timestamps_from_whole_seconds():
