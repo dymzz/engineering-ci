@@ -22,6 +22,26 @@ ModuleSource code-generation API; do not edit generated SDK files.
 `packaging` supplies Matrix version/specifier handling. The actual dependency versions
 are in `.dagger/pyproject.toml` and `.dagger/uv.lock`.
 
+## Dagger native OpenTelemetry export
+
+- **Status:** adopted (the native export path); experimental (ECI's observation receipt)
+- **Pin:** Engine `1.0.0-beta.16` (`dagger-module.toml`); the CLI is installed with the same
+  version through `DAGGER_VERSION` and `dl.dagger.io/dagger/install.sh`; the generated SDK
+  carries no version marker
+- **Used by:** `engineering_ci.dagger_telemetry` (`engineering-ci dagger-telemetry`); the CI
+  Engine container is started without any OTLP configuration today
+- **Contract:** [Dagger native telemetry](../dagger-native-telemetry.md)
+- **Verify:** a real `dagger check` whose exported Spans reach an OTLP receiver, bound to the
+  invocation through the propagated traceparent or the engine's own Check attribute
+- **Verified:** 2026-11-12 @ `95c70be` (capability inventory; the live capture is CI-only)
+
+Native facts of the pinned version: the engine exports its own Spans when
+`/etc/dagger/engine.json` sets `telemetry.workloadExport` and the standard OTLP environment
+names an endpoint (`grpc` or `http/protobuf`); engine Spans carry `dagger.io/check.name`,
+`dagger.io/check.passed` and the `dagger.io/cache.*` contract; the generated SDK exports
+module-client traces over OTLP/HTTP only and propagates `TRACEPARENT` into the engine's
+GraphQL requests. ECI neither re-instruments those Spans nor adds an exporter or a collector.
+
 ## Docker
 
 A working Docker Linux Engine is required locally. PR CI lets the pinned Dagger CLI start

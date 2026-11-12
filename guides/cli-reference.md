@@ -74,6 +74,7 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 | 依赖安全 | `uv run --locked python -m engineering_ci.tools.security ...` |
 | 性能采样 | `uv run --locked python -m engineering_ci.tools.performance ...` |
 | 消费者同步 | `uv run --locked python -m engineering_ci.tools.consumer ...` |
+| Dagger 原生遥测回执 | `uv run --locked python -m engineering_ci.dagger_telemetry --capture ... --output ...` |
 
 Actions 内部操作依赖当前 Workflow 上下文，不是另一套本地发布入口。
 consumer 默认只读，修改/提交/推送由显式参数控制。
