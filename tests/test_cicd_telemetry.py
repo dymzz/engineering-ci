@@ -2388,11 +2388,20 @@ def test_v8_identity_archive_keeps_its_original_bytes():
     assert logs["resourceLogs"][0]["scopeLogs"][0]["scope"] == scope
 
 
-def test_v8_identity_readme_is_a_file_check_not_a_receiver_ack():
-    text = (_ARCHIVED_V8 / "README.md").read_text(encoding="utf-8")
-    assert "schema 8 file identity check" in text
-    assert "schema_version" in text
-    assert "not a new network receipt" in text
-    assert "rpc_accepted` is false" in text
+def test_v8_identity_note_is_a_file_check_not_a_receiver_ack():
+    # The native test Source includes evidence JSON, not Markdown. Verify the
+    # actual archived candidate's note and transport claims in both environments.
+    saved = json.loads((_ARCHIVED_V8 / "candidate.json").read_text(encoding="utf-8"))
+    text = saved["evidence_note"]
     assert "File identity check only. Not a receiver ACK." in text
     assert "42821429094" in text
+    assert saved["evidence_role"] == "file_identity_check"
+    for claim in (
+        "rpc_accepted",
+        "receiver_observed",
+        "otlp_delivered",
+        "github_authenticated",
+        "weaver_pass",
+        "trusted",
+    ):
+        assert saved["claims"][claim] is False
