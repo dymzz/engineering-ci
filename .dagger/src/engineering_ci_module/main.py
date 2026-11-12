@@ -208,7 +208,9 @@ class EngineeringCi:
         try:
             value = json.loads(raw)
         except ValueError:
-            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+            return json.dumps(
+                execution.plan_rejection(execution.ExecutionError("plan_invalid"))
+            )
         try:
             execution.validate_plan(value)
         except execution.ExecutionError as error:
@@ -273,6 +275,9 @@ class EngineeringCi:
             report = {
                 "kind": execution.REPORT_KIND,
                 "schema_version": execution.SCHEMA_VERSION,
+                "dependency_contract": value.get("dependency_contract"),
+                "plan": {"generator": value.get("generator"), "git": git},
+                "execution_context": "dagger_export",
                 "status": "passed",
                 "exit_code": 0,
                 "targets": targets,
