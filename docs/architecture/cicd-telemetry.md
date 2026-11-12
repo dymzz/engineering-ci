@@ -202,8 +202,14 @@ Schema 8 identity fields for that same Run are a file check in
 [cicd-telemetry-real-run-identity-v8](../verification/cicd-telemetry-real-run-identity-v8/README.md).
 
 A complete Attempt fetch writes the raw Attempt payload and Job pages beside
-the candidate (`*.api-pages.json`) and records only page digests, page count,
-and `completeness` on the candidate. `github_authenticated` stays false.
+the candidate (`*.api-pages.json`) before any OTLP file or network export, and
+records only page digests, page count, and `completeness` on the candidate.
+The output directory is created first. A witness write failure does not start
+OTLP export. `github_authenticated` stays false. A page whose length matches
+`total_count` is still refused when a list entry is not a Job object, or when
+`status` is missing or not one of `queued`, `in_progress`, `completed`,
+`waiting`, `requested`, or `pending` (`jobs_payload_invalid`). A real
+noncompleted status stays in the source count and does not become a Task.
 Missing `gh` or API timeouts map to `github_cli_unavailable` /
 `github_api_timeout` (no retry engine).
 

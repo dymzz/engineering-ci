@@ -106,6 +106,11 @@ _RESULT_MAP = {
 }
 
 _JOBS_PAGE_SIZE = 100
+# GitHub Actions workflow job status values. Anything else is not a Job
+# classification and must not be counted as a normal noncompleted Job.
+_GITHUB_JOB_STATUSES = frozenset(
+    {"queued", "in_progress", "completed", "waiting", "requested", "pending"}
+)
 
 
 class TelemetryError(ValueError):
@@ -2522,7 +2527,10 @@ def fetch_attempt_jobs(api_get, jobs_path):
     seen_ids = set()
     for job in jobs:
         if not isinstance(job, dict):
-            continue
+            raise TelemetryError("jobs_payload_invalid")
+        status = job.get("status")
+        if type(status) is not str or status not in _GITHUB_JOB_STATUSES:
+            raise TelemetryError("jobs_payload_invalid")
         job_id = job.get("id")
         if job_id is None:
             continue
@@ -2905,6 +2913,27 @@ def main(argv=None):
     )
     attach_signal_candidates(report)
     attach_otlp_json(report)
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        parser.exit(2, "cicd-telemetry rejected: artifact_flush_failed\n")
+    if github_api_fetched and raw_api_witness is not None:
+        pages_path = args.output.with_name(args.output.name + ".api-pages.json")
+        body = json.dumps(raw_api_witness, indent=2, sort_keys=True).encode() + b"\n"
+        try:
+            pages_path.write_bytes(body)
+        except OSError:
+            parser.exit(2, "cicd-telemetry rejected: api_pages_flush_failed\n")
+        report["source_witness"] = {
+            "kind": "github_attempt_and_job_pages",
+            "path": pages_path.name,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "page_count": (api_jobs_snapshot or {}).get("page_count"),
+            "pages_sha256": (api_jobs_snapshot or {}).get("pages_sha256"),
+            "total_count": (api_jobs_snapshot or {}).get("total_count"),
+            "completeness": (api_jobs_snapshot or {}).get("completeness"),
+            "github_authenticated": False,
+        }
     export_error = None
     if args.otlp_json is not None:
         try:
@@ -2942,23 +2971,6 @@ def main(argv=None):
         except TelemetryError as error:
             export_error = error
             sys.stderr.write(f"cicd-telemetry grpc failed: {error.code}\n")
-    if github_api_fetched and raw_api_witness is not None:
-        pages_path = args.output.with_name(args.output.name + ".api-pages.json")
-        body = json.dumps(raw_api_witness, indent=2, sort_keys=True).encode() + b"\n"
-        try:
-            pages_path.write_bytes(body)
-        except OSError:
-            parser.exit(2, "cicd-telemetry rejected: api_pages_flush_failed\n")
-        report["source_witness"] = {
-            "kind": "github_attempt_and_job_pages",
-            "path": pages_path.name,
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "page_count": (api_jobs_snapshot or {}).get("page_count"),
-            "pages_sha256": (api_jobs_snapshot or {}).get("pages_sha256"),
-            "total_count": (api_jobs_snapshot or {}).get("total_count"),
-            "completeness": (api_jobs_snapshot or {}).get("completeness"),
-            "github_authenticated": False,
-        }
     # Persist candidate after export attempt so claims match actual flush outcome.
     try:
         write_artifact(report, args.output)

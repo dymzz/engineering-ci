@@ -961,6 +961,168 @@ def test_cli_api_fetch_writes_page_witness(tmp_path, monkeypatch):
     assert "raw_pages" not in report["coverage"]["api_jobs_snapshot"]
 
 
+def _api_attempt_get(run, pages):
+    def api_get(path):
+        if "/jobs" in path:
+            return pages
+        if "/attempts/" in path:
+            return run
+        raise AssertionError(path)
+
+    return api_get
+
+
+def test_witness_is_saved_before_a_rejected_export(tmp_path, monkeypatch):
+    run, job = _api_run_job_fixture()
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    pages = {"total_count": 1, "jobs": [job]}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    output = tmp_path / "nested" / "candidate.json"
+    witness = output.with_name(output.name + ".api-pages.json")
+    export = cicd_telemetry.export_otlp_grpc
+
+    class _Partial:
+        rejected_spans = 1
+        error_message = "dropped"
+
+    class _Response:
+        partial_success = _Partial()
+
+    class _Stub:
+        def __init__(self, channel):
+            pass
+
+        def Export(self, request, timeout=None):
+            return _Response()
+
+    def rejecting(report, endpoint, *, insecure=False, **kwargs):
+        assert witness.is_file()
+        return export(
+            report,
+            endpoint,
+            insecure=True,
+            channel_factory=lambda endpoint, insecure=False: object(),
+            stub_factory=_Stub,
+        )
+
+    monkeypatch.setattr(cicd_telemetry, "export_otlp_grpc", rejecting)
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--output",
+            str(output),
+            "--otlp-endpoint",
+            "127.0.0.1:1",
+            "--otlp-insecure",
+        ]
+    )
+    assert code == 3
+    assert witness.is_file()
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert (
+        saved["source_witness"]["sha256"]
+        == hashlib.sha256(witness.read_bytes()).hexdigest()
+    )
+    assert saved["source_witness"]["github_authenticated"] is False
+    assert saved["claims"]["rpc_accepted"] is False
+
+
+def test_uncreatable_output_parent_does_not_export(tmp_path, monkeypatch):
+    run, job = _api_run_job_fixture()
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    pages = {"total_count": 1, "jobs": [job]}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    output = blocker / "candidate.json"
+    sent = []
+
+    def refusing(*_args, **_kwargs):
+        sent.append("export")
+        raise AssertionError("export started")
+
+    monkeypatch.setattr(cicd_telemetry, "export_otlp_grpc", refusing)
+    try:
+        cicd_telemetry.main(
+            [
+                "--repository",
+                "dymzz/engineering-ci",
+                "--run-id",
+                str(run["id"]),
+                "--attempt",
+                "1",
+                "--output",
+                str(output),
+                "--otlp-endpoint",
+                "127.0.0.1:1",
+                "--otlp-insecure",
+            ]
+        )
+        raise AssertionError("expected artifact_flush_failed")
+    except SystemExit as error:
+        assert error.code == 2
+    assert sent == []
+    assert not output.exists()
+    assert not output.with_name(output.name + ".api-pages.json").exists()
+
+
+def test_job_page_count_does_not_accept_invalid_entries():
+    def fetch(jobs):
+        def api_get(_path):
+            return {"total_count": len(jobs), "jobs": jobs}
+
+        try:
+            cicd_telemetry.fetch_attempt_jobs(
+                api_get, "repos/x/y/actions/runs/1/attempts/1/jobs"
+            )
+            raise AssertionError(jobs)
+        except cicd_telemetry.TelemetryError as error:
+            assert error.code == "jobs_payload_invalid"
+
+    fetch([{"id": 1, "status": "completed"}, None])
+    fetch([{"id": 1, "status": "completed"}, "job"])
+    fetch([{"id": 1}])
+    fetch([{"id": 1, "status": ""}])
+    fetch([{"id": 1, "status": "not-a-status"}])
+
+    run, job = _api_run_job_fixture()
+    run["run_attempt"] = 1
+    jobs = [
+        {
+            **job,
+            "id": 11,
+            "status": "completed",
+            "run_id": run["id"],
+            "run_attempt": 1,
+        },
+        {
+            **job,
+            "id": 12,
+            "name": "still-queued",
+            "status": "queued",
+            "conclusion": None,
+            "completed_at": None,
+            "run_id": run["id"],
+            "run_attempt": 1,
+        },
+    ]
+    _facts, coverage = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        run["id"],
+        attempt=1,
+        api_get=_api_attempt_get(run, {"total_count": 2, "jobs": jobs}),
+    )
+    assert coverage["jobs_observed_total"] == 2
+    assert coverage["completed_jobs_total"] == 1
+    assert coverage["noncompleted_jobs_total"] == 1
+    assert coverage["api_jobs_snapshot"]["completeness"] == "complete"
+
+
 def test_missing_job_id_still_checks_provided_membership():
     run, job = _api_run_job_fixture()
     run["run_attempt"] = 1
