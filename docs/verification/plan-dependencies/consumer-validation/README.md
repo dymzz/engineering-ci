@@ -6,6 +6,9 @@ stay separate from real Source binding. Implementation is pinned in
 [receipt.json](receipt.json); it preserves schema 2, legacy readability and
 the previously delivered Git-context/Host-write safeguards.
 
+The subsequent [enum semantics review](enum-semantics.md) records the two
+unknown-value refusals, current producer values and focused native control.
+
 The validator now checks string types before set membership and checks nested
 consumer structures before field access. This includes top-level and nested
 `check_scope`, fallback check names, selected prerequisites, Git fields, input

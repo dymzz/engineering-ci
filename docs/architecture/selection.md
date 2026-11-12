@@ -363,6 +363,19 @@ B supplies their consumers; all entry points reject them instead of ignoring
 mandatory semantics. Unknown versions, missing references/conditions and
 changed action overrides are likewise refused.
 
+Check scope status accepts the current producer's seven values: `selected`,
+`unknown`, `not_applicable`, `targeted`, `escalated`, `no_tests`, `no_changes`.
+The last four describe the test-selection scope; explicit full selection is
+represented as `escalated`. Unknown values refuse with
+`check_scope_status_unsupported`, before a Check can be silently omitted.
+
+Executable snapshot identities are `worktree`, `index`, `commit`, `push`,
+`pr_merge`, `multi`; CLI mode `pr` produces `pr_merge`. Unknown explicit values
+refuse with `git_snapshot_unsupported`. Missing/null legacy snapshot retains
+the existing default: commit when `execution_tree` exists, worktree otherwise.
+The binding helper also refuses unknown modes before querying Git. Accepting
+the `multi` declaration does not enable single-source multi-ref execution.
+
 `plan_declaration_consistent=true` records schema-2 declaration validation
 only. Rejected Plans report false; legacy Plans without the dependency
 contract report null. `source_binding_verified="unknown"` is a separate,
