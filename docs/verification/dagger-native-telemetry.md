@@ -30,7 +30,18 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | 命中缓存 | 捕获 Span 携带 `cache.outcome=hit` | `origin_execution.status=unknown`、`new_tool_execution=false`、缓存观察保留 |
 | 复用指向既有原执行 | 两条回执共享同一 `cache.result.id`，一条为 `executed` | 命中那条 `status=existing_execution` 且 `ref` 指向已证明的那次；两次调用只算一次工具执行 |
 | 复用无既有原执行 | 只有 `hit` 一条回执 | `status=unknown`、`ref` 为空、`new_tool_execution=false` |
-| 缓存观察范围 | 捕获 Span 携带 `dagger.io/cache.outcome` | `coverage.cache_outcomes` 记录实际观察值，不上升为整个 Check 状态 |
+| 缓存观察范围 | 捕获 Span 携带 `dagger.io/cache.outcome` | `cache_observation_scope.status` 用 D-06 词表（`observed_hit` / `observed_execution` / `mixed` / `unknown` / `not_applicable`）并记录 `observed`、`scope`、`reason`；不上升为整个 Check 状态 |
+
+## 定向验收（Issue #87 P0）
+
+| 场景 | 期望 |
+| --- | --- |
+| 同名 Check 连续两次 Invocation | 两次回执各自绑定自己的 Span，互不合并 |
+| 一个 Check 多个 Span | 该 Check 的多个 Span 全部绑定 |
+| 并发不同 Check 的交错 Span | 绑定只取本次 Check 的 Span，不串到别的 Check |
+| 缓存命中但没有新原生工具运行 | `new_tool_execution=false`、原执行来源 `unknown`，不虚构 Origin Execution |
+| 单独 Host Check 无 Dagger Span | `unbound` / `no_capture`，原生结果原样保留 |
+| 原生失败 Result 关联对应 Trace | 失败结果与它的 Trace 仍然绑定；失败不被 Trace 掩盖 |
 
 ## 本地运行
 
@@ -42,7 +53,8 @@ uv run --locked --group dev pytest tests/test_dagger_native_telemetry.py -q
 
 真实的 `dagger check` → Engine 导出 → OTLP 接收端捕获只能在 CI 产生：本机没有可用的 Dagger
 Engine/CLI 会话。该路径的运行与断言见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)
-的 `dagger-native-telemetry` Job；产物是 Workflow Artifact，不是已提交的证据包。
+的 `dagger-native-telemetry` Job；它跑两次真实 Check——一次通过、一次用一个真实的 lint 失败——
+并为两次各产出一份回执（`receipt.json` 与 `receipt-negative.json`）。已提交的证据摘要见
+[Dagger 原生 Trace 捕获证据](dagger-native-telemetry-evidence/README.md)。
 
-未提交证据前，本页只记录上面这些本地可复现的负例与边界；没有观察到的 Span、缓存结果或接收端
-身份一律记为 `unknown`，不由命令退出码推断。
+未观察到的 Span、缓存结果或接收端身份一律记为 `unknown`，不由命令退出码推断。
