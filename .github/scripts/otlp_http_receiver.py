@@ -16,6 +16,7 @@ import http.server
 import json
 import signal
 import threading
+import time
 from pathlib import Path
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
@@ -96,6 +97,7 @@ def capture_json() -> dict:
 
 class ReceiverServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
     def __init__(self, address, handler, output: Path):
         super().__init__(address, handler)
@@ -117,6 +119,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path == "/stop":
+            # A clean stop: the caller gets the socket back instead of racing
+            # the next receiver for the same port.
+            self._respond()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         if not self.path.endswith("/v1/traces"):
@@ -151,6 +159,19 @@ def write_output(path: Path) -> None:
     path.write_bytes((json.dumps(capture_json(), indent=2) + "\n").encode("utf-8"))
 
 
+def start_server(host: str, port: int, output: Path, wait_seconds: int = 60):
+    """Bind the port, waiting for a previous receiver to release it."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            return ReceiverServer((host, port), Handler, output)
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                raise
+            print(f"waiting for {host}:{port}: {error}", flush=True)
+            time.sleep(0.5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=4318)
@@ -165,7 +186,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    server = ReceiverServer((args.host, args.port), Handler, args.output)
+    server = start_server(args.host, args.port, args.output)
 
     def stop(signum, frame):
         # shutdown() blocks until serve_forever() returns, so it cannot run

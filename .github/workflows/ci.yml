@@ -216,6 +216,16 @@ jobs:
         shell: bash
         run: |
           set +e
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          # Stop the receiver cleanly and wait for the port, so the next
+          # receiver can bind it.
+          curl -fsS -X POST "http://${BRIDGE}:4318/stop" > /dev/null 2>&1 || true
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$(cat artifacts/dagger-native-telemetry/receiver.pid)" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
           kill "$(cat artifacts/dagger-native-telemetry/receiver.pid)" 2>/dev/null || true
           for _ in $(seq 1 30); do
             if [[ -s artifacts/dagger-native-telemetry/capture.json ]]; then break; fi
@@ -283,6 +293,14 @@ jobs:
         shell: bash
         run: |
           set +e
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          curl -fsS -X POST "http://${BRIDGE}:4318/stop" > /dev/null 2>&1 || true
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$(cat artifacts/dagger-native-telemetry/receiver-negative.pid)" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
           kill "$(cat artifacts/dagger-native-telemetry/receiver-negative.pid)" 2>/dev/null || true
           for _ in $(seq 1 30); do
             if [[ -s artifacts/dagger-native-telemetry/capture-negative.json ]]; then break; fi
