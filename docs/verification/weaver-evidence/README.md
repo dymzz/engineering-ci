@@ -1,4 +1,15 @@
-# Weaver checker evidence summaries (#74 / PR #78)
+# Weaver checker evidence
+
+## Real Attempt Task-only integration (#52)
+
+[Task-only bundle](real-attempt-task-only/README.md): Run `42821429094`, Attempt
+`1`, three received/matched Task identities, official Registry verified, but
+strict native `missing_attribute` on Resource `github.repository`.
+`weaver-enforce` exits 1; the same failure is preserved by Report/Artifact/Plan.
+The Source, complete exported native output, original reports and Source-drift
+refusal are retained with their own checksums. This is a blocked integration,
+not a new positive or #63/#61 admission. The controlled #74 cases below remain
+separate evidence.
 
 ## Historical (pre observed-Span bind)
 

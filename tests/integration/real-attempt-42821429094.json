@@ -3,14 +3,16 @@
   "authority": "Committed ECI #75 real GitHub API Attempt snapshot, not an authenticated #63 admission",
   "upstream": {
     "repository": "https://github.com/open-telemetry/semantic-conventions",
-    "version": "v1.45.0",
+    "version": "1.45.0",
     "commit": "fb30ca17193b551473b1f43c315482918ab6987c"
   },
   "run": {
     "repository": "dymzz/engineering-ci",
     "run_id": "42821429094",
     "attempt": 1,
-    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc"
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "trace_id": "21ee8206fe06a4879580f60591a3014f",
+    "pipeline_span_id": "093c00d57bcc226c"
   },
   "jobs": [
     {
@@ -38,5 +40,21 @@
     "weaver_pass": false,
     "trusted": false,
     "temporal_precision": "no_pipeline_root"
+  },
+  "archive": {
+    "repository": "https://github.com/dymzz/engineering-ci",
+    "commit": "f8c31251ac6b4b3277579b40b78827e3bced6c85",
+    "path": "docs/verification/cicd-telemetry-evidence-all-completed",
+    "files": {
+      "candidate-42821429094-all-completed.json": "12f0c4a85c96ea88e7153f7a55840bec9933bc85d443608aae638ccc2754221b",
+      "cli-42821429094-all-completed.stdout.json": "f9287c72827e975fcd925753df459a3ad925ce00de02d80d1042a30e4e3136f4",
+      "otel-42821429094-all-completed.json": "07aa61d36ea8e0a179302ad75d17b1a5ec836e6c8870dd551482b59a759245e5"
+    },
+    "inventory_basis": "Separately committed #75 all_completed Attempt Job witness; no IDs are taken from the replay capture"
+  },
+  "identity_mapping": {
+    "module": "engineering_ci.cicd_telemetry",
+    "function": "_stable_ids",
+    "source_commit": "f8c31251ac6b4b3277579b40b78827e3bced6c85"
   }
 }
