@@ -13,6 +13,7 @@ from dagger import DefaultPath, Ignore, check, dag, function, object_type
 from . import python_static as static
 from . import repository, tooling
 from . import script_analysis as script
+from .plan_result import PlanExecution
 from .pytest_matrix import (
     SUPPORTED_PYTHONS,
     aggregate,
@@ -191,6 +192,21 @@ class EngineeringCi:
         )
 
     @function
+    async def plan_execution(
+        self,
+        plan: dagger.File,
+        source: dagger.Directory,
+        python_version: str = "3.14",
+        weaver_config: str = "ci-weaver.toml",
+    ) -> PlanExecution:
+        """Build one result object for Report, Artifact and strict Enforce."""
+        from . import plan_execution
+
+        return await plan_execution.execute(
+            self, plan, source, python_version, weaver_config
+        )
+
+    @function
     async def execute_plan(
         self,
         plan: dagger.File,
@@ -198,307 +214,45 @@ class EngineeringCi:
         python_version: str = "3.14",
         weaver_config: str = "ci-weaver.toml",
     ) -> str:
-        """Execute plan targets in-container; host-run selected checks/prereqs."""
-        import copy
-        import tempfile
-
-        from engineering_ci import execution, plan_contract, selection
-
-        raw = await plan.contents()
-        try:
-            value = json.loads(raw)
-        except ValueError:
-            return json.dumps(
-                execution.plan_rejection(execution.ExecutionError("plan_invalid"))
-            )
-        try:
-            execution.validate_plan(value)
-        except execution.ExecutionError as error:
-            return json.dumps(execution.plan_rejection(error))
-        declaration_consistent = (
-            True if value["schema_version"] == plan_contract.PLAN_VERSION else None
+        """Read the Report from one Plan result; API exit is not its verdict."""
+        execution = await self.plan_execution(
+            plan, source, python_version, weaver_config
         )
-        chosen = value.get("selection") or {}
-        targets = chosen.get("tests") or []
-        framework = chosen.get("framework", "unittest")
-        selected_checks = [
-            item
-            for item in value.get("check_scope", chosen.get("check_scope", []))
-            if item.get("status") in {"selected", "unknown"}
-        ]
-        if ("check_scope" not in value and "check_scope" not in chosen) and chosen.get(
-            "checks"
-        ):
-            selected_checks = [
-                {"name": name, "status": "unknown"} for name in chosen["checks"]
-            ]
-        prerequisites = list(chosen.get("prerequisites") or [])
-        if value.get("git", {}).get("snapshot") == "multi":
-            return json.dumps(
-                {
-                    "status": "not_executed",
-                    "reason": "multi_ref_requires_per_ref_execution",
-                }
-            )
-        if not targets and not selected_checks and not prerequisites:
-            return json.dumps({"status": "not_executed", "reason": "no_selected_tests"})
-        git = value.get("git") or {}
-        source_tree_id = git.get("source_tree_id")
-        execution_tree = git.get("execution_tree")
-        tree_verified = False
-        source_tree_state = "not_requested"
-        source_digest = None
-        input_closure_verified = "not_requested"
-        with tempfile.TemporaryDirectory() as directory:
-            await source.export(directory)
-            exported_content_id = selection.directory_content_id(directory)
-            if source_tree_id and execution_tree:
-                source_digest = selection.directory_content_id(directory)
-                tree_verified = source_digest == source_tree_id
-                source_tree_state = "verified" if tree_verified else "failed"
-                if not tree_verified:
-                    return json.dumps(
-                        {
-                            "kind": execution.REPORT_KIND,
-                            "schema_version": execution.SCHEMA_VERSION,
-                            "plan_declaration_consistent": declaration_consistent,
-                            "source_binding_verified": "unknown",
-                            "status": "not_executed",
-                            "reason": "source_tree_mismatch",
-                            "exit_code": 4,
-                            "tree_verified": False,
-                            "source_tree_verified": source_tree_state,
-                            "input_closure_verified": input_closure_verified,
-                            "trusted": False,
-                            "plan_execution_tree": execution_tree,
-                            "source_tree_id": source_tree_id,
-                            "source_digest": source_digest,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-            report = {
-                "kind": execution.REPORT_KIND,
-                "schema_version": execution.SCHEMA_VERSION,
-                "dependency_contract": value.get("dependency_contract"),
-                "plan_declaration_consistent": declaration_consistent,
-                # Preserved metadata/export identity is not a verified #66
-                # Source/Prerequisite receipt or actual-config binding.
-                "source_binding_verified": "unknown",
-                "plan": {"generator": value.get("generator"), "git": git},
-                "execution_context": "dagger_export",
-                "status": "passed",
-                "exit_code": 0,
-                "targets": targets,
-                "framework": framework,
-                # tree_verified is whole-tree Source-byte equivalence only when
-                # that check ran. Post-completion uses input_closure_verified.
-                # Neither field is #63 Check-evidence admission.
-                "tree_verified": tree_verified,
-                "source_tree_verified": source_tree_state,
-                "input_closure_verified": input_closure_verified,
-                "trusted": False,
-                "plan_execution_tree": execution_tree,
-                "source_tree_id": source_tree_id,
-                "source_digest": source_digest,
-                "tests": {"status": "not_executed", "exit_code": 3},
-                "checks": [],
-                "prerequisites": [],
-                "source_handoff": {
-                    "original_git": git,
-                    "exported_content_id": exported_content_id,
-                    "host_context": "dagger_export",
-                    "original_git_snapshot_preserved": True,
-                },
-            }
-            if targets:
-                container = self._uv_container(source, python_version)
-                junit = "/tmp/engineering-ci-junit.xml"
-                if framework == "pytest":
-                    pytest_targets = []
-                    for target in targets:
-                        if target.endswith(".py") or "/" in target or "::" in target:
-                            pytest_targets.append(target)
-                        else:
-                            pytest_targets.extend(["--pyargs", target])
-                    command = [
-                        "uv",
-                        "run",
-                        "pytest",
-                        "-q",
-                        f"--junitxml={junit}",
-                        *pytest_targets,
-                    ]
-                elif framework == "unittest":
-                    command = ["uv", "run", "python", "-m", "unittest", *targets]
-                else:
-                    return json.dumps(
-                        {"status": "not_executed", "reason": "framework_invalid"}
-                    )
-                result = container.with_exec(command, expect=dagger.ReturnType.ANY)
-                exit_code = await result.exit_code()
-                report["exit_code"] = exit_code
-                report["stdout"] = await result.stdout()
-                report["stderr"] = await result.stderr()
-                report["tests"] = {
-                    "status": "passed" if exit_code == 0 else "failed",
-                    "exit_code": exit_code,
-                }
-                if exit_code != 0:
-                    report["status"] = "failed"
-                    report["reason"] = "tests_failed"
-                if framework == "pytest" and exit_code in {0, 1}:
-                    try:
-                        report["junit"] = await result.file(junit).contents()
-                    except dagger.QueryError:
-                        report["junit"] = None
-            if selected_checks or prerequisites:
-                check_plan = copy.deepcopy(value)
-                check_plan.setdefault("selection", {})
-                check_plan["selection"] = dict(check_plan["selection"])
-                check_plan["selection"]["tests"] = []
-                check_plan["git"] = dict(check_plan.get("git") or {})
-                # This is only the Host adapter's filesystem view. Preserve the
-                # original Git identity in source_handoff, and do not claim an
-                # exported Directory has the original ODB or verified full Tree.
-                check_plan["git"]["execution_tree"] = None
-                check_plan["git"]["index_tree"] = None
-                check_plan["git"]["content_binding"] = None
-                check_plan["git"]["snapshot"] = "worktree"
-                weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
-                selected_weaver = [
-                    item
-                    for item in selected_checks
-                    if item.get("name") in weaver_checks
-                ]
-                check_plan["check_scope"] = [
-                    item
-                    for item in selected_checks
-                    if item.get("name") not in weaver_checks
-                ]
-                check_plan["selection"]["checks"] = [
-                    name
-                    for name in check_plan["selection"].get("checks", [])
-                    if name not in weaver_checks
-                ]
-                host = (
-                    execution.execute(
-                        check_plan, root=directory, execution_context="dagger_export"
-                    )
-                    if check_plan["check_scope"] or prerequisites
-                    else {
-                        "status": "passed",
-                        "exit_code": 0,
-                        "checks": [],
-                        "prerequisites": [],
-                    }
-                )
-                report["checks"] = host.get("checks") or []
-                report["prerequisites"] = host.get("prerequisites") or []
-                after_host = selection.directory_content_id(directory)
-                report["source_handoff"]["after_host_content_id"] = after_host
-                if after_host != exported_content_id:
-                    report.update(
-                        status="not_executed",
-                        reason="exported_source_changed",
-                        exit_code=4,
-                        tree_verified=False,
-                        source_tree_verified="failed_after_host_action",
-                    )
-                    report["source_handoff"]["generated_outputs_delivered"] = False
-                    report["checks"].extend(
-                        {
-                            "name": item["name"],
-                            "status": "not_executed",
-                            "reason": "exported_source_changed",
-                        }
-                        for item in selected_weaver
-                    )
-                    return json.dumps(report, sort_keys=True)
-                if report["status"] == "passed":
-                    report["status"] = host.get("status", "blocked")
-                    report["reason"] = host.get("reason")
-                    report["exit_code"] = host.get("exit_code", 5)
-                terminal_config = weaver_config
-                binding = value.get("post_completion")
-                if isinstance(binding, dict):
-                    declared = (binding.get("weaver_config") or {}).get("path")
-                    if isinstance(declared, str) and declared:
-                        terminal_config = declared
-                for item in selected_weaver:
-                    kind = item["name"].removeprefix("weaver_")
-                    if kind == "terminal":
-                        gate = selection.validate_post_completion_binding(
-                            value, directory
-                        )
-                        report["input_closure_verified"] = gate.get(
-                            "input_closure_verified", "failed"
-                        )
-                        report["plan_closure_digest"] = gate.get("plan_closure_digest")
-                        report["actual_closure_digest"] = gate.get(
-                            "actual_closure_digest"
-                        )
-                        if gate.get("source_tree_verified") != "not_requested":
-                            report["source_tree_verified"] = gate[
-                                "source_tree_verified"
-                            ]
-                            report["tree_verified"] = (
-                                gate["source_tree_verified"] == "verified"
-                            )
-                            if gate.get("source_digest"):
-                                report["source_digest"] = gate["source_digest"]
-                        if not gate.get("ok"):
-                            native = {
-                                "name": "weaver_terminal",
-                                "status": "not_executed",
-                                "reason": gate.get("reason")
-                                or "post_completion_binding_invalid",
-                                "gate_exit_code": 1,
-                                "trusted": False,
-                                "authenticated": False,
-                                "selected": item.get("status"),
-                                "input_closure_verified": gate.get(
-                                    "input_closure_verified"
-                                ),
-                                "source_tree_verified": report["source_tree_verified"],
-                                "plan_closure_digest": gate.get("plan_closure_digest"),
-                                "actual_closure_digest": gate.get(
-                                    "actual_closure_digest"
-                                ),
-                            }
-                            report["checks"].append(native)
-                            if report["status"] == "passed":
-                                report.update(
-                                    status="blocked",
-                                    exit_code=1,
-                                    reason=native["reason"],
-                                )
-                            continue
-                        config_path = terminal_config
-                    else:
-                        config_path = weaver_config
-                    native = json.loads(
-                        await self.weaver_report(source, kind, config_path)
-                    )
-                    native["selected"] = item.get("status")
-                    native["source_tree_verified"] = report["source_tree_verified"]
-                    if kind == "terminal":
-                        native["phase"] = selection.POST_COMPLETION_PHASE
-                        native["input_closure_verified"] = report[
-                            "input_closure_verified"
-                        ]
-                        native["plan_closure_digest"] = report.get(
-                            "plan_closure_digest"
-                        )
-                        native["actual_closure_digest"] = report.get(
-                            "actual_closure_digest"
-                        )
-                    report["checks"].append(native)
-                    if native["status"] != "passed" and report["status"] == "passed":
-                        report.update(
-                            status="failed", exit_code=1, reason="checks_failed"
-                        )
-        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+        return await execution.report()
+
+    @function
+    async def fixture_plan_execution(
+        self,
+        plan: dagger.File,
+        source: dagger.Directory,
+        python_version: str = "3.14",
+    ) -> dagger.Directory:
+        """Inspect all consumers of one result; strict production API is enforce."""
+        execution = await self.plan_execution(plan, source, python_version)
+        bundle = execution.artifacts
+        original_id = await bundle.id()
+        report = await execution.report()
+        original_exit = await bundle.file("exit-code.txt").contents()
+        try:
+            await execution.enforce()
+            strict = {"status": "passed"}
+        except RuntimeError as error:
+            strict = {"status": "failed", "diagnostic": str(error)}
+        inspection = {
+            "scope": "one_explicit_PlanExecution_object",
+            "report_equals_artifact": report
+            == await bundle.file("report.json").contents(),
+            "same_bundle_id_after_enforce": original_id
+            == await execution.artifacts.id(),
+            "original_exit": original_exit.strip(),
+            "strict": strict,
+            "origin_execution_attributed": False,
+        }
+        return (
+            dag.directory()
+            .with_directory("result", bundle)
+            .with_new_file("inspection.json", json.dumps(inspection, sort_keys=True))
+        )
 
     @function
     async def sources_self_test(self) -> str:
@@ -1236,6 +990,7 @@ class EngineeringCi:
         _matrix_runtime: bool = False,
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
+        _targets: list[str] | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
@@ -1253,6 +1008,17 @@ class EngineeringCi:
             )
         )
         arguments = pytest_arguments(policy, report_path)
+        if _targets is not None:
+            if not _targets:
+                raise ValueError("selected pytest targets must not be empty")
+            selected = []
+            for target in _targets:
+                test_policy(target)
+                if target.endswith(".py") or "/" in target or "::" in target:
+                    selected.append(target)
+                else:
+                    selected.extend(["--pyargs", target])
+            arguments = arguments[:-1] + selected
         if _matrix_runtime:
             prepared = prepared.with_new_file(
                 "/tmp/engineering-ci-matrix-runtime.py",
@@ -1295,6 +1061,8 @@ class EngineeringCi:
         report = summarize_pytest(
             xml, exit_code, output + "\n" + stderr, max_failures=max_failures
         )
+        if _targets is not None:
+            report["selected_targets"] = list(_targets)
         if evidence["diagnostic"]:
             report["diagnostic"] = evidence["diagnostic"]
         coverage = None
