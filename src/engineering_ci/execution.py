@@ -261,6 +261,23 @@ def _prerequisite_actions(plan, override):
     return dict(declared) if isinstance(declared, dict) else {}
 
 
+def test_requirement_failure(plan):
+    """Existing test-only prerequisites shared by Host and native consumers."""
+    chosen = plan["selection"]
+    if not chosen["tests"]:
+        return None
+    graph = chosen.get("tach_graph_validation") or {}
+    if (
+        chosen.get("requires_tach_check")
+        and not chosen.get("full_tests")
+        and graph.get("status") != "passed"
+    ):
+        return "tach_graph_unvalidated"
+    if chosen.get("coverage_required"):
+        return "coverage_evidence_required"
+    return None
+
+
 def _run_prerequisites(names, actions, *, root, runner, execution_context="host"):
     results = []
     failed = False
@@ -473,22 +490,13 @@ def execute(
         )
         report["reason"] = bind_reason
         return report
-    graph = chosen.get("tach_graph_validation") or {}
-    if (
-        tests
-        and chosen.get("requires_tach_check")
-        and not chosen.get("full_tests")
-        and graph.get("status") != "passed"
-    ):
+    requirement = test_requirement_failure(plan)
+    if requirement:
         report["status"] = "blocked"
         report["exit_code"] = 5
-        report["reason"] = "tach_graph_unvalidated"
-        return report
-    if tests and chosen.get("coverage_required"):
-        report["status"] = "blocked"
-        report["exit_code"] = 5
-        report["reason"] = "coverage_evidence_required"
-        report["coverage"]["scope"] = "not_measured"
+        report["reason"] = requirement
+        if requirement == "coverage_evidence_required":
+            report["coverage"]["scope"] = "not_measured"
         return report
 
     exit_code = 0

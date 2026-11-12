@@ -301,6 +301,71 @@ def test_infrastructure_error_preserves_the_independent_native_result(modules):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "fields,reason",
+    [
+        (
+            {
+                "requires_tach_check": True,
+                "tach_graph_validation": {"status": "failed"},
+            },
+            "tach_graph_unvalidated",
+        ),
+        ({"coverage_required": True}, "coverage_evidence_required"),
+    ],
+)
+def test_existing_test_precondition_blocks_only_its_native_consumer(
+    modules, fields, reason
+):
+    _, collector = modules
+
+    class Independent(NativeDouble):
+        async def weaver_artifacts(self, source, kind, config):
+            self.calls.append("independent native check")
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": "passed",
+                            "exit_code": 0,
+                        }
+                    )
+                }
+            )
+
+        def _uv_container(self, *args):
+            pytest.fail("dependent test started before its prerequisite passed")
+
+    async def run():
+        native = Independent()
+        report = {
+            "status": "passed",
+            "exit_code": 0,
+            "framework": "unittest",
+            "source_tree_verified": "not_requested",
+            "checks": [],
+        }
+        files = await collector._native_results(
+            native,
+            MemoryDirectory(),
+            {"selection": {"tests": ["tests.controlled"], **fields}},
+            ".",
+            [{"name": "weaver_registry", "status": "selected"}],
+            report,
+            MemoryDirectory(),
+            "3.14",
+            "ci-weaver.toml",
+        )
+        assert report["status"] == "blocked" and report["reason"] == reason
+        assert report["tests"]["status"] == "not_executed"
+        assert report["checks"][0]["status"] == "passed"
+        assert "checks/weaver_registry/report.json" in files.files
+        assert native.calls == ["independent native check"]
+
+    asyncio.run(run())
+
+
 def test_invalid_plan_refuses_before_source_export(modules):
     _, collector = modules
     plan = MemoryFile(

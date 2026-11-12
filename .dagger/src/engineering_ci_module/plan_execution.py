@@ -100,9 +100,19 @@ async def _native_results(
     weaver_config,
 ):
     """Collect fixed independent native branches; Engine owns their DAG."""
+    from engineering_ci import execution
+
     targets = value["selection"]["tests"]
     branches = []
-    if targets:
+    requirement = execution.test_requirement_failure(value)
+    if requirement:
+        report["tests"] = {
+            "status": "not_executed",
+            "exit_code": None,
+            "reason": requirement,
+        }
+        report.update(status="blocked", exit_code=5, reason=requirement)
+    elif targets:
         branches.append(
             (
                 "tests",
