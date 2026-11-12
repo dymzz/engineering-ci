@@ -115,3 +115,108 @@ jobs:
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Validate release metadata and root lock consistency
         run: dagger check --engineering-ci --check=version --check=lock
+
+  # ECI #87 A: the pinned Engine exports its own Spans when its config file
+  # enables telemetry.workloadExport and the OTLP environment names an
+  # endpoint. This Job runs a real native Check, lets the Engine export, and
+  # records what an actual receiver captured. The receipt is the evidence; a
+  # missing capture fails the Job instead of being reported as observed.
+  dagger-native-telemetry:
+    name: dagger-native-telemetry / native trace capture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Dagger CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6.1.0
+        with:
+          enable-cache: true
+      - name: Start the OTLP receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          mkdir -p artifacts/dagger-native-telemetry
+          # The receiver binds the Docker bridge address: the Engine container
+          # reaches the host there, and no wildcard address is exposed.
+          BRIDGE="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          printf '%s\n' "${BRIDGE}" > artifacts/dagger-native-telemetry/receiver-address.txt
+          nohup .venv/bin/python .github/scripts/otlp_http_receiver.py \
+            --host "${BRIDGE}" \
+            --port 4318 \
+            --output artifacts/dagger-native-telemetry/capture.json \
+            > artifacts/dagger-native-telemetry/receiver.log 2>&1 &
+          echo $! > artifacts/dagger-native-telemetry/receiver.pid
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://${BRIDGE}:4318/health" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "the OTLP receiver did not become ready" >&2
+          exit 1
+      - name: Start the Dagger Engine with the native workload export
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          printf '%s\n' '{"telemetry": {"workloadExport": true}}' > "$RUNNER_TEMP/engine.json"
+          printf '%s\n' "http://${BRIDGE}:4318/v1/traces" > artifacts/dagger-native-telemetry/engine-endpoint.txt
+          docker volume create dagger-engine-data
+          docker run --pull=missing -d \
+            --name dagger-engine \
+            --privileged \
+            -v dagger-engine-data:/var/lib/dagger \
+            -v "$RUNNER_TEMP/engine.json:/etc/dagger/engine.json:ro" \
+            -e OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://${BRIDGE}:4318/v1/traces" \
+            -e OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
+            "registry.dagger.io/engine:v${DAGGER_VERSION}"
+      - name: Run a native Dagger check
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAGGER_ENGINE=container://dagger-engine
+          # The installed CLI and the Engine it talks to are the actual
+          # versions behind the pinned engineVersion.
+          dagger version | tee artifacts/dagger-native-telemetry/dagger-version.txt
+          dagger check --engineering-ci --check=lint
+      - name: Record the native trace observation
+        shell: bash
+        run: |
+          set -euo pipefail
+          kill "$(cat artifacts/dagger-native-telemetry/receiver.pid)" 2>/dev/null || true
+          for _ in $(seq 1 30); do
+            if [[ -s artifacts/dagger-native-telemetry/capture.json ]]; then break; fi
+            sleep 1
+          done
+          set +e
+          uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
+            --capture artifacts/dagger-native-telemetry/capture.json \
+            --capture-ref "otlp-http-receiver:4318" \
+            --engine-config "$RUNNER_TEMP/engine.json" \
+            --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
+            --engine-protocol http/protobuf \
+            --check-name lint \
+            --invocation-ref "dagger check --engineering-ci --check=lint" \
+            --output artifacts/dagger-native-telemetry/receipt.json \
+            --json > artifacts/dagger-native-telemetry/receipt.stdout.json
+          code=$?
+          set -e
+          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt.exit
+          exit "${code}"
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() }}
+        with:
+          name: dagger-native-telemetry
+          path: artifacts/dagger-native-telemetry/
+          if-no-files-found: warn
+          retention-days: 7
