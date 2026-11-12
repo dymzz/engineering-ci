@@ -53,9 +53,14 @@ Span 原文**（未改写，仅按 Span 名筛出）：
 
 ## 完整捕获
 
-完整 `capture.json` 未入库（仓库现有最大文件 636 KB），保留在 CI 工件 `dagger-native-telemetry` 里
-（保留 7 天）；上表给出的是通过那次的字节数与摘要。失败那次的完整捕获在同一个工件目录的
-`capture-negative.json`。
+完整捕获未入库（仓库现有最大文件 636 KB），保留在 CI 工件 `dagger-native-telemetry` 里（保留 7 天）：
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `capture.json`（通过那次） | 3007373 | `e55008b60d1e8029abc76fcfbd76b76e75ef3b361ccb7e11f2b22898598e83ea` |
+| `capture-negative.json`（失败那次） | 1693802 | `a9f2ba4eb56e2dcd8c1a5fcd5010710f4d0addd716b85eba7f135af7378e93c0` |
+
+入库的是按 Span 名筛出的 Check 链路原文（`capture-check-spans*.json`），未改写。
 
 ## 文件
 
