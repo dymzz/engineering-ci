@@ -10,6 +10,52 @@ from .plan_result import PlanExecution
 from .plan_result import result as make_result
 
 
+def _aggregate(report):
+    """Summarize collected facts; source-wide refusals return before this."""
+    tests = report.get("tests") or {}
+    checks = report.get("checks") or []
+    prerequisites = report.get("prerequisites") or []
+
+    def nonzero(item, keys):
+        for key in keys:
+            value = item.get(key)
+            if type(value) is int and value != 0:
+                return value
+        return None
+
+    for children, reason in (
+        ([tests], "tests_failed"),
+        (checks, "checks_failed"),
+        (prerequisites, "prerequisites_failed"),
+    ):
+        for item in children:
+            status = item.get("status")
+            code = nonzero(item, ("gate_exit_code", "exit_code"))
+            if status in ("failed", "error", "failure") or (
+                status == "passed" and code is not None
+            ):
+                report.update(status="failed", exit_code=code or 1, reason=reason)
+                return report
+
+    pending = []
+    if report.get("targets") or tests.get("reason"):
+        pending.append(tests)
+    pending.extend(checks)
+    pending.extend(prerequisites)
+    for item in pending:
+        if item.get("status") not in ("passed", "advisory", "not_applicable"):
+            report.update(
+                status="blocked",
+                # A native exit from an ODB context probe does not mean the
+                # unexecuted prerequisite itself failed. Keep it in the child.
+                exit_code=nonzero(item, ("gate_exit_code",)) or 5,
+                reason=item.get("reason") or "required_checks_not_executed",
+            )
+            return report
+    report.update(status="passed", exit_code=0, reason=None)
+    return report
+
+
 async def _tests(module, source, targets, framework, python_version):
     """Use the existing pytest computation, or native unittest, exactly once."""
     if framework == "pytest":
@@ -111,7 +157,6 @@ async def _native_results(
             "exit_code": None,
             "reason": requirement,
         }
-        report.update(status="blocked", exit_code=5, reason=requirement)
     elif targets:
         branches.append(
             (
@@ -156,35 +201,17 @@ async def _native_results(
                 report["tests"] = native
             else:
                 report["checks"].append(native)
-            if report["status"] == "passed":
-                report.update(
-                    status="blocked", exit_code=5, reason="native_execution_error"
-                )
             continue
         if name == "tests":
             payload, files = output
             report.update(payload)
             artifacts = artifacts.with_directory("tests", files)
-            if payload["tests"]["exit_code"] != 0:
-                report.update(
-                    status="failed",
-                    exit_code=payload["tests"]["exit_code"],
-                    reason="tests_failed",
-                )
         else:
             native, files, metadata = output
             report.update(metadata)
             report["checks"].append(native)
             if files is not None:
                 artifacts = artifacts.with_directory("checks/" + name, files)
-            if native["status"] != "passed" and report["status"] == "passed":
-                report.update(
-                    status="blocked"
-                    if native["status"] == "not_executed"
-                    else "failed",
-                    exit_code=native.get("gate_exit_code") or 1,
-                    reason=native.get("reason") or "checks_failed",
-                )
     report["result_sharing"] = {
         "scope": "this_result_bundle",
         "native_branches": [name for name, _ in branches],
@@ -382,8 +409,5 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     "immutable_input_before_host_action"
                 )
                 return make_result(report, artifacts)
-            if report["status"] == "passed":
-                report["status"] = host.get("status", "blocked")
-                report["reason"] = host.get("reason")
-                report["exit_code"] = host.get("exit_code", 5)
+    _aggregate(report)
     return make_result(report, artifacts)
