@@ -1,5 +1,6 @@
 """Generic Git impact selection, plan identity and native unittest execution."""
 
+import dataclasses
 import json
 import os
 import shutil
@@ -58,6 +59,43 @@ def select(repo, base, *, full=False, include_worktree=True):
         root=repo,
         full=full,
     )
+
+
+def test_plan_validator_accepts_all_actual_selector_scope_states(repo):
+    path, base = repo
+    original = changes(path, base)
+    observed = set()
+    for paths, complete, full in (
+        (("src/pkg/sub.py",), True, False),
+        (("README.md",), True, False),
+        ((), True, False),
+        (("pyproject.toml",), True, False),
+        ((), False, False),
+        (("README.md",), True, True),
+    ):
+        actual = selection.select(
+            dataclasses.replace(original, paths=paths, complete=complete),
+            config(path),
+            root=path,
+            full=full,
+        )
+        value = selection.plan(
+            actual,
+            config=config(path),
+            config_path=path / "ci-selection.toml",
+            root=path,
+        )
+        execution.validate_plan(value)
+        observed.update(item["status"] for item in value["check_scope"])
+    assert observed == {
+        "selected",
+        "unknown",
+        "not_applicable",
+        "targeted",
+        "escalated",
+        "no_tests",
+        "no_changes",
+    }
 
 
 def test_dynamic_discovery_uses_configured_tests_directory(repo):
@@ -207,7 +245,7 @@ def test_plan_records_git_config_and_tach_identity(repo):
         config_path=path / "ci-selection.toml",
         root=path,
     )
-    assert plan["schema_version"] == 1
+    assert plan["schema_version"] == 2
     assert plan["kind"] == "engineering-ci-selection-plan"
     assert plan["git"]["base_commit"] is not None
     assert plan["git"]["head_commit"] == base
@@ -321,6 +359,32 @@ argv = ["python", "-c", "raise SystemExit(0)"]
     }
     assert plan["prerequisite_actions"]["wheel_smoke"]["type"] == "command"
     assert plan["prerequisite_actions"]["wheel_smoke"]["argv"][0] == "python"
+
+
+@pytest.mark.parametrize("mode", ["targeted", "full", "escalated"])
+def test_dependency_contract_records_actual_selection_without_inventing_actions(
+    repo, mode
+):
+    path, base = repo
+    changed = path / ("pyproject.toml" if mode == "escalated" else "src/pkg/other.py")
+    changed.write_text(
+        changed.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    selected = select(path, base, full=mode == "full")
+    value = selection.plan(
+        selected, config=config(path), config_path=path / "ci-selection.toml", root=path
+    )
+    execution.validate_plan(value)
+    edges = value["dependency_contract"]["edges"]
+    assert {edge["producer_ref"]["name"] for edge in edges} == set(
+        value["selection"]["prerequisites"]
+    )
+    assert {edge["selection"]["selected_by"] for edge in edges} == {mode}
+    assert all(
+        edge["resolution"] == "unresolved"
+        and edge["unresolved_reason"] == "action_parameters_missing"
+        for edge in edges
+    )
 
 
 def test_changeset_includes_renames_and_untracked_paths(repo):

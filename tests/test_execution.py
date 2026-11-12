@@ -282,6 +282,37 @@ def test_execute_runs_command_prerequisite(repo):
     assert report["prerequisites"][0]["exit_code"] == 0
 
 
+def test_export_without_original_odb_is_not_a_missing_commit(repo):
+    path, base = repo
+    value = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {"type": "git_commit_present", "commit": base}
+    }
+    assert execution.execute(value, root=path)["status"] == "passed"
+    exported = path.parent / "exported"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git"))
+    result = execution.execute(value, root=exported)
+    assert result["status"] == "blocked" and result["exit_code"] == 5
+    assert result["tests"]["status"] == "passed"
+    assert result["prerequisites"][0]["reason"] == "git_odb_unavailable_or_unbound"
+
+
+def test_dagger_export_context_does_not_probe_any_host_git_odb(repo, monkeypatch):
+    path, base = repo
+    value = plan([], git={"snapshot": "worktree"})
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {"type": "git_commit_present", "commit": base}
+    }
+    calls = []
+    monkeypatch.setattr(selection, "_git", lambda *a: calls.append(a))
+    result = execution.execute(value, root=path, execution_context="dagger_export")
+    assert calls == []
+    assert result["prerequisites"][0]["result_origin"] == "dagger_export_boundary"
+    assert result["prerequisites"][0]["status"] == "not_executed"
+
+
 def test_execute_runs_selected_source_check(repo):
     path, base = repo
     content = b"source-bytes"

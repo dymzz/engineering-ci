@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import hygiene, selection, sources
+from . import hygiene, plan_contract, selection, sources
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -32,23 +32,31 @@ def load_plan(path):
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeError):
         raise ExecutionError("plan_unreadable") from None
-    if (
-        not isinstance(value, dict)
-        or value.get("kind") != selection.PLAN_KIND
-        or value.get("schema_version") != SCHEMA_VERSION
-    ):
-        raise ExecutionError("plan_invalid")
-    chosen = value.get("selection")
-    git = value.get("git")
-    if not isinstance(chosen, dict) or not isinstance(git, dict):
-        raise ExecutionError("plan_invalid")
-    tests = chosen.get("tests")
-    if not isinstance(tests, list) or any(not isinstance(item, str) for item in tests):
-        raise ExecutionError("tests_invalid")
-    framework = chosen.get("framework", "unittest")
-    if framework not in {"unittest", "pytest"}:
-        raise ExecutionError("framework_invalid")
-    return value
+    return validate_plan(value)
+
+
+def validate_plan(value):
+    """One public validation path, including direct API and Dagger callers."""
+    try:
+        return plan_contract.validate(value)
+    except plan_contract.PlanError as error:
+        raise ExecutionError(error.code) from None
+
+
+def plan_rejection(error):
+    return {
+        "kind": REPORT_KIND,
+        "schema_version": SCHEMA_VERSION,
+        "status": "not_executed",
+        "reason": error.code,
+        "exit_code": 2,
+        "tests": {"status": "not_executed"},
+        "checks": [],
+        "prerequisites": [],
+        "plan_declaration_consistent": False,
+        "source_binding_verified": "unknown",
+        "trusted": False,
+    }
 
 
 def _selected_checks(plan):
@@ -94,7 +102,11 @@ def _verify_execution_binding(plan, root):
     git = plan["git"]
     expected_tree = git.get("execution_tree")
     snapshot = git.get("snapshot")
-    if not snapshot:
+    if snapshot is not None and (
+        not isinstance(snapshot, str) or snapshot not in plan_contract.GIT_SNAPSHOTS
+    ):
+        return False, "git_snapshot_unsupported", expected_tree
+    if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
         expected_tree = expected_tree or git.get("index_tree")
@@ -249,7 +261,7 @@ def _prerequisite_actions(plan, override):
     return dict(declared) if isinstance(declared, dict) else {}
 
 
-def _run_prerequisites(names, actions, *, root, runner):
+def _run_prerequisites(names, actions, *, root, runner, execution_context="host"):
     results = []
     failed = False
     for name in names:
@@ -276,6 +288,36 @@ def _run_prerequisites(names, actions, *, root, runner):
                     }
                 )
                 continue
+            # An exported Directory is not the original Git object database.
+            # Do not query an enclosing repository or label missing context as
+            # a genuinely absent Commit. #66 owns an authenticated handoff.
+            odb = (
+                selection._git(root, "rev-parse", "--show-toplevel")
+                if execution_context == "host"
+                else None
+            )
+            if (
+                odb is None
+                or odb.returncode != 0
+                or Path(odb.stdout.strip()).resolve() != root.resolve()
+            ):
+                results.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "status": "not_executed",
+                        "reason": "git_odb_unavailable_or_unbound",
+                        "commit": commit,
+                        "execution_context": execution_context,
+                        "result_origin": "git_context_probe"
+                        if odb is not None
+                        else "dagger_export_boundary",
+                        "exit_code": odb.returncode if odb is not None else None,
+                        "stdout": odb.stdout if odb is not None else "",
+                        "stderr": odb.stderr if odb is not None else "",
+                    }
+                )
+                continue
             probe = selection._git(root, "cat-file", "-e", f"{commit}^{{commit}}")
             if probe.returncode == 0:
                 results.append(
@@ -284,6 +326,12 @@ def _run_prerequisites(names, actions, *, root, runner):
                         "type": kind,
                         "status": "passed",
                         "commit": commit,
+                        "git_odb_root": odb.stdout.strip(),
+                        "execution_context": execution_context,
+                        "result_origin": "git_cat_file",
+                        "exit_code": probe.returncode,
+                        "stdout": probe.stdout,
+                        "stderr": probe.stderr,
                     }
                 )
             else:
@@ -295,6 +343,12 @@ def _run_prerequisites(names, actions, *, root, runner):
                         "status": "failed",
                         "reason": "identity_commit_missing",
                         "commit": commit,
+                        "git_odb_root": odb.stdout.strip(),
+                        "execution_context": execution_context,
+                        "result_origin": "git_cat_file",
+                        "exit_code": probe.returncode,
+                        "stdout": probe.stdout,
+                        "stderr": probe.stderr,
                     }
                 )
             continue
@@ -363,8 +417,19 @@ def execute(
     hygiene_config=None,
     sources_config=None,
     prerequisite_actions=None,
+    execution_context="host",
     runner=None,
 ):
+    try:
+        validate_plan(plan)
+        if (
+            plan["schema_version"] == plan_contract.PLAN_VERSION
+            and prerequisite_actions is not None
+            and prerequisite_actions != plan.get("prerequisite_actions", {})
+        ):
+            raise ExecutionError("dependency_action_override_mismatch")
+    except ExecutionError as error:
+        return plan_rejection(error)
     root = Path(root)
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -374,6 +439,14 @@ def execute(
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
+        "dependency_contract": plan.get("dependency_contract"),
+        "plan_declaration_consistent": True
+        if plan["schema_version"] == plan_contract.PLAN_VERSION
+        else None,
+        # Contract validation does not verify actual config bytes or a #66
+        # Source/Prerequisite receipt. Narrow Git checks below remain separate.
+        "source_binding_verified": "unknown",
+        "execution_context": execution_context,
         "plan": {
             "generator": plan.get("generator"),
             "git": plan.get("git"),
@@ -473,6 +546,7 @@ def execute(
         _prerequisite_actions(plan, prerequisite_actions),
         root=root,
         runner=runner,
+        execution_context=execution_context,
     )
     report["prerequisites"] = prereq_results
 

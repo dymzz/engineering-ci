@@ -1,0 +1,496 @@
+{
+  "baseline_commit": "95c70be310053ddb9fcbe12b78a285e56d62b542",
+  "baseline_git_blob_sha256": {
+    ".dagger/src/engineering_ci_module/main.py": "4971cf91ff42d81bd69dff0343d74c450534285fce4a7e2434e79a3e73f24b45",
+    ".github/workflows/reusable-python-ci.yml": "4cc8f88412f647cfc4f16b61d88b661e4883903ed0bc86d599e6dd9c5cf0365f",
+    "docs/architecture/selection.md": "082d368c0e156e69ae7e0af6d569bcbced78e77fc4e87d51da3c51555d3a46ca",
+    "src/engineering_ci/execution.py": "3028e699b0df7f17886ffe7a9aca5dc9b28dce3c3ade555265991b47e8c68959",
+    "src/engineering_ci/selection.py": "afd448eb86bfac8e41a16dfd213049ed50a0af541fa6fc775e473bfbc0061e56",
+    "tests/fixtures/selection-app/ci-selection.toml": "074369cbedd091880accbd776e438465337f88b507b0f5e83229f79bdb74cd3d",
+    ".dagger/src/engineering_ci_module/repository.py": "3c23c665ccc94d53959b5447c32363ef411f1afab4068666a53c072dcb6f2d3f",
+    "tests/test_execution.py": "f944845f68109002fcbedbbb7c9762101ad63f2090af93d20974ac9766d129bc",
+    "tests/test_selection.py": "db67c68e997f1b634a9df23836404268d4575cad5c305d9cd1a307da224f3d73"
+  },
+  "instances": [
+    {
+      "consumer": [
+        "tests.test_sub (selection relation only)"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "not established",
+      "id": "fixture-identity",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": false,
+        "action_spec": null,
+        "config_schema_version": 1,
+        "path": "tests/fixtures/selection-app/ci-selection.toml",
+        "prerequisite_name": "identity_commit",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "selection only",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "fixture",
+      "unresolved_reason": "No prerequisite_actions, Commit, or ODB consumer declaration",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "tests.test_other (selection relation only)"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "not established",
+      "id": "fixture-wheel",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": false,
+        "action_spec": null,
+        "config_schema_version": 1,
+        "path": "tests/fixtures/selection-app/ci-selection.toml",
+        "prerequisite_name": "wheel_smoke",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "selection only",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "fixture",
+      "unresolved_reason": "No argv, wheel File/Directory, or consumer data edge",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "execution report prerequisites"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "host Git repository or unresolved exported context",
+      "id": "example-identity",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "commit": "0123abcd...",
+          "type": "git_commit_present"
+        },
+        "config_schema_version": null,
+        "path": "docs/architecture/selection.md",
+        "prerequisite_name": "identity_commit",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": true,
+      "result_origin": "not observed",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "example",
+      "unresolved_reason": "Documentation example, not an executed production configuration",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "execution report prerequisites"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "caller host",
+      "id": "example-wheel",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "argv": [
+            "python",
+            "-m",
+            "your_wheel_smoke"
+          ],
+          "type": "command"
+        },
+        "config_schema_version": null,
+        "path": "docs/architecture/selection.md",
+        "prerequisite_name": "wheel_smoke",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "not observed",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "example",
+      "unresolved_reason": "Placeholder module; no established wheel producer/consumer output",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "Plan serialization only"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "disposable Git fixture",
+      "id": "selection-parameters",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "identity_commit": "fixture base Commit",
+          "wheel_smoke": [
+            "python",
+            "-c",
+            "raise SystemExit(0)"
+          ]
+        },
+        "config_schema_version": null,
+        "path": "tests/test_selection.py::test_plan_includes_typed_prerequisite_actions",
+        "prerequisite_name": "identity_commit / wheel_smoke",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": true,
+      "result_origin": "Plan serialization assertion; neither action is executed",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests",
+        "observed": "targeted src/pkg/sub.py change selects identity_commit; wheel_smoke parameters are serialized but it is not selected"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "controlled_test",
+      "unresolved_reason": "Test proves parameter serialization, not prerequisite execution",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "final execution report"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "fixture original Git ODB",
+      "id": "host-identity-present",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "commit": "actual fixture base Commit",
+          "type": "git_commit_present"
+        },
+        "config_schema_version": null,
+        "path": "tests/test_execution.py::test_execute_runs_identity_commit_prerequisite",
+        "prerequisite_name": "identity_commit",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": true,
+      "result_origin": "controlled execution",
+      "selection": {
+        "observed": "schema-1 Plan constructed directly by the test; one selected policy and tests.test_pkg; Selector not invoked"
+      },
+      "source_binding": {
+        "execution_tree": null,
+        "head_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshot": "omitted by schema-1 test Plan helper; no whole-tree identity claim"
+      },
+      "source_category": "controlled_test",
+      "unresolved_reason": "No evidence that this is a production pre-execution condition",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "final execution report"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "fixture original Git ODB",
+      "id": "host-identity-absent",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "commit": "0000000000000000000000000000000000000000",
+          "type": "git_commit_present"
+        },
+        "config_schema_version": null,
+        "path": "tests/test_execution.py::test_execute_fails_missing_identity_commit",
+        "prerequisite_name": "identity_commit",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": true,
+      "result_origin": "controlled execution",
+      "selection": {
+        "observed": "schema-1 Plan constructed directly by the test; one selected policy and tests.test_pkg; Selector not invoked"
+      },
+      "source_binding": {
+        "execution_tree": null,
+        "head_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshot": "omitted by schema-1 test Plan helper; no whole-tree identity claim"
+      },
+      "source_category": "controlled_test",
+      "unresolved_reason": "Controlled rejection, not production evidence",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "final execution report"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "host runner test double",
+      "id": "host-command",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "argv": [
+            "python",
+            "-c",
+            "raise SystemExit(0)"
+          ],
+          "type": "command"
+        },
+        "config_schema_version": null,
+        "path": "tests/test_execution.py::test_execute_runs_command_prerequisite",
+        "prerequisite_name": "wheel_smoke",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "FakeRunner CompletedProcess; no native command execution",
+      "selection": {
+        "observed": "schema-1 Plan constructed directly by the test; one selected policy and tests.test_pkg; Selector not invoked"
+      },
+      "source_binding": {
+        "execution_tree": null,
+        "head_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshot": "omitted by schema-1 test Plan helper; no whole-tree identity claim"
+      },
+      "source_category": "controlled_test",
+      "unresolved_reason": "No wheel is built; no output_ref exists",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan"
+    },
+    {
+      "consumer": [
+        "select -> execute CLI"
+      ],
+      "dependency_kind": "policy_only",
+      "execution_context": "Actions checkout",
+      "id": "workflow-config",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": false,
+        "action_spec": null,
+        "config_schema_version": null,
+        "path": ".github/workflows/reusable-python-ci.yml",
+        "prerequisite_name": "caller-defined",
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "not observed",
+      "selection": {
+        "escalation_reason_source": "Selection.escalation_reason",
+        "full_escalated": "all declared prerequisite names",
+        "targeted": "configured tests intersect selected tests",
+        "observed": "optional workflow input; no committed caller invocation found"
+      },
+      "source_binding": [
+        "git.snapshot",
+        "git.execution_tree",
+        "git.source_tree_id",
+        "git.content_binding"
+      ],
+      "source_category": "workflow_parameter",
+      "unresolved_reason": "selection_config defaults empty; no committed caller supplies it",
+      "current_phase": "post_check",
+      "target_phase": "post_check",
+      "failure_scope": "Post-check policy affects final Report; it is not a startup dependency of tests or selected checks",
+      "public_handoff": "selection.plan -> dependency_contract -> execution.execute / Dagger execute_plan",
+      "necessary_inputs": [
+        "explicit nonempty selection_config",
+        "Actions checkout and event refs"
+      ]
+    },
+    {
+      "consumer": [],
+      "dependency_kind": "unresolved",
+      "execution_context": "not configured",
+      "id": "repository-config",
+      "independent_checks": "No declared consumer startup edge; legacy policy aggregation only",
+      "necessary_outputs": null,
+      "producer": {
+        "action_parameters_present": false,
+        "action_spec": null,
+        "config_schema_version": 1,
+        "path": "ci-selection.toml",
+        "prerequisite_name": null,
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": null,
+      "result_origin": "not observed",
+      "selection": null,
+      "source_binding": null,
+      "source_category": "project_config",
+      "unresolved_reason": "No root project ci-selection.toml exists in this repository",
+      "current_phase": "not configured",
+      "target_phase": "unresolved",
+      "failure_scope": "No declaration or invocation exists",
+      "public_handoff": "No root config to produce a Plan"
+    },
+    {
+      "consumer": [
+        "_repository_tests -> tests / repository_test_artifacts"
+      ],
+      "dependency_kind": "data",
+      "execution_context": "Dagger container",
+      "id": "pytest-data",
+      "independent_checks": "Separate lint/format/Weaver computation paths are not dependent on this pytest verdict",
+      "necessary_outputs": [
+        "prepared Container",
+        "_run_pytest result with native exit/stdout/stderr",
+        "JUnit/optional coverage File bundle"
+      ],
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "manifests": [
+            "pyproject.toml",
+            "uv.lock"
+          ],
+          "source": "Directory"
+        },
+        "config_schema_version": null,
+        "path": ".dagger/src/engineering_ci_module/repository.py::environment",
+        "prerequisite_name": null,
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": false,
+      "result_origin": "Static existing Dagger call path; not re-executed during this A acceptance",
+      "selection": {
+        "observed": "native tests / repository_test_artifacts function entry; not Selector-dependent"
+      },
+      "source_binding": "actual Directory -> /workspace, after repository.SOURCE_EXCLUDES",
+      "source_category": "actual_function",
+      "unresolved_reason": "Native data dependency exists; Plan-driven Pytest is a separate path, B result sharing not delivered",
+      "current_phase": "native_data_dependency",
+      "target_phase": "native_data_dependency",
+      "failure_scope": "Environment failure blocks that test computation; pytest failure fails strict tests while artifact export retains the result",
+      "public_handoff": "repository.environment -> _repository_tests -> tests / repository_test_artifacts; B must connect the selected Plan",
+      "necessary_inputs": [
+        "pyproject.toml",
+        "uv.lock",
+        "Source Directory",
+        "Python 3.14",
+        "test-only git/gh"
+      ]
+    },
+    {
+      "consumer": [
+        "weaver_report / weaver_enforce / native Checks"
+      ],
+      "dependency_kind": "data",
+      "execution_context": "Dagger container",
+      "id": "weaver-data",
+      "independent_checks": "Repository pytest/lint/format paths do not depend on this Weaver verdict",
+      "necessary_outputs": [
+        "/out Directory",
+        "/out/report.json",
+        "native execution logs and package"
+      ],
+      "producer": {
+        "action_parameters_present": true,
+        "action_spec": {
+          "output": "/out",
+          "runtime": "weaver_runtime.py",
+          "source": "Directory"
+        },
+        "config_schema_version": null,
+        "path": ".dagger/src/engineering_ci_module/main.py::weaver_artifacts",
+        "prerequisite_name": null,
+        "revision": "95c70be310053ddb9fcbe12b78a285e56d62b542"
+      },
+      "requires_git_odb": false,
+      "result_origin": "Static existing Dagger call path; not re-executed during this A acceptance",
+      "selection": {
+        "observed": "native kind registry/sample/live/terminal and explicit config path; not prerequisite name inference"
+      },
+      "source_binding": "actual Directory filtered by tooling.SOURCE_NOISE; bound.digest passed as ECI_SOURCE_DIGEST",
+      "source_category": "actual_function",
+      "unresolved_reason": "Existing function path; no A claim of cross-invocation or cross-Run identity",
+      "current_phase": "native_data_dependency",
+      "target_phase": "native_data_dependency",
+      "failure_scope": "Non-passed report rejects _require_weaver / strict Check / Enforce; this is not the pytest branch",
+      "public_handoff": "weaver_artifacts -> weaver_report -> _require_weaver -> Enforce/Checks; B must connect the selected Plan",
+      "necessary_inputs": [
+        "filtered Source Directory",
+        "config_path",
+        "kind",
+        "fixed Weaver tool asset",
+        "weaver_runtime.py"
+      ]
+    }
+  ],
+  "production_pre_execution_pass_edges_confirmed": 0,
+  "scope": "A first delivery, actual instance inventory; not a graph registry"
+}

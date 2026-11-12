@@ -1,0 +1,4 @@
+# Retain the exact captured acceptance bytes.
+* -text
+# Native Windows pytest output retains CRLF.
+targeted-tests.txt whitespace=cr-at-eol
