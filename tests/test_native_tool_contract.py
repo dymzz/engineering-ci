@@ -54,7 +54,9 @@ def test_builtin_definitions_declare_their_real_native_tools():
     docs = check_contract.definition_for("docs")
     inventory = requirements(docs)["inventory"]
     links = requirements(docs)["links"]
+    assert docs.definition_version == 2
     assert inventory.alternatives[0].access_id == "git/ls-files"
+    assert inventory.alternatives[0].authority == "eci_local_entry"
     assert inventory.after == ()
     assert links.alternatives[0].access_id == "lychee/docs"
     assert links.after == ("inventory",)
@@ -67,11 +69,36 @@ def test_builtin_definitions_declare_their_real_native_tools():
         ("whitespace", "git/diff-check"),
     ):
         definition = check_contract.definition_for(name)
+        assert definition.definition_version == 2
         assert [
             item.alternatives[0].access_id for item in definition.tool_requirements
         ] == [access]
     for name in ("forwarding", "source"):
-        assert check_contract.definition_for(name).tool_requirements == ()
+        definition = check_contract.definition_for(name)
+        assert definition.definition_version == 1
+        assert definition.tool_requirements == ()
+
+
+def test_definition_versions_preserve_the_pre_tool_contract():
+    docs = check_contract.definition_for("docs")
+    legacy = check_contract.validate_definition(
+        check_contract.CheckDefinition(check_id=docs.check_id, definition_version=1)
+    )
+    assert legacy.definition_version == 1
+    assert legacy.tool_requirements == ()
+    assert legacy.requires_baseline == docs.requires_baseline
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_version_mismatch"
+    ):
+        check_contract.validate_definition(
+            check_contract.CheckDefinition(check_id=docs.check_id, definition_version=3)
+        )
+    with pytest.raises(check_contract.CheckContractError, match="result_check_unknown"):
+        check_contract.validate_definition(
+            check_contract.CheckDefinition(
+                check_id="eci/not/registered", definition_version=1
+            )
+        )
 
 
 def test_definition_rejects_conflicting_tool_requirements():
@@ -217,10 +244,12 @@ def test_undeclared_or_forbidden_tool_observations_are_refused():
         check_contract.CheckContractError, match="result_tool_undeclared"
     ):
         result(tool=observed("osv/scan"))
-    # No ToolAsset identity was verified for Lychee in this contract, so a
-    # result may not invent one.
-    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
-        result(tool=observed("lychee/docs", tool_id="lychee"))
+    # No ToolAsset identity was verified for Lychee in this contract, so an
+    # ECI-local entry may not invent one.
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+    ):
+        observed("lychee/docs", tool_id="lychee")
     with pytest.raises(
         check_contract.CheckContractError, match="result_tool_unexpected"
     ):
@@ -386,3 +415,251 @@ def test_schema_version_one_results_remain_readable():
     payload["content_id"] = check_contract._digest(content)
     payload["result_id"] = check_contract._digest(payload)
     assert check_contract.validate_result(payload) is payload
+
+
+def test_single_result_coverage_uses_the_declared_requirement_satisfaction():
+    tach = check_contract.definition_for("tach")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    expected = {
+        "check_id": tach.check_id,
+        "definition_version": tach.definition_version,
+        "rule_ref": rule,
+        "source_ref": closed_source(),
+    }
+    bare = check_contract.native_result(
+        tach,
+        source=closed_source(),
+        status="passed",
+        result_origin="host",
+        result_instance="bare",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=rule,
+    )
+    assert (
+        check_contract.evaluate_check_satisfaction(tach, [bare])["status"]
+        == "unsatisfied"
+    )
+    assert not check_contract.result_covers_expected(bare, expected)
+
+    with_tool = check_contract.native_result(
+        tach,
+        source=closed_source(),
+        status="passed",
+        result_origin="host",
+        result_instance="with-tool",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=rule,
+        tool=observed("tach/check"),
+    )
+    assert (
+        check_contract.evaluate_check_satisfaction(tach, [with_tool])["status"]
+        == "satisfied"
+    )
+    assert check_contract.result_covers_expected(with_tool, expected)
+
+    forwarding = check_contract.definition_for("forwarding")
+    baseline = {"base_commit": "a" * 40}
+    internal = check_contract.native_result(
+        forwarding,
+        source=closed_source(),
+        status="passed",
+        result_origin="host",
+        result_instance="internal",
+        evidence={"analysis": "forwarding"},
+        rule_ref=rule,
+        baseline_ref=baseline,
+    )
+    expected_internal = {
+        "check_id": forwarding.check_id,
+        "definition_version": forwarding.definition_version,
+        "rule_ref": rule,
+        "source_ref": closed_source(),
+        "baseline_ref": baseline,
+    }
+    assert (
+        check_contract.evaluate_check_satisfaction(forwarding, [internal])["status"]
+        == "not_applicable"
+    )
+    assert check_contract.result_covers_expected(internal, expected_internal)
+
+
+def test_satisfaction_refuses_results_from_different_check_instances():
+    docs = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    other_rule = check_contract.rule_ref("hygiene", 2, digest="b" * 64)
+    source_a = closed_source("a" * 40)
+    source_b = closed_source("b" * 40)
+
+    def inventory_result(*, source=source_a, rule_value=rule):
+        return check_contract.native_result(
+            docs,
+            source=source,
+            status="passed",
+            result_origin="host",
+            result_instance="inventory",
+            native_exit_code=0,
+            evidence={"stdout": ""},
+            rule_ref=rule_value,
+            tool=observed("git/ls-files", executable="git"),
+        )
+
+    def links_result(
+        inventory,
+        *,
+        source=source_a,
+        rule_value=rule,
+        baseline=None,
+        instance="links",
+    ):
+        return check_contract.native_result(
+            docs,
+            source=source,
+            status="passed",
+            result_origin="host",
+            result_instance=instance,
+            native_exit_code=0,
+            evidence={"stdout": ""},
+            rule_ref=rule_value,
+            tool=observed("lychee/docs", executable="lychee"),
+            baseline_ref=baseline,
+            input_refs=[
+                {
+                    "kind": "check_result",
+                    "result_id": inventory["result_id"],
+                    "path": "git/ls-files",
+                }
+            ],
+        )
+
+    inventory = inventory_result()
+    assert (
+        check_contract.evaluate_check_satisfaction(
+            docs, [inventory, links_result(inventory)]
+        )["status"]
+        == "satisfied"
+    )
+    # A different run instance of the same Check instance may be combined.
+    assert (
+        check_contract.evaluate_check_satisfaction(
+            docs, [inventory, links_result(inventory, instance="another-job")]
+        )["status"]
+        == "satisfied"
+    )
+    for kwargs in (
+        {"source": source_b},
+        {"rule_value": other_rule},
+        {"baseline": {"base_commit": "b" * 40}},
+    ):
+        with pytest.raises(
+            check_contract.CheckContractError, match="satisfaction_instance_mismatch"
+        ):
+            check_contract.evaluate_check_satisfaction(
+                docs, [inventory, links_result(inventory, **kwargs)]
+            )
+
+
+def test_legacy_definition_result_cannot_satisfy_the_upgraded_check():
+    docs = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    legacy = {
+        "kind": check_contract.RESULT_KIND,
+        "schema_version": 1,
+        "check": {
+            "check_id": docs.check_id,
+            "definition_version": 1,
+            "tool_id": None,
+            "access_id": None,
+            "rule_ref": rule,
+            "profile_ref": None,
+        },
+        "source_ref": closed_source(),
+        "input_refs": [],
+        "status": "passed",
+        "native_exit_code": 0,
+        "result_origin": "host",
+        "runner_ref": None,
+        "result_instance": "legacy",
+        "artifact_refs": [],
+        "coverage": None,
+        "evidence": {"stdout": ""},
+        "baseline_ref": None,
+        "reason": None,
+    }
+    content = {key: value for key, value in legacy.items() if key != "result_instance"}
+    legacy["content_id"] = check_contract._digest(content)
+    legacy["result_id"] = check_contract._digest(legacy)
+    assert check_contract.validate_result(legacy) is legacy
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="satisfaction_definition_version_mismatch",
+    ):
+        check_contract.evaluate_check_satisfaction(docs, [legacy])
+    # The old single-result contract remains readable for its own definition.
+    expected_v1 = {
+        "check_id": docs.check_id,
+        "definition_version": 1,
+        "rule_ref": rule,
+        "source_ref": closed_source(),
+    }
+    assert check_contract.result_covers_expected(legacy, expected_v1)
+    recreated = check_contract.native_result(
+        check_contract.CheckDefinition(check_id=docs.check_id, definition_version=1),
+        source=closed_source(),
+        status="passed",
+        result_origin="host",
+        result_instance="recreated",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=rule,
+    )
+    assert recreated["check"]["definition_version"] == 1
+    assert check_contract.validate_result(recreated)["check"]["definition_version"] == 1
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_version_mismatch"
+    ):
+        check_contract.native_result(
+            check_contract.CheckDefinition(
+                check_id=docs.check_id, definition_version=3
+            ),
+            source=closed_source(),
+            status="passed",
+            result_origin="host",
+            result_instance="future",
+            native_exit_code=0,
+            evidence={"stdout": ""},
+        )
+
+
+def test_tool_identity_authority_is_explicit():
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity("lychee/docs", tool_id="lychee")
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_id_required_for_runtime_access"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity("osv/scan", authority="runtime_tool_access")
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_authority_invalid"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity("osv/scan", authority="runtime")
+        )
+    runtime = check_contract.ToolIdentity(
+        "osv/scan", tool_id="osv-scanner", authority="runtime_tool_access"
+    )
+    assert check_contract.validate_tool_identity(runtime) is runtime
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+    ):
+        check_contract.tool_ref("lychee/docs", tool_id="lychee")
+    observed_runtime = check_contract.tool_ref(
+        "osv/scan", tool_id="osv-scanner", authority="runtime_tool_access"
+    )
+    assert observed_runtime["authority"] == "runtime_tool_access"

@@ -205,7 +205,7 @@ def test_execute_runs_selected_docs_check_without_tests(repo):
     assert report["checks"][0]["name"] == "docs"
     assert report["checks"][0]["status"] == "passed"
     assert report["checks"][0]["check_id"] == "eci/hygiene/docs"
-    assert report["checks"][0]["check_version"] == 1
+    assert report["checks"][0]["check_version"] == 2
     assert report["checks"][0]["result_id"].startswith("sha256:")
     assert report["checks"][0]["native_result"]["check"]["check_id"] == (
         "eci/hygiene/docs"
@@ -862,3 +862,47 @@ def test_unsatisfied_native_satisfaction_blocks_the_report(repo):
     assert check["native_satisfaction"]["status"] == "unsatisfied"
     assert report["status"] == "blocked"
     assert report["reason"] == "native_satisfaction_incomplete"
+
+
+def test_failed_inventory_cannot_become_a_clean_not_applicable(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    fake = FakeRunner()
+
+    def failing_inventory(argv, root, data=None):
+        if list(argv)[:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(argv, 1, "", "inventory failed")
+        return fake(argv, root, data)
+
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=failing_inventory,
+    )
+    check = report["checks"][0]
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert check["status"] == "failed"
+    assert check["reason"] == "git_inventory_failed"
+    assert check["execution_started"] is False
+    assert check["inventory"]["exit_code"] == 1
+    assert "native_result" not in check
+
+
+def test_genuine_no_documents_does_not_become_a_failure(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert report["status"] == "passed"
+    assert check["status"] == "not_applicable"
+    assert check["reason"] == "no_applicable_documents"
+    assert check["inventory"]["exit_code"] == 0

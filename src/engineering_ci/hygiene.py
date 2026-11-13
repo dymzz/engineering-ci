@@ -380,7 +380,7 @@ def _forwarding(paths, changes, root, runner, config):
     return _result("forwarding", "passed")
 
 
-def _docs(paths, tracked, changes, root, runner, config, full):
+def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
     changed_docs = _changed_documents(set(paths), config)
     removed = any(not (root / path).exists() for path in paths)
     if not (full or changed_docs or removed):
@@ -388,6 +388,15 @@ def _docs(paths, tracked, changes, root, runner, config, full):
     documents = _active_documents(root, tracked, set(paths), config)
     targets = documents if (full or removed) else documents & changed_docs
     if not targets:
+        if not inventory_ok:
+            # An unknown/failed tracked-file set is not proof that no document
+            # is applicable; the check did not start and must not become a
+            # clean not_applicable verdict.
+            return {
+                **_result("docs", "failed", reason="git_inventory_failed"),
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
         return _result("docs", "not_applicable", reason="no_applicable_documents")
     # Lychee requires explicit inputs; passing the document set as stdin is
     # not an accepted invocation and fails before any link is checked.
@@ -480,6 +489,7 @@ def run(changes, config, *, root, runner=_run, full=False):
         if tracked_result.returncode == 0
         else set()
     )
+    inventory_ok = tracked_result.returncode == 0
     code_changed = full or any(
         path.startswith(("src/", "scripts/", "tests/"))
         or path in {"tach.toml", "pyproject.toml"}
@@ -492,7 +502,18 @@ def run(changes, config, *, root, runner=_run, full=False):
         elif name == "forwarding":
             results.append(_forwarding(paths, changes, root, runner, config))
         elif name == "docs":
-            results.append(_docs(paths, tracked, changes, root, runner, config, full))
+            results.append(
+                _docs(
+                    paths,
+                    tracked,
+                    changes,
+                    root,
+                    runner,
+                    config,
+                    full,
+                    inventory_ok=inventory_ok,
+                )
+            )
         elif name == "vulture":
             results.append(_vulture(root, runner, config, code_changed))
         elif name == "tach":

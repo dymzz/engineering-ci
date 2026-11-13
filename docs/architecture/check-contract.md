@@ -2,9 +2,15 @@
 
 Status: #52 Check/Native Result contract, first delivered by
 [ECI #52-A](https://github.com/dymzz/engineering-ci/issues/52) (PR #93) and
-extended by the Native Tool slice. Contract and result schema version 2;
-implemented contract, not a Hook or Required/trusted delivery. Version 1
-results remain readable with their original rules.
+extended by the Native Tool slice. Contract/result schema version 2;
+implemented contract, not a Hook or Required/trusted delivery. Two versions are
+independent:
+
+- **Result data schema** (2) formats one Native Result; schema 1 results stay
+  readable under their original rules.
+- **Check definition version** describes when a Check can be satisfied. Checks
+  that gained tool requirements are version 2; version 1 (pre-tool) definitions
+  stay readable but cannot satisfy the upgraded Check.
 
 The contract gives one stable `check_id` to a logical Check and a separate,
 per-run `result_id`. One Check may require several native tools, each recorded
@@ -58,10 +64,10 @@ reinterpreted):
 - `tool_id`/`access_id` are optional definition fields and are never inferred
   from a tool or Job name; per-Check tool requirements are declared separately
   below.
-- `definition_version` stays 1: the requirements describe the native
-  implementation identity of the same Check, while the Check's rule semantics
-  and baseline dependency are unchanged. The contract/result schema carries the
-  version change.
+- `definition_version` describes the Check's satisfaction contract. The five
+  tool-bound Checks are version 2; the pre-tool version 1 definitions remain
+  readable but cannot satisfy a version 2 Check. This is independent of the
+  Result data schema.
 - A missing identity is `check_identity_missing`; a genuinely executed Check
   retains its original native status and diagnostics. The Host records
   `check_contract=identity_missing` and blocks the top-level Report as
@@ -100,25 +106,34 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 - `after` is a real prerequisite. The satisfying result must reference the
   prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
   is not evidence that the tool consumed it.
-- A `ToolIdentity` declares `access_id` (the entry ECI controls) and optionally
-  a verified `tool_id`, `version` and `artifact_sha256`. A declared `tool_id`
-  must be recorded identically and is never derived from an executable, Hook
-  Job or display name. An undeclared version/artifact may be recorded as
-  observed evidence (for example a pinned Dagger tool).
-- Definition validation refuses duplicate/unknown requirement ids, self
-  references, cycles, empty or duplicate alternatives and invalid identities.
-  A definition whose requirements differ from the registered definition cannot
-  construct or validate a result.
+- A `ToolIdentity` declares `authority`, `access_id` and optionally a verified
+  `tool_id`, `version` and `artifact_sha256`. `authority` is either
+  `eci_local_entry` (an invocation ECI controls; `tool_id` must be absent) or
+  `runtime_tool_access` (a registered Runtime #27 ToolAccess, which requires its
+  ToolAsset `tool_id`). A local name is never promoted to a Runtime identity by
+  an executable, Hook Job or display name. An undeclared version/artifact may be
+  recorded as observed evidence (for example a pinned Dagger tool).
+- The current definitions (version 2) are the tool-bound ones: `docs`, `tach`,
+  `tach_external`, `vulture`, `whitespace`. `forwarding`/`source` remain version
+  1 because no tool requirement was added. Version 1 definitions keep the
+  pre-tool rules and stay readable; a version 1 result cannot satisfy a version
+  2 Check (`satisfaction_definition_version_mismatch`). Result schema 2 is
+  independent of this definition version.
+- Definition validation refuses unknown Check ids/versions, duplicate/unknown
+  requirement ids, self references, cycles, empty or duplicate alternatives and
+  invalid identities. A definition whose requirements differ from the
+  registered definition cannot construct or validate a result.
 - Alternative declarations are contract capability, not a production claim: no
   built-in Check currently declares more than one alternative.
 
 A Native Result records the entry that actually ran in `tool`
-(`access_id`, optional `tool_id`/`version`/`artifact_sha256`, and `executable`).
-The record participates in `content_id`/`result_id`. A tool-bound Check may omit
+(`authority`, `access_id`, optional `tool_id`/`version`/`artifact_sha256`, and
+`executable`). The record participates in `content_id`/`result_id`, and the
+observed `authority` must equal the declared one. A tool-bound Check may omit
 the observation (the native fact is preserved), but then it cannot satisfy the
 Check; a tool-less Check must not claim one. `direct_tool` results additionally
-require a matching verified `tool_id`, so no built-in Check currently accepts
-them.
+require `authority=runtime_tool_access` with a matching verified `tool_id`, so
+no built-in Check currently accepts them.
 
 `evaluate_check_satisfaction(definition, results)` combines the Native Results
 of one Check:
@@ -127,14 +142,21 @@ of one Check:
   declared alternative and every `after` edge is evidenced;
 - otherwise `unsatisfied` with per-requirement `result_missing`,
   `result_not_passed`, `prerequisite_unmet` or `prerequisite_unevidenced`;
+- all supplied results must describe one composable Check instance: equal
+  rule/profile/Source/baseline; a mixed set is refused with
+  `satisfaction_instance_mismatch`. Different run instances are allowed when
+  those facts are equal; stronger cross-Job equivalence remains #63 work;
 - a tool-less Check returns `not_applicable/no_tool_requirements`;
 - the decision always carries `consumer_scope=supplied_results_only`,
   `required=false`, `trusted=false`. It is not an ExpectedSet, Evidence
   Admission or Required decision.
 
-`result_covers_expected()` remains a single-result primitive: for a Check with
-more than one requirement it returns `False`, because one result cannot stand
-for an `all-required` composition.
+`result_covers_expected()` is a single-result primitive that **reuses the same
+requirement judgement**: for a tool-bound Check the result must have a matching
+declared Tool Observation, so a structurally valid native PASS without its tool
+cannot cover the Expected instance. A multi-requirement Check can never be
+covered by one result because its other requirements stay unsatisfied.
+Tool-less internal Checks keep their existing single-result coverage semantics.
 
 ## Public API
 
@@ -147,12 +169,14 @@ CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
 SATISFACTION_KIND = "engineering-ci-check-satisfaction"
 
-ToolIdentity(access_id, tool_id=None, version=None, artifact_sha256=None)
+ToolIdentity(access_id, tool_id=None, version=None, artifact_sha256=None,
+             authority="eci_local_entry")
 ToolRequirement(requirement_id, alternatives, after=())
+TOOL_AUTHORITIES = frozenset({"eci_local_entry", "runtime_tool_access"})
 
-definition_for(name) -> CheckDefinition | None
+definition_for(name) -> CheckDefinition | None   # current definition version
 check_id_for(name) -> str | None
-validate_definition(definition) -> CheckDefinition  # normalizes tool requirements
+validate_definition(definition) -> CheckDefinition  # registered version + requirements
 rule_ref(name, version, *, path=None, digest=None) -> dict
 profile_ref(name, version) -> dict
 source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
@@ -160,7 +184,7 @@ source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
            verified_scope=(), binding_status=None,
            scope_kind="changed_paths", materialization_ref=None) -> dict
 tool_ref(access_id, *, tool_id=None, version=None, artifact_sha256=None,
-         executable=None) -> dict   # observed evidence, not a declaration
+         authority="eci_local_entry", executable=None) -> dict  # observed evidence
 native_result(definition, *, source, status, result_origin, result_instance, ..., tool=None) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
@@ -168,7 +192,7 @@ evaluate_check_satisfaction(definition, results) -> dict  # one Check, supplied 
 resolve_definitions(required=None) -> dict   # requested_names only
 result_matches_expected(result, expected) -> bool  # candidate identity only
 validate_expected_instance(expected) -> dict  # one supplied scoped Check, no completeness
-result_covers_expected(result, expected) -> bool  # one result, single-tool Check only
+result_covers_expected(result, expected) -> bool  # one result; reuses requirement satisfaction
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -186,7 +210,7 @@ copy-pastable validated Result):
   "schema_version": 2,
   "check": {
     "check_id": "eci/hygiene/docs",
-    "definition_version": 1,
+    "definition_version": 2,
     "tool_id": null,
     "access_id": null,
     "rule_ref": {
@@ -219,6 +243,7 @@ copy-pastable validated Result):
     "tool_id": null,
     "version": null,
     "artifact_sha256": null,
+    "authority": "eci_local_entry",
     "executable": "lychee"
   },
   "runner_ref": "execution:host",
@@ -269,10 +294,13 @@ When an Expected instance explicitly declares `input_refs`, each declared
 input must be represented by an identical Native Result input reference.
 Additional real inputs are allowed; a mismatched digest cannot be overlooked.
 An explicitly declared `coverage` claim must also match the Native Result.
-For a Check with more than one requirement, `result_covers_expected()` returns
-`False`: one Native Result cannot represent an `all-required` composition, so
-callers must use `evaluate_check_satisfaction()`. These local comparisons do not
-prove consumer-wide Expected completeness or trusted source provenance.
+For a tool-bound Check, `result_covers_expected()` also requires the result's
+matching declared Tool Observation (the same requirement judgement used by
+`evaluate_check_satisfaction()`); a structurally valid PASS without it covers
+nothing. A Check with more than one requirement can never be covered by one
+result, so callers must use `evaluate_check_satisfaction()` there. These local
+comparisons do not prove consumer-wide Expected completeness or trusted source
+provenance.
 
 **No consumer-wide Expected/Required coverage API is produced by this #52
 slice.** The earlier `validate_completeness_receipt` and
@@ -303,12 +331,21 @@ execution-layer refusal). For every selected check it adds:
 
 A Check that reports native `passed` while its declared composition is
 `unsatisfied` blocks the Report with
-`blocked/native_satisfaction_incomplete`; failed, not-executed and
-not-applicable verdicts keep their existing handling. Unknown selected names
-remain `not_executed` with `check_identity_missing`. The report top-level adds
-`check_contract` kind/version. The Host `docs` Check now passes the document
-list to Lychee as arguments; real Lychee rejects an invocation without inputs,
-so the previous stdin invocation could never produce a valid native result.
+`blocked/native_satisfaction_incomplete`. The same block applies to a
+`not_applicable` verdict whose own Native Results contain a failed tool: a
+failed `git ls-files` inventory cannot be used as proof that no document is
+applicable. A genuinely empty document set with a successful inventory stays
+`not_applicable` and does not become a failure. In the Host `docs` path a failed
+inventory with no usable target is a pre-execution failure
+(`git_inventory_failed`, `execution_started=false`, no fabricated Lychee
+result); when changed documents remain, Lychee still runs and the native
+satisfaction gate blocks the PASS because the inventory requirement failed.
+
+Unknown selected names remain `not_executed` with `check_identity_missing`. The
+report top-level adds `check_contract` kind/version. The Host `docs` Check now
+passes the document list to Lychee as arguments; real Lychee rejects an
+invocation without inputs, so the previous stdin invocation could never produce
+a valid native result.
 
 ## Verification
 
@@ -316,26 +353,36 @@ so the previous stdin invocation could never produce a valid native result.
 compatibility; `tests/test_native_tool_contract.py` covers the Native Tool
 extension:
 
-- the real built-in Check tool requirements and entries;
+- the real built-in Check tool requirements, entries and definition versions;
 - duplicate requirement ids, unknown prerequisites, self references, cycles,
   empty/duplicate alternatives and invalid identities are refused;
 - a forged definition with different tool requirements cannot construct a
-  result;
+  result; unknown Check ids/versions are refused by `validate_definition`;
 - undeclared tool evidence, tool identity claims without a verified declaration
   and tool evidence on a tool-less Check are refused;
+- ECI-local entries cannot claim a `tool_id`; a `runtime_tool_access` identity
+  requires its ToolAsset id, and `direct_tool` requires that authority;
 - observed tool evidence participates in `content_id`/`result_id`;
 - satisfaction requires every declared result, allows a declared alternative,
   and requires an evidenced prerequisite `result_id` reference;
 - results from another Check are refused, a tool-less Check is
   `not_applicable`, and the decision never claims Required/trusted;
-- one result cannot cover a multi-tool Check;
-- schema version 1 results stay readable.
+- `result_covers_expected()` and `evaluate_check_satisfaction()` agree for the
+  same single result (bare PASS without the declared tool covers nothing;
+  a valid Tool Observation covers; internal tool-less checks keep coverage);
+- results of one Check from different rule/profile/Source/baseline instances
+  are refused, while equal instances from different run ids are allowed;
+- a schema 1 / definition version 1 result stays readable but cannot satisfy
+  the version 2 Check, while it still covers its own version 1 expectation;
+- one result cannot cover a multi-tool Check.
 
 `tests/test_execution.py` additionally checks that the real `docs` path emits
-`git/ls-files` and `lychee/docs` results for one `check_id`, references the
-inventory `result_id` from the Lychee result, records `satisfied` satisfaction,
-invokes Lychee with explicit document targets, and blocks a native PASS whose
-composition is unsatisfied.
+`git/ls-files` and `lychee/docs` results for one `check_id` (version 2),
+references the inventory `result_id` from the Lychee result, records
+`satisfied` satisfaction, invokes Lychee with explicit document targets, blocks
+a native PASS whose composition is unsatisfied, refuses a failed inventory as a
+clean `not_applicable`, and keeps a genuinely empty document set
+`not_applicable` (not failed).
 
 The real Host `git` + Lychee execution (pass and broken-link cases, actual
 exits and the resulting Report) is recorded in
@@ -347,8 +394,14 @@ exits and the resulting Report) is recorded in
   `identity_only`, and worktree content digests cover only changed paths. Exact
   full-input materialization remains #66 Source work.
 - No verified Runtime ToolAsset identity exists for the Host `git`/Lychee/
-  Vulture/Tach tools, so their results keep `tool_id=null`. Binding a real
-  ToolAsset/ToolAccess record is external-adapter work, not inferred here.
+  Vulture/Tach tools, so their results keep `authority=eci_local_entry` and
+  `tool_id=null`. The `runtime_tool_access` authority only marks where a
+  registered Runtime #27 ToolAccess/ToolAsset may be used; this contract does
+  not verify that registration, and no adapter supplies one yet.
+- Definition version 1 remains the pre-tool contract for the five tool-bound
+  Checks. Consumers must select the version they intend: a version 1 result or
+  expectation never satisfies a version 2 Check. No second version catalogue is
+  created; the controlled table lives in `check_contract`.
 - Dagger `execute-plan` reuses the Host function and therefore emits this
   contract, but `dagger_export` maps to `result_origin=unknown` and the Dagger
   tool pins (`tach`, `lychee`, `weaver`) are not recorded as observations. The

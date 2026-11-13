@@ -535,11 +535,14 @@ def _tool_observation(
     for requirement in definition.tool_requirements:
         for alternative in requirement.alternatives:
             if alternative.access_id == access_id:
+                # The namespace comes from the declaration; a verified
+                # runtime ToolAsset id must be supplied by the executor.
                 return check_contract.tool_ref(
                     access_id,
                     tool_id=tool_id,
                     version=version,
                     artifact_sha256=artifact_sha256,
+                    authority=alternative.authority,
                     executable=executable,
                 )
     raise check_contract.CheckContractError("result_tool_undeclared")
@@ -714,6 +717,26 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
     return checks
 
 
+def _unsatisfied_native(check):
+    """True when a claimed verdict contradicts the Check's native composition.
+
+    A native PASS requires a fully satisfied composition. A not_applicable
+    verdict is clean only when no native tool of that Check actually failed;
+    a failed inventory cannot become proof that the Check did not apply.
+    """
+    decision = check.get("native_satisfaction") or {}
+    if decision.get("status") != "unsatisfied":
+        return False
+    if check.get("status") == "passed":
+        return True
+    if check.get("status") == "not_applicable":
+        return any(
+            result.get("status") == "failed"
+            for result in check.get("native_results") or ()
+        )
+    return False
+
+
 def execute(
     plan,
     *,
@@ -876,13 +899,11 @@ def execute(
         for item in report["checks"]
         if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
     ]
-    # A Check that claims native PASS without its declared tool composition is
-    # not a satisfied Check. Non-passed verdicts keep their existing handling.
+    # A Check that claims a native verdict without its declared tool composition
+    # is not a satisfied Check. A genuine not_applicable verdict stays clean
+    # only when no native tool of that Check actually failed.
     unsatisfied_native = [
-        item
-        for item in report["checks"]
-        if item.get("status") == "passed"
-        and item.get("native_satisfaction", {}).get("status") == "unsatisfied"
+        item for item in report["checks"] if _unsatisfied_native(item)
     ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"

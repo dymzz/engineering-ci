@@ -8,18 +8,18 @@
           "status": "valid"
         },
         "check_id": "eci/hygiene/docs",
-        "check_version": 1,
+        "check_version": 2,
         "name": "docs",
         "native_results": [
           {
             "baseline_ref": {
-              "base_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "base_commit": "47581d08926673fb7626f27f383084b097c0663b",
               "base_ref": "HEAD"
             },
             "check": {
               "access_id": null,
               "check_id": "eci/hygiene/docs",
-              "definition_version": 1,
+              "definition_version": 2,
               "profile_ref": null,
               "rule_ref": {
                 "name": "engineering-ci.hygiene",
@@ -29,7 +29,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:3910fa4696051050923fb6b642530929cf29c27a177a4d67b68c2f1e82afe061",
+            "content_id": "sha256:747b13b80ad979b78a7052330863f4aad3f796537649bb0ef5ccb26fcce318d3",
             "evidence": {
               "stderr": "",
               "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
@@ -37,12 +37,12 @@
             "input_refs": [],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
+            "result_id": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -51,6 +51,7 @@
             "tool": {
               "access_id": "git/ls-files",
               "artifact_sha256": null,
+              "authority": "eci_local_entry",
               "executable": "git",
               "tool_id": null,
               "version": null
@@ -58,13 +59,13 @@
           },
           {
             "baseline_ref": {
-              "base_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "base_commit": "47581d08926673fb7626f27f383084b097c0663b",
               "base_ref": "HEAD"
             },
             "check": {
               "access_id": null,
               "check_id": "eci/hygiene/docs",
-              "definition_version": 1,
+              "definition_version": 2,
               "profile_ref": null,
               "rule_ref": {
                 "name": "engineering-ci.hygiene",
@@ -74,17 +75,17 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:a2058c22e241673037b324b8339b937f9022b73c60c95ac45b2ff022bdda8d6b",
+            "content_id": "sha256:be5e13473ddcde021238507dc5525780d0da1cc308e7d07b6284aee780cbd2da",
             "evidence": {
               "findings": [],
               "stderr": "",
-              "stdout": "\ud83d\udd0d 1 Total (in 7ms) \ud83d\udd17 1 Unique \u2705 1 OK \ud83d\udeab 0 Errors\n\n"
+              "stdout": "\ud83d\udd0d 1 Total (in 6ms) \ud83d\udd17 1 Unique \u2705 1 OK \ud83d\udeab 0 Errors\n\n"
             },
             "input_refs": [
               {
                 "kind": "check_result",
                 "path": "git/ls-files",
-                "result_id": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e"
+                "result_id": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea"
               },
               {
                 "kind": "config",
@@ -94,12 +95,12 @@
             ],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c",
+            "result_id": "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -108,6 +109,7 @@
             "tool": {
               "access_id": "lychee/docs",
               "artifact_sha256": null,
+              "authority": "eci_local_entry",
               "executable": "lychee",
               "tool_id": null,
               "version": null
@@ -117,7 +119,7 @@
         "native_satisfaction": {
           "check_id": "eci/hygiene/docs",
           "consumer_scope": "supplied_results_only",
-          "definition_version": 1,
+          "definition_version": 2,
           "kind": "engineering-ci-check-satisfaction",
           "reason": "all_requirements_satisfied",
           "required": false,
@@ -128,11 +130,11 @@
                 "git/ls-files"
               ],
               "observed": [
-                "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e"
+                "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea"
               ],
               "reason": "native_pass",
               "requirement_id": "inventory",
-              "satisfied_by": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
+              "satisfied_by": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
               "status": "satisfied"
             },
             {
@@ -143,17 +145,17 @@
                 "lychee/docs"
               ],
               "observed": [
-                "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c"
+                "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f"
               ],
               "reason": "native_pass",
               "requirement_id": "links",
-              "satisfied_by": "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c",
+              "satisfied_by": "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f",
               "status": "satisfied"
             }
           ],
           "result_ids": [
-            "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
-            "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c"
+            "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
+            "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f"
           ],
           "schema_version": 2,
           "status": "satisfied",
@@ -163,7 +165,7 @@
         "status": "passed"
       },
       "fixture": "cases\\docs-pass",
-      "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+      "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
       "report": {
         "exit_code": 0,
         "reason": null,
@@ -178,18 +180,18 @@
           "status": "valid"
         },
         "check_id": "eci/hygiene/docs",
-        "check_version": 1,
+        "check_version": 2,
         "name": "docs",
         "native_results": [
           {
             "baseline_ref": {
-              "base_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "base_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
               "base_ref": "HEAD"
             },
             "check": {
               "access_id": null,
               "check_id": "eci/hygiene/docs",
-              "definition_version": 1,
+              "definition_version": 2,
               "profile_ref": null,
               "rule_ref": {
                 "name": "engineering-ci.hygiene",
@@ -199,7 +201,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:feb31436731d4c43f6532125d2c099dfc7259b1067b4e127bafacbc5d1368ee4",
+            "content_id": "sha256:9c2c363137022ec4b62189a72c386b693bf8a0bfea23da14ec423f1955bbed88",
             "evidence": {
               "stderr": "",
               "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
@@ -207,12 +209,12 @@
             "input_refs": [],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
+            "result_id": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -221,6 +223,7 @@
             "tool": {
               "access_id": "git/ls-files",
               "artifact_sha256": null,
+              "authority": "eci_local_entry",
               "executable": "git",
               "tool_id": null,
               "version": null
@@ -228,13 +231,13 @@
           },
           {
             "baseline_ref": {
-              "base_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "base_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
               "base_ref": "HEAD"
             },
             "check": {
               "access_id": null,
               "check_id": "eci/hygiene/docs",
-              "definition_version": 1,
+              "definition_version": 2,
               "profile_ref": null,
               "rule_ref": {
                 "name": "engineering-ci.hygiene",
@@ -244,7 +247,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:b8408529651a28fb2f182e23cdba5db91f4809efa89fa2c24bd2fd72f0fb8ecf",
+            "content_id": "sha256:7817a65bbb6a18548f023112b990f7431d6d818e744dac920a98eb5d84ea718c",
             "evidence": {
               "findings": [],
               "stderr": "",
@@ -254,7 +257,7 @@
               {
                 "kind": "check_result",
                 "path": "git/ls-files",
-                "result_id": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145"
+                "result_id": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96"
               },
               {
                 "kind": "config",
@@ -264,12 +267,12 @@
             ],
             "native_exit_code": 2,
             "reason": "lychee_findings",
-            "result_id": "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8",
+            "result_id": "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -278,6 +281,7 @@
             "tool": {
               "access_id": "lychee/docs",
               "artifact_sha256": null,
+              "authority": "eci_local_entry",
               "executable": "lychee",
               "tool_id": null,
               "version": null
@@ -287,7 +291,7 @@
         "native_satisfaction": {
           "check_id": "eci/hygiene/docs",
           "consumer_scope": "supplied_results_only",
-          "definition_version": 1,
+          "definition_version": 2,
           "kind": "engineering-ci-check-satisfaction",
           "reason": "result_not_passed",
           "required": false,
@@ -298,11 +302,11 @@
                 "git/ls-files"
               ],
               "observed": [
-                "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145"
+                "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96"
               ],
               "reason": "native_pass",
               "requirement_id": "inventory",
-              "satisfied_by": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
+              "satisfied_by": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
               "status": "satisfied"
             },
             {
@@ -313,7 +317,7 @@
                 "lychee/docs"
               ],
               "observed": [
-                "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8"
+                "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d"
               ],
               "reason": "result_not_passed",
               "requirement_id": "links",
@@ -322,8 +326,8 @@
             }
           ],
           "result_ids": [
-            "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
-            "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8"
+            "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
+            "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d"
           ],
           "schema_version": 2,
           "status": "unsatisfied",
@@ -333,7 +337,7 @@
         "status": "failed"
       },
       "fixture": "cases\\docs-fail",
-      "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+      "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
       "report": {
         "exit_code": 1,
         "reason": "checks_failed",
@@ -348,5 +352,5 @@
     "python": "3.14.3"
   },
   "kind": "engineering-ci-native-tool-host-evidence",
-  "recorded_at": "2026-11-13T17:27:49.473827+00:00"
+  "recorded_at": "2026-11-13T17:57:59.360498+00:00"
 }

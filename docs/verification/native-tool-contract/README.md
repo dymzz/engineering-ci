@@ -36,14 +36,19 @@ repository inputs above are the complete reproduction.
 | `docs-fail` (`[missing](missing.md)`) | `git/ls-files` 0, `lychee/docs` 2 | `unsatisfied`, `links: result_not_passed` | `failed`, `checks_failed` |
 
 Both cases produce two Native Results with distinct `result_id`s for the same
-`check_id` (`eci/hygiene/docs`), `definition_version` 1 and the same
+`check_id` (`eci/hygiene/docs`), `definition_version` 2 and the same
 `rule_ref`. The `lychee/docs` result carries the `git/ls-files` `result_id` in
 `input_refs` (`kind=check_result`); the `docs` requirement declares
 `after=("inventory",)` and is satisfied only because that consumption is
-evidenced. `tool_id` is `null` in both results: no verified Runtime ToolAsset
-identity exists for these host tools, so the contract records the native entry
-(`git/ls-files`, `lychee/docs`), the executable and the exit, not an invented
-asset id.
+evidenced. Both tools keep `authority=eci_local_entry` and `tool_id=null`: no
+verified Runtime ToolAsset identity exists for these host tools, so the contract
+records the ECI-local entry (`git/ls-files`, `lychee/docs`), the executable and
+the exit, not an invented asset id.
+
+The record was regenerated after the review follow-up that gave the tool-bound
+Checks definition version 2 (version 1 stays readable as the pre-tool contract),
+added the explicit `authority` namespace, and made `result_covers_expected()`
+reuse the same requirement judgement as `evaluate_check_satisfaction()`.
 
 ## Real defect found and fixed
 
@@ -75,3 +80,8 @@ first reproduction of the Host `docs` tool chain.
 - No `all-required` multi-result instance beyond `git` + `lychee` for `docs`,
   and no production `allowed-alternative` instance exists yet. The alternative
   path is covered by controlled contract tests only.
+- The `runtime_tool_access` authority is declared in the contract but not
+  exercised here: no verified Runtime #27 ToolAsset/ToolAccess record is
+  supplied by this Host path, so `tool_id` stays null.
+- Schema 1 / definition version 1 results remain readable but cannot satisfy
+  the version 2 `docs` Check; the evidence JSON above is version 2.

@@ -32,6 +32,10 @@ STATUSES = frozenset(
     {"passed", "failed", "advisory", "not_applicable", "not_executed", "unknown"}
 )
 ORIGINS = frozenset({"host", "dagger", "actions", "direct_tool", "unknown"})
+# An ECI-local entry is a native invocation this package controls; it is not a
+# registered Runtime ToolAccess. A runtime ToolAccess may only be recorded when
+# the caller has a verified ToolAsset/ToolAccess registration for it.
+TOOL_AUTHORITIES = frozenset({"eci_local_entry", "runtime_tool_access"})
 PROCESS_CHECK_IDS = frozenset(
     {
         "eci/hygiene/whitespace",
@@ -70,15 +74,19 @@ class CheckContractError(ValueError):
 class ToolIdentity:
     """One native tool/entry that can implement (part of) a Check.
 
-    ``access_id`` is the native entry identity ECI itself controls. ``tool_id``
-    is only filled with a verified ToolAsset identity or another verified asset
-    record; it is never inferred from an executable, Hook Job or display name.
+    ``access_id`` is the native entry ECI invokes. ``authority`` states which
+    namespace that entry belongs to: ``eci_local_entry`` is an ECI-local
+    invocation (no registered ToolAccess, therefore no ``tool_id``), while
+    ``runtime_tool_access`` names a verified Runtime #27 ToolAccess and requires
+    its registered ToolAsset ``tool_id``. A local name is never promoted to a
+    Runtime identity by an executable, Hook Job or display name.
     """
 
     access_id: str
     tool_id: str | None = None
     version: str | None = None
     artifact_sha256: str | None = None
+    authority: str = "eci_local_entry"
 
 
 @dataclass(frozen=True)
@@ -124,7 +132,7 @@ def _sha256(value, name):
 
 _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _TOOL_ACCESS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
-_TOOL_REF_FIELDS = ("access_id", "tool_id", "version", "artifact_sha256")
+_TOOL_REF_FIELDS = ("access_id", "tool_id", "version", "artifact_sha256", "authority")
 
 
 def validate_tool_identity(identity):
@@ -136,6 +144,8 @@ def validate_tool_identity(identity):
             raise CheckContractError("tool_identity_invalid") from None
     if not isinstance(identity, ToolIdentity):
         raise CheckContractError("tool_identity_invalid")
+    if identity.authority not in TOOL_AUTHORITIES:
+        raise CheckContractError("tool_authority_invalid")
     if not isinstance(identity.access_id, str) or not _TOOL_ACCESS_PATTERN.fullmatch(
         identity.access_id
     ):
@@ -145,6 +155,10 @@ def validate_tool_identity(identity):
         or not _LOCAL_ID_PATTERN.fullmatch(identity.tool_id)
     ):
         raise CheckContractError("tool_id_invalid")
+    if identity.authority == "eci_local_entry" and identity.tool_id is not None:
+        raise CheckContractError("tool_id_forbidden_for_local_entry")
+    if identity.authority == "runtime_tool_access" and identity.tool_id is None:
+        raise CheckContractError("tool_id_required_for_runtime_access")
     if identity.version is not None:
         _text(identity.version, "tool_version")
     _sha256(identity.artifact_sha256, "tool_artifact_sha256")
@@ -157,6 +171,7 @@ def tool_ref(
     tool_id=None,
     version=None,
     artifact_sha256=None,
+    authority="eci_local_entry",
     executable=None,
 ):
     """Record the native entry that actually ran; evidence, not a declaration."""
@@ -165,6 +180,7 @@ def tool_ref(
         "tool_id": tool_id,
         "version": version,
         "artifact_sha256": artifact_sha256,
+        "authority": authority,
     }
     if executable is not None:
         ref["executable"] = _text(executable, "tool_executable")
@@ -269,16 +285,17 @@ def check_id_for(name):
 
 
 def definition_for(name):
+    """Return the current definition for a built-in display name, or None."""
     check_id = check_id_for(name)
-    return _BUILTIN_BY_ID.get(check_id) if check_id else None
+    return _CURRENT_BY_ID.get(check_id) if check_id else None
 
 
 # Exact old→new checks consume the old source as native input. Other checks
 # may use changed-path selection, but do not intrinsically inspect old bytes.
 #
 # Native entries are declared here, not inferred at runtime: an alternative's
-# ``access_id`` is the entry ECI itself invokes. ``tool_id`` stays empty until a
-# verified ToolAsset/asset record exists for that tool (external adapters).
+# ``access_id`` is an ECI-local entry. ``tool_id`` stays empty: these host tools
+# have no verified Runtime ToolAsset registration.
 _TOOL_REQUIREMENTS = {
     # ``git ls-files`` determines the checked document set and feeds Lychee.
     "docs": (
@@ -292,24 +309,49 @@ _TOOL_REQUIREMENTS = {
     "vulture": (ToolRequirement("dead-code", (ToolIdentity("vulture/dead-code"),)),),
     "whitespace": (ToolRequirement("diff-hygiene", (ToolIdentity("git/diff-check"),)),),
 }
-_BUILTIN_DEFINITIONS = tuple(
-    CheckDefinition(
-        check_id,
-        requires_baseline=name in {"whitespace", "forwarding"},
-        tool_requirements=_TOOL_REQUIREMENTS.get(name, ()),
-    )
-    for name, check_id in CHECK_IDS.items()
-)
-_BUILTIN_BY_ID = MappingProxyType(
-    {definition.check_id: definition for definition in _BUILTIN_DEFINITIONS}
-)
+# Declaring tool requirements changes when a Check can be satisfied, so it is a
+# definition-version change, not only a Result schema change. Version 1 remains
+# the pre-tool contract and stays readable; it can never satisfy the upgraded
+# version because the definition versions differ.
+_CURRENT_DEFINITION_VERSION = {
+    "whitespace": 2,
+    "forwarding": 1,
+    "docs": 2,
+    "vulture": 2,
+    "tach": 2,
+    "tach_external": 2,
+    "source": 1,
+}
+
+
+def _builtin_definitions():
+    by_version = {}
+    current = {}
+    for name, check_id in CHECK_IDS.items():
+        latest = _CURRENT_DEFINITION_VERSION[name]
+        for version in range(1, latest + 1):
+            by_version[(check_id, version)] = CheckDefinition(
+                check_id,
+                definition_version=version,
+                requires_baseline=name in {"whitespace", "forwarding"},
+                tool_requirements=(
+                    _TOOL_REQUIREMENTS.get(name, ()) if version >= 2 else ()
+                ),
+            )
+        current[check_id] = by_version[(check_id, latest)]
+    return by_version, current
+
+
+_versions, _current = _builtin_definitions()
+_BUILTIN_BY_VERSION = MappingProxyType(_versions)
+_CURRENT_BY_ID = MappingProxyType(_current)
 
 
 def _registered_definition(check_id, version):
-    definition = _BUILTIN_BY_ID.get(check_id)
-    if definition is None:
+    if check_id not in _CURRENT_BY_ID:
         raise CheckContractError("result_check_unknown")
-    if version != definition.definition_version:
+    definition = _BUILTIN_BY_VERSION.get((check_id, version))
+    if definition is None:
         raise CheckContractError("result_check_version_mismatch")
     return definition
 
@@ -364,6 +406,7 @@ def validate_definition(definition):
     # Use the same reference validation as validate_result(), including digest.
     _validate_reference(definition.rule_ref, "rule_ref")
     _validate_reference(definition.profile_ref, "profile_ref")
+    _registered_definition(definition.check_id, definition.definition_version)
     return replace(
         definition,
         tool_requirements=validate_tool_requirements(definition.tool_requirements),
@@ -549,6 +592,8 @@ def _select_declared_tool(definition, tool):
     if not matched:
         raise CheckContractError("result_tool_undeclared")
     for requirement, alternative in matched:
+        if tool.get("authority") != alternative.authority:
+            continue
         # A ToolAsset identity is never invented: it must be declared and equal.
         if tool.get("tool_id") != alternative.tool_id:
             continue
@@ -574,7 +619,11 @@ def _validated_result_tool(definition, tool, result_origin):
     """
     if tool is not None:
         tool = validate_tool_ref(tool)
-    if result_origin == "direct_tool" and (tool is None or not tool.get("tool_id")):
+    if result_origin == "direct_tool" and (
+        tool is None
+        or tool.get("authority") != "runtime_tool_access"
+        or not tool.get("tool_id")
+    ):
         raise CheckContractError("direct_tool_identity_missing")
     if not definition.tool_requirements:
         if tool is not None:
@@ -904,13 +953,17 @@ def result_covers_expected(result, expected):
     """
     validate_result(result)
     validate_expected_instance(expected)
-    # One result cannot stand for a Check that requires several native tools;
-    # multi-tool satisfaction stays with evaluate_check_satisfaction().
     definition = _registered_definition(
         result["check"]["check_id"], result["check"]["definition_version"]
     )
-    if len(definition.tool_requirements) > 1:
-        return False
+    # Reuse the single-Check requirement judgement so a structurally valid
+    # Native PASS without its declared Tool Observation cannot be reported as
+    # covering the Expected instance. A multi-tool Check can never be covered
+    # by one result because its other requirements stay unsatisfied.
+    if definition.tool_requirements:
+        decision = evaluate_check_satisfaction(definition, [result])
+        if decision["status"] != "satisfied":
+            return False
     if not result_matches_expected(result, expected):
         return False
     # Compare explicit input dependencies, not just the outer Source identity.
@@ -961,6 +1014,8 @@ def _result_matches_requirement(requirement, result):
     for alternative in requirement.alternatives:
         if alternative.access_id != tool.get("access_id"):
             continue
+        if tool.get("authority") != alternative.authority:
+            continue
         if tool.get("tool_id") != alternative.tool_id:
             continue
         if any(
@@ -1010,6 +1065,20 @@ def evaluate_check_satisfaction(definition, results):
         if check["definition_version"] != definition.definition_version:
             raise CheckContractError("satisfaction_definition_version_mismatch")
         observed.append(result)
+    if len(observed) > 1:
+        # The supplied results must describe one composable Check instance.
+        # Equal rule/profile/Source/baseline is the contract-visible
+        # equivalence; stronger cross-Job reuse evidence remains #63 work.
+        reference = observed[0]
+        for result in observed[1:]:
+            if (
+                result["check"].get("rule_ref") != reference["check"].get("rule_ref")
+                or result["check"].get("profile_ref")
+                != reference["check"].get("profile_ref")
+                or result.get("source_ref") != reference.get("source_ref")
+                or result.get("baseline_ref") != reference.get("baseline_ref")
+            ):
+                raise CheckContractError("satisfaction_instance_mismatch")
     decision = {
         "kind": SATISFACTION_KIND,
         "schema_version": CONTRACT_VERSION,
@@ -1100,6 +1169,7 @@ def _definition_payload(definition):
                         "tool_id": alternative.tool_id,
                         "version": alternative.version,
                         "artifact_sha256": alternative.artifact_sha256,
+                        "authority": alternative.authority,
                     }
                     for alternative in item.alternatives
                 ],
@@ -1134,10 +1204,7 @@ def resolve_definitions(required=None):
         if item in CHECK_IDS:
             definition = definition_for(item)
         else:
-            definition = next(
-                (value for value in _BUILTIN_DEFINITIONS if value.check_id == item),
-                None,
-            )
+            definition = _CURRENT_BY_ID.get(item)
         if definition is None:
             missing.append(str(item))
             continue

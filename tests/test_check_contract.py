@@ -283,6 +283,7 @@ def test_native_satisfaction_is_strictly_per_supplied_expected_instance():
         native_exit_code=0,
         evidence={"stdout": ""},
         rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
     )
     failed = check_contract.native_result(
         definition,
@@ -293,6 +294,7 @@ def test_native_satisfaction_is_strictly_per_supplied_expected_instance():
         native_exit_code=1,
         evidence={"stderr": "broken"},
         rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
     )
     assert check_contract.result_covers_expected(passed, expected)
     assert not check_contract.result_covers_expected(failed, expected)
@@ -371,7 +373,7 @@ def test_constructor_and_validator_reject_unknown_definition_revision():
     definition = check_contract.definition_for("docs")
     incompatible = check_contract.CheckDefinition(
         check_id=definition.check_id,
-        definition_version=2,
+        definition_version=definition.definition_version + 1,
     )
     with pytest.raises(
         check_contract.CheckContractError, match="result_check_version_mismatch"
@@ -381,7 +383,7 @@ def test_constructor_and_validator_reject_unknown_definition_revision():
             source=closed_source(),
             status="passed",
             result_origin="host",
-            result_instance="revision-2",
+            result_instance="future-revision",
             native_exit_code=0,
             evidence={"stdout": ""},
         )
@@ -442,6 +444,7 @@ def test_declared_input_refs_and_coverage_participate_in_local_satisfaction():
         input_refs=[config, extra],
         coverage=coverage,
         evidence={"stdout": ""},
+        tool=check_contract.tool_ref("tach/check"),
     )
     expected = {
         "check_id": definition.check_id,
