@@ -12,9 +12,10 @@ import argparse
 import dataclasses
 import json
 import sys
+import uuid
 from pathlib import Path
 
-from . import hygiene, plan_contract, selection, sources
+from . import check_contract, hygiene, plan_contract, selection, sources
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -176,17 +177,40 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         return [], False
     config_path = _hygiene_config_path(plan, root, hygiene_config)
     try:
+        digest_before = check_contract.file_digest(config_path)
         config = hygiene.load_config(config_path)
-    except hygiene.HygieneError as error:
+        digest_after = check_contract.file_digest(config_path)
+    except (OSError, hygiene.HygieneError) as error:
+        code = getattr(error, "code", "read_failed")
         return [
             {
                 "name": name,
                 "selected": selected_by_name[name].get("status"),
                 "status": "failed",
-                "reason": f"hygiene_config_{error.code}",
+                "reason": f"hygiene_config_{code}",
+                "execution_started": False,
+                "execution_kind": "not_started",
             }
             for name in wanted
         ], True
+    if digest_before != digest_after:
+        return [
+            {
+                "name": name,
+                "selected": selected_by_name[name].get("status"),
+                "status": "failed",
+                "reason": "hygiene_config_changed_during_read",
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
+            for name in wanted
+        ], True
+    rule = check_contract.rule_ref(
+        "engineering-ci.hygiene",
+        1,
+        path=str(config_path),
+        digest=digest_after,
+    )
     checks = tuple(name for name in config.checks if name in selected_by_name)
     if not checks:
         checks = wanted
@@ -204,6 +228,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         if base not in selected_by_name and name not in selected_by_name:
             continue
         payload = dict(native)
+        payload["rule_ref"] = rule
         origin = selected_by_name.get(base) or selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "selected"
         results.append(payload)
@@ -218,6 +243,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "selected": item.get("status"),
                 "status": "not_executed",
                 "reason": "hygiene_check_missing",
+                "rule_ref": rule,
             }
         )
     return results, report["status"] == "failed"
@@ -229,13 +255,27 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         return None, False
     config_path = _sources_config_path(plan, root, sources_config)
     try:
+        digest_before = check_contract.file_digest(config_path)
         config = sources.load_config(config_path)
-    except sources.SourcesError as error:
+        digest_after = check_contract.file_digest(config_path)
+    except (OSError, sources.SourcesError) as error:
+        code = getattr(error, "code", "read_failed")
         return {
             "name": "source",
             "selected": item.get("status"),
             "status": "failed",
-            "reason": f"sources_config_{error.code}",
+            "reason": f"sources_config_{code}",
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }, True
+    if digest_before != digest_after:
+        return {
+            "name": "source",
+            "selected": item.get("status"),
+            "status": "failed",
+            "reason": "sources_config_changed_during_read",
+            "execution_started": False,
+            "execution_kind": "not_started",
         }, True
     source_runner = runner or sources._run
     report = sources.reconcile(config, root=root, runner=source_runner)
@@ -246,6 +286,12 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         "reason": None if report.status == "passed" else "source_reconcile_failed",
         "counts": dict(report.counts),
         "failures": list(report.failures),
+        "rule_ref": check_contract.rule_ref(
+            "engineering-ci.sources",
+            1,
+            path=str(config_path),
+            digest=digest_after,
+        ),
     }
     return payload, report.status == "failed"
 
@@ -409,6 +455,138 @@ def _run_prerequisites(names, actions, *, root, runner, execution_context="host"
     return results, failed
 
 
+def _source_reference(plan, execution_context):
+    git = plan["git"]
+    binding = git.get("content_binding")
+    scope = []
+    content_digest = None
+    if isinstance(binding, dict):
+        content_digest = binding.get("digest")
+        paths = binding.get("paths")
+        if isinstance(paths, dict):
+            scope = sorted(str(path) for path in paths)
+    declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    if content_digest and scope:
+        status = "content_digest"
+    elif declared or git.get("head_commit") or git.get("index_tree"):
+        status = "identity_only"
+    else:
+        status = "unknown"
+    actual = "worktree" if execution_context == "host" else "dagger_directory"
+    return check_contract.source_ref(
+        str(git.get("snapshot") or "worktree"),
+        declared_target_tree=declared,
+        actual_execution_source=actual,
+        head_commit=git.get("head_commit"),
+        index_tree=git.get("index_tree"),
+        content_digest=content_digest,
+        verified_scope=scope,
+        binding_status=status,
+    )
+
+
+def _baseline_reference(plan):
+    git = plan["git"]
+    # Relative names alone are not immutable comparison inputs. The native
+    # whitespace/forwarding checks consume the resolved base_commit.
+    if not git.get("base_commit"):
+        return None
+    ref = {"base_commit": git["base_commit"]}
+    for key in ("base_ref", "base_tip"):
+        if git.get(key) is not None:
+            ref[key] = git[key]
+    return ref
+
+
+def _decorate_checks(plan, checks, *, execution_context, run_instance):
+    source = _source_reference(plan, execution_context)
+    baseline = _baseline_reference(plan)
+    origin = (
+        execution_context if execution_context in check_contract.ORIGINS else "unknown"
+    )
+    for index, item in enumerate(checks):
+        name = item.get("name")
+        definition = check_contract.definition_for(name)
+        if definition is None:
+            item["check_id"] = None
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": "identity_missing",
+            }
+            # Preserve the real native status: identity rejection invalidates
+            # ECI consumption, but does not make an executed Check unexecuted.
+            if item.get("status") == "passed":
+                item["reason"] = "check_identity_missing"
+            continue
+        item["check_id"] = definition.check_id
+        item["check_version"] = definition.definition_version
+        if item.get("execution_started") is False:
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": "not_started",
+            }
+            continue
+        rule = item.get("rule_ref")
+        input_refs = []
+        if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
+            input_refs.append(
+                {
+                    "kind": "config",
+                    "path": rule["path"],
+                    "sha256": rule["sha256"],
+                }
+            )
+        try:
+            evidence = {
+                key: item[key]
+                for key in ("stdout", "stderr", "findings", "counts", "failures")
+                if item.get(key) is not None
+            }
+            if not evidence and name == "forwarding":
+                evidence = {
+                    "analysis": "forwarding",
+                    "status": item.get("status"),
+                    "reason": item.get("reason"),
+                }
+            native = check_contract.native_result(
+                definition,
+                source=source,
+                status=item.get("status", "not_executed"),
+                native_exit_code=item.get("exit_code"),
+                result_origin=origin,
+                runner_ref=f"execution:{origin}",
+                result_instance=f"{run_instance}:{origin}:{index}:{name}",
+                input_refs=input_refs,
+                rule_ref=rule,
+                evidence=evidence or None,
+                baseline_ref=baseline,
+                reason=item.get("reason"),
+            )
+            check_contract.validate_result(native)
+        except check_contract.CheckContractError as error:
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": error.code,
+            }
+            # A native process may actually have run and reported PASS.
+            # A contract error invalidates ECI consumption, not that execution
+            # fact. The report is blocked below, without forging not_executed.
+            continue
+        item["check_contract"] = {
+            "kind": check_contract.CHECK_CONTRACT_KIND,
+            "schema_version": check_contract.CONTRACT_VERSION,
+            "status": "valid",
+        }
+        item["native_result"] = native
+        item["result_id"] = native["result_id"]
+        item["result_origin"] = origin
+        item["source_ref"] = source
+    return checks
+
+
 def execute(
     plan,
     *,
@@ -419,6 +597,7 @@ def execute(
     prerequisite_actions=None,
     execution_context="host",
     runner=None,
+    run_instance=None,
 ):
     try:
         validate_plan(plan)
@@ -436,9 +615,14 @@ def execute(
     framework = chosen.get("framework", "unittest")
     selected = _selected_checks(plan)
     prerequisites = list(chosen.get("prerequisites", []))
+    run_instance = run_instance or uuid.uuid4().hex
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
+        "check_contract": {
+            "kind": check_contract.CHECK_CONTRACT_KIND,
+            "schema_version": check_contract.CONTRACT_VERSION,
+        },
         "dependency_contract": plan.get("dependency_contract"),
         "plan_declaration_consistent": True
         if plan["schema_version"] == plan_contract.PLAN_VERSION
@@ -540,7 +724,12 @@ def execute(
         for item in selected
         if item.get("name") not in covered
     ]
-    report["checks"] = native_checks + remaining
+    report["checks"] = _decorate_checks(
+        plan,
+        native_checks + remaining,
+        execution_context=execution_context,
+        run_instance=run_instance,
+    )
     prereq_results, prereq_failed = _run_prerequisites(
         prerequisites,
         _prerequisite_actions(plan, prerequisite_actions),
@@ -555,6 +744,11 @@ def execute(
     ] + [
         item for item in report["prerequisites"] if item.get("status") == "not_executed"
     ]
+    invalid_contract = [
+        item
+        for item in report["checks"]
+        if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
+    ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
     elif hygiene_failed or source_failed:
@@ -565,6 +759,10 @@ def execute(
         report["status"] = "failed"
         report["exit_code"] = 1
         report["reason"] = "prerequisites_failed"
+    elif invalid_contract:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "check_contract_invalid"
     elif unfinished:
         report["status"] = "blocked"
         report["exit_code"] = 5

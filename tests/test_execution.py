@@ -204,6 +204,18 @@ def test_execute_runs_selected_docs_check_without_tests(repo):
     assert report["tests"]["status"] == "not_executed"
     assert report["checks"][0]["name"] == "docs"
     assert report["checks"][0]["status"] == "passed"
+    assert report["checks"][0]["check_id"] == "eci/hygiene/docs"
+    assert report["checks"][0]["check_version"] == 1
+    assert report["checks"][0]["result_id"].startswith("sha256:")
+    assert report["checks"][0]["native_result"]["check"]["check_id"] == (
+        "eci/hygiene/docs"
+    )
+    assert report["check_contract"] == {
+        "kind": "engineering-ci-check-contract",
+        "schema_version": 1,
+    }
+    assert report["checks"][0]["source_ref"]["snapshot"] == "worktree"
+    assert report["checks"][0]["native_result"]["check"]["rule_ref"]["sha256"]
     tools = [call[0] for call in fake.calls if call[0][0] != "git"]
     assert len(tools) == 1
     assert Path(tools[0][0]).stem == "lychee"
@@ -222,6 +234,153 @@ def test_execute_propagates_docs_failure_without_tests(repo):
     assert report["reason"] == "checks_failed"
     assert report["exit_code"] == 1
     assert report["checks"][0]["reason"] == "lychee_findings"
+
+
+def forwarding_plan(base, path="src/pkg/sub.py"):
+    return plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": [path],
+        },
+        check_scope=[{"name": "forwarding", "status": "selected"}],
+    )
+
+
+def test_forwarding_internal_result_is_valid_without_process_exit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "forwarding"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["native_exit_code"] is None
+    assert check["native_result"]["status"] == "advisory"
+    assert check["result_id"]
+
+
+def test_forwarding_parse_failure_stays_failed_and_valid(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("def broken(:\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "failed"
+    assert check["reason"] == "module_unparsable"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["status"] == "failed"
+
+
+def test_config_failure_is_not_started_and_has_no_native_result(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "missing-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
+def test_tach_missing_config_is_pre_execution_failure(repo):
+    path, base = repo
+    (path / "tach.toml").unlink()
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "tach"
+    assert check["status"] == "failed"
+    assert check["reason"] == "tach_config_missing"
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
+def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypatch):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+
+    def bad_contract(*args, **kwargs):
+        raise execution.check_contract.CheckContractError("fixture_invalid_contract")
+
+    monkeypatch.setattr(execution.check_contract, "native_result", bad_contract)
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"  # Real native execution fact is retained
+    assert check["check_contract"]["status"] == "fixture_invalid_contract"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+
+
+def test_missing_check_identity_preserves_successful_native_execution(
+    repo, monkeypatch
+):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    original = execution.check_contract.definition_for
+
+    def missing_docs_identity(name):
+        return None if name == "docs" else original(name)
+
+    monkeypatch.setattr(
+        execution.check_contract, "definition_for", missing_docs_identity
+    )
+    runner = FakeRunner()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"
+    assert check["reason"] == "check_identity_missing"
+    assert check["check_contract"]["status"] == "identity_missing"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+    assert any(Path(args[0]).stem == "lychee" for args, _ in runner.calls)
 
 
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
