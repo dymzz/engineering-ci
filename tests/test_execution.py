@@ -353,7 +353,9 @@ def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypa
     assert report["reason"] == "check_contract_invalid"
 
 
-def test_missing_check_identity_preserves_successful_native_execution(repo, monkeypatch):
+def test_missing_check_identity_preserves_successful_native_execution(
+    repo, monkeypatch
+):
     path, base = repo
     (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
     original = execution.check_contract.definition_for
