@@ -529,6 +529,45 @@ def validate_result_set(results):
     return True
 
 
+EXPECTED_REQUIRED = ("check_id", "definition_version", "rule_ref", "source_ref")
+
+
+def validate_expected_instance(expected):
+    """Validate one supplied Check expectation, not a consumer-wide set.
+
+    The shape and input claims must be sufficient for a local native match.
+    Profile authenticity, complete Expected enumeration, evidence admission
+    and Required Gate remain with their actual #66/#63/#61 producers.
+    """
+    if not isinstance(expected, dict):
+        raise CheckContractError("expected_invalid")
+    if any(key not in expected for key in EXPECTED_REQUIRED):
+        raise CheckContractError("expected_incomplete")
+    definition = _registered_definition(
+        expected["check_id"], expected["definition_version"]
+    )
+    rule = expected.get("rule_ref")
+    if not isinstance(rule, dict) or not rule.get("sha256"):
+        raise CheckContractError("expected_rule_unproven")
+    _validate_reference(rule, "rule_ref")
+    source = expected.get("source_ref")
+    validate_source_ref(source)
+    if source["binding_status"] not in {"byte_tree", "content_digest"}:
+        raise CheckContractError("expected_source_unproven")
+    if source["scope_kind"] not in {
+        "check_input_closure",
+        "full_input_closure",
+    } or not source["verified_input_scope"]:
+        raise CheckContractError("expected_source_scope_insufficient")
+    if expected.get("profile_ref") is not None:
+        _validate_reference(expected["profile_ref"], "profile_ref")
+    baseline = expected.get("baseline_ref")
+    _validate_baseline(baseline)
+    if (definition.requires_baseline or expected.get("comparison")) and baseline is None:
+        raise CheckContractError("expected_baseline_missing")
+    return expected
+
+
 def result_matches_expected(result, expected):
     """Candidate identity matching only, not Check coverage or Required PASS.
 
@@ -557,6 +596,27 @@ def result_matches_expected(result, expected):
         if key in expected and expected[key] != actual:
             return False
     return True
+
+
+def result_covers_expected(result, expected):
+    """Single supplied Check's native satisfaction, NOT ExpectedSet completeness.
+
+    The result must be valid and match a scoped supplied Expected instance.
+    The caller still needs #66 to establish completeness/identity of the whole
+    Expected collection and #63/#61 to decide trust and Required policy.
+    """
+    validate_result(result)
+    validate_expected_instance(expected)
+    if not result_matches_expected(result, expected):
+        return False
+    if result["status"] != "passed":
+        return False
+    kind = _execution_kind(result["check"]["check_id"])
+    if kind == "process":
+        return result["native_exit_code"] == 0 and bool(result.get("evidence"))
+    if kind == "internal":
+        return bool(result.get("evidence"))
+    return False
 
 
 def resolve_definitions(required=None):
