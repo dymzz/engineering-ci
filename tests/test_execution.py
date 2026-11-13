@@ -616,6 +616,50 @@ def test_execute_refuses_stale_index_tree(repo):
     assert report["reason"] == "index_tree_mismatch"
 
 
+def test_execute_refuses_index_when_worktree_differs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_worktree_mismatch"
+
+
+def test_execute_refuses_index_with_untracked_inputs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "docs/untracked.md").write_text("# untracked\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_untracked_inputs"
+
+
 def test_execute_refuses_worktree_content_drift(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")

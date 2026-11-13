@@ -772,6 +772,36 @@ def test_index_snapshot_excludes_unstaged_worktree_changes(repo):
     assert {"src/pkg/sub.py", "src/pkg/other.py"} <= set(worktree.paths)
 
 
+def test_changeset_index_file_reads_alternate_index(repo, tmp_path):
+    path, base = repo
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/new.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    external_tree = subprocess.run(
+        ["git", "write-tree"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    default_tree = run(path, "write-tree").strip()
+    assert external_tree != default_tree
+    changeset = selection.changeset(path, base=base, mode="index", index_file=index)
+    assert changeset.index_tree == external_tree
+    assert "docs/new.md" in changeset.paths
+
+
 def test_push_snapshot_uses_before_after_commits(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")

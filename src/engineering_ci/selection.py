@@ -305,7 +305,8 @@ def load_config(path):
     )
 
 
-def _git(root, *args):
+def _git(root, *args, env=None):
+    environment = {**os.environ, **env} if env else None
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -314,6 +315,7 @@ def _git(root, *args):
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=environment,
     )
 
 
@@ -465,6 +467,7 @@ def changeset(
     mode="worktree",
     before=None,
     after=None,
+    index_file=None,
 ):
     """Describe the Git snapshot behind a change set.
 
@@ -563,6 +566,11 @@ def changeset(
             snapshot="commit",
         )
     if mode == "index":
+        index_env = (
+            {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
+            if index_file is not None
+            else None
+        )
         diff = _git(
             root,
             "diff",
@@ -571,14 +579,22 @@ def changeset(
             "-z",
             "--cached",
             base_commit,
+            env=index_env,
         )
         index_tree = None
-        write_tree = _git(root, "write-tree")
+        write_tree = _git(root, "write-tree", env=index_env)
         index_tree = (
             write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
-        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+        status = _git(
+            root,
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            env=index_env,
+        )
         return ChangeSet(
             root,
             base,
@@ -1683,6 +1699,11 @@ def main(argv=None):
     parser.add_argument("--before")
     parser.add_argument("--after")
     parser.add_argument(
+        "--index-file",
+        type=Path,
+        help="Use this Git index for --mode index instead of the default index",
+    )
+    parser.add_argument(
         "--refs",
         help="Comma-separated before:after pairs for --mode multi",
     )
@@ -1708,6 +1729,8 @@ def main(argv=None):
     mode.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
     root = args.root.resolve()
+    if args.index_file is not None and args.mode != "index":
+        parser.exit(2, "--index-file requires --mode index\n")
     config_path = args.config if args.config.is_absolute() else root / args.config
     try:
         config = load_config(config_path)
@@ -1733,6 +1756,7 @@ def main(argv=None):
             mode=args.mode,
             before=args.before,
             after=args.after,
+            index_file=args.index_file,
         )
     selection = select(
         changes,

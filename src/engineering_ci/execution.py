@@ -117,6 +117,13 @@ def _verify_execution_binding(plan, root):
         actual = current.stdout.strip() if current.returncode == 0 else None
         if actual != expected_tree:
             return False, "index_tree_mismatch", expected_tree
+        if selection._git(root, "diff", "--quiet", "--").returncode != 0:
+            return False, "index_worktree_mismatch", expected_tree
+        untracked = selection._git(
+            root, "ls-files", "--others", "--exclude-standard", "-z"
+        )
+        if untracked.returncode == 0 and untracked.stdout:
+            return False, "index_untracked_inputs", expected_tree
         return True, None, expected_tree
     if snapshot == "worktree":
         binding = git.get("content_binding")

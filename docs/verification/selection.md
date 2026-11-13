@@ -54,6 +54,8 @@ checkout or the Knowledge repository:
 | Rename/delete with spaces | exact `docs/space name.md` identity kept; deletion sets `docs.recheck_all` |
 | `--full` scope | `selection.full_tests = true`; docs/Tach/Vulture remain `not_applicable` |
 | Index snapshot | staged paths selected; unstaged path excluded; `snapshot=index` |
+| Alternate Index | `--index-file`/`index_file` reads a temporary `GIT_INDEX_FILE`; its tree is recorded independently of the default index |
+| Index execution | matching index tree executes only when the worktree matches the index and has no untracked inputs; dirty worktree → `index_worktree_mismatch`, untracked → `index_untracked_inputs` |
 | Push snapshot | `before..after` commits and exact path set recorded |
 | PR snapshot | `merge-tree --write-tree` recorded as `merge_tree` |
 | Execution binding | a checkout with a different `HEAD` tree returns `4` and runs nothing |
@@ -61,7 +63,7 @@ checkout or the Knowledge repository:
 | Plan execution | `execute --plan` runs exactly plan targets; failing test → `failed` |
 | Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
 | Empty execution | no targets and no selected checks → `not_executed`/exit 3; selected docs/source checks still run natively |
-| Index binding | stale `index_tree` → `not_executed`/`index_tree_mismatch` |
+| Index binding | stale `index_tree` → `not_executed`/`index_tree_mismatch`; worktree drift or untracked files are explicit refusals before tools start |
 | Worktree binding | changed-path digest drift → `worktree_snapshot_stale` |
 | Push/commit binding | `HEAD` tree/commit must match plan `execution_tree`/`head_commit` |
 | PR binding | feature checkout ≠ merge tree → `pr_merge_tree_unmaterialized` |
