@@ -174,79 +174,95 @@ def closed_source(tree="a" * 40):
     )
 
 
-def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
+def test_distinct_result_instances_can_be_matched_without_claiming_coverage():
     definition = check_contract.definition_for("docs")
-    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
     first = check_contract.native_result(
-        definition,
-        source=closed_source("a" * 40),
-        status="passed",
-        result_origin="host",
-        result_instance="ref-a",
-        native_exit_code=0,
-        evidence={"stdout": ""},
-        rule_ref=rule,
+        definition, source=closed_source("a" * 40),
+        status="passed", result_origin="host", result_instance="ref-a",
+        native_exit_code=0, evidence={"stdout": ""},
     )
     second = check_contract.native_result(
-        definition,
-        source=closed_source("b" * 40),
-        status="passed",
-        result_origin="host",
-        result_instance="ref-b",
-        native_exit_code=0,
-        evidence={"stdout": ""},
-        rule_ref=rule,
+        definition, source=closed_source("b" * 40),
+        status="failed", result_origin="host", result_instance="ref-b",
+        native_exit_code=1, evidence={"stderr": "broken"},
     )
     assert check_contract.validate_result_set([first, second])
-    expected = {
-        "check_id": "eci/hygiene/docs",
-        "definition_version": 1,
-        "rule_ref": rule,
-        "source_ref": first["source_ref"],
-    }
-    assert check_contract.validate_expected_coverage([first, second], [expected])
-    with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage(
-            [first, second],
-            [{**expected, "source_ref": closed_source("c" * 40)}],
-        )
-    with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage(
-            [first], [{"check_id": "eci/hygiene/docs"}]
-        )
-    with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage([], [])
+    expected = {"check_id": definition.check_id, "source_ref": first["source_ref"]}
+    assert check_contract.result_matches_expected(first, expected)
+    assert not check_contract.result_matches_expected(second, expected)
+    # Candidate matching does not certify native PASS, full consumer
+    # completeness, evidence admission or Required Gate.
+    assert check_contract.result_matches_expected(
+        second, {"check_id": definition.check_id}
+    )
+    assert not hasattr(check_contract, "validate_expected_coverage")
+    assert not hasattr(check_contract, "validate_completeness_receipt")
 
 
-def test_failed_or_unexecuted_result_cannot_cover_expected():
+def test_comparison_check_requires_immutable_baseline_for_association():
+    definition = check_contract.definition_for("forwarding")
+    assert definition.requires_baseline
+    baseline = {"base_commit": "a" * 40}
+    native = check_contract.native_result(
+        definition,
+        source=closed_source(),
+        status="passed",
+        result_origin="host",
+        result_instance="forwarding-run",
+        evidence={"analysis": "forwarding"},
+        baseline_ref=baseline,
+    )
+    assert check_contract.validate_result(native) is native
+    assert not check_contract.result_matches_expected(
+        native, {"check_id": definition.check_id}
+    )
+    assert not check_contract.result_matches_expected(
+        native, {"check_id": definition.check_id,
+                 "baseline_ref": {"base_commit": "b" * 40}}
+    )
+    assert check_contract.result_matches_expected(
+        native, {"check_id": definition.check_id, "baseline_ref": baseline}
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_baseline_missing"
+    ):
+        check_contract.native_result(
+            definition,
+            source=closed_source(),
+            status="passed",
+            result_origin="host",
+            result_instance="missing-baseline",
+            evidence={"analysis": "forwarding"},
+        )
+    assert check_contract.definition_for("whitespace").requires_baseline
+    assert not check_contract.definition_for("docs").requires_baseline
+
+
+def test_constructor_and_validator_reject_unknown_definition_revision():
     definition = check_contract.definition_for("docs")
-    expected = {
-        "check_id": "eci/hygiene/docs",
-        "definition_version": 1,
-        "rule_ref": None,
-        "source_ref": source(),
-    }
-    failed = check_contract.native_result(
-        definition,
-        source=source(),
-        status="failed",
-        result_origin="host",
-        result_instance="failed-run",
-        native_exit_code=1,
-        evidence={"stdout": "failure"},
+    incompatible = check_contract.CheckDefinition(
+        check_id=definition.check_id, definition_version=2,
     )
-    with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage([failed], [expected])
-    unexecuted = check_contract.native_result(
-        definition,
-        source=source(),
-        status="not_executed",
-        result_origin="host",
-        result_instance="not-run",
-        reason="not run",
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_version_mismatch"
+    ):
+        check_contract.native_result(
+            incompatible, source=closed_source(),
+            status="passed", result_origin="host", result_instance="revision-2",
+            native_exit_code=0, evidence={"stdout": ""},
+        )
+    forged = check_contract.CheckDefinition(
+        check_id=definition.check_id, definition_version=1,
+        requires_baseline=True,
     )
-    with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage([unexecuted], [expected])
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.native_result(
+            forged, source=closed_source(),
+            status="passed", result_origin="host", result_instance="forged",
+            native_exit_code=0, evidence={"stdout": ""},
+        )
 
 
 def test_baseline_ref_changes_result_identity():
