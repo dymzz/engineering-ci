@@ -111,19 +111,9 @@ def _verify_execution_binding(plan, root):
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
         expected_tree = expected_tree or git.get("index_tree")
-        if not expected_tree:
-            return True, None, None
-        current = selection._git(root, "write-tree")
-        actual = current.stdout.strip() if current.returncode == 0 else None
-        if actual != expected_tree:
-            return False, "index_tree_mismatch", expected_tree
-        if selection._git(root, "diff", "--quiet", "--").returncode != 0:
-            return False, "index_worktree_mismatch", expected_tree
-        untracked = selection._git(
-            root, "ls-files", "--others", "--exclude-standard", "-z"
-        )
-        if untracked.returncode == 0 and untracked.stdout:
-            return False, "index_untracked_inputs", expected_tree
+        refusal = selection.index_source_refusal(root, expected_tree)
+        if refusal:
+            return False, refusal, expected_tree
         return True, None, expected_tree
     if snapshot == "worktree":
         binding = git.get("content_binding")

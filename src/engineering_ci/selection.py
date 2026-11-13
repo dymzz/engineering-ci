@@ -112,6 +112,7 @@ class ChangeSet:
     merge_tree: str | None = None
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
+    source_refusal: str | None = None
 
     @property
     def execution_tree(self):
@@ -317,6 +318,37 @@ def _git(root, *args, env=None):
         check=False,
         env=environment,
     )
+
+
+def index_source_refusal(root, expected_tree, *, index_file=None):
+    """One Index source judgment shared by selection and execution.
+
+    Returns an explicit refusal code, or None only when the selected Index tree
+    and the worktree bytes consumed by native tools are provably equivalent.
+    """
+    if not expected_tree:
+        return "index_tree_missing"
+    env = (
+        {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
+        if index_file is not None
+        else None
+    )
+    written = _git(root, "write-tree", env=env)
+    if written.returncode != 0:
+        return "index_tree_unavailable"
+    if written.stdout.strip() != expected_tree:
+        return "index_tree_mismatch"
+    diff = _git(root, "diff", "--quiet", "--", env=env)
+    if diff.returncode == 1:
+        return "index_worktree_mismatch"
+    if diff.returncode != 0:
+        return "index_git_check_failed"
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env)
+    if untracked.returncode != 0:
+        return "index_git_check_failed"
+    if untracked.stdout:
+        return "index_untracked_inputs"
+    return None
 
 
 def _resolve(root, ref):
@@ -595,6 +627,12 @@ def changeset(
             "--untracked-files=all",
             env=index_env,
         )
+        if index_tree is None:
+            refusal = "index_tree_unavailable"
+        elif diff.returncode != 0:
+            refusal = "index_diff_failed"
+        else:
+            refusal = index_source_refusal(root, index_tree, index_file=index_file)
         return ChangeSet(
             root,
             base,
@@ -604,10 +642,11 @@ def changeset(
             tree,
             tuple(sorted(set(paths))),
             bool(status.stdout) if status.returncode == 0 else False,
-            diff.returncode == 0,
-            None if diff.returncode == 0 else "diff_failed",
+            diff.returncode == 0 and refusal is None,
+            refusal or (None if diff.returncode == 0 else "diff_failed"),
             snapshot="index",
             index_tree=index_tree,
+            source_refusal=refusal,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -814,6 +853,8 @@ def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=Fal
 
 def select(changes, config, *, root, full=False):
     """Select tests for one change set; unknown coverage escalates, never passes."""
+    if getattr(changes, "source_refusal", None):
+        raise SelectionError(changes.source_refusal)
     root = Path(root)
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
@@ -1758,6 +1799,8 @@ def main(argv=None):
             after=args.after,
             index_file=args.index_file,
         )
+    if getattr(changes, "source_refusal", None):
+        parser.exit(4, f"source rejected: {changes.source_refusal}\n")
     selection = select(
         changes,
         config,

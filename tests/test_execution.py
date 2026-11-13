@@ -616,6 +616,24 @@ def test_execute_refuses_stale_index_tree(repo):
     assert report["reason"] == "index_tree_mismatch"
 
 
+def test_execute_refuses_index_without_tree(repo):
+    path, base = repo
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_tree_missing"
+
+
 def test_execute_refuses_index_when_worktree_differs(repo):
     path, base = repo
     index_tree = run(path, "write-tree").strip()

@@ -63,7 +63,8 @@ checkout or the Knowledge repository:
 | Plan execution | `execute --plan` runs exactly plan targets; failing test → `failed` |
 | Execution snapshot | checkout tree differs → `not_executed`/exit 4, no test run |
 | Empty execution | no targets and no selected checks → `not_executed`/exit 3; selected docs/source checks still run natively |
-| Index binding | stale `index_tree` → `not_executed`/`index_tree_mismatch`; worktree drift or untracked files are explicit refusals before tools start |
+| Index binding | missing target tree → `index_tree_missing`; `write-tree` failure → `index_tree_unavailable`; stale `index_tree` → `index_tree_mismatch`; worktree drift/untracked/Git query failure are explicit refusals before tools start |
+| Index selection guard | a temporary index whose worktree differs is refused before selection/Tach (`source_refusal`); `select --run` and `execute --plan` share `index_source_refusal` |
 | Worktree binding | changed-path digest drift → `worktree_snapshot_stale` |
 | Push/commit binding | `HEAD` tree/commit must match plan `execution_tree`/`head_commit` |
 | PR binding | feature checkout ≠ merge tree → `pr_merge_tree_unmaterialized` |

@@ -802,6 +802,86 @@ def test_changeset_index_file_reads_alternate_index(repo, tmp_path):
     assert "docs/new.md" in changeset.paths
 
 
+def test_changeset_index_file_refuses_worktree_mismatch(repo, tmp_path):
+    path, base = repo
+    (path / "docs/indexed.md").write_text("# indexed\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/indexed.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    (path / "docs/indexed.md").write_text("# worktree\n", encoding="utf-8")
+    changeset = selection.changeset(path, base=base, mode="index", index_file=index)
+    assert changeset.source_refusal == "index_worktree_mismatch"
+    assert changeset.complete is False
+    with pytest.raises(selection.SelectionError, match="index_worktree_mismatch"):
+        selection.select(changeset, config(path), root=path)
+
+
+def test_changeset_index_write_tree_failure_is_explicit(repo, tmp_path):
+    path, base = repo
+    missing = tmp_path / "missing" / "index"
+    changeset = selection.changeset(path, base=base, mode="index", index_file=missing)
+    assert changeset.index_tree is None
+    assert changeset.source_refusal == "index_tree_unavailable"
+
+
+def test_index_source_refusal_rejects_git_query_failure(repo, monkeypatch):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    real = selection._git
+
+    def fake(root, *args, env=None):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 2, "", "git failure")
+        return real(root, *args, env=env)
+
+    monkeypatch.setattr(selection, "_git", fake)
+    assert selection.index_source_refusal(path, tree) == "index_git_check_failed"
+
+
+def test_select_run_refuses_index_worktree_mismatch(repo, tmp_path):
+    path, base = repo
+    (path / "docs/indexed.md").write_text("# indexed\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/indexed.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    (path / "docs/indexed.md").write_text("# worktree\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        selection.main(
+            [
+                "--root",
+                str(path),
+                "--config",
+                "ci-selection.toml",
+                "--base",
+                base,
+                "--mode",
+                "index",
+                "--index-file",
+                str(index),
+                "--run",
+            ]
+        )
+    assert raised.value.code == 4
+
+
 def test_push_snapshot_uses_before_after_commits(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")
