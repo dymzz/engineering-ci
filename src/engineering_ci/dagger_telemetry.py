@@ -1054,19 +1054,26 @@ def _bind_capture(
                     candidates.append(path)
 
     if not candidates:
-        if parsed and any(
-            s["trace_id"] != parsed[0] for group in keys.values() for s in group
-        ) and not any(
-            s["trace_id"] == parsed[0] for group in keys.values() for s in group
+        if (
+            parsed
+            and any(
+                s["trace_id"] != parsed[0] for group in keys.values() for s in group
+            )
+            and not any(
+                s["trace_id"] == parsed[0] for group in keys.values() for s in group
+            )
         ):
-            return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
-        if not any(
-            all(_native_scope(s)) for group in keys.values() for s in group
-        ):
+            return (
+                BINDING_AMBIGUOUS,
+                REASON_CHECK_NAME_OUTSIDE_TRACE,
+                BASIS_NONE,
+                [],
+                keys,
+            )
+        if not any(all(_native_scope(s)) for group in keys.values() for s in group):
             return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, [], keys
         if parsed is not None and any(
-            s["trace_id"] == parsed[0]
-            for group in keys.values() for s in group
+            s["trace_id"] == parsed[0] for group in keys.values() for s in group
         ):
             return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], keys
         return (
