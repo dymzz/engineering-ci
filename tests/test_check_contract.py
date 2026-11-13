@@ -197,6 +197,38 @@ def test_distinct_result_instances_can_be_matched_without_claiming_coverage():
     )
     assert not hasattr(check_contract, "validate_expected_coverage")
     assert not hasattr(check_contract, "validate_completeness_receipt")
+    assert hasattr(check_contract, "result_covers_expected")
+
+
+def test_native_satisfaction_is_strictly_per_supplied_expected_instance():
+    definition = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    checked = closed_source("a" * 40)
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    passed = check_contract.native_result(
+        definition, source=checked, status="passed", result_origin="host",
+        result_instance="run-a", native_exit_code=0,
+        evidence={"stdout": ""}, rule_ref=rule,
+    )
+    failed = check_contract.native_result(
+        definition, source=checked, status="failed", result_origin="host",
+        result_instance="run-b", native_exit_code=1,
+        evidence={"stderr": "broken"}, rule_ref=rule,
+    )
+    assert check_contract.result_covers_expected(passed, expected)
+    assert not check_contract.result_covers_expected(failed, expected)
+    assert not check_contract.result_covers_expected(
+        passed, {**expected, "source_ref": closed_source("b" * 40)}
+    )
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.result_covers_expected(passed, {"check_id": definition.check_id})
+    # This local predicate cannot vouch for a consumer ExpectedSet or Required Gate.
+    assert not hasattr(check_contract, "validate_expected_coverage")
 
 
 def test_comparison_check_requires_immutable_baseline_for_association():
@@ -223,6 +255,17 @@ def test_comparison_check_requires_immutable_baseline_for_association():
     assert check_contract.result_matches_expected(
         native, {"check_id": definition.check_id, "baseline_ref": baseline}
     )
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    scoped = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": closed_source(),
+    }
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_missing"
+    ):
+        check_contract.validate_expected_instance(scoped)
     with pytest.raises(
         check_contract.CheckContractError, match="result_baseline_missing"
     ):
