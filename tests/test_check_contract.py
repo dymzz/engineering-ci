@@ -277,6 +277,15 @@ def test_comparison_check_requires_immutable_baseline_for_association():
             result_instance="missing-baseline",
             evidence={"analysis": "forwarding"},
         )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_baseline_missing"
+    ):
+        check_contract.native_result(
+            definition, source=closed_source(), status="passed",
+            result_origin="host", result_instance="unresolved-base",
+            evidence={"analysis": "forwarding"},
+            baseline_ref={"base_ref": "origin/main"},
+        )
     assert check_contract.definition_for("whitespace").requires_baseline
     assert not check_contract.definition_for("docs").requires_baseline
 
