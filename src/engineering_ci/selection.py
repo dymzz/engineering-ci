@@ -1727,11 +1727,15 @@ def run_tests(
     if index_tree is not None:
         refusal = index_source_refusal(root, index_tree, index_file=index_file)
         if refusal:
+            if capture is not None:
+                capture["source_refusal"] = refusal
             print(f"execution refused: {refusal}", file=sys.stderr)
             return 4
     elif expected_tree is not None:
         current = _tree_of(root, "HEAD")
         if current != expected_tree:
+            if capture is not None:
+                capture["source_refusal"] = "checkout_tree_mismatch"
             print(
                 "execution refused: checkout tree does not match the selected snapshot",
                 file=sys.stderr,

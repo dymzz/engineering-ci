@@ -689,11 +689,15 @@ def execute(
             junit_path=junit_path,
             capture=native,
         )
-        if exit_code == 4 and plan["git"].get("snapshot") == "index":
+        if native.get("source_refusal"):
             report["status"] = "not_executed"
             report["exit_code"] = 4
-            report["reason"] = "index_source_refused"
-            report["tests"] = {"status": "not_executed", "exit_code": 4}
+            report["reason"] = native["source_refusal"]
+            report["tests"] = {
+                "status": "not_executed",
+                "exit_code": 4,
+                "source_refusal": native["source_refusal"],
+            }
             return report
         report["exit_code"] = exit_code
         report["native_stdout"] = native.get("stdout", "")

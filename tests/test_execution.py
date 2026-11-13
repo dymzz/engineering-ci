@@ -689,6 +689,50 @@ def test_execute_runs_tests_with_external_index(repo, tmp_path):
     assert report["tests"].get("exit_code") != 4
 
 
+def test_execute_keeps_native_pytest_exit_four(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests/does_not_exist.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] != "index_source_refused"
+    assert report["tests"]["status"] == "failed"
+    assert report["tests"]["exit_code"] == 4
+    assert report["native_stderr"]
+
+
+def test_run_tests_reports_source_refusal_separately(repo):
+    path, _ = repo
+    capture = {}
+    code = selection.run_tests(
+        ["tests.test_pkg"],
+        root=path,
+        framework="unittest",
+        index_tree="0" * 40,
+        capture=capture,
+    )
+    assert code == 4
+    assert capture["source_refusal"] == "index_tree_mismatch"
+
+
 def test_execute_rejects_changed_external_index(repo, tmp_path):
     path, base = repo
     external = tmp_path / "external-index"
