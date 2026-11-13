@@ -77,6 +77,7 @@ def _validate_consumer_fields(value, chosen, git):
         "snapshot",
         "execution_tree",
         "index_tree",
+        "index_file",
         "head_commit",
         "base_commit",
         "source_tree_id",

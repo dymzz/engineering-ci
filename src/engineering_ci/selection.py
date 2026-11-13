@@ -109,6 +109,7 @@ class ChangeSet:
     error: str | None = None
     snapshot: str = "worktree"
     index_tree: str | None = None
+    index_file: str | None = None
     merge_tree: str | None = None
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
@@ -320,6 +321,17 @@ def _git(root, *args, env=None):
     )
 
 
+def _git_bytes(root, *args, env=None):
+    environment = {**os.environ, **env} if env else None
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+
+
 def index_source_refusal(root, expected_tree, *, index_file=None):
     """One Index source judgment shared by selection and execution.
 
@@ -348,6 +360,20 @@ def index_source_refusal(root, expected_tree, *, index_file=None):
         return "index_git_check_failed"
     if untracked.stdout:
         return "index_untracked_inputs"
+    tracked = _git(root, "ls-files", "-v", "-z", env=env)
+    if tracked.returncode != 0:
+        return "index_git_check_failed"
+    for entry in tracked.stdout.split("\0"):
+        if not entry or not entry.startswith("S "):
+            continue
+        path = entry[2:]
+        blob = _git_bytes(root, "cat-file", "blob", f":{path}", env=env)
+        file = Path(root) / path
+        if blob.returncode != 0 or not file.is_file():
+            return "index_skip_worktree_bytes_mismatch"
+        if file.read_bytes() != blob.stdout:
+            return "index_skip_worktree_bytes_mismatch"
+    return None
     return None
 
 
@@ -646,6 +672,9 @@ def changeset(
             refusal or (None if diff.returncode == 0 else "diff_failed"),
             snapshot="index",
             index_tree=index_tree,
+            index_file=str(Path(index_file).resolve())
+            if index_file is not None
+            else None,
             source_refusal=refusal,
         )
     if mode == "pr":
@@ -1193,6 +1222,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "worktree_dirty": selection.changeset.worktree_dirty,
             "snapshot": selection.changeset.snapshot,
             "index_tree": selection.changeset.index_tree,
+            "index_file": selection.changeset.index_file,
             "merge_tree": selection.changeset.merge_tree,
             "execution_tree": selection.changeset.execution_tree,
             "references": list(selection.changeset.references),
@@ -1672,6 +1702,8 @@ def run_tests(
     src_root="src",
     python=None,
     expected_tree=None,
+    index_tree=None,
+    index_file=None,
     junit_path=None,
     capture=None,
 ):
@@ -1680,7 +1712,12 @@ def run_tests(
     if not modules:
         return 3
     root = Path(root)
-    if expected_tree is not None:
+    if index_tree is not None:
+        refusal = index_source_refusal(root, index_tree, index_file=index_file)
+        if refusal:
+            print(f"execution refused: {refusal}", file=sys.stderr)
+            return 4
+    elif expected_tree is not None:
         current = _tree_of(root, "HEAD")
         if current != expected_tree:
             print(
@@ -1842,6 +1879,8 @@ def main(argv=None):
             framework=config.framework,
             src_root=config.src_root,
             expected_tree=selection.changeset.execution_tree,
+            index_tree=selection.changeset.index_tree,
+            index_file=selection.changeset.index_file,
             junit_path=args.junit,
         )
     print(f"status: {selection.status}")

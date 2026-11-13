@@ -111,7 +111,9 @@ def _verify_execution_binding(plan, root):
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
         expected_tree = expected_tree or git.get("index_tree")
-        refusal = selection.index_source_refusal(root, expected_tree)
+        refusal = selection.index_source_refusal(
+            root, expected_tree, index_file=git.get("index_file")
+        )
         if refusal:
             return False, refusal, expected_tree
         return True, None, expected_tree
@@ -160,6 +162,7 @@ def _changeset_from_plan(plan, root):
         error=None if complete else "incomplete_plan_git",
         snapshot=str(git.get("snapshot") or "worktree"),
         index_tree=git.get("index_tree"),
+        index_file=git.get("index_file"),
         merge_tree=git.get("merge_tree"),
         base_tip=git.get("base_tip"),
     )

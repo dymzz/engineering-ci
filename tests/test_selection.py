@@ -882,6 +882,37 @@ def test_select_run_refuses_index_worktree_mismatch(repo, tmp_path):
     assert raised.value.code == 4
 
 
+def test_index_source_refusal_allows_eol_checkout_representation(repo):
+    path, _ = repo
+    run(path, "config", "core.autocrlf", "false")
+    (path / ".gitattributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+    (path / "input.txt").write_text("one\ntwo\n", encoding="utf-8")
+    run(path, "add", ".gitattributes", "input.txt")
+    run(path, "commit", "-q", "-m", "attributes")
+    tree = run(path, "write-tree").strip()
+    (path / "input.txt").write_bytes(b"one\r\ntwo\r\n")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert selection.index_source_refusal(path, tree) is None
+
+
+def test_index_source_refusal_rejects_skip_worktree_bytes(repo):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    run(path, "update-index", "--skip-worktree", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert (
+        selection.index_source_refusal(path, tree)
+        == "index_skip_worktree_bytes_mismatch"
+    )
+
+
 def test_push_snapshot_uses_before_after_commits(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")

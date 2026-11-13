@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -613,6 +614,83 @@ def test_execute_refuses_stale_index_tree(repo):
     report = execution.execute(value, root=path)
     assert report["status"] == "not_executed"
     assert report["exit_code"] == 4
+    assert report["reason"] == "index_tree_mismatch"
+
+
+def _external_git(path, index, *args):
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    return subprocess.run(
+        ["git", *args],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _external_tree(path, index):
+    return _external_git(path, index, "write-tree").strip()
+
+
+def test_execute_uses_plan_index_file_when_worktree_matches(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert "checks" in report, (report.get("status"), report.get("reason"))
+    assert report["checks"][0]["check_contract"]["status"] == "valid"
+
+
+def test_execute_rejects_changed_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    expected = _external_tree(path, external)
+    (path / "docs/new.md").write_text("# changed index\n", encoding="utf-8")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": expected,
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert report["status"] == "not_executed"
     assert report["reason"] == "index_tree_mismatch"
 
 
