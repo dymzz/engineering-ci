@@ -331,6 +331,15 @@ def _validate_baseline(ref):
         _text(ref[key], key)
 
 
+def _has_resolved_base_commit(ref):
+    if not isinstance(ref, dict):
+        return False
+    commit = ref.get("base_commit")
+    return isinstance(commit, str) and bool(
+        re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit)
+    )
+
+
 def native_result(
     definition,
     *,
@@ -388,7 +397,7 @@ def native_result(
     if (
         registered.requires_baseline
         and status in {"passed", "failed", "advisory"}
-        and baseline_ref is None
+        and not _has_resolved_base_commit(baseline_ref)
     ):
         raise CheckContractError("result_baseline_missing")
     kind = _execution_kind(definition.check_id)
@@ -479,7 +488,7 @@ def validate_result(result):
     if (
         builtin.requires_baseline
         and status in {"passed", "failed", "advisory"}
-        and result.get("baseline_ref") is None
+        and not _has_resolved_base_commit(result.get("baseline_ref"))
     ):
         raise CheckContractError("result_baseline_missing")
     kind = _execution_kind(check_id)
@@ -563,7 +572,9 @@ def validate_expected_instance(expected):
         _validate_reference(expected["profile_ref"], "profile_ref")
     baseline = expected.get("baseline_ref")
     _validate_baseline(baseline)
-    if (definition.requires_baseline or expected.get("comparison")) and baseline is None:
+    if (
+        definition.requires_baseline or expected.get("comparison")
+    ) and not _has_resolved_base_commit(baseline):
         raise CheckContractError("expected_baseline_missing")
     return expected
 
