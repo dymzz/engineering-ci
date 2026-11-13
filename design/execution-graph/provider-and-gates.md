@@ -5,6 +5,8 @@
 ## 1. 权威与接口
 项目/组织的**当前生效工程 Profile** 根据 Context × Action × Target 决定 Required。ECI #63 对账原生执行/可信复用与 Expected Coverage；#61 决定 Required/Release 授权并连接平台保护规则。Selector、Knowledge RDF 查询及 GitHub Job success 不能自行删减 Required。
 
+Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dispatch`（请求远端执行）、`Observe`（真实平台状态/时间）、`Artifacts`（取得/保存）、`Publish`（发布 Check/Decision）。本地不要求实现远程能力；不同 Provider 不伪造不支持的状态。
+
 ### 1.1 Profile → Expected Requirements → Plan → Assessment（目标交接）
 
 当前并无已交付的统一 Profile→Expected API；以下是**拟议的跨组件固定交接**，不得写成现有 `selection.plan()` 字段。生产/选取责任与最小核验如下：
@@ -38,6 +40,14 @@
 | 证据有效性、历史复用、Required 覆盖 | ECI #63 | **执行前**核验可复用的受信历史覆盖，交付 Remaining Work；**执行后**核验新增 Native Result、复用与缺项；均固定同一 `expected_set_ref` |
 | Dagger 计算依赖与最终放行 | Dagger Engine / #86；#61 | Engine 执行剩余计算和必要产物；#61 基于相同 Profile/Expected 与 #63 受信结论决定当前动作的 Required/Release Gate，不重新制定 Required |
 
+**Required Obligations 与 Expected Checks 的无损关系（补齐 §1.1，而不是创建第二套 Required Policy）：**
+
+- 当前生效且有权的 Profile 对本次 Context×Action×Target 定义的 `required_obligations` 是**完整的授权义务集合**；`Expected Checks` 是在声明的检查域、真实 Source 和规则条件下对原生可检验项的**派生预期集合**。两者不得互相覆盖、简单改名或默认一对一。每条 Required Obligation 的受控来源/修订、适用对象及允许的不适用条件必须保留到最终 Assessment。
+- **映射可为零到多、多对多：** 一个 Obligation 可能由多个 Check 的组合、额外 Artifact/Prerequisite、可信历史结果或已完成 Run 的 Terminal 见证等共同满足；一个 Check 也可能为多个义务提供证据。义务若本身不对应 Native Check（如 Release/Promotion 的既有 Terminal 证据义务），仍留在 Required 集合中并由相应实际事实生产者/证据消费者核验，不能从 `Expected Checks` 未命中而删除；也不能为它伪造一个 Native Check PASS。真实 Data/PASS 依赖继续由 #86/Dagger 表达。
+- `expected_set_ref` 仍绑定**明确作用域内**的 Expected Checks 内容与其来源/规则版本，并可关联来源 Obligation 引用，但**不是整个 `required_obligations` 的替代身份或完整性证明**。同一 Profile/动作/目标的 Requirement/Obligation 关联应可追溯至 Check、受信历史复用或其他必要证据；`required_obligations` 的完整身份与原 Profile 修订必须在 #61 当前 Assessment 中一并核对，不另造平行 Policy Registry。
+- **验收不变量：** `Expected Checks` 全部 `passed`（或被 #63 受信复用），并不自动推出 `Required Obligations` 全部满足。#61 必须逐项覆盖当前生效 Profile 的完整 Required 集合，包含未映射为 Native Check 的义务；缺失、未证实、不适用未经授权或后置 Terminal 尚未形成时，不得发布该动作的完整 Required PASS。独立、不依赖该 Required Profile 的本地 Check 仍按既有 §1.1 允许产生自己的原生事实。
+- **设计反例：** Profile 对 Release 同时要求若干 Native Checks 的合格证据和**上一 Run 的已验收 Terminal**，即便这些 Check 已 PASS，缺 Terminal 仍不能放行；Profile 有 Required Obligation 但本次 `Expected Checks=[]`，亦不能仅凭“检查集合合法为空”令 Required Gate PASS；反过来 Required 子集为空时，适用 Advisory Check 仍应保留在 Expected 中。
+
 **作用域与集合语义：**
 
 - `Expected Checks` 必须声明消费者、Check/规则域、Profile/配置版本、Event/逐 Ref、Source 及作用域完整性；包含该声明域内适用的 Required **和**非 Required Check，并明确 `applicability`、`requirement_ref`/策略地位或其不存在的理由。Required/Advisory 与适用/不适用是**正交维度**。一个动作的 Required 子集为空，不能据此清空适用的 Advisory Check。
@@ -57,16 +67,14 @@ Effective Profile + Context/Action/Target + CheckDefinition + Source
   -> 同次 Native Result / Report
   -> #66-C Expected/Plan/Routing/Result 对账
   -> #63 当前覆盖与受信证据核验
-  -> #61 Current Policy Assessment / Final Gate
+  -> #61 Current Policy Assessment / Final Gate（逐项核验完整 Required Obligations，非仅 Check 子集）
 ```
 
-历史 PASS 可以使本次**符合条件的 Check Verdict** 免跑，但不自动恢复下游所需的 Directory、文件或准备数据；产物仍按 [Evidence and Identity §2](evidence-and-identity.md) 和 [Dagger Execution](dagger-execution.md) 补足可核验闭包。#63 复用条件、原生执行及 Assessment 身份和 Dagger Data/PASS 前置关系的**详细定义仅在对应专题维护**，本节只规定其交接位置，避免重复规范。Result schema-valid、原生执行成功、Expected 覆盖、受信接纳、最终放行各有独立含义，不自动递推。尤其 Process Exit、Job Success、Tool/Check ID、Tree SHA 都不替代真实 Native Result、Expected 或 Required。
+历史 PASS 只有在 [Evidence and Identity §1、§3](evidence-and-identity.md) 已定义的 `check_key` 语义等价（Check、Subject、实际输入/规则/工具/相关环境）与 #63 来源接纳、作用域/策略复用条件**均有证明**时，才能使本次符合条件的 Check Verdict 免跑；执行前不要求先获取本次尚未运行工具的 Native Result，但若目标输入闭包未知，也不能假定历史结果可复用。历史 PASS 不自动恢复下游所需的 Directory、文件或准备数据；产物仍按 [Evidence and Identity §2](evidence-and-identity.md) 和 [Dagger Execution](dagger-execution.md) 补足可核验闭包。#63 复用条件、原生执行及 Assessment 身份和 Dagger Data/PASS 前置关系的**详细定义仅在对应专题维护**，本节只规定其交接位置，避免重复规范。Result schema-valid、原生执行成功、Expected 覆盖、受信接纳、最终放行各有独立含义，不自动递推。尤其 Process Exit、Job Success、Tool/Check ID、Tree SHA 都不替代真实 Native Result、Expected 或 Required。
 
 **实施与验收边界：** 本节不修改已发布 `plan_contract` Schema 2 或 `execution` Report Schema 1。#52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 先证明当前已支持 Check/Native Result→公共校验→Report 自洽，并移除可能将局部字符串验证误称整体 Expected 完整的公开 API 语义；不得把 #66 Source 全闭包、完整 Expected、跨 Job 路由及 #63/#61 全部验收作为首切片单独合并的硬前置，也不得把这些未交付能力称为已冻结。#66-P0 与 #52-A 可并行；#66-B/C 由真实消费接口和同一有效策略后续交付；#86/#63/#61 按现有设计独立验收。本 PR 的设计验收不等于 Issue 已原位同步、接口已冻结或运行时代码已实现。仅对各自改变的风险补定向反例：合法空 Required 但有 Advisory、缺 Profile 与真实空 Expected、未配置 Job 的 Required、同目标 Tree 不同 old→new、Index/Worktree 字节不一致、Required 组合少结果、可信历史 PASS 但产物缺失等；复用已有效原生/CI 证据。
 
 **依据：** [Knowledge 总设计 §4/§6.3](https://github.com/dymzz/engineering-knowledge/blob/main/design/software-engineering-knowledge-architecture.md)；[Engineering Verification §2/§4](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/overall-design.md)；本文件 §1.1；[Evidence and Identity](evidence-and-identity.md)；[Dagger Execution](dagger-execution.md)；[Execution Graph 实施计划](plan.md)。如有冲突，应在真实专题比较现有约束与提案并审阅，不通过追加“优先解释”隐式覆盖。
-
-Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dispatch`（请求远端执行）、`Observe`（真实平台状态/时间）、`Artifacts`（取得/保存）、`Publish`（发布 Check/Decision）。本地不要求实现远程能力；不同 Provider 不伪造不支持的状态。
 
 ## 2. 执行与结果消费
 - **Local/Agent**：直接消费现有 `engineering-ci select/execute` 或原生 `dagger check`，不依赖 GitHub Run ID。当前 `execute-plan`、Host 和原生 Check 的功能不完全等价，目标是统一适用的结果和证据语义而非强迫一个执行容器。
