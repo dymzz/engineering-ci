@@ -78,6 +78,20 @@ Span 原文**（未改写，仅按 Span 名筛出）：
 | `receipt.exit` / `receipt-negative.exit` / `receipt-entrypoints.exit` | 三份回执生成的退出码 |
 | `SHA256SUMS` | 上述文件的摘要 |
 
+## 本次实施中发生过的失败
+
+每条：现象 → 根因 → 修复 → 现在的状态。写在这里是为了不把失败藏在对话里。
+
+| # | 现象 | 根因 | 修复 | 现在的状态 |
+| --- | --- | --- | --- | --- |
+| 1 | CI：Engine 起不来，CLI 干等 10 分钟（`start engine: new client: context deadline exceeded`） | 只给了 traces 端点；beta.16 的 workload export 要求**每个信号都有自己的端点**，缺 metrics 端点时 `cmd/engine/main.go` 直接返回错误、Engine 退出 | 补 `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`；加 Engine 就绪探针（20s 超时并打印 engine log），失败从 10 分钟降到 2 分钟 | 已修复；该 Job 自此持续绿 |
+| 2 | CI：第二次捕获起不来（`OSError: [Errno 98] Address already in use`） | 两次捕获复用同一端口，却没有端口交接协议 | 接收端加 `POST /stop` 干净关闭与绑定重试（最多 60s）；CI 停干净并等端口释放再起下一个 | 已修复 |
+| 3 | CI：4 个 Job 全在 2–3 秒内失败、无任何步骤输出 | **不是代码问题**：账号的 Actions 额度耗尽（annotation：`recent account payments have failed or your spending limit needs to be increased`） | 仓库侧无解；PR 正文如实标注该状态，不保留"全绿"的旧表述 | 额度恢复后已绿 |
+| 4 | 本地 `test_manual_release.py::test_workflow_triggers_and_privileges` 失败 | 加的 `dagger call execute-plan` 违反仓库守卫：PR Workflow 里不得用 ad-hoc 函数调用 | 移除该步骤；Plan 入口改为**按仓库策略不在 PR CI 里跑**并写进文档；Function 入口改用 `dagger api call` | 已修复，本地绿 |
+| 5 | 能力清单把 `dagger.io/check.name` / `check.passed` 写成 available | 只读了源码（`core/checks.go`），没等真实捕获 | 能力事实分三档：`source-present` / `observed-at-runtime` / `unknown`；实测 2494 个 Span 里一次未发出 → 降为 `partial` | 已修正，文档与 Issue 评论同步 |
+| 6 | 独立 Function 入口的回执 `unbound`（`check_name_not_observed`） | 假设引擎用下划线命名函数调用（`repository_ruff_tools`）；**实测**引擎用驼峰（`engineering-ci:EngineeringCi.repositoryRuffTools`），CLI 用连字符 | 声明名与 Span 名改为**去分隔符 + 忽略大小写**比较；能力清单新增"函数调用名的形态"一行记录这个实测事实 | 已修复；用同一份真实捕获重跑回执 → `bound` / `engine_function_call` / `source_associated=true` |
+| 7 | `git add -A` 把草稿文件扫进仓库 | 提交前没看暂存清单 | 提交前核对 `git status`，只 add 具体文件 | 已修正 |
+
 ## 复现
 
 ```text
