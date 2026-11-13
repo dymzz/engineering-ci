@@ -831,10 +831,9 @@ def _cache_observation_scope(bound_spans):
             "scope": [],
             "reason": "no_bound_call_span",
         }
-    scope = sorted({span.get("name") or "" for span in bound_spans})
-    outcomes = {
-        span.get("cache_outcome") for span in bound_spans if span.get("cache_outcome")
-    }
+    observed_spans = [span for span in bound_spans if span.get("cache_outcome")]
+    scope = sorted({span.get("name") or "" for span in observed_spans})
+    outcomes = {span["cache_outcome"] for span in observed_spans}
     if not outcomes:
         return {
             "status": CACHE_SCOPE_UNKNOWN,
@@ -1033,6 +1032,10 @@ def _bind_capture(
             s["trace_id"] == parsed[0] for group in keys.values() for s in group
         ):
             return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
+        if not any(
+            all(_native_scope(s)) for group in keys.values() for s in group
+        ):
+            return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, [], keys
         if parsed is not None and any(
             s["trace_id"] == parsed[0]
             for group in keys.values() for s in group
