@@ -188,6 +188,8 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "selected": selected_by_name[name].get("status"),
                 "status": "failed",
                 "reason": f"hygiene_config_{code}",
+                "execution_started": False,
+                "execution_kind": "not_started",
             }
             for name in wanted
         ], True
@@ -198,6 +200,8 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "selected": selected_by_name[name].get("status"),
                 "status": "failed",
                 "reason": "hygiene_config_changed_during_read",
+                "execution_started": False,
+                "execution_kind": "not_started",
             }
             for name in wanted
         ], True
@@ -261,6 +265,8 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
             "selected": item.get("status"),
             "status": "failed",
             "reason": f"sources_config_{code}",
+            "execution_started": False,
+            "execution_kind": "not_started",
         }, True
     if digest_before != digest_after:
         return {
@@ -268,6 +274,8 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
             "selected": item.get("status"),
             "status": "failed",
             "reason": "sources_config_changed_during_read",
+            "execution_started": False,
+            "execution_kind": "not_started",
         }, True
     source_runner = runner or sources._run
     report = sources.reconcile(config, root=root, runner=source_runner)
@@ -477,8 +485,19 @@ def _source_reference(plan, execution_context):
     )
 
 
+def _baseline_reference(plan):
+    git = plan["git"]
+    ref = {
+        key: git[key]
+        for key in ("base_commit", "base_ref", "base_tip")
+        if git.get(key) is not None
+    }
+    return ref or None
+
+
 def _decorate_checks(plan, checks, *, execution_context, run_instance):
     source = _source_reference(plan, execution_context)
+    baseline = _baseline_reference(plan)
     origin = (
         execution_context if execution_context in check_contract.ORIGINS else "unknown"
     )
@@ -498,6 +517,13 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
             continue
         item["check_id"] = definition.check_id
         item["check_version"] = definition.definition_version
+        if item.get("execution_started") is False:
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": "not_started",
+            }
+            continue
         rule = item.get("rule_ref")
         input_refs = []
         if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
@@ -514,6 +540,12 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 for key in ("stdout", "stderr", "findings", "counts", "failures")
                 if item.get(key) is not None
             }
+            if not evidence and name == "forwarding":
+                evidence = {
+                    "analysis": "forwarding",
+                    "status": item.get("status"),
+                    "reason": item.get("reason"),
+                }
             native = check_contract.native_result(
                 definition,
                 source=source,
@@ -525,8 +557,10 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 input_refs=input_refs,
                 rule_ref=rule,
                 evidence=evidence or None,
+                baseline_ref=baseline,
                 reason=item.get("reason"),
             )
+            check_contract.validate_result(native)
         except check_contract.CheckContractError as error:
             item["check_contract"] = {
                 "kind": check_contract.CHECK_CONTRACT_KIND,

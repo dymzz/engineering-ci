@@ -29,13 +29,13 @@ ORIGINS = frozenset({"host", "dagger", "actions", "direct_tool", "unknown"})
 PROCESS_CHECK_IDS = frozenset(
     {
         "eci/hygiene/whitespace",
-        "eci/hygiene/forwarding",
         "eci/hygiene/docs",
         "eci/hygiene/vulture",
         "eci/hygiene/tach",
         "eci/hygiene/tach-external",
     }
 )
+INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile"})
 EXPECTED_REQUIRED = ("check_id", "definition_version", "rule_ref", "source_ref")
 
 
@@ -191,7 +191,11 @@ def source_ref(
             result[key] = _text(value, key)
     scope = sorted({_text(item, "verified_scope") for item in verified_scope})
     result["verified_input_scope"] = scope
-    if scope_kind not in {"changed_paths", "full_input_closure"}:
+    if scope_kind not in {
+        "changed_paths",
+        "check_input_closure",
+        "full_input_closure",
+    }:
         raise CheckContractError("source_scope_kind_invalid")
     result["scope_kind"] = scope_kind
     if materialization_ref is not None:
@@ -244,7 +248,11 @@ def validate_source_ref(source):
     ):
         raise CheckContractError("source_scope_invalid")
     scope_kind = source.get("scope_kind")
-    if scope_kind not in {"changed_paths", "full_input_closure"}:
+    if scope_kind not in {
+        "changed_paths",
+        "check_input_closure",
+        "full_input_closure",
+    }:
         raise CheckContractError("source_scope_kind_invalid")
     if source.get("materialization_ref") is not None:
         _text(source["materialization_ref"], "materialization_ref")
@@ -282,6 +290,30 @@ def _validate_reference(ref, name):
         _sha256(ref["sha256"], f"{name}_sha256")
 
 
+def _execution_kind(check_id):
+    if check_id in PROCESS_CHECK_IDS:
+        return "process"
+    if check_id in INTERNAL_CHECK_IDS:
+        return "internal"
+    return "unknown"
+
+
+def _validate_baseline(ref):
+    if ref is None:
+        return
+    if not isinstance(ref, dict):
+        raise CheckContractError("baseline_ref_invalid")
+    present = [
+        key
+        for key in ("base_commit", "base_ref", "base_tree", "digest")
+        if ref.get(key) is not None
+    ]
+    if not present:
+        raise CheckContractError("baseline_ref_invalid")
+    for key in present:
+        _text(ref[key], key)
+
+
 def native_result(
     definition,
     *,
@@ -298,6 +330,7 @@ def native_result(
     evidence=None,
     reason=None,
     runner_ref=None,
+    baseline_ref=None,
 ):
     """Create one immutable Native Result.
 
@@ -329,6 +362,16 @@ def native_result(
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and native_exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
+    _validate_baseline(baseline_ref)
+    kind = _execution_kind(definition.check_id)
+    if status in {"passed", "failed"}:
+        if kind == "process":
+            if native_exit_code is None:
+                raise CheckContractError("result_native_exit_missing")
+            if not evidence:
+                raise CheckContractError("result_evidence_missing")
+        elif kind == "internal" and not evidence:
+            raise CheckContractError("result_evidence_missing")
     payload = {
         "kind": RESULT_KIND,
         "schema_version": CONTRACT_VERSION,
@@ -352,6 +395,7 @@ def native_result(
         "artifact_refs": list(artifact_refs),
         "coverage": coverage,
         "evidence": evidence,
+        "baseline_ref": baseline_ref,
         "reason": reason,
     }
     content = {key: value for key, value in payload.items() if key != "result_instance"}
@@ -407,10 +451,15 @@ def validate_result(result):
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
-    if check_id in PROCESS_CHECK_IDS and status in {"passed", "failed"}:
-        if exit_code is None:
-            raise CheckContractError("result_native_exit_missing")
-        if evidence is None:
+    _validate_baseline(result.get("baseline_ref"))
+    kind = _execution_kind(check_id)
+    if status in {"passed", "failed"}:
+        if kind == "process":
+            if exit_code is None:
+                raise CheckContractError("result_native_exit_missing")
+            if not evidence:
+                raise CheckContractError("result_evidence_missing")
+        elif kind == "internal" and not evidence:
             raise CheckContractError("result_evidence_missing")
     if result.get("result_origin") == "direct_tool" and (
         not check.get("tool_id") or not check.get("access_id")
@@ -464,8 +513,21 @@ def validate_expected_instance(expected):
     )
     if expected["definition_version"] != builtin.definition_version:
         raise CheckContractError("expected_check_version_mismatch")
-    _validate_reference(expected["rule_ref"], "rule_ref")
-    validate_source_ref(expected["source_ref"])
+    rule = expected.get("rule_ref")
+    if not isinstance(rule, dict) or not rule.get("sha256"):
+        raise CheckContractError("expected_rule_unproven")
+    _validate_reference(rule, "rule_ref")
+    source = expected.get("source_ref")
+    validate_source_ref(source)
+    if source.get("binding_status") not in {"byte_tree", "content_digest"}:
+        raise CheckContractError("expected_source_unproven")
+    if source.get("scope_kind") not in {
+        "check_input_closure",
+        "full_input_closure",
+    }:
+        raise CheckContractError("expected_source_scope_insufficient")
+    if not source.get("verified_input_scope"):
+        raise CheckContractError("expected_source_scope_insufficient")
     if expected.get("profile_ref") is not None:
         _validate_reference(expected["profile_ref"], "profile_ref")
     if expected.get("comparison") and not expected.get("baseline_ref"):
@@ -502,20 +564,41 @@ def result_covers_expected(result, expected):
     if result.get("status") != "passed":
         return False
     check_id = result["check"]["check_id"]
-    if check_id in PROCESS_CHECK_IDS:
+    kind = _execution_kind(check_id)
+    if kind == "process":
         if result.get("native_exit_code") != 0:
             return False
-        if result.get("evidence") is None:
+        if not result.get("evidence"):
             return False
-    elif result.get("evidence") is None:
+    elif kind == "internal":
+        if not result.get("evidence"):
+            return False
+    else:
         return False
     return True
 
 
-def validate_expected_coverage(results, expected):
+def validate_completeness_receipt(receipt):
+    if not isinstance(receipt, dict):
+        raise CheckContractError("expected_completeness_invalid")
+    for key in ("consumer", "expected_set_ref", "definitions_source"):
+        _text(receipt.get(key), key)
+    profile = receipt.get("profile_ref")
+    if not isinstance(profile, dict):
+        raise CheckContractError("expected_completeness_invalid")
+    _validate_reference(profile, "profile_ref")
+    return True
+
+
+def validate_expected_coverage(results, expected, *, completeness=None):
     if not isinstance(expected, (list, tuple)):
         raise CheckContractError("expected_invalid")
     validate_result_set(results)
+    if not expected:
+        if completeness is None:
+            raise CheckContractError("expected_scope_unknown")
+        validate_completeness_receipt(completeness)
+        return True
     prepared = [validate_expected_instance(item) for item in expected]
     for item in prepared:
         if not any(result_covers_expected(result, item) for result in results):

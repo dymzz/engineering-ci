@@ -164,43 +164,58 @@ def test_scoped_definitions_report_complete_partial_unknown():
     assert empty["consumer_completeness"] == "not_claimed"
 
 
+def closed_source(tree="a" * 40):
+    return check_contract.source_ref(
+        "worktree",
+        declared_target_tree=tree,
+        content_digest="c" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+
+
 def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
     definition = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
     first = check_contract.native_result(
         definition,
-        source=source("a" * 40),
+        source=closed_source("a" * 40),
         status="passed",
         result_origin="host",
         result_instance="ref-a",
         native_exit_code=0,
         evidence={"stdout": ""},
+        rule_ref=rule,
     )
     second = check_contract.native_result(
         definition,
-        source=source("b" * 40),
+        source=closed_source("b" * 40),
         status="passed",
         result_origin="host",
         result_instance="ref-b",
         native_exit_code=0,
         evidence={"stdout": ""},
+        rule_ref=rule,
     )
     assert check_contract.validate_result_set([first, second])
     expected = {
         "check_id": "eci/hygiene/docs",
         "definition_version": 1,
-        "rule_ref": None,
+        "rule_ref": rule,
         "source_ref": first["source_ref"],
     }
     assert check_contract.validate_expected_coverage([first, second], [expected])
     with pytest.raises(check_contract.CheckContractError):
         check_contract.validate_expected_coverage(
             [first, second],
-            [{**expected, "source_ref": source("c" * 40)}],
+            [{**expected, "source_ref": closed_source("c" * 40)}],
         )
     with pytest.raises(check_contract.CheckContractError):
         check_contract.validate_expected_coverage(
             [first], [{"check_id": "eci/hygiene/docs"}]
         )
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_expected_coverage([], [])
 
 
 def test_failed_or_unexecuted_result_cannot_cover_expected():
@@ -232,6 +247,26 @@ def test_failed_or_unexecuted_result_cannot_cover_expected():
     )
     with pytest.raises(check_contract.CheckContractError):
         check_contract.validate_expected_coverage([unexecuted], [expected])
+
+
+def test_baseline_ref_changes_result_identity():
+    definition = check_contract.definition_for("docs")
+    base = {
+        "source": closed_source(),
+        "status": "passed",
+        "result_origin": "host",
+        "result_instance": "job-1",
+        "native_exit_code": 0,
+        "evidence": {"stdout": ""},
+    }
+    first = check_contract.native_result(
+        definition, baseline_ref={"base_commit": "a" * 40}, **base
+    )
+    second = check_contract.native_result(
+        definition, baseline_ref={"base_commit": "b" * 40}, **base
+    )
+    assert first["result_id"] != second["result_id"]
+    assert first["baseline_ref"] != second["baseline_ref"]
 
 
 def test_duplicate_result_id_is_refused():

@@ -53,6 +53,13 @@ reinterpreted):
 - `validate_result()` rejects mutated content, a mismatched `content_id` or
   `result_id`, unknown Check IDs, invalid source binding, and status/exit
   contradictions (`passed` with nonzero exit, `failed` with zero exit).
+- Execution kinds are explicit: process Checks (`docs`, `tach`, `tach_external`,
+  `vulture`, `whitespace`) require a real native exit and evidence for
+  passed/failed; internal Checks (`forwarding`, `source`) carry structured
+  evidence without a process exit. Configuration failures are `not_started`,
+  carry no Native Result, and cannot be reported as native failures.
+- `baseline_ref` is part of the result digest when a comparison baseline exists;
+  equal new Trees with different baselines produce different `content_id`s.
 
 ## Public API
 
@@ -145,12 +152,13 @@ never claims the consumer-wide set:
   `required_scope_missing`; neither is a legal "0 Expected" proof.
 
 `result_matches_expected` is only candidate identity association.
-`result_covers_expected` requires a complete Expected instance, matching
-definition version/rule/profile/source, `status=passed`, and native
-Exit/Evidence for process checks. `failed`, `not_executed`, `unknown` and
-advisory do not satisfy coverage. Different Ref results may coexist; an
-uncovered Expected instance fails explicitly. These are not #63 trust or #61
-Required decisions.
+`result_covers_expected` requires a complete Expected instance, a proven
+rule digest, a `check_input_closure`/`full_input_closure` Source (not
+`identity_only`/`unknown`), matching definition/rule/profile/source, and
+`status=passed` with non-empty native evidence. `failed`, `not_executed`,
+`unknown` and advisory do not satisfy coverage. An empty Expected set requires
+a `completeness` receipt (consumer/profile/expected-set/definition source);
+without it `validate_expected_coverage` raises `expected_scope_unknown`.
 
 ## Execution Report integration
 

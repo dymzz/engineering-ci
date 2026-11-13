@@ -236,6 +236,70 @@ def test_execute_propagates_docs_failure_without_tests(repo):
     assert report["checks"][0]["reason"] == "lychee_findings"
 
 
+def forwarding_plan(base, path="src/pkg/sub.py"):
+    return plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": [path],
+        },
+        check_scope=[{"name": "forwarding", "status": "selected"}],
+    )
+
+
+def test_forwarding_internal_result_is_valid_without_process_exit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "forwarding"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["native_exit_code"] is None
+    assert check["native_result"]["status"] == "advisory"
+    assert check["result_id"]
+
+
+def test_forwarding_parse_failure_stays_failed_and_valid(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("def broken(:\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "failed"
+    assert check["reason"] == "module_unparsable"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["status"] == "failed"
+
+
+def test_config_failure_is_not_started_and_has_no_native_result(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "missing-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])
