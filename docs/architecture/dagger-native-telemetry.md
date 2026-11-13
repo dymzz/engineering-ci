@@ -41,6 +41,18 @@ ECI 只**读取**原生 Span 与原生结果，不生成、不改写、不补造
 Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Function 级缓存观察字段。以上在
 [观察回执](#观察状态)中按 `unknown` 记录，不由较新 Dagger 文档推断。
 
+## 本地与 CI 的实际配置
+
+| | 本地 | CI |
+| --- | --- | --- |
+| Dagger Engine | **不可用**：本机没有可运行的 Engine/CLI 会话，`dagger version` 挂起 | 固定版本 `registry.dagger.io/engine:v1.0.0-beta.16`，由 CLI 或 `docker run --privileged` 启动 |
+| 原生导出配置 | 无 Engine 即无 Engine 侧导出；Module 侧 SDK 仅在进程存在 `OTEL_*` 时初始化（默认不配置） | Engine 配置 `/etc/dagger/engine.json` 的 `telemetry.workloadExport=true` + `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `..._METRICS_ENDPOINT`，协议 `http/protobuf` |
+| destination | 无 | runner 本机 docker bridge 网关地址（`172.17.0.1`）上的临时接收端端口 4318；**不监听通配地址，不向仓库外发送** |
+| signal 范围 | 无 | traces（回执只记录 trace 信号范围）+ Engine 的 workload metrics（接收端应答但不入证据） |
+| 接收端 | 无 | `.github/scripts/otlp_http_receiver.py`，CI 验证辅助，不是包内组件，不是 Telemetry Store |
+| Trace 记录来源与内容身份 | 无 | 捕获文件的路径与 SHA-256；全量捕获的摘要记在证据 README |
+| 不可观察原因 | 本机没有 Engine 会话，任何原生 Trace 都不可观察——只能跑负例与边界 | Engine 若缺少某个信号的端点会**启动失败**；未收到 Span 不猜造，只记 `unknown` |
+
 ## 导出与接收路径
 
 1. **Engine 侧**：Engine 容器读取 `/etc/dagger/engine.json`；`telemetry.workloadExport` 为真且环境提供
@@ -102,6 +114,7 @@ Issue #87 P0 要求的最小字段集，逐项写清生产者、消费入口、�
 | --- | --- | --- | --- | --- | --- | --- |
 | `actual_invocation_ref` | 实际发起调用的 CLI / ECI 调用端 | 回执消费者 | 有本次真实调用事实时；历史 Verdict 复用不生成新调用 | 1:1（本次请求） | 调用端写入的调用描述 | 无真实调用事实时缺省 |
 | `source_binding_ref` | ECI Plan / Source 生产方 | 回执消费者、被检对象核对 | 有实际 Source 绑定时 | 1:N（一次调用可有多个被检对象） | 既有 `git.execution_tree` / `source_tree_id` / `content_binding` | 绑定不一致时不作 Check 归因 |
+| `source_binding.observed_dag_digests` | 引擎（绑定到的调用 Span） | 回执消费者 | 绑定到带内容身份的调用 Span 时 | 1:N（一次调用可有多个 digest） | `dagger.io/dag.digest` / `dagger.io/dag.content_preferred_digest` | 没有观察到 digest 时为空数组，不推测 |
 | `check_or_function_ref` | 真实 Check / Function 入口 | 回执消费者 | 观察到被检的 Check 或 Function 时 | 1:N（一次调用可触发多个 Function） | 本次捕获的 Span 名 | 未观察到对应 Span 时不填 |
 | `native_result_or_bundle_ref` | Dagger / 工具原生结果生产者 | 回执消费者、Report 与 Gate | 原生产者给出结果或产物时 | 1:1（一个产物一个引用） | 结果文件路径 + SHA-256 | 无来源时不能据此证明 Trace 与原生执行相同 |
 | `raw_trace_ref` | 原生 Engine/SDK 输出与实际接收端 | 回执消费者 | 接收端确实捕获到内容时 | 1:1（一次捕获一份引用） | 捕获文件路径 + SHA-256 + 接收端标签 | 仅配置了 exporter 不等于已接收 |

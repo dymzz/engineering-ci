@@ -52,8 +52,13 @@ def span(
     check_name=None,
     cache_outcome=None,
     cache_result_id=None,
+    digest=None,
 ):
     attributes = []
+    if digest is not None:
+        attributes.append(
+            {"key": "dagger.io/dag.digest", "value": {"stringValue": digest}}
+        )
     if check_name is not None:
         attributes.append(
             {"key": "dagger.io/check.name", "value": {"stringValue": check_name}}
@@ -701,6 +706,32 @@ def test_a_failing_native_result_still_binds_to_its_trace(tmp_path):
     assert record["claims"]["native_check_result"] is True
     assert record["native_check_result"]["exit_code"] == 1
     assert record["status"] == "produced"
+
+
+def test_source_binding_records_the_engine_content_identity(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="EngineeringCi.lint",
+                    cache_outcome="executed",
+                    digest="xxh3:f40b13ae16dbfbf3",
+                )
+            ),
+        )
+    )
+    record = receipt(
+        capture=capture,
+        check_name="lint",
+        correlation=None,
+        source_binding_ref="git-tree:abc123",
+    )
+    binding = record["source_binding"]
+    assert binding["source_binding_ref"] == "git-tree:abc123"
+    assert binding["observed_dag_digests"] == ["xxh3:f40b13ae16dbfbf3"]
+    assert binding["session_ids"] == [SESSION_ID]
+    assert binding["engine_instance_ids"] == [ENGINE_INSTANCE_ID]
 
 
 def test_cache_observation_scope_reports_its_range(tmp_path):

@@ -99,6 +99,10 @@ ATTR_SERVICE_NAME = "service.name"
 # The cache entry a call resolved to. It names one entry of one cache for the
 # cache's lifetime, so two invocations that share it share one origin.
 ATTR_CACHE_RESULT_ID = "dagger.io/cache.result.id"
+# The content identity the engine resolved for a call. It is the native,
+# verifiable source binding of what the call consumed.
+ATTR_DAG_DIGEST = "dagger.io/dag.digest"
+ATTR_CONTENT_PREFERRED_DIGEST = "dagger.io/dag.content_preferred_digest"
 
 # The cache outcome the engine recorded for a call.
 CACHE_OUTCOME_EXECUTED = "executed"
@@ -569,6 +573,10 @@ def _capture_spans(payload):
                         "cache_outcome": attributes.get(ATTR_CACHE_OUTCOME, ""),
                         "cache_contract": attributes.get(ATTR_CACHE_CONTRACT, ""),
                         "cache_result_id": attributes.get(ATTR_CACHE_RESULT_ID, ""),
+                        "dag_digest": attributes.get(ATTR_DAG_DIGEST, ""),
+                        "content_preferred_digest": attributes.get(
+                            ATTR_CONTENT_PREFERRED_DIGEST, ""
+                        ),
                         "module_function_name": attributes.get(
                             ATTR_MODULE_FUNCTION_NAME, ""
                         ),
@@ -754,6 +762,32 @@ def _cache_observation_scope(bound_spans):
         "observed": observed,
         "scope": scope,
         "reason": "cache_outcome_on_the_bound_call_only",
+    }
+
+
+def _source_binding(bound_spans, source_binding_ref, capture):
+    """Record the verifiable source binding of the bound calls.
+
+    The engine publishes the content identity it resolved for a call. That
+    digest is the native source binding: it names what the call consumed, and
+    it is comparable across invocations without inventing an identifier.
+    """
+    digests = sorted(
+        {span.get("dag_digest") for span in bound_spans if span.get("dag_digest")}
+    )
+    content_digests = sorted(
+        {
+            span.get("content_preferred_digest")
+            for span in bound_spans
+            if span.get("content_preferred_digest")
+        }
+    )
+    return {
+        "source_binding_ref": source_binding_ref,
+        "observed_dag_digests": digests,
+        "observed_content_preferred_digests": content_digests,
+        "session_ids": list(capture.session_ids) if capture else [],
+        "engine_instance_ids": list(capture.engine_instance_ids) if capture else [],
     }
 
 
@@ -1057,6 +1091,7 @@ def build_receipt(
             "source_binding_ref": source_binding_ref,
             "check_or_function_ref": check_ref,
         },
+        "source_binding": _source_binding(bound_spans, source_binding_ref, capture),
         "native_check_result": native_result,
         "native_result_or_bundle_ref": native_result_ref,
         "raw_trace_ref": (
