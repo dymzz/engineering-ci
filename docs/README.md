@@ -8,5 +8,6 @@
 - [配置](configuration/README.md) — 原生 Dagger 与环境设置。
 - [验证记录](verification/README.md) — 执行验证、发布审查及性能测量证据。
 - [交付要求](delivery/README.md) — 公共组件支持范围与 Release Readiness。
+- [Issue 修订](issue-revisions/README.md) — 按 Issue 评审整理的拟议修订稿。
 
 上级入口：[项目入口](../README.md)。
