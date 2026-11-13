@@ -38,11 +38,21 @@ reinterpreted):
 - `check_id` is stable across Hook Job, Host, Dagger and Actions.
 - `definition_version` and `rule_ref` describe the Check definition/rule
   version; a different rule version is a different result identity.
-- `result_instance` distinguishes runs; `result_id` is a SHA-256 of the
-  canonical Native Result payload.
+- `result_instance` distinguishes runs; `content_id` is the hash of canonical
+  result content without the instance, and `result_id` binds both content and
+  instance. Validation recomputes both.
+- `declared_target_tree` records the plan's intended Tree; it is **not** proof
+  that a tool read those bytes. `actual_execution_source`, `verified_input_scope`
+  and `binding_status` record the execution level separately.
+- `byte_tree` is accepted only when a materializer supplies both a declared
+  target Tree and a verified input scope; a Tree field alone yields
+  `identity_only`, and a missing scope yields `unknown`.
 - `tool_id`/`access_id` are optional and never inferred from a tool or Job name.
 - A missing identity is `check_identity_missing`; a check that would otherwise
   pass is downgraded to `not_executed`, never passed by display name.
+- `validate_result()` rejects mutated content, a mismatched `content_id` or
+  `result_id`, unknown Check IDs, invalid source binding, and status/exit
+  contradictions (`passed` with nonzero exit, `failed` with zero exit).
 
 ## Public API
 
@@ -57,10 +67,15 @@ definition_for(name) -> CheckDefinition | None
 check_id_for(name) -> str | None
 rule_ref(name, version, *, path=None, digest=None) -> dict
 profile_ref(name, version) -> dict
-source_ref(snapshot, *, tree=None, head_commit=None, index_tree=None, content_digest=None) -> dict
+source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
+           head_commit=None, index_tree=None, content_digest=None,
+           verified_scope=(), binding_status=None) -> dict
 native_result(definition, *, source, status, result_origin, result_instance, ...) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
+resolve_definitions(required=()) -> dict   # complete | partial | unknown
+result_matches_expected(result, expected) -> bool
+validate_expected_coverage(results, expected) -> bool
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -88,8 +103,12 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
   },
   "source_ref": {
     "snapshot": "worktree",
-    "head_commit": "…",
-    "binding_status": "identity_only"
+    "declared_target_tree": "...",
+    "actual_execution_source": "worktree",
+    "head_commit": "...",
+    "verified_input_scope": ["docs/guide.md"],
+    "binding_status": "content_digest",
+    "content_digest": "..."
   },
   "input_refs": [{"kind": "config", "path": "ci-hygiene.toml", "sha256": "…"}],
   "status": "passed",
@@ -104,9 +123,26 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
 }
 ```
 
-`binding_status` is explicit: `byte_tree` (immutable Tree), `content_digest`
-(content-bound worktree), `identity_only` (commit/index identity only), or
-`unknown`. An `identity_only` result does not prove the exact bytes read.
+`binding_status` is explicit: `byte_tree` (a materializer verified the exact
+Tree and scope), `content_digest` (a content digest over the listed scope),
+`identity_only` (commit/index/Tree identity without byte verification), or
+`unknown`. Execution currently emits `identity_only` for immutable/Index
+snapshots and `content_digest` only for the changed-path scope; it does not emit
+`byte_tree`.
+
+## Definition scope
+
+`resolve_definitions(required)` resolves the built-in set without claiming a
+full catalog:
+
+- all required known → `complete`;
+- some known, some missing → `partial` with `missing[]`;
+- none known but required non-empty → `unknown`;
+- empty required → `complete`, reason `no_required_checks`.
+
+`result_matches_expected` / `validate_expected_coverage` compare Check ID,
+definition version, rule/profile reference and source binding; different Ref
+results may coexist, while an uncovered Expected instance fails explicitly.
 
 ## Execution Report integration
 
@@ -139,9 +175,15 @@ The report top-level adds `check_contract` kind/version.
 
 ## Limits / next slices
 
-- Dagger `execute-plan` and Actions do not yet emit the same contract.
+- Execution does not emit `byte_tree`: immutable/Index snapshots are
+  `identity_only`, and worktree content digests cover only changed paths. Exact
+  full-input materialization remains #66 Source work.
+- Dagger `execute-plan` and Actions do not yet emit the same contract; the Host
+  report cannot be presented as three-entry-point parity.
 - Only the frozen built-in checks have IDs; external native tools and #52
   Runtime Check/Profile interfaces still require the #52/Runtime contract.
 - `profile_ref` is pass-through metadata; it cannot grant Required/trusted.
-- This slice does not define Expected Check enumeration for #66 or Hook routing;
-  it defines the result/identity primitive those consumers will use.
+- `resolve_definitions` resolves only the built-in scope; Expected Check
+  enumeration, Job routing and Required aggregation remain #66/#63/#61 work.
+- `result_matches_expected` is a conservative field comparison, not a trust or
+  Required decision.

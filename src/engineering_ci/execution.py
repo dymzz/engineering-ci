@@ -424,20 +424,38 @@ def _run_prerequisites(names, actions, *, root, runner, execution_context="host"
     return results, failed
 
 
-def _source_reference(plan):
+def _source_reference(plan, execution_context):
     git = plan["git"]
     binding = git.get("content_binding")
+    scope = []
+    content_digest = None
+    if isinstance(binding, dict):
+        content_digest = binding.get("digest")
+        paths = binding.get("paths")
+        if isinstance(paths, dict):
+            scope = sorted(str(path) for path in paths)
+    declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    if content_digest and scope:
+        status = "content_digest"
+    elif declared or git.get("head_commit") or git.get("index_tree"):
+        status = "identity_only"
+    else:
+        status = "unknown"
+    actual = "worktree" if execution_context == "host" else "dagger_directory"
     return check_contract.source_ref(
         str(git.get("snapshot") or "worktree"),
-        tree=git.get("execution_tree") or git.get("tree"),
+        declared_target_tree=declared,
+        actual_execution_source=actual,
         head_commit=git.get("head_commit"),
         index_tree=git.get("index_tree"),
-        content_digest=binding.get("digest") if isinstance(binding, dict) else None,
+        content_digest=content_digest,
+        verified_scope=scope,
+        binding_status=status,
     )
 
 
 def _decorate_checks(plan, checks, *, execution_context, run_instance):
-    source = _source_reference(plan)
+    source = _source_reference(plan, execution_context)
     origin = (
         execution_context if execution_context in check_contract.ORIGINS else "unknown"
     )
@@ -468,6 +486,11 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 }
             )
         try:
+            evidence = {
+                key: item[key]
+                for key in ("stdout", "stderr", "findings", "counts", "failures")
+                if item.get(key) is not None
+            }
             native = check_contract.native_result(
                 definition,
                 source=source,
@@ -478,6 +501,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 result_instance=f"{run_instance}:{origin}:{index}:{name}",
                 input_refs=input_refs,
                 rule_ref=rule,
+                evidence=evidence or None,
                 reason=item.get("reason"),
             )
         except check_contract.CheckContractError as error:

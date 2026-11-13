@@ -6,7 +6,9 @@ from engineering_ci import check_contract
 
 
 def source(tree="a" * 40):
-    return check_contract.source_ref("worktree", tree=tree, head_commit="b" * 40)
+    return check_contract.source_ref(
+        "worktree", declared_target_tree=tree, head_commit="b" * 40
+    )
 
 
 def result(
@@ -77,8 +79,110 @@ def test_rule_or_origin_change_produces_a_different_result():
     first = check_contract.native_result(definition, rule_ref=rule_a, **base)
     second = check_contract.native_result(definition, rule_ref=rule_b, **base)
     assert first["result_id"] != second["result_id"]
+    assert check_contract.validate_result_set([first, second])
+
+
+def test_declared_tree_does_not_claim_byte_binding():
+    identity = check_contract.source_ref(
+        "worktree", declared_target_tree="a" * 40, head_commit="b" * 40
+    )
+    assert identity["binding_status"] == "identity_only"
     with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_result_set([first, second])
+        check_contract.source_ref(
+            "worktree",
+            declared_target_tree="a" * 40,
+            binding_status="byte_tree",
+        )
+    scoped = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="a" * 40,
+        content_digest="c" * 64,
+        verified_scope=["docs/guide.md"],
+    )
+    assert scoped["binding_status"] == "content_digest"
+    assert scoped["verified_input_scope"] == ["docs/guide.md"]
+
+
+def test_tampered_result_is_rejected():
+    original = result(instance="job-1")
+    tampered = dict(original)
+    tampered["status"] = "passed"
+    tampered["native_exit_code"] = 1
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_result(tampered)
+    changed_id = dict(original)
+    changed_id["result_id"] = "sha256:" + "0" * 64
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_result(changed_id)
+    unknown = result(instance="job-2")
+    unknown["check"]["check_id"] = "eci/not-registered"
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_result(unknown)
+
+
+def test_result_id_binds_native_evidence_and_instance():
+    definition = check_contract.definition_for("docs")
+    base = {
+        "source": source(),
+        "status": "failed",
+        "result_origin": "host",
+        "result_instance": "job-1",
+        "native_exit_code": 2,
+    }
+    first = check_contract.native_result(
+        definition, evidence={"findings": ["broken link"]}, **base
+    )
+    second = check_contract.native_result(
+        definition, evidence={"findings": ["other link"]}, **base
+    )
+    assert first["content_id"] != second["content_id"]
+    assert first["result_id"] != second["result_id"]
+    same_content = check_contract.native_result(
+        definition,
+        evidence={"findings": ["broken link"]},
+        **{**base, "result_instance": "job-2"},
+    )
+    assert same_content["content_id"] == first["content_id"]
+    assert same_content["result_id"] != first["result_id"]
+
+
+def test_scoped_definitions_report_complete_partial_unknown():
+    complete = check_contract.resolve_definitions(["docs", "tach"])
+    assert complete["status"] == "complete"
+    assert len(complete["definitions"]) == 2
+    partial = check_contract.resolve_definitions(["docs", "unknown-check"])
+    assert partial["status"] == "partial"
+    assert partial["missing"] == ["unknown-check"]
+    unknown = check_contract.resolve_definitions(["unknown-check"])
+    assert unknown["status"] == "unknown"
+    empty = check_contract.resolve_definitions([])
+    assert empty["status"] == "complete"
+    assert empty["reason"] == "no_required_checks"
+
+
+def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
+    definition = check_contract.definition_for("docs")
+    first = check_contract.native_result(
+        definition,
+        source=source("a" * 40),
+        status="passed",
+        result_origin="host",
+        result_instance="ref-a",
+    )
+    second = check_contract.native_result(
+        definition,
+        source=source("b" * 40),
+        status="passed",
+        result_origin="host",
+        result_instance="ref-b",
+    )
+    assert check_contract.validate_result_set([first, second])
+    expected = {"check_id": "eci/hygiene/docs", "source_ref": source("c" * 40)}
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_expected_coverage([first, second], [expected])
+    assert check_contract.validate_expected_coverage(
+        [first, second], [{"check_id": "eci/hygiene/docs"}]
+    )
 
 
 def test_duplicate_result_id_is_refused():
