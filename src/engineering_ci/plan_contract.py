@@ -47,6 +47,74 @@ def _string_list(value):
     return isinstance(value, list) and all(isinstance(s, str) and s for s in value)
 
 
+def _validate_expected(expected, git):
+    if not isinstance(expected, dict):
+        raise PlanError("expected_checks_invalid")
+    if expected.get("kind") != "engineering-ci-expected-checks":
+        raise PlanError("expected_checks_invalid")
+    if expected.get("schema_version") != 1:
+        raise PlanError("expected_checks_schema_unsupported")
+    if expected.get("status") not in {"complete", "partial", "unknown"}:
+        raise PlanError("expected_status_invalid")
+    for key in ("scope_id", "expected_set_ref"):
+        value = expected.get(key)
+        if not isinstance(value, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", value
+        ):
+            raise PlanError(f"expected_{key}_invalid")
+    source = expected.get("source_ref")
+    if not isinstance(source, dict) or not isinstance(source.get("snapshot"), str):
+        raise PlanError("expected_source_invalid")
+    if git.get("snapshot") is not None and source["snapshot"] != git["snapshot"]:
+        raise PlanError("expected_source_mismatch")
+    checks = expected.get("checks")
+    if not isinstance(checks, list):
+        raise PlanError("expected_checks_invalid")
+    seen = set()
+    for item in checks:
+        if not isinstance(item, dict):
+            raise PlanError("expected_check_invalid")
+        if "job_refs" in item or "job_ref" in item:
+            raise PlanError("expected_routing_forbidden")
+        if item.get("definition_status") not in {"resolved", "unknown"}:
+            raise PlanError("expected_definition_status_invalid")
+        check_id = item.get("check_id")
+        if check_id is not None and (
+            not isinstance(check_id, str)
+            or not re.fullmatch(
+                r"eci/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+", check_id
+            )
+        ):
+            raise PlanError("expected_check_id_invalid")
+        if item.get("definition_status") == "resolved":
+            if check_id is None or type(item.get("definition_version")) is not int:
+                raise PlanError("expected_definition_invalid")
+            ref = item.get("expected_check_ref")
+            if not isinstance(ref, str) or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", ref
+            ):
+                raise PlanError("expected_check_ref_invalid")
+            identity = ref
+        else:
+            identity = item.get("name")
+        if identity in seen:
+            raise PlanError("expected_duplicate")
+        seen.add(identity)
+        applicability = item.get("applicability")
+        if not isinstance(applicability, dict) or not isinstance(
+            applicability.get("status"), str
+        ):
+            raise PlanError("expected_applicability_invalid")
+        if not isinstance(item.get("policy_status"), str):
+            raise PlanError("expected_policy_invalid")
+    missing = expected.get("missing")
+    if not isinstance(missing, list) or any(
+        not isinstance(item, str) for item in missing
+    ):
+        raise PlanError("expected_missing_invalid")
+    return expected
+
+
 def _validate_consumer_fields(value, chosen, git):
     """Validate nested shapes before consumers dereference them or start tools."""
     for container in (value, chosen):
@@ -189,6 +257,10 @@ def validate(value):
     if not isinstance(framework, str) or framework not in {"pytest", "unittest"}:
         raise PlanError("framework_invalid")
     _validate_consumer_fields(value, chosen, git)
+    if "expected_checks" in value:
+        if version != PLAN_VERSION:
+            raise PlanError("expected_checks_requires_plan_v2")
+        _validate_expected(value["expected_checks"], git)
     contract = value.get("dependency_contract")
     if version == 1:
         if "dependency_contract" in value:

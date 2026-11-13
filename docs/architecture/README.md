@@ -10,6 +10,7 @@
 - [本地检查](local-checks.md) — 原生 Dagger Checks、失败传播与单次执行报告。
 - [依赖安全](dependency-security.md) — 锁文件完整性、安全扫描及质量门禁。
 - [变更影响选择](selection.md) — Git 对象、Tach 闭包、选择计划与原生 unittest 执行交接。
+- [Expected Checks](expected-checks.md) — 调度器无关的 Plan Expected 投影、完整性状态与 #66-C 边界。
 - [Check 身份与原生结果](check-contract.md) — 稳定 check_id、规则/Profile 引用、Native Result 与执行报告绑定。
 - [仓库 Hygiene](hygiene.md) — 原生 whitespace/forwarding/docs/Vulture/Tach 检查与结果语义。
 - [来源集合对账](sources.md) — Manifest 投影、集合差、冲突、大小/SHA-256 与宿主 Git attributes。
