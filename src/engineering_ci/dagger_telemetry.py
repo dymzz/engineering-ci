@@ -760,7 +760,8 @@ def _check_keys(capture, check_name, function_name):
     keys = {}
     attribute = [s for s in capture.spans if s.get("check_name") == declared]
     selector = [
-        s for s in capture.spans
+        s
+        for s in capture.spans
         if check_name and s.get("name") == CHECK_SELECTOR_PREFIX + declared
     ]
     function = [s for s in capture.spans if _function_span(s, declared)]
@@ -905,8 +906,9 @@ def _origin_execution(bound_spans):
     return {
         "ref": None,
         "status": ORIGIN_UNKNOWN,
-        "reason": "function_cache_is_not_tool_origin" if outcomes else
-                  "cache_outcome_not_observed",
+        "reason": "function_cache_is_not_tool_origin"
+        if outcomes
+        else "cache_outcome_not_observed",
         "cache_outcome": outcomes[0] if len(outcomes) == 1 else None,
         "cache_result_id": ids[0] if len(ids) == 1 else None,
         "new_tool_execution": None,
@@ -923,8 +925,13 @@ def resolve_origin_execution(receipts):
 
 
 def _bind_capture(
-    capture, parsed, check_name, function_name, *,
-    invocation_ref=None, capture_isolated=False,
+    capture,
+    parsed,
+    check_name,
+    function_name,
+    *,
+    invocation_ref=None,
+    capture_isolated=False,
 ):
     """Bind only native ancestry in the actual caller's capture scope.
 
@@ -947,14 +954,21 @@ def _bind_capture(
         # A real propagated parent binds the direct native descendants,
         # not arbitrary other spans sharing the trace id.
         propagated = [
-            s for s in capture.spans
+            s
+            for s in capture.spans
             if s["trace_id"] == parsed[0]
             and (s["span_id"] == parsed[1] or s["parent_span_id"] == parsed[1])
         ]
         if len(propagated) == 1:
-            return BINDING_BOUND, None, BASIS_TRACEPARENT, propagated, {
-                KEY_TRACEPARENT: propagated,
-            }
+            return (
+                BINDING_BOUND,
+                None,
+                BASIS_TRACEPARENT,
+                propagated,
+                {
+                    KEY_TRACEPARENT: propagated,
+                },
+            )
         if len(propagated) > 1:
             return BINDING_AMBIGUOUS, REASON_INVOCATION_AMBIGUOUS, BASIS_NONE, [], {}
         if any(s["trace_id"] == parsed[0] for s in capture.spans):
@@ -969,25 +983,37 @@ def _bind_capture(
     # is not uniquely attributable without an actual propagated parent.
     if parsed is None and (
         (check_name and len(keys.get(KEY_CHECK_SELECTOR, ())) > 1)
-        or (function_name and len([
-            s for s in keys.get(KEY_FUNCTION_CALL, ())
-            if s["name"].startswith("engineering-ci:EngineeringCi.")
-        ]) > 1)
+        or (
+            function_name
+            and len(
+                [
+                    s
+                    for s in keys.get(KEY_FUNCTION_CALL, ())
+                    if s["name"].startswith("engineering-ci:EngineeringCi.")
+                ]
+            )
+            > 1
+        )
     ):
         return (
-            BINDING_AMBIGUOUS, REASON_INVOCATION_AMBIGUOUS,
-            BASIS_NONE, [], keys,
+            BINDING_AMBIGUOUS,
+            REASON_INVOCATION_AMBIGUOUS,
+            BASIS_NONE,
+            [],
+            keys,
         )
 
     candidates = []
     if check_name:
         selectors = keys.get(KEY_CHECK_SELECTOR, ())
         functions = [
-            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            s
+            for s in keys.get(KEY_FUNCTION_CALL, ())
             if s["name"].startswith("engineering-ci:EngineeringCi.")
         ]
         cores = [
-            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            s
+            for s in keys.get(KEY_FUNCTION_CALL, ())
             if s["name"].startswith("EngineeringCi.")
         ]
         for selector in selectors:
@@ -1010,11 +1036,13 @@ def _bind_capture(
                     candidates.append([span])
     else:
         modules = [
-            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            s
+            for s in keys.get(KEY_FUNCTION_CALL, ())
             if s["name"].startswith("engineering-ci:EngineeringCi.")
         ]
         cores = [
-            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            s
+            for s in keys.get(KEY_FUNCTION_CALL, ())
             if s["name"].startswith("EngineeringCi.")
         ]
         for module in modules:
@@ -1041,11 +1069,19 @@ def _bind_capture(
             for group in keys.values() for s in group
         ):
             return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], keys
-        return BINDING_UNBOUND, (
-            REASON_SESSION_NOT_OBSERVED if not any(
-                all(_native_scope(s)) for group in keys.values() for s in group
-            ) else REASON_PARENT_CHAIN
-        ), BASIS_NONE, [], keys
+        return (
+            BINDING_UNBOUND,
+            (
+                REASON_SESSION_NOT_OBSERVED
+                if not any(
+                    all(_native_scope(s)) for group in keys.values() for s in group
+                )
+                else REASON_PARENT_CHAIN
+            ),
+            BASIS_NONE,
+            [],
+            keys,
+        )
 
     # One selector/Function call cannot be chosen merely because a Capture
     # contains its name. Confirm a propagated parent or a caller-scoped
@@ -1134,7 +1170,10 @@ def build_receipt(
             sent = SENT_SENT
             sent_basis = "receiver_observation"
         binding_status, reason, basis, bound_spans, binding_keys = _bind_capture(
-            capture, parsed, check_name, function_name,
+            capture,
+            parsed,
+            check_name,
+            function_name,
             invocation_ref=invocation_ref,
             capture_isolated=capture_isolated,
         )
