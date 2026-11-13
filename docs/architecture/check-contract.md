@@ -96,6 +96,9 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
 
 ## Representative result
 
+Illustrative payload (hashes/Tree values shown as placeholders, not a
+copy-pastable validated Result):
+
 ```json
 {
   "kind": "engineering-ci-native-check-result",
@@ -131,7 +134,10 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
   "result_instance": "run-id:host:0:docs",
   "artifact_refs": [],
   "coverage": null,
+  "evidence": {"stdout": "", "stderr": "", "findings": []},
+  "baseline_ref": null,
   "reason": null,
+  "content_id": "sha256:…",
   "result_id": "sha256:…"
 }
 ```
