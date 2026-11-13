@@ -67,8 +67,8 @@ checkout or the Knowledge repository:
 | Empty execution | no targets and no selected checks → `not_executed`/exit 3; selected docs/source checks still run natively |
 | Index binding | missing target tree → `index_tree_missing`; `write-tree` failure → `index_tree_unavailable`; stale `index_tree` → `index_tree_mismatch`; worktree drift/untracked/Git query failure/skip-worktree are explicit refusals before tools start |
 | Index selection guard | a temporary index whose worktree differs is refused before selection/Tach (`source_refusal`); `select --run` and `execute --plan` share `index_source_refusal` |
-| Index identity | `snapshot=index` with both `execution_tree` and `index_tree` must use one Tree; mismatch → `index_source_identity_mismatch` before any native tool starts |
-| Index test execution | plan `index_tree`/`index_file` flow into `run_tests()`; real pytest exit 4 stays `failed` with native stderr, while pre-start Source refusal returns `not_executed` with `source_refusal`/specific reason |
+| Index identity | `snapshot=index` accepts either single `index_tree` or single `execution_tree`; both present must name one Tree, mismatch → `index_source_identity_mismatch` before any native tool starts |
+| Index test execution | execution passes its resolved target tree to `run_tests()` as `index_tree`; real pytest exit 4 stays `failed` with native stderr, while pre-start Source refusal returns `not_executed` with `source_refusal`/specific reason |
 | Worktree binding | changed-path digest drift → `worktree_snapshot_stale` |
 | Push/commit binding | `HEAD` tree/commit must match plan `execution_tree`/`head_commit` |
 | PR binding | feature checkout ≠ merge tree → `pr_merge_tree_unmaterialized` |

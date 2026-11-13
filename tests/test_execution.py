@@ -701,6 +701,33 @@ def test_execute_rejects_conflicting_index_tree_identities(repo, tmp_path):
         assert not fake.calls
 
 
+def test_execute_runs_tests_with_single_execution_tree(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "execution_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] == "passed"
+    assert report["tests"]["exit_code"] == 0
+
+
 def test_execute_runs_tests_with_external_index(repo, tmp_path):
     path, base = repo
     external = tmp_path / "external-index"

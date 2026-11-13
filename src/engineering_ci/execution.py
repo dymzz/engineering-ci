@@ -688,7 +688,9 @@ def execute(
             framework=framework,
             src_root=chosen.get("src_root", "src"),
             expected_tree=expected_tree,
-            index_tree=plan["git"].get("index_tree"),
+            index_tree=expected_tree
+            if plan["git"].get("snapshot") == "index"
+            else None,
             index_file=plan["git"].get("index_file"),
             junit_path=junit_path,
             capture=native,
