@@ -56,3 +56,32 @@ GitHub Issue 正文是直接更新的，**不属于此 PR 的 Git 文件 Diff**�
 - [ ] Required 受信引用丢失时是否维持未知/拒绝，且不重复 #63 的证据核验或 #61 最终门禁？
 - [ ] #52-A/#66-B 的真实接口版本仍是未交付项，是否没有被文档或 PR Merge 冒充已验收？
 - [ ] #72/#82/#91 的现有设计/实施边界是否保持，没有为了低价值“统一”而压缩或重做？
+
+## 6. 2026-11-13 架构根因裁决：定义域 ≠ 消费者 ExpectedSet ≠ 可信门禁（取代旧的实施归属扩大解释）
+
+**起因及实际代码验证。** #52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 的 `check_contract.py` 已能表达局部七项 Check 身份与 Native Result，但是 `resolve_definitions(required_names)` 只解析请求的名字，不能证明某消费者在给定 Event/Ref 的应有全集。它的 `validate_expected_coverage(..., completeness=...)` 通过字符串 `consumer/expected_set_ref/definitions_source/profile_ref` 的结构验证允许空集，不能证明规则/Profile/Source 实际全部加载；这不是在 #52 再加字段即可独立解决的事。
+
+### 裁决表（以当前 Issue 正文为最终任务权威）
+
+| 层 | 生产者与真正责任 | 交付/验收事实 | 不应承担 |
+| --- | --- | --- | --- |
+| CheckDefinition / Native Result | **ECI #52-A / PR #93**；必要的后续 #52 切片 | 稳定 Check/Rule/Tool 关联、定义域来源与版本、真实 Native Result/原生状态/摘要、比较依赖声明、多 Tool all-required/alternative 元数据、结构校验 | 消费者项目级 Expected 全集、Git 字节物化、跨 Job 路由、受信 Required |
+| Event/Source | **ECI #66-P0** | 目标 Index/Commit/Push/PR 的真实受检字节，及 Check 实际读取/规则配置闭包或不足的回执 | 伪称 changed-path digest 等于全闭包 |
+| ExpectedSet 及合法空集 | **ECI #66-B**，消费者（Knowledge #68 等）提供项目规则 | 独立于 Job/Result、按 Event/逐 Ref/Consumer/Profile/Rule/Source 生成 `scope_id`、`expected_set_ref`、Expected 实例、定义与规则解析完整性、合法空集及缺失原因 | 从七项内置列表或已完成 Job/Result 反推全集 |
+| Routing 与 Native 对账 | **ECI #66-C**；[PR #72](https://github.com/dymzz/engineering-ci/pull/72) 保留多工具调度设计 | Expected→实际有效 Job→同次 Native Result，多对多关系、未路由/未执行/不等价、比较基线与组合结果覆盖 | 建立第二套 Runner/Result Ledger/Check Registry |
+| DAG / 来源信任 / Gate | **#86 / #63 / #61** 分别负责 | 真正 Dagger Data/PASS DAG / 受信历史与 Required 完整性接纳 / 最终当前阶段 Required & Release Gate | 把这些判断折叠到 `check_contract=valid` |
+
+**必须区分四种不同的 PASS/Valid：** (1) Result schema/内容摘要一致；(2) Native Check 本次实际运行并满足自己的原生语义；(3) 按完整 ExpectedSet 和 Source/规则/输入前提对账的实例覆盖；(4) 经过 #63 受信接纳、#61 当前阶段最终门禁。任何一层的结论均不自动证明后一层。
+
+### PR #93 应如何验收，而非无限追加其他组件缺口
+
+首个 #52-A 实施 PR 可在**局部 CheckDefinition 域与 Native Result 合同自洽**时独立验收合并：真实 Host Check 生产、公共校验器与 Report 状态一致；内部 Check 不伪造退出码、配置前置失败不伪造 Native Result；版本/Rule/Source 等级与比较基线诚实，摘要与诊断保真，未知 ID 失败；提供消费者可用的版本化接口/真实样本。未完成的受控 Profile/扩展 Tool、全 Check input closure、组合 Tool 关系应在 #52 继续明确后续切片及 #66 消费前置，不得将尚未交付事项标记已冻结。**真正 Source P0、ExpectedSet、路由多对多、#63/#61 不作为 PR #93 基础接口单独合并的全局前置**；这些能力仍须按所属 Issue 后续完成。
+
+### 旧要求调整及 PR 责任
+
+- 上文 §1 的 P1-1/P1-2：#52 负责声明域与 Native Result 所需事实，#66-B/C 才计算消费者全集、空集合与多 Expected 覆盖；不能让 `validate_expected_coverage` 接受几个自填字符串就当成全集完整。
+- 上文 §1 的 P2-1/P2-2：#52 提供真实 Check 组合定义与身份，#86 实施 DAG，#66-C 消费实际多结果，#63/#61 完成可信 Required/Gate；不得让单 Tool PASS 独立证明组合 Required。
+- [PR #92](https://github.com/dymzz/engineering-ci/pull/92) 本文件只记录设计归属与验收裁决；不是运行时实施，不应成为第二规范权威。[PR #93](https://github.com/dymzz/engineering-ci/pull/93) 继续只承担 #52-A 基础 Check/Result 合同，不要求它代写 #66-B/C。[PR #72](https://github.com/dymzz/engineering-ci/pull/72) 保留调度方案。[PR #91](https://github.com/dymzz/engineering-ci/pull/91) 历史 S0.5 审计不因本次改变。
+- 前述 §4 的“首个 #52-A PR 提供受控消费者全集/合法空集、实际多 Job 路由验收”的扩大解释**由本节替代**；不删除功能，只将其归还对应生产方与联调阶段。
+
+**定向验收策略：** 沿用已成功的原生 CI；仅新增对应风险的交接契约/反例。#66-B 真正空集 vs 未解析、#66-C 无 Job/不同基线/组合少结果、#66-P0 实际 Index 字节和检查目录闭包、#52 合同生成与验收一致分别验证，不重跑无关工具矩阵。不要创建新 Issue、Check Registry、第二个 Report/Runner 或多余审计副本。
