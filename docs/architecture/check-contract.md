@@ -37,7 +37,12 @@ reinterpreted):
 
 - `check_id` is stable across Hook Job, Host, Dagger and Actions.
 - `definition_version` and `rule_ref` describe the Check definition/rule
-  version; a different rule version is a different result identity.
+  version; a different rule version is a different result identity. Constructor
+  and validator both reject unsupported built-in definition versions.
+- `requires_baseline` is controlled per built-in Check: `whitespace` and
+  `forwarding` actually read the old source. Their native verdicts require
+  resolved `base_commit` in `baseline_ref`; a caller cannot omit it to
+  make different comparisons match.
 - `result_instance` distinguishes runs; `content_id` is the hash of canonical
   result content without the instance, and `result_id` binds both content and
   instance. Validation recomputes both.
@@ -83,8 +88,6 @@ validate_result(result) -> dict
 validate_result_set(results) -> bool
 resolve_definitions(required=None) -> dict   # requested_names only
 result_matches_expected(result, expected) -> bool  # candidate identity only
-result_covers_expected(result, expected) -> bool   # strict satisfaction
-validate_expected_coverage(results, expected) -> bool
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -151,14 +154,22 @@ never claims the consumer-wide set:
 - empty list or omitted input → `unknown`, reason `empty_request_not_proof` /
   `required_scope_missing`; neither is a legal "0 Expected" proof.
 
-`result_matches_expected` is only candidate identity association.
-`result_covers_expected` requires a complete Expected instance, a proven
-rule digest, a `check_input_closure`/`full_input_closure` Source (not
-`identity_only`/`unknown`), matching definition/rule/profile/source, and
-`status=passed` with non-empty native evidence. `failed`, `not_executed`,
-`unknown` and advisory do not satisfy coverage. An empty Expected set requires
-a `completeness` receipt (consumer/profile/expected-set/definition source);
-without it `validate_expected_coverage` raises `expected_scope_unknown`.
+`result_matches_expected` is **candidate identity association only**. It does
+not assert native PASS, input-equivalence coverage, an ExpectedSet-complete
+scope, Evidence Admission or Required Gate. For comparison-dependent built-in
+Checks, a missing or mismatched expected `baseline_ref` does not match.
+
+**No consumer-wide Expected/Required coverage API is produced by this first
+#52-A slice.** Earlier `result_covers_expected`,
+`validate_completeness_receipt`, `validate_expected_instance` and
+`validate_expected_coverage` were withdrawn before release because structural
+receipt strings cannot prove that a Profile's ExpectedSet is complete,
+including a legitimate empty set. Follow the existing
+[Profile → Expected Requirements → Plan → Assessment](../../design/execution-graph/provider-and-gates.md)
+design: #66-B derives the scoped Expected instances from the effective Profile,
+#66-C reconciles routing and Native Results, #63 admits trusted coverage and
+#61 makes the Required Gate decision. An empty Required subset does not imply
+an empty set of applicable Checks.
 
 ## Execution Report integration
 
@@ -201,5 +212,10 @@ The report top-level adds `check_contract` kind/version.
 - `profile_ref` is pass-through metadata; it cannot grant Required/trusted.
 - `resolve_definitions` resolves only the built-in scope; Expected Check
   enumeration, Job routing and Required aggregation remain #66/#63/#61 work.
-- `result_matches_expected` is a conservative field comparison, not a trust or
-  Required decision.
+- `result_matches_expected` is candidate identity association, not a
+  satisfaction, trusted coverage, applicability or Required decision.
+- If a native Check ran but its Result contract is invalid, its original
+  native status and diagnostics remain in the Report; `execution.execute()`
+  blocks with `check_contract_invalid`. Configuration/pre-tool failures,
+  including a missing Tach config, are `not_started` without a Native Result
+  and preserve the original failure reason.
