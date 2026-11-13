@@ -487,12 +487,15 @@ def _source_reference(plan, execution_context):
 
 def _baseline_reference(plan):
     git = plan["git"]
-    ref = {
-        key: git[key]
-        for key in ("base_commit", "base_ref", "base_tip")
-        if git.get(key) is not None
-    }
-    return ref or None
+    # Relative names alone are not immutable comparison inputs. The native
+    # whitespace/forwarding checks consume the resolved base_commit.
+    if not git.get("base_commit"):
+        return None
+    ref = {"base_commit": git["base_commit"]}
+    for key in ("base_ref", "base_tip"):
+        if git.get(key) is not None:
+            ref[key] = git[key]
+    return ref
 
 
 def _decorate_checks(plan, checks, *, execution_context, run_instance):
@@ -567,9 +570,9 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 "schema_version": check_contract.CONTRACT_VERSION,
                 "status": error.code,
             }
-            if item.get("status") == "passed":
-                item["status"] = "not_executed"
-                item["reason"] = error.code
+            # A native process may actually have run and reported PASS.
+            # A contract error invalidates ECI consumption, not that execution
+            # fact. The report is blocked below, without forging not_executed.
             continue
         item["check_contract"] = {
             "kind": check_contract.CHECK_CONTRACT_KIND,
@@ -740,6 +743,12 @@ def execute(
     ] + [
         item for item in report["prerequisites"] if item.get("status") == "not_executed"
     ]
+    invalid_contract = [
+        item
+        for item in report["checks"]
+        if item.get("check_contract", {}).get("status")
+        not in {"valid", "not_started"}
+    ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
     elif hygiene_failed or source_failed:
@@ -750,6 +759,10 @@ def execute(
         report["status"] = "failed"
         report["exit_code"] = 1
         report["reason"] = "prerequisites_failed"
+    elif invalid_contract:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "check_contract_invalid"
     elif unfinished:
         report["status"] = "blocked"
         report["exit_code"] = 5
