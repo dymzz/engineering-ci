@@ -339,9 +339,32 @@ def capability_inventory() -> tuple[Capability, ...]:
             detail=(
                 "Receiver acceptance is not an engine-side durability "
                 "guarantee; the export uses bounded queues and a batch "
-                "processor."
+                "processor with a one minute export timeout."
             ),
             source="engine/telemetry/workload_export.go::WorkloadExport",
+        ),
+        Capability(
+            key="engine_export_flush",
+            status="available",
+            detail=(
+                "The Engine drains the workload export itself: the session "
+                "providers finish first, then the export is shut down with a "
+                "30 second flush budget. An incomplete shutdown is only a "
+                "warning."
+            ),
+            source="cmd/engine/main.go:engine/telemetry/workload_export.go",
+        ),
+        Capability(
+            key="sdk_export_flush",
+            status="available",
+            detail=(
+                "The module entrypoint force-flushes and shuts down the SDK "
+                "tracer provider when the module process ends."
+            ),
+            source=(
+                ".dagger/sdk/src/dagger/mod/cli.py::app"
+                ":.dagger/sdk/src/dagger/telemetry.py::shutdown"
+            ),
         ),
         Capability(
             key="engine_check_attribute",

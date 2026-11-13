@@ -27,7 +27,9 @@ ECI 只**读取**原生 Span 与原生结果，不生成、不改写、不补造
 | 导出协议 | 可用 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` 或 `OTEL_EXPORTER_OTLP_PROTOCOL`：`grpc` / `http/protobuf`（默认 http/protobuf） | `engine/telemetry/workload_export.go::workloadExportProtocol` |
 | 导出端点 | 可用 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 或 `OTEL_EXPORTER_OTLP_ENDPOINT`；两者都为空时导出**不启动** | `engine/telemetry/workload_export.go` |
 | 导出信号范围 | 可用 | Spans + workload readings；**不导出 logs** | `engine/telemetry/workload_export.go` |
-| 导出持久性 | 部分 | 接收端接受不等于 Engine 侧持久保证；有界队列 + BatchSpanProcessor | `engine/telemetry/workload_export.go::WorkloadExport` |
+| 导出持久性 | 部分 | 接收端接受不等于 Engine 侧持久保证；有界队列 + BatchSpanProcessor（导出超时 1 分钟） | `engine/telemetry/workload_export.go::WorkloadExport` |
+| Engine 侧 flush | 可用 | **Engine 自己 drain**：session provider 先结束，随后 workload export 用 **30 秒 flush 预算**关闭；flush 不完整只记 warning | `cmd/engine/main.go` |
+| Module 侧 flush | 可用 | Module 入口在 `finally` 里 `force_flush()` + `shutdown()` tracer provider | `.dagger/sdk/src/dagger/mod/cli.py::app`、`.dagger/sdk/src/dagger/telemetry.py::shutdown` |
 | Check 身份属性 | 部分 | 固定源码在 Check Span 上写 `dagger.io/check.name` 与 `dagger.io/check.passed`（`core/checks.go`），但**实测运行一次都没有发出**；Check 身份实际由 Span 名承载 | `core/checks.go`；实测见[验证记录](../verification/dagger-native-telemetry.md) |
 | Check 身份的 Span 名 | 可用 | CLI 选择器 `dag://?check=<name>`、模块函数调用 `<module>:<object>.<function>`、调用本体 `<object>.<function>` | 实测见[验证记录](../verification/dagger-native-telemetry.md) |
 | 缓存观察属性 | 可用 | `dagger.io/cache.contract`、`dagger.io/cache.outcome`（`hit`/`executed`/`joined`/`uncached`）、`dagger.io/cache.hit.route` | `engine/telemetryattrs/attrs.go` |
@@ -38,8 +40,11 @@ ECI 只**读取**原生 Span 与原生结果，不生成、不改写、不补造
 | SDK 版本标记 | 不可用 | 生成的 SDK 代码没有版本常量，不推测 | `.dagger/sdk/src/dagger/client/gen.py` |
 
 **未知项（固定版本未被仓库内来源证明）：** Engine 是否把会话 Span 挂在外部传入的 `traceparent` 之下；
-Engine 是否有"所有 Span 到达接收端"的保证；Engine 之外的 Function 级缓存观察字段。以上在
-[观察回执](#观察状态)中按 `unknown` 记录，不由较新 Dagger 文档推断。
+Engine 是否有"所有 Span 到达接收端"的保证（只有 30 秒 flush 预算，不是一致性承诺）；Engine 之外的
+Function 级缓存观察字段。以上在[观察回执](#观察状态)中按 `unknown` 记录，不由较新 Dagger 文档推断。
+
+**生命周期与 flush：** Engine 侧由 Engine 自己 drain——session provider 先结束，再关 workload export
+（30 秒预算）；Module 侧由 Module 入口 `finally` force-flush。两条链路的 flush 互不覆盖，也不互相保证。
 
 ## 本地与 CI 的实际配置
 

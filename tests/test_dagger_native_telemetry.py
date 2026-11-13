@@ -512,6 +512,8 @@ def test_capability_inventory_is_bound_to_pinned_sources():
     assert inventory["engine_check_attribute"].status == "partial"
     assert inventory["engine_check_identity_by_span_name"].status == "available"
     assert inventory["engine_cache_observation"].status == "available"
+    assert inventory["engine_export_flush"].status == "available"
+    assert inventory["sdk_export_flush"].status == "available"
     assert inventory["sdk_context_propagation"].status == "available"
     assert inventory["sdk_metric_and_log_export"].status == "not_available"
     assert inventory["sdk_version_marker"].status == "not_available"
