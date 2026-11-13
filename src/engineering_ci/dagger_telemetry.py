@@ -176,6 +176,11 @@ REASON_SESSION_NOT_OBSERVED = "engine_session_not_observed"
 REASON_CHECK_NAME_OUTSIDE_TRACE = "check_name_outside_propagated_trace"
 REASON_REQUIRED_OBSERVABILITY_UNMET = "required_observability_unmet"
 REASON_EXPORTER_ERROR = "exporter_reported_failure"
+REASON_PARENT_CHAIN = "native_parent_chain_not_observed"
+REASON_INVOCATION_AMBIGUOUS = "native_invocation_ambiguous"
+REASON_CALLER_SCOPE = "caller_capture_scope_not_proven"
+REASON_SPAN_CONFLICT = "native_span_identity_conflict"
+REASON_NATIVE_RESULT_MISMATCH = "native_result_invocation_mismatch"
 
 
 class DaggerTelemetryError(ValueError):
@@ -591,7 +596,8 @@ def _capture_spans(payload):
     spans = []
     resources = []
     for resource in payload.get("resourceSpans", []) or []:
-        resources.append(_attribute_map(resource.get("resource") or {}))
+        resource_attrs = _attribute_map(resource.get("resource") or {})
+        resources.append(resource_attrs)
         for scope in resource.get("scopeSpans", []) or []:
             scope_name = (scope.get("scope") or {}).get("name") or ""
             for span in scope.get("spans", []) or []:
@@ -603,6 +609,11 @@ def _capture_spans(payload):
                         "parent_span_id": span.get("parentSpanId") or "",
                         "name": span.get("name") or "",
                         "scope": scope_name,
+                        "session_id": resource_attrs.get(ATTR_SESSION_ID, ""),
+                        "engine_instance_id": resource_attrs.get(
+                            ATTR_ENGINE_INSTANCE_ID, ""
+                        ),
+                        "service_name": resource_attrs.get(ATTR_SERVICE_NAME, ""),
                         "check_name": attributes.get(ATTR_CHECK_NAME, ""),
                         "check_passed": attributes.get(ATTR_CHECK_PASSED),
                         "cache_outcome": attributes.get(ATTR_CACHE_OUTCOME, ""),
@@ -733,30 +744,26 @@ def _normalized(value):
 
 
 def _function_span(span, declared_name):
-    """True when the Span name is the module function call of the entry.
-
-    The pinned engine names a module function call `<object>.<function>` or
-    `<module>:<object>.<function>`, so the last segment carries the function
-    name and the rest carries the module reference.
-    """
+    """Match this repository's actual Dagger module, not any .<name> suffix."""
     name = span.get("name") or ""
-    if "." not in name:
-        return False
-    return _normalized(name.rsplit(".", 1)[1]) == _normalized(declared_name)
+    prefixes = ("EngineeringCi.", "engineering-ci:EngineeringCi.")
+    return any(
+        name.startswith(prefix)
+        and _normalized(name[len(prefix) :]) == _normalized(declared_name)
+        for prefix in prefixes
+    )
 
 
 def _check_keys(capture, check_name, function_name):
-    """Native keys in the capture that carry the declared entry identity."""
-    keys = {}
+    """Find identity candidates only. Matching a name is NOT a binding."""
     declared = check_name or function_name
-    attribute = [span for span in capture.spans if span.get("check_name") == declared]
+    keys = {}
+    attribute = [s for s in capture.spans if s.get("check_name") == declared]
     selector = [
-        span
-        for span in capture.spans
-        if _normalized(span.get("name") or "")
-        == _normalized(CHECK_SELECTOR_PREFIX + declared)
+        s for s in capture.spans
+        if check_name and s.get("name") == CHECK_SELECTOR_PREFIX + declared
     ]
-    function = [span for span in capture.spans if _function_span(span, declared)]
+    function = [s for s in capture.spans if _function_span(s, declared)]
     if attribute:
         keys[KEY_CHECK_ATTRIBUTE] = attribute
     if selector:
@@ -764,6 +771,50 @@ def _check_keys(capture, check_name, function_name):
     if function:
         keys[KEY_FUNCTION_CALL] = function
     return keys
+
+
+def _native_scope(span):
+    """The Resource identity carried by this *particular* Span."""
+    return span.get("session_id"), span.get("engine_instance_id")
+
+
+def _ancestry(span, by_span, stop=None):
+    """Return a native parent chain up to stop; do not invent missing links.
+
+    An unknown parent beyond the requested stop is acceptable: exported traces
+    can be partial. A gap *before* stop, cycle, or resource switch is not.
+    """
+    chain, visited = [], set()
+    node = span
+    while node:
+        key = node["trace_id"], node["span_id"]
+        if key in visited or not all(_native_scope(node)):
+            return None
+        visited.add(key)
+        chain.append(node)
+        if stop is not None and key == (stop["trace_id"], stop["span_id"]):
+            return list(reversed(chain))
+        parent_id = node.get("parent_span_id")
+        if not parent_id:
+            break
+        parent = by_span.get((node["trace_id"], parent_id))
+        if parent is None:
+            break
+        if _native_scope(node) != _native_scope(parent):
+            return None
+        node = parent
+    return None if stop is not None else list(reversed(chain))
+
+
+def _propagated_path(chain, parsed):
+    if parsed is None:
+        return False
+    trace_id, parent_id = parsed
+    return any(
+        span["trace_id"] == trace_id
+        and (span["span_id"] == parent_id or span["parent_span_id"] == parent_id)
+        for span in chain
+    )
 
 
 def _cache_observation_scope(bound_spans):
@@ -837,164 +888,164 @@ def _source_binding(bound_spans, source_binding_ref, capture):
 
 
 def _origin_execution(bound_spans):
-    """Derive the origin tool execution of this invocation.
+    """Observe Function cache facts without upgrading them to Tool Origin.
 
-    The distinction the review requires: a call that reused a cached result
-    ran no new tool execution, and that is not the same as having no origin
-    reference at all. Only an executed or uncached call proves that this
-    invocation is the origin; a hit or a join leaves the origin unknown
-    unless the consumer can resolve the shared cache entry.
+    This pinned native capture does not identify Ruff's process by a verified
+    exec-to-result link. Function cache execution is not proof that the tool
+    itself ran in the same invocation.
     """
-    outcomes = {
-        span.get("cache_outcome") for span in bound_spans if span.get("cache_outcome")
-    }
-    result_ids = {
-        span.get("cache_result_id")
-        for span in bound_spans
-        if span.get("cache_result_id")
-    }
-    cache_result_id = min(result_ids) if result_ids else None
-    span_ref = None
-    for span in bound_spans:
-        if span.get("cache_outcome") in (
-            CACHE_OUTCOME_EXECUTED,
-            CACHE_OUTCOME_UNCACHED,
-        ):
-            span_ref = span.get("span_id") or span_ref
-    if CACHE_OUTCOME_EXECUTED in outcomes or CACHE_OUTCOME_UNCACHED in outcomes:
-        return {
-            "ref": span_ref,
-            "status": ORIGIN_CURRENT_EXECUTION,
-            "reason": "cache_outcome_" + min(outcomes),
-            "cache_outcome": min(outcomes),
-            "cache_result_id": cache_result_id,
-            "new_tool_execution": True,
-        }
-    if CACHE_OUTCOME_HIT in outcomes:
-        return {
-            "ref": None,
-            "status": ORIGIN_UNKNOWN,
-            "reason": "cache_outcome_hit_without_prior_execution_reference",
-            "cache_outcome": CACHE_OUTCOME_HIT,
-            "cache_result_id": cache_result_id,
-            "new_tool_execution": False,
-        }
-    if CACHE_OUTCOME_JOINED in outcomes:
-        return {
-            "ref": None,
-            "status": ORIGIN_UNKNOWN,
-            "reason": "cache_outcome_joined_into_concurrent_execution",
-            "cache_outcome": CACHE_OUTCOME_JOINED,
-            "cache_result_id": cache_result_id,
-            "new_tool_execution": False,
-        }
+    outcomes = sorted(
+        {s["cache_outcome"] for s in bound_spans if s.get("cache_outcome")}
+    )
+    ids = sorted(
+        {s["cache_result_id"] for s in bound_spans if s.get("cache_result_id")}
+    )
     return {
         "ref": None,
         "status": ORIGIN_UNKNOWN,
-        "reason": "cache_outcome_not_observed",
-        "cache_outcome": min(outcomes) if outcomes else None,
-        "cache_result_id": cache_result_id,
-        "new_tool_execution": False,
+        "reason": "function_cache_is_not_tool_origin" if outcomes else
+                  "cache_outcome_not_observed",
+        "cache_outcome": outcomes[0] if len(outcomes) == 1 else None,
+        "cache_result_id": ids[0] if len(ids) == 1 else None,
+        "new_tool_execution": None,
     }
 
 
 def resolve_origin_execution(receipts):
-    """Resolve the origin execution of every receipt in one observation set.
+    """Do not join unrelated origins on an unscoped cache.result.id.
 
-    A receipt that reused a cached result names the cache entry it resolved
-    to. When another receipt in the set proved the execution of that entry,
-    the reuse points at that existing origin instead of creating one. A
-    reuse whose origin is not in the set stays unknown; it never counts as a
-    second tool execution.
+    Version-scoped Engine/cache-node identity is required for B's later
+    origin handoff; candidates in A/A.1 remain unknown.
     """
-    by_result_id = {}
-    for receipt in receipts:
-        origin = receipt.get("origin_execution") or {}
-        if origin.get("new_tool_execution") and origin.get("cache_result_id"):
-            by_result_id.setdefault(origin["cache_result_id"], receipt)
-    resolved = []
-    for receipt in receipts:
-        origin = dict(receipt.get("origin_execution") or {})
-        if origin.get("status") == ORIGIN_UNKNOWN and origin.get("cache_result_id"):
-            source = by_result_id.get(origin["cache_result_id"])
-            if source is not None:
-                origin["ref"] = (source.get("origin_execution") or {}).get("ref")
-                origin["status"] = ORIGIN_EXISTING_EXECUTION
-                origin["reason"] = "cache_result_id_shared_with_proven_execution"
-        resolved.append(origin)
-    return resolved
+    return [dict(receipt.get("origin_execution") or {}) for receipt in receipts]
 
 
-def _bind_capture(capture, parsed, check_name, function_name):
-    """Bind a capture to one invocation.
+def _bind_capture(
+    capture, parsed, check_name, function_name, *,
+    invocation_ref=None, capture_isolated=False,
+):
+    """Bind only native ancestry in the actual caller's capture scope.
 
-    Returns (status, reason, basis, bound_spans, keys). The rules are
-    deliberately strict: a shared trace id is never a correlation on its own,
-    and a declared Check name is only accepted when the engine's own native
-    key confirms it inside a known engine session.
+    A unique module/selector chain is necessary but not sufficient: without
+    propagated context the caller must also attest a dedicated receiver
+    capture for this invocation. This is a scoped A.1 correlation, NOT a
+    verified Git Source identity or a cross-Run execution identity.
     """
-    if parsed is None and not check_name and not function_name:
+    if parsed is None and not (check_name or function_name):
         return BINDING_UNBOUND, REASON_NO_CORRELATION_KEY, BASIS_NONE, [], {}
 
-    propagated = []
-    if parsed is not None:
-        trace_id, parent_span_id = parsed
-        propagated = [
-            span
-            for span in capture.spans
-            if span["trace_id"] == trace_id
-            and (
-                span["parent_span_id"] == parent_span_id
-                or span["span_id"] == parent_span_id
-            )
-        ]
+    by_span = {}
+    for span in capture.spans:
+        key = (span["trace_id"], span["span_id"])
+        if not all(key) or key in by_span:
+            return BINDING_AMBIGUOUS, REASON_SPAN_CONFLICT, BASIS_NONE, [], {}
+        by_span[key] = span
 
     if not check_name and not function_name:
-        if propagated:
-            return (
-                BINDING_BOUND,
-                None,
-                BASIS_TRACEPARENT,
-                propagated,
-                {KEY_TRACEPARENT: propagated},
-            )
-        if parsed is not None and any(
-            span["trace_id"] == parsed[0] for span in capture.spans
-        ):
+        # A real propagated parent binds the direct native descendants,
+        # not arbitrary other spans sharing the trace id.
+        propagated = [
+            s for s in capture.spans
+            if s["trace_id"] == parsed[0]
+            and (s["span_id"] == parsed[1] or s["parent_span_id"] == parsed[1])
+        ]
+        if len(propagated) == 1:
+            return BINDING_BOUND, None, BASIS_TRACEPARENT, propagated, {
+                KEY_TRACEPARENT: propagated,
+            }
+        if len(propagated) > 1:
+            return BINDING_AMBIGUOUS, REASON_INVOCATION_AMBIGUOUS, BASIS_NONE, [], {}
+        if any(s["trace_id"] == parsed[0] for s in capture.spans):
             return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], {}
         return BINDING_UNBOUND, REASON_NO_CORRELATED_SPAN, BASIS_NONE, [], {}
 
     keys = _check_keys(capture, check_name, function_name)
     if not keys:
-        # The engine did not report the declared entry in this capture.
         return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, [], {}
 
-    if not capture.session_ids:
-        # A name without its engine session is not a same-source reference.
-        return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, [], keys
+    candidates = []
+    if check_name:
+        selectors = keys.get(KEY_CHECK_SELECTOR, ())
+        functions = [
+            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            if s["name"].startswith("engineering-ci:EngineeringCi.")
+        ]
+        cores = [
+            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            if s["name"].startswith("EngineeringCi.")
+        ]
+        for selector in selectors:
+            if not all(_native_scope(selector)):
+                continue
+            for module in functions:
+                path = _ancestry(module, by_span, stop=selector)
+                if path is None or not any(
+                    (s["trace_id"], s["span_id"])
+                    in {(c["trace_id"], c["span_id"]) for c in cores}
+                    for s in path
+                ):
+                    continue
+                candidates.append(path)
+        # A genuinely propagated check attribute can bind without a selector,
+        # provided it uniquely identifies the call and parent context.
+        if not candidates and parsed is not None:
+            for span in keys.get(KEY_CHECK_ATTRIBUTE, ()):
+                if all(_native_scope(span)) and _propagated_path([span], parsed):
+                    candidates.append([span])
+    else:
+        modules = [
+            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            if s["name"].startswith("engineering-ci:EngineeringCi.")
+        ]
+        cores = [
+            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            if s["name"].startswith("EngineeringCi.")
+        ]
+        for module in modules:
+            if not all(_native_scope(module)):
+                continue
+            for core in cores:
+                path = _ancestry(module, by_span, stop=core)
+                if path is not None:
+                    candidates.append(path)
 
-    named = [span for spans in keys.values() for span in spans]
-    if parsed is None:
-        basis = BASIS_CHECK_ATTRIBUTE
-        for candidate in (KEY_CHECK_SELECTOR, KEY_FUNCTION_CALL):
-            if candidate in keys:
-                basis = {
-                    KEY_CHECK_SELECTOR: BASIS_CHECK_SELECTOR,
-                    KEY_FUNCTION_CALL: BASIS_FUNCTION_CALL,
-                }[candidate]
-                break
-        return BINDING_BOUND, None, basis, named, keys
+    if not candidates:
+        if parsed and any(
+            s["trace_id"] != parsed[0] for group in keys.values() for s in group
+        ) and not any(
+            s["trace_id"] == parsed[0] for group in keys.values() for s in group
+        ):
+            return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
+        return BINDING_UNBOUND, (
+            REASON_SESSION_NOT_OBSERVED if not any(
+                all(_native_scope(s)) for group in keys.values() for s in group
+            ) else REASON_PARENT_CHAIN
+        ), BASIS_NONE, [], keys
 
-    trace_id, parent_span_id = parsed
-    in_trace = [span for span in named if span["trace_id"] == trace_id]
-    if not in_trace:
-        return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
-    if any(
-        span["parent_span_id"] == parent_span_id or span["span_id"] == parent_span_id
-        for span in in_trace
-    ):
-        return BINDING_BOUND, None, BASIS_TRACEPARENT, in_trace, keys
-    return BINDING_BOUND, None, BASIS_CHECK_IN_TRACE, in_trace, keys
+    # One selector/Function call cannot be chosen merely because a Capture
+    # contains its name. Confirm a propagated parent or a caller-scoped
+    # isolated receiver and a real invocation record.
+    if parsed is not None:
+        candidates = [path for path in candidates if _propagated_path(path, parsed)]
+        if not candidates:
+            return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], keys
+        basis = BASIS_TRACEPARENT
+    else:
+        if not (capture_isolated and invocation_ref):
+            return BINDING_UNBOUND, REASON_CALLER_SCOPE, BASIS_NONE, [], keys
+        basis = BASIS_CHECK_SELECTOR if check_name else BASIS_FUNCTION_CALL
+
+    # Multiple distinct eligible Function paths cannot be reduced by name.
+    unique = {
+        (path[0]["trace_id"], path[0]["span_id"], path[-1]["span_id"]): path
+        for path in candidates
+    }
+    if len(unique) != 1:
+        return BINDING_AMBIGUOUS, REASON_INVOCATION_AMBIGUOUS, BASIS_NONE, [], keys
+    selected = next(iter(unique.values()))
+    # Distinct Session/Engine identities in the selected chain are rejected by
+    # _ancestry; do not promote capture-wide session collections.
+    return BINDING_BOUND, None, basis, selected, keys
 
 
 def build_receipt(
@@ -1012,6 +1063,7 @@ def build_receipt(
     check_name: str | None = None,
     function_name: str | None = None,
     capture_ref: str | None = None,
+    capture_isolated: bool = False,
     required_observability: bool = False,
     root: Path | None = None,
 ):
@@ -1057,7 +1109,9 @@ def build_receipt(
             sent = SENT_SENT
             sent_basis = "receiver_observation"
         binding_status, reason, basis, bound_spans, binding_keys = _bind_capture(
-            capture, parsed, check_name, function_name
+            capture, parsed, check_name, function_name,
+            invocation_ref=invocation_ref,
+            capture_isolated=capture_isolated,
         )
 
     source_associated = binding_status == BINDING_BOUND
@@ -1067,9 +1121,7 @@ def build_receipt(
         reason = REASON_REQUIRED_OBSERVABILITY_UNMET
 
     origin_execution = _origin_execution(bound_spans)
-    proves = [PROVES_INVOCATION] if bound_spans else []
-    if origin_execution["status"] == ORIGIN_CURRENT_EXECUTION:
-        proves.append(PROVES_ORIGIN_EXECUTION)
+    proves = [PROVES_INVOCATION] if binding_status == BINDING_BOUND else []
 
     claims = {
         CLAIM_EXPORTER_CONFIGURED: bool(
@@ -1081,7 +1133,7 @@ def build_receipt(
         CLAIM_NATIVE_CHECK_RESULT: native_result is not None,
     }
 
-    if binding_status == BINDING_BOUND and not required_observability:
+    if binding_status == BINDING_BOUND:
         status = STATUS_PRODUCED
     elif capture is not None or native_result is not None or exporter_error is not None:
         status = STATUS_PARTIAL
@@ -1125,10 +1177,22 @@ def build_receipt(
             "correlation_key": traceparent,
             "declared_check_name": check_name,
             "declared_function_name": function_name,
-            "session_ids": list(capture.session_ids) if capture else [],
-            "engine_instance_ids": (
-                list(capture.engine_instance_ids) if capture else []
+            "session_ids": sorted({s["session_id"] for s in bound_spans}),
+            "engine_instance_ids": sorted(
+                {s["engine_instance_id"] for s in bound_spans}
             ),
+            "capture_isolated": bool(capture_isolated),
+            "verified_parent_chain": [
+                {
+                    "trace_id": s["trace_id"],
+                    "span_id": s["span_id"],
+                    "parent_span_id": s["parent_span_id"],
+                    "name": s["name"],
+                    "session_id": s["session_id"],
+                    "engine_instance_id": s["engine_instance_id"],
+                }
+                for s in bound_spans
+            ],
         },
         "origin_execution": origin_execution,
         "cache_observation_scope": _cache_observation_scope(bound_spans),
@@ -1204,6 +1268,11 @@ def main(argv=None):
     parser.add_argument(
         "--capture-ref",
         help="Label of the receiver configuration that produced the capture",
+    )
+    parser.add_argument(
+        "--capture-isolated",
+        action="store_true",
+        help="Caller confirms this Receiver was dedicated to the one invocation",
     )
     parser.add_argument(
         "--native-result",
@@ -1310,6 +1379,7 @@ def main(argv=None):
         check_name=args.check_name,
         function_name=args.function_name,
         capture_ref=args.capture_ref,
+        capture_isolated=args.capture_isolated,
         required_observability=args.required_observability,
     )
     try:
