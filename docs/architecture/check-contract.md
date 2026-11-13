@@ -106,13 +106,21 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 - `after` is a real prerequisite. The satisfying result must reference the
   prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
   is not evidence that the tool consumed it.
-- A `ToolIdentity` declares `authority`, `access_id` and optionally a verified
-  `tool_id`, `version` and `artifact_sha256`. `authority` is either
-  `eci_local_entry` (an invocation ECI controls; `tool_id` must be absent) or
-  `runtime_tool_access` (a registered Runtime #27 ToolAccess, which requires its
-  ToolAsset `tool_id`). A local name is never promoted to a Runtime identity by
-  an executable, Hook Job or display name. An undeclared version/artifact may be
-  recorded as observed evidence (for example a pinned Dagger tool).
+- A `ToolIdentity` records two independent facts: the invocation entry
+  (`access_id` + `authority`) and the ToolAsset identity (`tool_id` +
+  `tool_id_source`, optionally `version`/`artifact_sha256`).
+  - `eci_local_entry` follows ECI's slash naming (`git/ls-files`); it is not a
+    registered Runtime ToolAccess. A verified asset identity may still be
+    recorded here (for example an ECI-pinned Lychee binary).
+  - `runtime_tool_access` names a registered Runtime #27 ToolAccess in Runtime's
+    own text (`trivy.scan`, `trivy.sbom`, ...), not ECI naming, and requires its
+    ToolAsset `tool_id` with `tool_id_source="runtime_tool_asset"`.
+  - A `tool_id` without a known `tool_id_source` (`runtime_tool_asset` or
+    `eci_pinned_asset`) is self-reported and refused; format-only validation
+    does not prove a Runtime registration.
+  - A local name is never promoted to a Runtime identity by an executable, Hook
+    Job or display name. An undeclared version/artifact may be recorded as
+    observed evidence (for example a pinned Dagger tool).
 - The current definitions (version 2) are the tool-bound ones: `docs`, `tach`,
   `tach_external`, `vulture`, `whitespace`. `forwarding`/`source` remain version
   1 because no tool requirement was added. Version 1 definitions keep the
@@ -127,13 +135,14 @@ no requirements is an internal ECI analysis and carries no tool evidence:
   built-in Check currently declares more than one alternative.
 
 A Native Result records the entry that actually ran in `tool`
-(`authority`, `access_id`, optional `tool_id`/`version`/`artifact_sha256`, and
-`executable`). The record participates in `content_id`/`result_id`, and the
-observed `authority` must equal the declared one. A tool-bound Check may omit
-the observation (the native fact is preserved), but then it cannot satisfy the
-Check; a tool-less Check must not claim one. `direct_tool` results additionally
-require `authority=runtime_tool_access` with a matching verified `tool_id`, so
-no built-in Check currently accepts them.
+(`authority`, `access_id`, optional `tool_id`/`tool_id_source`/`version`/
+`artifact_sha256`, and `executable`). The record participates in
+`content_id`/`result_id`, and the observed entry and asset facts must equal the
+declared ones. A tool-bound Check may omit the observation (the native fact is
+preserved), but then it cannot satisfy the Check; a tool-less Check must not
+claim one. `direct_tool` results additionally require
+`authority=runtime_tool_access` with a matching verified `tool_id`, so no
+built-in Check currently accepts them.
 
 `evaluate_check_satisfaction(definition, results)` combines the Native Results
 of one Check:
@@ -169,10 +178,11 @@ CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
 SATISFACTION_KIND = "engineering-ci-check-satisfaction"
 
-ToolIdentity(access_id, tool_id=None, version=None, artifact_sha256=None,
-             authority="eci_local_entry")
+ToolIdentity(access_id, tool_id=None, tool_id_source=None, version=None,
+             artifact_sha256=None, authority="eci_local_entry")
 ToolRequirement(requirement_id, alternatives, after=())
 TOOL_AUTHORITIES = frozenset({"eci_local_entry", "runtime_tool_access"})
+TOOL_ASSET_SOURCES = frozenset({"runtime_tool_asset", "eci_pinned_asset"})
 
 definition_for(name) -> CheckDefinition | None   # current definition version
 check_id_for(name) -> str | None
@@ -183,8 +193,9 @@ source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
            head_commit=None, index_tree=None, content_digest=None,
            verified_scope=(), binding_status=None,
            scope_kind="changed_paths", materialization_ref=None) -> dict
-tool_ref(access_id, *, tool_id=None, version=None, artifact_sha256=None,
-         authority="eci_local_entry", executable=None) -> dict  # observed evidence
+tool_ref(access_id, *, tool_id=None, tool_id_source=None, version=None,
+         artifact_sha256=None, authority="eci_local_entry",
+         executable=None) -> dict  # observed evidence
 native_result(definition, *, source, status, result_origin, result_instance, ..., tool=None) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
@@ -241,6 +252,7 @@ copy-pastable validated Result):
   "tool": {
     "access_id": "lychee/docs",
     "tool_id": null,
+    "tool_id_source": null,
     "version": null,
     "artifact_sha256": null,
     "authority": "eci_local_entry",
@@ -335,10 +347,15 @@ A Check that reports native `passed` while its declared composition is
 `not_applicable` verdict whose own Native Results contain a failed tool: a
 failed `git ls-files` inventory cannot be used as proof that no document is
 applicable. A genuinely empty document set with a successful inventory stays
-`not_applicable` and does not become a failure. In the Host `docs` path a failed
-inventory with no usable target is a pre-execution failure
-(`git_inventory_failed`, `execution_started=false`, no fabricated Lychee
-result); when changed documents remain, Lychee still runs and the native
+`not_applicable` and does not become a failure.
+
+In the Host `docs` path a failed inventory with no usable target is a
+pre-execution failure for the Check verdict (`git_inventory_failed`,
+`execution_started=false`), but the inventory tool itself already ran: its
+Native Result is kept in `native_results` with the real exit/stderr, while no
+Lychee result or exit is fabricated (`check_contract=not_started` refers only
+to the link-scan stage). `native_satisfaction` is `unsatisfied`, and the Report
+fails. When changed documents remain, Lychee still runs and the native
 satisfaction gate blocks the PASS because the inventory requirement failed.
 
 Unknown selected names remain `not_executed` with `check_identity_missing`. The
@@ -360,8 +377,11 @@ extension:
   result; unknown Check ids/versions are refused by `validate_definition`;
 - undeclared tool evidence, tool identity claims without a verified declaration
   and tool evidence on a tool-less Check are refused;
-- ECI-local entries cannot claim a `tool_id`; a `runtime_tool_access` identity
-  requires its ToolAsset id, and `direct_tool` requires that authority;
+- ECI-local entries may record a verified ToolAsset identity with its source;
+  a `tool_id` without a known `tool_id_source` is refused. A
+  `runtime_tool_access` identity accepts Runtime's registered key text (for
+  example `trivy.scan`) and requires its ToolAsset id with
+  `tool_id_source=runtime_tool_asset`; `direct_tool` requires that authority;
 - observed tool evidence participates in `content_id`/`result_id`;
 - satisfaction requires every declared result, allows a declared alternative,
   and requires an evidenced prerequisite `result_id` reference;
@@ -380,9 +400,10 @@ extension:
 `git/ls-files` and `lychee/docs` results for one `check_id` (version 2),
 references the inventory `result_id` from the Lychee result, records
 `satisfied` satisfaction, invokes Lychee with explicit document targets, blocks
-a native PASS whose composition is unsatisfied, refuses a failed inventory as a
-clean `not_applicable`, and keeps a genuinely empty document set
-`not_applicable` (not failed).
+a native PASS whose composition is unsatisfied, keeps a genuinely empty document
+set `not_applicable` (not failed), and on a failed inventory with no target
+keeps the real failed inventory Native Result (exit/stderr), fabricates no
+Lychee result, reports `unsatisfied` and does not PASS.
 
 The real Host `git` + Lychee execution (pass and broken-link cases, actual
 exits and the resulting Report) is recorded in
@@ -394,10 +415,11 @@ exits and the resulting Report) is recorded in
   `identity_only`, and worktree content digests cover only changed paths. Exact
   full-input materialization remains #66 Source work.
 - No verified Runtime ToolAsset identity exists for the Host `git`/Lychee/
-  Vulture/Tach tools, so their results keep `authority=eci_local_entry` and
-  `tool_id=null`. The `runtime_tool_access` authority only marks where a
-  registered Runtime #27 ToolAccess/ToolAsset may be used; this contract does
-  not verify that registration, and no adapter supplies one yet.
+  Vulture/Tach tools, so their results keep `authority=eci_local_entry`,
+  `tool_id=null` and `tool_id_source=null`. The `runtime_tool_access` authority
+  and `tool_id_source` mark where a registered Runtime #27 ToolAccess/ToolAsset
+  may be used; this contract does not verify that registration, and no adapter
+  supplies one yet.
 - Definition version 1 remains the pre-tool contract for the five tool-bound
   Checks. Consumers must select the version they intend: a version 1 result or
   expectation never satisfies a version 2 Check. No second version catalogue is
@@ -422,5 +444,7 @@ exits and the resulting Report) is recorded in
   native status and diagnostics remain in the Report; `execution.execute()`
   blocks with `check_contract_invalid`. Configuration/pre-tool failures,
   including a missing Tach config, are `not_started` without a Native Result
-  and preserve the original failure reason.
+  and preserve the original failure reason; a prerequisite tool that already ran
+  (the `docs` inventory) keeps its real Native Result even when the Check's own
+  verdict process never started.
 

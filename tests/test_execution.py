@@ -888,7 +888,18 @@ def test_failed_inventory_cannot_become_a_clean_not_applicable(repo):
     assert check["reason"] == "git_inventory_failed"
     assert check["execution_started"] is False
     assert check["inventory"]["exit_code"] == 1
-    assert "native_result" not in check
+    # The inventory actually ran: its native failure must survive even though
+    # the link scan never started, and no Lychee result may be fabricated.
+    results = check["native_results"]
+    assert len(results) == 1
+    inventory = results[0]
+    assert inventory["tool"]["access_id"] == "git/ls-files"
+    assert inventory["status"] == "failed"
+    assert inventory["native_exit_code"] == 1
+    assert "inventory failed" in inventory["evidence"]["stderr"]
+    assert check["native_result"]["result_id"] == inventory["result_id"]
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert check["check_contract"]["status"] == "not_started"
 
 
 def test_genuine_no_documents_does_not_become_a_failure(repo):

@@ -40,15 +40,20 @@ Both cases produce two Native Results with distinct `result_id`s for the same
 `rule_ref`. The `lychee/docs` result carries the `git/ls-files` `result_id` in
 `input_refs` (`kind=check_result`); the `docs` requirement declares
 `after=("inventory",)` and is satisfied only because that consumption is
-evidenced. Both tools keep `authority=eci_local_entry` and `tool_id=null`: no
-verified Runtime ToolAsset identity exists for these host tools, so the contract
-records the ECI-local entry (`git/ls-files`, `lychee/docs`), the executable and
-the exit, not an invented asset id.
+evidenced. Both tools keep `authority=eci_local_entry`, `tool_id=null` and
+`tool_id_source=null`: no verified Runtime ToolAsset identity exists for these
+host tools, so the contract records the ECI-local entry (`git/ls-files`,
+`lychee/docs`), the executable and the exit, not an invented asset id.
 
-The record was regenerated after the review follow-up that gave the tool-bound
+The entry namespace and the ToolAsset identity are separate facts: the same
+record may later carry a verified `tool_id` (with `tool_id_source`) while the
+entry stays an ECI-local invocation.
+
+The record was regenerated after the review follow-ups that gave the tool-bound
 Checks definition version 2 (version 1 stays readable as the pre-tool contract),
-added the explicit `authority` namespace, and made `result_covers_expected()`
-reuse the same requirement judgement as `evaluate_check_satisfaction()`.
+separated entry authority from asset identity, and made
+`result_covers_expected()` reuse the same requirement judgement as
+`evaluate_check_satisfaction()`.
 
 ## Real defect found and fixed
 

@@ -36,6 +36,9 @@ ORIGINS = frozenset({"host", "dagger", "actions", "direct_tool", "unknown"})
 # registered Runtime ToolAccess. A runtime ToolAccess may only be recorded when
 # the caller has a verified ToolAsset/ToolAccess registration for it.
 TOOL_AUTHORITIES = frozenset({"eci_local_entry", "runtime_tool_access"})
+# How a claimed ToolAsset identity is verified. An identity without one of
+# these sources is self-reported and refused.
+TOOL_ASSET_SOURCES = frozenset({"runtime_tool_asset", "eci_pinned_asset"})
 PROCESS_CHECK_IDS = frozenset(
     {
         "eci/hygiene/whitespace",
@@ -74,16 +77,21 @@ class CheckContractError(ValueError):
 class ToolIdentity:
     """One native tool/entry that can implement (part of) a Check.
 
-    ``access_id`` is the native entry ECI invokes. ``authority`` states which
-    namespace that entry belongs to: ``eci_local_entry`` is an ECI-local
-    invocation (no registered ToolAccess, therefore no ``tool_id``), while
-    ``runtime_tool_access`` names a verified Runtime #27 ToolAccess and requires
-    its registered ToolAsset ``tool_id``. A local name is never promoted to a
-    Runtime identity by an executable, Hook Job or display name.
+    Two facts are recorded independently:
+
+    - ``access_id`` + ``authority`` name the invocation entry. An
+      ``eci_local_entry`` follows ECI's slash naming; a ``runtime_tool_access``
+      is a registered Runtime #27 ToolAccess key in Runtime's own text (for
+      example ``trivy.scan``) and does not follow ECI naming.
+    - ``tool_id`` + ``tool_id_source`` name the ToolAsset that actually ran and
+      how its identity was verified. A verified asset keeps its identity even
+      when invoked through an ECI-local entry; an unverified or self-reported
+      ``tool_id`` is refused.
     """
 
     access_id: str
     tool_id: str | None = None
+    tool_id_source: str | None = None
     version: str | None = None
     artifact_sha256: str | None = None
     authority: str = "eci_local_entry"
@@ -131,8 +139,20 @@ def _sha256(value, name):
 
 
 _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# ECI-controlled native entry names (for example ``git/ls-files``).
 _TOOL_ACCESS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
-_TOOL_REF_FIELDS = ("access_id", "tool_id", "version", "artifact_sha256", "authority")
+# Runtime #27 ToolAccess keys are used as registered: ``trivy.scan`` is legal
+# and ECI's slash convention does not apply. Format-only validation does not
+# prove registration.
+_RUNTIME_ACCESS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_TOOL_REF_FIELDS = (
+    "access_id",
+    "tool_id",
+    "tool_id_source",
+    "version",
+    "artifact_sha256",
+    "authority",
+)
 
 
 def validate_tool_identity(identity):
@@ -146,7 +166,12 @@ def validate_tool_identity(identity):
         raise CheckContractError("tool_identity_invalid")
     if identity.authority not in TOOL_AUTHORITIES:
         raise CheckContractError("tool_authority_invalid")
-    if not isinstance(identity.access_id, str) or not _TOOL_ACCESS_PATTERN.fullmatch(
+    pattern = (
+        _RUNTIME_ACCESS_PATTERN
+        if identity.authority == "runtime_tool_access"
+        else _TOOL_ACCESS_PATTERN
+    )
+    if not isinstance(identity.access_id, str) or not pattern.fullmatch(
         identity.access_id
     ):
         raise CheckContractError("tool_access_id_invalid")
@@ -155,10 +180,16 @@ def validate_tool_identity(identity):
         or not _LOCAL_ID_PATTERN.fullmatch(identity.tool_id)
     ):
         raise CheckContractError("tool_id_invalid")
-    if identity.authority == "eci_local_entry" and identity.tool_id is not None:
-        raise CheckContractError("tool_id_forbidden_for_local_entry")
-    if identity.authority == "runtime_tool_access" and identity.tool_id is None:
-        raise CheckContractError("tool_id_required_for_runtime_access")
+    if identity.authority == "runtime_tool_access":
+        if identity.tool_id is None:
+            raise CheckContractError("tool_id_required_for_runtime_access")
+        if identity.tool_id_source != "runtime_tool_asset":
+            raise CheckContractError("tool_asset_source_mismatch")
+    if identity.tool_id is None:
+        if identity.tool_id_source is not None:
+            raise CheckContractError("tool_id_source_without_asset")
+    elif identity.tool_id_source not in TOOL_ASSET_SOURCES:
+        raise CheckContractError("tool_asset_source_invalid")
     if identity.version is not None:
         _text(identity.version, "tool_version")
     _sha256(identity.artifact_sha256, "tool_artifact_sha256")
@@ -169,6 +200,7 @@ def tool_ref(
     access_id,
     *,
     tool_id=None,
+    tool_id_source=None,
     version=None,
     artifact_sha256=None,
     authority="eci_local_entry",
@@ -178,6 +210,7 @@ def tool_ref(
     ref = {
         "access_id": access_id,
         "tool_id": tool_id,
+        "tool_id_source": tool_id_source,
         "version": version,
         "artifact_sha256": artifact_sha256,
         "authority": authority,
@@ -594,8 +627,11 @@ def _select_declared_tool(definition, tool):
     for requirement, alternative in matched:
         if tool.get("authority") != alternative.authority:
             continue
-        # A ToolAsset identity is never invented: it must be declared and equal.
+        # A ToolAsset identity is never invented: it must be declared and equal,
+        # including its verification source.
         if tool.get("tool_id") != alternative.tool_id:
+            continue
+        if tool.get("tool_id_source") != alternative.tool_id_source:
             continue
         # A declared version/artifact is a constraint; an undeclared one may
         # be recorded as observed evidence (for example a pinned Dagger tool).
@@ -1018,6 +1054,8 @@ def _result_matches_requirement(requirement, result):
             continue
         if tool.get("tool_id") != alternative.tool_id:
             continue
+        if tool.get("tool_id_source") != alternative.tool_id_source:
+            continue
         if any(
             declared is not None and tool.get(key) != declared
             for key, declared in (
@@ -1167,6 +1205,7 @@ def _definition_payload(definition):
                     {
                         "access_id": alternative.access_id,
                         "tool_id": alternative.tool_id,
+                        "tool_id_source": alternative.tool_id_source,
                         "version": alternative.version,
                         "artifact_sha256": alternative.artifact_sha256,
                         "authority": alternative.authority,

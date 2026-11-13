@@ -13,7 +13,7 @@
         "native_results": [
           {
             "baseline_ref": {
-              "base_commit": "47581d08926673fb7626f27f383084b097c0663b",
+              "base_commit": "e0d80457bdb271f9c4fb233dfe5fc048348d6c4d",
               "base_ref": "HEAD"
             },
             "check": {
@@ -29,7 +29,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:747b13b80ad979b78a7052330863f4aad3f796537649bb0ef5ccb26fcce318d3",
+            "content_id": "sha256:c1206bcfd8e4e8bef0cb7c32140c54dc792952131b0aee71e004e5a8f17cf061",
             "evidence": {
               "stderr": "",
               "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
@@ -37,12 +37,12 @@
             "input_refs": [],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
+            "result_id": "sha256:fb62a937382c703405f93de2333766a79bdd0a6df6bea5c2915c331f1785b1fc",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
+              "head_commit": "e0d80457bdb271f9c4fb233dfe5fc048348d6c4d",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -54,12 +54,13 @@
               "authority": "eci_local_entry",
               "executable": "git",
               "tool_id": null,
+              "tool_id_source": null,
               "version": null
             }
           },
           {
             "baseline_ref": {
-              "base_commit": "47581d08926673fb7626f27f383084b097c0663b",
+              "base_commit": "e0d80457bdb271f9c4fb233dfe5fc048348d6c4d",
               "base_ref": "HEAD"
             },
             "check": {
@@ -75,17 +76,17 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:be5e13473ddcde021238507dc5525780d0da1cc308e7d07b6284aee780cbd2da",
+            "content_id": "sha256:029a901b53ee364141eba8090783c4079a9a87f3fac178c9c2add4889530bb62",
             "evidence": {
               "findings": [],
               "stderr": "",
-              "stdout": "\ud83d\udd0d 1 Total (in 6ms) \ud83d\udd17 1 Unique \u2705 1 OK \ud83d\udeab 0 Errors\n\n"
+              "stdout": "\ud83d\udd0d 1 Total (in 14ms) \ud83d\udd17 1 Unique \u2705 1 OK \ud83d\udeab 0 Errors\n\n"
             },
             "input_refs": [
               {
                 "kind": "check_result",
                 "path": "git/ls-files",
-                "result_id": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea"
+                "result_id": "sha256:fb62a937382c703405f93de2333766a79bdd0a6df6bea5c2915c331f1785b1fc"
               },
               {
                 "kind": "config",
@@ -95,12 +96,12 @@
             ],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f",
+            "result_id": "sha256:1271a416f59b21d8c44c213267057dde6831b9a62436a10e99126a68a19873f8",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
+              "head_commit": "e0d80457bdb271f9c4fb233dfe5fc048348d6c4d",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -112,6 +113,7 @@
               "authority": "eci_local_entry",
               "executable": "lychee",
               "tool_id": null,
+              "tool_id_source": null,
               "version": null
             }
           }
@@ -130,11 +132,11 @@
                 "git/ls-files"
               ],
               "observed": [
-                "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea"
+                "sha256:fb62a937382c703405f93de2333766a79bdd0a6df6bea5c2915c331f1785b1fc"
               ],
               "reason": "native_pass",
               "requirement_id": "inventory",
-              "satisfied_by": "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
+              "satisfied_by": "sha256:fb62a937382c703405f93de2333766a79bdd0a6df6bea5c2915c331f1785b1fc",
               "status": "satisfied"
             },
             {
@@ -145,17 +147,17 @@
                 "lychee/docs"
               ],
               "observed": [
-                "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f"
+                "sha256:1271a416f59b21d8c44c213267057dde6831b9a62436a10e99126a68a19873f8"
               ],
               "reason": "native_pass",
               "requirement_id": "links",
-              "satisfied_by": "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f",
+              "satisfied_by": "sha256:1271a416f59b21d8c44c213267057dde6831b9a62436a10e99126a68a19873f8",
               "status": "satisfied"
             }
           ],
           "result_ids": [
-            "sha256:88046dc803848f87cb5ae69d093a1506cfd111de720bfe37b22acd699d27fcea",
-            "sha256:c0795e8a3a9768964a5ac25bc2529eb07acd18f0178dad9ea73a04641202526f"
+            "sha256:fb62a937382c703405f93de2333766a79bdd0a6df6bea5c2915c331f1785b1fc",
+            "sha256:1271a416f59b21d8c44c213267057dde6831b9a62436a10e99126a68a19873f8"
           ],
           "schema_version": 2,
           "status": "satisfied",
@@ -165,7 +167,7 @@
         "status": "passed"
       },
       "fixture": "cases\\docs-pass",
-      "head_commit": "47581d08926673fb7626f27f383084b097c0663b",
+      "head_commit": "e0d80457bdb271f9c4fb233dfe5fc048348d6c4d",
       "report": {
         "exit_code": 0,
         "reason": null,
@@ -185,7 +187,7 @@
         "native_results": [
           {
             "baseline_ref": {
-              "base_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
+              "base_commit": "5846246b4728a7927cde95ffdf0ff8ac020a2a78",
               "base_ref": "HEAD"
             },
             "check": {
@@ -201,7 +203,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:9c2c363137022ec4b62189a72c386b693bf8a0bfea23da14ec423f1955bbed88",
+            "content_id": "sha256:becc650f93e614aad165004d9e8c29c487930e01f6aa35cbb6d541f72db050c3",
             "evidence": {
               "stderr": "",
               "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
@@ -209,12 +211,12 @@
             "input_refs": [],
             "native_exit_code": 0,
             "reason": null,
-            "result_id": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
+            "result_id": "sha256:7d0347b17685e4ed71c5dee89ca7a69d09427aa7fc6d35b3e0bc04c4a35e6196",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
+              "head_commit": "5846246b4728a7927cde95ffdf0ff8ac020a2a78",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -226,12 +228,13 @@
               "authority": "eci_local_entry",
               "executable": "git",
               "tool_id": null,
+              "tool_id_source": null,
               "version": null
             }
           },
           {
             "baseline_ref": {
-              "base_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
+              "base_commit": "5846246b4728a7927cde95ffdf0ff8ac020a2a78",
               "base_ref": "HEAD"
             },
             "check": {
@@ -247,7 +250,7 @@
               },
               "tool_id": null
             },
-            "content_id": "sha256:7817a65bbb6a18548f023112b990f7431d6d818e744dac920a98eb5d84ea718c",
+            "content_id": "sha256:efe3c55092b7f11b7c80f994d340c7b6af24ccd4ff33799c6c9813d1ba4a9f24",
             "evidence": {
               "findings": [],
               "stderr": "",
@@ -257,7 +260,7 @@
               {
                 "kind": "check_result",
                 "path": "git/ls-files",
-                "result_id": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96"
+                "result_id": "sha256:7d0347b17685e4ed71c5dee89ca7a69d09427aa7fc6d35b3e0bc04c4a35e6196"
               },
               {
                 "kind": "config",
@@ -267,12 +270,12 @@
             ],
             "native_exit_code": 2,
             "reason": "lychee_findings",
-            "result_id": "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d",
+            "result_id": "sha256:e05bf6f673ba4559dc76156e59899701aeee65458fb3b3e3dd83cde32699bdf2",
             "result_origin": "host",
             "source_ref": {
               "actual_execution_source": "worktree",
               "binding_status": "identity_only",
-              "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
+              "head_commit": "5846246b4728a7927cde95ffdf0ff8ac020a2a78",
               "scope_kind": "changed_paths",
               "snapshot": "worktree",
               "verified_input_scope": []
@@ -284,6 +287,7 @@
               "authority": "eci_local_entry",
               "executable": "lychee",
               "tool_id": null,
+              "tool_id_source": null,
               "version": null
             }
           }
@@ -302,11 +306,11 @@
                 "git/ls-files"
               ],
               "observed": [
-                "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96"
+                "sha256:7d0347b17685e4ed71c5dee89ca7a69d09427aa7fc6d35b3e0bc04c4a35e6196"
               ],
               "reason": "native_pass",
               "requirement_id": "inventory",
-              "satisfied_by": "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
+              "satisfied_by": "sha256:7d0347b17685e4ed71c5dee89ca7a69d09427aa7fc6d35b3e0bc04c4a35e6196",
               "status": "satisfied"
             },
             {
@@ -317,7 +321,7 @@
                 "lychee/docs"
               ],
               "observed": [
-                "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d"
+                "sha256:e05bf6f673ba4559dc76156e59899701aeee65458fb3b3e3dd83cde32699bdf2"
               ],
               "reason": "result_not_passed",
               "requirement_id": "links",
@@ -326,8 +330,8 @@
             }
           ],
           "result_ids": [
-            "sha256:92ac4fcdda4d0d6d0f3e00db1d3d02afa6dbbfd2251adb3fa548fdc85972df96",
-            "sha256:8dd3b7638c8a0ab5f98b0f35860a87ab4e0e0ecf0ad2114d0226e135bc5bea8d"
+            "sha256:7d0347b17685e4ed71c5dee89ca7a69d09427aa7fc6d35b3e0bc04c4a35e6196",
+            "sha256:e05bf6f673ba4559dc76156e59899701aeee65458fb3b3e3dd83cde32699bdf2"
           ],
           "schema_version": 2,
           "status": "unsatisfied",
@@ -337,7 +341,7 @@
         "status": "failed"
       },
       "fixture": "cases\\docs-fail",
-      "head_commit": "dd33588bf1d631eb8ef65a196666532a74f5715d",
+      "head_commit": "5846246b4728a7927cde95ffdf0ff8ac020a2a78",
       "report": {
         "exit_code": 1,
         "reason": "checks_failed",
@@ -352,5 +356,5 @@
     "python": "3.14.3"
   },
   "kind": "engineering-ci-native-tool-host-evidence",
-  "recorded_at": "2026-11-13T17:57:59.360498+00:00"
+  "recorded_at": "2026-11-13T18:18:12.344840+00:00"
 }

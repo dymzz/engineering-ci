@@ -247,7 +247,7 @@ def test_undeclared_or_forbidden_tool_observations_are_refused():
     # No ToolAsset identity was verified for Lychee in this contract, so an
     # ECI-local entry may not invent one.
     with pytest.raises(
-        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+        check_contract.CheckContractError, match="tool_asset_source_invalid"
     ):
         observed("lychee/docs", tool_id="lychee")
     with pytest.raises(
@@ -632,18 +632,69 @@ def test_legacy_definition_result_cannot_satisfy_the_upgraded_check():
         )
 
 
-def test_tool_identity_authority_is_explicit():
+def test_tool_entry_authority_and_asset_identity_are_separate_facts():
+    # An ECI-local entry can invoke an asset whose identity is verified
+    # elsewhere; the entry namespace does not erase the asset identity.
+    local_with_asset = check_contract.ToolIdentity(
+        "lychee/docs",
+        tool_id="lychee",
+        tool_id_source="eci_pinned_asset",
+    )
+    assert check_contract.validate_tool_identity(local_with_asset) is local_with_asset
+    # ... but a claimed asset identity without a source is refused.
     with pytest.raises(
-        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+        check_contract.CheckContractError, match="tool_asset_source_invalid"
     ):
         check_contract.validate_tool_identity(
             check_contract.ToolIdentity("lychee/docs", tool_id="lychee")
         )
     with pytest.raises(
+        check_contract.CheckContractError, match="tool_id_source_without_asset"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity(
+                "lychee/docs", tool_id_source="eci_pinned_asset"
+            )
+        )
+    # Runtime ToolAccess keys use the Runtime-registered text, not ECI slash
+    # naming, and must carry the registered ToolAsset identity.
+    runtime = check_contract.ToolIdentity(
+        "trivy.scan",
+        tool_id="trivy",
+        tool_id_source="runtime_tool_asset",
+        authority="runtime_tool_access",
+    )
+    assert check_contract.validate_tool_identity(runtime) is runtime
+    assert check_contract.validate_tool_identity(
+        check_contract.ToolIdentity(
+            "trivy.sbom",
+            tool_id="trivy",
+            tool_id_source="runtime_tool_asset",
+            authority="runtime_tool_access",
+        )
+    )
+    with pytest.raises(
         check_contract.CheckContractError, match="tool_id_required_for_runtime_access"
     ):
         check_contract.validate_tool_identity(
-            check_contract.ToolIdentity("osv/scan", authority="runtime_tool_access")
+            check_contract.ToolIdentity("trivy.scan", authority="runtime_tool_access")
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_asset_source_mismatch"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity(
+                "trivy.scan",
+                tool_id="trivy",
+                tool_id_source="eci_pinned_asset",
+                authority="runtime_tool_access",
+            )
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_access_id_invalid"
+    ):
+        check_contract.validate_tool_identity(
+            check_contract.ToolIdentity("trivy.scan", authority="eci_local_entry")
         )
     with pytest.raises(
         check_contract.CheckContractError, match="tool_authority_invalid"
@@ -651,15 +702,15 @@ def test_tool_identity_authority_is_explicit():
         check_contract.validate_tool_identity(
             check_contract.ToolIdentity("osv/scan", authority="runtime")
         )
-    runtime = check_contract.ToolIdentity(
-        "osv/scan", tool_id="osv-scanner", authority="runtime_tool_access"
-    )
-    assert check_contract.validate_tool_identity(runtime) is runtime
     with pytest.raises(
-        check_contract.CheckContractError, match="tool_id_forbidden_for_local_entry"
+        check_contract.CheckContractError, match="tool_asset_source_invalid"
     ):
         check_contract.tool_ref("lychee/docs", tool_id="lychee")
     observed_runtime = check_contract.tool_ref(
-        "osv/scan", tool_id="osv-scanner", authority="runtime_tool_access"
+        "trivy.scan",
+        tool_id="trivy",
+        tool_id_source="runtime_tool_asset",
+        authority="runtime_tool_access",
     )
     assert observed_runtime["authority"] == "runtime_tool_access"
+    assert observed_runtime["tool_id_source"] == "runtime_tool_asset"
