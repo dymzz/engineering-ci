@@ -913,6 +913,21 @@ def test_index_source_refusal_rejects_skip_worktree_bytes(repo):
     )
 
 
+def test_index_source_refusal_rejects_assume_unchanged_bytes(repo):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    run(path, "update-index", "--assume-unchanged", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 100\n", encoding="utf-8")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert (
+        selection.index_source_refusal(path, tree)
+        == "index_assume_unchanged_bytes_mismatch"
+    )
+
+
 def test_push_snapshot_uses_before_after_commits(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")

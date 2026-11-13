@@ -364,15 +364,27 @@ def index_source_refusal(root, expected_tree, *, index_file=None):
     if tracked.returncode != 0:
         return "index_git_check_failed"
     for entry in tracked.stdout.split("\0"):
-        if not entry or not entry.startswith("S "):
+        if not entry:
             continue
-        path = entry[2:]
+        tag, path = entry[0], entry[2:]
+        if tag != "S" and not tag.islower():
+            continue
         blob = _git_bytes(root, "cat-file", "blob", f":{path}", env=env)
         file = Path(root) / path
         if blob.returncode != 0 or not file.is_file():
-            return "index_skip_worktree_bytes_mismatch"
+            reason = (
+                "index_skip_worktree_bytes_mismatch"
+                if tag == "S"
+                else "index_assume_unchanged_bytes_mismatch"
+            )
+            return reason
         if file.read_bytes() != blob.stdout:
-            return "index_skip_worktree_bytes_mismatch"
+            reason = (
+                "index_skip_worktree_bytes_mismatch"
+                if tag == "S"
+                else "index_assume_unchanged_bytes_mismatch"
+            )
+            return reason
     return None
     return None
 
@@ -1809,11 +1821,6 @@ def main(argv=None):
     root = args.root.resolve()
     if args.index_file is not None and args.mode != "index":
         parser.exit(2, "--index-file requires --mode index\n")
-    config_path = args.config if args.config.is_absolute() else root / args.config
-    try:
-        config = load_config(config_path)
-    except SelectionError as error:
-        parser.exit(1, f"selection rejected: {error.code}\n")
     if args.mode == "multi":
         try:
             refs = [
@@ -1838,6 +1845,11 @@ def main(argv=None):
         )
     if getattr(changes, "source_refusal", None):
         parser.exit(4, f"source rejected: {changes.source_refusal}\n")
+    config_path = args.config if args.config.is_absolute() else root / args.config
+    try:
+        config = load_config(config_path)
+    except SelectionError as error:
+        parser.exit(1, f"selection rejected: {error.code}\n")
     selection = select(
         changes,
         config,

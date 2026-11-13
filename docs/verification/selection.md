@@ -55,7 +55,8 @@ checkout or the Knowledge repository:
 | `--full` scope | `selection.full_tests = true`; docs/Tach/Vulture remain `not_applicable` |
 | Index snapshot | staged paths selected; unstaged path excluded; `snapshot=index` |
 | Alternate Index | `--index-file`/`index_file` reads a temporary `GIT_INDEX_FILE`; tree identity is authoritative, the path is local execution context |
-| Index representation | normal checkout representations (including declared EOL conversion) are accepted when Git reports the worktree clean; `skip-worktree` paths whose raw bytes differ from the Index blob are refused |
+| Index representation | normal checkout representations (including declared EOL conversion) are accepted when Git reports the worktree clean; `skip-worktree`/`assume-unchanged` paths whose raw bytes differ from the Index blob are refused |
+| Index hidden flags | `index_skip_worktree_bytes_mismatch` / `index_assume_unchanged_bytes_mismatch` are explicit refusals, not empty diffs |
 | Index execution | matching index tree executes only when the worktree matches the index and has no untracked inputs; dirty worktree → `index_worktree_mismatch`, untracked → `index_untracked_inputs` |
 | Push snapshot | `before..after` commits and exact path set recorded |
 | PR snapshot | `merge-tree --write-tree` recorded as `merge_tree` |

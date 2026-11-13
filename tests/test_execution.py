@@ -662,6 +662,33 @@ def test_execute_uses_plan_index_file_when_worktree_matches(repo, tmp_path):
     assert report["checks"][0]["check_contract"]["status"] == "valid"
 
 
+def test_execute_runs_tests_with_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] in {"passed", "failed"}
+    assert report["tests"].get("exit_code") != 4
+
+
 def test_execute_rejects_changed_external_index(repo, tmp_path):
     path, base = repo
     external = tmp_path / "external-index"

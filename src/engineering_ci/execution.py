@@ -684,9 +684,17 @@ def execute(
             framework=framework,
             src_root=chosen.get("src_root", "src"),
             expected_tree=expected_tree,
+            index_tree=plan["git"].get("index_tree"),
+            index_file=plan["git"].get("index_file"),
             junit_path=junit_path,
             capture=native,
         )
+        if exit_code == 4 and plan["git"].get("snapshot") == "index":
+            report["status"] = "not_executed"
+            report["exit_code"] = 4
+            report["reason"] = "index_source_refused"
+            report["tests"] = {"status": "not_executed", "exit_code": 4}
+            return report
         report["exit_code"] = exit_code
         report["native_stdout"] = native.get("stdout", "")
         report["native_stderr"] = native.get("stderr", "")
