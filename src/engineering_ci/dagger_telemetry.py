@@ -736,17 +736,13 @@ def _check_keys(capture, check_name, function_name):
     """Native keys in the capture that carry the declared entry identity."""
     keys = {}
     declared = check_name or function_name
-    attribute = [
-        span for span in capture.spans if span.get("check_name") == declared
-    ]
+    attribute = [span for span in capture.spans if span.get("check_name") == declared]
     selector = [
         span
         for span in capture.spans
         if span.get("name") == CHECK_SELECTOR_PREFIX + declared
     ]
-    function = [
-        span for span in capture.spans if _function_span(span, declared)
-    ]
+    function = [span for span in capture.spans if _function_span(span, declared)]
     if attribute:
         keys[KEY_CHECK_ATTRIBUTE] = attribute
     if selector:
