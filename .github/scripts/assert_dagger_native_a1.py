@@ -53,12 +53,18 @@ def verify(kind: str, folder: Path, *, native_exit: int | None) -> None:
     context = receipt["binding"]
     require(context["binding_status"] == "bound", f"{kind}: not bound")
     require(context["capture_isolated"] is True, f"{kind}: caller scope not declared")
-    require(receipt["claims"]["source_associated"] is True,
-            f"{kind}: trace-to-invocation not correlated")
-    require(receipt["source_binding"]["source_binding_status"] == "unknown",
-            f"{kind}: Git Source incorrectly verified")
-    require(receipt["origin_execution"]["new_tool_execution"] is None,
-            f"{kind}: Function cache incorrectly promoted to Tool Origin")
+    require(
+        receipt["claims"]["source_associated"] is True,
+        f"{kind}: trace-to-invocation not correlated",
+    )
+    require(
+        receipt["source_binding"]["source_binding_status"] == "unknown",
+        f"{kind}: Git Source incorrectly verified",
+    )
+    require(
+        receipt["origin_execution"]["new_tool_execution"] is None,
+        f"{kind}: Function cache incorrectly promoted to Tool Origin",
+    )
     require(
         hashlib.sha256(capture.read_bytes()).hexdigest()
         == receipt["raw_trace_ref"]["sha256"],
@@ -72,13 +78,12 @@ def verify(kind: str, folder: Path, *, native_exit: int | None) -> None:
         node = nodes[key]
         require(item["name"] == node["name"], f"{kind}: name mismatch")
         require(
-            item["session_id"] == node["session"] and
-            item["engine_instance_id"] == node["engine"] and
-            all((node["session"], node["engine"])),
+            item["session_id"] == node["session"]
+            and item["engine_instance_id"] == node["engine"]
+            and all((node["session"], node["engine"])),
             f"{kind}: wrong resource identity",
         )
-        require(item["parent_span_id"] == node["parent"],
-                f"{kind}: invented Parent ID")
+        require(item["parent_span_id"] == node["parent"], f"{kind}: invented Parent ID")
         if index:
             prev = chain[index - 1]
             require(
@@ -89,43 +94,67 @@ def verify(kind: str, folder: Path, *, native_exit: int | None) -> None:
                 f"{kind}: broken ancestry or cross-session link",
             )
     claimed_ids = receipt["observed_trace_span_ids"]
-    require(claimed_ids == [s["span_id"] for s in chain],
-            f"{kind}: bound Span selection differs from checked chain")
+    require(
+        claimed_ids == [s["span_id"] for s in chain],
+        f"{kind}: bound Span selection differs from checked chain",
+    )
 
     if native_exit is not None:
-        require(chain[0]["name"] == "dag://?check=lint",
-                f"{kind}: wrong native Check selector")
-        require(chain[-2]["name"] == "EngineeringCi.lint",
-                f"{kind}: missing Check core Function")
-        require(chain[-1]["name"] == "engineering-ci:EngineeringCi.lint",
-                f"{kind}: wrong module Function")
+        require(
+            chain[0]["name"] == "dag://?check=lint",
+            f"{kind}: wrong native Check selector",
+        )
+        require(
+            chain[-2]["name"] == "EngineeringCi.lint",
+            f"{kind}: missing Check core Function",
+        )
+        require(
+            chain[-1]["name"] == "engineering-ci:EngineeringCi.lint",
+            f"{kind}: wrong module Function",
+        )
         native = load(folder / f"native-result{suffix}.json")
-        actual_code = int((folder / (
-            "check.exit" if kind == "pass" else "negative-check.exit"
-        )).read_text().strip())
-        require(actual_code == native_exit == native["exit_code"],
-                f"{kind}: native exit mismatch")
+        actual_code = int(
+            (folder / ("check.exit" if kind == "pass" else "negative-check.exit"))
+            .read_text()
+            .strip()
+        )
+        require(
+            actual_code == native_exit == native["exit_code"],
+            f"{kind}: native exit mismatch",
+        )
         require(native["check"] == "lint", f"{kind}: wrong native result")
-        require(receipt["native_check_result"] == native,
-                f"{kind}: original result changed by recorder")
+        require(
+            receipt["native_check_result"] == native,
+            f"{kind}: original result changed by recorder",
+        )
         result_ref = receipt["native_result_or_bundle_ref"]
-        require(result_ref and result_ref["sha256"]
-                == hashlib.sha256((folder / f"native-result{suffix}.json")
-                                  .read_bytes()).hexdigest(),
-                f"{kind}: native result content identity not preserved")
+        require(
+            result_ref
+            and result_ref["sha256"]
+            == hashlib.sha256(
+                (folder / f"native-result{suffix}.json").read_bytes()
+            ).hexdigest(),
+            f"{kind}: native result content identity not preserved",
+        )
     else:
-        require(chain[-2]["name"] == "EngineeringCi.repositoryRuffTools"
-                and chain[-1]["name"]
-                == "engineering-ci:EngineeringCi.repositoryRuffTools",
-                "artifact: wrong Function module lineage")
-        require(receipt["native_check_result"] is None,
-                "artifact: standalone Function was falsely labeled a Check")
+        require(
+            chain[-2]["name"] == "EngineeringCi.repositoryRuffTools"
+            and chain[-1]["name"] == "engineering-ci:EngineeringCi.repositoryRuffTools",
+            "artifact: wrong Function module lineage",
+        )
+        require(
+            receipt["native_check_result"] is None,
+            "artifact: standalone Function was falsely labeled a Check",
+        )
         artifact = folder / "entrypoints" / "ruff-tools"
-        require(int((folder / "entrypoints" / "artifact.exit")
-                    .read_text().strip()) == 0,
-                "artifact: native export failed")
-        require(artifact.is_file() and bool(artifact.read_bytes()),
-                "artifact: no native output")
+        require(
+            int((folder / "entrypoints" / "artifact.exit").read_text().strip()) == 0,
+            "artifact: native export failed",
+        )
+        require(
+            artifact.is_file() and bool(artifact.read_bytes()),
+            "artifact: no native output",
+        )
         print(f"artifact_sha256={hashlib.sha256(artifact.read_bytes()).hexdigest()}")
     print(f"PASS A.1 {kind} native_span_chain={len(chain)}")
 
