@@ -5,14 +5,14 @@
 ## 背景及真实问题
 
 - [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 已形成局部稳定 Check ID、Native Result、Host 校验/Report 及 Source 等级字段，修复了 Result 构造/校验不一致等实际缺陷。但它的 `resolve_definitions(requested_names)` **只解析给定 Check 名称**，其 `validate_completeness_receipt()` 只能检查若干字符串结构，不能证明有权工程 Profile 对某次 Event/Ref 的 Expected 真正完整。
-- 此前 [Issue #52](https://github.com/dymzz/engineering-ci/issues/52) 和 [Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 被追加“CheckDefinition 域权威”“ExpectedSet 完整性权威”等优先解释条款。在没有先核对已存在的有效 Profile→Expected Requirements→Plan→Assessment 设计前，容易把**事实实现职责**提升为新的**策略规范权威**。
+- 此前 [Issue #52](https://github.com/dymzz/engineering-ci/issues/52) 和 [Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 被追加“CheckDefinition 域权威”“ExpectedSet 完整性权威”等优先解释条款。在没有先核对已存在的有效 Profile→Expected Requirements→Plan→Assessment 设计前，容易把**事实实现职责**提升为新的**策略规范权威**；该新增设计仍是待审提案，不自动高于已有 Issue。
 - 早期 Review 将消费者合法空集、#66-P0 Source 字节证明、#66-C 实际 Job 路由、#63 来源受信和 #61 最终 Gate 全部作为 PR #93 首切片的单独阻断，是不正确的跨组件验收归属；反过来，首切片可独立验收也**不表示**这些能力可从全系统需求中删除。
 
 ## 本 PR 实际修订
 
 | 修改目标 | 变更性质 | 验证边界 |
 | --- | --- | --- |
-| [Provider and Gates §1.2](../../design/execution-graph/provider-and-gates.md) | **唯一维护中的跨组件接口裁决**：来源、当前有效 Profile、CheckDefinition、Expected、Native Result、Coverage、受信/门禁，建立明确引用、版本和不能相互升级的结论 | 目标设计；不是已交付 Profile→Expected API |
+| [Provider and Gates §1.2](../../design/execution-graph/provider-and-gates.md) | **既有架构交接的修订提案（待审）**：延续 §1.1 的有效 Profile 及 Required 来源；明确 Expected/Native Result/覆盖与受信的接口，不宣称已接纳或已实施 | 目标设计；不是已交付 Profile→Expected API |
 | 本文件 | 只保留审阅事实、差分、出处、受影响任务和实施顺序 | **不得**在此维护平行字段表或合法空集规则 |
 | PR #92 描述 | 保留设计修订记录；不把已直接修改的 Issue 正文冒充 PR Git Diff | 不启动代码实现 |
 | Issue #52/#66（下一步按本设计原位收敛） | 删除先前重复的“优先解释/权威再裁决”，把有效要求融入原有任务段落 | Issue 是实施任务、非第二 Profile 策略来源 |
@@ -30,12 +30,13 @@
 
 - **#52-A / PR #93**：保留稳定 Check ID、当前已支持的 Check 定义、真实 Native Result 与同次 Report/validator 的一致性。后续领域/多 Tool/外部适配需如实标明未交付；没有 Profile 全集/Source 全闭包时不假称已通过整体覆盖。#52 的结构性 matcher 不取代 #66 的 Expected+Coverage 计算。
 - **#66-P0**：目标 Git Index/Worktree/Commit/PR/Push 实际被检字节和闭包；可与 #52-A 并行。
-- **#66-B**：以项目/组织生效 Profile、实际 Context×Action×Target、#52 的 CheckDefinition 与 #66-P0 Source 生成同一次 Expected Requirements 和 `expected_set_ref`，是**受控派生结果**，不是另一个项目策略权威。缺定义/规则/来源时明确 partial/unknown。
+- **#66-B**：从项目/组织有效 Profile、项目适用规则、Context×Action×Target、#52 CheckDefinition 与 #66-P0 已知 Source 派生本次 Expected Checks / Required 子集和 `expected_set_ref`；Required 为空不自动删除 Advisory，原生输入闭包尚未知时可保留 Expected 及未知范围，不必等待工具执行。
 - **#66-C / PR #72**：真实 Job Routing 与 Result 多对多关联，对账未路由/未执行/不等价/输入漂移；不能按 Job 清单反推 Required/Expected。
-- **#86/#63/#61**：依次负责真实 Dagger DAG / 受信证据及 Required Coverage / 最终阶段性授权与 Release；三者引用同一有效 Profile/Expected，但拥有独立核验职责，不另建规则来源。
+- **#63（双时点）**：执行前评估受信历史结果并计算 Remaining Work；执行后复核同次 Native Result、已接纳复用与覆盖缺项；历史 PASS 不替代缺失的 Dagger 产物闭包。
+- **#86/#61**：Dagger Engine/#86 负责编排真实计算图和必要产物；#61 按同一有效 Profile/Expected 和 #63 受信结论完成阶段性授权与 Release，不另建 Required 规则。
 - **Knowledge #68**：维护项目领域规则和 Profile 配置、Workflow/Hook 消费行为，不实现 ECI 的公共选择和检查器。
 
-**定向验收**：Profile 实际合法空集 vs 未加载/未批准；已 Required 但 Job 缺失；相同目标 Tree、不同 old→new 的差分型 Check 不得错误复用；Index B vs Worktree C；两个必须的 Native Result 少一个不能通过；真实 Result 结构有效但 #63 来源不受信；合格历史 PASS 可在输入等价时复用。将验收分配给真正的接口生产/消费方；不为文档修订重跑原生扫描。
+**定向验收**：Required 子集为空但 Advisory 适用；Profile 实际合法空 Expected vs 未加载/未批准；已 Required 但 Job 缺失；相同目标 Tree、不同 old→new 的差分型 Check 不得错误复用；Index B vs Worktree C；两个必须的 Native Result 少一个不能通过；真实 Result 结构有效但 #63 来源不受信；合格历史 PASS 可在输入等价时复用。将验收分配给真正的接口生产/消费方；不为文档修订重跑原生扫描。
 
 ## 历史说明
 
