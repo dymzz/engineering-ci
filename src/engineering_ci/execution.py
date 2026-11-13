@@ -514,8 +514,9 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 "schema_version": check_contract.CONTRACT_VERSION,
                 "status": "identity_missing",
             }
+            # Preserve the real native status: identity rejection invalidates
+            # ECI consumption, but does not make an executed Check unexecuted.
             if item.get("status") == "passed":
-                item["status"] = "not_executed"
                 item["reason"] = "check_identity_missing"
             continue
         item["check_id"] = definition.check_id
@@ -746,8 +747,7 @@ def execute(
     invalid_contract = [
         item
         for item in report["checks"]
-        if item.get("check_contract", {}).get("status")
-        not in {"valid", "not_started"}
+        if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
     ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
