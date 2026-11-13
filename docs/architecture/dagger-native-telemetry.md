@@ -80,7 +80,7 @@ Function 级缓存观察字段。以上在[观察回执](#观察状态)中按 `u
 | `exporter_configured` | 原生导出被配置（SDK 环境变量或 Engine 配置 + 端点） | 读到真实配置；接收端已启动不算 |
 | `sent` | `sent` / `not_sent` / `unknown` | `sent` 需接收端实际收到；`not_sent` 只由导出侧失败记录证明；否则 `unknown` |
 | `receiver_observed` | 接收端确实捕获到 Span | 捕获文件存在且非空，并记录路径与 SHA-256 |
-| `source_associated` | 捕获内容可归因到本次调用 | 满足[关联键](#关联键)规则 |
+| `source_associated` | **Trace 可归因到本次 Invocation**；不代表 Git Source 已核验 | 满足逐 Span Parent/Session 与 Caller Scope 规则 |
 | `native_check_result` | 独立成立的原生 Check 结果 | 原生退出与产物本身，不依赖 Trace |
 
 命令 `exit=0`、Collector 已启动、时间窗口接近，都**不是**任何一层的证据。缺少 Trace 时不按时间戳或命令
@@ -119,7 +119,7 @@ Issue #87 P0 要求的最小字段集，逐项写清生产者、消费入口、�
 | 字段 | 生产者 | 消费入口 | 存在条件 | 唯一性 | 原始出处 | 拒绝原因 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `actual_invocation_ref` | 实际发起调用的 CLI / ECI 调用端 | 回执消费者 | 有本次真实调用事实时；历史 Verdict 复用不生成新调用 | 1:1（本次请求） | 调用端写入的调用描述 | 无真实调用事实时缺省 |
-| `source_binding_ref` | ECI Plan / Source 生产方 | 回执消费者、被检对象核对 | 有实际 Source 绑定时 | 1:N（一次调用可有多个被检对象） | 既有 `git.execution_tree` / `source_tree_id` / `content_binding` | 绑定不一致时不作 Check 归因 |
+| `source_binding_ref` | 调用端声明的目标 Source（权威验证由 #66 生产） | B.1 对实际 Source 作对账 | 当前候选中可只是声明值 | 1:N | Git 目标与 Dagger 节点摘要分别记录 | 仅目标 Git Tree/节点 XXH3 不构成真实输入已验证；`source_binding_status=unknown` |
 | `source_binding.observed_dag_digests` | 引擎（绑定到的调用 Span） | 回执消费者 | 绑定到带内容身份的调用 Span 时 | 1:N（一次调用可有多个 digest） | `dagger.io/dag.digest` / `dagger.io/dag.content_preferred_digest` | 没有观察到 digest 时为空数组，不推测 |
 | `check_or_function_ref` | 真实 Check / Function 入口 | 回执消费者 | 观察到被检的 Check 或 Function 时 | 1:N（一次调用可触发多个 Function） | 本次捕获的 Span 名 | 未观察到对应 Span 时不填 |
 | `native_result_or_bundle_ref` | Dagger / 工具原生结果生产者 | 回执消费者、Report 与 Gate | 原生产者给出结果或产物时 | 1:1（一个产物一个引用） | 结果文件路径 + SHA-256 | 无来源时不能据此证明 Trace 与原生执行相同 |
@@ -144,10 +144,16 @@ Issue #87 P0 要求的最小字段集，逐项写清生产者、消费入口、�
 | `engine_check_function` | 捕获 Span 名为 `<module>:<object>.<function>` 或 `<object>.<function>` | 中：被观察到的 Function |
 | `engine_check_in_propagated_trace` | Check 键落在传播 Trace 内 | 强：键与上下文同时成立 |
 
-同一捕获里若同时出现多个键，回执记录全部（`binding.keys`）与最强的一个（`binding.basis`）。
-**不足以归因：** 相同 Trace ID、相同 Check 名、近似时间窗口、相同 Scope 名。共享 Trace ID 必须再核对实际
-Span 的 Function/Check 与调用上下文；无法唯一判定时返回 `unbound` 或 `ambiguous` 并保留各自原始事实，
-不拼接、不伪造父 Span。
+**A.1 实际绑定规则（修订）：** Span 名或 `dagger.io/check.name` 只是**候选身份**，不足以单独授予 `bound`。
+`_capture_spans` 对每条 Span 保留 Resource 的 Session/Engine，`_bind_capture` 从真实 Check Selector
+沿 `parent_span_id` 关联 Module/Core Function，或对独立 Function 入口验证 Core→Module 父链。
+没有传播父上下文时，仅在本次 Caller 明确确认独立 Receiver Capture（`--capture-isolated`）、
+实际 Invocation 引用存在且候选唯一时，才能以**受限调用范围**报告 `bound`。
+同一个 Capture 的多次同名候选须报告 `ambiguous`；断链、跨 Session/Engine、错误模块或缺 Caller
+范围均拒绝，返回原因和原生 Span 链。记录的是 Trace↔Invocation 观察，不是 Git Source bytes verified。
+
+**不足以归因：** 相同 Trace ID、相同 Check 名、近似时间窗口、相同 Scope 名或全局 Session 集合；
+`Check.sync` 可能是 Selector 的旁支，不得虚构一个线性 Parent 链。
 
 ## 原执行来源（Origin Execution）
 
@@ -159,26 +165,16 @@ Span 的 Function/Check 与调用上下文；无法唯一判定时返回 `unboun
 | `invocation.actual_invocation_ref` | 本次实际请求的引用 |
 | `origin_execution.ref` | 本次结果的**原始工具执行来源**引用；无来源证明时为空 |
 | `origin_execution.status` | `current_execution`（本次就是原执行）/ `existing_execution`（引用到已证实的既有执行）/ `unknown` |
-| `origin_execution.new_tool_execution` | 本次是否真的跑了工具 |
-| `origin_execution.cache_result_id` | 原生同源引用：同一条缓存项的调用共享同一原执行 |
+| `origin_execution.new_tool_execution` | 本次是否有可验证工具执行；A.1 证据不足时为 `null`（未知），不是 false |
+| `origin_execution.cache_result_id` | 引擎原生节点的缓存结果 ID（必须校验 Engine/节点/输入作用域后才能用作 Origin 关联键） |
 | `origin_execution.reason` | 判定依据与缺失原因 |
 
-判定规则：
+**A/A.1 候选回执目前的判定：**
 
-- `dagger.io/cache.outcome=executed`（或 `uncached`）→ 本次调用**就是**原工具执行：`status=current_execution`，
-  `new_tool_execution=true`，`ref` 指向该调用 Span。
-- `hit` → 本次**没有新的工具执行**；捕获里没有原执行的引用时 `status=unknown`、`ref` 为空。
-  只有缓存命中或结果内容相同，**不足以**推断原执行身份。
-- `joined` → 并发去重到另一次进行中的执行；该执行属于另一次调用，本捕获无法证明，`status=unknown`。
-- 未观察到缓存事实 → `status=unknown`，`reason=cache_outcome_not_observed`。
-
-`resolve_origin_execution(receipts)` 在同一观察集合内解析：命中缓存的调用若与另一条**已证明执行**的回执
-共享同一个 `cache_result_id`，则指向那条**既有** Origin（`status=existing_execution`）；否则保持
-`unknown`。两种情况下**都不会**被统计成两次独立工具执行——计数依据是 `new_tool_execution`。
-
-Trace 绑定只说明它证明了什么：`binding.proves` 记录 `invocation_call_and_cache_outcome`，只有当本次调用
-确为原执行时才追加 `origin_tool_execution`。收到本次调用 Span **不**表示工具本次重新运行；仅在实际取得
-原执行 Trace 时才引用其原始来源，不把旧 Span 改写成当前 Trace。
+- Engine `cache.outcome=executed/hit/joined/uncached` 只证明对应**Function/计算节点**的缓存观察；`new_tool_execution=null`、`origin_execution.status=unknown`，不将 Function 求值提升为 Ruff/其他工具进程本次执行。
+- 同一个 `cache.result.id` 数字不能跨 Engine、计算节点、输入范围归并 Origin。`resolve_origin_execution` 在 A.1 保留原始 unknown，待 B 使用具有实际作用域和来源的工具 Exec/Native Result 证据再作 Origin 绑定。
+- 真实工具执行与历史 Origin 的生产级归因属于 #87-B/B.1；此处不放弃该功能目标，也不伪称其已通过。可观察的 Cache 命中不会修改原生 Check exit/Artifact。
+- `binding.binding_proves` 目前只声明受限范围的 `invocation_call_and_cache_outcome`；没有确证的 Tool Exec 不增加 `origin_tool_execution`。
 
 ## 缓存观察范围
 
