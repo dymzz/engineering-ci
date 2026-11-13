@@ -41,7 +41,7 @@ GitHub Issue 正文是直接更新的，**不属于此 PR 的 Git 文件 Diff**�
 
 ## 4. 实施 PR 分配的设计结论（尚未启动实施）
 
-1. **#52-A 第一独立实现 PR（以后创建）**：确认正式 Check Identity/Profile/原生 Result 的代码位置和版本，提供受控定义全集完整性、实例覆盖的原生字段与组合满足关系；优先不修改 #82 正在更改的 OTel 代码路径。
+1. **#52-A 第一独立实现 [PR #93](https://github.com/dymzz/engineering-ci/pull/93)（已创建、Draft）**：独立交付已支持 CheckDefinition 的稳定身份与版本、原生 Result 生产/校验及同次 Report 绑定；消费者级 ExpectedSet 完整性归 #66-B，跨实例/Job 对账归 #66-C，Source 字节闭包归 #66-P0。受控 Profile/外部 Tool 与组合 Check 满足关系继续作为 #52 后续切片，不因本首 PR 尚未交付而删除。
 2. **#66-P0 Source 切片（可并行）**：确保 Index/Push/Worktree 实际字节与 Native Check 使用的 Source 一致；不用等待 #52-A 身份合同整体完成。
 3. **#66-B Expected/Plan 扩展 PR（在 #52-A 真正可消费后）**：消费稳定 Check/规则身份、在不依赖路由结果的情况下产生 Expected；缺 Check 定义不自证合法空集；明确 schema 版本及旧 Host/Dagger/Actions 消费迁移。
 4. **#66-C / PR #72 多工具 Routing/Result 设计与集成**：保留成熟调度器 Job 级选择、并行、完整 pre-push stdin/每 Ref 以及实际有效配置绑定；落实实例级覆盖、漏路由/漏执行和 Check 组合关系。具体拆分依据真实代码文件及接口，而非新建同义 Issue。
