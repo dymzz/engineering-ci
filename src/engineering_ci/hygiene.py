@@ -401,7 +401,13 @@ def _tach(paths, root, runner, config, code_changed):
     if not code_changed:
         return _result("tach", "not_applicable", reason="no_code_changes")
     if not (root / config.tach.path).is_file():
-        return _result("tach", "failed", reason="tach_config_missing")
+        # Tool has not started: preserve the preparation failure separately
+        # from a native Tach execution verdict.
+        return {
+            **_result("tach", "failed", reason="tach_config_missing"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
     return _tool(
         "tach",
         [config.tach.executable, "check"],
