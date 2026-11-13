@@ -151,7 +151,7 @@ STATUS_INCOMPLETE = "incomplete"
 BASIS_TRACEPARENT = "w3c_traceparent_propagation"
 BASIS_CHECK_ATTRIBUTE = "engine_check_attribute"
 BASIS_CHECK_SELECTOR = "engine_check_selector"
-BASIS_CHECK_FUNCTION = "engine_check_function"
+BASIS_FUNCTION_CALL = "engine_function_call"
 BASIS_CHECK_IN_TRACE = "engine_check_in_propagated_trace"
 BASIS_NONE = "none"
 
@@ -160,7 +160,7 @@ BASIS_NONE = "none"
 # exists in the pinned sources but did not appear in that run.
 KEY_CHECK_ATTRIBUTE = "check_attribute"
 KEY_CHECK_SELECTOR = "check_selector"
-KEY_CHECK_FUNCTION = "check_function"
+KEY_FUNCTION_CALL = "function_call"
 KEY_TRACEPARENT = "traceparent"
 # The engine names the Check it selected as a dagql selector.
 CHECK_SELECTOR_PREFIX = "dag://?check="
@@ -710,37 +710,49 @@ def read_exporter_error(path):
     }
 
 
-def _check_function_span(span, check_name):
-    """True when the Span name is the module function call of the Check.
+def _normalized(value):
+    """Normalize a declared name to the engine's field-name form.
+
+    The CLI calls a function `execute-plan`; the engine names the call
+    `execute_plan`. Both names refer to the same entry.
+    """
+    return (value or "").replace("-", "_")
+
+
+def _function_span(span, declared_name):
+    """True when the Span name is the module function call of the entry.
 
     The pinned engine names a module function call `<object>.<function>` or
-    `<module>:<object>.<function>`, so the last segment carries the Check
+    `<module>:<object>.<function>`, so the last segment carries the function
     name and the rest carries the module reference.
     """
     name = span.get("name") or ""
     if "." not in name:
         return False
-    return name.rsplit(".", 1)[1] == check_name
+    return _normalized(name.rsplit(".", 1)[1]) == _normalized(declared_name)
 
 
-def _check_keys(capture, check_name):
-    """Native keys in the capture that carry the declared Check identity."""
+def _check_keys(capture, check_name, function_name):
+    """Native keys in the capture that carry the declared entry identity."""
     keys = {}
-    attribute = [span for span in capture.spans if span.get("check_name") == check_name]
+    declared = check_name or function_name
+    attribute = [
+        span for span in capture.spans if span.get("check_name") == declared
+    ]
     selector = [
         span
         for span in capture.spans
-        if span.get("name") == CHECK_SELECTOR_PREFIX + check_name
+        if span.get("name") == CHECK_SELECTOR_PREFIX + declared
     ]
     function = [
-        span for span in capture.spans if _check_function_span(span, check_name)
+        span for span in capture.spans if _function_span(span, declared)
     ]
     if attribute:
         keys[KEY_CHECK_ATTRIBUTE] = attribute
     if selector:
         keys[KEY_CHECK_SELECTOR] = selector
     if function:
-        keys[KEY_CHECK_FUNCTION] = function
+        keys[KEY_FUNCTION_CALL] = function
     return keys
 
 
@@ -903,7 +915,7 @@ def resolve_origin_execution(receipts):
     return resolved
 
 
-def _bind_capture(capture, parsed, check_name):
+def _bind_capture(capture, parsed, check_name, function_name):
     """Bind a capture to one invocation.
 
     Returns (status, reason, basis, bound_spans, keys). The rules are
@@ -911,7 +923,7 @@ def _bind_capture(capture, parsed, check_name):
     and a declared Check name is only accepted when the engine's own native
     key confirms it inside a known engine session.
     """
-    if parsed is None and not check_name:
+    if parsed is None and not check_name and not function_name:
         return BINDING_UNBOUND, REASON_NO_CORRELATION_KEY, BASIS_NONE, [], {}
 
     propagated = []
@@ -927,7 +939,7 @@ def _bind_capture(capture, parsed, check_name):
             )
         ]
 
-    if not check_name:
+    if not check_name and not function_name:
         if propagated:
             return (
                 BINDING_BOUND,
@@ -942,24 +954,23 @@ def _bind_capture(capture, parsed, check_name):
             return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], {}
         return BINDING_UNBOUND, REASON_NO_CORRELATED_SPAN, BASIS_NONE, [], {}
 
-    keys = _check_keys(capture, check_name)
+    keys = _check_keys(capture, check_name, function_name)
     if not keys:
-        # The engine did not report the declared Check in this capture.
+        # The engine did not report the declared entry in this capture.
         return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, [], {}
 
     if not capture.session_ids:
-        # A Check name without its engine session is not a same-source
-        # reference.
+        # A name without its engine session is not a same-source reference.
         return BINDING_UNBOUND, REASON_SESSION_NOT_OBSERVED, BASIS_NONE, [], keys
 
     named = [span for spans in keys.values() for span in spans]
     if parsed is None:
         basis = BASIS_CHECK_ATTRIBUTE
-        for candidate in (KEY_CHECK_SELECTOR, KEY_CHECK_FUNCTION):
+        for candidate in (KEY_CHECK_SELECTOR, KEY_FUNCTION_CALL):
             if candidate in keys:
                 basis = {
                     KEY_CHECK_SELECTOR: BASIS_CHECK_SELECTOR,
-                    KEY_CHECK_FUNCTION: BASIS_CHECK_FUNCTION,
+                    KEY_FUNCTION_CALL: BASIS_FUNCTION_CALL,
                 }[candidate]
                 break
         return BINDING_BOUND, None, basis, named, keys
@@ -989,6 +1000,7 @@ def build_receipt(
     source_binding_ref: str | None = None,
     check_ref: str | None = None,
     check_name: str | None = None,
+    function_name: str | None = None,
     capture_ref: str | None = None,
     required_observability: bool = False,
     root: Path | None = None,
@@ -1035,7 +1047,7 @@ def build_receipt(
             sent = SENT_SENT
             sent_basis = "receiver_observation"
         binding_status, reason, basis, bound_spans, binding_keys = _bind_capture(
-            capture, parsed, check_name
+            capture, parsed, check_name, function_name
         )
 
     source_associated = binding_status == BINDING_BOUND
@@ -1102,6 +1114,7 @@ def build_receipt(
             "binding_keys": sorted(binding_keys),
             "correlation_key": traceparent,
             "declared_check_name": check_name,
+            "declared_function_name": function_name,
             "session_ids": list(capture.session_ids) if capture else [],
             "engine_instance_ids": (
                 list(capture.engine_instance_ids) if capture else []
@@ -1221,6 +1234,14 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
+        "--function-name",
+        help=(
+            "Module function the invocation called (for example "
+            "execute-plan); confirmed when a captured span carries the "
+            "engine's function call name"
+        ),
+    )
+    parser.add_argument(
         "--invocation-ref", help="Reference of the actual invocation that ran"
     )
     parser.add_argument(
@@ -1277,6 +1298,7 @@ def main(argv=None):
         source_binding_ref=args.source_binding_ref,
         check_ref=args.check_ref,
         check_name=args.check_name,
+        function_name=args.function_name,
         capture_ref=args.capture_ref,
         required_observability=args.required_observability,
     )

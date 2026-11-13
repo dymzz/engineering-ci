@@ -262,8 +262,8 @@ def test_module_function_call_span_name_binds_the_check(tmp_path):
     )
     record = receipt(capture=capture, check_name="lint", correlation=None)
     assert record["binding"]["binding_status"] == "bound"
-    assert record["binding"]["correlation_basis"] == "engine_check_function"
-    assert record["binding"]["binding_keys"] == ["check_function"]
+    assert record["binding"]["correlation_basis"] == "engine_function_call"
+    assert record["binding"]["binding_keys"] == ["function_call"]
 
 
 def test_check_name_without_a_correlation_key_binds_on_the_attribute(tmp_path):
@@ -708,6 +708,48 @@ def test_a_failing_native_result_still_binds_to_its_trace(tmp_path):
     assert record["claims"]["native_check_result"] is True
     assert record["native_check_result"]["exit_code"] == 1
     assert record["status"] == "produced"
+
+
+def test_standalone_function_entry_point_binds_by_its_call_name(tmp_path):
+    """A Function entry has no Check selector; its call span is the key."""
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="engineering-ci:EngineeringCi.execute_plan",
+                    span_id="abababababababab",
+                    cache_outcome="executed",
+                )
+            ),
+        )
+    )
+    record = receipt(capture=capture, function_name="execute-plan", correlation=None)
+    assert record["binding"]["binding_status"] == "bound"
+    assert record["binding"]["correlation_basis"] == "engine_function_call"
+    assert record["binding"]["declared_function_name"] == "execute-plan"
+    assert record["observed_trace_span_ids"] == ["abababababababab"]
+
+
+def test_a_different_function_in_the_same_capture_does_not_bind(tmp_path):
+    capture = dagger_telemetry.read_capture(
+        write_capture(
+            tmp_path,
+            capture_document(
+                span(
+                    name="engineering-ci:EngineeringCi.repository_ruff_tools",
+                    span_id="abababababababab",
+                ),
+                span(
+                    name="engineering-ci:EngineeringCi.execute_plan",
+                    span_id="cdcdcdcdcdcdcdcd",
+                ),
+            ),
+        )
+    )
+    record = receipt(capture=capture, function_name="execute-plan", correlation=None)
+    assert record["observed_trace_span_ids"] == ["cdcdcdcdcdcdcdcd"]
+    assert record["binding"]["binding_status"] == "bound"
 
 
 def test_source_binding_records_the_engine_content_identity(tmp_path):

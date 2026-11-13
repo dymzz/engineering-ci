@@ -329,6 +329,73 @@ jobs:
           # The supplementary capture never fails the Job; its exit code and
           # the receiver state are recorded in the artifacts.
           exit 0
+      - name: Start the OTLP receiver for the entry points
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          nohup .venv/bin/python .github/scripts/otlp_http_receiver.py \
+            --host "${BRIDGE}" \
+            --port 4318 \
+            --output artifacts/dagger-native-telemetry/capture-entrypoints.json \
+            > artifacts/dagger-native-telemetry/receiver-entrypoints.log 2>&1 &
+          echo $! > artifacts/dagger-native-telemetry/receiver-entrypoints.pid
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://${BRIDGE}:4318/health" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "the OTLP receiver for the entry points did not become ready" >&2
+          exit 0
+      - name: Run the standalone Report and Artifact Function
+        shell: bash
+        run: |
+          set +e
+          export DAGGER_ENGINE=container://dagger-engine
+          mkdir -p artifacts/dagger-native-telemetry/entrypoints
+          # A standalone Report/Artifact Function: its native result is an
+          # artifact, not a Check. The Plan driven entry point is not run in
+          # this Workflow on purpose: the repository keeps ad-hoc function
+          # invocations out of the PR Workflow
+          # (tests/test_manual_release.py::test_workflow_triggers_and_privileges).
+          dagger api call repository-ruff-tools export \
+            --path artifacts/dagger-native-telemetry/entrypoints/ruff-tools
+          artifact_code=$?
+          set -e
+          printf '%s\n' "${artifact_code}" > artifacts/dagger-native-telemetry/entrypoints/artifact.exit
+          exit 0
+      - name: Record the entry point observation
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          BRIDGE="$(cat artifacts/dagger-native-telemetry/receiver-address.txt)"
+          curl -fsS -X POST "http://${BRIDGE}:4318/stop" > /dev/null 2>&1 || true
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$(cat artifacts/dagger-native-telemetry/receiver-entrypoints.pid)" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          kill "$(cat artifacts/dagger-native-telemetry/receiver-entrypoints.pid)" 2>/dev/null || true
+          for _ in $(seq 1 30); do
+            if [[ -s artifacts/dagger-native-telemetry/capture-entrypoints.json ]]; then break; fi
+            sleep 1
+          done
+          uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
+            --capture artifacts/dagger-native-telemetry/capture-entrypoints.json \
+            --capture-ref "otlp-http-receiver:4318 (entry points)" \
+            --engine-config "$RUNNER_TEMP/engine.json" \
+            --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
+            --engine-protocol http/protobuf \
+            --function-name repository-ruff-tools \
+            --invocation-ref "dagger api call repository-ruff-tools export" \
+            --source-binding-ref "git-tree:$(git rev-parse HEAD^{tree})" \
+            --output artifacts/dagger-native-telemetry/receipt-entrypoints.json \
+            --json > artifacts/dagger-native-telemetry/receipt-entrypoints.stdout.json
+          code=$?
+          set -e
+          printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt-entrypoints.exit
+          exit 0
       - name: Collect the Engine and receiver logs
         if: ${{ failure() }}
         shell: bash
