@@ -11,11 +11,11 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | # | 回执条目 | 证据位置 | 状态 |
 | --- | --- | --- | --- |
 | 1 | 列出固定版本实际提供的原生可关联数据 | 架构文档「固定版本原生能力」17 行；[Issue 评论](https://github.com/dymzz/engineering-ci/issues/87#issuecomment-6829679688) | 已交付 |
-| 2 | 列出实际调用入口（`dagger check` / `dagger call execute-plan` / 单独 Report/Artifact Function） | 架构文档「原生调用入口」；CI 的三个入口捕获 | 已交付（三者均由真实调用观察） |
+| 2 | 列出实际调用入口（`dagger check` / `dagger call execute-plan` / 单独 Report/Artifact Function） | 架构文档「原生调用入口」；CI 的实际捕获 | 已记录入口：Check PASS/FAIL、单独 Artifact Function 已实测；`execute-plan` **未实测** |
 | 3 | 拟议最小交接九字段 + 逐项生产者/消费入口/存在条件/唯一性/原始出处/拒绝原因 | 架构文档「拟议最小交接」；[issue-revisions/issue-87.proposed.md](../issue-revisions/issue-87.proposed.md)；[Issue 评论](https://github.com/dymzz/engineering-ci/issues/87#issuecomment-6841856627) | 已交付 |
-| 4 | 只有原生调用上下文/受支持的传播/有来源的绑定回执才 `bound`，否则 `unbound`/`ambiguous`，保留原生结果与实际 Trace，不拼接 | `src/engineering_ci/dagger_telemetry.py::_bind_capture`；架构文档「明确拒绝路径」 | 已交付 |
+| 4 | 只有可核验的 Parent/Session + Caller 共同上下文才 `bound`，否则 `unbound`/`ambiguous`，保留原生结果与 Trace | `_capture_spans/_bind_capture`；`.github/scripts/assert_dagger_native_a1.py` | 修订中：新算法与 A.1 CI 机器断言已接线，需核对新 HEAD 的 CI 验收 |
 | 5 | 不得把每次变化的随机 ID 注入可缓存的 Function/Exec 输入 | 架构文档「边界与已知限制」；实现只在回执里关联 | 已交付 |
-| 6 | 定向验收 6 条（同名 Check 两次／一个 Check 多 Span／并发交错／缓存命中无新执行／Host Check 无 Dagger Span／失败 Result 关联 Trace） | `tests/test_dagger_native_telemetry.py`；失败 Result 由 CI 的真实失败 Check 验证 | 已交付 |
+| 6 | 定向验收：同 Capture 同名两次／多 Span／并发交错／Host 无 Dagger Span／失败 Result 关联 Trace | `tests/test_dagger_native_telemetry.py`、独立 A.1 原始 Capture 验收脚本 | 已修订错误测试期望，待 CI 确认；Tool Origin/历史 Cache 属 B，不冒充 A.1 完成 |
 | 7 | 核查 CLI/SDK/Engine 实际版本 | 能力清单「版本事实」；证据 `dagger-version.txt` | 已交付 |
 | 8 | OTLP 导出路径与协议 | 能力清单「Engine workload export」；`/etc/dagger/engine.json` + 标准 OTLP 环境变量 | 已交付 |
 | 9 | CLI/Client/Engine 分别产生哪些 Span | 架构文档「Span 的生产者」（实测 scope 分布） | 已交付 |
@@ -30,10 +30,10 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | 18 | 没有可证明的完整 Check/Exec 作用域时报告 `unknown`/`mixed` 与具体范围 | 回执 `cache_observation_scope`（D-06 词表 + `observed`/`scope`/`reason`） | 已交付 |
 | 19 | 不为 Dagger Span 再埋 OTel；不改 SemConv YAML；不强行同一 Trace Root | 架构文档「边界与已知限制」 | 已交付 |
 | 20 | `actual_invocation_ref` 与 `origin_execution_ref` 语义分离 | 回执 `invocation.actual_invocation_ref` 与 `origin_execution.*` | 已交付 |
-| 21 | 缓存命中不创建新 Origin；已证实的既有来源可保留引用；不可证实时 `unknown`，不凭缓存状态推导 | `_origin_execution` 的判定规则 | 已交付 |
+| 21 | 仅从 Function 缓存状态不能产生新 Tool Origin；未证实时保持 unknown | `_origin_execution`、`resolve_origin_execution` | A.1 候选回执校准为 unknown；正式 Origin 仍属 B |
 | 22 | Trace 绑定须说明证明的是本次调用还是原工具执行 | 回执 `binding.binding_proves` | 已交付 |
 | 23 | 仅在实际取得原执行 Trace 时引用其原始来源 | `origin_execution.ref` 只在 `current_execution`/`existing_execution` 时有值 | 已交付 |
-| 24 | 定向验收：真运行后第二次命中缓存 | 三个测试：指向既有 Origin／保持 unknown／都不计为两次工具执行 | 已交付 |
+| 24 | 真运行后再次命中缓存的历史 Origin | 原生 beta.16 可见 Cache 属性与 B 的真实 Origin 交接 | A.1 未验收工具原执行复用；B 后续定向验证 |
 
 ## 负例与边界
 
@@ -50,18 +50,26 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段。上级入
 | 导出侧失败记录 | 只有 exporter 失败输出 | `sent=not_sent`、`reason=exporter_reported_failure` |
 | Required 要求可观察性 | 声明 `--required-observability` 且未绑定 | `status=partial`、`required_observability.satisfied=false`，不因原生结果假通过 |
 
+## 当前 A.1 验收入口
+
+新 HEAD 的专项 CI 不再只信 Recorder 的 `exit 0`：`.github/scripts/assert_dagger_native_a1.py`
+独立读取实际 Receiver 的完整 PASS/FAIL/Artifact Capture、原生退出与回执，检查 Parent/Session、完整
+Span 内容身份、回执证明范围及故意 F401 保留。原始失败工具退出 1 是预期负例；关联断言失败是专项 CI
+失败。单次隔离 Capture 由 workflow 的独立 Receiver 生命周期声明（`--capture-isolated`）。
+尚未核实新 HEAD CI 的运行结果前，不把旧版回执归因状态当作当前代码已验收。
+
 ## 正常路径
 
 | 场景 | 输入 | 期望 |
 | --- | --- | --- |
 | 传播绑定 | 捕获 Span 携带传播的父 Span ID | `bound`、`basis=w3c_traceparent_propagation`、`status=produced`、退出 0 |
 | Engine Check 属性绑定 | 捕获 Span 携带 `dagger.io/check.name` | `bound`、`basis=engine_check_attribute`（实测该属性未发出，见下） |
-| Check 选择器绑定 | 捕获 Span 名为 `dag://?check=lint` | `bound`、`basis=engine_check_selector` |
-| 模块函数调用绑定 | 捕获 Span 名为 `engineering-ci:EngineeringCi.lint` | `bound`、`basis=engine_check_function` |
-| 本次执行了工具 | 捕获 Span 携带 `cache.outcome=executed` | `origin_execution.status=current_execution`、`new_tool_execution=true`、`binding.proves` 含 `origin_tool_execution` |
-| 命中缓存 | 捕获 Span 携带 `cache.outcome=hit` | `origin_execution.status=unknown`、`new_tool_execution=false`、缓存观察保留 |
-| 复用指向既有原执行 | 两条回执共享同一 `cache.result.id`，一条为 `executed` | 命中那条 `status=existing_execution` 且 `ref` 指向已证明的那次；两次调用只算一次工具执行 |
-| 复用无既有原执行 | 只有 `hit` 一条回执 | `status=unknown`、`ref` 为空、`new_tool_execution=false` |
+| Check 选择器绑定 | 同一隔离调用的 Selector→Core→Module 实际 Parent 链与 Session 一致 | `bound`、`basis=engine_check_selector`；只有同名 Selector 应 `unbound` |
+| 独立 Artifact Function 绑定 | Caller 独立 Capture 中的 Core→Module 原生 Parent 链唯一 | `bound`、`basis=engine_function_call`；只有同名 Module Span 不成立 |
+| Function 节点计算 | 捕获 Function Span 带 `cache.outcome=executed` | 仅 Function cache 观察；Tool Origin 未核验时 `unknown`、`new_tool_execution=null` |
+| Function 命中缓存 | 捕获 Function Span 携带 `cache.outcome=hit` | Origin 未证实时 `unknown`、`new_tool_execution=null`；不新增工具执行事实 |
+| 复用指向既有原执行 | 真实 Tool Exec/Cache Result 作用域与原执行来源可核验（B） | A.1 不以数字 `cache.result.id` 直接关联；仅有 Function 命中时 Origin 仍 unknown |
+| 复用无既有原执行 | 只有 `hit` 一条回执 | `status=unknown`、`ref` 为空、`new_tool_execution=null`（未证明 Tool 层） |
 | 缓存观察范围 | 捕获 Span 携带 `dagger.io/cache.outcome` | `cache_observation_scope.status` 用 D-06 词表（`observed_hit` / `observed_execution` / `mixed` / `unknown` / `not_applicable`）并记录 `observed`、`scope`、`reason`；不上升为整个 Check 状态 |
 
 ## 定向验收（Issue #87 P0）
