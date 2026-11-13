@@ -240,6 +240,7 @@ jobs:
             --engine-protocol http/protobuf \
             --check-name lint \
             --invocation-ref "dagger check --engineering-ci --check=lint" \
+            --source-binding-ref "git-tree:$(git rev-parse HEAD^{tree})" \
             --output artifacts/dagger-native-telemetry/receipt.json \
             --json > artifacts/dagger-native-telemetry/receipt.stdout.json
           receipt_code=$?
@@ -319,6 +320,7 @@ jobs:
             --engine-protocol http/protobuf \
             --check-name lint \
             --invocation-ref "dagger check --engineering-ci --check=lint (negative)" \
+            --source-binding-ref "git-tree:$(git rev-parse HEAD^{tree})" \
             --output artifacts/dagger-native-telemetry/receipt-negative.json \
             --json > artifacts/dagger-native-telemetry/receipt-negative.stdout.json
           code=$?
