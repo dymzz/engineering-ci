@@ -77,6 +77,7 @@ def _validate_consumer_fields(value, chosen, git):
         "snapshot",
         "execution_tree",
         "index_tree",
+        "index_file",
         "head_commit",
         "base_commit",
         "source_tree_id",
@@ -90,6 +91,13 @@ def _validate_consumer_fields(value, chosen, git):
             raise PlanError("git_invalid")
     if git.get("snapshot") is not None and git["snapshot"] not in GIT_SNAPSHOTS:
         raise PlanError("git_snapshot_unsupported")
+    if (
+        git.get("snapshot") == "index"
+        and git.get("execution_tree")
+        and git.get("index_tree")
+        and git["execution_tree"] != git["index_tree"]
+    ):
+        raise PlanError("index_source_identity_mismatch")
     if "changed_paths" in git and not _string_list(git["changed_paths"]):
         raise PlanError("git_invalid")
     content = git.get("content_binding")
