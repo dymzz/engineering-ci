@@ -4,8 +4,11 @@ Issue [#87](https://github.com/dymzz/engineering-ci/issues/87) A 段的真实捕
 `dagger check` → Engine 原生导出 → 接收端实收 → 观察回执。**两次真实 Check**：一次通过，
 一次用真实的 lint 失败。
 
-**这是 CI 产生的候选证据**，不是 #63 的受信接纳，不是 #61 的 Required 聚合，也不是 CI/CD SemConv 的
-Pipeline/Task 映射。
+**这是旧 CI Run 的候选观察事实归档**，不是 #63 受信接纳、#61 Required 聚合，也不是
+CI/CD SemConv Pipeline/Task 映射。此处的旧 `bound` / `current_execution` 是**历史 Recorder 输出**，
+不能当作新版本严格 Parent/Session 绑定或 Tool Origin 的独立验收。
+当前 PR #89 的 A.1 验收以 [现行专用 CI 断言](../../../.github/scripts/assert_dagger_native_a1.py)
+在**同一次新 Run 的原始 Capture/Native Result/Receipt** 上的结果为准，旧 Run 不重新记账。
 
 ## 本次执行是什么
 
@@ -22,14 +25,14 @@ Pipeline/Task 映射。
 | 五个事实（Check 入口两次一致） | `exporter_configured=true`、`sent=sent`、`receiver_observed=true`、`source_associated=true`、`native_check_result=true` |
 | 关联键（Check 入口两次） | `engine_check_selector` + `function_call` |
 | 关联键（Function 入口） | `engine_function_call`（键 `function_call`）：引擎把函数调用命名为**驼峰**（`engineering-ci:EngineeringCi.repositoryRuffTools`），CLI 用连字符（`repository-ruff-tools`） |
-| 原执行来源 | 三次都是 `current_execution`、`new_tool_execution=true`、`cache.outcome=executed` |
+| 旧 Recorder 原执行声明 | 旧回执写为 `current_execution`、`new_tool_execution=true`，**仅 Function 缓存事实实际观察到 executed，不能证明 Tool Origin** |
 | 缓存观察范围 | 三次都是 `observed_execution`，范围是绑定到的调用 Span |
-| Source 绑定 | Check 入口两次的 `source_binding.source_binding_ref` 相同（同一 checkout 的树），但 `observed_dag_digests` 不同——失败那次多了一个注入文件，内容身份随之改变 |
+| Source 声明与 Dagger 摘要 | Check 入口两次声明相同 `HEAD^{tree}`，但失败那次注入额外受检文件，`observed_dag_digests` 不同；**Git Target Tree 与实际执行 Source 并未完成字节对账** |
 | 覆盖 | Check 入口实收 2494 个 Span；Function 入口实收 201 个 Span、绑定 2 个 |
 
-**失败那次的要点**：原生 lint 真的失败了（`exit_code=1`），Trace 仍然把这次调用绑定到它的 Check 上，
-失败**没有**被 Trace 掩盖，Trace 也**没有**掩盖失败——`native_check_result` 保留 `exit_code=1`，
-`binding_status` 仍是 `bound`。
+**失败那次的要点**：原生 lint 确实失败（`exit_code=1`），原始 Capture 确实包含相应 Selector/Function
+Span。旧回执记录 `binding_status=bound`，但该判定**当时只检查名称，未验收真正 Parent/Session 唯一性**。
+原生失败没有被观测回执改写；新算法必须对原始 Parent 链独立证明后才能给出新的 `bound`。
 
 ## 观察到的原生 Check 链路
 
@@ -43,7 +46,11 @@ Span 原文**（未改写，仅按 Span 名筛出）：
 | `dagger.io/dagql` | `engineering-ci:EngineeringCi.lint` | `dagger.io/dag.digest` |
 | `dagger.io/core` | `EngineeringCi.lint` | `dagger.io/cache.contract=1`、`dagger.io/cache.outcome=executed`、`dagger.io/cache.result.id` |
 
-父链：`dag://?check=lint` → `Check.sync` → `engineering-ci:EngineeringCi.lint` → `EngineeringCi.lint`。
+**实际原生 Parent 链（按完整 Capture 的 `traceId/spanId/parentSpanId` 核对）：**
+`dag://?check=lint` → `Artifact.value` → `EngineeringCi.lint` →
+`engineering-ci:EngineeringCi.lint`。上表的 `Check.sync` 属于 Selector 下另一分支，
+不是 Module/Core Function 的线性祖先。按名称筛选的四条原文不是完整父链，不可据该摘录
+自行推断 Parent。
 
 ## 本次**没有**证明的
 
