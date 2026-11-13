@@ -204,6 +204,18 @@ def test_execute_runs_selected_docs_check_without_tests(repo):
     assert report["tests"]["status"] == "not_executed"
     assert report["checks"][0]["name"] == "docs"
     assert report["checks"][0]["status"] == "passed"
+    assert report["checks"][0]["check_id"] == "eci/hygiene/docs"
+    assert report["checks"][0]["check_version"] == 1
+    assert report["checks"][0]["result_id"].startswith("sha256:")
+    assert report["checks"][0]["native_result"]["check"]["check_id"] == (
+        "eci/hygiene/docs"
+    )
+    assert report["check_contract"] == {
+        "kind": "engineering-ci-check-contract",
+        "schema_version": 1,
+    }
+    assert report["checks"][0]["source_ref"]["snapshot"] == "worktree"
+    assert report["checks"][0]["native_result"]["check"]["rule_ref"]["sha256"]
     tools = [call[0] for call in fake.calls if call[0][0] != "git"]
     assert len(tools) == 1
     assert Path(tools[0][0]).stem == "lychee"

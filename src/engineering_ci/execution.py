@@ -12,9 +12,10 @@ import argparse
 import dataclasses
 import json
 import sys
+import uuid
 from pathlib import Path
 
-from . import hygiene, plan_contract, selection, sources
+from . import check_contract, hygiene, plan_contract, selection, sources
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -187,6 +188,12 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
             }
             for name in wanted
         ], True
+    rule = check_contract.rule_ref(
+        "engineering-ci.hygiene",
+        1,
+        path=str(config_path),
+        digest=check_contract.file_digest(config_path),
+    )
     checks = tuple(name for name in config.checks if name in selected_by_name)
     if not checks:
         checks = wanted
@@ -204,6 +211,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         if base not in selected_by_name and name not in selected_by_name:
             continue
         payload = dict(native)
+        payload["rule_ref"] = rule
         origin = selected_by_name.get(base) or selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "selected"
         results.append(payload)
@@ -218,6 +226,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "selected": item.get("status"),
                 "status": "not_executed",
                 "reason": "hygiene_check_missing",
+                "rule_ref": rule,
             }
         )
     return results, report["status"] == "failed"
@@ -246,6 +255,12 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         "reason": None if report.status == "passed" else "source_reconcile_failed",
         "counts": dict(report.counts),
         "failures": list(report.failures),
+        "rule_ref": check_contract.rule_ref(
+            "engineering-ci.sources",
+            1,
+            path=str(config_path),
+            digest=check_contract.file_digest(config_path),
+        ),
     }
     return payload, report.status == "failed"
 
@@ -409,6 +424,84 @@ def _run_prerequisites(names, actions, *, root, runner, execution_context="host"
     return results, failed
 
 
+def _source_reference(plan):
+    git = plan["git"]
+    binding = git.get("content_binding")
+    return check_contract.source_ref(
+        str(git.get("snapshot") or "worktree"),
+        tree=git.get("execution_tree") or git.get("tree"),
+        head_commit=git.get("head_commit"),
+        index_tree=git.get("index_tree"),
+        content_digest=binding.get("digest") if isinstance(binding, dict) else None,
+    )
+
+
+def _decorate_checks(plan, checks, *, execution_context, run_instance):
+    source = _source_reference(plan)
+    origin = (
+        execution_context if execution_context in check_contract.ORIGINS else "unknown"
+    )
+    for index, item in enumerate(checks):
+        name = item.get("name")
+        definition = check_contract.definition_for(name)
+        if definition is None:
+            item["check_id"] = None
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": "identity_missing",
+            }
+            if item.get("status") == "passed":
+                item["status"] = "not_executed"
+                item["reason"] = "check_identity_missing"
+            continue
+        item["check_id"] = definition.check_id
+        item["check_version"] = definition.definition_version
+        rule = item.get("rule_ref")
+        input_refs = []
+        if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
+            input_refs.append(
+                {
+                    "kind": "config",
+                    "path": rule["path"],
+                    "sha256": rule["sha256"],
+                }
+            )
+        try:
+            native = check_contract.native_result(
+                definition,
+                source=source,
+                status=item.get("status", "not_executed"),
+                native_exit_code=item.get("exit_code"),
+                result_origin=origin,
+                runner_ref=f"execution:{origin}",
+                result_instance=f"{run_instance}:{origin}:{index}:{name}",
+                input_refs=input_refs,
+                rule_ref=rule,
+                reason=item.get("reason"),
+            )
+        except check_contract.CheckContractError as error:
+            item["check_contract"] = {
+                "kind": check_contract.CHECK_CONTRACT_KIND,
+                "schema_version": check_contract.CONTRACT_VERSION,
+                "status": error.code,
+            }
+            if item.get("status") == "passed":
+                item["status"] = "not_executed"
+                item["reason"] = error.code
+            continue
+        item["check_contract"] = {
+            "kind": check_contract.CHECK_CONTRACT_KIND,
+            "schema_version": check_contract.CONTRACT_VERSION,
+            "status": "valid",
+        }
+        item["native_result"] = native
+        item["result_id"] = native["result_id"]
+        item["result_origin"] = origin
+        item["source_ref"] = source
+    return checks
+
+
 def execute(
     plan,
     *,
@@ -419,6 +512,7 @@ def execute(
     prerequisite_actions=None,
     execution_context="host",
     runner=None,
+    run_instance=None,
 ):
     try:
         validate_plan(plan)
@@ -436,9 +530,14 @@ def execute(
     framework = chosen.get("framework", "unittest")
     selected = _selected_checks(plan)
     prerequisites = list(chosen.get("prerequisites", []))
+    run_instance = run_instance or uuid.uuid4().hex
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
+        "check_contract": {
+            "kind": check_contract.CHECK_CONTRACT_KIND,
+            "schema_version": check_contract.CONTRACT_VERSION,
+        },
         "dependency_contract": plan.get("dependency_contract"),
         "plan_declaration_consistent": True
         if plan["schema_version"] == plan_contract.PLAN_VERSION
@@ -540,7 +639,12 @@ def execute(
         for item in selected
         if item.get("name") not in covered
     ]
-    report["checks"] = native_checks + remaining
+    report["checks"] = _decorate_checks(
+        plan,
+        native_checks + remaining,
+        execution_context=execution_context,
+        run_instance=run_instance,
+    )
     prereq_results, prereq_failed = _run_prerequisites(
         prerequisites,
         _prerequisite_actions(plan, prerequisite_actions),
