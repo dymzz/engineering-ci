@@ -149,6 +149,61 @@ def test_result_id_binds_native_evidence_and_instance():
     assert same_content["result_id"] != first["result_id"]
 
 
+def test_constructor_and_validator_share_direct_tool_requirements():
+    definition = check_contract.definition_for("docs")
+    assert definition is not None
+    with pytest.raises(
+        check_contract.CheckContractError, match="direct_tool_identity_missing"
+    ):
+        check_contract.native_result(
+            definition,
+            source=source(),
+            status="passed",
+            result_origin="direct_tool",
+            result_instance="direct-attempt",
+            native_exit_code=0,
+            evidence={"stdout": "checked"},
+        )
+
+    # A valid public construction must also pass public validation.
+    native = check_contract.native_result(
+        definition,
+        source=source(),
+        status="passed",
+        result_origin="host",
+        result_instance="host-attempt",
+        native_exit_code=0,
+        evidence={"stdout": "checked"},
+    )
+    assert check_contract.validate_result(native) is native
+
+
+def test_definition_rejects_reference_digest_rejected_by_result_validator():
+    definition = check_contract.definition_for("docs")
+    assert definition is not None
+    invalid = check_contract.CheckDefinition(
+        check_id=definition.check_id,
+        definition_version=definition.definition_version,
+        rule_ref={"name": "project", "version": "1", "sha256": "invalid"},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="rule_ref_sha256_invalid"
+    ):
+        check_contract.validate_definition(invalid)
+    with pytest.raises(
+        check_contract.CheckContractError, match="rule_ref_sha256_invalid"
+    ):
+        check_contract.native_result(
+            invalid,
+            source=source(),
+            status="passed",
+            result_origin="host",
+            result_instance="bad-definition",
+            native_exit_code=0,
+            evidence={"stdout": "checked"},
+        )
+
+
 def test_scoped_definitions_report_complete_partial_unknown():
     complete = check_contract.resolve_definitions(["docs", "tach"])
     assert complete["status"] == "complete"
@@ -177,14 +232,22 @@ def closed_source(tree="a" * 40):
 def test_distinct_result_instances_can_be_matched_without_claiming_coverage():
     definition = check_contract.definition_for("docs")
     first = check_contract.native_result(
-        definition, source=closed_source("a" * 40),
-        status="passed", result_origin="host", result_instance="ref-a",
-        native_exit_code=0, evidence={"stdout": ""},
+        definition,
+        source=closed_source("a" * 40),
+        status="passed",
+        result_origin="host",
+        result_instance="ref-a",
+        native_exit_code=0,
+        evidence={"stdout": ""},
     )
     second = check_contract.native_result(
-        definition, source=closed_source("b" * 40),
-        status="failed", result_origin="host", result_instance="ref-b",
-        native_exit_code=1, evidence={"stderr": "broken"},
+        definition,
+        source=closed_source("b" * 40),
+        status="failed",
+        result_origin="host",
+        result_instance="ref-b",
+        native_exit_code=1,
+        evidence={"stderr": "broken"},
     )
     assert check_contract.validate_result_set([first, second])
     expected = {"check_id": definition.check_id, "source_ref": first["source_ref"]}
@@ -211,14 +274,24 @@ def test_native_satisfaction_is_strictly_per_supplied_expected_instance():
         "source_ref": checked,
     }
     passed = check_contract.native_result(
-        definition, source=checked, status="passed", result_origin="host",
-        result_instance="run-a", native_exit_code=0,
-        evidence={"stdout": ""}, rule_ref=rule,
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="run-a",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=rule,
     )
     failed = check_contract.native_result(
-        definition, source=checked, status="failed", result_origin="host",
-        result_instance="run-b", native_exit_code=1,
-        evidence={"stderr": "broken"}, rule_ref=rule,
+        definition,
+        source=checked,
+        status="failed",
+        result_origin="host",
+        result_instance="run-b",
+        native_exit_code=1,
+        evidence={"stderr": "broken"},
+        rule_ref=rule,
     )
     assert check_contract.result_covers_expected(passed, expected)
     assert not check_contract.result_covers_expected(failed, expected)
@@ -249,8 +322,8 @@ def test_comparison_check_requires_immutable_baseline_for_association():
         native, {"check_id": definition.check_id}
     )
     assert not check_contract.result_matches_expected(
-        native, {"check_id": definition.check_id,
-                 "baseline_ref": {"base_commit": "b" * 40}}
+        native,
+        {"check_id": definition.check_id, "baseline_ref": {"base_commit": "b" * 40}},
     )
     assert check_contract.result_matches_expected(
         native, {"check_id": definition.check_id, "baseline_ref": baseline}
@@ -281,8 +354,11 @@ def test_comparison_check_requires_immutable_baseline_for_association():
         check_contract.CheckContractError, match="result_baseline_missing"
     ):
         check_contract.native_result(
-            definition, source=closed_source(), status="passed",
-            result_origin="host", result_instance="unresolved-base",
+            definition,
+            source=closed_source(),
+            status="passed",
+            result_origin="host",
+            result_instance="unresolved-base",
             evidence={"analysis": "forwarding"},
             baseline_ref={"base_ref": "origin/main"},
         )
@@ -293,27 +369,37 @@ def test_comparison_check_requires_immutable_baseline_for_association():
 def test_constructor_and_validator_reject_unknown_definition_revision():
     definition = check_contract.definition_for("docs")
     incompatible = check_contract.CheckDefinition(
-        check_id=definition.check_id, definition_version=2,
+        check_id=definition.check_id,
+        definition_version=2,
     )
     with pytest.raises(
         check_contract.CheckContractError, match="result_check_version_mismatch"
     ):
         check_contract.native_result(
-            incompatible, source=closed_source(),
-            status="passed", result_origin="host", result_instance="revision-2",
-            native_exit_code=0, evidence={"stdout": ""},
+            incompatible,
+            source=closed_source(),
+            status="passed",
+            result_origin="host",
+            result_instance="revision-2",
+            native_exit_code=0,
+            evidence={"stdout": ""},
         )
     forged = check_contract.CheckDefinition(
-        check_id=definition.check_id, definition_version=1,
+        check_id=definition.check_id,
+        definition_version=1,
         requires_baseline=True,
     )
     with pytest.raises(
         check_contract.CheckContractError, match="result_check_semantics_mismatch"
     ):
         check_contract.native_result(
-            forged, source=closed_source(),
-            status="passed", result_origin="host", result_instance="forged",
-            native_exit_code=0, evidence={"stdout": ""},
+            forged,
+            source=closed_source(),
+            status="passed",
+            result_origin="host",
+            result_instance="forged",
+            native_exit_code=0,
+            evidence={"stdout": ""},
         )
 
 
