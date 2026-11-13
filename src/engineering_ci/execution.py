@@ -177,14 +177,27 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         return [], False
     config_path = _hygiene_config_path(plan, root, hygiene_config)
     try:
+        digest_before = check_contract.file_digest(config_path)
         config = hygiene.load_config(config_path)
-    except hygiene.HygieneError as error:
+        digest_after = check_contract.file_digest(config_path)
+    except (OSError, hygiene.HygieneError) as error:
+        code = getattr(error, "code", "read_failed")
         return [
             {
                 "name": name,
                 "selected": selected_by_name[name].get("status"),
                 "status": "failed",
-                "reason": f"hygiene_config_{error.code}",
+                "reason": f"hygiene_config_{code}",
+            }
+            for name in wanted
+        ], True
+    if digest_before != digest_after:
+        return [
+            {
+                "name": name,
+                "selected": selected_by_name[name].get("status"),
+                "status": "failed",
+                "reason": "hygiene_config_changed_during_read",
             }
             for name in wanted
         ], True
@@ -192,7 +205,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         "engineering-ci.hygiene",
         1,
         path=str(config_path),
-        digest=check_contract.file_digest(config_path),
+        digest=digest_after,
     )
     checks = tuple(name for name in config.checks if name in selected_by_name)
     if not checks:
@@ -238,13 +251,23 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         return None, False
     config_path = _sources_config_path(plan, root, sources_config)
     try:
+        digest_before = check_contract.file_digest(config_path)
         config = sources.load_config(config_path)
-    except sources.SourcesError as error:
+        digest_after = check_contract.file_digest(config_path)
+    except (OSError, sources.SourcesError) as error:
+        code = getattr(error, "code", "read_failed")
         return {
             "name": "source",
             "selected": item.get("status"),
             "status": "failed",
-            "reason": f"sources_config_{error.code}",
+            "reason": f"sources_config_{code}",
+        }, True
+    if digest_before != digest_after:
+        return {
+            "name": "source",
+            "selected": item.get("status"),
+            "status": "failed",
+            "reason": "sources_config_changed_during_read",
         }, True
     source_runner = runner or sources._run
     report = sources.reconcile(config, root=root, runner=source_runner)
@@ -259,7 +282,7 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
             "engineering-ci.sources",
             1,
             path=str(config_path),
-            digest=check_contract.file_digest(config_path),
+            digest=digest_after,
         ),
     }
     return payload, report.status == "failed"

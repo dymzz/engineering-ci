@@ -69,12 +69,14 @@ rule_ref(name, version, *, path=None, digest=None) -> dict
 profile_ref(name, version) -> dict
 source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
            head_commit=None, index_tree=None, content_digest=None,
-           verified_scope=(), binding_status=None) -> dict
+           verified_scope=(), binding_status=None,
+           scope_kind="changed_paths", materialization_ref=None) -> dict
 native_result(definition, *, source, status, result_origin, result_instance, ...) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
-resolve_definitions(required=()) -> dict   # complete | partial | unknown
-result_matches_expected(result, expected) -> bool
+resolve_definitions(required=None) -> dict   # requested_names only
+result_matches_expected(result, expected) -> bool  # candidate identity only
+result_covers_expected(result, expected) -> bool   # strict satisfaction
 validate_expected_coverage(results, expected) -> bool
 ```
 
@@ -107,6 +109,7 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
     "actual_execution_source": "worktree",
     "head_commit": "...",
     "verified_input_scope": ["docs/guide.md"],
+    "scope_kind": "changed_paths",
     "binding_status": "content_digest",
     "content_digest": "..."
   },
@@ -124,25 +127,30 @@ statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
 ```
 
 `binding_status` is explicit: `byte_tree` (a materializer verified the exact
-Tree and scope), `content_digest` (a content digest over the listed scope),
-`identity_only` (commit/index/Tree identity without byte verification), or
-`unknown`. Execution currently emits `identity_only` for immutable/Index
-snapshots and `content_digest` only for the changed-path scope; it does not emit
-`byte_tree`.
+Tree and full input closure), `content_digest` (a content digest over the listed
+scope), `identity_only` (commit/index/Tree identity without byte verification),
+or `unknown`. `byte_tree` also requires `scope_kind="full_input_closure"` and a
+`materialization_ref`; execution emits only `identity_only` or changed-path
+`content_digest`.
 
 ## Definition scope
 
-`resolve_definitions(required)` resolves the built-in set without claiming a
-full catalog:
+`resolve_definitions(required)` resolves an **explicit request list** only; it
+never claims the consumer-wide set:
 
-- all required known → `complete`;
+- all requested known → `complete`, reason `requested_names_complete`;
 - some known, some missing → `partial` with `missing[]`;
-- none known but required non-empty → `unknown`;
-- empty required → `complete`, reason `no_required_checks`.
+- only unknown names → `unknown`;
+- empty list or omitted input → `unknown`, reason `empty_request_not_proof` /
+  `required_scope_missing`; neither is a legal "0 Expected" proof.
 
-`result_matches_expected` / `validate_expected_coverage` compare Check ID,
-definition version, rule/profile reference and source binding; different Ref
-results may coexist, while an uncovered Expected instance fails explicitly.
+`result_matches_expected` is only candidate identity association.
+`result_covers_expected` requires a complete Expected instance, matching
+definition version/rule/profile/source, `status=passed`, and native
+Exit/Evidence for process checks. `failed`, `not_executed`, `unknown` and
+advisory do not satisfy coverage. Different Ref results may coexist; an
+uncovered Expected instance fails explicitly. These are not #63 trust or #61
+Required decisions.
 
 ## Execution Report integration
 

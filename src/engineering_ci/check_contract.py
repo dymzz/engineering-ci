@@ -26,6 +26,18 @@ STATUSES = frozenset(
     {"passed", "failed", "advisory", "not_applicable", "not_executed", "unknown"}
 )
 ORIGINS = frozenset({"host", "dagger", "actions", "direct_tool", "unknown"})
+PROCESS_CHECK_IDS = frozenset(
+    {
+        "eci/hygiene/whitespace",
+        "eci/hygiene/forwarding",
+        "eci/hygiene/docs",
+        "eci/hygiene/vulture",
+        "eci/hygiene/tach",
+        "eci/hygiene/tach-external",
+    }
+)
+EXPECTED_REQUIRED = ("check_id", "definition_version", "rule_ref", "source_ref")
+
 
 # Built-in identity table for the checks currently produced by this package.
 # This is not a runtime registry: consumers cannot register arbitrary names, and
@@ -152,6 +164,8 @@ def source_ref(
     content_digest=None,
     verified_scope=(),
     binding_status=None,
+    scope_kind="changed_paths",
+    materialization_ref=None,
 ):
     """Describe checked source levels without inferring byte binding.
 
@@ -177,6 +191,13 @@ def source_ref(
             result[key] = _text(value, key)
     scope = sorted({_text(item, "verified_scope") for item in verified_scope})
     result["verified_input_scope"] = scope
+    if scope_kind not in {"changed_paths", "full_input_closure"}:
+        raise CheckContractError("source_scope_kind_invalid")
+    result["scope_kind"] = scope_kind
+    if materialization_ref is not None:
+        result["materialization_ref"] = _text(
+            materialization_ref, "materialization_ref"
+        )
     if binding_status is None:
         if content_digest is not None and scope:
             binding_status = "content_digest"
@@ -191,7 +212,12 @@ def source_ref(
         "unknown",
     }:
         raise CheckContractError("source_binding_invalid")
-    if binding_status == "byte_tree" and not (declared_target_tree and scope):
+    if binding_status == "byte_tree" and not (
+        declared_target_tree
+        and scope
+        and scope_kind == "full_input_closure"
+        and materialization_ref
+    ):
         raise CheckContractError("source_byte_binding_unproven")
     if binding_status == "content_digest" and not (content_digest and scope):
         raise CheckContractError("source_content_binding_unproven")
@@ -217,10 +243,20 @@ def validate_source_ref(source):
         not isinstance(item, str) or not item for item in scope
     ):
         raise CheckContractError("source_scope_invalid")
+    scope_kind = source.get("scope_kind")
+    if scope_kind not in {"changed_paths", "full_input_closure"}:
+        raise CheckContractError("source_scope_kind_invalid")
+    if source.get("materialization_ref") is not None:
+        _text(source["materialization_ref"], "materialization_ref")
     status = source.get("binding_status")
     if status not in {"byte_tree", "content_digest", "identity_only", "unknown"}:
         raise CheckContractError("source_binding_invalid")
-    if status == "byte_tree" and not (source.get("declared_target_tree") and scope):
+    if status == "byte_tree" and not (
+        source.get("declared_target_tree")
+        and scope
+        and scope_kind == "full_input_closure"
+        and source.get("materialization_ref")
+    ):
         raise CheckContractError("source_byte_binding_unproven")
     if status == "content_digest" and not (source.get("content_digest") and scope):
         raise CheckContractError("source_content_binding_unproven")
@@ -339,6 +375,11 @@ def validate_result(result):
     version = check.get("definition_version")
     if type(version) is not int or version < 1:
         raise CheckContractError("result_check_version_invalid")
+    builtin = next(
+        value for value in _BUILTIN_DEFINITIONS if value.check_id == check_id
+    )
+    if version != builtin.definition_version:
+        raise CheckContractError("result_check_version_mismatch")
     _validate_reference(check.get("rule_ref"), "rule_ref")
     _validate_reference(check.get("profile_ref"), "profile_ref")
     status = result.get("status")
@@ -366,6 +407,15 @@ def validate_result(result):
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
+    if check_id in PROCESS_CHECK_IDS and status in {"passed", "failed"}:
+        if exit_code is None:
+            raise CheckContractError("result_native_exit_missing")
+        if evidence is None:
+            raise CheckContractError("result_evidence_missing")
+    if result.get("result_origin") == "direct_tool" and (
+        not check.get("tool_id") or not check.get("access_id")
+    ):
+        raise CheckContractError("direct_tool_identity_missing")
     content_id = result.get("content_id")
     result_id = result.get("result_id")
     if not isinstance(content_id, str) or not content_id.startswith("sha256:"):
@@ -400,8 +450,31 @@ def validate_result_set(results):
     return True
 
 
+def validate_expected_instance(expected):
+    if not isinstance(expected, dict):
+        raise CheckContractError("expected_invalid")
+    missing = [key for key in EXPECTED_REQUIRED if key not in expected]
+    if missing:
+        raise CheckContractError("expected_incomplete")
+    check_id = expected["check_id"]
+    if check_id not in set(CHECK_IDS.values()):
+        raise CheckContractError("expected_check_unknown")
+    builtin = next(
+        value for value in _BUILTIN_DEFINITIONS if value.check_id == check_id
+    )
+    if expected["definition_version"] != builtin.definition_version:
+        raise CheckContractError("expected_check_version_mismatch")
+    _validate_reference(expected["rule_ref"], "rule_ref")
+    validate_source_ref(expected["source_ref"])
+    if expected.get("profile_ref") is not None:
+        _validate_reference(expected["profile_ref"], "profile_ref")
+    if expected.get("comparison") and not expected.get("baseline_ref"):
+        raise CheckContractError("expected_baseline_missing")
+    return expected
+
+
 def result_matches_expected(result, expected):
-    """Whether one Native Result covers one expected Check instance."""
+    """Candidate identity association only; does not prove Check satisfaction."""
     validate_result(result)
     if not isinstance(expected, dict):
         raise CheckContractError("expected_invalid")
@@ -412,6 +485,7 @@ def result_matches_expected(result, expected):
         "rule_ref": check.get("rule_ref"),
         "profile_ref": check.get("profile_ref"),
         "source_ref": result["source_ref"],
+        "baseline_ref": result.get("baseline_ref"),
     }
     for key, actual in comparisons.items():
         if key in expected and expected[key] != actual:
@@ -419,18 +493,51 @@ def result_matches_expected(result, expected):
     return True
 
 
+def result_covers_expected(result, expected):
+    """Strict Check satisfaction, excluding trust/Required admission."""
+    validate_result(result)
+    validate_expected_instance(expected)
+    if not result_matches_expected(result, expected):
+        return False
+    if result.get("status") != "passed":
+        return False
+    check_id = result["check"]["check_id"]
+    if check_id in PROCESS_CHECK_IDS:
+        if result.get("native_exit_code") != 0:
+            return False
+        if result.get("evidence") is None:
+            return False
+    elif result.get("evidence") is None:
+        return False
+    return True
+
+
 def validate_expected_coverage(results, expected):
     if not isinstance(expected, (list, tuple)):
         raise CheckContractError("expected_invalid")
     validate_result_set(results)
-    for item in expected:
-        if not any(result_matches_expected(result, item) for result in results):
+    prepared = [validate_expected_instance(item) for item in expected]
+    for item in prepared:
+        if not any(result_covers_expected(result, item) for result in results):
             raise CheckContractError("expected_result_missing")
     return True
 
 
-def resolve_definitions(required=()):
-    """Resolve a scoped built-in definition set without claiming a full catalog."""
+def resolve_definitions(required=None):
+    """Resolve an explicit request list; never claim a consumer-wide set."""
+    if required is None:
+        return {
+            "kind": "engineering-ci-check-definition-set",
+            "schema_version": CONTRACT_VERSION,
+            "source": "check_contract.builtin.v1",
+            "scope": "requested_names",
+            "consumer_completeness": "not_claimed",
+            "status": "unknown",
+            "reason": "required_scope_missing",
+            "definitions": [],
+            "missing": [],
+            "conflicts": [],
+        }
     required = list(required)
     definitions = []
     missing = []
@@ -460,17 +567,19 @@ def resolve_definitions(required=()):
             )
             seen.add(definition.check_id)
     if not required:
-        status, reason = "complete", "no_required_checks"
+        status, reason = "unknown", "empty_request_not_proof"
     elif missing and definitions:
         status, reason = "partial", "required_definitions_missing"
     elif missing:
         status, reason = "unknown", "required_definitions_missing"
     else:
-        status, reason = "complete", None
+        status, reason = "complete", "requested_names_complete"
     return {
         "kind": "engineering-ci-check-definition-set",
         "schema_version": CONTRACT_VERSION,
         "source": "check_contract.builtin.v1",
+        "scope": "requested_names",
+        "consumer_completeness": "not_claimed",
         "status": status,
         "reason": reason,
         "definitions": definitions,

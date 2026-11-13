@@ -23,6 +23,7 @@ def result(
         result_origin=origin,
         result_instance=instance,
         native_exit_code=0 if status == "passed" else 1,
+        evidence={"stdout": ""},
     )
 
 
@@ -75,6 +76,8 @@ def test_rule_or_origin_change_produces_a_different_result():
         "status": "passed",
         "result_origin": "host",
         "result_instance": "job-1",
+        "native_exit_code": 0,
+        "evidence": {"stdout": ""},
     }
     first = check_contract.native_result(definition, rule_ref=rule_a, **base)
     second = check_contract.native_result(definition, rule_ref=rule_b, **base)
@@ -156,8 +159,9 @@ def test_scoped_definitions_report_complete_partial_unknown():
     unknown = check_contract.resolve_definitions(["unknown-check"])
     assert unknown["status"] == "unknown"
     empty = check_contract.resolve_definitions([])
-    assert empty["status"] == "complete"
-    assert empty["reason"] == "no_required_checks"
+    assert empty["status"] == "unknown"
+    assert empty["reason"] == "empty_request_not_proof"
+    assert empty["consumer_completeness"] == "not_claimed"
 
 
 def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
@@ -168,6 +172,8 @@ def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
         status="passed",
         result_origin="host",
         result_instance="ref-a",
+        native_exit_code=0,
+        evidence={"stdout": ""},
     )
     second = check_contract.native_result(
         definition,
@@ -175,14 +181,57 @@ def test_result_set_allows_distinct_refs_but_expected_coverage_stays_explicit():
         status="passed",
         result_origin="host",
         result_instance="ref-b",
+        native_exit_code=0,
+        evidence={"stdout": ""},
     )
     assert check_contract.validate_result_set([first, second])
-    expected = {"check_id": "eci/hygiene/docs", "source_ref": source("c" * 40)}
+    expected = {
+        "check_id": "eci/hygiene/docs",
+        "definition_version": 1,
+        "rule_ref": None,
+        "source_ref": first["source_ref"],
+    }
+    assert check_contract.validate_expected_coverage([first, second], [expected])
     with pytest.raises(check_contract.CheckContractError):
-        check_contract.validate_expected_coverage([first, second], [expected])
-    assert check_contract.validate_expected_coverage(
-        [first, second], [{"check_id": "eci/hygiene/docs"}]
+        check_contract.validate_expected_coverage(
+            [first, second],
+            [{**expected, "source_ref": source("c" * 40)}],
+        )
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_expected_coverage(
+            [first], [{"check_id": "eci/hygiene/docs"}]
+        )
+
+
+def test_failed_or_unexecuted_result_cannot_cover_expected():
+    definition = check_contract.definition_for("docs")
+    expected = {
+        "check_id": "eci/hygiene/docs",
+        "definition_version": 1,
+        "rule_ref": None,
+        "source_ref": source(),
+    }
+    failed = check_contract.native_result(
+        definition,
+        source=source(),
+        status="failed",
+        result_origin="host",
+        result_instance="failed-run",
+        native_exit_code=1,
+        evidence={"stdout": "failure"},
     )
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_expected_coverage([failed], [expected])
+    unexecuted = check_contract.native_result(
+        definition,
+        source=source(),
+        status="not_executed",
+        result_origin="host",
+        result_instance="not-run",
+        reason="not run",
+    )
+    with pytest.raises(check_contract.CheckContractError):
+        check_contract.validate_expected_coverage([unexecuted], [expected])
 
 
 def test_duplicate_result_id_is_refused():
