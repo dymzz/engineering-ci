@@ -233,6 +233,8 @@ Engine 在**每个调用**的 Span 上给出缓存事实：`dagger.io/cache.outc
 | 与 #63 / #61 的边界 | Trace 被收到、Check Span 通过，都**不**成为 #63 的受信结果或 #61 的 Required。OTel 失败只降低相关观察，不覆盖可独立证明的原生工具成功或失败。 |
 | 不注入随机 ID | 为了做关联而把每次变化的 Trace/Invocation ID 注入可缓存的 Dagger Function/Exec 输入，会击穿缓存——本仓不这样做，关联只发生在回执里。 |
 | 与 #75 的边界 | #75 只负责 GitHub Attempt/Task/Terminal Producer；不为 Dagger Span 再埋一套 OTel。 |
+| Root 断言 | 本仓**不声明任何 Trace Root**：Engine 会话、ECI 验证会话、CI Provider Attempt 是三个不同生命周期，不强行归到同一个 Trace Root。 |
+| SemConv | 不修改官方 SemConv YAML、不复制官方 registry；Dagger Span 也不会因为存在就成为 `cicd.pipeline.*` Span。 |
 | 缓存观察 | 回执只记录 `dagger.io/cache.outcome` 的**实际观察值**。准备节点命中与工具实际执行必须分别记录，不得把单个节点的命中上升为整个 Check 的状态。 |
 | 接收端接受 | Engine 侧明确声明"接收端接受不是 Engine 侧持久保证"；`sent=sent` 的依据是接收端确实收到，不是引擎的 flush 承诺。 |
 
