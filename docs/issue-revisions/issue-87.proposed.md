@@ -1,4 +1,10 @@
-## A 段实施回写（二）：P0 的字段/关联与明确拒绝路径
+# Issue #87 拟议修订：A 段的关联回执字段与拒绝路径
+
+关联 Issue：[#87](https://github.com/dymzz/engineering-ci/issues/87)；实施 PR：
+[#89](https://github.com/dymzz/engineering-ci/pull/89)。本文是按 P0 与复审要求整理的**拟议交接**，
+用于评审；已交付的实现事实见
+[Dagger 原生 OpenTelemetry 导出与接收](../architecture/dagger-native-telemetry.md)。
+
 
 按本 Issue P0 的修订要求（「先列当前 Dagger CLI/SDK/Engine 固定版本确实提供的原生可关联数据和调用入口」「给出一份拟议最小交接……逐项写清生产者、消费入口、存在条件、唯一性/1:N、原始出处、拒绝原因」）与复审建议（「先把 P0 的字段/关联与明确拒绝路径落入 Issue，再按 beta.16 的真实能力收敛最小接口」），把已交付的关联回执结构写回本 Issue。实施 PR：#89。
 
