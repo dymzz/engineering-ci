@@ -88,6 +88,8 @@ validate_result(result) -> dict
 validate_result_set(results) -> bool
 resolve_definitions(required=None) -> dict   # requested_names only
 result_matches_expected(result, expected) -> bool  # candidate identity only
+validate_expected_instance(expected) -> dict  # one supplied scoped Check, no completeness
+result_covers_expected(result, expected) -> bool  # one native Check PASS, not Required
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -165,11 +167,18 @@ not assert native PASS, input-equivalence coverage, an ExpectedSet-complete
 scope, Evidence Admission or Required Gate. For comparison-dependent built-in
 Checks, a missing or mismatched expected `baseline_ref` does not match.
 
+`validate_expected_instance` and `result_covers_expected` remain
+**single-supplied-Check primitives**: a scoped rule/source/definition/baseline
+can be structurally checked and an actual native PASS associated with that
+instance. They do **not** establish the completeness or authenticity of the
+consumer's Expected collection, input closure provenance, Evidence Admission
+or Required Gate. For a built-in comparison-dependent Check, the supplied
+Expected instance must include the real baseline.
+
 **No consumer-wide Expected/Required coverage API is produced by this first
-#52-A slice.** Earlier `result_covers_expected`,
-`validate_completeness_receipt`, `validate_expected_instance` and
-`validate_expected_coverage` were withdrawn before release because structural
-receipt strings cannot prove that a Profile's ExpectedSet is complete,
+#52-A slice.** The earlier `validate_completeness_receipt` and
+`validate_expected_coverage` were withdrawn before release because
+structural receipt strings cannot prove a Profile's ExpectedSet is complete,
 including a legitimate empty set. Follow the existing
 [Profile → Expected Requirements → Plan → Assessment](../../design/execution-graph/provider-and-gates.md)
 design: #66-B derives the scoped Expected instances from the effective Profile,
