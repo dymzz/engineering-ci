@@ -22,36 +22,49 @@
 
 **拒绝/降级：** Required Profile 不存在或不可信、有效性/目标绑定无法证明、Expected 缺失、选中集遗漏或不适用无授权时，该动作不能获得完整 Required PASS；局部可执行 Check 可保留自身原生结果，不得全部伪装为失败。Profile 解析或授权状态缺失不强制阻断不依赖该 Profile 的普通本地检查。
 
-### 1.2 CheckDefinition / Expected / Native Result：沿用唯一 Profile 权威的接口边界（设计修订，非已实施）
+### 1.2 CheckDefinition / Expected / Native Result：统一 Profile 交接提案（待审，不是已验收规范）
 
-**本节只细化 §1.1 已存在的交接；不创建第二套 Required 权威或新的 Expected 规范来源。** 原生工具及其版本/规则的真实语义来自对应 Native Tool；可被项目采用的工程知识由其原始/已接纳来源定义；是否在某次工程动作中成为 Required、允许哪些不适用或例外，**只由当时有权生效的项目/组织 Engineering Profile** 决定。ECI 负责该策略的受控解析、工程执行和证据/门禁，不因新增 `CheckDefinition`、`ExpectedSet` 或 `check_contract` 改变权威。知识 RDF 查询零行、Hook Job 未激活、Selection 没选中或 Result 缺席均不能删除 Profile 义务。
+**地位：** 本节是针对 §1.1 既有 `Profile → Expected Requirements → Plan → Assessment` 的**设计修订提案**；随本 PR 通过设计审阅后，才可作为 #52/#66 的后续实施基线。它不因写入本文件自动凌驾现有 Issue、已交付公共接口或原生工具语义。实际 Profile→Expected API 尚未交付；若设计冲突，应在原专题原位裁决并记录差异，不依赖“较新条款优先”。
 
-| 已有事实/接口 | 真正来源或负责实现的组件 | 接口含义与禁止的替代 |
-|---|---|---|
-| 规范/工具规则与领域定义 | 原生工具/标准；消费者受控配置；按需引用已接纳工程知识 | ECI 不用 `check_id` 重新定义 Tach/Weaver 等原生语义；Knowledge 不成为 ECI 核心运行依赖 |
-| 有效 Profile、Required、允许不适用 | **项目/组织有权策略来源**；固定批准来源、修订、生效条件、Context×Action×Target | #52/#66/#63/#61 读取**同一**受控策略修订，不分别维护 Required 规则；Required 地位不属于 Check 的恒定属性 |
-| CheckDefinition 和 Native Result/Report 适配 | **ECI #52**（实际原生工具保留自己的执行结论） | 稳定 `check_id`、Check/规则引用、适用 ToolAsset/ToolAccess、输入/比较依赖、必要工具组合关系；原生执行身份、状态、输出/Artifact；**不是**本次消费者完整 Expected/Required 集合 |
-| Context、Git Event、逐 Ref Source 与受检字节 | **ECI #66-P0**；平台原生 Run/Attempt 身份由 Provider 产生 | 目标 Index/Commit/Push/PR Merge 的声明与实际读取范围分开；无法证明实际输入闭包不能由 Tree 字符串或 changed-path digest 推导完整字节绑定 |
-| Expected Requirements 派生和固定引用 | **ECI #66-B** 在现有 Selection/Plan 公共接口扩展，消费有效 Profile + CheckDefinition + Context/Action/Target + Source | 生成同一 Profile 的 `expected_set_ref` 及适用/不适用/未知原因；**不能**由已经 selected/executed 的集合、Job 清单或 Result 反推完整 Expected |
-| Plan、有效 Job 路由和同次结果对账 | **ECI #66-C**；Hook 实际调度按 [#72](https://github.com/dymzz/engineering-ci/pull/72) 设计实现 | 对账 Expected→Selection/Plan→Routing→Native Result，Check↔Job 多对多、Job 缺失不删除 Expected；在输入等价/比较基线成立时可共享同次结果，不重做扫描 |
-| 真实 Dagger 执行依赖/计算缓存 | **Dagger Engine + ECI #86** 的实际 Function/Check 声明 | Engine 运行 DAG；不由 #52/#66 再造调度器、图引擎或第二种检查 PASS |
-| 受信来源、有效复用和 Required 覆盖接纳 | **ECI #63** | 核对同一 `expected_set_ref`、原执行/输入/策略与当前有效性；不生产另一套 Required 义务 |
-| Policy Assessment、最终 Required/Release 放行与平台保护规则 | **ECI #61** | 消费同一有效 Profile/Expected 和 #63 的证据结论；可以再次核验一致性，**不能重算一份相竞争的策略定义** |
+**唯一规范性策略来源：** 对某次 Context×Action×Target，项目/组织有权生效的 Engineering Profile 决定 Required Obligations 与允许的不适用条件；受控项目检查配置还可以声明适用的非 Required/Advisory Check。原生标准/工具仍拥有其规则语义，Knowledge 保留已接纳工程知识和领域规则权威；CheckDefinition 是 ECI 对原生 Check 的身份及适配合同，Expected 是固定作用域下的派生事实，**均不是第二份可编辑 Required Policy**。具体输入范围、批准来源及有效时点按 §1.1 固定；不能用 RDF 空查询、Selection 未选中、Hook Job 缺席或结果 PASS 改写策略。
 
-**计算方向与状态分离：**
+| 交接事实 | 生产/实现位置 | 本阶段应维护的边界 |
+| --- | --- | --- |
+| 有效 Profile 与 `required_obligations/allowed_inapplicability` | 有权项目/组织策略来源 | 消费者固定相同受控修订、批准依据、生效时点及 Context×Action×Target；#52/#66/#63/#61 不自建第二策略 |
+| CheckDefinition / Native Result | ECI #52 + 真实 Native Tool | Check ID/Rule/Tool/真实输入依赖/比较基线、原生执行及 Report 适配；不据此独立认定本次 Required/Expected 全集 |
+| Git Source 与执行 Source Binding | ECI #66-P0；Provider 原生身份按对应生产者 | 提供目标 Git 对象/隔离 Source 的可核验事实及实际绑定范围；不把 Tree 或 changed-path 摘要冒充全部检查输入闭包 |
+| Expected Checks / Required 引用 | ECI #66-B，复用既有 Selection/Plan 入口 | 在相关执行前由有效 Profile、受控 Check/项目适用规则、Context/Action/Target 与已知 Source 派生同一 `expected_set_ref`；区分适用性、Required 地位及来源/定义完整性 |
+| Plan、Routing、Native Result 关联 | ECI #66-C，Hook 实际调度按 #72 | Expected→Plan→实际 Job→Result 对账，支持多对多和缺 Job 不删除 Expected；只消费真实结果，不重新执行检查 |
+| 证据有效性、历史复用、Required 覆盖 | ECI #63 | **执行前**核验可复用的受信历史覆盖，交付 Remaining Work；**执行后**核验新增 Native Result、复用与缺项；均固定同一 `expected_set_ref` |
+| Dagger 计算依赖与最终放行 | Dagger Engine / #86；#61 | Engine 执行剩余计算和必要产物；#61 基于相同 Profile/Expected 与 #63 受信结论决定当前动作的 Required/Release Gate，不重新制定 Required |
 
-1. 先解析当时有效 Profile 的 `required_obligations/allowed_inapplicability`、来源和版本，并固定 Context/Action/Target；再结合受控 CheckDefinition 和实际 Source 判定本次 Expected 的完整作用域。这里的 `#66-B` 是**派生计算接口**，不是授予 Required 的新策略权威；可复用 `selection.py` 的源码/规则分析能力，但不可先按 Job/Selected 截断 Expected。
-2. 把同一个 `expected_set_ref` 与其 Profile 修订、Source、Event/逐 Ref、CheckDefinition/规则修订一起传给 Plan、#66-C、#63、#61；任一消费者若缺失/更改这些依赖，应报告部分、未知或拒绝，而非生成第二份可独立编辑的“应有检查”。
-3. **区分五种结论：** (`CheckDefinition` 在已声明的名称/版本域内解析成功)、(`Native Result` 结构/摘要有效且原生运行状态已知)、(本次 Expected/Selection/Result 对账是否覆盖)、(#63 已受信接纳的 Required 覆盖)、(#61 当前动作是否授权)。这不是五个互相竞争的 Profile/Gate；任一前段 PASS 均不自动推出后段 PASS。
-4. **合法空 Expected** 不是 `resolve_definitions([])` 找不到 Check，也不是空 Job/空 Result 或任意非空字段的 `completeness` 字典。必须证明同一有权 Profile、声明检查域、适用规则、Context/Action/Target、Source 均完整且确实无适用义务；`expected_set_ref` 应绑定受控的具体 Expected 集合内容与来源。#66-B 负责产生该派生完整性事实，#66-C 核对实例覆盖，#63 判定受信；#52 可以校验单个 Result/候选关联，但**不得从自填字符串签发全局 ExpectedSet 完整性**。
-5. **身份不混合：** `check_id` 是受控 Check 定义身份；[证据设计](evidence-and-identity.md#3-身份拟议的交接语义)的 `check_key` 是 Check + Subject + 输入闭包/规则/工具/环境的语义等价键；`origin_execution_id` 是原生执行来源；`native_result_ref` 是一次原生结果引用；`expected_set_ref` 是本次 Profile/Context 下派生要求集合。不能用 Tool ID、Job ID、Check 名、Tree SHA、哈希一致或成功 Exit 相互取代。
-6. **组合与基线：** 某 Check 是否依赖 old→new 比较基线，应由它实际采用的原生规则及 CheckDefinition 输入合同决定，不能仅看 Expected 调用方是否传入 `comparison=true`；多个 Tool 共同必要/可替代关系来自真实 CheckDefinition/有效 Profile 的相应职责，不由一条 Job PASS 推断完整 Check 成功；#86 只执行确有依据的前置/Data/PASS 关系。
+**作用域与集合语义：**
 
-**版本化与独立实施：** 当前 §1.1 仍是目标设计；本节不会静默向既有 `plan_contract` Schema 2 或 `execution` Report Schema 1 写入新字段。具体扩展须在原公共契约上明确生产者、字段来源、有效范围、版本/兼容迁移及真实 Consumer。#52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 可独立验收**已支持的 Check 身份与原生 Result 生产→校验→Report 合同**，无须等待整个 #66/#63/#61/#86；但必须准确区分局部字段验证与最终 Expected 完整性，不能留下公开 API 的误导性“整体覆盖 PASS”。#66-P0 可并行，#66-B 在真实 Profile/Check/Source 输入上交付 Expected，#66-C 再落实 Routing/Result 对账，#63/#61 后续独立验收受信与 Gate。没有交付的 Profile/Check 扩展、输入闭包或组合能力均明确为未就绪，不用缩水设计换取“冻结”字样。
+- `Expected Checks` 必须声明消费者、Check/规则域、Profile/配置版本、Event/逐 Ref、Source 及作用域完整性；包含该声明域内适用的 Required **和**非 Required Check，并明确 `applicability`、`requirement_ref`/策略地位或其不存在的理由。Required/Advisory 与适用/不适用是**正交维度**。一个动作的 Required 子集为空，不能据此清空适用的 Advisory Check。
+- `expected_set_ref` 绑定的是声明作用域、有效策略/规则版本和该次具体 Expected 内容；它不是第二份策略注册项。未加载/未批准的 Profile、未解析的规则、未知 Source/条件等要保留适用性或完整性未知与原因，不能用空数组伪造合法空集。
+- **合法空集仅针对声明的完整检查域**：所有有关的受控 Profile/配置、定义与适用条件均已核实，且该域下确无适用 Check。空 Required 子集与空 Expected Check 集合分别判断；`resolve_definitions([])`、空 Job、空 Result 或自填非空字符串的 `completeness` Receipt 均不能单独证明任一种完整性。
+- **Expected 必须早于实际 Job/Result 决定其义务**，但**不必等原生工具运行结束才生成**：#66-P0 可先给目标 Source 身份/可用的物化回执，#66-B 输出含明确未知项的 Expected；#52 的 Native Result 在实际执行时引用真正读到的 Source、规则/配置与 Check 输入/分析闭包。#66-C 和 #63 仅在证据足以证明等价/覆盖时提升结果资格，避免“先要结果闭包才能生成 Expected”的循环依赖。
 
-**审阅负例（分别归实际责任方，不要求一个 PR 重跑整套 CI）：** Profile 缺失/不受信 vs 真实合法空集；已声明 Required 但未配置 Job；同新 Tree、不同 old→new 比较检查；Source Index B 与 Worktree C 不同；双原生工具都必需但只执行一项；Native Result/Report PASS 但 #63 来源不受信；有效历史 PASS 满足当前等价输入而无需重扫；后置 Terminal 不能成为产生它的原 Workflow 的前置。已有有效 Native 和 CI 证据复用，仅验证新接口风险。
+**实际执行与受信复用的顺序（参见 [Evidence and Identity §1–§3](evidence-and-identity.md)）：**
 
-**规范出处与冲突优先级：** [Knowledge 总设计 §6.3](https://github.com/dymzz/engineering-knowledge/blob/main/design/software-engineering-knowledge-architecture.md)（有权项目策略与原生执行边界）、[Engineering Verification §2/§4](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/overall-design.md)（跨仓公共接口）、本设计 §1.1、[Evidence and Identity](evidence-and-identity.md)（身份、复用）及 [Dagger Execution](dagger-execution.md)（DAG）共同约束。Issue #52/#66 和审阅记录应引用这些现有定义并写出实施差分；不得通过后发 Issue 的“优先解释”覆盖它们。若真正改变此权威链，必须在本专题明确提出与旧定义的差异及理由，而不是追加平行的总裁决。
+```text
+Effective Profile + Context/Action/Target + CheckDefinition + Source
+  -> Authoritative Expected Checks / Required subset (expected_set_ref)
+  -> Selection/Plan 对账
+  -> #63 执行前的受信 Evidence Resolution
+  -> Remaining Work + Artifact/Prerequisite Closure
+  -> #86/Dagger 原生 DAG 或必要 Host Checks
+  -> 同次 Native Result / Report
+  -> #66-C Expected/Plan/Routing/Result 对账
+  -> #63 当前覆盖与受信证据核验
+  -> #61 Current Policy Assessment / Final Gate
+```
+
+历史 PASS 可以使本次**符合条件的 Check Verdict** 免跑，但不自动恢复下游所需的 Directory、文件或准备数据；产物仍按 [Evidence and Identity §2](evidence-and-identity.md) 和 [Dagger Execution](dagger-execution.md) 补足可核验闭包。#63 复用条件、原生执行及 Assessment 身份和 Dagger Data/PASS 前置关系的**详细定义仅在对应专题维护**，本节只规定其交接位置，避免重复规范。Result schema-valid、原生执行成功、Expected 覆盖、受信接纳、最终放行各有独立含义，不自动递推。尤其 Process Exit、Job Success、Tool/Check ID、Tree SHA 都不替代真实 Native Result、Expected 或 Required。
+
+**实施与验收边界：** 本节不修改已发布 `plan_contract` Schema 2 或 `execution` Report Schema 1。#52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 先证明当前已支持 Check/Native Result→公共校验→Report 自洽，并移除可能将局部字符串验证误称整体 Expected 完整的公开 API 语义；不得把 #66 Source 全闭包、完整 Expected、跨 Job 路由及 #63/#61 全部验收作为首切片单独合并的硬前置，也不得把这些未交付能力称为已冻结。#66-P0 与 #52-A 可并行；#66-B/C 由真实消费接口和同一有效策略后续交付；#86/#63/#61 按现有设计独立验收。本 PR 的设计验收不等于 Issue 已原位同步、接口已冻结或运行时代码已实现。仅对各自改变的风险补定向反例：合法空 Required 但有 Advisory、缺 Profile 与真实空 Expected、未配置 Job 的 Required、同目标 Tree 不同 old→new、Index/Worktree 字节不一致、Required 组合少结果、可信历史 PASS 但产物缺失等；复用已有效原生/CI 证据。
+
+**依据：** [Knowledge 总设计 §4/§6.3](https://github.com/dymzz/engineering-knowledge/blob/main/design/software-engineering-knowledge-architecture.md)；[Engineering Verification §2/§4](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/overall-design.md)；本文件 §1.1；[Evidence and Identity](evidence-and-identity.md)；[Dagger Execution](dagger-execution.md)；[Execution Graph 实施计划](plan.md)。如有冲突，应在真实专题比较现有约束与提案并审阅，不通过追加“优先解释”隐式覆盖。
 
 Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dispatch`（请求远端执行）、`Observe`（真实平台状态/时间）、`Artifacts`（取得/保存）、`Publish`（发布 Check/Decision）。本地不要求实现远程能力；不同 Provider 不伪造不支持的状态。
 
