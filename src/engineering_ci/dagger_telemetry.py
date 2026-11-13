@@ -381,6 +381,18 @@ def capability_inventory() -> tuple[Capability, ...]:
             ),
         ),
         Capability(
+            key="engine_function_call_name",
+            status="available",
+            detail=(
+                "The engine names a module function call in camel case "
+                "(engineering-ci:EngineeringCi.repositoryRuffTools) while the "
+                "CLI spells the same entry in kebab case "
+                "(repository-ruff-tools); the Check selector keeps the raw "
+                "Check name (dag://?check=lint)."
+            ),
+            source="observed:v1.0.0-beta.16-native-capture",
+        ),
+        Capability(
             key="engine_check_identity_by_span_name",
             status="available",
             detail=(
@@ -713,10 +725,11 @@ def read_exporter_error(path):
 def _normalized(value):
     """Normalize a declared name to the engine's field-name form.
 
-    The CLI calls a function `execute-plan`; the engine names the call
-    `execute_plan`. Both names refer to the same entry.
+    The CLI calls a function `repository-ruff-tools`; the engine names the
+    call `repositoryRuffTools`. Comparing without separators and case covers
+    the kebab, snake and camel forms of the same entry.
     """
-    return (value or "").replace("-", "_")
+    return "".join(char for char in (value or "").lower() if char.isalnum())
 
 
 def _function_span(span, declared_name):
@@ -740,7 +753,8 @@ def _check_keys(capture, check_name, function_name):
     selector = [
         span
         for span in capture.spans
-        if span.get("name") == CHECK_SELECTOR_PREFIX + declared
+        if _normalized(span.get("name") or "")
+        == _normalized(CHECK_SELECTOR_PREFIX + declared)
     ]
     function = [span for span in capture.spans if _function_span(span, declared)]
     if attribute:

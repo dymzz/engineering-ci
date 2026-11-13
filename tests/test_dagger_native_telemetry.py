@@ -711,23 +711,29 @@ def test_a_failing_native_result_still_binds_to_its_trace(tmp_path):
 
 
 def test_standalone_function_entry_point_binds_by_its_call_name(tmp_path):
-    """A Function entry has no Check selector; its call span is the key."""
+    """A Function entry has no Check selector; its call span is the key.
+
+    The engine names the call in camel case (`repositoryRuffTools`) while the
+    CLI spells it in kebab case (`repository-ruff-tools`).
+    """
     capture = dagger_telemetry.read_capture(
         write_capture(
             tmp_path,
             capture_document(
                 span(
-                    name="engineering-ci:EngineeringCi.execute_plan",
+                    name="engineering-ci:EngineeringCi.repositoryRuffTools",
                     span_id="abababababababab",
                     cache_outcome="executed",
                 )
             ),
         )
     )
-    record = receipt(capture=capture, function_name="execute-plan", correlation=None)
+    record = receipt(
+        capture=capture, function_name="repository-ruff-tools", correlation=None
+    )
     assert record["binding"]["binding_status"] == "bound"
     assert record["binding"]["correlation_basis"] == "engine_function_call"
-    assert record["binding"]["declared_function_name"] == "execute-plan"
+    assert record["binding"]["declared_function_name"] == "repository-ruff-tools"
     assert record["observed_trace_span_ids"] == ["abababababababab"]
 
 
@@ -737,18 +743,21 @@ def test_a_different_function_in_the_same_capture_does_not_bind(tmp_path):
             tmp_path,
             capture_document(
                 span(
-                    name="engineering-ci:EngineeringCi.repository_ruff_tools",
+                    name="engineering-ci:EngineeringCi.repositoryRuffTools",
                     span_id="abababababababab",
                 ),
                 span(
-                    name="engineering-ci:EngineeringCi.execute_plan",
+                    name="engineering-ci:EngineeringCi.executePlan",
                     span_id="cdcdcdcdcdcdcdcd",
                 ),
             ),
         )
     )
-    record = receipt(capture=capture, function_name="execute-plan", correlation=None)
-    assert record["observed_trace_span_ids"] == ["cdcdcdcdcdcdcdcd"]
+    record = receipt(
+        capture=capture, function_name="repository-ruff-tools", correlation=None
+    )
+    # Only the declared function binds; the other one is left out.
+    assert record["observed_trace_span_ids"] == ["abababababababab"]
     assert record["binding"]["binding_status"] == "bound"
 
 

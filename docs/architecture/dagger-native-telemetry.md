@@ -32,6 +32,7 @@ ECI 只**读取**原生 Span 与原生结果，不生成、不改写、不补造
 | Module 侧 flush | 可用 | Module 入口在 `finally` 里 `force_flush()` + `shutdown()` tracer provider | `.dagger/sdk/src/dagger/mod/cli.py::app`、`.dagger/sdk/src/dagger/telemetry.py::shutdown` |
 | Check 身份属性 | 部分 | 固定源码在 Check Span 上写 `dagger.io/check.name` 与 `dagger.io/check.passed`（`core/checks.go`），但**实测运行一次都没有发出**；Check 身份实际由 Span 名承载 | `core/checks.go`；实测见[验证记录](../verification/dagger-native-telemetry.md) |
 | Check 身份的 Span 名 | 可用 | CLI 选择器 `dag://?check=<name>`、模块函数调用 `<module>:<object>.<function>`、调用本体 `<object>.<function>` | 实测见[验证记录](../verification/dagger-native-telemetry.md) |
+| 函数调用名的形态 | 可用 | 引擎用**驼峰**命名函数调用（`engineering-ci:EngineeringCi.repositoryRuffTools`），CLI 用**连字符**拼写同一入口（`repository-ruff-tools`）；Check 选择器保留原始 Check 名 | 实测见[验证记录](../verification/dagger-native-telemetry.md) |
 | 缓存观察属性 | 可用 | `dagger.io/cache.contract`、`dagger.io/cache.outcome`（`hit`/`executed`/`joined`/`uncached`）、`dagger.io/cache.hit.route` | `engine/telemetryattrs/attrs.go` |
 | Module Client 遥测 | 可用 | 固定 SDK 依 `OTEL_*` 环境变量初始化 OTel，仅导出 traces | `.dagger/sdk/src/dagger/telemetry.py` |
 | Module Client 传输 | 可用 | SDK 依赖 `opentelemetry-exporter-otlp-proto-http`，即 OTLP/HTTP + protobuf；`OTEL_EXPORTER_OTLP_PROTOCOL` 对固定 SDK 无效 | `.dagger/sdk/pyproject.toml` |
