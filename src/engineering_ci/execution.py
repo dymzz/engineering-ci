@@ -110,7 +110,11 @@ def _verify_execution_binding(plan, root):
     if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
-        expected_tree = expected_tree or git.get("index_tree")
+        execution_tree = git.get("execution_tree")
+        index_tree = git.get("index_tree")
+        if execution_tree and index_tree and execution_tree != index_tree:
+            return False, "index_source_identity_mismatch", execution_tree
+        expected_tree = expected_tree or index_tree
         refusal = selection.index_source_refusal(
             root, expected_tree, index_file=git.get("index_file")
         )

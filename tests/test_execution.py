@@ -662,6 +662,45 @@ def test_execute_uses_plan_index_file_when_worktree_matches(repo, tmp_path):
     assert report["checks"][0]["check_contract"]["status"] == "valid"
 
 
+def test_execute_rejects_conflicting_index_tree_identities(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    external_tree = _external_tree(path, external)
+    default_tree = run(path, "write-tree").strip()
+    assert external_tree != default_tree
+    for execution_tree, index_tree in (
+        (external_tree, default_tree),
+        (default_tree, external_tree),
+    ):
+        fake = FakeRunner()
+        report = execution.execute(
+            plan(
+                [],
+                git={
+                    "base_ref": base,
+                    "head_ref": "HEAD",
+                    "base_commit": base,
+                    "head_commit": base,
+                    "snapshot": "index",
+                    "execution_tree": execution_tree,
+                    "index_tree": index_tree,
+                    "index_file": str(external),
+                    "changed_paths": ["docs/new.md"],
+                },
+                check_scope=[{"name": "docs", "status": "selected"}],
+            ),
+            root=path,
+            hygiene_config=path / "ci-hygiene.toml",
+            runner=fake,
+        )
+        assert report["status"] == "not_executed"
+        assert report["reason"] == "index_source_identity_mismatch"
+        assert not fake.calls
+
+
 def test_execute_runs_tests_with_external_index(repo, tmp_path):
     path, base = repo
     external = tmp_path / "external-index"
