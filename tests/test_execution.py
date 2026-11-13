@@ -300,6 +300,55 @@ def test_config_failure_is_not_started_and_has_no_native_result(repo):
     assert report["status"] == "failed"
 
 
+def test_tach_missing_config_is_pre_execution_failure(repo):
+    path, base = repo
+    (path / "tach.toml").unlink()
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+    report = execution.execute(
+        value, root=path, hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "tach"
+    assert check["status"] == "failed"
+    assert check["reason"] == "tach_config_missing"
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
+def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypatch):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+
+    def bad_contract(*args, **kwargs):
+        raise execution.check_contract.CheckContractError("fixture_invalid_contract")
+
+    monkeypatch.setattr(execution.check_contract, "native_result", bad_contract)
+    report = execution.execute(
+        docs_only_plan(base, base), root=path,
+        hygiene_config=path / "ci-hygiene.toml", runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"  # Real native execution fact is retained
+    assert check["check_contract"]["status"] == "fixture_invalid_contract"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+
+
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
     path, _ = repo
     value = plan(["tests.test_pkg"])
