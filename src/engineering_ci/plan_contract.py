@@ -48,6 +48,8 @@ def _string_list(value):
 
 
 def _validate_expected(expected, git):
+    from . import expected_checks
+
     if not isinstance(expected, dict):
         raise PlanError("expected_checks_invalid")
     if expected.get("kind") != "engineering-ci-expected-checks":
@@ -62,20 +64,20 @@ def _validate_expected(expected, git):
             r"sha256:[0-9a-f]{64}", value
         ):
             raise PlanError(f"expected_{key}_invalid")
-    source = expected.get("source_ref")
-    if not isinstance(source, dict) or not isinstance(source.get("snapshot"), str):
-        raise PlanError("expected_source_invalid")
-    if git.get("snapshot") is not None and source["snapshot"] != git["snapshot"]:
-        raise PlanError("expected_source_mismatch")
     checks = expected.get("checks")
     if not isinstance(checks, list):
         raise PlanError("expected_checks_invalid")
+    refs = [item.get("expected_check_ref") for item in checks if isinstance(item, dict)]
+    if len(refs) != len(set(refs)):
+        raise PlanError("expected_duplicate")
+    try:
+        expected_checks.validate_projection(expected, git)
+    except expected_checks.ExpectedError as error:
+        raise PlanError(error.code) from None
     seen = set()
     for item in checks:
         if not isinstance(item, dict):
             raise PlanError("expected_check_invalid")
-        if "job_refs" in item or "job_ref" in item:
-            raise PlanError("expected_routing_forbidden")
         if item.get("definition_status") not in {"resolved", "unknown"}:
             raise PlanError("expected_definition_status_invalid")
         check_id = item.get("check_id")
@@ -86,20 +88,16 @@ def _validate_expected(expected, git):
             )
         ):
             raise PlanError("expected_check_id_invalid")
-        if item.get("definition_status") == "resolved":
-            if check_id is None or type(item.get("definition_version")) is not int:
-                raise PlanError("expected_definition_invalid")
-            ref = item.get("expected_check_ref")
-            if not isinstance(ref, str) or not re.fullmatch(
-                r"sha256:[0-9a-f]{64}", ref
-            ):
-                raise PlanError("expected_check_ref_invalid")
-            identity = ref
-        else:
-            identity = item.get("name")
-        if identity in seen:
+        if item.get("definition_status") == "resolved" and (
+            check_id is None or type(item.get("definition_version")) is not int
+        ):
+            raise PlanError("expected_definition_invalid")
+        ref = item.get("expected_check_ref")
+        if not isinstance(ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", ref):
+            raise PlanError("expected_check_ref_invalid")
+        if ref in seen:
             raise PlanError("expected_duplicate")
-        seen.add(identity)
+        seen.add(ref)
         applicability = item.get("applicability")
         if not isinstance(applicability, dict) or not isinstance(
             applicability.get("status"), str

@@ -1,5 +1,6 @@
 """#66-B Expected Check projection and Plan validation."""
 
+import dataclasses
 import json
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import expected_checks, plan_contract, selection
+from engineering_ci import check_contract, expected_checks, plan_contract, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -73,6 +74,103 @@ def test_expected_set_ref_changes_with_scope_or_source(repo):
     assert expected_checks._digest(changed["checks"]) != expected["expected_set_ref"]
 
 
+def test_expected_public_api_cannot_forge_complete(repo):
+    path, base = repo
+    changes = selection.changeset(path, base=base, mode="worktree")
+    result = expected_checks.derive_expected_checks(
+        changes,
+        [{"name": "not-a-check", "status": "selected", "inputs": [], "reason": "x"}],
+        config_path=path / "ci-selection.toml",
+        profile_ref={"name": "forged", "version": "1"},
+        profile_source="forged",
+    )
+    assert result["status"] == "partial"
+    assert result["definitions_status"] == "partial"
+    assert result["consumer_completeness"] == "not_claimed"
+    empty = expected_checks.derive_expected_checks(
+        changes,
+        [],
+        config_path=path / "ci-selection.toml",
+        profile_ref={"name": "forged", "version": "1"},
+        profile_source="forged",
+    )
+    assert empty["status"] == "unknown"
+    assert empty["definitions_status"] == "unknown"
+
+
+def test_expected_source_and_rule_match_check_contract(repo):
+    plan = make_plan(repo)
+    entry = plan["expected_checks"]["checks"][0]
+    check_contract.validate_source_ref(entry["source_ref"])
+    assert entry["rule_ref"] is None
+    assert entry["rule_status"] == "unknown"
+    assert entry["selection_rule_ref"]["sha256"].startswith("sha256:")
+    assert entry["event_ref"]["references"] == []
+
+
+def test_expected_identity_binds_event_not_local_paths(repo, tmp_path):
+    path, base = repo
+    changes = selection.changeset(path, base=base, mode="worktree")
+    scope = [{"name": "docs", "status": "selected", "inputs": ["docs/a.md"]}]
+    first = expected_checks.derive_expected_checks(
+        changes, scope, config_path=path / "ci-selection.toml"
+    )
+    copy = tmp_path / "copy.toml"
+    copy.write_bytes((path / "ci-selection.toml").read_bytes())
+    second = expected_checks.derive_expected_checks(changes, scope, config_path=copy)
+    assert first["expected_set_ref"] == second["expected_set_ref"]
+    assert (
+        first["checks"][0]["expected_check_ref"]
+        == (second["checks"][0]["expected_check_ref"])
+    )
+    other_ref = dataclasses.replace(changes, head_ref="refs/heads/other")
+    third = expected_checks.derive_expected_checks(
+        other_ref, scope, config_path=path / "ci-selection.toml"
+    )
+    assert (
+        third["checks"][0]["expected_check_ref"]
+        != (first["checks"][0]["expected_check_ref"])
+    )
+
+
+def test_expected_identity_tampering_is_rejected(repo):
+    plan = make_plan(repo)
+    for mutate, code in (
+        (
+            lambda item: item["applicability"].__setitem__("status", "x"),
+            "expected_check_ref_mismatch",
+        ),
+        (
+            lambda item: item.__setitem__("rule_ref", {"name": "x"}),
+            "expected_check_ref_mismatch",
+        ),
+        (
+            lambda item: item["input_refs"].append({"path": "x"}),
+            "expected_check_ref_mismatch",
+        ),
+    ):
+        tampered = json.loads(json.dumps(plan))
+        mutate(tampered["expected_checks"]["checks"][0])
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(tampered)
+        assert raised.value.code == code
+    tampered = json.loads(json.dumps(plan))
+    tampered["expected_checks"]["expected_set_ref"] = "sha256:" + "0" * 64
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_set_ref_mismatch"
+    tampered = json.loads(json.dumps(plan))
+    tampered["expected_checks"]["event_ref"]["head_ref"] = "refs/heads/other"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_event_mismatch"
+    tampered = json.loads(json.dumps(plan))
+    tampered["expected_checks"]["source_ref"]["declared_target_tree"] = "0" * 40
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_source_mismatch"
+
+
 def test_unknown_check_is_partial_and_no_legal_empty(repo):
     path, base = repo
     changes = selection.changeset(path, base=base, mode="worktree")
@@ -90,8 +188,9 @@ def test_unknown_check_is_partial_and_no_legal_empty(repo):
         changes, [], config_path=path / "ci-selection.toml"
     )
     assert empty["status"] == "unknown"
-    assert empty["reason"] == "no_expected_checks_or_profile"
+    assert empty["reason"] == "no_expected_checks"
     assert empty["checks"] == []
+    assert empty["definitions_status"] == "unknown"
 
 
 def test_expected_plan_rejects_routing_and_duplicate(repo):

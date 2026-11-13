@@ -1,9 +1,10 @@
 """Versioned Expected Check projection for #66-B.
 
-This module derives scheduler-independent Expected Checks from the existing
-Selection/Plan inputs. It deliberately does not claim a consumer Profile is
-complete: without an authoritative Profile/rule source the result stays
-``partial`` or ``unknown``. Required policy remains outside this module.
+Expected Checks are derived from the existing Selection/Plan inputs and the
+published Check identity contract. This first slice intentionally never claims
+a complete Consumer Profile: without authoritative Profile/rules sources the
+projection is ``partial`` or ``unknown``. Required policy and Job routing are
+outside this module.
 """
 
 from __future__ import annotations
@@ -12,10 +13,11 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import check_contract, plan_contract
+from . import check_contract
 
 EXPECTED_VERSION = 1
 EXPECTED_KIND = "engineering-ci-expected-checks"
+SELECTION_RULE_VERSION = 1
 STATUSES = frozenset({"complete", "partial", "unknown"})
 
 
@@ -37,36 +39,68 @@ def _file_digest(path):
         return None
 
 
-def _source_ref(changeset):
-    tree = changeset.execution_tree or changeset.tree
-    source = {
-        "kind": "git",
-        "snapshot": changeset.snapshot,
-        "tree": tree,
-        "index_tree": changeset.index_tree,
-        "index_file": changeset.index_file,
+def _event_ref(changeset):
+    references = sorted(
+        (dict(item) for item in changeset.references),
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+    return {
+        "base_ref": changeset.base_ref,
+        "head_ref": changeset.head_ref,
         "base_commit": changeset.base_commit,
         "head_commit": changeset.head_commit,
-        "changed_paths": list(changeset.paths),
+        "references": references,
     }
-    if tree and changeset.snapshot in {"commit", "push", "pr_merge"}:
-        source["binding_status"] = "tree_identity"
-    elif changeset.snapshot == "index" and changeset.index_tree:
-        source["binding_status"] = "index_identity"
-    elif changeset.snapshot == "worktree":
-        source["binding_status"] = "worktree_declared"
+
+
+def _source_ref(changeset):
+    declared = changeset.execution_tree or changeset.tree or changeset.index_tree
+    if changeset.snapshot == "worktree":
+        status = "unknown"
+    elif declared:
+        status = "identity_only"
     else:
-        source["binding_status"] = "unknown"
+        status = "unknown"
+    source = {
+        "snapshot": changeset.snapshot,
+        "declared_target_tree": declared,
+        "actual_execution_source": "worktree",
+        "verified_input_scope": sorted(changeset.paths),
+        "scope_kind": "changed_paths",
+        "binding_status": status,
+    }
+    if changeset.index_tree:
+        source["index_tree"] = changeset.index_tree
+    if changeset.head_commit:
+        source["head_commit"] = changeset.head_commit
     return source
 
 
-def _rule_ref(config_path, config_digest):
+def _selection_rule_ref(config_digest):
     return {
         "name": "engineering-ci.selection",
-        "version": str(plan_contract.PLAN_VERSION),
-        "path": str(config_path),
+        "version": str(SELECTION_RULE_VERSION),
         "sha256": config_digest,
     }
+
+
+def entry_identity(entry):
+    payload = {
+        key: value for key, value in entry.items() if key != "expected_check_ref"
+    }
+    return _digest(payload)
+
+
+def scope_identity(consumer, profile_ref, profile_source, event_ref, source_ref):
+    return _digest(
+        {
+            "consumer": consumer,
+            "profile_ref": profile_ref,
+            "profile_source": profile_source,
+            "event_ref": event_ref,
+            "source_ref": source_ref,
+        }
+    )
 
 
 def derive_expected_checks(
@@ -78,14 +112,10 @@ def derive_expected_checks(
     profile_ref=None,
     profile_source=None,
 ):
-    """Derive versioned Expected Checks without claiming Profile completeness.
-
-    ``profile_source`` is reserved for an authoritative Profile receipt. Until
-    one is supplied, the set is explicitly ``partial`` and never a legal empty
-    complete set.
-    """
+    """Derive a partial Expected projection; never claims Profile completeness."""
     config_digest = _file_digest(config_path)
-    rule_ref = _rule_ref(config_path, config_digest)
+    selection_rule = _selection_rule_ref(config_digest)
+    event_ref = _event_ref(changeset)
     source_ref = _source_ref(changeset)
     checks = []
     missing = []
@@ -94,47 +124,22 @@ def derive_expected_checks(
         definition = check_contract.definition_for(name)
         if definition is None:
             missing.append(str(name))
-            checks.append(
-                {
-                    "expected_check_ref": None,
-                    "check_id": None,
-                    "definition_version": None,
-                    "definition_status": "unknown",
-                    "name": name,
-                    "rule_ref": rule_ref,
-                    "profile_ref": profile_ref,
-                    "applicability": {
-                        "status": item.get("status", "unknown"),
-                        "reason": item.get("reason"),
-                    },
-                    "policy_status": "unknown",
-                    "source_ref": source_ref,
-                    "input_refs": [
-                        {"kind": "changed_path", "path": path}
-                        for path in item.get("inputs", [])
-                    ],
-                    "baseline_ref": (
-                        {"base_commit": changeset.base_commit}
-                        if changeset.base_commit
-                        else None
-                    ),
-                }
-            )
-            continue
         entry = {
-            "expected_check_ref": None,
-            "check_id": definition.check_id,
-            "definition_version": definition.definition_version,
-            "definition_status": "resolved",
             "name": name,
-            "rule_ref": rule_ref,
+            "check_id": definition.check_id if definition else None,
+            "definition_version": definition.definition_version if definition else None,
+            "definition_status": "resolved" if definition else "unknown",
+            "event_ref": json.loads(json.dumps(event_ref)),
+            "selection_rule_ref": selection_rule,
+            "rule_ref": None,
+            "rule_status": "unknown",
             "profile_ref": profile_ref,
             "applicability": {
                 "status": item.get("status", "unknown"),
                 "reason": item.get("reason"),
             },
             "policy_status": "unknown",
-            "source_ref": source_ref,
+            "source_ref": json.loads(json.dumps(source_ref)),
             "input_refs": [
                 {"kind": "changed_path", "path": path}
                 for path in item.get("inputs", [])
@@ -145,42 +150,25 @@ def derive_expected_checks(
                 else None
             ),
         }
-        entry["expected_check_ref"] = _digest(entry)
+        entry["expected_check_ref"] = entry_identity(entry)
         checks.append(entry)
 
-    definitions_status = (
-        "unknown"
-        if missing and not checks
-        else "partial"
-        if missing
-        else "requested_names_complete"
-    )
-    profile_complete = bool(profile_source and profile_ref)
-    status = "unknown" if not checks else "complete" if profile_complete else "partial"
-    if status == "unknown":
-        reason = "no_expected_checks_or_profile"
-    elif status == "partial":
-        reason = "consumer_profile_not_resolved"
+    if not checks:
+        status = "unknown"
+        reason = "no_expected_checks"
+        definitions_status = "unknown"
     else:
-        reason = None
-    scope = {
-        "consumer": consumer,
-        "profile_ref": profile_ref,
-        "profile_source": profile_source,
-        "event_ref": {
-            "base_ref": changeset.base_ref,
-            "head_ref": changeset.head_ref,
-            "base_commit": changeset.base_commit,
-            "head_commit": changeset.head_commit,
-        },
-        "source_ref": source_ref,
-    }
+        status = "partial"
+        reason = "consumer_profile_not_resolved"
+        definitions_status = "partial" if missing else "requested_names_complete"
     return {
         "kind": EXPECTED_KIND,
         "schema_version": EXPECTED_VERSION,
         "status": status,
         "reason": reason,
-        "scope_id": _digest(scope),
+        "scope_id": scope_identity(
+            consumer, profile_ref, profile_source, event_ref, source_ref
+        ),
         "expected_set_ref": _digest(checks),
         "definitions_status": definitions_status,
         "applicability_status": "partial" if missing else "requested_scope",
@@ -188,9 +176,63 @@ def derive_expected_checks(
         "profile_ref": profile_ref,
         "profile_source": profile_source,
         "consumer_completeness": "not_claimed",
-        "event_ref": scope["event_ref"],
+        "event_ref": event_ref,
         "source_ref": source_ref,
         "checks": checks,
         "missing": missing,
         "conflicts": [],
     }
+
+
+def validate_projection(expected, git):
+    """Recompute identities and cross-check the projection against Plan git."""
+    if not isinstance(expected, dict):
+        raise ExpectedError("expected_checks_invalid")
+    checks = expected.get("checks")
+    if not isinstance(checks, list):
+        raise ExpectedError("expected_checks_invalid")
+    for item in checks:
+        if not isinstance(item, dict):
+            raise ExpectedError("expected_check_invalid")
+        if "job_refs" in item or "job_ref" in item:
+            raise ExpectedError("expected_routing_forbidden")
+        if item.get("expected_check_ref") != entry_identity(item):
+            raise ExpectedError("expected_check_ref_mismatch")
+    if expected.get("expected_set_ref") != _digest(checks):
+        raise ExpectedError("expected_set_ref_mismatch")
+
+    source = expected.get("source_ref")
+    try:
+        check_contract.validate_source_ref(source)
+    except check_contract.CheckContractError as error:
+        raise ExpectedError(error.code) from None
+    if git.get("snapshot") is not None and source.get("snapshot") != git["snapshot"]:
+        raise ExpectedError("expected_source_mismatch")
+    plan_trees = {
+        value
+        for value in (
+            git.get("execution_tree"),
+            git.get("tree"),
+            git.get("index_tree"),
+        )
+        if value
+    }
+    declared = source.get("declared_target_tree")
+    if declared and plan_trees and declared not in plan_trees:
+        raise ExpectedError("expected_source_mismatch")
+    event = expected.get("event_ref")
+    if not isinstance(event, dict):
+        raise ExpectedError("expected_event_invalid")
+    for key in ("base_ref", "head_ref", "base_commit", "head_commit"):
+        if event.get(key) != git.get(key):
+            raise ExpectedError("expected_event_mismatch")
+    expected_scope = scope_identity(
+        expected.get("consumer"),
+        expected.get("profile_ref"),
+        expected.get("profile_source"),
+        expected.get("event_ref"),
+        expected.get("source_ref"),
+    )
+    if expected.get("scope_id") != expected_scope:
+        raise ExpectedError("expected_scope_id_mismatch")
+    return expected
