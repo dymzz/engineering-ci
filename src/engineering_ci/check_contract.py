@@ -162,12 +162,9 @@ def validate_definition(definition):
     for value in (definition.tool_id, definition.access_id):
         if value is not None:
             _text(value, "tool_identity")
-    for ref in (definition.rule_ref, definition.profile_ref):
-        if ref is not None:
-            if not isinstance(ref, dict):
-                raise CheckContractError("check_reference_invalid")
-            _text(ref.get("name"), "reference_name")
-            _version(ref.get("version"), "reference_version")
+    # Use the same reference validation as validate_result(), including digest.
+    _validate_reference(definition.rule_ref, "rule_ref")
+    _validate_reference(definition.profile_ref, "profile_ref")
     return definition
 
 
@@ -438,6 +435,8 @@ def native_result(
     content = {key: value for key, value in payload.items() if key != "result_instance"}
     payload["content_id"] = _digest(content)
     payload["result_id"] = _digest(payload)
+    # A public constructor must never emit a result its public validator rejects.
+    validate_result(payload)
     return payload
 
 
@@ -563,10 +562,14 @@ def validate_expected_instance(expected):
     validate_source_ref(source)
     if source["binding_status"] not in {"byte_tree", "content_digest"}:
         raise CheckContractError("expected_source_unproven")
-    if source["scope_kind"] not in {
-        "check_input_closure",
-        "full_input_closure",
-    } or not source["verified_input_scope"]:
+    if (
+        source["scope_kind"]
+        not in {
+            "check_input_closure",
+            "full_input_closure",
+        }
+        or not source["verified_input_scope"]
+    ):
         raise CheckContractError("expected_source_scope_insufficient")
     if expected.get("profile_ref") is not None:
         _validate_reference(expected["profile_ref"], "profile_ref")
@@ -590,9 +593,7 @@ def result_matches_expected(result, expected):
     if not isinstance(expected, dict):
         raise CheckContractError("expected_invalid")
     check = result["check"]
-    builtin = _registered_definition(
-        check["check_id"], check["definition_version"]
-    )
+    builtin = _registered_definition(check["check_id"], check["definition_version"])
     if builtin.requires_baseline and expected.get("baseline_ref") is None:
         return False
     comparisons = {
