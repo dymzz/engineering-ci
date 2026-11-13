@@ -316,7 +316,9 @@ def test_tach_missing_config_is_pre_execution_failure(repo):
         check_scope=[{"name": "tach", "status": "selected"}],
     )
     report = execution.execute(
-        value, root=path, hygiene_config=path / "ci-hygiene.toml",
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
         runner=FakeRunner(),
     )
     check = report["checks"][0]
@@ -338,8 +340,10 @@ def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypa
 
     monkeypatch.setattr(execution.check_contract, "native_result", bad_contract)
     report = execution.execute(
-        docs_only_plan(base, base), root=path,
-        hygiene_config=path / "ci-hygiene.toml", runner=FakeRunner(),
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
     )
     check = report["checks"][0]
     assert check["status"] == "passed"  # Real native execution fact is retained
@@ -347,6 +351,34 @@ def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypa
     assert "native_result" not in check
     assert report["status"] == "blocked"
     assert report["reason"] == "check_contract_invalid"
+
+
+def test_missing_check_identity_preserves_successful_native_execution(repo, monkeypatch):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    original = execution.check_contract.definition_for
+
+    def missing_docs_identity(name):
+        return None if name == "docs" else original(name)
+
+    monkeypatch.setattr(
+        execution.check_contract, "definition_for", missing_docs_identity
+    )
+    runner = FakeRunner()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"
+    assert check["reason"] == "check_identity_missing"
+    assert check["check_contract"]["status"] == "identity_missing"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+    assert any(Path(args[0]).stem == "lychee" for args, _ in runner.calls)
 
 
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
