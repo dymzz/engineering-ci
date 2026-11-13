@@ -6,13 +6,13 @@
           {
             "key": "dagger.io/engine.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
             "key": "dagger.io/session.id",
             "value": {
-              "stringValue": "pd2h5o9qzgxejapzy6lgf77hv"
+              "stringValue": "jr3fnkgzcwa11y9nz81a3mga4"
             }
           },
           {
@@ -24,7 +24,7 @@
           {
             "key": "service.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
@@ -48,12 +48,12 @@
           },
           "spans": [
             {
-              "traceId": "d00538fc0cb3e43ee84d36051e14e51f",
-              "spanId": "2e34d84d0ac99409",
+              "traceId": "166eb17d8f681d4e5df42664bf725dc3",
+              "spanId": "ad9d0e3d4ffd51e0",
               "name": "engineering-ci:EngineeringCi.lint",
               "kind": 1,
-              "startTimeUnixNano": "1794536516988900012",
-              "endTimeUnixNano": "1794536516988924469",
+              "startTimeUnixNano": "1794555479832450171",
+              "endTimeUnixNano": "1794555479832480126",
               "attributes": [
                 {
                   "key": "wcprof.op.kind",
@@ -64,20 +64,20 @@
                 {
                   "key": "dagger.io/dag.digest",
                   "value": {
-                    "stringValue": "xxh3:ebc19a2a231f151c"
+                    "stringValue": "xxh3:70af7d558eabef0f"
                   }
                 },
                 {
                   "key": "dagger.io/telemetry.origin_client_id",
                   "value": {
-                    "stringValue": "9dak21yiyvehsbncgarglapyy"
+                    "stringValue": "dbe60eokarvywxcmkkotcqka8"
                   }
                 }
               ],
               "status": {
                 "code": 1
               },
-              "parentSpanId": "f18235066ad398c6"
+              "parentSpanId": "066d6578ce9208f4"
             }
           ]
         }
@@ -89,13 +89,13 @@
           {
             "key": "dagger.io/engine.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
             "key": "dagger.io/session.id",
             "value": {
-              "stringValue": "pd2h5o9qzgxejapzy6lgf77hv"
+              "stringValue": "jr3fnkgzcwa11y9nz81a3mga4"
             }
           },
           {
@@ -107,7 +107,7 @@
           {
             "key": "service.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
@@ -131,29 +131,29 @@
           },
           "spans": [
             {
-              "traceId": "d00538fc0cb3e43ee84d36051e14e51f",
-              "spanId": "f18235066ad398c6",
+              "traceId": "166eb17d8f681d4e5df42664bf725dc3",
+              "spanId": "066d6578ce9208f4",
               "name": "EngineeringCi.lint",
               "kind": 1,
-              "startTimeUnixNano": "1794536516988767566",
-              "endTimeUnixNano": "1794536516989064807",
+              "startTimeUnixNano": "1794555479832337145",
+              "endTimeUnixNano": "1794555479832657998",
               "attributes": [
                 {
                   "key": "dagger.io/dag.digest",
                   "value": {
-                    "stringValue": "xxh3:ebc19a2a231f151c"
+                    "stringValue": "xxh3:70af7d558eabef0f"
                   }
                 },
                 {
                   "key": "dagger.io/telemetry.origin_client_id",
                   "value": {
-                    "stringValue": "9dak21yiyvehsbncgarglapyy"
+                    "stringValue": "dbe60eokarvywxcmkkotcqka8"
                   }
                 },
                 {
                   "key": "dagger.io/dag.content_preferred_digest",
                   "value": {
-                    "stringValue": "xxh3:9629255aa64f423a"
+                    "stringValue": "xxh3:e6d36ac6bdfe0476"
                   }
                 },
                 {
@@ -178,7 +178,7 @@
               "status": {
                 "code": 1
               },
-              "parentSpanId": "001264b4beec8df9"
+              "parentSpanId": "cefa7bac4729a730"
             }
           ]
         }
@@ -190,13 +190,13 @@
           {
             "key": "dagger.io/engine.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
             "key": "dagger.io/session.id",
             "value": {
-              "stringValue": "pd2h5o9qzgxejapzy6lgf77hv"
+              "stringValue": "jr3fnkgzcwa11y9nz81a3mga4"
             }
           },
           {
@@ -208,7 +208,7 @@
           {
             "key": "service.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
@@ -232,12 +232,12 @@
           },
           "spans": [
             {
-              "traceId": "d00538fc0cb3e43ee84d36051e14e51f",
-              "spanId": "7d97b3cb749e0a50",
+              "traceId": "166eb17d8f681d4e5df42664bf725dc3",
+              "spanId": "29bcbb77326d2479",
               "name": "Check.sync",
               "kind": 1,
-              "startTimeUnixNano": "1794536516989160740",
-              "endTimeUnixNano": "1794536519034901620",
+              "startTimeUnixNano": "1794555479832770193",
+              "endTimeUnixNano": "1794555481785191808",
               "attributes": [
                 {
                   "key": "wcprof.op.kind",
@@ -248,20 +248,20 @@
                 {
                   "key": "dagger.io/dag.digest",
                   "value": {
-                    "stringValue": "xxh3:096c4c3d891e80a5"
+                    "stringValue": "xxh3:da13fac62de4da10"
                   }
                 },
                 {
                   "key": "dagger.io/telemetry.origin_client_id",
                   "value": {
-                    "stringValue": "9dak21yiyvehsbncgarglapyy"
+                    "stringValue": "dbe60eokarvywxcmkkotcqka8"
                   }
                 }
               ],
               "status": {
                 "code": 1
               },
-              "parentSpanId": "798a86a69cfab783"
+              "parentSpanId": "418a436ca41d4743"
             }
           ]
         }
@@ -273,13 +273,13 @@
           {
             "key": "dagger.io/engine.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
             "key": "dagger.io/session.id",
             "value": {
-              "stringValue": "pd2h5o9qzgxejapzy6lgf77hv"
+              "stringValue": "jr3fnkgzcwa11y9nz81a3mga4"
             }
           },
           {
@@ -291,7 +291,7 @@
           {
             "key": "service.instance.id",
             "value": {
-              "stringValue": "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
             }
           },
           {
@@ -315,24 +315,24 @@
           },
           "spans": [
             {
-              "traceId": "d00538fc0cb3e43ee84d36051e14e51f",
-              "spanId": "798a86a69cfab783",
+              "traceId": "166eb17d8f681d4e5df42664bf725dc3",
+              "spanId": "418a436ca41d4743",
               "name": "dag://?check=lint",
               "kind": 1,
-              "startTimeUnixNano": "1794536516840373635",
-              "endTimeUnixNano": "1794536519035093104",
+              "startTimeUnixNano": "1794555479650598129",
+              "endTimeUnixNano": "1794555481785362950",
               "attributes": [
                 {
                   "key": "dagger.io/telemetry.origin_client_id",
                   "value": {
-                    "stringValue": "9dak21yiyvehsbncgarglapyy"
+                    "stringValue": "dbe60eokarvywxcmkkotcqka8"
                   }
                 }
               ],
               "status": {
                 "code": 2
               },
-              "parentSpanId": "4e78a007fabcdb83"
+              "parentSpanId": "39b77eba510e1b45"
             }
           ]
         }

@@ -1,0 +1,194 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "p8x11prvwcd8zjha03ls6ch8c"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/dagql"
+          },
+          "spans": [
+            {
+              "traceId": "7a47f38137b5f2c92d62db6d7e4b78bb",
+              "spanId": "12bde27d17854d49",
+              "name": "engineering-ci:EngineeringCi.repositoryRuffTools",
+              "kind": 1,
+              "startTimeUnixNano": "1794555484755216756",
+              "endTimeUnixNano": "1794555486552827980",
+              "attributes": [
+                {
+                  "key": "wcprof.op.kind",
+                  "value": {
+                    "stringValue": "call_exec"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.digest",
+                  "value": {
+                    "stringValue": "xxh3:926b405d447daa2d"
+                  }
+                },
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "94unh53gr8frup66qpmolmk6q"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "7b2ed6c02ff43374"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "dagger.io/engine.instance.id",
+            "value": {
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
+            }
+          },
+          {
+            "key": "dagger.io/session.id",
+            "value": {
+              "stringValue": "p8x11prvwcd8zjha03ls6ch8c"
+            }
+          },
+          {
+            "key": "dagger.io/workload_export.schema",
+            "value": {
+              "stringValue": "1"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "25ed897b-b6b7-4e8e-b901-011ae0218b64"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "dagger-engine"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v1.0.0-beta.16"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "dagger.io/core"
+          },
+          "spans": [
+            {
+              "traceId": "7a47f38137b5f2c92d62db6d7e4b78bb",
+              "spanId": "7b2ed6c02ff43374",
+              "name": "EngineeringCi.repositoryRuffTools",
+              "kind": 1,
+              "startTimeUnixNano": "1794555484755102197",
+              "endTimeUnixNano": "1794555486553150885",
+              "attributes": [
+                {
+                  "key": "dagger.io/dag.digest",
+                  "value": {
+                    "stringValue": "xxh3:926b405d447daa2d"
+                  }
+                },
+                {
+                  "key": "dagger.io/telemetry.origin_client_id",
+                  "value": {
+                    "stringValue": "94unh53gr8frup66qpmolmk6q"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.content_preferred_digest",
+                  "value": {
+                    "stringValue": "xxh3:d9031bc244ee0cf6"
+                  }
+                },
+                {
+                  "key": "dagger.io/dag.pending",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.contract",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.outcome",
+                  "value": {
+                    "stringValue": "executed"
+                  }
+                },
+                {
+                  "key": "dagger.io/cache.result.id",
+                  "value": {
+                    "stringValue": "12030"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "1bd08a53ee8aa7b1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

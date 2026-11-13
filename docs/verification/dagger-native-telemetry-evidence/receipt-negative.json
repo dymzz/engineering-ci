@@ -1,8 +1,8 @@
 {
   "binding": {
     "binding_keys": [
-      "check_function",
-      "check_selector"
+      "check_selector",
+      "function_call"
     ],
     "binding_proves": [
       "invocation_call_and_cache_outcome",
@@ -13,12 +13,13 @@
     "correlation_basis": "engine_check_selector",
     "correlation_key": null,
     "declared_check_name": "lint",
+    "declared_function_name": null,
     "engine_instance_ids": [
-      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+      "25ed897b-b6b7-4e8e-b901-011ae0218b64"
     ],
     "session_ids": [
-      "pd2h5o9qzgxejapzy6lgf77hv",
-      "vy4rr9g9gh34z5eox3av53hbg"
+      "jr3fnkgzcwa11y9nz81a3mga4",
+      "wnko3c7purfp9o6la613kjf01"
     ]
   },
   "cache_observation_scope": {
@@ -65,16 +66,34 @@
       "status": "available"
     },
     {
-      "detail": "Receiver acceptance is not an engine-side durability guarantee; the export uses bounded queues and a batch processor.",
+      "detail": "Receiver acceptance is not an engine-side durability guarantee; the export uses bounded queues and a batch processor with a one minute export timeout.",
       "key": "engine_export_durability",
       "source": "engine/telemetry/workload_export.go::WorkloadExport",
       "status": "partial"
+    },
+    {
+      "detail": "The Engine drains the workload export itself: the session providers finish first, then the export is shut down with a 30 second flush budget. An incomplete shutdown is only a warning.",
+      "key": "engine_export_flush",
+      "source": "cmd/engine/main.go:engine/telemetry/workload_export.go",
+      "status": "available"
+    },
+    {
+      "detail": "The module entrypoint force-flushes and shuts down the SDK tracer provider when the module process ends.",
+      "key": "sdk_export_flush",
+      "source": ".dagger/sdk/src/dagger/mod/cli.py::app:.dagger/sdk/src/dagger/telemetry.py::shutdown",
+      "status": "available"
     },
     {
       "detail": "The pinned sources set dagger.io/check.name and dagger.io/check.passed on the Check span, but the observed v1.0.0-beta.16 run emitted neither. The Check identity was carried by the Span names instead.",
       "key": "engine_check_attribute",
       "source": "dagger/otel-go attrs.go::CheckNameAttr:core/checks.go:unresolved:engine_check_attribute_observed",
       "status": "partial"
+    },
+    {
+      "detail": "The engine names a module function call in camel case (engineering-ci:EngineeringCi.repositoryRuffTools) while the CLI spells the same entry in kebab case (repository-ruff-tools); the Check selector keeps the raw Check name (dag://?check=lint).",
+      "key": "engine_function_call_name",
+      "source": "observed:v1.0.0-beta.16-native-capture",
+      "status": "available"
     },
     {
       "detail": "The observed run identified the Check through the Span names: the CLI selector dag://?check=<name>, the module function call <module>:<object>.<function> and the call's core span <object>.<function>.",
@@ -130,12 +149,11 @@
     "cache_outcomes": [
       "executed",
       "hit",
-      "joined",
       "uncached"
     ],
     "check_names": [],
     "engine_instance_ids": [
-      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+      "25ed897b-b6b7-4e8e-b901-011ae0218b64"
     ],
     "scopes": [
       "dagger.io/core",
@@ -149,8 +167,8 @@
       "dagger-engine"
     ],
     "session_ids": [
-      "pd2h5o9qzgxejapzy6lgf77hv",
-      "vy4rr9g9gh34z5eox3av53hbg"
+      "jr3fnkgzcwa11y9nz81a3mga4",
+      "wnko3c7purfp9o6la613kjf01"
     ],
     "signal_scope": [
       "traces"
@@ -163,8 +181,8 @@
     "spans_bound": 3,
     "spans_observed": 1324,
     "trace_ids": [
-      "b0b27001cbdc742fda88e9ed1c32a92d",
-      "d00538fc0cb3e43ee84d36051e14e51f"
+      "166eb17d8f681d4e5df42664bf725dc3",
+      "1b9177b88e2372bc3a4b046811ceafd6"
     ],
     "unobserved_reason": null
   },
@@ -213,7 +231,7 @@
   "invocation": {
     "actual_invocation_ref": "dagger check --engineering-ci --check=lint (negative)",
     "check_or_function_ref": null,
-    "source_binding_ref": "git-tree:83f7f20d3ab54d5881a7646586e41943045910f8"
+    "source_binding_ref": "git-tree:15bcb008ec4bf5e75c7051476e70abc7cc1bc73b"
   },
   "kind": "engineering-ci-dagger-telemetry",
   "native_check_result": {
@@ -227,16 +245,16 @@
     "source": "native_result"
   },
   "observed_trace_span_ids": [
-    "798a86a69cfab783",
-    "2e34d84d0ac99409",
-    "f18235066ad398c6"
+    "418a436ca41d4743",
+    "ad9d0e3d4ffd51e0",
+    "066d6578ce9208f4"
   ],
   "origin_execution": {
     "cache_outcome": "executed",
     "cache_result_id": "8318",
     "new_tool_execution": true,
     "reason": "cache_outcome_executed",
-    "ref": "f18235066ad398c6",
+    "ref": "066d6578ce9208f4",
     "status": "current_execution"
   },
   "pinned": {
@@ -252,7 +270,7 @@
   "raw_trace_ref": {
     "path": "artifacts/dagger-native-telemetry/capture-negative.json",
     "receiver": "otlp-http-receiver:4318 (negative)",
-    "sha256": "585874efbf8da5af056a1cc55325e46222307a7d0cd6c194f1aeb3eb5105dafe"
+    "sha256": "094658810e9fae57c5851fc8c40b44420d43bbe54727609e1f8ee2a898868439"
   },
   "reason": null,
   "required_observability": {
@@ -264,19 +282,19 @@
   "source": "dagger_native_otel",
   "source_binding": {
     "engine_instance_ids": [
-      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+      "25ed897b-b6b7-4e8e-b901-011ae0218b64"
     ],
     "observed_content_preferred_digests": [
-      "xxh3:9629255aa64f423a"
+      "xxh3:e6d36ac6bdfe0476"
     ],
     "observed_dag_digests": [
-      "xxh3:ebc19a2a231f151c"
+      "xxh3:70af7d558eabef0f"
     ],
     "session_ids": [
-      "pd2h5o9qzgxejapzy6lgf77hv",
-      "vy4rr9g9gh34z5eox3av53hbg"
+      "jr3fnkgzcwa11y9nz81a3mga4",
+      "wnko3c7purfp9o6la613kjf01"
     ],
-    "source_binding_ref": "git-tree:83f7f20d3ab54d5881a7646586e41943045910f8"
+    "source_binding_ref": "git-tree:15bcb008ec4bf5e75c7051476e70abc7cc1bc73b"
   },
   "status": "produced"
 }
