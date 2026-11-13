@@ -55,6 +55,17 @@ Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dis
 - **合法空集仅针对声明的完整检查域**：所有有关的受控 Profile/配置、定义与适用条件均已核实，且该域下确无适用 Check。空 Required 子集与空 Expected Check 集合分别判断；`resolve_definitions([])`、空 Job、空 Result 或自填非空字符串的 `completeness` Receipt 均不能单独证明任一种完整性。
 - **Expected 必须早于实际 Job/Result 决定其义务**，但**不必等原生工具运行结束才生成**：#66-P0 可先给目标 Source 身份/可用的物化回执，#66-B 输出含明确未知项的 Expected；#52 的 Native Result 在实际执行时引用真正读到的 Source、规则/配置与 Check 输入/分析闭包。#66-C 和 #63 仅在证据足以证明等价/覆盖时提升结果资格，避免“先要结果闭包才能生成 Expected”的循环依赖。
 
+**Expected Input Constraints → Observed Input Evidence 的交接（#66-B/C 消费已合并 #52-A 合同）：**
+
+| 阶段与负责方 | 产生或固定的事实 | 允许下游作出的判断 |
+| --- | --- | --- |
+| **执行前：#66-B（含 #66-P0 当前可证明的 Source）** | 从生效 Profile/适用规则及版本化 CheckDefinition 得到 Expected Check、`expected_set_ref`、目标 Source/逐 Ref、规则与比较基线、已知的**预期输入约束**及未解析项；Check 的适用性与 Required 义务不能由后续 Result 反向定义 | 确定本次应有义务、可启动的计划及仍未知的依赖；不将尚未观察的输入范围声明为已验证的 `check_input_closure` |
+| **执行或有效历史复用：#66-P0 + #52 原生执行者 / #63 历史证据** | #66-P0 提供目标 Git Source 的真实物化与绑定范围；#52 Native Result 记录实际观察到的规则、配置、工具/环境、输入引用、范围、比较基线与原生结果；历史 Result 保留原执行及来源身份 | 保留已执行/可复用候选事实；目标 Tree 或 changed-path digest 不自动成为实际 Check 全输入闭包 |
+| **对账：#66-C，然后 #63** | 将**原有** Expected 实例的预期约束与观察事实按 Check/版本、Source、Rule、必要 old→new、输入及其闭包核对；记录 matched / insufficient / mismatched / unknown 的依据。#63 独立核验来源真实性、输入等价与受信复用 | 仅在对应证明成立时确认单项满足/可复用覆盖；否则保留 `unknown` 或不满足，不删除 Expected，不创建第二份 Expected/Result |
+| **最终：#61** | 消费同一个有效 Profile 的**完整** `required_obligations`、Expected Check 投影和 #63 已接纳证据 | 判断当前 Action/Target 的完整 Required / Release 授权；不由 Check 全部 PASS 代替非 Check 义务 |
+
+**接口约束：** [已合并 #52-A / PR #93](https://github.com/dymzz/engineering-ci/pull/93) 的 `validate_expected_instance()` / `result_covers_expected()` 是**已提供的单实例严格校验原语**，它们要求提供可核验的 Check 输入闭包；但**不是**执行前 Expected 枚举器、消费者完整性凭据或受信判定器。#66-B 在工具运行前可以合法地产生带待证输入条件的 Expected；#66-C 在获得原生/历史证据后再对已固定的实例与实际输入进行严格核对，必要时明确记录已验证绑定的依据，**不得通过修改 Expected 的规则/作用域或复制 Native Result 来源倒造预期**。具体输入引用字段、版本兼容与 `plan_contract` 消费位置在 #66-B/C 的实际接口切片设计/实施，不能在本设计 PR 中假称 Schema 2/Report 1 已扩展。已有 [Evidence and Identity](evidence-and-identity.md) 仍是历史证据等价和受信复用细则的唯一维护位置。
+
 **实际执行与受信复用的顺序（参见 [Evidence and Identity §1–§3](evidence-and-identity.md)）：**
 
 ```text
@@ -72,7 +83,7 @@ Effective Profile + Context/Action/Target + CheckDefinition + Source
 
 历史 PASS 只有在 [Evidence and Identity §1、§3](evidence-and-identity.md) 已定义的 `check_key` 语义等价（Check、Subject、实际输入/规则/工具/相关环境）与 #63 来源接纳、作用域/策略复用条件**均有证明**时，才能使本次符合条件的 Check Verdict 免跑；执行前不要求先获取本次尚未运行工具的 Native Result，但若目标输入闭包未知，也不能假定历史结果可复用。历史 PASS 不自动恢复下游所需的 Directory、文件或准备数据；产物仍按 [Evidence and Identity §2](evidence-and-identity.md) 和 [Dagger Execution](dagger-execution.md) 补足可核验闭包。#63 复用条件、原生执行及 Assessment 身份和 Dagger Data/PASS 前置关系的**详细定义仅在对应专题维护**，本节只规定其交接位置，避免重复规范。Result schema-valid、原生执行成功、Expected 覆盖、受信接纳、最终放行各有独立含义，不自动递推。尤其 Process Exit、Job Success、Tool/Check ID、Tree SHA 都不替代真实 Native Result、Expected 或 Required。
 
-**实施与验收边界：** 本节不修改已发布 `plan_contract` Schema 2 或 `execution` Report Schema 1。#52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 先证明当前已支持 Check/Native Result→公共校验→Report 自洽，并移除可能将局部字符串验证误称整体 Expected 完整的公开 API 语义；不得把 #66 Source 全闭包、完整 Expected、跨 Job 路由及 #63/#61 全部验收作为首切片单独合并的硬前置，也不得把这些未交付能力称为已冻结。#66-P0 与 #52-A 可并行；#66-B/C 由真实消费接口和同一有效策略后续交付；#86/#63/#61 按现有设计独立验收。本 PR 的设计验收不等于 Issue 已原位同步、接口已冻结或运行时代码已实现。仅对各自改变的风险补定向反例：合法空 Required 但有 Advisory、缺 Profile 与真实空 Expected、未配置 Job 的 Required、同目标 Tree 不同 old→new、Index/Worktree 字节不一致、Required 组合少结果、可信历史 PASS 但产物缺失等；复用已有效原生/CI 证据。
+**实施与验收边界：** 本节不修改已发布 `plan_contract` Schema 2 或 `execution` Report Schema 1。#52-A [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 已于 2026-11-13 合并（merge `c8dbdd2edfef57bfe1fbb1900b7b49d04df44977`）：已支持 Check/Native Result→公共校验→Report 的局部合同，保留单 Check 严格满足原语，并移除了不能证明完整 ExpectedSet 的字符串式集合完整性 API。**合并事实不代表**目标 Source 全输入闭包、完整 Profile→Expected 生产、跨 Job 路由、#63 受信或 #61 Gate 已交付；#52 后续仍负责扩展受控 Check/多 Tool/外部适配。#66-P0、#66-B/C 按上表在真实消费接口交付 Source、执行前预期与执行后/复用证据对账；#86/#63/#61 按现有设计独立验收。本 PR 的设计验收不等于 Issue 已原位同步、下游接口已冻结或运行时代码已实现。仅对各自改变的风险补定向反例：合法空 Required 但有 Advisory、缺 Profile 与真实空 Expected、未配置 Job 的 Required、同目标 Tree 不同 old→new、Index/Worktree 字节不一致、预期输入闭包未证实、Required 组合少结果、可信历史 PASS 但产物缺失等；复用已有有效原生/CI 证据。
 
 **依据：** [Knowledge 总设计 §4/§6.3](https://github.com/dymzz/engineering-knowledge/blob/main/design/software-engineering-knowledge-architecture.md)；[Engineering Verification §2/§4](https://github.com/dymzz/engineering-knowledge/blob/main/design/engineering-verification/overall-design.md)；本文件 §1.1；[Evidence and Identity](evidence-and-identity.md)；[Dagger Execution](dagger-execution.md)；[Execution Graph 实施计划](plan.md)。如有冲突，应在真实专题比较现有约束与提案并审阅，不通过追加“优先解释”隐式覆盖。
 
