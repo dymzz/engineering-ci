@@ -14,11 +14,11 @@
     "correlation_key": null,
     "declared_check_name": "lint",
     "engine_instance_ids": [
-      "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
     ],
     "session_ids": [
-      "lojw1by9dsjxjf907cutitdd4",
-      "mymr6nhv60wytstoqirvgs72e"
+      "3c3azu0xqze2d2bpvsjn8nu27",
+      "nblhkql1o4i1mjv19hszgsazg"
     ]
   },
   "cache_observation_scope": {
@@ -134,7 +134,7 @@
     ],
     "check_names": [],
     "engine_instance_ids": [
-      "61550bd9-bf4b-4904-8774-b0ebfc83f801"
+      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
     ],
     "scopes": [
       "dagger.io/core",
@@ -150,8 +150,8 @@
       "dagger-engine"
     ],
     "session_ids": [
-      "lojw1by9dsjxjf907cutitdd4",
-      "mymr6nhv60wytstoqirvgs72e"
+      "3c3azu0xqze2d2bpvsjn8nu27",
+      "nblhkql1o4i1mjv19hszgsazg"
     ],
     "signal_scope": [
       "traces"
@@ -162,10 +162,10 @@
       "engineering-ci:EngineeringCi.lint"
     ],
     "spans_bound": 3,
-    "spans_observed": 2494,
+    "spans_observed": 2492,
     "trace_ids": [
-      "0515a27e3f571563fa82bf521bfdfcb0",
-      "94b9c427c6e63126c99341618db7d457"
+      "350893bd8c3ae2fecc10b1a0e36a06eb",
+      "5ab85082d8046b0633fb07a16d1654c7"
     ],
     "unobserved_reason": null
   },
@@ -214,7 +214,7 @@
   "invocation": {
     "actual_invocation_ref": "dagger check --engineering-ci --check=lint",
     "check_or_function_ref": null,
-    "source_binding_ref": null
+    "source_binding_ref": "git-tree:83f7f20d3ab54d5881a7646586e41943045910f8"
   },
   "kind": "engineering-ci-dagger-telemetry",
   "native_check_result": {
@@ -228,16 +228,16 @@
     "source": "native_result"
   },
   "observed_trace_span_ids": [
-    "72e642e844b67863",
-    "a60c4f22a183e8f8",
-    "9593e6bfbc637ecb"
+    "7a6e904638638536",
+    "2fcb1c7d456f7340",
+    "4a857babc6e29a57"
   ],
   "origin_execution": {
     "cache_outcome": "executed",
     "cache_result_id": "7921",
     "new_tool_execution": true,
     "reason": "cache_outcome_executed",
-    "ref": "9593e6bfbc637ecb",
+    "ref": "4a857babc6e29a57",
     "status": "current_execution"
   },
   "pinned": {
@@ -253,7 +253,7 @@
   "raw_trace_ref": {
     "path": "artifacts/dagger-native-telemetry/capture.json",
     "receiver": "otlp-http-receiver:4318",
-    "sha256": "e55008b60d1e8029abc76fcfbd76b76e75ef3b361ccb7e11f2b22898598e83ea"
+    "sha256": "ca080044144b4dd7427355a1283433431e3fb40aec269ed21d60b2a258c69fa8"
   },
   "reason": null,
   "required_observability": {
@@ -263,5 +263,21 @@
   "schema_version": 1,
   "sent_basis": "receiver_observation",
   "source": "dagger_native_otel",
+  "source_binding": {
+    "engine_instance_ids": [
+      "1db2cb15-f0bc-44f7-8f87-827dd1d92167"
+    ],
+    "observed_content_preferred_digests": [
+      "xxh3:663f3b9390682b64"
+    ],
+    "observed_dag_digests": [
+      "xxh3:60f15273a7405117"
+    ],
+    "session_ids": [
+      "3c3azu0xqze2d2bpvsjn8nu27",
+      "nblhkql1o4i1mjv19hszgsazg"
+    ],
+    "source_binding_ref": "git-tree:83f7f20d3ab54d5881a7646586e41943045910f8"
+  },
   "status": "produced"
 }
