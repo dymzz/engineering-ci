@@ -234,6 +234,7 @@ jobs:
           uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
             --capture artifacts/dagger-native-telemetry/capture.json \
             --capture-ref "otlp-http-receiver:4318" \
+            --capture-isolated \
             --native-result artifacts/dagger-native-telemetry/native-result.json \
             --engine-config "$RUNNER_TEMP/engine.json" \
             --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
@@ -314,6 +315,7 @@ jobs:
           uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
             --capture artifacts/dagger-native-telemetry/capture-negative.json \
             --capture-ref "otlp-http-receiver:4318 (negative)" \
+            --capture-isolated \
             --native-result artifacts/dagger-native-telemetry/native-result-negative.json \
             --engine-config "$RUNNER_TEMP/engine.json" \
             --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
@@ -384,6 +386,7 @@ jobs:
           uv run --locked --group dev python -m engineering_ci.dagger_telemetry \
             --capture artifacts/dagger-native-telemetry/capture-entrypoints.json \
             --capture-ref "otlp-http-receiver:4318 (entry points)" \
+            --capture-isolated \
             --engine-config "$RUNNER_TEMP/engine.json" \
             --engine-endpoint "$(cat artifacts/dagger-native-telemetry/engine-endpoint.txt)" \
             --engine-protocol http/protobuf \
@@ -396,6 +399,17 @@ jobs:
           set -e
           printf '%s\n' "${code}" > artifacts/dagger-native-telemetry/receipt-entrypoints.exit
           exit 0
+      - name: Verify native A.1 invocation and result correlation
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The recorder can return zero for a partial candidate. This
+          # independent gate checks real raw parent chains and original
+          # native results. Deliberate Ruff F401 is the EXPECTED negative.
+          uv run --locked --group dev python \
+            .github/scripts/assert_dagger_native_a1.py \
+            artifacts/dagger-native-telemetry
       - name: Collect the Engine and receiver logs
         if: ${{ failure() }}
         shell: bash
