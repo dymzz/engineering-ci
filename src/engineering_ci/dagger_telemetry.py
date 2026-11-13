@@ -862,11 +862,11 @@ def _cache_observation_scope(bound_spans):
 
 
 def _source_binding(bound_spans, source_binding_ref, capture):
-    """Record the verifiable source binding of the bound calls.
+    """Record caller-declared target and observed Dagger node digests.
 
-    The engine publishes the content identity it resolved for a call. That
-    digest is the native source binding: it names what the call consumed, and
-    it is comparable across invocations without inventing an identifier.
+    Neither a Git Tree string nor a node XXH3 digest verifies that the tool
+    consumed the target's exact file/configuration bytes. #66 owns the actual
+    Source producer; this A.1 candidate therefore reports it as unknown.
     """
     digests = sorted(
         {span.get("dag_digest") for span in bound_spans if span.get("dag_digest")}
@@ -880,6 +880,9 @@ def _source_binding(bound_spans, source_binding_ref, capture):
     )
     return {
         "source_binding_ref": source_binding_ref,
+        "declared_target_source_ref": source_binding_ref,
+        "source_binding_status": "unknown",
+        "source_binding_reason": "execution_source_not_verified_by_66",
         "observed_dag_digests": digests,
         "observed_content_preferred_digests": content_digests,
         "session_ids": list(capture.session_ids) if capture else [],
@@ -963,6 +966,20 @@ def _bind_capture(
     if not keys:
         return BINDING_UNBOUND, REASON_CHECK_NAME_NOT_OBSERVED, BASIS_NONE, [], {}
 
+    # A single-call receiver with two native selectors for the same Check
+    # is not uniquely attributable without an actual propagated parent.
+    if parsed is None and (
+        (check_name and len(keys.get(KEY_CHECK_SELECTOR, ())) > 1)
+        or (function_name and len([
+            s for s in keys.get(KEY_FUNCTION_CALL, ())
+            if s["name"].startswith("engineering-ci:EngineeringCi.")
+        ]) > 1)
+    ):
+        return (
+            BINDING_AMBIGUOUS, REASON_INVOCATION_AMBIGUOUS,
+            BASIS_NONE, [], keys,
+        )
+
     candidates = []
     if check_name:
         selectors = keys.get(KEY_CHECK_SELECTOR, ())
@@ -1016,6 +1033,11 @@ def _bind_capture(
             s["trace_id"] == parsed[0] for group in keys.values() for s in group
         ):
             return BINDING_AMBIGUOUS, REASON_CHECK_NAME_OUTSIDE_TRACE, BASIS_NONE, [], keys
+        if parsed is not None and any(
+            s["trace_id"] == parsed[0]
+            for group in keys.values() for s in group
+        ):
+            return BINDING_AMBIGUOUS, REASON_TRACE_ID_ONLY, BASIS_NONE, [], keys
         return BINDING_UNBOUND, (
             REASON_SESSION_NOT_OBSERVED if not any(
                 all(_native_scope(s)) for group in keys.values() for s in group
@@ -1201,6 +1223,7 @@ def build_receipt(
             "source_binding_ref": source_binding_ref,
             "check_or_function_ref": check_ref,
         },
+        # Trace association is independent of authoritative Git Source matching.
         "source_binding": _source_binding(bound_spans, source_binding_ref, capture),
         "native_check_result": native_result,
         "native_result_or_bundle_ref": native_result_ref,
