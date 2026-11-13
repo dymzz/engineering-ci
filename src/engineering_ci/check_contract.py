@@ -6,7 +6,11 @@ check identities, rule/profile references and result instances so a result can
 be associated with the exact Check and source that produced it.
 
 Tool identities (Runtime tool_id/group_id/access_id) are not Check identities.
-A missing check_id is refused rather than inferred from a display name.
+A missing check_id is refused rather than inferred from a display name. A
+declared tool requirement describes which native entries can implement a
+Check; a result records the entry that actually ran. A ToolAsset ``tool_id`` is
+only recorded when a verified asset identity exists, never derived from an
+executable, Hook Job or display name.
 """
 
 from __future__ import annotations
@@ -14,13 +18,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
+SUPPORTED_RESULT_VERSIONS = frozenset({1, 2})
 CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
+SATISFACTION_KIND = "engineering-ci-check-satisfaction"
 CHECK_ID_PATTERN = re.compile(r"^eci/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
 STATUSES = frozenset(
     {"passed", "failed", "advisory", "not_applicable", "not_executed", "unknown"}
@@ -61,6 +67,36 @@ class CheckContractError(ValueError):
 
 
 @dataclass(frozen=True)
+class ToolIdentity:
+    """One native tool/entry that can implement (part of) a Check.
+
+    ``access_id`` is the native entry identity ECI itself controls. ``tool_id``
+    is only filled with a verified ToolAsset identity or another verified asset
+    record; it is never inferred from an executable, Hook Job or display name.
+    """
+
+    access_id: str
+    tool_id: str | None = None
+    version: str | None = None
+    artifact_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolRequirement:
+    """One required native-tool group; alternatives are allowed implementations.
+
+    Every requirement of a Check must be satisfied. ``after`` records a real
+    prerequisite between requirements: the satisfying result must reference the
+    prerequisite result it consumed, so the order is evidenced rather than
+    presumed.
+    """
+
+    requirement_id: str
+    alternatives: tuple[ToolIdentity, ...]
+    after: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CheckDefinition:
     check_id: str
     definition_version: int = 1
@@ -69,6 +105,7 @@ class CheckDefinition:
     rule_ref: dict | None = None
     profile_ref: dict | None = None
     requires_baseline: bool = False
+    tool_requirements: tuple[ToolRequirement, ...] = ()
 
 
 def _text(value, name):
@@ -85,6 +122,147 @@ def _sha256(value, name):
     return value
 
 
+_LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_TOOL_ACCESS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
+_TOOL_REF_FIELDS = ("access_id", "tool_id", "version", "artifact_sha256")
+
+
+def validate_tool_identity(identity):
+    """Validate one declared tool alternative, refusing unverifiable names."""
+    if isinstance(identity, dict):
+        try:
+            identity = ToolIdentity(**identity)
+        except TypeError:
+            raise CheckContractError("tool_identity_invalid") from None
+    if not isinstance(identity, ToolIdentity):
+        raise CheckContractError("tool_identity_invalid")
+    if not isinstance(identity.access_id, str) or not _TOOL_ACCESS_PATTERN.fullmatch(
+        identity.access_id
+    ):
+        raise CheckContractError("tool_access_id_invalid")
+    if identity.tool_id is not None and (
+        not isinstance(identity.tool_id, str)
+        or not _LOCAL_ID_PATTERN.fullmatch(identity.tool_id)
+    ):
+        raise CheckContractError("tool_id_invalid")
+    if identity.version is not None:
+        _text(identity.version, "tool_version")
+    _sha256(identity.artifact_sha256, "tool_artifact_sha256")
+    return identity
+
+
+def tool_ref(
+    access_id,
+    *,
+    tool_id=None,
+    version=None,
+    artifact_sha256=None,
+    executable=None,
+):
+    """Record the native entry that actually ran; evidence, not a declaration."""
+    ref = {
+        "access_id": access_id,
+        "tool_id": tool_id,
+        "version": version,
+        "artifact_sha256": artifact_sha256,
+    }
+    if executable is not None:
+        ref["executable"] = _text(executable, "tool_executable")
+    return validate_tool_ref(ref)
+
+
+def validate_tool_ref(ref):
+    if not isinstance(ref, dict):
+        raise CheckContractError("result_tool_invalid")
+    if set(ref) - {*_TOOL_REF_FIELDS, "executable"}:
+        raise CheckContractError("result_tool_invalid")
+    validate_tool_identity({key: ref.get(key) for key in _TOOL_REF_FIELDS})
+    if ref.get("executable") is not None:
+        _text(ref["executable"], "tool_executable")
+    return ref
+
+
+def _coerce_requirement(value):
+    if isinstance(value, ToolRequirement):
+        return value
+    if isinstance(value, dict):
+        try:
+            return ToolRequirement(
+                requirement_id=value["requirement_id"],
+                alternatives=tuple(value["alternatives"]),
+                after=tuple(value.get("after") or ()),
+            )
+        except (KeyError, TypeError):
+            raise CheckContractError("tool_requirement_invalid") from None
+    raise CheckContractError("tool_requirement_invalid")
+
+
+def _ensure_acyclic(requirements):
+    graph = {item.requirement_id: tuple(item.after) for item in requirements}
+    state = {}
+
+    def visit(node):
+        if state.get(node) == 1:
+            raise CheckContractError("tool_requirement_cycle")
+        if state.get(node) == 2:
+            return
+        state[node] = 1
+        for prerequisite in graph[node]:
+            visit(prerequisite)
+        state[node] = 2
+
+    for node in graph:
+        visit(node)
+
+
+def validate_tool_requirements(requirements):
+    """Validate the controlled requirement groups of one Check definition."""
+    if isinstance(requirements, dict) or not isinstance(requirements, (list, tuple)):
+        raise CheckContractError("tool_requirements_invalid")
+    items = [_coerce_requirement(item) for item in requirements]
+    seen_ids = []
+    for item in items:
+        if not isinstance(item.requirement_id, str) or not _LOCAL_ID_PATTERN.fullmatch(
+            item.requirement_id
+        ):
+            raise CheckContractError("tool_requirement_id_invalid")
+        if item.requirement_id in seen_ids:
+            raise CheckContractError("tool_requirement_duplicate")
+        seen_ids.append(item.requirement_id)
+        if not isinstance(item.alternatives, (list, tuple)) or not item.alternatives:
+            raise CheckContractError("tool_alternatives_missing")
+        if not isinstance(item.after, (list, tuple)) or any(
+            not isinstance(entry, str) for entry in item.after
+        ):
+            raise CheckContractError("tool_requirement_prerequisite_invalid")
+    known = set(seen_ids)
+    for item in items:
+        for prerequisite in item.after:
+            if prerequisite == item.requirement_id:
+                raise CheckContractError("tool_requirement_self_prerequisite")
+            if prerequisite not in known:
+                raise CheckContractError("tool_requirement_unknown_prerequisite")
+    _ensure_acyclic(items)
+    seen_access = set()
+    normalized = []
+    for item in items:
+        alternatives = []
+        for alternative in item.alternatives:
+            alternative = validate_tool_identity(alternative)
+            if alternative.access_id in seen_access:
+                raise CheckContractError("tool_alternative_duplicate")
+            seen_access.add(alternative.access_id)
+            alternatives.append(alternative)
+        normalized.append(
+            ToolRequirement(
+                item.requirement_id,
+                tuple(alternatives),
+                tuple(item.after),
+            )
+        )
+    return tuple(normalized)
+
+
 def check_id_for(name):
     """Return the stable Check ID for a built-in display name, or None."""
     return CHECK_IDS.get(name)
@@ -97,8 +275,29 @@ def definition_for(name):
 
 # Exact old→new checks consume the old source as native input. Other checks
 # may use changed-path selection, but do not intrinsically inspect old bytes.
+#
+# Native entries are declared here, not inferred at runtime: an alternative's
+# ``access_id`` is the entry ECI itself invokes. ``tool_id`` stays empty until a
+# verified ToolAsset/asset record exists for that tool (external adapters).
+_TOOL_REQUIREMENTS = {
+    # ``git ls-files`` determines the checked document set and feeds Lychee.
+    "docs": (
+        ToolRequirement("inventory", (ToolIdentity("git/ls-files"),)),
+        ToolRequirement("links", (ToolIdentity("lychee/docs"),), after=("inventory",)),
+    ),
+    "tach": (ToolRequirement("module-graph", (ToolIdentity("tach/check"),)),),
+    "tach_external": (
+        ToolRequirement("external-modules", (ToolIdentity("tach/check-external"),)),
+    ),
+    "vulture": (ToolRequirement("dead-code", (ToolIdentity("vulture/dead-code"),)),),
+    "whitespace": (ToolRequirement("diff-hygiene", (ToolIdentity("git/diff-check"),)),),
+}
 _BUILTIN_DEFINITIONS = tuple(
-    CheckDefinition(check_id, requires_baseline=name in {"whitespace", "forwarding"})
+    CheckDefinition(
+        check_id,
+        requires_baseline=name in {"whitespace", "forwarding"},
+        tool_requirements=_TOOL_REQUIREMENTS.get(name, ()),
+    )
     for name, check_id in CHECK_IDS.items()
 )
 _BUILTIN_BY_ID = MappingProxyType(
@@ -165,7 +364,10 @@ def validate_definition(definition):
     # Use the same reference validation as validate_result(), including digest.
     _validate_reference(definition.rule_ref, "rule_ref")
     _validate_reference(definition.profile_ref, "profile_ref")
-    return definition
+    return replace(
+        definition,
+        tool_requirements=validate_tool_requirements(definition.tool_requirements),
+    )
 
 
 def source_ref(
@@ -337,6 +539,53 @@ def _has_resolved_base_commit(ref):
     )
 
 
+def _select_declared_tool(definition, tool):
+    matched = [
+        (requirement, alternative)
+        for requirement in definition.tool_requirements
+        for alternative in requirement.alternatives
+        if alternative.access_id == tool["access_id"]
+    ]
+    if not matched:
+        raise CheckContractError("result_tool_undeclared")
+    for requirement, alternative in matched:
+        # A ToolAsset identity is never invented: it must be declared and equal.
+        if tool.get("tool_id") != alternative.tool_id:
+            continue
+        # A declared version/artifact is a constraint; an undeclared one may
+        # be recorded as observed evidence (for example a pinned Dagger tool).
+        if any(
+            declared is not None and tool.get(key) != declared
+            for key, declared in (
+                ("version", alternative.version),
+                ("artifact_sha256", alternative.artifact_sha256),
+            )
+        ):
+            continue
+        return requirement, alternative
+    raise CheckContractError("result_tool_mismatch")
+
+
+def _validated_result_tool(definition, tool, result_origin):
+    """Check observed tool evidence against the controlled declaration.
+
+    A tool-bound Check may omit the observation (the native fact is preserved),
+    but then it cannot satisfy the Check. A tool-less Check must not claim one.
+    """
+    if tool is not None:
+        tool = validate_tool_ref(tool)
+    if result_origin == "direct_tool" and (tool is None or not tool.get("tool_id")):
+        raise CheckContractError("direct_tool_identity_missing")
+    if not definition.tool_requirements:
+        if tool is not None:
+            raise CheckContractError("result_tool_unexpected")
+        return None
+    if tool is None:
+        return None
+    _select_declared_tool(definition, tool)
+    return tool
+
+
 def native_result(
     definition,
     *,
@@ -354,11 +603,13 @@ def native_result(
     reason=None,
     runner_ref=None,
     baseline_ref=None,
+    tool=None,
 ):
     """Create one immutable Native Result.
 
     ``content_id`` identifies the result content excluding the run instance;
-    ``result_id`` additionally binds the run instance.
+    ``result_id`` additionally binds the run instance. ``tool`` records the
+    native entry that actually ran; it is not copied from the definition.
     """
     definition = validate_definition(definition)
     registered = _registered_definition(
@@ -366,6 +617,8 @@ def native_result(
     )
     if definition.requires_baseline != registered.requires_baseline:
         raise CheckContractError("result_check_semantics_mismatch")
+    if definition.tool_requirements != registered.tool_requirements:
+        raise CheckContractError("result_tool_requirements_mismatch")
     if status not in STATUSES:
         raise CheckContractError("result_status_invalid")
     if result_origin not in ORIGINS:
@@ -399,6 +652,7 @@ def native_result(
     if status == "not_applicable" and native_exit_code == 0 and not evidence:
         raise CheckContractError("result_not_applicable_evidence_missing")
     _validate_baseline(baseline_ref)
+    tool = _validated_result_tool(definition, tool, result_origin)
     if (
         registered.requires_baseline
         and status in {"passed", "failed", "advisory"}
@@ -432,6 +686,7 @@ def native_result(
         "status": status,
         "native_exit_code": native_exit_code,
         "result_origin": result_origin,
+        "tool": tool,
         "runner_ref": runner_ref,
         "result_instance": result_instance,
         "artifact_refs": list(artifact_refs),
@@ -452,7 +707,8 @@ def validate_result(result):
     """Recompute identity and reject mutated/inconsistent native results."""
     if not isinstance(result, dict) or result.get("kind") != RESULT_KIND:
         raise CheckContractError("result_invalid")
-    if result.get("schema_version") != CONTRACT_VERSION:
+    schema_version = result.get("schema_version")
+    if schema_version not in SUPPORTED_RESULT_VERSIONS:
         raise CheckContractError("result_schema_unsupported")
     check = result.get("check")
     if not isinstance(check, dict):
@@ -513,10 +769,19 @@ def validate_result(result):
                 raise CheckContractError("result_evidence_missing")
         elif kind == "internal" and not evidence:
             raise CheckContractError("result_evidence_missing")
-    if result.get("result_origin") == "direct_tool" and (
-        not check.get("tool_id") or not check.get("access_id")
+    if (
+        result.get("result_origin") == "direct_tool"
+        and schema_version == 1
+        and (not check.get("tool_id") or not check.get("access_id"))
     ):
         raise CheckContractError("direct_tool_identity_missing")
+    if schema_version == 1:
+        if "tool" in result:
+            raise CheckContractError("result_schema_tool_unsupported")
+    else:
+        if "tool" not in result:
+            raise CheckContractError("result_tool_missing")
+        _validated_result_tool(builtin, result.get("tool"), result.get("result_origin"))
     content_id = result.get("content_id")
     result_id = result.get("result_id")
     if not isinstance(content_id, str) or not content_id.startswith("sha256:"):
@@ -639,6 +904,13 @@ def result_covers_expected(result, expected):
     """
     validate_result(result)
     validate_expected_instance(expected)
+    # One result cannot stand for a Check that requires several native tools;
+    # multi-tool satisfaction stays with evaluate_check_satisfaction().
+    definition = _registered_definition(
+        result["check"]["check_id"], result["check"]["definition_version"]
+    )
+    if len(definition.tool_requirements) > 1:
+        return False
     if not result_matches_expected(result, expected):
         return False
     # Compare explicit input dependencies, not just the outer Source identity.
@@ -658,6 +930,184 @@ def result_covers_expected(result, expected):
     if kind == "internal":
         return bool(result.get("evidence"))
     return False
+
+
+def _requirement_order(requirements):
+    graph = {item.requirement_id: tuple(item.after) for item in requirements}
+    ordered = []
+    state = {}
+
+    def visit(node):
+        if state.get(node) == 2:
+            return
+        if state.get(node) == 1:
+            raise CheckContractError("tool_requirement_cycle")
+        state[node] = 1
+        for prerequisite in graph[node]:
+            visit(prerequisite)
+        state[node] = 2
+        ordered.append(node)
+
+    for node in graph:
+        visit(node)
+    by_id = {item.requirement_id: item for item in requirements}
+    return [by_id[node] for node in ordered]
+
+
+def _result_matches_requirement(requirement, result):
+    tool = result.get("tool")
+    if not isinstance(tool, dict):
+        return False
+    for alternative in requirement.alternatives:
+        if alternative.access_id != tool.get("access_id"):
+            continue
+        if tool.get("tool_id") != alternative.tool_id:
+            continue
+        if any(
+            declared is not None and tool.get(key) != declared
+            for key, declared in (
+                ("version", alternative.version),
+                ("artifact_sha256", alternative.artifact_sha256),
+            )
+        ):
+            continue
+        return True
+    return False
+
+
+def _consumed_result_ids(result):
+    refs = result.get("input_refs") or ()
+    return {
+        ref.get("result_id")
+        for ref in refs
+        if isinstance(ref, dict) and ref.get("kind") == "check_result"
+    }
+
+
+def evaluate_check_satisfaction(definition, results):
+    """Native satisfaction of one Check from the supplied results.
+
+    Every declared requirement must be satisfied. An alternative satisfies its
+    requirement only when its own Native Result passed; a requirement that
+    declares ``after`` is satisfied only when the dependent result references
+    the prerequisite ``result_id`` it consumed. This is not an ExpectedSet,
+    Evidence Admission or Required decision.
+    """
+    definition = validate_definition(definition)
+    registered = _registered_definition(
+        definition.check_id, definition.definition_version
+    )
+    if definition.tool_requirements != registered.tool_requirements:
+        raise CheckContractError("result_tool_requirements_mismatch")
+    if not isinstance(results, (list, tuple)):
+        raise CheckContractError("satisfaction_results_invalid")
+    observed = []
+    for result in results:
+        validate_result(result)
+        check = result["check"]
+        if check["check_id"] != definition.check_id:
+            raise CheckContractError("satisfaction_check_mismatch")
+        if check["definition_version"] != definition.definition_version:
+            raise CheckContractError("satisfaction_definition_version_mismatch")
+        observed.append(result)
+    decision = {
+        "kind": SATISFACTION_KIND,
+        "schema_version": CONTRACT_VERSION,
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "consumer_scope": "supplied_results_only",
+        "required": False,
+        "trusted": False,
+        "result_ids": [item["result_id"] for item in observed],
+    }
+    if not definition.tool_requirements:
+        return {
+            **decision,
+            "status": "not_applicable",
+            "reason": "no_tool_requirements",
+            "requirements": [],
+        }
+    satisfied = {}
+    entries = []
+    for requirement in _requirement_order(definition.tool_requirements):
+        candidates = [
+            item for item in observed if _result_matches_requirement(requirement, item)
+        ]
+        passed = sorted(
+            (item for item in candidates if item["status"] == "passed"),
+            key=lambda item: item["result_id"],
+        )
+        entry = {
+            "requirement_id": requirement.requirement_id,
+            "after": list(requirement.after),
+            "alternatives": [
+                alternative.access_id for alternative in requirement.alternatives
+            ],
+            "observed": [item["result_id"] for item in candidates],
+            "satisfied_by": None,
+            "status": "unsatisfied",
+            "reason": "result_missing" if not candidates else "result_not_passed",
+        }
+        selected = None
+        for candidate in passed:
+            blocker = None
+            for prerequisite in requirement.after:
+                prerequisite_entry = satisfied[prerequisite]
+                if prerequisite_entry["status"] != "satisfied":
+                    blocker = "prerequisite_unmet"
+                    break
+                if prerequisite_entry["satisfied_by"] not in _consumed_result_ids(
+                    candidate
+                ):
+                    blocker = "prerequisite_unevidenced"
+                    break
+            if blocker is None:
+                selected = candidate
+                break
+            entry["reason"] = blocker
+        if selected is not None:
+            entry.update(
+                status="satisfied",
+                reason="native_pass",
+                satisfied_by=selected["result_id"],
+            )
+        satisfied[requirement.requirement_id] = entry
+        entries.append(entry)
+    unmet = [item for item in entries if item["status"] != "satisfied"]
+    return {
+        **decision,
+        "status": "unsatisfied" if unmet else "satisfied",
+        "reason": unmet[0]["reason"] if unmet else "all_requirements_satisfied",
+        "requirements": entries,
+    }
+
+
+def _definition_payload(definition):
+    return {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "tool_id": definition.tool_id,
+        "access_id": definition.access_id,
+        "rule_ref": definition.rule_ref,
+        "profile_ref": definition.profile_ref,
+        "requires_baseline": definition.requires_baseline,
+        "tool_requirements": [
+            {
+                "requirement_id": item.requirement_id,
+                "alternatives": [
+                    {
+                        "access_id": alternative.access_id,
+                        "tool_id": alternative.tool_id,
+                        "version": alternative.version,
+                        "artifact_sha256": alternative.artifact_sha256,
+                    }
+                    for alternative in item.alternatives
+                ],
+                "after": list(item.after),
+            }
+            for item in definition.tool_requirements
+        ],
+    }
 
 
 def resolve_definitions(required=None):
@@ -692,17 +1142,7 @@ def resolve_definitions(required=None):
             missing.append(str(item))
             continue
         if definition.check_id not in seen:
-            definitions.append(
-                {
-                    "check_id": definition.check_id,
-                    "definition_version": definition.definition_version,
-                    "tool_id": definition.tool_id,
-                    "access_id": definition.access_id,
-                    "rule_ref": definition.rule_ref,
-                    "profile_ref": definition.profile_ref,
-                    "requires_baseline": definition.requires_baseline,
-                }
-            )
+            definitions.append(_definition_payload(definition))
             seen.add(definition.check_id)
     if not required:
         status, reason = "unknown", "empty_request_not_proof"

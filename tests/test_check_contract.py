@@ -264,7 +264,8 @@ def test_distinct_result_instances_can_be_matched_without_claiming_coverage():
 
 
 def test_native_satisfaction_is_strictly_per_supplied_expected_instance():
-    definition = check_contract.definition_for("docs")
+    # A single-tool Check: one native PASS can stand for the supplied instance.
+    definition = check_contract.definition_for("tach")
     rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
     checked = closed_source("a" * 40)
     expected = {
@@ -424,7 +425,7 @@ def test_baseline_ref_changes_result_identity():
 
 
 def test_declared_input_refs_and_coverage_participate_in_local_satisfaction():
-    definition = check_contract.definition_for("docs")
+    definition = check_contract.definition_for("tach")
     rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
     config = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "b" * 64}
     extra = {"kind": "data", "path": "docs/other.md", "sha256": "c" * 64}

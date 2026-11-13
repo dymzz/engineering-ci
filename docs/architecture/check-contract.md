@@ -1,12 +1,15 @@
 # Check identity and Native Result contract
 
-Status: first #52 slice for [ECI #52-A](https://github.com/dymzz/engineering-ci/issues/52)
-and the #66 S1-A handoff. Schema version 1; implemented contract, not a Hook or
-Required/trusted delivery.
+Status: #52 Check/Native Result contract, first delivered by
+[ECI #52-A](https://github.com/dymzz/engineering-ci/issues/52) (PR #93) and
+extended by the Native Tool slice. Contract and result schema version 2;
+implemented contract, not a Hook or Required/trusted delivery. Version 1
+results remain readable with their original rules.
 
 The contract gives one stable `check_id` to a logical Check and a separate,
-per-run `result_id`. It does not grant Required/Optional or `trusted` status and
-does not replace Runtime `tool_id`/`group_id`/`access_id`.
+per-run `result_id`. One Check may require several native tools, each recorded
+as its own Native Result. It does not grant Required/Optional or `trusted`
+status and does not replace Runtime `tool_id`/`group_id`/`access_id`.
 
 ## Existing path inventory
 
@@ -16,9 +19,9 @@ does not replace Runtime `tool_id`/`group_id`/`access_id`.
 | `plan_contract.PLAN_VERSION = 2` | Selection/Plan dependency declarations | Unchanged |
 | `execution.SCHEMA_VERSION = 1` | Execution Report (`engineering-ci-execution-report`) | Extended with `check_contract`, per-check `check_id`/`result_id`/`native_result`; old fields retained |
 | `execution.execute()` | Host execution and native check report | Emits the contract for known built-in checks |
-| Dagger `execute-plan` | Container plan execution | **Gap:** does not yet emit this contract |
+| Dagger `execute-plan` | Container plan execution | Calls the Host `execution.execute()` on the exported Source, so it emits this contract, but `execution_context=dagger_export` maps to `result_origin=unknown` and the Dagger tool pins are not recorded |
 | Actions reusable selection job | Calls `select` then `execute` | Consumes the host report; no separate contract translation |
-| Runtime `tool_id`/`group_id`/`access_id` | Tool/group/access identity | Optional `tool_id`/`access_id` fields in a Check definition; never used as `check_id` |
+| Runtime `tool_id`/`group_id`/`access_id` | Tool/group/access identity | A declared alternative may name a verified `tool_id`; results record only observed evidence. Never inferred from a name and never used as `check_id` |
 
 ## Stable identities
 
@@ -52,7 +55,13 @@ reinterpreted):
 - `byte_tree` is accepted only when a materializer supplies both a declared
   target Tree and a verified input scope; a Tree field alone yields
   `identity_only`, and a missing scope yields `unknown`.
-- `tool_id`/`access_id` are optional and never inferred from a tool or Job name.
+- `tool_id`/`access_id` are optional definition fields and are never inferred
+  from a tool or Job name; per-Check tool requirements are declared separately
+  below.
+- `definition_version` stays 1: the requirements describe the native
+  implementation identity of the same Check, while the Check's rule semantics
+  and baseline dependency are unchanged. The contract/result schema carries the
+  version change.
 - A missing identity is `check_identity_missing`; a genuinely executed Check
   retains its original native status and diagnostics. The Host records
   `check_contract=identity_missing` and blocks the top-level Report as
@@ -71,30 +80,95 @@ reinterpreted):
 - `baseline_ref` is part of the result digest when a comparison baseline exists;
   equal new Trees with different baselines produce different `content_id`s.
 
+## Native tool requirements and observed evidence
+
+A built-in Check may declare controlled `ToolRequirement` groups; a Check with
+no requirements is an internal ECI analysis and carries no tool evidence:
+
+| `check_id` | Requirement (`after`) | Declared entry | Purpose |
+| --- | --- | --- | --- |
+| `eci/hygiene/docs` | `inventory` | `git/ls-files` | tracked-file inventory fed to the scan |
+| | `links` (`inventory`) | `lychee/docs` | link scan of that document set |
+| `eci/hygiene/tach` | `module-graph` | `tach/check` | module-boundary check |
+| `eci/hygiene/tach-external` | `external-modules` | `tach/check-external` | external-module check |
+| `eci/hygiene/vulture` | `dead-code` | `vulture/dead-code` | dead-code scan |
+| `eci/hygiene/whitespace` | `diff-hygiene` | `git/diff-check` | old→new whitespace check |
+| `eci/hygiene/forwarding`, `eci/sources/reconcile` | none | — | internal analysis |
+
+- Every requirement must be satisfied: `all-required` across groups,
+  `allowed-alternative` within one group's `alternatives`.
+- `after` is a real prerequisite. The satisfying result must reference the
+  prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
+  is not evidence that the tool consumed it.
+- A `ToolIdentity` declares `access_id` (the entry ECI controls) and optionally
+  a verified `tool_id`, `version` and `artifact_sha256`. A declared `tool_id`
+  must be recorded identically and is never derived from an executable, Hook
+  Job or display name. An undeclared version/artifact may be recorded as
+  observed evidence (for example a pinned Dagger tool).
+- Definition validation refuses duplicate/unknown requirement ids, self
+  references, cycles, empty or duplicate alternatives and invalid identities.
+  A definition whose requirements differ from the registered definition cannot
+  construct or validate a result.
+- Alternative declarations are contract capability, not a production claim: no
+  built-in Check currently declares more than one alternative.
+
+A Native Result records the entry that actually ran in `tool`
+(`access_id`, optional `tool_id`/`version`/`artifact_sha256`, and `executable`).
+The record participates in `content_id`/`result_id`. A tool-bound Check may omit
+the observation (the native fact is preserved), but then it cannot satisfy the
+Check; a tool-less Check must not claim one. `direct_tool` results additionally
+require a matching verified `tool_id`, so no built-in Check currently accepts
+them.
+
+`evaluate_check_satisfaction(definition, results)` combines the Native Results
+of one Check:
+
+- `satisfied` only when every requirement has a native PASS result matching a
+  declared alternative and every `after` edge is evidenced;
+- otherwise `unsatisfied` with per-requirement `result_missing`,
+  `result_not_passed`, `prerequisite_unmet` or `prerequisite_unevidenced`;
+- a tool-less Check returns `not_applicable/no_tool_requirements`;
+- the decision always carries `consumer_scope=supplied_results_only`,
+  `required=false`, `trusted=false`. It is not an ExpectedSet, Evidence
+  Admission or Required decision.
+
+`result_covers_expected()` remains a single-result primitive: for a Check with
+more than one requirement it returns `False`, because one result cannot stand
+for an `all-required` composition.
+
 ## Public API
 
 `src/engineering_ci/check_contract.py`:
 
 ```python
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
+SUPPORTED_RESULT_VERSIONS = frozenset({1, 2})
 CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
+SATISFACTION_KIND = "engineering-ci-check-satisfaction"
+
+ToolIdentity(access_id, tool_id=None, version=None, artifact_sha256=None)
+ToolRequirement(requirement_id, alternatives, after=())
 
 definition_for(name) -> CheckDefinition | None
 check_id_for(name) -> str | None
+validate_definition(definition) -> CheckDefinition  # normalizes tool requirements
 rule_ref(name, version, *, path=None, digest=None) -> dict
 profile_ref(name, version) -> dict
 source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
            head_commit=None, index_tree=None, content_digest=None,
            verified_scope=(), binding_status=None,
            scope_kind="changed_paths", materialization_ref=None) -> dict
-native_result(definition, *, source, status, result_origin, result_instance, ...) -> dict
+tool_ref(access_id, *, tool_id=None, version=None, artifact_sha256=None,
+         executable=None) -> dict   # observed evidence, not a declaration
+native_result(definition, *, source, status, result_origin, result_instance, ..., tool=None) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
+evaluate_check_satisfaction(definition, results) -> dict  # one Check, supplied results only
 resolve_definitions(required=None) -> dict   # requested_names only
 result_matches_expected(result, expected) -> bool  # candidate identity only
 validate_expected_instance(expected) -> dict  # one supplied scoped Check, no completeness
-result_covers_expected(result, expected) -> bool  # one native Check PASS, not Required
+result_covers_expected(result, expected) -> bool  # one result, single-tool Check only
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -109,7 +183,7 @@ copy-pastable validated Result):
 ```json
 {
   "kind": "engineering-ci-native-check-result",
-  "schema_version": 1,
+  "schema_version": 2,
   "check": {
     "check_id": "eci/hygiene/docs",
     "definition_version": 1,
@@ -133,12 +207,22 @@ copy-pastable validated Result):
     "binding_status": "content_digest",
     "content_digest": "..."
   },
-  "input_refs": [{"kind": "config", "path": "ci-hygiene.toml", "sha256": "…"}],
+  "input_refs": [
+    {"kind": "check_result", "result_id": "sha256:…", "path": "git/ls-files"},
+    {"kind": "config", "path": "ci-hygiene.toml", "sha256": "…"}
+  ],
   "status": "passed",
   "native_exit_code": 0,
   "result_origin": "host",
+  "tool": {
+    "access_id": "lychee/docs",
+    "tool_id": null,
+    "version": null,
+    "artifact_sha256": null,
+    "executable": "lychee"
+  },
   "runner_ref": "execution:host",
-  "result_instance": "run-id:host:0:docs",
+  "result_instance": "run-id:host:0:docs:lychee/docs",
   "artifact_refs": [],
   "coverage": null,
   "evidence": {"stdout": "", "stderr": "", "findings": []},
@@ -149,12 +233,14 @@ copy-pastable validated Result):
 }
 ```
 
-`binding_status` is explicit: `byte_tree` (a materializer verified the exact
-Tree and full input closure), `content_digest` (a content digest over the listed
-scope), `identity_only` (commit/index/Tree identity without byte verification),
-or `unknown`. `byte_tree` also requires `scope_kind="full_input_closure"` and a
-`materialization_ref`; execution emits only `identity_only` or changed-path
-`content_digest`.
+This is the `links` result of the real `docs` execution; the separate
+`git/ls-files` result is referenced by `input_refs` and recorded under the
+Check's `native_results`. `binding_status` is explicit: `byte_tree` (a
+materializer verified the exact Tree and full input closure), `content_digest`
+(a content digest over the listed scope), `identity_only` (commit/index/Tree
+identity without byte verification), or `unknown`. `byte_tree` also requires
+`scope_kind="full_input_closure"` and a `materialization_ref`; execution emits
+only `identity_only` or changed-path `content_digest`.
 
 ## Definition scope
 
@@ -183,11 +269,13 @@ When an Expected instance explicitly declares `input_refs`, each declared
 input must be represented by an identical Native Result input reference.
 Additional real inputs are allowed; a mismatched digest cannot be overlooked.
 An explicitly declared `coverage` claim must also match the Native Result.
-These local comparisons do not prove consumer-wide Expected completeness or
-trusted source provenance.
+For a Check with more than one requirement, `result_covers_expected()` returns
+`False`: one Native Result cannot represent an `all-required` composition, so
+callers must use `evaluate_check_satisfaction()`. These local comparisons do not
+prove consumer-wide Expected completeness or trusted source provenance.
 
-**No consumer-wide Expected/Required coverage API is produced by this first
-#52-A slice.** The earlier `validate_completeness_receipt` and
+**No consumer-wide Expected/Required coverage API is produced by this #52
+slice.** The earlier `validate_completeness_receipt` and
 `validate_expected_coverage` were withdrawn before release because
 structural receipt strings cannot prove a Profile's ExpectedSet is complete,
 including a legitimate empty set. Follow the existing
@@ -205,36 +293,73 @@ execution-layer refusal). For every selected check it adds:
 - `check_id`, `check_version`;
 - `check_contract` status (`valid`, `identity_missing`, or a contract error);
 - `source_ref`, `result_origin`;
-- `result_id` and the full `native_result`.
+- `result_id` and the full `native_result` (the primary result);
+- `native_results` — all Native Results of this Check. A Check whose declared
+  chain has several tools (currently `docs`) emits one result per entry, each
+  with its own `result_id`; the later result references the prerequisite
+  `result_id` in `input_refs`;
+- `native_satisfaction` — the local decision from
+  `evaluate_check_satisfaction()` over `native_results`.
 
-Unknown selected names remain `not_executed` with `check_identity_missing`.
-The report top-level adds `check_contract` kind/version.
+A Check that reports native `passed` while its declared composition is
+`unsatisfied` blocks the Report with
+`blocked/native_satisfaction_incomplete`; failed, not-executed and
+not-applicable verdicts keep their existing handling. Unknown selected names
+remain `not_executed` with `check_identity_missing`. The report top-level adds
+`check_contract` kind/version. The Host `docs` Check now passes the document
+list to Lychee as arguments; real Lychee rejects an invocation without inputs,
+so the previous stdin invocation could never produce a valid native result.
 
 ## Verification
 
-`tests/test_check_contract.py`:
+`tests/test_check_contract.py` covers the version-1 primitives and migration
+compatibility; `tests/test_native_tool_contract.py` covers the Native Tool
+extension:
 
-- same Check across two Job instances keeps `check_id` but has different
-  `result_id`;
-- one Job can carry multiple distinct Check IDs;
-- missing/invalid Check ID is refused, not inferred from a name;
-- native failure/exit is preserved;
-- rule/origin changes produce a new result and conflicting definitions are
-  refused;
-- duplicate `result_id` is refused.
+- the real built-in Check tool requirements and entries;
+- duplicate requirement ids, unknown prerequisites, self references, cycles,
+  empty/duplicate alternatives and invalid identities are refused;
+- a forged definition with different tool requirements cannot construct a
+  result;
+- undeclared tool evidence, tool identity claims without a verified declaration
+  and tool evidence on a tool-less Check are refused;
+- observed tool evidence participates in `content_id`/`result_id`;
+- satisfaction requires every declared result, allows a declared alternative,
+  and requires an evidenced prerequisite `result_id` reference;
+- results from another Check are refused, a tool-less Check is
+  `not_applicable`, and the decision never claims Required/trusted;
+- one result cannot cover a multi-tool Check;
+- schema version 1 results stay readable.
 
-`tests/test_execution.py` additionally checks that a real docs execution emits
-`eci/hygiene/docs`, a rule digest, `source_ref`, and `result_id`.
+`tests/test_execution.py` additionally checks that the real `docs` path emits
+`git/ls-files` and `lychee/docs` results for one `check_id`, references the
+inventory `result_id` from the Lychee result, records `satisfied` satisfaction,
+invokes Lychee with explicit document targets, and blocks a native PASS whose
+composition is unsatisfied.
+
+The real Host `git` + Lychee execution (pass and broken-link cases, actual
+exits and the resulting Report) is recorded in
+[verification/native-tool-contract](../verification/native-tool-contract/README.md).
 
 ## Limits / next slices
 
 - Execution does not emit `byte_tree`: immutable/Index snapshots are
   `identity_only`, and worktree content digests cover only changed paths. Exact
   full-input materialization remains #66 Source work.
-- Dagger `execute-plan` and Actions do not yet emit the same contract; the Host
-  report cannot be presented as three-entry-point parity.
-- Only the frozen built-in checks have IDs; external native tools and #52
-  Runtime Check/Profile interfaces still require the #52/Runtime contract.
+- No verified Runtime ToolAsset identity exists for the Host `git`/Lychee/
+  Vulture/Tach tools, so their results keep `tool_id=null`. Binding a real
+  ToolAsset/ToolAccess record is external-adapter work, not inferred here.
+- Dagger `execute-plan` reuses the Host function and therefore emits this
+  contract, but `dagger_export` maps to `result_origin=unknown` and the Dagger
+  tool pins (`tach`, `lychee`, `weaver`) are not recorded as observations. The
+  separate Dagger `tach-check`/`lychee-check` functions still return their own
+  ad-hoc JSON. Three-entry-point parity is not claimed.
+- The `all-required` relation is real only for `docs` (`git` + Lychee). No
+  production `allowed-alternative` instance exists yet; the alternative path is
+  covered by controlled contract tests, and `after` edges are declared only
+  where a real consumption is wired.
+- Only the frozen built-in checks have IDs; external native tools and the
+  #52/Runtime Check/Profile interfaces still require the later contract work.
 - `profile_ref` is pass-through metadata; it cannot grant Required/trusted.
 - `resolve_definitions` resolves only the built-in scope; Expected Check
   enumeration, Job routing and Required aggregation remain #66/#63/#61 work.
@@ -245,3 +370,4 @@ The report top-level adds `check_contract` kind/version.
   blocks with `check_contract_invalid`. Configuration/pre-tool failures,
   including a missing Tach config, are `not_started` without a Native Result
   and preserve the original failure reason.
+

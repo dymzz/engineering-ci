@@ -229,6 +229,9 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
             continue
         payload = dict(native)
         payload["rule_ref"] = rule
+        if name == "docs":
+            # The git inventory is a real native input step of this Check.
+            payload["inventory"] = report.get("inventory")
         origin = selected_by_name.get(base) or selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "selected"
         results.append(payload)
@@ -498,6 +501,146 @@ def _baseline_reference(plan):
     return ref
 
 
+def _input_refs(rule):
+    if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
+        return [{"kind": "config", "path": rule["path"], "sha256": rule["sha256"]}]
+    return []
+
+
+def _check_evidence(item, name):
+    evidence = {
+        key: item[key]
+        for key in ("stdout", "stderr", "findings", "counts", "failures")
+        if item.get(key) is not None
+    }
+    if not evidence and name == "forwarding":
+        evidence = {
+            "analysis": "forwarding",
+            "status": item.get("status"),
+            "reason": item.get("reason"),
+        }
+    return evidence or None
+
+
+def _tool_observation(
+    definition,
+    access_id,
+    *,
+    executable=None,
+    tool_id=None,
+    version=None,
+    artifact_sha256=None,
+):
+    """Observed evidence for a declared entry; unknown identity stays unknown."""
+    for requirement in definition.tool_requirements:
+        for alternative in requirement.alternatives:
+            if alternative.access_id == access_id:
+                return check_contract.tool_ref(
+                    access_id,
+                    tool_id=tool_id,
+                    version=version,
+                    artifact_sha256=artifact_sha256,
+                    executable=executable,
+                )
+    raise check_contract.CheckContractError("result_tool_undeclared")
+
+
+def _observed_tool(definition, access_id, item):
+    # No executable and no native exit means the entry did not run; do not
+    # claim a tool observation for a not-executed or pre-execution result.
+    if item.get("executable") is None and item.get("exit_code") is None:
+        return None
+    return _tool_observation(definition, access_id, executable=item.get("executable"))
+
+
+def _native_results(
+    definition, item, *, name, source, rule, baseline, origin, run_instance, index
+):
+    inputs = _input_refs(rule)
+
+    def instance(access_id):
+        return f"{run_instance}:{origin}:{index}:{name}:{access_id}"
+
+    if name == "docs" and isinstance(item.get("inventory"), dict):
+        inventory = item["inventory"]
+        requirements = {
+            entry.requirement_id: entry for entry in definition.tool_requirements
+        }
+        inventory_requirement = requirements.get("inventory")
+        links_requirement = requirements.get("links")
+        if inventory_requirement is None or links_requirement is None:
+            raise check_contract.CheckContractError("result_tool_undeclared")
+        inventory_access = inventory_requirement.alternatives[0].access_id
+        links_access = links_requirement.alternatives[0].access_id
+        inventory_status = "passed" if inventory.get("exit_code") == 0 else "failed"
+        inventory_result = check_contract.native_result(
+            definition,
+            source=source,
+            status=inventory_status,
+            native_exit_code=inventory.get("exit_code"),
+            result_origin=origin,
+            runner_ref=f"execution:{origin}",
+            result_instance=instance(inventory_access),
+            input_refs=[],
+            rule_ref=rule,
+            tool=_tool_observation(
+                definition,
+                inventory_access,
+                executable=inventory.get("tool"),
+            ),
+            evidence={
+                "stdout": inventory.get("stdout", ""),
+                "stderr": inventory.get("stderr", ""),
+            },
+            baseline_ref=baseline,
+            reason=None if inventory_status == "passed" else "git_inventory_failed",
+        )
+        links_inputs = [
+            {
+                "kind": "check_result",
+                "result_id": inventory_result["result_id"],
+                "path": inventory_access,
+            },
+            *inputs,
+        ]
+        links_result = check_contract.native_result(
+            definition,
+            source=source,
+            status=item.get("status", "not_executed"),
+            native_exit_code=item.get("exit_code"),
+            result_origin=origin,
+            runner_ref=f"execution:{origin}",
+            result_instance=instance(links_access),
+            input_refs=links_inputs,
+            rule_ref=rule,
+            tool=_observed_tool(definition, links_access, item),
+            evidence=_check_evidence(item, name),
+            baseline_ref=baseline,
+            reason=item.get("reason"),
+        )
+        return [inventory_result, links_result]
+    requirement = (
+        definition.tool_requirements[0] if definition.tool_requirements else None
+    )
+    access_id = requirement.alternatives[0].access_id if requirement else name
+    native = check_contract.native_result(
+        definition,
+        source=source,
+        status=item.get("status", "not_executed"),
+        native_exit_code=item.get("exit_code"),
+        result_origin=origin,
+        runner_ref=f"execution:{origin}",
+        result_instance=instance(access_id),
+        input_refs=inputs,
+        rule_ref=rule,
+        tool=_observed_tool(definition, access_id, item) if requirement else None,
+        evidence=_check_evidence(item, name),
+        baseline_ref=baseline,
+        reason=item.get("reason"),
+    )
+    return [native]
+
+
 def _decorate_checks(plan, checks, *, execution_context, run_instance):
     source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
@@ -529,42 +672,23 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
             }
             continue
         rule = item.get("rule_ref")
-        input_refs = []
-        if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
-            input_refs.append(
-                {
-                    "kind": "config",
-                    "path": rule["path"],
-                    "sha256": rule["sha256"],
-                }
-            )
         try:
-            evidence = {
-                key: item[key]
-                for key in ("stdout", "stderr", "findings", "counts", "failures")
-                if item.get(key) is not None
-            }
-            if not evidence and name == "forwarding":
-                evidence = {
-                    "analysis": "forwarding",
-                    "status": item.get("status"),
-                    "reason": item.get("reason"),
-                }
-            native = check_contract.native_result(
+            native_results = _native_results(
                 definition,
+                item,
+                name=name,
                 source=source,
-                status=item.get("status", "not_executed"),
-                native_exit_code=item.get("exit_code"),
-                result_origin=origin,
-                runner_ref=f"execution:{origin}",
-                result_instance=f"{run_instance}:{origin}:{index}:{name}",
-                input_refs=input_refs,
-                rule_ref=rule,
-                evidence=evidence or None,
-                baseline_ref=baseline,
-                reason=item.get("reason"),
+                rule=rule,
+                baseline=baseline,
+                origin=origin,
+                run_instance=run_instance,
+                index=index,
             )
-            check_contract.validate_result(native)
+            for native in native_results:
+                check_contract.validate_result(native)
+            satisfaction = check_contract.evaluate_check_satisfaction(
+                definition, native_results
+            )
         except check_contract.CheckContractError as error:
             item["check_contract"] = {
                 "kind": check_contract.CHECK_CONTRACT_KIND,
@@ -580,8 +704,11 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
             "schema_version": check_contract.CONTRACT_VERSION,
             "status": "valid",
         }
-        item["native_result"] = native
-        item["result_id"] = native["result_id"]
+        primary = native_results[-1] if name == "docs" else native_results[0]
+        item["native_result"] = primary
+        item["native_results"] = native_results
+        item["native_satisfaction"] = satisfaction
+        item["result_id"] = primary["result_id"]
         item["result_origin"] = origin
         item["source_ref"] = source
     return checks
@@ -749,6 +876,14 @@ def execute(
         for item in report["checks"]
         if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
     ]
+    # A Check that claims native PASS without its declared tool composition is
+    # not a satisfied Check. Non-passed verdicts keep their existing handling.
+    unsatisfied_native = [
+        item
+        for item in report["checks"]
+        if item.get("status") == "passed"
+        and item.get("native_satisfaction", {}).get("status") == "unsatisfied"
+    ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
     elif hygiene_failed or source_failed:
@@ -767,6 +902,10 @@ def execute(
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "required_checks_not_executed"
+    elif unsatisfied_native:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "native_satisfaction_incomplete"
     else:
         report["status"], report["reason"] = "passed", None
         report["exit_code"] = 0

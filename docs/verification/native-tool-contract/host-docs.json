@@ -1,0 +1,352 @@
+{
+  "cases": [
+    {
+      "check": {
+        "check_contract": {
+          "kind": "engineering-ci-check-contract",
+          "schema_version": 2,
+          "status": "valid"
+        },
+        "check_id": "eci/hygiene/docs",
+        "check_version": 1,
+        "name": "docs",
+        "native_results": [
+          {
+            "baseline_ref": {
+              "base_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "base_ref": "HEAD"
+            },
+            "check": {
+              "access_id": null,
+              "check_id": "eci/hygiene/docs",
+              "definition_version": 1,
+              "profile_ref": null,
+              "rule_ref": {
+                "name": "engineering-ci.hygiene",
+                "path": "cases\\docs-pass\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97",
+                "version": "1"
+              },
+              "tool_id": null
+            },
+            "content_id": "sha256:3910fa4696051050923fb6b642530929cf29c27a177a4d67b68c2f1e82afe061",
+            "evidence": {
+              "stderr": "",
+              "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
+            },
+            "input_refs": [],
+            "native_exit_code": 0,
+            "reason": null,
+            "result_id": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
+            "result_origin": "host",
+            "source_ref": {
+              "actual_execution_source": "worktree",
+              "binding_status": "identity_only",
+              "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "scope_kind": "changed_paths",
+              "snapshot": "worktree",
+              "verified_input_scope": []
+            },
+            "status": "passed",
+            "tool": {
+              "access_id": "git/ls-files",
+              "artifact_sha256": null,
+              "executable": "git",
+              "tool_id": null,
+              "version": null
+            }
+          },
+          {
+            "baseline_ref": {
+              "base_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "base_ref": "HEAD"
+            },
+            "check": {
+              "access_id": null,
+              "check_id": "eci/hygiene/docs",
+              "definition_version": 1,
+              "profile_ref": null,
+              "rule_ref": {
+                "name": "engineering-ci.hygiene",
+                "path": "cases\\docs-pass\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97",
+                "version": "1"
+              },
+              "tool_id": null
+            },
+            "content_id": "sha256:a2058c22e241673037b324b8339b937f9022b73c60c95ac45b2ff022bdda8d6b",
+            "evidence": {
+              "findings": [],
+              "stderr": "",
+              "stdout": "\ud83d\udd0d 1 Total (in 7ms) \ud83d\udd17 1 Unique \u2705 1 OK \ud83d\udeab 0 Errors\n\n"
+            },
+            "input_refs": [
+              {
+                "kind": "check_result",
+                "path": "git/ls-files",
+                "result_id": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e"
+              },
+              {
+                "kind": "config",
+                "path": "cases\\docs-pass\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97"
+              }
+            ],
+            "native_exit_code": 0,
+            "reason": null,
+            "result_id": "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c",
+            "result_origin": "host",
+            "source_ref": {
+              "actual_execution_source": "worktree",
+              "binding_status": "identity_only",
+              "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+              "scope_kind": "changed_paths",
+              "snapshot": "worktree",
+              "verified_input_scope": []
+            },
+            "status": "passed",
+            "tool": {
+              "access_id": "lychee/docs",
+              "artifact_sha256": null,
+              "executable": "lychee",
+              "tool_id": null,
+              "version": null
+            }
+          }
+        ],
+        "native_satisfaction": {
+          "check_id": "eci/hygiene/docs",
+          "consumer_scope": "supplied_results_only",
+          "definition_version": 1,
+          "kind": "engineering-ci-check-satisfaction",
+          "reason": "all_requirements_satisfied",
+          "required": false,
+          "requirements": [
+            {
+              "after": [],
+              "alternatives": [
+                "git/ls-files"
+              ],
+              "observed": [
+                "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e"
+              ],
+              "reason": "native_pass",
+              "requirement_id": "inventory",
+              "satisfied_by": "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
+              "status": "satisfied"
+            },
+            {
+              "after": [
+                "inventory"
+              ],
+              "alternatives": [
+                "lychee/docs"
+              ],
+              "observed": [
+                "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c"
+              ],
+              "reason": "native_pass",
+              "requirement_id": "links",
+              "satisfied_by": "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c",
+              "status": "satisfied"
+            }
+          ],
+          "result_ids": [
+            "sha256:346785f615a6f1af99a1a3e8d84c876012a28e077b3bb356c0d86e954a86bf5e",
+            "sha256:8c0bac7afc7615ad218564a6ec4cefc748807462ff3ce776c64252483d92b85c"
+          ],
+          "schema_version": 2,
+          "status": "satisfied",
+          "trusted": false
+        },
+        "reason": null,
+        "status": "passed"
+      },
+      "fixture": "cases\\docs-pass",
+      "head_commit": "20c4d4459824441e127893e225ad4da9b8c4669f",
+      "report": {
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed"
+      }
+    },
+    {
+      "check": {
+        "check_contract": {
+          "kind": "engineering-ci-check-contract",
+          "schema_version": 2,
+          "status": "valid"
+        },
+        "check_id": "eci/hygiene/docs",
+        "check_version": 1,
+        "name": "docs",
+        "native_results": [
+          {
+            "baseline_ref": {
+              "base_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "base_ref": "HEAD"
+            },
+            "check": {
+              "access_id": null,
+              "check_id": "eci/hygiene/docs",
+              "definition_version": 1,
+              "profile_ref": null,
+              "rule_ref": {
+                "name": "engineering-ci.hygiene",
+                "path": "cases\\docs-fail\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97",
+                "version": "1"
+              },
+              "tool_id": null
+            },
+            "content_id": "sha256:feb31436731d4c43f6532125d2c099dfc7259b1067b4e127bafacbc5d1368ee4",
+            "evidence": {
+              "stderr": "",
+              "stdout": "ci-hygiene.toml\u0000docs/guide.md\u0000"
+            },
+            "input_refs": [],
+            "native_exit_code": 0,
+            "reason": null,
+            "result_id": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
+            "result_origin": "host",
+            "source_ref": {
+              "actual_execution_source": "worktree",
+              "binding_status": "identity_only",
+              "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "scope_kind": "changed_paths",
+              "snapshot": "worktree",
+              "verified_input_scope": []
+            },
+            "status": "passed",
+            "tool": {
+              "access_id": "git/ls-files",
+              "artifact_sha256": null,
+              "executable": "git",
+              "tool_id": null,
+              "version": null
+            }
+          },
+          {
+            "baseline_ref": {
+              "base_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "base_ref": "HEAD"
+            },
+            "check": {
+              "access_id": null,
+              "check_id": "eci/hygiene/docs",
+              "definition_version": 1,
+              "profile_ref": null,
+              "rule_ref": {
+                "name": "engineering-ci.hygiene",
+                "path": "cases\\docs-fail\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97",
+                "version": "1"
+              },
+              "tool_id": null
+            },
+            "content_id": "sha256:b8408529651a28fb2f182e23cdba5db91f4809efa89fa2c24bd2fd72f0fb8ecf",
+            "evidence": {
+              "findings": [],
+              "stderr": "",
+              "stdout": "Issues found in 1 input. Find details below.\n\n[docs/guide.md]:\n[ERROR] file:///D:/workspace/engineering-ci/.work/evidence/cases/docs-fail/docs/missing.md (at 3:5) | File not found. Check if file exists and path is correct\n\n\ud83d\udd0d 1 Total (in 1ms) \ud83d\udd17 1 Unique \u2705 0 OK \ud83d\udeab 1 Error\n\n"
+            },
+            "input_refs": [
+              {
+                "kind": "check_result",
+                "path": "git/ls-files",
+                "result_id": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145"
+              },
+              {
+                "kind": "config",
+                "path": "cases\\docs-fail\\ci-hygiene.toml",
+                "sha256": "507a0786d4619d8ca731dc2f03d8e87fc16c1e0ddf030c7b4f6937d8a0226b97"
+              }
+            ],
+            "native_exit_code": 2,
+            "reason": "lychee_findings",
+            "result_id": "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8",
+            "result_origin": "host",
+            "source_ref": {
+              "actual_execution_source": "worktree",
+              "binding_status": "identity_only",
+              "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+              "scope_kind": "changed_paths",
+              "snapshot": "worktree",
+              "verified_input_scope": []
+            },
+            "status": "failed",
+            "tool": {
+              "access_id": "lychee/docs",
+              "artifact_sha256": null,
+              "executable": "lychee",
+              "tool_id": null,
+              "version": null
+            }
+          }
+        ],
+        "native_satisfaction": {
+          "check_id": "eci/hygiene/docs",
+          "consumer_scope": "supplied_results_only",
+          "definition_version": 1,
+          "kind": "engineering-ci-check-satisfaction",
+          "reason": "result_not_passed",
+          "required": false,
+          "requirements": [
+            {
+              "after": [],
+              "alternatives": [
+                "git/ls-files"
+              ],
+              "observed": [
+                "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145"
+              ],
+              "reason": "native_pass",
+              "requirement_id": "inventory",
+              "satisfied_by": "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
+              "status": "satisfied"
+            },
+            {
+              "after": [
+                "inventory"
+              ],
+              "alternatives": [
+                "lychee/docs"
+              ],
+              "observed": [
+                "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8"
+              ],
+              "reason": "result_not_passed",
+              "requirement_id": "links",
+              "satisfied_by": null,
+              "status": "unsatisfied"
+            }
+          ],
+          "result_ids": [
+            "sha256:6023b9047b35ee9d972b7b807b3636af660d039a7094d7c18044e2e5af59f145",
+            "sha256:5f3d0ae831c8f5d59043aba6ad3c9c57c3c8c6510ca56550cc800fd1a6260ef8"
+          ],
+          "schema_version": 2,
+          "status": "unsatisfied",
+          "trusted": false
+        },
+        "reason": "lychee_findings",
+        "status": "failed"
+      },
+      "fixture": "cases\\docs-fail",
+      "head_commit": "8b4a21a2f3d3a8cf0f59068e38f7d82c5c28d931",
+      "report": {
+        "exit_code": 1,
+        "reason": "checks_failed",
+        "status": "failed"
+      }
+    }
+  ],
+  "environment": {
+    "git": "git version 2.56.0.windows.4",
+    "lychee": "lychee 0.24.2",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3"
+  },
+  "kind": "engineering-ci-native-tool-host-evidence",
+  "recorded_at": "2026-11-13T17:27:49.473827+00:00"
+}
