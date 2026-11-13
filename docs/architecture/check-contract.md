@@ -53,11 +53,16 @@ reinterpreted):
   target Tree and a verified input scope; a Tree field alone yields
   `identity_only`, and a missing scope yields `unknown`.
 - `tool_id`/`access_id` are optional and never inferred from a tool or Job name.
-- A missing identity is `check_identity_missing`; a check that would otherwise
-  pass is downgraded to `not_executed`, never passed by display name.
+- A missing identity is `check_identity_missing`; a genuinely executed Check
+  retains its original native status and diagnostics. The Host records
+  `check_contract=identity_missing` and blocks the top-level Report as
+  `blocked/check_contract_invalid`, rather than forging `not_executed`.
 - `validate_result()` rejects mutated content, a mismatched `content_id` or
   `result_id`, unknown Check IDs, invalid source binding, and status/exit
   contradictions (`passed` with nonzero exit, `failed` with zero exit).
+- `not_executed` never carries a native process exit. `not_applicable` may
+  report no exit, or a successful process exit with diagnostic evidence; it
+  cannot hide a nonzero native failure. `unknown` is never accepted as PASS.
 - Execution kinds are explicit: process Checks (`docs`, `tach`, `tach_external`,
   `vulture`, `whitespace`) require a real native exit and evidence for
   passed/failed; internal Checks (`forwarding`, `source`) carry structured
@@ -174,6 +179,12 @@ instance. They do **not** establish the completeness or authenticity of the
 consumer's Expected collection, input closure provenance, Evidence Admission
 or Required Gate. For a built-in comparison-dependent Check, the supplied
 Expected instance must include the real baseline.
+When an Expected instance explicitly declares `input_refs`, each declared
+input must be represented by an identical Native Result input reference.
+Additional real inputs are allowed; a mismatched digest cannot be overlooked.
+An explicitly declared `coverage` claim must also match the Native Result.
+These local comparisons do not prove consumer-wide Expected completeness or
+trusted source provenance.
 
 **No consumer-wide Expected/Required coverage API is produced by this first
 #52-A slice.** The earlier `validate_completeness_receipt` and

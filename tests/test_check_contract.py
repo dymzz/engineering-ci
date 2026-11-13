@@ -423,6 +423,102 @@ def test_baseline_ref_changes_result_identity():
     assert first["baseline_ref"] != second["baseline_ref"]
 
 
+def test_declared_input_refs_and_coverage_participate_in_local_satisfaction():
+    definition = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    config = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "b" * 64}
+    extra = {"kind": "data", "path": "docs/other.md", "sha256": "c" * 64}
+    coverage = {"paths": ["docs/guide.md"]}
+    checked = closed_source()
+    native = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="input-scope-check",
+        native_exit_code=0,
+        rule_ref=rule,
+        input_refs=[config, extra],
+        coverage=coverage,
+        evidence={"stdout": ""},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [config],
+        "coverage": coverage,
+    }
+    assert check_contract.result_covers_expected(native, expected)
+    assert not check_contract.result_covers_expected(
+        native, {**expected, "input_refs": [{**config, "sha256": "d" * 64}]}
+    )
+    assert not check_contract.result_covers_expected(
+        native, {**expected, "coverage": {"paths": ["docs/other.md"]}}
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_input_refs_invalid"
+    ):
+        check_contract.result_covers_expected(
+            native, {**expected, "input_refs": "not-a-list"}
+        )
+    # Candidate identity matching remains intentionally weaker.
+    assert check_contract.result_matches_expected(native, expected)
+
+
+def test_native_nonexecuted_and_not_applicable_exit_consistency():
+    definition = check_contract.definition_for("docs")
+    base = {
+        "source": source(),
+        "result_origin": "host",
+        "result_instance": "native-state",
+    }
+    for status, exit_code, error in (
+        ("not_executed", 0, "result_nonexecuted_exit_inconsistent"),
+        ("not_executed", 1, "result_nonexecuted_exit_inconsistent"),
+        ("not_applicable", 1, "result_not_applicable_exit_inconsistent"),
+    ):
+        with pytest.raises(check_contract.CheckContractError, match=error):
+            check_contract.native_result(
+                definition, status=status, native_exit_code=exit_code, **base
+            )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="result_not_applicable_evidence_missing",
+    ):
+        check_contract.native_result(
+            definition, status="not_applicable", native_exit_code=0, **base
+        )
+    # A successful native probe may establish non-applicability with evidence.
+    native = check_contract.native_result(
+        definition,
+        status="not_applicable",
+        native_exit_code=0,
+        evidence={"reason": "no_applicable_documents"},
+        **base,
+    )
+    assert check_contract.validate_result(native) is native
+    # Recompute hashes to prove the semantic validator, not just the digest,
+    # rejects a contradictory native process result.
+    forged = {**native, "native_exit_code": 1}
+    payload = {
+        key: value
+        for key, value in forged.items()
+        if key not in {"content_id", "result_id"}
+    }
+    content = {key: value for key, value in payload.items() if key != "result_instance"}
+    forged["content_id"] = check_contract._digest(content)
+    forged["result_id"] = check_contract._digest(
+        {**payload, "content_id": forged["content_id"]}
+    )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="result_not_applicable_exit_inconsistent",
+    ):
+        check_contract.validate_result(forged)
+
+
 def test_duplicate_result_id_is_refused():
     one = result(instance="job-1")
     with pytest.raises(check_contract.CheckContractError):

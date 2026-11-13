@@ -390,6 +390,14 @@ def native_result(
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and native_exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
+    # The exit status of a completed process cannot become a skipped Check.
+    # A successful probe may establish non-applicability with native evidence.
+    if status == "not_executed" and native_exit_code is not None:
+        raise CheckContractError("result_nonexecuted_exit_inconsistent")
+    if status == "not_applicable" and native_exit_code not in (None, 0):
+        raise CheckContractError("result_not_applicable_exit_inconsistent")
+    if status == "not_applicable" and native_exit_code == 0 and not evidence:
+        raise CheckContractError("result_not_applicable_evidence_missing")
     _validate_baseline(baseline_ref)
     if (
         registered.requires_baseline
@@ -483,6 +491,12 @@ def validate_result(result):
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
+    if status == "not_executed" and exit_code is not None:
+        raise CheckContractError("result_nonexecuted_exit_inconsistent")
+    if status == "not_applicable" and exit_code not in (None, 0):
+        raise CheckContractError("result_not_applicable_exit_inconsistent")
+    if status == "not_applicable" and exit_code == 0 and not evidence:
+        raise CheckContractError("result_not_applicable_evidence_missing")
     _validate_baseline(result.get("baseline_ref"))
     if (
         builtin.requires_baseline
@@ -571,6 +585,12 @@ def validate_expected_instance(expected):
         or not source["verified_input_scope"]
     ):
         raise CheckContractError("expected_source_scope_insufficient")
+    if "input_refs" in expected:
+        refs = expected["input_refs"]
+        if not isinstance(refs, list) or any(
+            not isinstance(item, dict) for item in refs
+        ):
+            raise CheckContractError("expected_input_refs_invalid")
     if expected.get("profile_ref") is not None:
         _validate_reference(expected["profile_ref"], "profile_ref")
     baseline = expected.get("baseline_ref")
@@ -620,6 +640,15 @@ def result_covers_expected(result, expected):
     validate_result(result)
     validate_expected_instance(expected)
     if not result_matches_expected(result, expected):
+        return False
+    # Compare explicit input dependencies, not just the outer Source identity.
+    # Extra observed inputs are allowed; missing or different declared inputs
+    # cannot satisfy the supplied Check expectation.
+    if "input_refs" in expected and any(
+        ref not in result["input_refs"] for ref in expected["input_refs"]
+    ):
+        return False
+    if "coverage" in expected and expected["coverage"] != result.get("coverage"):
         return False
     if result["status"] != "passed":
         return False
