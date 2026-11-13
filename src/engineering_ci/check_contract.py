@@ -36,7 +36,6 @@ PROCESS_CHECK_IDS = frozenset(
     }
 )
 INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile"})
-EXPECTED_REQUIRED = ("check_id", "definition_version", "rule_ref", "source_ref")
 
 
 # Built-in identity table for the checks currently produced by this package.
@@ -69,6 +68,7 @@ class CheckDefinition:
     access_id: str | None = None
     rule_ref: dict | None = None
     profile_ref: dict | None = None
+    requires_baseline: bool = False
 
 
 def _text(value, name):
@@ -92,12 +92,27 @@ def check_id_for(name):
 
 def definition_for(name):
     check_id = check_id_for(name)
-    return CheckDefinition(check_id) if check_id else None
+    return _BUILTIN_BY_ID.get(check_id) if check_id else None
 
 
+# Exact old→new checks consume the old source as native input. Other checks
+# may use changed-path selection, but do not intrinsically inspect old bytes.
 _BUILTIN_DEFINITIONS = tuple(
-    CheckDefinition(check_id) for check_id in CHECK_IDS.values()
+    CheckDefinition(check_id, requires_baseline=name in {"whitespace", "forwarding"})
+    for name, check_id in CHECK_IDS.items()
 )
+_BUILTIN_BY_ID = MappingProxyType(
+    {definition.check_id: definition for definition in _BUILTIN_DEFINITIONS}
+)
+
+
+def _registered_definition(check_id, version):
+    definition = _BUILTIN_BY_ID.get(check_id)
+    if definition is None:
+        raise CheckContractError("result_check_unknown")
+    if version != definition.definition_version:
+        raise CheckContractError("result_check_version_mismatch")
+    return definition
 
 
 def _version(value, name):
@@ -142,6 +157,8 @@ def validate_definition(definition):
         or definition.definition_version < 1
     ):
         raise CheckContractError("check_version_invalid")
+    if type(definition.requires_baseline) is not bool:
+        raise CheckContractError("check_baseline_requirement_invalid")
     for value in (definition.tool_id, definition.access_id):
         if value is not None:
             _text(value, "tool_identity")
@@ -338,6 +355,11 @@ def native_result(
     ``result_id`` additionally binds the run instance.
     """
     definition = validate_definition(definition)
+    registered = _registered_definition(
+        definition.check_id, definition.definition_version
+    )
+    if definition.requires_baseline != registered.requires_baseline:
+        raise CheckContractError("result_check_semantics_mismatch")
     if status not in STATUSES:
         raise CheckContractError("result_status_invalid")
     if result_origin not in ORIGINS:
@@ -363,6 +385,12 @@ def native_result(
     if status == "failed" and native_exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
     _validate_baseline(baseline_ref)
+    if (
+        registered.requires_baseline
+        and status in {"passed", "failed", "advisory"}
+        and baseline_ref is None
+    ):
+        raise CheckContractError("result_baseline_missing")
     kind = _execution_kind(definition.check_id)
     if status in {"passed", "failed"}:
         if kind == "process":
@@ -419,11 +447,7 @@ def validate_result(result):
     version = check.get("definition_version")
     if type(version) is not int or version < 1:
         raise CheckContractError("result_check_version_invalid")
-    builtin = next(
-        value for value in _BUILTIN_DEFINITIONS if value.check_id == check_id
-    )
-    if version != builtin.definition_version:
-        raise CheckContractError("result_check_version_mismatch")
+    builtin = _registered_definition(check_id, version)
     _validate_reference(check.get("rule_ref"), "rule_ref")
     _validate_reference(check.get("profile_ref"), "profile_ref")
     status = result.get("status")
@@ -452,6 +476,12 @@ def validate_result(result):
     if status == "failed" and exit_code == 0:
         raise CheckContractError("result_exit_inconsistent")
     _validate_baseline(result.get("baseline_ref"))
+    if (
+        builtin.requires_baseline
+        and status in {"passed", "failed", "advisory"}
+        and result.get("baseline_ref") is None
+    ):
+        raise CheckContractError("result_baseline_missing")
     kind = _execution_kind(check_id)
     if status in {"passed", "failed"}:
         if kind == "process":
@@ -499,48 +529,22 @@ def validate_result_set(results):
     return True
 
 
-def validate_expected_instance(expected):
-    if not isinstance(expected, dict):
-        raise CheckContractError("expected_invalid")
-    missing = [key for key in EXPECTED_REQUIRED if key not in expected]
-    if missing:
-        raise CheckContractError("expected_incomplete")
-    check_id = expected["check_id"]
-    if check_id not in set(CHECK_IDS.values()):
-        raise CheckContractError("expected_check_unknown")
-    builtin = next(
-        value for value in _BUILTIN_DEFINITIONS if value.check_id == check_id
-    )
-    if expected["definition_version"] != builtin.definition_version:
-        raise CheckContractError("expected_check_version_mismatch")
-    rule = expected.get("rule_ref")
-    if not isinstance(rule, dict) or not rule.get("sha256"):
-        raise CheckContractError("expected_rule_unproven")
-    _validate_reference(rule, "rule_ref")
-    source = expected.get("source_ref")
-    validate_source_ref(source)
-    if source.get("binding_status") not in {"byte_tree", "content_digest"}:
-        raise CheckContractError("expected_source_unproven")
-    if source.get("scope_kind") not in {
-        "check_input_closure",
-        "full_input_closure",
-    }:
-        raise CheckContractError("expected_source_scope_insufficient")
-    if not source.get("verified_input_scope"):
-        raise CheckContractError("expected_source_scope_insufficient")
-    if expected.get("profile_ref") is not None:
-        _validate_reference(expected["profile_ref"], "profile_ref")
-    if expected.get("comparison") and not expected.get("baseline_ref"):
-        raise CheckContractError("expected_baseline_missing")
-    return expected
-
-
 def result_matches_expected(result, expected):
-    """Candidate identity association only; does not prove Check satisfaction."""
+    """Candidate identity matching only, not Check coverage or Required PASS.
+
+    For a check that natively reads old→new inputs, an assertion lacking the
+    actual comparison baseline is too ambiguous even for safe association.
+    The #66 Expected/Assessment consumer owns complete scope and satisfaction.
+    """
     validate_result(result)
     if not isinstance(expected, dict):
         raise CheckContractError("expected_invalid")
     check = result["check"]
+    builtin = _registered_definition(
+        check["check_id"], check["definition_version"]
+    )
+    if builtin.requires_baseline and expected.get("baseline_ref") is None:
+        return False
     comparisons = {
         "check_id": check["check_id"],
         "definition_version": check["definition_version"],
@@ -552,57 +556,6 @@ def result_matches_expected(result, expected):
     for key, actual in comparisons.items():
         if key in expected and expected[key] != actual:
             return False
-    return True
-
-
-def result_covers_expected(result, expected):
-    """Strict Check satisfaction, excluding trust/Required admission."""
-    validate_result(result)
-    validate_expected_instance(expected)
-    if not result_matches_expected(result, expected):
-        return False
-    if result.get("status") != "passed":
-        return False
-    check_id = result["check"]["check_id"]
-    kind = _execution_kind(check_id)
-    if kind == "process":
-        if result.get("native_exit_code") != 0:
-            return False
-        if not result.get("evidence"):
-            return False
-    elif kind == "internal":
-        if not result.get("evidence"):
-            return False
-    else:
-        return False
-    return True
-
-
-def validate_completeness_receipt(receipt):
-    if not isinstance(receipt, dict):
-        raise CheckContractError("expected_completeness_invalid")
-    for key in ("consumer", "expected_set_ref", "definitions_source"):
-        _text(receipt.get(key), key)
-    profile = receipt.get("profile_ref")
-    if not isinstance(profile, dict):
-        raise CheckContractError("expected_completeness_invalid")
-    _validate_reference(profile, "profile_ref")
-    return True
-
-
-def validate_expected_coverage(results, expected, *, completeness=None):
-    if not isinstance(expected, (list, tuple)):
-        raise CheckContractError("expected_invalid")
-    validate_result_set(results)
-    if not expected:
-        if completeness is None:
-            raise CheckContractError("expected_scope_unknown")
-        validate_completeness_receipt(completeness)
-        return True
-    prepared = [validate_expected_instance(item) for item in expected]
-    for item in prepared:
-        if not any(result_covers_expected(result, item) for result in results):
-            raise CheckContractError("expected_result_missing")
     return True
 
 
@@ -646,6 +599,7 @@ def resolve_definitions(required=None):
                     "access_id": definition.access_id,
                     "rule_ref": definition.rule_ref,
                     "profile_ref": definition.profile_ref,
+                    "requires_baseline": definition.requires_baseline,
                 }
             )
             seen.add(definition.check_id)
