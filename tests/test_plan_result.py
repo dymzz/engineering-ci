@@ -59,7 +59,14 @@ def modules(monkeypatch):
     stub.dag = types.SimpleNamespace(
         directory=MemoryDirectory,
         host=lambda: types.SimpleNamespace(
-            file=lambda path: MemoryFile(Path(path).read_text(encoding="utf-8"))
+            file=lambda path: MemoryFile(Path(path).read_text(encoding="utf-8")),
+            directory=lambda path: MemoryDirectory(
+                {
+                    file.relative_to(path).as_posix(): file.read_text(encoding="utf-8")
+                    for file in Path(path).rglob("*")
+                    if file.is_file()
+                }
+            ),
         ),
     )
     stub.ReturnType = types.SimpleNamespace(ANY=object())

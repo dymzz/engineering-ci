@@ -393,6 +393,7 @@ def verify_artifact_output(artifact_root, output_ref):
         "expected_sha256": expected,
         "sha256": None,
         "files": [],
+        "materialized_objects": [],
     }
     if artifact_root is None:
         return {**base_result, "ok": False, "reason": "data_artifact_missing"}
@@ -412,6 +413,7 @@ def verify_artifact_output(artifact_root, output_ref):
             return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
         digest = check_contract.file_digest(target)
         files = [Path(rel).as_posix()]
+        objects = [{"kind": "file", "path": rel}]
     else:
         if not target.is_dir():
             return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
@@ -424,6 +426,7 @@ def verify_artifact_output(artifact_root, output_ref):
             if entry.is_file():
                 files.append(entry.relative_to(root_path).as_posix())
         digest = selection.directory_content_id(target)
+        objects = [{"kind": "directory", "path": rel}]
     if expected is not None and digest != expected:
         return {
             **base_result,
@@ -438,6 +441,7 @@ def verify_artifact_output(artifact_root, output_ref):
         "reason": None,
         "sha256": digest,
         "files": files,
+        "materialized_objects": objects,
     }
 
 
@@ -482,7 +486,19 @@ def build_consumer_view(source_root, artifacts):
     temporary = tempfile.TemporaryDirectory(prefix="eci-consumer-")
     view = Path(temporary.name) / "source"
     shutil.copytree(source_root, view)
-    for producer_root, rel in artifacts:
+    for item in artifacts:
+        if len(item) == 3:
+            producer_root, rel, kind = item
+        else:
+            producer_root, rel = item
+            kind = "file"
+        if kind == "directory":
+            shutil.copytree(
+                Path(producer_root) / rel,
+                view / rel,
+                dirs_exist_ok=True,
+            )
+            continue
         target = view / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(Path(producer_root) / rel, target)
@@ -536,6 +552,7 @@ def evaluate_edge(edge, producer_result, *, artifact_root=None):
             "reason": closure["reason"],
             "sha256": closure["sha256"],
             "materialized_files": closure["files"],
+            "materialized_objects": closure.get("materialized_objects", []),
         }
         if not closure["ok"]:
             return False, closure["reason"], entry
@@ -1152,7 +1169,9 @@ def _execute_with_dependencies(
                 if closure is not None:
                     closure_records.append(closure)
                     if closure.get("verified"):
-                        for rel in closure.get("materialized_files") or ():
+                        for obj in closure.get("materialized_objects") or ():
+                            rel = obj["path"]
+                            kind = obj["kind"]
                             if rel in seen_paths and seen_paths[rel] != str(
                                 producer_root
                             ):
@@ -1165,7 +1184,7 @@ def _execute_with_dependencies(
                                 )
                                 continue
                             seen_paths[rel] = str(producer_root)
-                            files.append((producer_root, rel))
+                            files.append((producer_root, rel, kind))
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
@@ -1202,7 +1221,7 @@ def _execute_with_dependencies(
                         runner=runner,
                         execution_context=execution_context,
                         run_instance=run_instance,
-                        artifact_paths=[rel for _, rel in files],
+                        artifact_paths=[rel for _, rel, _ in files],
                         generated_input_refs=generated_refs,
                     )
                 finally:

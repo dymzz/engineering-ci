@@ -251,25 +251,35 @@ async def _native_results(
 
 
 def _overlay_files(target_dir, artifacts):
-    """Materialize producer-isolated files onto an immutable Directory copy."""
+    """Materialize producer-isolated File/Directory objects."""
     updated = target_dir
-    for producer_root, rel in sorted(set(artifacts)):
-        updated = updated.with_file(
-            rel, dag.host().file(str(Path(producer_root) / rel))
-        )
+    for producer_root, rel, kind in sorted(set(artifacts)):
+        if kind == "directory":
+            updated = updated.with_directory(
+                rel, dag.host().directory(str(Path(producer_root) / rel))
+            )
+        else:
+            updated = updated.with_file(
+                rel, dag.host().file(str(Path(producer_root) / rel))
+            )
     return updated
 
 
 def _bundle_produced(artifacts, artifacts_files):
     updated = artifacts
-    for producer_ref, producer_root, rel in sorted(
+    for producer_ref, producer_root, rel, kind in sorted(
         artifacts_files,
         key=lambda item: (item[0]["kind"], item[0]["name"], item[2]),
     ):
-        updated = updated.with_file(
-            f"produced/{producer_ref['kind']}/{producer_ref['name']}/{rel}",
-            dag.host().file(str(Path(producer_root) / rel)),
-        )
+        target = f"produced/{producer_ref['kind']}/{producer_ref['name']}/{rel}"
+        if kind == "directory":
+            updated = updated.with_directory(
+                target, dag.host().directory(str(Path(producer_root) / rel))
+            )
+        else:
+            updated = updated.with_file(
+                target, dag.host().file(str(Path(producer_root) / rel))
+            )
     return updated
 
 
@@ -395,7 +405,9 @@ async def _execute_dag(
                 if closure is not None:
                     closure_records.append(closure)
                     if closure.get("verified"):
-                        for rel in closure.get("materialized_files") or ():
+                        for obj in closure.get("materialized_objects") or ():
+                            rel = obj["path"]
+                            kind = obj["kind"]
                             if rel in seen_paths and seen_paths[rel] != str(
                                 producer_root
                             ):
@@ -408,8 +420,8 @@ async def _execute_dag(
                                 )
                                 continue
                             seen_paths[rel] = str(producer_root)
-                            files.append((producer_root, rel))
-                            produced_files.append((p_ref, producer_root, rel))
+                            files.append((producer_root, rel, kind))
+                            produced_files.append((p_ref, producer_root, rel, kind))
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append(
@@ -477,7 +489,7 @@ async def _execute_dag(
                             root=consumer_root,
                             execution_context="dagger_export",
                             run_instance=run_instance,
-                            artifact_paths=[rel for _, rel in files],
+                            artifact_paths=[rel for _, rel, _ in files],
                             generated_input_refs=generated_refs,
                         )
                     finally:
