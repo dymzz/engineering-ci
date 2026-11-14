@@ -476,3 +476,205 @@ def test_expected_requires_plan_v2_and_valid_schema(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(plan)
     assert raised.value.code == "expected_checks_schema_unsupported"
+
+
+def _sample_effective_profile(
+    *,
+    required_obligations=None,
+    advisory_checks=None,
+    allowed_inapplicability=None,
+    declared_checks=None,
+    domain_complete=True,
+):
+    payload = {
+        "profile_ref": {"name": "consumer.pr", "version": "1.0.0"},
+        "profile_revision": "rev-2026-11-15",
+        "approval_source": "governance-signed",
+        "effective_at": "2026-11-15T00:00:00Z",
+        "context": "pr",
+        "action": "synchronize",
+        "target": "refs/heads/main",
+        "required_obligations": required_obligations or [],
+        "advisory_checks": advisory_checks or [],
+        "allowed_inapplicability": allowed_inapplicability or [],
+        "domain_complete": domain_complete,
+    }
+    if declared_checks is not None:
+        payload["declared_checks"] = declared_checks
+    return payload
+
+
+def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "branch-a")
+    branch_a = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "shared-target")
+    shared = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/a", shared, "refs/heads/a", base),
+            ("refs/heads/b", shared, "refs/heads/b", branch_a),
+        ],
+    )
+    sel = selection.select(
+        multi, selection.load_config(path / "ci-selection.toml"), root=path
+    )
+    p = selection.plan(
+        sel,
+        config=selection.load_config(path / "ci-selection.toml"),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    plan_contract.validate(p)
+    per_ref = p["expected_checks"]["per_ref"]
+    assert len(per_ref) == 2
+    assert per_ref[0]["baseline_ref"] != per_ref[1]["baseline_ref"]
+    assert per_ref[0]["expected_set_ref"] != per_ref[1]["expected_set_ref"]
+    assert per_ref[0]["scope_id"] != per_ref[1]["scope_id"]
+    assert (
+        per_ref[0]["checks"][0]["expected_check_ref"]
+        != per_ref[1]["checks"][0]["expected_check_ref"]
+    )
+
+    # Tampering a per-ref baseline is rejected rather than bypassed
+    tampered = json.loads(json.dumps(p))
+    tampered["expected_checks"]["per_ref"][1]["checks"][0]["baseline_ref"][
+        "base_commit"
+    ] = base
+    tampered["expected_checks"]["per_ref"][1]["checks"][0]["expected_check_ref"] = (
+        expected_checks.entry_identity(
+            tampered["expected_checks"]["per_ref"][1]["checks"][0]
+        )
+    )
+    tampered["expected_checks"]["per_ref"][1]["expected_set_ref"] = (
+        expected_checks._digest(tampered["expected_checks"]["per_ref"][1]["checks"])
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_baseline_mismatch"
+
+
+def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# docs change\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+    profile = _sample_effective_profile(
+        declared_checks=[
+            "whitespace",
+            "forwarding",
+            "docs",
+            "vulture",
+            "tach",
+            "source",
+        ],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/architecture",
+                "kind": "check",
+                "check_names": ["tach", "docs"],
+                "allow_inapplicable": True,
+            },
+            {
+                "obligation_ref": "ob/security-boundary",
+                "kind": "check",
+                "check_names": ["tach"],
+                "allow_inapplicable": True,
+            },
+            {
+                "obligation_ref": "ob/release-evidence",
+                "kind": "non_check",
+                "reason": "terminal telemetry required for release",
+            },
+        ],
+        advisory_checks=[{"name": "tach", "obligation_ref": "ob/advisory-arch"}],
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    plan_contract.validate(p)
+    exp = p["expected_checks"]
+    assert exp["schema_version"] == 2
+    assert exp["projection_source"] == "effective_profile"
+    assert exp["status"] == "complete"
+    assert exp["definitions_status"] == "domain_complete"
+    assert exp["consumer_completeness"] == "expected_domain_complete"
+    assert exp["observed_input_closure_status"] == "not_observed"
+    assert len(exp["non_check_obligations"]) == 1
+    assert exp["non_check_obligations"][0]["obligation_ref"] == "ob/release-evidence"
+    by_name = {item["name"]: item for item in exp["checks"]}
+    assert set(by_name["tach"]["required_by_obligations"]) == {
+        "ob/architecture",
+        "ob/security-boundary",
+    }
+    assert by_name["tach"]["advisory_for_obligations"] == ["ob/advisory-arch"]
+    assert len(by_name["tach"]["obligation_refs"]) == 3
+
+
+def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+    profile = _sample_effective_profile(
+        required_obligations=[
+            {
+                "obligation_ref": "ob/ext-deps",
+                "kind": "check",
+                "check_names": ["tach_external"],
+            }
+        ]
+    )
+    # Local ci-hygiene.toml has tach.external = false; must record conflict without silent drop
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    plan_contract.validate(p)
+    exp = p["expected_checks"]
+    assert exp["status"] == "partial"
+    assert exp["consumer_completeness"] == "incomplete_conflict"
+    assert exp["conflicts"][0]["kind"] == "hygiene_profile_conflict"
+    assert any(item["name"] == "tach_external" for item in exp["checks"])
+
+    # Deletion with non-check obligation only produces legitimate complete empty check set
+    del_changes = selection.changeset(
+        path,
+        base=base,
+        mode="push",
+        before=base,
+        after=selection.ZERO_OID,
+        remote_ref="refs/heads/topic",
+    )
+    del_sel = selection.select(del_changes, cfg, root=path)
+    del_profile = _sample_effective_profile()
+    del_plan = selection.plan(
+        del_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=del_profile,
+    )
+    plan_contract.validate(del_plan)
+    del_exp = del_plan["expected_checks"]
+    assert del_exp["checks"] == []
+    assert del_exp["status"] == "complete"
+    assert del_exp["reason"] == "domain_complete_empty"
+    assert any(ob["kind"] == "ref_deletion" for ob in del_exp["non_check_obligations"])

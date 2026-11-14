@@ -251,3 +251,15 @@ def test_domain_field_projection_is_configurable(tmp_path):
     report = check(root)
     assert report.status == "passed"
     assert report.counts["checked"] == 1
+
+
+def test_sources_config_identity_is_deterministic(tmp_path):
+    root = make(tmp_path, entries=[])
+    cfg_path = root / "ci-sources.toml"
+    cfg = sources.load_config(cfg_path)
+    first = sources.config_identity(cfg_path, cfg, root=root)
+    second = sources.config_identity(cfg_path, root=root)
+    assert first == second
+    assert first["path"] == "ci-sources.toml"
+    assert first["schema_version"] == sources.SCHEMA_VERSION
+    assert first["effective_check_config_ref"]["name"] == "engineering-ci.sources"

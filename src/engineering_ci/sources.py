@@ -134,6 +134,49 @@ def load_config(path):
     )
 
 
+def config_identity(path, config=None, *, root=None):
+    """Canonical config path, file digest, and normalized check-config digest."""
+    resolved = Path(path).resolve()
+    raw_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    loaded = load_config(resolved) if config is None else config
+    stored_path = str(resolved)
+    if root is not None:
+        base = Path(root).resolve()
+        if resolved.is_relative_to(base):
+            stored_path = resolved.relative_to(base).as_posix()
+    normalized = {
+        "schema_version": loaded.schema_version,
+        "manifest": loaded.manifest,
+        "entries_key": loaded.entries_key,
+        "path_field": loaded.path_field,
+        "sha256_field": loaded.sha256_field,
+        "size_field": loaded.size_field,
+        "acquired_roots": list(loaded.acquired_roots),
+        "exempt_paths": list(loaded.exempt_paths),
+        "environment_prefixes": list(loaded.environment_prefixes),
+        "require_text_unset": loaded.require_text_unset,
+        "require_acquired_roots": loaded.require_acquired_roots,
+        "environment_requires_no_digest": loaded.environment_requires_no_digest,
+        "require_under_acquired_roots": loaded.require_under_acquired_roots,
+    }
+    canonical = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    return {
+        "path": stored_path,
+        "sha256": raw_sha,
+        "schema_version": loaded.schema_version,
+        "effective_check_config_ref": {
+            "name": "engineering-ci.sources",
+            "version": str(loaded.schema_version),
+            "sha256": canonical,
+        },
+    }
+
+
 def _safe_path(value):
     path = _text(value, "manifest_path")
     if "\\" in path or path.startswith("/") or ":" in path:

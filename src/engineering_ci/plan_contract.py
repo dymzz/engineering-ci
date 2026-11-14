@@ -54,20 +54,44 @@ def _validate_expected(expected, git, plan):
         raise PlanError("expected_checks_invalid")
     if expected.get("kind") != "engineering-ci-expected-checks":
         raise PlanError("expected_checks_invalid")
-    if expected.get("schema_version") != 1:
+    schema_version = expected.get("schema_version")
+    if schema_version not in {1, 2}:
         raise PlanError("expected_checks_schema_unsupported")
     if expected.get("status") not in {"complete", "partial", "unknown"}:
         raise PlanError("expected_status_invalid")
-    if expected.get("status") == "complete":
-        raise PlanError("expected_complete_unproven")
-    if expected.get("consumer_completeness") != "not_claimed":
-        raise PlanError("expected_consumer_completeness_unproven")
-    if expected.get("projection_source") != "check_scope":
-        raise PlanError("expected_projection_source_unsupported")
+    projection_source = expected.get("projection_source")
+    if schema_version == 1:
+        if expected.get("status") == "complete":
+            raise PlanError("expected_complete_unproven")
+        if expected.get("consumer_completeness") != "not_claimed":
+            raise PlanError("expected_consumer_completeness_unproven")
+        if projection_source != "check_scope":
+            raise PlanError("expected_projection_source_unsupported")
+    else:
+        if projection_source != "effective_profile":
+            raise PlanError("expected_checks_schema_unsupported")
+        if expected.get("consumer_completeness") not in {
+            "expected_domain_complete",
+            "incomplete_conflict",
+            "incomplete_profile",
+            "unknown",
+        }:
+            raise PlanError("expected_consumer_completeness_invalid")
+        if expected.get("observed_input_closure_status") not in {
+            "not_observed",
+            "observed",
+            "complete",
+        }:
+            raise PlanError("expected_observed_closure_invalid")
+        if "non_check_obligations" in expected and not isinstance(
+            expected["non_check_obligations"], list
+        ):
+            raise PlanError("expected_non_check_obligations_invalid")
+
     check_scope = plan.get("check_scope") or (plan.get("selection") or {}).get(
         "check_scope"
     )
-    if check_scope is None:
+    if schema_version == 1 and check_scope is None:
         raise PlanError("expected_check_scope_missing")
     rule = expected.get("selection_rule_ref")
     generator = plan.get("generator")
@@ -144,15 +168,36 @@ def _validate_expected(expected, git, plan):
         not isinstance(item, str) for item in missing
     ):
         raise PlanError("expected_missing_invalid")
-    if expected.get("conflicts"):
-        raise PlanError("expected_conflicts_unresolved")
-    if not checks and (
-        expected.get("status") != "unknown"
-        or expected.get("definitions_status") != "unknown"
-    ):
-        raise PlanError("expected_status_inconsistent")
-    if missing and expected.get("definitions_status") == "requested_names_complete":
-        raise PlanError("expected_status_inconsistent")
+    conflicts = expected.get("conflicts") or []
+    if schema_version == 1:
+        if conflicts:
+            raise PlanError("expected_conflicts_unresolved")
+        if not checks and (
+            expected.get("status") != "unknown"
+            or expected.get("definitions_status") != "unknown"
+        ):
+            raise PlanError("expected_status_inconsistent")
+        if missing and expected.get("definitions_status") == "requested_names_complete":
+            raise PlanError("expected_status_inconsistent")
+    else:
+        if conflicts and (
+            expected.get("status") == "complete"
+            or expected.get("consumer_completeness") != "incomplete_conflict"
+        ):
+            raise PlanError("expected_status_inconsistent")
+        if expected.get("status") == "complete" and (
+            expected.get("consumer_completeness") != "expected_domain_complete"
+            or expected.get("definitions_status") != "domain_complete"
+            or missing
+            or conflicts
+            or not (expected.get("effective_profile") or {}).get("domain_complete")
+        ):
+            raise PlanError("expected_complete_unproven")
+        if missing and expected.get("definitions_status") in {
+            "requested_names_complete",
+            "domain_complete",
+        }:
+            raise PlanError("expected_status_inconsistent")
     unknown_names = sorted(
         str(item.get("name"))
         for item in checks
@@ -229,11 +274,27 @@ def _validate_consumer_fields(value, chosen, git):
         raise PlanError("inputs_invalid")
     for key in ("hygiene", "sources"):
         declared = (inputs or {}).get(key)
-        if declared is not None and (
-            not isinstance(declared, dict)
-            or ("path" in declared and not isinstance(declared["path"], str))
-        ):
-            raise PlanError("inputs_invalid")
+        if declared is not None:
+            if not isinstance(declared, dict) or (
+                "path" in declared and not isinstance(declared["path"], str)
+            ):
+                raise PlanError("inputs_invalid")
+            if declared.get("sha256") is not None and not re.fullmatch(
+                r"[0-9a-f]{64}", str(declared["sha256"])
+            ):
+                raise PlanError("inputs_invalid")
+            if declared.get("schema_version") is not None and (
+                type(declared["schema_version"]) is not int
+            ):
+                raise PlanError("inputs_invalid")
+            eff = declared.get("effective_check_config_ref")
+            if eff is not None and (
+                not isinstance(eff, dict)
+                or not isinstance(eff.get("name"), str)
+                or not isinstance(eff.get("version"), str)
+                or not isinstance(eff.get("sha256"), str)
+            ):
+                raise PlanError("inputs_invalid")
     binding = value.get("post_completion")
     if binding is not None:
         if not isinstance(binding, dict):

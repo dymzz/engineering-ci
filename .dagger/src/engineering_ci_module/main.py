@@ -308,6 +308,11 @@ class EngineeringCi:
                 "tests": {"status": "not_executed", "exit_code": 3},
                 "checks": [],
                 "prerequisites": [],
+                "coverage": {
+                    "required": bool(chosen.get("coverage_required")),
+                    "satisfied": False,
+                    "scope": "unverified",
+                },
                 "source_handoff": {
                     "original_git": git,
                     "exported_content_id": exported_content_id,
@@ -315,6 +320,15 @@ class EngineeringCi:
                     "original_git_snapshot_preserved": True,
                 },
             }
+            gate = execution.target_test_gate(value)
+            if gate is not None:
+                gate_reason, coverage_scope = gate
+                report["status"] = "blocked"
+                report["exit_code"] = 5
+                report["reason"] = gate_reason
+                if coverage_scope is not None:
+                    report["coverage"]["scope"] = coverage_scope
+                return json.dumps(report, ensure_ascii=False, sort_keys=True)
             if targets:
                 container = self._uv_container(source, python_version)
                 junit = "/tmp/engineering-ci-junit.xml"

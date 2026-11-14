@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-from engineering_ci import expected_checks, plan_contract, semconv_registry
+from engineering_ci import (
+    expected_checks,
+    hygiene,
+    plan_contract,
+    semconv_registry,
+    sources,
+)
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -114,6 +120,12 @@ class ChangeSet:
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
     source_refusal: str | None = None
+    deleted_paths: tuple[str, ...] = ()
+    ref_action: str | None = None
+    object_type: str | None = None
+    force_push: bool = False
+    baseline_status: str | None = None
+    non_check_obligations: tuple[str, ...] = ()
 
     @property
     def execution_tree(self):
@@ -332,6 +344,35 @@ def _git_bytes(root, *args, env=None):
     )
 
 
+def _hidden_worktree_refusal(
+    root,
+    target_prefix,
+    *,
+    env=None,
+    skip_reason,
+    assume_reason,
+    error_reason,
+):
+    tracked = _git(root, "ls-files", "-v", "-z", env=env)
+    if tracked.returncode != 0:
+        return error_reason
+    for entry in tracked.stdout.split("\0"):
+        if not entry:
+            continue
+        tag, path = entry[0], entry[2:]
+        if tag != "S" and not tag.islower():
+            continue
+        blob = _git_bytes(root, "cat-file", "blob", f"{target_prefix}{path}", env=env)
+        file = Path(root) / path
+        if (
+            blob.returncode != 0
+            or not file.is_file()
+            or file.read_bytes() != blob.stdout
+        ):
+            return skip_reason if tag == "S" else assume_reason
+    return None
+
+
 def index_source_refusal(root, expected_tree, *, index_file=None):
     """One Index source judgment shared by selection and execution.
 
@@ -360,33 +401,53 @@ def index_source_refusal(root, expected_tree, *, index_file=None):
         return "index_git_check_failed"
     if untracked.stdout:
         return "index_untracked_inputs"
-    tracked = _git(root, "ls-files", "-v", "-z", env=env)
-    if tracked.returncode != 0:
-        return "index_git_check_failed"
-    for entry in tracked.stdout.split("\0"):
-        if not entry:
-            continue
-        tag, path = entry[0], entry[2:]
-        if tag != "S" and not tag.islower():
-            continue
-        blob = _git_bytes(root, "cat-file", "blob", f":{path}", env=env)
-        file = Path(root) / path
-        if blob.returncode != 0 or not file.is_file():
-            reason = (
-                "index_skip_worktree_bytes_mismatch"
-                if tag == "S"
-                else "index_assume_unchanged_bytes_mismatch"
-            )
-            return reason
-        if file.read_bytes() != blob.stdout:
-            reason = (
-                "index_skip_worktree_bytes_mismatch"
-                if tag == "S"
-                else "index_assume_unchanged_bytes_mismatch"
-            )
-            return reason
-    return None
-    return None
+    return _hidden_worktree_refusal(
+        root,
+        ":",
+        env=env,
+        skip_reason="index_skip_worktree_bytes_mismatch",
+        assume_reason="index_assume_unchanged_bytes_mismatch",
+        error_reason="index_git_check_failed",
+    )
+
+
+def worktree_tree_refusal(root, expected_tree):
+    """Refuse immutable commit/push/pr_merge execution when the worktree diverges."""
+    if not expected_tree:
+        return "checkout_tree_missing"
+    if _tree_of(root, "HEAD") != expected_tree:
+        return "checkout_tree_mismatch"
+    diff = _git(root, "diff-index", "--quiet", expected_tree, "--")
+    if diff.returncode == 1:
+        return "worktree_tree_mismatch"
+    if diff.returncode != 0:
+        return "worktree_git_query_failed"
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked.returncode != 0:
+        return "worktree_git_query_failed"
+    if untracked.stdout:
+        return "worktree_untracked_inputs"
+    return _hidden_worktree_refusal(
+        root,
+        f"{expected_tree}:",
+        skip_reason="checkout_skip_worktree_bytes_mismatch",
+        assume_reason="checkout_assume_unchanged_bytes_mismatch",
+        error_reason="worktree_git_query_failed",
+    )
+
+
+def _rev_parse(root, ref):
+    result = _git(root, "rev-parse", "--verify", str(ref))
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
+
+
+def _object_type(root, ref):
+    result = _git(root, "cat-file", "-t", str(ref))
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
 
 
 def _resolve(root, ref):
@@ -454,13 +515,47 @@ def directory_content_id(root):
     return digest.hexdigest()
 
 
+ZERO_OID = "0" * 40
+
+
+def _is_zero_oid(value):
+    return isinstance(value, str) and len(value) in {40, 64} and set(value) == {"0"}
+
+
+def _resolve_git_dir(root):
+    root = Path(root).resolve()
+    result = _git(root, "rev-parse", "--absolute-git-dir")
+    if result.returncode == 0 and result.stdout.strip():
+        candidate = Path(result.stdout.strip())
+        if candidate.is_dir():
+            return candidate
+    git_dir = root / ".git"
+    return git_dir if git_dir.is_dir() else None
+
+
+def _diff_deleted_paths(root, *diff_args, env=None):
+    result = _git(
+        root,
+        "diff",
+        "--no-renames",
+        "--diff-filter=D",
+        "--name-only",
+        "-z",
+        *diff_args,
+        env=env,
+    )
+    if result.returncode != 0:
+        return ()
+    return tuple(sorted({path for path in result.stdout.split("\0") if path}))
+
+
 def tree_content_id(root, tree):
     """Content id for a Git tree, matching directory_content_id on a raw checkout."""
     import tempfile
 
     root = Path(root).resolve()
-    git_dir = root / ".git"
-    if not git_dir.exists():
+    git_dir = _resolve_git_dir(root)
+    if git_dir is None:
         return None
     with tempfile.TemporaryDirectory() as temporary:
         temporary = Path(temporary)
@@ -494,37 +589,301 @@ def tree_content_id(root, tree):
         return directory_content_id(work)
 
 
-def changeset_multi(root, refs):
-    """Union of several push ref pairs; execution still requires per-ref runs."""
-    root = Path(root)
-    parts = []
-    for before, after in refs:
-        parts.append(
-            changeset(root, base=before, mode="push", before=before, after=after)
+def parse_pre_push_stdin(text):
+    """Parse Git pre-push hook 4-tuple lines into structured ref updates."""
+    updates = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 4:
+            raise SelectionError("pre_push_input_invalid")
+        local_ref, local_oid, remote_ref, remote_oid = parts
+        updates.append(
+            {
+                "local_ref": local_ref,
+                "local_oid": local_oid,
+                "remote_ref": remote_ref,
+                "remote_oid": remote_oid,
+                "before": remote_oid,
+                "after": local_oid,
+            }
         )
-    paths = sorted({path for part in parts for path in part.paths})
-    references = tuple(
-        {
-            "before": part.base_commit,
-            "after": part.head_commit,
-            "paths": list(part.paths),
-            "complete": part.complete,
+    return updates
+
+
+def _normalize_push_ref(item, default_baseline=None):
+    if isinstance(item, dict):
+        before = item.get("remote_oid", item.get("before"))
+        after = item.get("local_oid", item.get("after"))
+        return {
+            "before": before,
+            "after": after,
+            "local_ref": item.get("local_ref"),
+            "remote_ref": item.get("remote_ref"),
+            "new_ref_baseline": item.get("new_ref_baseline", default_baseline),
         }
-        for part in parts
+    if isinstance(item, (tuple, list)) and len(item) == 4:
+        local_ref, local_oid, remote_ref, remote_oid = item
+        return {
+            "before": remote_oid,
+            "after": local_oid,
+            "local_ref": local_ref,
+            "remote_ref": remote_ref,
+            "new_ref_baseline": default_baseline,
+        }
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        before, after = item
+        return {
+            "before": before,
+            "after": after,
+            "local_ref": None,
+            "remote_ref": None,
+            "new_ref_baseline": default_baseline,
+        }
+    raise SelectionError("multi_ref_item_invalid")
+
+
+def changeset_multi(root, refs, *, new_ref_baseline=None):
+    """Union of several push ref updates; execution still requires per-ref runs."""
+    root = Path(root)
+    normalized_refs = [_normalize_push_ref(item, new_ref_baseline) for item in refs]
+    parts = [
+        changeset(
+            root,
+            base=entry["before"] or "",
+            head=entry["after"] or "HEAD",
+            mode="push",
+            before=entry["before"],
+            after=entry["after"],
+            local_ref=entry["local_ref"],
+            remote_ref=entry["remote_ref"],
+            new_ref_baseline=entry["new_ref_baseline"],
+        )
+        for entry in normalized_refs
+    ]
+    paths = sorted({path for part in parts for path in part.paths})
+    deleted_paths = sorted({path for part in parts for path in part.deleted_paths})
+    non_check = tuple(
+        sorted({ob for part in parts for ob in part.non_check_obligations})
     )
+    references = []
+    for entry, part in zip(normalized_refs, parts, strict=True):
+        before_id = part.base_commit or (
+            entry["before"]
+            if entry["before"] and not _is_zero_oid(entry["before"])
+            else "0" * 40
+        )
+        after_id = part.head_commit or (
+            entry["after"]
+            if entry["after"] and not _is_zero_oid(entry["after"])
+            else "0" * 40
+        )
+        source_ref = (
+            entry["remote_ref"] or entry["local_ref"] or part.head_ref or after_id
+        )
+        references.append(
+            {
+                "local_ref": entry["local_ref"],
+                "remote_ref": entry["remote_ref"],
+                "source_ref": source_ref,
+                "baseline_ref": f"{before_id} -> {after_id}",
+                "before": part.base_commit,
+                "after": part.head_commit,
+                "raw_before": entry["before"],
+                "raw_after": entry["after"],
+                "tree": part.tree,
+                "ref_action": part.ref_action,
+                "object_type": part.object_type,
+                "force_push": part.force_push,
+                "baseline_status": part.baseline_status,
+                "non_check_obligations": list(part.non_check_obligations),
+                "paths": list(part.paths),
+                "deleted_paths": list(part.deleted_paths),
+                "complete": part.complete,
+                "error": part.error,
+            }
+        )
+    all_complete = all(part.complete for part in parts) and bool(parts)
     return ChangeSet(
         root=root,
-        base_ref=",".join(before for before, _ in refs),
-        head_ref=",".join(after for _, after in refs),
-        base_commit=parts[0].base_commit if parts else None,
-        head_commit=parts[-1].head_commit if parts else None,
+        base_ref=",".join(str(entry["before"] or "") for entry in normalized_refs),
+        head_ref=",".join(str(entry["after"] or "") for entry in normalized_refs),
+        base_commit=None,
+        head_commit=None,
         tree=None,
         paths=tuple(paths),
         worktree_dirty=False,
-        complete=all(part.complete for part in parts) and bool(parts),
-        error=None if all(part.complete for part in parts) else "multi_ref_incomplete",
+        complete=all_complete,
+        error=None if all_complete else "multi_ref_incomplete",
         snapshot="multi",
-        references=references,
+        references=tuple(references),
+        deleted_paths=tuple(deleted_paths),
+        non_check_obligations=non_check,
+    )
+
+
+def _push_changeset(
+    root,
+    *,
+    before=None,
+    after=None,
+    local_ref=None,
+    remote_ref=None,
+    new_ref_baseline=None,
+):
+    head_label = remote_ref or local_ref or (after or "")
+    if after and _is_zero_oid(after):
+        before_commit = (
+            _resolve(root, before) if before and not _is_zero_oid(before) else None
+        )
+        return ChangeSet(
+            root=root,
+            base_ref=before or "",
+            head_ref=head_label,
+            base_commit=before_commit,
+            head_commit=None,
+            tree=None,
+            paths=(),
+            worktree_dirty=False,
+            complete=True,
+            error=None,
+            snapshot="push",
+            ref_action="delete",
+            object_type="delete",
+            baseline_status="not_applicable",
+            non_check_obligations=("ref_deletion",),
+        )
+    after_oid = _rev_parse(root, after) if after else None
+    if after_oid is None:
+        return ChangeSet(
+            root=root,
+            base_ref=before or "",
+            head_ref=head_label,
+            base_commit=None,
+            head_commit=None,
+            tree=None,
+            paths=(),
+            worktree_dirty=False,
+            complete=False,
+            error="push_ref_unresolved",
+            snapshot="push",
+            baseline_status="unknown",
+        )
+    obj_type = _object_type(root, after_oid) or "unknown"
+    after_commit = _resolve(root, after_oid)
+    if obj_type in {"blob", "tree"} or after_commit is None:
+        return ChangeSet(
+            root=root,
+            base_ref=before or "",
+            head_ref=head_label,
+            base_commit=None,
+            head_commit=None,
+            tree=None,
+            paths=(),
+            worktree_dirty=False,
+            complete=False,
+            error="non_commit_object",
+            snapshot="push",
+            object_type=obj_type,
+            baseline_status="unknown",
+        )
+    target_tree = _tree_of(root, after_commit)
+    if before and _is_zero_oid(before):
+        if not new_ref_baseline:
+            return ChangeSet(
+                root=root,
+                base_ref="",
+                head_ref=head_label,
+                base_commit=None,
+                head_commit=after_commit,
+                tree=target_tree,
+                paths=(),
+                worktree_dirty=False,
+                complete=False,
+                error="new_ref_baseline_unknown",
+                snapshot="push",
+                ref_action="create",
+                object_type=obj_type,
+                baseline_status="unknown",
+            )
+        before_commit = _resolve(root, new_ref_baseline)
+        if before_commit is None:
+            return ChangeSet(
+                root=root,
+                base_ref=str(new_ref_baseline),
+                head_ref=head_label,
+                base_commit=None,
+                head_commit=after_commit,
+                tree=target_tree,
+                paths=(),
+                worktree_dirty=False,
+                complete=False,
+                error="new_ref_baseline_unresolved",
+                snapshot="push",
+                ref_action="create",
+                object_type=obj_type,
+                baseline_status="unknown",
+            )
+        base_label = str(new_ref_baseline)
+        ref_action = "create"
+        force_push = False
+        baseline_status = "policy"
+    else:
+        before_commit = _resolve(root, before) if before else None
+        if before_commit is None:
+            return ChangeSet(
+                root=root,
+                base_ref=before or "",
+                head_ref=head_label,
+                base_commit=None,
+                head_commit=after_commit,
+                tree=target_tree,
+                paths=(),
+                worktree_dirty=False,
+                complete=False,
+                error="old_object_unavailable",
+                snapshot="push",
+                ref_action="update",
+                object_type=obj_type,
+                baseline_status="old_object_unavailable",
+            )
+        ancestor = _git(
+            root, "merge-base", "--is-ancestor", before_commit, after_commit
+        )
+        force_push = ancestor.returncode == 1
+        ref_action = "force_update" if force_push else "update"
+        base_label = before or ""
+        baseline_status = "resolved"
+    diff = _git(
+        root,
+        "diff",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        before_commit,
+        after_commit,
+    )
+    paths = [path for path in diff.stdout.split("\0") if path]
+    deleted = _diff_deleted_paths(root, before_commit, after_commit)
+    return ChangeSet(
+        root=root,
+        base_ref=base_label,
+        head_ref=head_label,
+        base_commit=before_commit,
+        head_commit=after_commit,
+        tree=target_tree,
+        paths=tuple(sorted(set(paths))),
+        worktree_dirty=False,
+        complete=diff.returncode == 0,
+        error=None if diff.returncode == 0 else "push_diff_failed",
+        snapshot="push",
+        deleted_paths=deleted,
+        ref_action=ref_action,
+        object_type=obj_type,
+        force_push=force_push,
+        baseline_status=baseline_status,
     )
 
 
@@ -538,6 +897,9 @@ def changeset(
     before=None,
     after=None,
     index_file=None,
+    local_ref=None,
+    remote_ref=None,
+    new_ref_baseline=None,
 ):
     """Describe the Git snapshot behind a change set.
 
@@ -546,44 +908,13 @@ def changeset(
     """
     root = Path(root)
     if mode == "push":
-        before_commit = _resolve(root, before) if before else None
-        after_commit = _resolve(root, after) if after else None
-        if before_commit is None or after_commit is None:
-            return ChangeSet(
-                root,
-                before or "",
-                after or "",
-                before_commit,
-                after_commit,
-                None,
-                (),
-                False,
-                False,
-                "push_ref_unresolved",
-                snapshot="push",
-            )
-        diff = _git(
+        return _push_changeset(
             root,
-            "diff",
-            "--no-renames",
-            "--name-only",
-            "-z",
-            before_commit,
-            after_commit,
-        )
-        paths = [path for path in diff.stdout.split("\0") if path]
-        return ChangeSet(
-            root=root,
-            base_ref=before or "",
-            head_ref=after or "",
-            base_commit=before_commit,
-            head_commit=after_commit,
-            tree=_tree_of(root, after_commit),
-            paths=tuple(sorted(set(paths))),
-            worktree_dirty=False,
-            complete=diff.returncode == 0,
-            error=None if diff.returncode == 0 else "push_diff_failed",
-            snapshot="push",
+            before=before,
+            after=after,
+            local_ref=local_ref,
+            remote_ref=remote_ref,
+            new_ref_baseline=new_ref_baseline,
         )
     head_commit = _resolve(root, head)
     if head_commit is None:
@@ -622,6 +953,11 @@ def changeset(
             root, "diff", "--no-renames", "--name-only", "-z", base_commit, head_commit
         )
         paths = [path for path in diff.stdout.split("\0") if path]
+        deleted = (
+            _diff_deleted_paths(root, base_commit, head_commit)
+            if diff.returncode == 0
+            else ()
+        )
         return ChangeSet(
             root,
             base,
@@ -634,6 +970,7 @@ def changeset(
             diff.returncode == 0,
             None if diff.returncode == 0 else "diff_failed",
             snapshot="commit",
+            deleted_paths=deleted,
         )
     if mode == "index":
         index_env = (
@@ -657,6 +994,11 @@ def changeset(
             write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
+        deleted = (
+            _diff_deleted_paths(root, "--cached", base_commit, env=index_env)
+            if diff.returncode == 0
+            else ()
+        )
         status = _git(
             root,
             "status",
@@ -688,6 +1030,7 @@ def changeset(
             if index_file is not None
             else None,
             source_refusal=refusal,
+            deleted_paths=deleted,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -732,6 +1075,11 @@ def changeset(
             merge_tree,
         )
         paths = [path for path in diff.stdout.split("\0") if path]
+        deleted = (
+            _diff_deleted_paths(root, base_tip, merge_tree)
+            if diff.returncode == 0
+            else ()
+        )
         return ChangeSet(
             root,
             base,
@@ -746,6 +1094,7 @@ def changeset(
             snapshot="pr_merge",
             merge_tree=merge_tree,
             base_tip=base_tip,
+            deleted_paths=deleted,
         )
     if mode != "worktree":
         return ChangeSet(
@@ -896,6 +1245,15 @@ def select(changes, config, *, root, full=False):
     """Select tests for one change set; unknown coverage escalates, never passes."""
     if getattr(changes, "source_refusal", None):
         raise SelectionError(changes.source_refusal)
+    if getattr(changes, "ref_action", None) == "delete":
+        return Selection(
+            changeset=changes,
+            tests=(),
+            checks=config.checks,
+            status="not_applicable",
+            escalated=False,
+            reasons={"skipped": ["remote_ref_deleted"]},
+        )
     root = Path(root)
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
@@ -1028,95 +1386,187 @@ def _digest(path):
         return None
 
 
-def _check_scope(selection, config, root):
-    """Per-check impact; a documentation-only change still selects Lychee."""
-    paths = [_normalized(path) for path in selection.changeset.paths]
-    if not selection.changeset.complete:
-        return [
-            {
-                "name": config.framework,
-                "status": selection.status,
-                "inputs": list(selection.tests),
-                "reason": selection.escalation_reason,
-            },
-            *[
-                {
-                    "name": name,
-                    "status": "unknown",
-                    "inputs": [],
-                    "reason": "git input is incomplete; full applicability unknown",
-                }
-                for name in (
-                    "docs",
-                    "tach",
-                    "vulture",
-                    "source",
-                    *[
-                        check
-                        for check in config.checks
-                        if check
-                        in {"weaver_registry", "weaver_live", "weaver_terminal"}
-                    ],
-                )
-            ],
-        ]
-    docs_changed = sorted(
-        path
-        for path in paths
-        if path.lower().endswith(config.check_scope.docs_suffixes)
+def _fallback_hygiene_config(config):
+    return hygiene.Config(
+        schema_version=hygiene.SCHEMA_VERSION,
+        checks=hygiene._DEFAULT_CHECKS,
+        docs=hygiene.DocsConfig(
+            suffixes=config.check_scope.docs_suffixes,
+            excluded_prefixes=(),
+        ),
+        lychee=hygiene.LycheeConfig(
+            executable="lychee",
+            arguments=("--offline", "--no-progress", "--files-from", "-"),
+        ),
+        forwarding=hygiene.ForwardingConfig(source_prefix="src/"),
+        vulture=hygiene.VultureConfig(
+            executable="vulture",
+            paths=("src",),
+            min_confidence=60,
+            advisory_exit_codes=frozenset({3}),
+        ),
+        tach=hygiene.TachConfig(
+            executable="tach",
+            path=config.tach,
+            external=False,
+        ),
     )
-    removed = any(not (root / path).exists() for path in paths)
-    code_changed = any(
-        path.startswith(config.check_scope.code_prefixes) for path in paths
-    ) or any(path in {"tach.toml", "pyproject.toml"} for path in paths)
-    source_changed = any(
-        path.startswith(config.check_scope.source_prefixes) for path in paths
+
+
+def _resolve_hygiene_input(
+    root,
+    config,
+    *,
+    hygiene_config=None,
+    hygiene_config_path=None,
+):
+    root = Path(root)
+    if hygiene_config_path is not None:
+        raw_path = Path(hygiene_config_path)
+        resolved = raw_path if raw_path.is_absolute() else root / raw_path
+        loaded = (
+            hygiene_config
+            if isinstance(hygiene_config, hygiene.Config)
+            else hygiene.load_config(resolved)
+        )
+        return loaded, hygiene.config_identity(resolved, loaded, root=root)
+    if isinstance(hygiene_config, (str, Path)):
+        raw_path = Path(hygiene_config)
+        resolved = raw_path if raw_path.is_absolute() else root / raw_path
+        loaded = hygiene.load_config(resolved)
+        return loaded, hygiene.config_identity(resolved, loaded, root=root)
+    default_path = root / "ci-hygiene.toml"
+    if isinstance(hygiene_config, hygiene.Config):
+        identity = (
+            hygiene.config_identity(default_path, hygiene_config, root=root)
+            if default_path.is_file()
+            else None
+        )
+        return hygiene_config, identity
+    if default_path.is_file():
+        loaded = hygiene.load_config(default_path)
+        return loaded, hygiene.config_identity(default_path, loaded, root=root)
+    return _fallback_hygiene_config(config), None
+
+
+def _resolve_sources_input(
+    root,
+    *,
+    sources_config=None,
+    sources_config_path=None,
+):
+    root = Path(root)
+    if sources_config_path is not None:
+        raw_path = Path(sources_config_path)
+        resolved = raw_path if raw_path.is_absolute() else root / raw_path
+        loaded = (
+            sources_config
+            if isinstance(sources_config, sources.Config)
+            else sources.load_config(resolved)
+        )
+        return loaded, sources.config_identity(resolved, loaded, root=root)
+    if isinstance(sources_config, (str, Path)):
+        raw_path = Path(sources_config)
+        resolved = raw_path if raw_path.is_absolute() else root / raw_path
+        loaded = sources.load_config(resolved)
+        return loaded, sources.config_identity(resolved, loaded, root=root)
+    default_path = root / "ci-sources.toml"
+    if isinstance(sources_config, sources.Config):
+        identity = (
+            sources.config_identity(default_path, sources_config, root=root)
+            if default_path.is_file()
+            else None
+        )
+        return sources_config, identity
+    if default_path.is_file():
+        loaded = sources.load_config(default_path)
+        return loaded, sources.config_identity(default_path, loaded, root=root)
+    return None, None
+
+
+def _check_scope(
+    selection,
+    config,
+    root,
+    *,
+    hygiene_config=None,
+    sources_config=None,
+    sources_identity=None,
+):
+    """Per-check impact aligned with authoritative Hygiene and Sources configs."""
+    changes = selection.changeset
+    if hygiene_config is None:
+        hygiene_config, _ = _resolve_hygiene_input(root, config)
+    hygiene_scopes = hygiene.check_applicability(
+        changes,
+        hygiene_config,
+        root=root,
+        full=False,
+        code_prefixes=config.check_scope.code_prefixes,
     )
-    scopes = [
-        {
+    is_delete = getattr(changes, "ref_action", None) == "delete"
+    paths = [_normalized(path) for path in changes.paths]
+    if is_delete:
+        test_entry = {
+            "name": config.framework,
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "remote_ref_deleted",
+        }
+    else:
+        test_entry = {
             "name": config.framework,
             "status": selection.status,
             "inputs": list(selection.tests),
             "reason": selection.escalation_reason,
-        },
-        {
-            "name": "docs",
-            "status": "selected" if docs_changed or removed else "not_applicable",
-            "inputs": docs_changed,
-            "recheck_all": bool(removed),
-            "reason": (
-                "deleted path may break unchanged documents"
-                if removed
-                else "changed documents"
-                if docs_changed
-                else "no document changes"
-            ),
-        },
-        {
-            "name": "tach",
-            "status": "selected" if code_changed else "not_applicable",
-            "inputs": [],
-            "reason": "code changed" if code_changed else "no code changes",
-        },
-        {
-            "name": "vulture",
-            "status": "selected" if code_changed else "not_applicable",
-            "inputs": [],
-            "reason": "code changed" if code_changed else "no code changes",
-        },
-        {
-            "name": "source",
-            "status": "selected" if source_changed else "not_applicable",
-            "inputs": [
-                path
-                for path in paths
-                if path.startswith(config.check_scope.source_prefixes)
-            ],
-            "reason": "source inputs changed"
-            if source_changed
-            else "no source changes",
-        },
-    ]
+        }
+    scopes = [test_entry]
+    for name in hygiene.effective_checks(hygiene_config):
+        scopes.append(hygiene_scopes[name])
+    if is_delete:
+        scopes.append(
+            {
+                "name": "source",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "remote_ref_deleted",
+            }
+        )
+    elif not changes.complete:
+        scopes.append(
+            {
+                "name": "source",
+                "status": "unknown",
+                "inputs": [],
+                "reason": "git input is incomplete; full applicability unknown",
+            }
+        )
+    else:
+        source_prefixes = list(config.check_scope.source_prefixes)
+        exact_source_files = set()
+        if sources_config is not None:
+            for item in sources_config.acquired_roots:
+                prefix = item.rstrip("/") + "/"
+                if prefix not in source_prefixes:
+                    source_prefixes.append(prefix)
+            exact_source_files.add(_normalized(sources_config.manifest))
+        if sources_identity and sources_identity.get("path"):
+            exact_source_files.add(_normalized(sources_identity["path"]))
+        source_inputs = [
+            path
+            for path in paths
+            if path in exact_source_files or path.startswith(tuple(source_prefixes))
+        ]
+        scopes.append(
+            {
+                "name": "source",
+                "status": "selected" if source_inputs else "not_applicable",
+                "inputs": source_inputs,
+                "reason": (
+                    "source inputs changed" if source_inputs else "no source changes"
+                ),
+            }
+        )
     weaver_inputs = [
         path for path in paths if path.startswith(config.check_scope.weaver_prefixes)
     ]
@@ -1124,6 +1574,26 @@ def _check_scope(selection, config, root):
     # weaver_terminal runs only via an explicit post-completion Plan (PR #78 P1-2).
     for name in config.checks:
         if name not in {"weaver_registry", "weaver_live", "weaver_terminal"}:
+            continue
+        if is_delete:
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "not_applicable",
+                    "inputs": [],
+                    "reason": "remote_ref_deleted",
+                }
+            )
+            continue
+        if not changes.complete:
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": "git input is incomplete; full applicability unknown",
+                }
+            )
             continue
         if name == "weaver_terminal":
             scopes.append(
@@ -1151,6 +1621,25 @@ def _check_scope(selection, config, root):
 
 
 def _tach_check(root, config, changes):
+    if changes.snapshot == "index":
+        refusal = index_source_refusal(
+            root, changes.execution_tree, index_file=changes.index_file
+        )
+    elif changes.execution_tree:
+        refusal = worktree_tree_refusal(root, changes.execution_tree)
+    else:
+        refusal = None
+    if refusal:
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": f"execution refused: {refusal}",
+            "reason": refusal,
+            "tach_sha256": _digest(root / config.tach),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
     try:
         result = subprocess.run(
             ["tach", "check"],
@@ -1191,20 +1680,53 @@ def _graph_validation(selection, config, root, value):
         return {"status": "untrusted", "reason": "tach_config_mismatch"}
     if value.get("source_tree") != expected_tree:
         return {"status": "untrusted", "reason": "source_tree_mismatch"}
-    return {
+    report = {
         "status": value.get("status", "failed"),
         "exit_code": value.get("exit_code"),
         "tach_sha256": value.get("tach_sha256"),
         "source_tree": value.get("source_tree"),
     }
+    if value.get("reason") is not None:
+        report["reason"] = value.get("reason")
+    return report
 
 
-def plan(selection, *, config, config_path, root, tach_validation=None):
+def plan(
+    selection,
+    *,
+    config,
+    config_path,
+    root,
+    tach_validation=None,
+    hygiene_config=None,
+    hygiene_config_path=None,
+    sources_config=None,
+    sources_config_path=None,
+    effective_profile=None,
+):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
     tach_path = root / config.tach
+    loaded_hygiene, hygiene_identity = _resolve_hygiene_input(
+        root,
+        config,
+        hygiene_config=hygiene_config,
+        hygiene_config_path=hygiene_config_path,
+    )
+    loaded_sources, sources_identity = _resolve_sources_input(
+        root,
+        sources_config=sources_config,
+        sources_config_path=sources_config_path,
+    )
     graph = _graph_validation(selection, config, root, tach_validation)
-    scope = _check_scope(selection, config, root)
+    scope = _check_scope(
+        selection,
+        config,
+        root,
+        hygiene_config=loaded_hygiene,
+        sources_config=loaded_sources,
+        sources_identity=sources_identity,
+    )
     content_binding = (
         worktree_content_binding(root, selection.changeset.paths)
         if selection.changeset.snapshot == "worktree" and selection.changeset.paths
@@ -1215,7 +1737,20 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
         scope,
         config_path=config_path,
         content_binding=content_binding,
+        hygiene_config=loaded_hygiene,
+        hygiene_identity=hygiene_identity,
+        sources_identity=sources_identity,
+        effective_profile=effective_profile,
+        code_prefixes=config.check_scope.code_prefixes,
     )
+    inputs_payload = {
+        "config": {"path": str(config_path), "sha256": _digest(config_path)},
+        "tach": {"path": config.tach, "sha256": _digest(tach_path)},
+    }
+    if hygiene_identity is not None:
+        inputs_payload["hygiene"] = hygiene_identity
+    if sources_identity is not None:
+        inputs_payload["sources"] = sources_identity
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
@@ -1251,6 +1786,12 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "execution_tree": selection.changeset.execution_tree,
             "references": list(selection.changeset.references),
             "changed_paths": list(selection.changeset.paths),
+            "deleted_paths": list(selection.changeset.deleted_paths),
+            "ref_action": selection.changeset.ref_action,
+            "object_type": selection.changeset.object_type,
+            "force_push": selection.changeset.force_push,
+            "baseline_status": selection.changeset.baseline_status,
+            "non_check_obligations": list(selection.changeset.non_check_obligations),
             "content_binding": content_binding,
             "source_tree_id": (
                 tree_content_id(root, selection.changeset.execution_tree)
@@ -1282,10 +1823,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             name: dict(spec)
             for name, spec in sorted(config.prerequisite_actions.items())
         },
-        "inputs": {
-            "config": {"path": str(config_path), "sha256": _digest(config_path)},
-            "tach": {"path": config.tach, "sha256": _digest(tach_path)},
-        },
+        "inputs": inputs_payload,
     }
 
 
@@ -1741,14 +2279,11 @@ def run_tests(
             print(f"execution refused: {refusal}", file=sys.stderr)
             return 4
     elif expected_tree is not None:
-        current = _tree_of(root, "HEAD")
-        if current != expected_tree:
+        refusal = worktree_tree_refusal(root, expected_tree)
+        if refusal:
             if capture is not None:
-                capture["source_refusal"] = "checkout_tree_mismatch"
-            print(
-                "execution refused: checkout tree does not match the selected snapshot",
-                file=sys.stderr,
-            )
+                capture["source_refusal"] = refusal
+            print(f"execution refused: {refusal}", file=sys.stderr)
             return 4
     environment = dict(os.environ)
     source = str((root / src_root).resolve())
@@ -1811,6 +2346,15 @@ def main(argv=None):
         help="Comma-separated before:after pairs for --mode multi",
     )
     parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read Git pre-push 4-tuple lines from stdin for --mode multi",
+    )
+    parser.add_argument(
+        "--new-ref-baseline",
+        help="Controlled baseline ref/commit for newly pushed remote refs",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="Run the full discovered test suite; it does not run every hygiene check",
@@ -1836,16 +2380,21 @@ def main(argv=None):
         parser.exit(2, "--index-file requires --mode index\n")
     if args.mode == "multi":
         try:
-            refs = [
-                tuple(item.split(":", 1))
-                for item in (args.refs or "").split(",")
-                if item
-            ]
-            if not refs or any(len(pair) != 2 for pair in refs):
-                raise ValueError
-        except ValueError:
-            parser.exit(2, "multi mode requires --refs before:after,...\n")
-        changes = changeset_multi(root, refs)
+            if args.stdin:
+                refs = parse_pre_push_stdin(sys.stdin.read())
+                if not refs:
+                    raise ValueError
+            else:
+                refs = [
+                    tuple(item.split(":", 1))
+                    for item in (args.refs or "").split(",")
+                    if item
+                ]
+                if not refs or any(len(pair) != 2 for pair in refs):
+                    raise ValueError
+        except (ValueError, SelectionError):
+            parser.exit(2, "multi mode requires --refs before:after,... or --stdin\n")
+        changes = changeset_multi(root, refs, new_ref_baseline=args.new_ref_baseline)
     else:
         changes = changeset(
             root,
@@ -1855,6 +2404,7 @@ def main(argv=None):
             before=args.before,
             after=args.after,
             index_file=args.index_file,
+            new_ref_baseline=args.new_ref_baseline,
         )
     if getattr(changes, "source_refusal", None):
         parser.exit(4, f"source rejected: {changes.source_refusal}\n")

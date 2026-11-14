@@ -1236,3 +1236,203 @@ def test_genuine_no_documents_does_not_become_a_failure(repo):
     assert check["status"] == "not_applicable"
     assert check["reason"] == "no_applicable_documents"
     assert check["inventory"]["exit_code"] == 0
+
+
+def test_execute_refuses_skip_worktree_and_assume_unchanged_on_commit(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    git = {
+        "base_ref": base,
+        "head_ref": "HEAD",
+        "base_commit": base,
+        "head_commit": base,
+        "snapshot": "commit",
+        "execution_tree": tree,
+        "changed_paths": [],
+    }
+    value = plan(["tests.test_pkg"], tree=tree, git=git)
+
+    run(path, "update-index", "--skip-worktree", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 50\n", encoding="utf-8")
+    try:
+        report_skip = execution.execute(value, root=path)
+        assert report_skip["status"] == "not_executed"
+        assert report_skip["exit_code"] == 4
+        assert report_skip["reason"] == "checkout_skip_worktree_bytes_mismatch"
+    finally:
+        run(path, "update-index", "--no-skip-worktree", "src/pkg/sub.py")
+        run(path, "checkout", "--", "src/pkg/sub.py")
+
+    run(path, "update-index", "--assume-unchanged", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 51\n", encoding="utf-8")
+    try:
+        report_assume = execution.execute(value, root=path)
+        assert report_assume["status"] == "not_executed"
+        assert report_assume["exit_code"] == 4
+        assert report_assume["reason"] == "checkout_assume_unchanged_bytes_mismatch"
+    finally:
+        run(path, "update-index", "--no-assume-unchanged", "src/pkg/sub.py")
+        run(path, "checkout", "--", "src/pkg/sub.py")
+
+
+def test_execute_verifies_declared_hygiene_and_sources_configs(repo, tmp_path):
+    path, _base = repo
+    runner = FakeRunner()
+
+    # 1. Digest drift in declared hygiene config refuses tool execution
+    hygiene_path = path / "ci-hygiene.toml"
+    drift_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    drift_plan["inputs"] = {
+        "hygiene": {
+            "path": "ci-hygiene.toml",
+            "sha256": "0" * 64,
+            "schema_version": 1,
+        }
+    }
+    drift_report = execution.execute(drift_plan, root=path, runner=runner)
+    assert drift_report["status"] == "failed"
+    assert drift_report["checks"][0]["reason"] == "hygiene_config_digest_mismatch"
+    assert not runner.calls
+
+    # 2. Override path mismatch is refused
+    other_hygiene = path / "alt-hygiene.toml"
+    other_hygiene.write_bytes(hygiene_path.read_bytes())
+    real_sha = hashlib.sha256(hygiene_path.read_bytes()).hexdigest()
+    override_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    override_plan["inputs"] = {
+        "hygiene": {"path": "ci-hygiene.toml", "sha256": real_sha, "schema_version": 1}
+    }
+    override_report = execution.execute(
+        override_plan, root=path, hygiene_config=other_hygiene, runner=runner
+    )
+    assert override_report["checks"][0]["reason"] == "hygiene_config_override_mismatch"
+
+    # 3. Path escape outside repository root is refused
+    escape_cfg = tmp_path / "outside-hygiene.toml"
+    escape_cfg.write_bytes(hygiene_path.read_bytes())
+    escape_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    escape_plan["inputs"] = {"hygiene": {"path": "../outside-hygiene.toml"}}
+    escape_report = execution.execute(escape_plan, root=path, runner=runner)
+    assert escape_report["checks"][0]["reason"] == "hygiene_config_outside_root"
+
+    # 4. Sources config digest drift is also refused without invoking tools
+    (path / "ci-sources.toml").write_text(
+        'schema_version = 1\nmanifest = "data/manifest.json"\nacquired_roots = ["data/acquired"]\n',
+        encoding="utf-8",
+    )
+    src_drift = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "source", "status": "selected"}],
+    )
+    src_drift["inputs"] = {
+        "sources": {"path": "ci-sources.toml", "sha256": "1" * 64, "schema_version": 1}
+    }
+    src_report = execution.execute(src_drift, root=path, runner=runner)
+    assert src_report["status"] == "failed"
+    assert src_report["checks"][0]["reason"] == "sources_config_digest_mismatch"
+    assert not runner.calls
+
+
+def test_tach_external_unauthorized_failure_is_preserved_with_attribution(
+    repo, monkeypatch
+):
+    path, _base = repo
+    value = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+
+    def fake_hygiene_run(changes, cfg, *, root, runner):
+        return {
+            "status": "failed",
+            "checks": [
+                {"name": "tach", "status": "passed", "exit_code": 0, "findings": []},
+                {
+                    "name": "tach_external",
+                    "status": "failed",
+                    "exit_code": 1,
+                    "reason": "tach_external_failed",
+                    "findings": [],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(hygiene, "run", fake_hygiene_run)
+    report = execution.execute(
+        value, root=path, hygiene_config=path / "ci-hygiene.toml", runner=FakeRunner()
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    by_name = {item["name"]: item for item in report["checks"]}
+    assert by_name["tach"]["plan_authorized"] is True
+    assert by_name["tach"]["status"] == "passed"
+    assert by_name["tach_external"]["plan_authorized"] is False
+    assert by_name["tach_external"]["selected"] == "not_selected"
+    assert by_name["tach_external"]["status"] == "failed"
+    assert by_name["tach_external"]["native_result"]["status"] == "failed"
+
+
+def test_dagger_export_check_origin_is_host_with_dagger_parent(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["docs/guide.md"],
+        },
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["execution_context"] == "dagger_export"
+    assert check["parent_execution_context"] == "dagger"
+    assert check["result_origin"] == "host"
+    assert check["native_result"]["result_origin"] == "host"
+    assert check["native_result"]["runner_ref"] == "execution:dagger_export"
+    assert check["source_ref"]["actual_execution_source"] == "dagger_directory"
+
+
+def test_target_test_gate_blocks_before_container_startup():
+    gated_tach = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    gated_tach["selection"]["requires_tach_check"] = True
+    gated_tach["selection"]["tach_graph_validation"] = {"status": "not_executed"}
+    assert execution.target_test_gate(gated_tach) == ("tach_graph_unvalidated", None)
+
+    gated_cov = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    gated_cov["selection"]["coverage_required"] = True
+    assert execution.target_test_gate(gated_cov) == (
+        "coverage_evidence_required",
+        "not_measured",
+    )
+
+    main_source = (ROOT / ".dagger/src/engineering_ci_module/main.py").read_text(
+        encoding="utf-8"
+    )
+    gate_pos = main_source.index("execution.target_test_gate(value)")
+    container_pos = main_source.index("self._uv_container(")
+    assert gate_pos < container_pos
