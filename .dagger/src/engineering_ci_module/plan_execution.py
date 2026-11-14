@@ -356,6 +356,7 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
+    host_import_supported = hasattr(dag, "host")
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = uuid.uuid4().hex
     closure_records = []
@@ -569,6 +570,17 @@ async def _execute_dag(
                 generated_refs = execution.generated_input_refs(
                     closure_records, {"kind": "check", "name": name}
                 )
+                if files and not host_import_supported:
+                    return (
+                        execution._blocked_consumer_entry(
+                            name,
+                            item.get("status"),
+                            "dagger_host_import_unsupported",
+                            [],
+                        ),
+                        None,
+                        {},
+                    )
                 if files:
                     temporary, consumer_root = execution.build_consumer_view(
                         Path(directory), files
@@ -795,7 +807,19 @@ async def _execute_dag(
             else:
                 report["prerequisites"].append(output)
 
-        if produced_files:
+        if produced_files and not host_import_supported:
+            report["artifact_delivery"] = {
+                "status": "blocked",
+                "reason": "dagger_host_import_unsupported",
+                "consumers": [
+                    {
+                        "consumer_ref": {"kind": "artifact_bundle"},
+                        "failures": [{"reason": "dagger_host_import_unsupported"}],
+                    }
+                ],
+            }
+            report["source_handoff"]["generated_outputs_delivered"] = False
+        elif produced_files:
             artifacts = _bundle_produced(artifacts, produced_files)
         if closure_records:
             closure_records.sort(
