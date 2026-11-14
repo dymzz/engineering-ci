@@ -797,6 +797,26 @@ def test_v2_pre_execution_pass_gates_only_dependent_dagger_consumer(
         asyncio.run(saved.enforce())
 
 
+def test_dagger_aggregate_rejects_unsatisfied_native_check(modules):
+    _, collector = modules
+    report = {
+        "tests": {"status": "not_executed"},
+        "checks": [
+            {
+                "status": "passed",
+                "check_contract": {"status": "valid"},
+                "native_satisfaction": {"status": "unsatisfied"},
+                "native_results": [{"status": "failed"}],
+            }
+        ],
+        "prerequisites": [],
+        "artifact_closure": [],
+    }
+    result = collector._aggregate(report)
+    assert result["status"] == "blocked"
+    assert result["reason"] == "native_satisfaction_incomplete"
+
+
 @pytest.mark.parametrize("output_kind", ["file", "directory"])
 def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
     modules, output_kind

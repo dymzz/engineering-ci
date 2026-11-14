@@ -50,6 +50,15 @@ def _aggregate(report):
                 reason="check_contract_invalid",
             )
             return report
+    from engineering_ci import execution as _host_execution
+
+    if any(_host_execution._unsatisfied_native(item) for item in checks):
+        report.update(
+            status="blocked",
+            exit_code=5,
+            reason="native_satisfaction_incomplete",
+        )
+        return report
     pending = []
     if report.get("targets") or tests.get("reason"):
         pending.append(tests)
