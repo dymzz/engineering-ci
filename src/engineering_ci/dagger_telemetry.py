@@ -597,6 +597,35 @@ def _matches_core(span: SpanRecord, object_name: str, camel_fn: str) -> bool:
     return not span.scope_name or span.scope_name == CORE_SCOPE_NAME
 
 
+def _find_core_peer(
+    dagql_node: SpanRecord,
+    dagql_subtree: list[SpanRecord],
+    by_key: dict[tuple[str, str], SpanRecord],
+    *,
+    object_name: str,
+    camel_fn: str,
+) -> tuple[SpanRecord | None, str | None]:
+    """Locate the Core span paired with a Module DagQL span (parent in beta.16, or child)."""
+    parent = (
+        by_key.get((dagql_node.trace_id, dagql_node.parent_span_id))
+        if dagql_node.parent_span_id
+        else None
+    )
+    if parent is not None and _matches_core(parent, object_name, camel_fn):
+        return parent, None
+    core_children = [
+        child
+        for child in dagql_subtree
+        if child.span_id != dagql_node.span_id
+        and _matches_core(child, object_name, camel_fn)
+    ]
+    if not core_children:
+        return None, "missing_core_child_span"
+    if len(core_children) > 1:
+        return None, "multiple_core_children_under_dagql"
+    return core_children[0], None
+
+
 def _discover_check_candidates(
     dataset: CaptureDataset,
     by_key: dict[tuple[str, str], SpanRecord],
@@ -644,20 +673,20 @@ def _discover_check_candidates(
             continue
         dagql_node = dagql_nodes[0]
         dagql_subtree = _collect_subtree(dagql_node, children_by_key)
-        core_children = [
-            child
-            for child in dagql_subtree
-            if child.span_id != dagql_node.span_id
-            and _matches_core(child, object_name, camel_fn)
-        ]
-        if not core_children:
-            rejected.append("missing_core_child_span")
+        core_node, core_err = _find_core_peer(
+            dagql_node,
+            dagql_subtree,
+            by_key,
+            object_name=object_name,
+            camel_fn=camel_fn,
+        )
+        if core_err or core_node is None:
+            rejected.append(core_err or "missing_core_child_span")
             continue
-        if len(core_children) > 1:
-            rejected.append("multiple_core_children_under_dagql")
-            continue
-        core_node = core_children[0]
-        path = _find_path(selector, core_node.span_id, children_by_key)
+        leaf_for_path = (
+            dagql_node if core_node.span_id == dagql_node.parent_span_id else core_node
+        )
+        path = _find_path(selector, leaf_for_path.span_id, children_by_key)
         if not path:
             rejected.append("broken_parent_chain")
             continue
@@ -715,20 +744,21 @@ def _discover_artifact_candidates(
             rejected.append("unexpected_check_selector_ancestor")
             continue
         dagql_subtree = _collect_subtree(dagql_node, children_by_key)
-        core_children = [
-            child
-            for child in dagql_subtree
-            if child.span_id != dagql_node.span_id
-            and _matches_core(child, object_name, camel_fn)
-        ]
-        if not core_children:
-            rejected.append("missing_core_child_span")
+        core_node, core_err = _find_core_peer(
+            dagql_node,
+            dagql_subtree,
+            by_key,
+            object_name=object_name,
+            camel_fn=camel_fn,
+        )
+        if core_err or core_node is None:
+            rejected.append(core_err or "missing_core_child_span")
             continue
-        if len(core_children) > 1:
-            rejected.append("multiple_core_children_under_dagql")
-            continue
-        core_node = core_children[0]
-        path_to_core = _find_path(dagql_node, core_node.span_id, children_by_key)
+        path_to_core = (
+            [core_node, dagql_node]
+            if core_node.span_id == dagql_node.parent_span_id
+            else _find_path(dagql_node, core_node.span_id, children_by_key)
+        )
         if not path_to_core:
             rejected.append("broken_parent_chain")
             continue
