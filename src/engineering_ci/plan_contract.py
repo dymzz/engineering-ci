@@ -47,8 +47,8 @@ def _string_list(value):
     return isinstance(value, list) and all(isinstance(s, str) and s for s in value)
 
 
-def _validate_expected(expected, git):
-    from . import expected_checks
+def _validate_expected(expected, git, plan):
+    from . import check_contract, expected_checks
 
     if not isinstance(expected, dict):
         raise PlanError("expected_checks_invalid")
@@ -62,6 +62,19 @@ def _validate_expected(expected, git):
         raise PlanError("expected_complete_unproven")
     if expected.get("consumer_completeness") != "not_claimed":
         raise PlanError("expected_consumer_completeness_unproven")
+    if expected.get("projection_source") not in {"check_scope", "profile"}:
+        raise PlanError("expected_projection_source_invalid")
+    rule = expected.get("selection_rule_ref")
+    generator = plan.get("generator")
+    if (
+        not isinstance(rule, dict)
+        or rule.get("name") != "engineering-ci.selection"
+        or not isinstance(rule.get("sha256"), str)
+        or not isinstance(generator, dict)
+        or not isinstance(generator.get("config_sha256"), str)
+        or rule["sha256"] != f"sha256:{generator['config_sha256']}"
+    ):
+        raise PlanError("expected_selection_rule_mismatch")
     for key in ("scope_id", "expected_set_ref"):
         value = expected.get(key)
         if not isinstance(value, str) or not re.fullmatch(
@@ -75,18 +88,22 @@ def _validate_expected(expected, git):
     if len(refs) != len(set(refs)):
         raise PlanError("expected_duplicate")
     try:
-        expected_checks.validate_projection(expected, git)
+        expected_checks.validate_projection(
+            expected,
+            git,
+            plan.get("check_scope") or (plan.get("selection") or {}).get("check_scope"),
+        )
     except expected_checks.ExpectedError as error:
         raise PlanError(error.code) from None
     seen = set()
-    from . import check_contract
-
     for item in checks:
         if not isinstance(item, dict):
             raise PlanError("expected_check_invalid")
         if item.get("definition_status") not in {"resolved", "unknown"}:
             raise PlanError("expected_definition_status_invalid")
-        definition = check_contract.definition_for(item.get("name"))
+        definition = check_contract.definition_for(
+            item.get("name"), item.get("definition_version")
+        )
         check_id = item.get("check_id")
         if item.get("definition_status") == "resolved":
             if (
@@ -286,7 +303,7 @@ def validate(value):
     if "expected_checks" in value:
         if version != PLAN_VERSION:
             raise PlanError("expected_checks_requires_plan_v2")
-        _validate_expected(value["expected_checks"], git)
+        _validate_expected(value["expected_checks"], git, value)
     contract = value.get("dependency_contract")
     if version == 1:
         if "dependency_contract" in value:

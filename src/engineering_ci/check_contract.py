@@ -90,9 +90,13 @@ def check_id_for(name):
     return CHECK_IDS.get(name)
 
 
-def definition_for(name):
+def definition_for(name, version=None):
     check_id = check_id_for(name)
-    return _BUILTIN_BY_ID.get(check_id) if check_id else None
+    if not check_id:
+        return None
+    if version is None:
+        return _BUILTIN_BY_ID.get(check_id)
+    return DEFINITION_HISTORY.get(check_id, {}).get(version)
 
 
 # Exact old→new checks consume the old source as native input. Other checks
@@ -103,6 +107,14 @@ _BUILTIN_DEFINITIONS = tuple(
 )
 _BUILTIN_BY_ID = MappingProxyType(
     {definition.check_id: definition for definition in _BUILTIN_DEFINITIONS}
+)
+DEFINITION_HISTORY = MappingProxyType(
+    {
+        definition.check_id: MappingProxyType(
+            {definition.definition_version: definition}
+        )
+        for definition in _BUILTIN_DEFINITIONS
+    }
 )
 
 

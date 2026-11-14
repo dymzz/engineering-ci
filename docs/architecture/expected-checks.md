@@ -57,9 +57,17 @@ no `job_refs`/scheduler activation.
   definition, Source identity, selection rule, applicability and input
   constraints. Local Index/config paths are excluded.
 - `scope_id` binds consumer/Profile/Event/Source **and the selection rule
-  identity**, so a rule change cannot keep the same scope.
+  identity**, so a rule change cannot keep the same scope. The rule SHA must
+  match Plan `generator.config_sha256`; a merely self-consistent tamper is
+  rejected.
 - Resolved entries are checked against the published `check_contract`
-  name↔ID↔definition-version mapping; unknown entries must match `missing[]`.
+  name↔ID↔historical definition-version mapping; unknown entries must match
+  `missing[]`. Historical v1 remains readable; it does not satisfy a newer v2.
+- For `projection_source=check_scope`, applicability/reason/input refs are
+  cross-checked with Plan `check_scope`; changed-path scope is cross-checked
+  with `git.changed_paths` and `content_binding.paths`. Single-Ref baseline must
+  equal `git.base_commit`. These checks never raise the claim to a full input
+  closure.
 - `source_ref.actual_execution_source` is `unknown` before a Native execution;
   Expected only declares the selection target, not observed native reads.
 - `expected_set_ref` binds the declared Check-domain set; it is not the full

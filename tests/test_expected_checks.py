@@ -262,6 +262,61 @@ def test_expected_scope_binds_selection_rule(repo, tmp_path):
     assert first["source_ref"]["actual_execution_source"] == "unknown"
 
 
+def test_expected_selection_rule_matches_generator(repo):
+    plan = make_plan(repo)
+    plan["expected_checks"]["selection_rule_ref"]["sha256"] = "sha256:" + "0" * 64
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_selection_rule_mismatch"
+
+
+def test_expected_scope_matches_plan_scope(repo):
+    plan = make_plan(repo)
+    expected = plan["expected_checks"]
+    expected["source_ref"]["verified_input_scope"] = ["other.py"]
+    for entry in expected["checks"]:
+        entry["source_ref"]["verified_input_scope"] = ["other.py"]
+    refresh_expected(expected)
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_source_scope_mismatch"
+
+    plan = make_plan(repo)
+    entry = plan["expected_checks"]["checks"][0]
+    entry["applicability"]["status"] = "not_applicable"
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_applicability_mismatch"
+
+
+def test_expected_baseline_matches_plan(repo):
+    plan = make_plan(repo)
+    entry = plan["expected_checks"]["checks"][0]
+    entry["baseline_ref"]["base_commit"] = "0" * 40
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_baseline_mismatch"
+
+
+def test_expected_definition_history_and_unknown(repo):
+    assert check_contract.definition_for("docs", 1) is not None
+    assert check_contract.definition_for("docs", 999) is None
+    plan = make_plan(repo)
+    entry = next(
+        item
+        for item in plan["expected_checks"]["checks"]
+        if item["definition_status"] == "resolved"
+    )
+    entry["definition_version"] = 999
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_definition_mismatch"
+
+
 def test_expected_source_and_rule_match_check_contract(repo):
     plan = make_plan(repo)
     entry = plan["expected_checks"]["checks"][0]

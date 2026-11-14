@@ -176,6 +176,7 @@ def derive_expected_checks(
     return {
         "kind": EXPECTED_KIND,
         "schema_version": EXPECTED_VERSION,
+        "projection_source": "check_scope",
         "status": status,
         "reason": reason,
         "scope_id": scope_identity(
@@ -202,7 +203,7 @@ def derive_expected_checks(
     }
 
 
-def validate_projection(expected, git):
+def validate_projection(expected, git, check_scope=None):
     """Recompute identities and cross-check the projection against Plan git."""
     if not isinstance(expected, dict):
         raise ExpectedError("expected_checks_invalid")
@@ -251,6 +252,39 @@ def validate_projection(expected, git):
         and source.get("content_digest") != content["digest"]
     ):
         raise ExpectedError("expected_content_binding_mismatch")
+    changed = sorted(git.get("changed_paths") or [])
+    scope_paths = sorted(source.get("verified_input_scope") or [])
+    if scope_paths != changed:
+        raise ExpectedError("expected_source_scope_mismatch")
+    if isinstance(content, dict) and isinstance(content.get("paths"), dict):
+        binding_paths = sorted(content["paths"])
+        if binding_paths != scope_paths:
+            raise ExpectedError("expected_source_scope_mismatch")
+    refs = git.get("references") or []
+    if len(refs) <= 1:
+        expected_baseline = (
+            {"base_commit": git["base_commit"]} if git.get("base_commit") else None
+        )
+        for item in checks:
+            if item.get("baseline_ref") != expected_baseline:
+                raise ExpectedError("expected_baseline_mismatch")
+    if expected.get("projection_source") == "check_scope" and check_scope is not None:
+        scope_by_name = {item.get("name"): item for item in check_scope}
+        for item in checks:
+            origin = scope_by_name.get(item.get("name"))
+            if origin is None:
+                raise ExpectedError("expected_scope_mismatch")
+            if item.get("applicability", {}).get("status") != origin.get("status"):
+                raise ExpectedError("expected_applicability_mismatch")
+            if item.get("applicability", {}).get("reason") != origin.get("reason"):
+                raise ExpectedError("expected_applicability_mismatch")
+            expected_inputs = [
+                ref.get("path")
+                for ref in item.get("input_refs", [])
+                if ref.get("kind") == "changed_path"
+            ]
+            if expected_inputs != list(origin.get("inputs", [])):
+                raise ExpectedError("expected_input_mismatch")
     event = expected.get("event_ref")
     if not isinstance(event, dict):
         raise ExpectedError("expected_event_invalid")
