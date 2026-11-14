@@ -244,16 +244,16 @@ def _overlay_files(target_dir, artifact_root, rel_paths):
     """Materialize isolated derived files onto an immutable Directory copy."""
     updated = target_dir
     for rel in sorted(set(rel_paths)):
-        content = (artifact_root / rel).read_text(encoding="utf-8")
-        updated = updated.with_new_file(rel, content)
+        updated = updated.with_file(rel, dag.host().file(str(artifact_root / rel)))
     return updated
 
 
 def _bundle_produced(artifacts, artifact_root, rel_paths):
     updated = artifacts
     for rel in sorted(set(rel_paths)):
-        content = (artifact_root / rel).read_text(encoding="utf-8")
-        updated = updated.with_new_file("produced/" + rel, content)
+        updated = updated.with_file(
+            "produced/" + rel, dag.host().file(str(artifact_root / rel))
+        )
     return updated
 
 
@@ -452,6 +452,13 @@ async def _execute_dag(
                 tasks[node_key] = asyncio.create_task(compute_node(node_key))
             return tasks[node_key]
 
+        pre_names = {
+            edge["producer_ref"]["name"]
+            for edges in incoming.values()
+            for edge in edges
+            if edge["producer_ref"].get("kind") == "prerequisite_action"
+        }
+        post_prerequisites = [name for name in prerequisites if name not in pre_names]
         scheduled = []
         native_branches = []
         if targets:
@@ -463,7 +470,10 @@ async def _execute_dag(
             if name in weaver_checks:
                 native_branches.append(name)
         for name in prerequisites:
-            scheduled.append((("prereq", name), ensure(("prerequisite_action", name))))
+            if name not in post_prerequisites:
+                scheduled.append(
+                    (("prereq", name), ensure(("prerequisite_action", name)))
+                )
         if ("report", "artifacts") in incoming:
             scheduled.append((("report", "artifacts"), ensure(("report_artifacts",))))
 
@@ -524,6 +534,24 @@ async def _execute_dag(
                     )
                 else:
                     report["prerequisites"].append(output)
+
+        for name in post_prerequisites:
+            try:
+                output = await ensure(("prerequisite_action", name))
+            except BaseException as error:
+                if not isinstance(error, Exception):
+                    raise
+                report["prerequisites"].append(
+                    {
+                        "name": name,
+                        "status": "not_executed",
+                        "reason": "native_execution_error",
+                        "error_type": type(error).__name__,
+                        "diagnostic": str(error),
+                    }
+                )
+            else:
+                report["prerequisites"].append(output)
 
         if produced_files:
             artifacts = _bundle_produced(artifacts, artifact_root, produced_files)
