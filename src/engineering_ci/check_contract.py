@@ -1113,8 +1113,6 @@ def _expected_witness_failure(requirements, chosen, expected):
     }
     mapping = expected.get("coverage_by_requirement")
     if mapping is not None:
-        if terminal_ids != set(mapping):
-            return "expected_coverage_mapping_incomplete"
         if any(
             chosen[key].get("coverage") != coverage
             for key, coverage in mapping.items()
@@ -1343,6 +1341,14 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         entries.append(entry)
 
     unmet = [item for item in entries if item["status"] != "satisfied"]
+    if tool_witness is None and not unmet:
+        # Per-requirement local choices do not certify one coherent chain.
+        entries[-1].update(
+            status="unsatisfied",
+            reason="prerequisite_combination_unproven",
+            satisfied_by=None,
+        )
+        unmet = [entries[-1]]
     if selected is not None:
         status, reason = "satisfied", "all_requirements_satisfied"
     elif tool_witness is not None and expected is not None:
