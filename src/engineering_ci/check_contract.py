@@ -1053,11 +1053,9 @@ def results_cover_expected(results, expected):
     ]
     if any(ref not in observed_inputs for ref in expected.get("input_refs", [])):
         return False
-    if "coverage" in expected and not any(
+    return "coverage" not in expected or any(
         item.get("coverage") == expected["coverage"] for item in results
-    ):
-        return False
-    return True
+    )
 
 def _requirement_order(requirements):
     graph = {item.requirement_id: tuple(item.after) for item in requirements}
