@@ -179,7 +179,14 @@ def _changeset_from_plan(plan, root, extra_paths=()):
 
 
 def _run_hygiene_checks(
-    plan, selected, *, root, hygiene_config, runner, extra_paths=()
+    plan,
+    selected,
+    *,
+    root,
+    hygiene_config,
+    runner,
+    extra_paths=(),
+    generated_input_refs=(),
 ):
     selected_by_name = {
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
@@ -241,6 +248,7 @@ def _run_hygiene_checks(
             continue
         payload = dict(native)
         payload["rule_ref"] = rule
+        payload["generated_input_refs"] = list(generated_input_refs)
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
@@ -353,6 +361,7 @@ def _run_command(argv, root, *, runner=None, artifact_root=None):
             return runner(list(rendered), root, None), rendered
     if artifact_root is None:
         return hygiene._run(rendered, root), rendered
+    Path(artifact_root).mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["ENGINEERING_CI_ARTIFACT_DIR"] = str(artifact_root)
     try:
@@ -478,6 +487,31 @@ def build_consumer_view(source_root, artifacts):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(Path(producer_root) / rel, target)
     return temporary, view
+
+
+def generated_input_refs(closures, consumer_ref):
+    """Derive Native Result inputs from verified producer closures only."""
+    refs = []
+    for closure in closures:
+        if closure.get("consumer_ref") != consumer_ref:
+            continue
+        if not closure.get("verified"):
+            continue
+        output = closure.get("output_ref") or {}
+        kind = output.get("kind")
+        path = output.get("path")
+        if kind not in {"file", "directory"} or not isinstance(path, str):
+            continue
+        refs.append(
+            {
+                "kind": "generated_input",
+                "input_kind": kind,
+                "producer_ref": closure["producer_ref"],
+                "path": path,
+                "sha256": closure.get("sha256"),
+            }
+        )
+    return refs
 
 
 def evaluate_edge(edge, producer_result, *, artifact_root=None):
@@ -981,6 +1015,7 @@ def run_host_check(
     execution_context="host",
     run_instance=None,
     artifact_paths=(),
+    generated_input_refs=(),
 ):
     """Run one selected Host check (hygiene or source) with contract decoration."""
     name = item.get("name")
@@ -993,6 +1028,7 @@ def run_host_check(
             hygiene_config=hygiene_config,
             runner=runner,
             extra_paths=artifact_paths,
+            generated_input_refs=generated_input_refs,
         )
         raw = results or [
             {
@@ -1140,21 +1176,9 @@ def _execute_with_dependencies(
                 return check_cache[name]
             item = dict(selected_by_name[name])
             block_reason, blocked_by, files = resolve_incoming(("check", name))
-            generated_refs = []
-            for closure in closure_records:
-                if closure.get("consumer_ref") != {"kind": "check", "name": name}:
-                    continue
-                if not closure.get("verified"):
-                    continue
-                for rel in closure.get("materialized_files") or ():
-                    generated_refs.append(
-                        {
-                            "kind": "generated_input",
-                            "producer_ref": closure["producer_ref"],
-                            "path": rel,
-                            "sha256": closure.get("sha256"),
-                        }
-                    )
+            generated_refs = generated_input_refs(
+                closure_records, {"kind": "check", "name": name}
+            )
             item["generated_input_refs"] = generated_refs
             if block_reason is not None:
                 entry = _decorated_blocked_check(
@@ -1179,6 +1203,7 @@ def _execute_with_dependencies(
                         execution_context=execution_context,
                         run_instance=run_instance,
                         artifact_paths=[rel for _, rel in files],
+                        generated_input_refs=generated_refs,
                     )
                 finally:
                     temporary.cleanup()

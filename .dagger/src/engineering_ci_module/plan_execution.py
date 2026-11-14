@@ -462,6 +462,9 @@ async def _execute_dag(
                         report["source_tree_verified"],
                     )
                     return native, check_files, metadata
+                generated_refs = execution.generated_input_refs(
+                    closure_records, {"kind": "check", "name": name}
+                )
                 if files:
                     temporary, consumer_root = execution.build_consumer_view(
                         Path(directory), files
@@ -475,6 +478,7 @@ async def _execute_dag(
                             execution_context="dagger_export",
                             run_instance=run_instance,
                             artifact_paths=[rel for _, rel in files],
+                            generated_input_refs=generated_refs,
                         )
                     finally:
                         temporary.cleanup()
@@ -486,6 +490,7 @@ async def _execute_dag(
                     root=Path(directory),
                     execution_context="dagger_export",
                     run_instance=run_instance,
+                    generated_input_refs=generated_refs,
                 )
                 return entry, None, {}
             if kind == "tests":
