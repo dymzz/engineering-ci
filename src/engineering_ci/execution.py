@@ -154,9 +154,9 @@ def _verify_execution_binding(plan, root):
     return True, None, expected_tree
 
 
-def _changeset_from_plan(plan, root):
+def _changeset_from_plan(plan, root, extra_paths=()):
     git = plan["git"]
-    paths = tuple(git.get("changed_paths") or ())
+    paths = tuple(dict.fromkeys((*git.get("changed_paths", ()), *extra_paths)))
     complete = bool(git.get("base_commit")) and "changed_paths" in git
     return selection.ChangeSet(
         root=Path(root),
@@ -177,7 +177,9 @@ def _changeset_from_plan(plan, root):
     )
 
 
-def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
+def _run_hygiene_checks(
+    plan, selected, *, root, hygiene_config, runner, extra_paths=()
+):
     selected_by_name = {
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
@@ -224,7 +226,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
     if not checks:
         checks = wanted
     report = hygiene.run(
-        _changeset_from_plan(plan, root),
+        _changeset_from_plan(plan, root, extra_paths),
         dataclasses.replace(config, checks=checks),
         root=root,
         runner=runner or hygiene._run,
@@ -453,9 +455,16 @@ def producer_artifact_root(artifact_root, producer_ref):
     name = producer_ref.get("name")
     if kind not in {"prerequisite_action", "check"}:
         raise ValueError("data_producer_kind_unsupported")
-    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+    if (
+        not isinstance(name, str)
+        or name in {".", ".."}
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+    ):
         raise ValueError("data_producer_name_invalid")
-    return Path(artifact_root) / kind / name
+    root = (Path(artifact_root) / kind / name).resolve()
+    if not root.is_relative_to(Path(artifact_root).resolve()):
+        raise ValueError("data_producer_name_invalid")
+    return root
 
 
 def build_consumer_view(source_root, artifacts):
@@ -969,13 +978,19 @@ def run_host_check(
     runner=None,
     execution_context="host",
     run_instance=None,
+    artifact_paths=(),
 ):
     """Run one selected Host check (hygiene or source) with contract decoration."""
     name = item.get("name")
     run_instance = run_instance or uuid.uuid4().hex
     if name in _HYGIENE_CHECKS:
         results, _ = _run_hygiene_checks(
-            plan, [item], root=root, hygiene_config=hygiene_config, runner=runner
+            plan,
+            [item],
+            root=root,
+            hygiene_config=hygiene_config,
+            runner=runner,
+            extra_paths=artifact_paths,
         )
         raw = results or [
             {
@@ -1138,6 +1153,7 @@ def _execute_with_dependencies(
                         runner=runner,
                         execution_context=execution_context,
                         run_instance=run_instance,
+                        artifact_paths=[rel for _, rel in files],
                     )
                 finally:
                     temporary.cleanup()

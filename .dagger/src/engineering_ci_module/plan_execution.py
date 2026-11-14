@@ -458,6 +458,7 @@ async def _execute_dag(
                             root=consumer_root,
                             execution_context="dagger_export",
                             run_instance=run_instance,
+                            artifact_paths=[rel for _, rel in files],
                         )
                     finally:
                         temporary.cleanup()
