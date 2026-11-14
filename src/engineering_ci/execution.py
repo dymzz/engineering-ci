@@ -156,7 +156,7 @@ def _verify_execution_binding(plan, root):
 
 def _changeset_from_plan(plan, root, extra_paths=()):
     git = plan["git"]
-    paths = tuple(dict.fromkeys((*git.get("changed_paths", ()), *extra_paths)))
+    paths = tuple(git.get("changed_paths") or ())
     complete = bool(git.get("base_commit")) and "changed_paths" in git
     return selection.ChangeSet(
         root=Path(root),
@@ -174,6 +174,7 @@ def _changeset_from_plan(plan, root, extra_paths=()):
         index_file=git.get("index_file"),
         merge_tree=git.get("merge_tree"),
         base_tip=git.get("base_tip"),
+        generated_paths=tuple(extra_paths),
     )
 
 
@@ -823,6 +824,7 @@ def _native_results(
                 "path": inventory_access,
             },
             *inputs,
+            *item.get("generated_input_refs", ()),
         ]
         links_result = check_contract.native_result(
             definition,
@@ -1136,8 +1138,24 @@ def _execute_with_dependencies(
         def ensure_check(name):
             if name in check_cache:
                 return check_cache[name]
-            item = selected_by_name[name]
+            item = dict(selected_by_name[name])
             block_reason, blocked_by, files = resolve_incoming(("check", name))
+            generated_refs = []
+            for closure in closure_records:
+                if closure.get("consumer_ref") != {"kind": "check", "name": name}:
+                    continue
+                if not closure.get("verified"):
+                    continue
+                for rel in closure.get("materialized_files") or ():
+                    generated_refs.append(
+                        {
+                            "kind": "generated_input",
+                            "producer_ref": closure["producer_ref"],
+                            "path": rel,
+                            "sha256": closure.get("sha256"),
+                        }
+                    )
+            item["generated_input_refs"] = generated_refs
             if block_reason is not None:
                 entry = _decorated_blocked_check(
                     plan,

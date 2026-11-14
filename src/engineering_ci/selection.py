@@ -114,6 +114,7 @@ class ChangeSet:
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
     source_refusal: str | None = None
+    generated_paths: tuple[str, ...] = ()
 
     @property
     def execution_tree(self):
