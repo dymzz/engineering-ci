@@ -482,6 +482,8 @@ def artifact_target_paths(files):
 
 def _artifact_paths_overlap(first, second):
     a, b = first.rstrip("/"), second.rstrip("/")
+    if os.name == "nt":
+        a, b = a.casefold(), b.casefold()
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 

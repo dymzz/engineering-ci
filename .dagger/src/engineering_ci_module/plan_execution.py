@@ -701,8 +701,13 @@ async def _execute_dag(
                 )
             )
             report["artifact_closure"] = closure_records
-            report["source_handoff"]["generated_outputs_delivered"] = all(
-                entry["verified"] for entry in closure_records
+            delivery_blocked = (report.get("artifact_delivery") or {}).get(
+                "status"
+            ) == "blocked"
+            report["source_handoff"]["generated_outputs_delivered"] = (
+                bool(closure_records)
+                and all(entry["verified"] for entry in closure_records)
+                and not delivery_blocked
             )
 
         report["result_sharing"] = {
