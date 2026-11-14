@@ -41,8 +41,8 @@
 ## 已验证范围与未完成边界
 
 - **本阶段已验证（#87-A / A.1）**：
-  - 每 Span 独立 Resource Session/Engine 归属、真实父图与精确 `dagger.io/dagql`/`dagger.io/core` Scope 验证；仅凭 `expected_session_id` 在非隔离捕获中不得升格为 Invocation 级 `bound`，且调用方传入 `isolated_capture=True` 不得强行覆盖非隔离或缺乏受控证据的捕获。
-  - `verify-a1` 针对真实 Capture 重新运行统一 `correlate_capture()` 并对账全部身份字段、原生 exit/F401 诊断、导出产物 `SHA256SUMS` 与分层后的 Artifact 绑定（严格 `purpose="cause"` 因果归因、`attributed`/`ambiguous`/`unknown` 区分、`export file <name>...` 目标匹配以及本地真实文件哈希验证；缺本地文件即使自报 SHA-256 也保持 `status="unknown"`）。
+  - 每 Span 独立 Resource Session/Engine 归属、真实父图与精确 `dagger.io/dagql`/`dagger.io/core` Scope 验证；仅凭 `expected_session_id` 或 `isolated_capture=True` + `receiver_observed=True` 而缺乏受控 `capture_scope` 窗口证据时不得升格为 Invocation 级 `bound`，且调用方传入 `isolated_capture=True` 不得强行覆盖非隔离或缺乏受控证据的捕获。
+  - `verify-a1` 针对真实 Capture 重新运行统一 `correlate_capture()` 并对账全部身份字段、原生 exit/F401 诊断、导出产物 `SHA256SUMS` 与分层后的 Artifact 绑定（严格 `purpose="cause"` 因果归因、含跨模块的多 Function 冲突判定 `attributed`/`ambiguous`/`unknown`、精确原生完整 Host 目标路径匹配 `export_host_path_matched` 与本地真实文件哈希验证；仅同文件名 `filename_matched` 只作受限线索且 `artifact_binding_verified=false`，缺本地文件即使自报 SHA-256 也保持 `status="unknown"`）。
   - 全部定向正反例与并发 OTLP/HTTP（`protobuf`/`json`/`gzip`）原子落盘（含入站 HTTP 请求体 `raw_payload_sha256`、`decoded_normalized_otlp_json` 与 `capture_scope` 分层标注）。
 - **显式未声称 / 保持 Open（Issue #87）**：
   - `source_binding_status` 保持 `unknown`（Git 源码绑定留待 `#66` 物化回执）。

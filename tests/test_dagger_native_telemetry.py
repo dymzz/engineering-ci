@@ -757,7 +757,15 @@ class CorrelationTests(unittest.TestCase):
                 "False",
             )
             self.assertEqual(
+                report["negative_controls"]["filename_only_export_verified"],
+                "False",
+            )
+            self.assertEqual(
                 report["negative_controls"]["non_isolated_override_rejected"],
+                "unbound",
+            )
+            self.assertEqual(
+                report["negative_controls"]["legacy_missing_capture_scope"],
                 "unbound",
             )
 
@@ -1372,6 +1380,189 @@ class OtlpReceiverTests(unittest.TestCase):
         self.assertEqual(art["export_attribution_status"], "attributed")
         self.assertIs(art["export_target_matched"], False)
         self.assertEqual(art["export_target_match_basis"], "export_path_mismatch")
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_filename_only_export_in_other_dir_stays_limited_clue_without_exact_binding(
+        self,
+    ) -> None:
+        capture = _make_artifact_capture(export_filename="same.json")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_file = Path(tmpdir) / "same.json"
+            local_file.write_text('{"ok": true}\n', encoding="utf-8")
+            sha = dt.sha256_file(local_file)
+            receipt = dt.correlate_capture(
+                capture,
+                entry_kind="artifact_function",
+                target_name="repository-ruff-tools",
+                artifact_exit_code=0,
+                artifact_path=local_file,
+                artifact_sha256=sha,
+            )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertTrue(art["export_span_observed"])
+        self.assertEqual(art["export_attribution_status"], "attributed")
+        self.assertTrue(art["local_file_verified"])
+        self.assertEqual(art["status"], "exported")
+        self.assertIs(art["export_target_matched"], False)
+        self.assertEqual(art["export_target_match_basis"], "filename_matched")
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_legacy_isolated_and_receiver_observed_without_capture_scope_stays_unbound(
+        self,
+    ) -> None:
+        capture = _make_check_capture(isolated_capture=True)
+        capture.pop("capture_scope", None)
+        self.assertIs(capture["isolated_capture"], True)
+        self.assertIs(capture["receiver_observed"], True)
+
+        receipt = dt.correlate_capture(
+            capture,
+            entry_kind="check",
+            target_name="lint",
+            isolated_capture=True,
+        )
+        self.assertEqual(receipt["correlation"]["status"], "unbound")
+        self.assertEqual(
+            receipt["correlation"]["reason"],
+            "legacy_isolation_missing_capture_scope_without_traceparent",
+        )
+        self.assertEqual(
+            receipt["correlation"]["isolation_evidence"]["evidence_level"],
+            "declared_and_receiver_observed_without_scope",
+        )
+        self.assertIs(
+            receipt["correlation"]["isolation_evidence"]["override_rejected"],
+            True,
+        )
+
+    def test_cross_module_cause_links_on_single_export_mark_ambiguous(self) -> None:
+        trace_id = "8" * 32
+        query_id = "8000000000000001"
+        core_eci = "8000000000000002"
+        dagql_eci = "8000000000000003"
+        core_other = "8000000000000004"
+        dagql_other = "8000000000000005"
+        export_id = "8000000000000006"
+        resume_id = "8000000000000007"
+        capture = {
+            "isolated_capture": True,
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
+            "trace_batches": [
+                {
+                    "batch_index": 0,
+                    "payload": {
+                        "resourceSpans": [
+                            {
+                                "resource": {
+                                    "attributes": [
+                                        _kv("service.name", "dagger-engine"),
+                                        _kv(dt.DAGGER_SESSION_ID_ATTR, "sess-cross"),
+                                        _kv(
+                                            dt.DAGGER_ENGINE_INSTANCE_ID_ATTR,
+                                            "eng-cross",
+                                        ),
+                                    ]
+                                },
+                                "scopeSpans": [
+                                    {
+                                        "scope": {"name": dt.DAGQL_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_eci,
+                                                parent_span_id=core_eci,
+                                                name="engineering-ci:EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_other,
+                                                parent_span_id=core_other,
+                                                name="other-module:OtherMod.buildArtifact",
+                                            ),
+                                        ],
+                                    },
+                                    {
+                                        "scope": {"name": dt.CORE_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=query_id,
+                                                parent_span_id="",
+                                                name="POST /query",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_eci,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_other,
+                                                parent_span_id=query_id,
+                                                name="OtherMod.buildArtifact",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=export_id,
+                                                parent_span_id=query_id,
+                                                name="File.export",
+                                            ),
+                                            {
+                                                **_span(
+                                                    trace_id=trace_id,
+                                                    span_id=resume_id,
+                                                    parent_span_id=export_id,
+                                                    name="resume file",
+                                                ),
+                                                "links": [
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_eci,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_other,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        receipt = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+        )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertTrue(art["export_span_observed"])
+        self.assertEqual(art["export_causality_status"], "causally_linked")
+        self.assertEqual(art["export_attribution_status"], "ambiguous")
+        self.assertEqual(art["export_attribution_basis"], "multiple_cause_targets")
         self.assertFalse(art["artifact_binding_verified"])
 
 

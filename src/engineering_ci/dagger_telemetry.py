@@ -978,10 +978,8 @@ def _resolve_isolation_evidence(
         and scope.get("single_invocation_window") is True
         and dataset.isolated_capture is True
     )
-    receiver_legacy_isolated = (
-        dataset.isolated_capture is True
-        and dataset.receiver_observed is True
-        and scope.get("single_invocation_window") is not False
+    legacy_declared_and_observed = (
+        dataset.isolated_capture is True and dataset.receiver_observed is True
     )
 
     if caller_isolated is False:
@@ -1036,20 +1034,21 @@ def _resolve_isolation_evidence(
             None,
         )
 
-    if receiver_legacy_isolated:
+    if legacy_declared_and_observed:
+        override_rejected = caller_isolated is True
         return (
-            True,
+            False,
             {
-                "effective_isolated": True,
-                "evidence_level": "receiver_observed_isolated",
-                "source": "receiver_observed_capture_flag",
-                "override_rejected": False,
+                "effective_isolated": False,
+                "evidence_level": "declared_and_receiver_observed_without_scope",
+                "source": "legacy_boolean_and_receiver_observed_without_capture_scope",
+                "override_rejected": override_rejected,
                 "limitations": (
-                    "Relies on receiver_observed + capture isolated_capture flag without "
-                    "explicit capture_scope window metadata."
+                    "Legacy isolated_capture=True and receiver_observed=True flags without "
+                    "controlled capture_scope window proof cannot grant unconditional bound."
                 ),
             },
-            None,
+            "legacy_isolation_missing_capture_scope_without_traceparent",
         )
 
     if dataset.isolated_capture is True:
@@ -1302,15 +1301,10 @@ def _discover_other_function_subtrees(
     children_by_key: dict[tuple[str, str], list[SpanRecord]],
     candidate_owned_ids: set[tuple[str, str]],
 ) -> list[tuple[str, set[tuple[str, str]]]]:
-    """Collect disjoint module-function owned span IDs in the same trace/session/engine."""
+    """Collect disjoint module-function owned span IDs across all modules in trace/session."""
     trace_id = candidate.anchor.trace_id
     session_id = candidate.anchor.session_id
     engine_id = candidate.anchor.engine_instance_id
-    prefix = (
-        f"{candidate.dagql_span.name.split(':', 1)[0]}:"
-        if ":" in candidate.dagql_span.name
-        else ""
-    )
     others: list[tuple[str, set[tuple[str, str]]]] = []
     seen_roots: set[tuple[str, str]] = set()
     for span in dataset.spans:
@@ -1323,12 +1317,20 @@ def _discover_other_function_subtrees(
             or (span.trace_id, span.span_id) in seen_roots
         ):
             continue
-        if ":" not in span.name or (prefix and not span.name.startswith(prefix)):
+        if ":" not in span.name or span.name.startswith(
+            ("dag://", "http://", "https://")
+        ):
             continue
-        _, qualified_fn = span.name.split(":", 1)
-        if "." not in qualified_fn:
+        mod_name, qualified_fn = span.name.split(":", 1)
+        if (
+            not mod_name
+            or any(ch.isspace() for ch in mod_name)
+            or "." not in qualified_fn
+        ):
             continue
         obj_name, fn_name = qualified_fn.split(".", 1)
+        if not obj_name or not fn_name or not obj_name[0].isupper():
+            continue
         dagql_sub = _collect_subtree(span, children_by_key)
         core_peer, _ = _find_core_peer(
             span,
@@ -1385,19 +1387,13 @@ def _match_export_target_identity(
             normalized_host = host_path.replace("\\", "/")
             if normalized_host == expected_posix:
                 return True, True, "export_host_path_matched"
-            if (normalized_host.startswith("/") and expected_posix.startswith("/")) or (
-                len(normalized_host) >= 3
-                and len(expected_posix) >= 3
-                and normalized_host[1:3] == ":/"
-                and expected_posix[1:3] == ":/"
-            ):
-                # Same filename exported to a different explicit directory mismatches.
-                continue
-        if exported_name == expected_name or expected_name in node.name:
+            # Explicit native host path exists and does not match target path.
+            continue
+        if exported_name == expected_name:
             name_matched = True
 
     if name_matched:
-        return True, True, "export_filename_matched"
+        return True, False, "filename_matched"
     return False, False, "export_path_mismatch"
 
 
@@ -2382,6 +2378,28 @@ def _mutate_strip_export_filename(raw: dict[str, Any]) -> dict[str, Any]:
     return mutated
 
 
+def _mutate_strip_export_host_path(raw: dict[str, Any]) -> dict[str, Any]:
+    """Strip host target path from export-file spans, leaving filename-only clue."""
+    mutated = copy.deepcopy(raw)
+    for batch in mutated.get("trace_batches") or []:
+        for resource in batch.get("payload", {}).get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                for span in scope.get("spans") or []:
+                    name = str(span.get("name") or "")
+                    if name.startswith("export file ") and " to host " in name:
+                        span["name"] = name.split(" to host ", 1)[0]
+    return mutated
+
+
+def _mutate_strip_capture_scope(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep isolated_capture and receiver_observed True while stripping capture_scope."""
+    mutated = copy.deepcopy(raw)
+    mutated["isolated_capture"] = True
+    mutated["receiver_observed"] = True
+    mutated.pop("capture_scope", None)
+    return mutated
+
+
 def _mutate_force_non_isolated(raw: dict[str, Any]) -> dict[str, Any]:
     mutated = copy.deepcopy(raw)
     mutated["isolated_capture"] = False
@@ -2726,6 +2744,23 @@ def verify_a1_suite(
     if missing_name_verified:
         failures.append("neg_missing_native_artifact_identity_claimed_verified")
 
+    filename_only_art = correlate_capture(
+        _mutate_strip_export_host_path(artifact_capture),
+        entry_kind="artifact_function",
+        target_name=artifact_target,
+        isolated_capture=True,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+    )
+    filename_only_res = filename_only_art.get("claims", {}).get(
+        "native_artifact_result", {}
+    )
+    neg_results["filename_only_export_verified"] = str(
+        filename_only_res.get("artifact_binding_verified")
+    )
+    if filename_only_res.get("artifact_binding_verified"):
+        failures.append("neg_filename_only_export_claimed_verified")
+
     forced_non_iso = correlate_capture(
         _mutate_force_non_isolated(pass_capture),
         entry_kind="check",
@@ -2737,6 +2772,18 @@ def verify_a1_suite(
     ]
     if forced_non_iso["correlation"]["status"] == "bound":
         failures.append("neg_non_isolated_override_bound")
+
+    legacy_missing_scope = correlate_capture(
+        _mutate_strip_capture_scope(pass_capture),
+        entry_kind="check",
+        target_name=pass_target,
+        isolated_capture=True,
+    )
+    neg_results["legacy_missing_capture_scope"] = legacy_missing_scope["correlation"][
+        "status"
+    ]
+    if legacy_missing_scope["correlation"]["status"] == "bound":
+        failures.append("neg_legacy_missing_capture_scope_bound")
 
     wrong_mod = correlate_capture(
         _mutate_wrong_module_prefix(pass_capture, kebab_to_camel(pass_target)),
