@@ -22,11 +22,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 
+from . import weaver_tool
+
 CONTRACT_VERSION = 2
 SUPPORTED_RESULT_VERSIONS = frozenset({1, 2})
 CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
 SATISFACTION_KIND = "engineering-ci-check-satisfaction"
+EXECUTION_PHASE = "execution"
+POST_COMPLETION_PHASE = "post_completion"
+EXECUTION_PHASES = frozenset({EXECUTION_PHASE, POST_COMPLETION_PHASE})
 CHECK_ID_PATTERN = re.compile(r"^eci/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
 STATUSES = frozenset(
     {"passed", "failed", "advisory", "not_applicable", "not_executed", "unknown"}
@@ -46,6 +51,11 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/hygiene/vulture",
         "eci/hygiene/tach",
         "eci/hygiene/tach-external",
+        "eci/tests/unittest",
+        "eci/tests/pytest",
+        "eci/weaver/registry",
+        "eci/weaver/live",
+        "eci/weaver/terminal",
     }
 )
 INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile"})
@@ -54,6 +64,12 @@ INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile
 # Built-in identity table for the checks currently produced by this package.
 # This is not a runtime registry: consumers cannot register arbitrary names, and
 # an unknown name is refused rather than used as an identity.
+#
+# Adjudication for tests: ``unittest`` and ``pytest`` differ in target
+# discovery, exit-code semantics and native artifact support (JUnit XML on
+# pytest only), so they stay distinct Check identities rather than alternative
+# tools under one logical test Check ID. Cross-engine satisfaction belongs in
+# #66/#61 profile policy when explicitly authorized.
 CHECK_IDS = MappingProxyType(
     {
         "whitespace": "eci/hygiene/whitespace",
@@ -63,6 +79,11 @@ CHECK_IDS = MappingProxyType(
         "tach": "eci/hygiene/tach",
         "tach_external": "eci/hygiene/tach-external",
         "source": "eci/sources/reconcile",
+        "unittest": "eci/tests/unittest",
+        "pytest": "eci/tests/pytest",
+        "weaver_registry": "eci/weaver/registry",
+        "weaver_live": "eci/weaver/live",
+        "weaver_terminal": "eci/weaver/terminal",
     }
 )
 
@@ -121,6 +142,7 @@ class CheckDefinition:
     rule_ref: dict | None = None
     profile_ref: dict | None = None
     requires_baseline: bool = False
+    requires_post_completion: bool = False
     tool_requirements: tuple[ToolRequirement, ...] = ()
 
 
@@ -330,9 +352,20 @@ def definition_for(name, version=None):
 # Exact old→new checks consume the old source as native input. Other checks
 # may use changed-path selection, but do not intrinsically inspect old bytes.
 #
+def _weaver_identity(access_id):
+    return ToolIdentity(
+        access_id,
+        tool_id="weaver",
+        tool_id_source="eci_pinned_asset",
+        version=weaver_tool.VERSION,
+        artifact_sha256=weaver_tool.LINUX_SHA256,
+    )
+
+
 # Native entries are declared here, not inferred at runtime: an alternative's
-# ``access_id`` is an ECI-local entry. ``tool_id`` stays empty: these host tools
-# have no verified Runtime ToolAsset registration.
+# ``access_id`` is an ECI-local entry. ``tool_id`` stays empty for host tools
+# without an ECI-pinned asset or verified Runtime ToolAsset registration, while
+# ``weaver`` binds to ECI's pinned release asset in ``weaver_tool.py``.
 _TOOL_REQUIREMENTS = {
     # ``git ls-files`` determines the checked document set and feeds Lychee.
     "docs": (
@@ -345,11 +378,45 @@ _TOOL_REQUIREMENTS = {
     ),
     "vulture": (ToolRequirement("dead-code", (ToolIdentity("vulture/dead-code"),)),),
     "whitespace": (ToolRequirement("diff-hygiene", (ToolIdentity("git/diff-check"),)),),
+    "unittest": (ToolRequirement("test-runner", (ToolIdentity("python/unittest"),)),),
+    "pytest": (ToolRequirement("test-runner", (ToolIdentity("python/pytest"),)),),
+    "weaver_registry": (
+        ToolRequirement("registry-check", (_weaver_identity("weaver/registry-check"),)),
+        ToolRequirement(
+            "registry-package",
+            (_weaver_identity("weaver/registry-package"),),
+            after=("registry-check",),
+        ),
+    ),
+    "weaver_live": (
+        ToolRequirement(
+            "registry-package", (_weaver_identity("weaver/registry-package"),)
+        ),
+        ToolRequirement(
+            "live-check",
+            (_weaver_identity("weaver/live-check"),),
+            after=("registry-package",),
+        ),
+    ),
+    "weaver_terminal": (
+        ToolRequirement(
+            "registry-package", (_weaver_identity("weaver/registry-package"),)
+        ),
+        ToolRequirement(
+            "terminal-live-check",
+            (_weaver_identity("weaver/terminal-live-check"),),
+            after=("registry-package",),
+        ),
+    ),
 }
 # Declaring tool requirements changes when a Check can be satisfied, so it is a
 # definition-version change, not only a Result schema change. Version 1 remains
-# the pre-tool contract and stays readable; it can never satisfy the upgraded
-# version because the definition versions differ.
+# the pre-tool contract for legacy hygiene checks and stays readable; it can
+# never satisfy the upgraded version because the definition versions differ.
+# Newly registered check families start tool-bound at version 1.
+_LEGACY_PRE_TOOL_V1 = frozenset(
+    {"whitespace", "docs", "vulture", "tach", "tach_external"}
+)
 _CURRENT_DEFINITION_VERSION = {
     "whitespace": 2,
     "forwarding": 1,
@@ -358,6 +425,11 @@ _CURRENT_DEFINITION_VERSION = {
     "tach": 2,
     "tach_external": 2,
     "source": 1,
+    "unittest": 1,
+    "pytest": 1,
+    "weaver_registry": 1,
+    "weaver_live": 1,
+    "weaver_terminal": 1,
 }
 
 
@@ -367,13 +439,17 @@ def _builtin_definitions():
     for name, check_id in CHECK_IDS.items():
         latest = _CURRENT_DEFINITION_VERSION[name]
         for version in range(1, latest + 1):
+            requirements = (
+                ()
+                if name in _LEGACY_PRE_TOOL_V1 and version == 1
+                else _TOOL_REQUIREMENTS.get(name, ())
+            )
             by_version[(check_id, version)] = CheckDefinition(
                 check_id,
                 definition_version=version,
                 requires_baseline=name in {"whitespace", "forwarding"},
-                tool_requirements=(
-                    _TOOL_REQUIREMENTS.get(name, ()) if version >= 2 else ()
-                ),
+                requires_post_completion=name == "weaver_terminal",
+                tool_requirements=requirements,
             )
         current[check_id] = by_version[(check_id, latest)]
     return by_version, current
@@ -437,6 +513,8 @@ def validate_definition(definition):
         raise CheckContractError("check_version_invalid")
     if type(definition.requires_baseline) is not bool:
         raise CheckContractError("check_baseline_requirement_invalid")
+    if type(definition.requires_post_completion) is not bool:
+        raise CheckContractError("check_post_completion_requirement_invalid")
     for value in (definition.tool_id, definition.access_id):
         if value is not None:
             _text(value, "tool_identity")
@@ -693,6 +771,7 @@ def native_result(
     runner_ref=None,
     baseline_ref=None,
     tool=None,
+    phase=None,
 ):
     """Create one immutable Native Result.
 
@@ -704,7 +783,10 @@ def native_result(
     registered = _registered_definition(
         definition.check_id, definition.definition_version
     )
-    if definition.requires_baseline != registered.requires_baseline:
+    if (
+        definition.requires_baseline != registered.requires_baseline
+        or definition.requires_post_completion != registered.requires_post_completion
+    ):
         raise CheckContractError("result_check_semantics_mismatch")
     if definition.tool_requirements != registered.tool_requirements:
         raise CheckContractError("result_tool_requirements_mismatch")
@@ -712,6 +794,8 @@ def native_result(
         raise CheckContractError("result_status_invalid")
     if result_origin not in ORIGINS:
         raise CheckContractError("result_origin_invalid")
+    if phase is not None and phase not in EXECUTION_PHASES:
+        raise CheckContractError("result_phase_invalid")
     _text(result_instance, "result_instance")
     validate_source_ref(source)
     _validate_reference(rule_ref, "rule_ref")
@@ -748,6 +832,12 @@ def native_result(
         and not _has_resolved_base_commit(baseline_ref)
     ):
         raise CheckContractError("result_baseline_missing")
+    if (
+        registered.requires_post_completion
+        and status in {"passed", "failed", "advisory"}
+        and phase != POST_COMPLETION_PHASE
+    ):
+        raise CheckContractError("result_post_completion_phase_required")
     kind = _execution_kind(definition.check_id)
     if status in {"passed", "failed"}:
         if kind == "process":
@@ -784,6 +874,8 @@ def native_result(
         "baseline_ref": baseline_ref,
         "reason": reason,
     }
+    if phase is not None:
+        payload["phase"] = phase
     content = {key: value for key, value in payload.items() if key != "result_instance"}
     payload["content_id"] = _digest(content)
     payload["result_id"] = _digest(payload)
@@ -849,6 +941,15 @@ def validate_result(result):
         and not _has_resolved_base_commit(result.get("baseline_ref"))
     ):
         raise CheckContractError("result_baseline_missing")
+    phase = result.get("phase")
+    if phase is not None and phase not in EXECUTION_PHASES:
+        raise CheckContractError("result_phase_invalid")
+    if (
+        builtin.requires_post_completion
+        and status in {"passed", "failed", "advisory"}
+        and phase != POST_COMPLETION_PHASE
+    ):
+        raise CheckContractError("result_post_completion_phase_required")
     kind = _execution_kind(check_id)
     if status in {"passed", "failed"}:
         if kind == "process":
@@ -963,6 +1064,11 @@ def validate_expected_instance(expected):
         definition.requires_baseline or expected.get("comparison")
     ) and not _has_resolved_base_commit(baseline):
         raise CheckContractError("expected_baseline_missing")
+    phase = expected.get("phase")
+    if phase is not None and phase not in EXECUTION_PHASES:
+        raise CheckContractError("expected_phase_invalid")
+    if definition.requires_post_completion and phase != POST_COMPLETION_PHASE:
+        raise CheckContractError("expected_post_completion_phase_required")
     return expected
 
 
@@ -980,6 +1086,11 @@ def result_matches_expected(result, expected):
     builtin = _registered_definition(check["check_id"], check["definition_version"])
     if builtin.requires_baseline and expected.get("baseline_ref") is None:
         return False
+    if (
+        builtin.requires_post_completion
+        and expected.get("phase") != POST_COMPLETION_PHASE
+    ):
+        return False
     comparisons = {
         "check_id": check["check_id"],
         "definition_version": check["definition_version"],
@@ -987,6 +1098,7 @@ def result_matches_expected(result, expected):
         "profile_ref": check.get("profile_ref"),
         "source_ref": result["source_ref"],
         "baseline_ref": result.get("baseline_ref"),
+        "phase": result.get("phase"),
     }
     for key, actual in comparisons.items():
         if key in expected and expected[key] != actual:
@@ -1291,6 +1403,11 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
     registered = _registered_definition(
         definition.check_id, definition.definition_version
     )
+    if (
+        definition.requires_baseline != registered.requires_baseline
+        or definition.requires_post_completion != registered.requires_post_completion
+    ):
+        raise CheckContractError("result_check_semantics_mismatch")
     if definition.tool_requirements != registered.tool_requirements:
         raise CheckContractError("result_tool_requirements_mismatch")
     observed = _validate_coherent_results(results)
@@ -1503,6 +1620,7 @@ def _definition_payload(definition):
         "rule_ref": definition.rule_ref,
         "profile_ref": definition.profile_ref,
         "requires_baseline": definition.requires_baseline,
+        "requires_post_completion": definition.requires_post_completion,
         "tool_requirements": [
             {
                 "requirement_id": item.requirement_id,

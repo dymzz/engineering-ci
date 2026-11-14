@@ -43,8 +43,19 @@ reinterpreted):
 | `tach` | `eci/hygiene/tach` |
 | `tach_external` | `eci/hygiene/tach-external` |
 | `source` | `eci/sources/reconcile` |
+| `unittest` | `eci/tests/unittest` |
+| `pytest` | `eci/tests/pytest` |
+| `weaver_registry` | `eci/weaver/registry` |
+| `weaver_live` | `eci/weaver/live` |
+| `weaver_terminal` | `eci/weaver/terminal` |
 
 - `check_id` is stable across Hook Job, Host, Dagger and Actions.
+- `unittest` (`eci/tests/unittest`) and `pytest` (`eci/tests/pytest`) are
+  intentionally modeled as **distinct Check identities**, not interchangeable
+  alternatives under one logical Check ID: the two runners differ in target
+  discovery, marker/fixture evaluation, exit codes, and native artifact support
+  (JUnit XML on `pytest` only). Cross-framework substitution belongs to an
+  explicit Consumer Profile policy rule in `#66`/`#61`.
 - `definition_version` and `rule_ref` describe the Check definition/rule
   version; a different rule version is a different result identity. Constructor
   and validator both reject unsupported built-in definition versions.
@@ -52,6 +63,16 @@ reinterpreted):
   `forwarding` actually read the old source. Their native verdicts require
   resolved `base_commit` in `baseline_ref`; a caller cannot omit it to
   make different comparisons match.
+- `requires_post_completion` is controlled per built-in Check and is `True` for
+  `weaver_terminal` (`eci/weaver/terminal`):
+  - `passed`, `failed`, and `advisory` results for `weaver_terminal` are only
+    valid when `phase == "post_completion"` (`POST_COMPLETION_PHASE`), tying
+    the Check definition contract to `selection.post_completion_plan()`.
+  - Ordinary PR results recording `status="not_applicable"` without
+    `post_completion` remain structurally valid as observations, but can never
+    match or satisfy a `post_completion` Expected instance.
+  - `validate_expected_instance()` rejects a `weaver_terminal` Expected whose
+    `phase` is not `"post_completion"`.
 - `result_instance` distinguishes runs; `content_id` is the hash of canonical
   result content without the instance, and `result_id` binds both content and
   instance. Validation recomputes both.
@@ -65,21 +86,26 @@ reinterpreted):
   from a tool or Job name; per-Check tool requirements are declared separately
   below.
 - `definition_version` describes the Check's satisfaction contract. The five
-  tool-bound Checks are version 2; the pre-tool version 1 definitions remain
-  readable but cannot satisfy a version 2 Check. This is independent of the
+  pre-existing tool-bound hygiene Checks (`docs`, `tach`, `tach_external`,
+  `vulture`, `whitespace`) are version 2 while keeping version 1 readable as
+  the pre-tool contract; newly registered tool-bound Checks (`unittest`,
+  `pytest`, `weaver_registry`, `weaver_live`, `weaver_terminal`) start at
+  version 1 with their declared tool requirements. This is independent of the
   Result data schema.
 - A missing identity is `check_identity_missing`; a genuinely executed Check
   retains its original native status and diagnostics. The Host records
   `check_contract=identity_missing` and blocks the top-level Report as
   `blocked/check_contract_invalid`, rather than forging `not_executed`.
 - `validate_result()` rejects mutated content, a mismatched `content_id` or
-  `result_id`, unknown Check IDs, invalid source binding, and status/exit
-  contradictions (`passed` with nonzero exit, `failed` with zero exit).
+  `result_id`, unknown Check IDs, invalid source binding, invalid execution
+  phases, and status/exit contradictions (`passed` with nonzero exit, `failed`
+  with zero exit).
 - `not_executed` never carries a native process exit. `not_applicable` may
   report no exit, or a successful process exit with diagnostic evidence; it
   cannot hide a nonzero native failure. `unknown` is never accepted as PASS.
 - Execution kinds are explicit: process Checks (`docs`, `tach`, `tach_external`,
-  `vulture`, `whitespace`) require a real native exit and evidence for
+  `vulture`, `whitespace`, `unittest`, `pytest`, `weaver_registry`,
+  `weaver_live`, `weaver_terminal`) require a real native exit and evidence for
   passed/failed; internal Checks (`forwarding`, `source`) carry structured
   evidence without a process exit. Configuration failures are `not_started`,
   carry no Native Result, and cannot be reported as native failures.
@@ -99,6 +125,14 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 | `eci/hygiene/tach-external` | `external-modules` | `tach/check-external` | external-module check |
 | `eci/hygiene/vulture` | `dead-code` | `vulture/dead-code` | dead-code scan |
 | `eci/hygiene/whitespace` | `diff-hygiene` | `git/diff-check` | old→new whitespace check |
+| `eci/tests/unittest` | `test-runner` | `python/unittest` | standard-library `unittest` runner |
+| `eci/tests/pytest` | `test-runner` | `python/pytest` | `pytest` runner (supports JUnit XML) |
+| `eci/weaver/registry` | `registry-check` | `weaver/registry-check` | SemConv Registry validation (`weaver_tool`) |
+| | `registry-package` (`registry-check`) | `weaver/registry-package` | resolved Registry package build (`weaver_tool`) |
+| `eci/weaver/live` | `registry-package` | `weaver/registry-package` | resolved Registry package input (`weaver_tool`) |
+| | `live-check` (`registry-package`) | `weaver/live-check` | OTLP live/replay schema check (`weaver_tool`) |
+| `eci/weaver/terminal` | `registry-package` | `weaver/registry-package` | resolved Registry package input (`weaver_tool`) |
+| | `terminal-live-check` (`registry-package`) | `weaver/terminal-live-check` | `post_completion` Run/Root terminal check (`weaver_tool`) |
 | `eci/hygiene/forwarding`, `eci/sources/reconcile` | none | — | internal analysis |
 
 - Every requirement must be satisfied: `all-required` across groups,
@@ -121,12 +155,16 @@ no requirements is an internal ECI analysis and carries no tool evidence:
   - A local name is never promoted to a Runtime identity by an executable, Hook
     Job or display name. An undeclared version/artifact may be recorded as
     observed evidence (for example a pinned Dagger tool).
-- The current definitions (version 2) are the tool-bound ones: `docs`, `tach`,
-  `tach_external`, `vulture`, `whitespace`. `forwarding`/`source` remain version
-  1 because no tool requirement was added. Version 1 definitions keep the
-  pre-tool rules and stay readable; a version 1 result cannot satisfy a version
-  2 Check (`satisfaction_definition_version_mismatch`). Result schema 2 is
-  independent of this definition version.
+- The current definitions are version 2 for the five legacy tool-bound hygiene
+  Checks (`docs`, `tach`, `tach_external`, `vulture`, `whitespace`), and version
+  1 for `forwarding`/`source` plus the newly registered test/Weaver Checks
+  (`unittest`, `pytest`, `weaver_registry`, `weaver_live`, `weaver_terminal`).
+  Weaver requirements pin `tool_id="weaver"`,
+  `tool_id_source="eci_pinned_asset"`, version and Linux asset SHA-256 directly
+  from `weaver_tool.py`. Version 1 definitions of the five legacy hygiene Checks
+  keep their pre-tool rules and stay readable; a version 1 result cannot
+  satisfy a version 2 Check (`satisfaction_definition_version_mismatch`).
+  Result schema 2 is independent of this definition version.
 - Definition validation refuses unknown Check ids/versions, duplicate/unknown
   requirement ids, self references, cycles, empty or duplicate alternatives and
   invalid identities. A definition whose requirements differ from the
@@ -205,6 +243,9 @@ SUPPORTED_RESULT_VERSIONS = frozenset({1, 2})
 CHECK_CONTRACT_KIND = "engineering-ci-check-contract"
 RESULT_KIND = "engineering-ci-native-check-result"
 SATISFACTION_KIND = "engineering-ci-check-satisfaction"
+EXECUTION_PHASE = "execution"
+POST_COMPLETION_PHASE = "post_completion"
+EXECUTION_PHASES = frozenset({EXECUTION_PHASE, POST_COMPLETION_PHASE})
 
 ToolIdentity(access_id, tool_id=None, tool_id_source=None, version=None,
              artifact_sha256=None, authority="eci_local_entry")
@@ -224,7 +265,8 @@ source_ref(snapshot, *, declared_target_tree=None, actual_execution_source=None,
 tool_ref(access_id, *, tool_id=None, tool_id_source=None, version=None,
          artifact_sha256=None, authority="eci_local_entry",
          executable=None) -> dict  # observed evidence
-native_result(definition, *, source, status, result_origin, result_instance, ..., tool=None) -> dict
+native_result(definition, *, source, status, result_origin, result_instance,
+              ..., tool=None, phase=None) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
 evaluate_check_satisfaction(definition, results, *, expected=None) -> dict  # one Check (+ optional Expected)
@@ -236,9 +278,10 @@ result_covers_expected(result, expected) -> bool  # one result; unified requirem
 results_cover_expected(results, expected) -> bool  # boolean wrapper over evaluate_expected_satisfaction
 ```
 
-Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
-statuses: `passed`, `failed`, `advisory`, `not_applicable`, `not_executed`,
-`unknown`.
+Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown` (there is
+intentionally no separate `container` Origin; container executions inside Dagger
+use `dagger`, while exported Host executions keep `host`). Result statuses:
+`passed`, `failed`, `advisory`, `not_applicable`, `not_executed`, `unknown`.
 
 ## Representative result
 
@@ -468,8 +511,15 @@ exits and the resulting Report) is recorded in
   production `allowed-alternative` instance exists yet; the alternative path is
   covered by controlled contract tests, and `after` edges are declared only
   where a real consumption is wired.
-- Only the frozen built-in checks have IDs; external native tools and the
-  #52/Runtime Check/Profile interfaces still require the later contract work.
+- Only the frozen built-in checks have IDs (`CHECK_IDS`). Registering
+  `unittest`, `pytest`, `weaver_registry`, `weaver_live`, and `weaver_terminal`
+  definitions makes them resolvable via `definition_for()` /
+  `resolve_definitions()`; wiring actual Native Result producers in
+  `execution.execute()`, `selection.run_tests()`, and Weaver Dagger/Host
+  outputs, plus `dagger_export` -> `host` Source Handoff and post-completion
+  `expected_checks` binding, remain subsequent D2–D4 slices. External native
+  tools and Runtime Check/Profile interfaces still require the later contract
+  work.
 - `profile_ref` is pass-through metadata; it cannot grant Required/trusted.
 - `resolve_definitions` resolves only the built-in scope; Expected Check
   enumeration, Job routing and Required aggregation remain #66/#63/#61 work.
