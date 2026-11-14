@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
         ("sources", "engineering_ci.sources"),
         ("execute", "engineering_ci.execution"),
         ("cicd-telemetry", "engineering_ci.cicd_telemetry"),
+        ("dagger-telemetry", "engineering_ci.dagger_telemetry"),
     ],
 )
 def test_unified_cli_preserves_exit_status(command, module, monkeypatch):
