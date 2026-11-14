@@ -204,20 +204,21 @@ jobs:
               exit 1
             fi
 
+            local log_out="$ARTIFACTS_DIR/${scenario}.log"
             local cmd_exit=0
             set +e
             if [[ "$scenario" == "pass" ]]; then
-              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint
-              cmd_exit=$?
+              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
             elif [[ "$scenario" == "fail" ]]; then
               printf 'import os\n' > src/engineering_ci/_ci_negative_lint_tmp.py
-              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint
-              cmd_exit=$?
+              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
               rm -f src/engineering_ci/_ci_negative_lint_tmp.py
             elif [[ "$scenario" == "artifact" ]]; then
               mkdir -p "$ARTIFACTS_DIR/exported-tools"
-              DAGGER_ENGINE="container://${cname}" dagger api call repository-ruff-tools export --path "$ARTIFACTS_DIR/exported-tools/tool-versions.json"
-              cmd_exit=$?
+              DAGGER_ENGINE="container://${cname}" dagger api call repository-ruff-tools export --path "$ARTIFACTS_DIR/exported-tools/tool-versions.json" 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
             fi
             set -e
             printf '%s\n' "$cmd_exit" > "$exit_out"
@@ -238,6 +239,9 @@ jobs:
           test "$PASS_EXIT" -eq 0
           test "$FAIL_EXIT" -ne 0
           test "$ARTIFACT_EXIT" -eq 0
+          ARTIFACT_FILE="$ARTIFACTS_DIR/exported-tools/tool-versions.json"
+          test -s "$ARTIFACT_FILE"
+          ARTIFACT_SHA256="$(sha256sum "$ARTIFACT_FILE" | awk '{print $1}')"
 
           uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry correlate \
             --capture "$ARTIFACTS_DIR/pass-capture.json" \
@@ -267,6 +271,9 @@ jobs:
             --target repository-ruff-tools \
             --isolated \
             --exporter-configured yes \
+            --artifact-exit-code "$ARTIFACT_EXIT" \
+            --artifact-path "$ARTIFACT_FILE" \
+            --artifact-sha256 "$ARTIFACT_SHA256" \
             --source-ref "${{ github.sha }}" \
             --required-observability \
             --output "$ARTIFACTS_DIR/artifact-receipt.json"
@@ -274,11 +281,21 @@ jobs:
           uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry verify-a1 \
             --pass-capture "$ARTIFACTS_DIR/pass-capture.json" \
             --pass-receipt "$ARTIFACTS_DIR/pass-receipt.json" \
+            --pass-exit-file "$ARTIFACTS_DIR/pass.exit" \
+            --pass-log-file "$ARTIFACTS_DIR/pass.log" \
             --fail-capture "$ARTIFACTS_DIR/fail-capture.json" \
             --fail-receipt "$ARTIFACTS_DIR/fail-receipt.json" \
+            --fail-exit-file "$ARTIFACTS_DIR/fail.exit" \
+            --fail-log-file "$ARTIFACTS_DIR/fail.log" \
+            --fail-diagnostic-pattern 'F401.*_ci_negative_lint_tmp\.py' \
             --artifact-capture "$ARTIFACTS_DIR/artifact-capture.json" \
             --artifact-receipt "$ARTIFACTS_DIR/artifact-receipt.json" \
+            --artifact-exit-file "$ARTIFACTS_DIR/artifact.exit" \
+            --artifact-path "$ARTIFACT_FILE" \
+            --artifact-expected-sha256 "$ARTIFACT_SHA256" \
             --output "$ARTIFACTS_DIR/a1-verification.json"
+
+          (cd "$ARTIFACTS_DIR" && sha256sum *.json *.exit *.log exported-tools/tool-versions.json > SHA256SUMS)
       - name: Upload A.1 native telemetry evidence
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
@@ -287,5 +304,8 @@ jobs:
           path: |
             ${{ runner.temp }}/dagger-native-telemetry/*.json
             ${{ runner.temp }}/dagger-native-telemetry/*.exit
+            ${{ runner.temp }}/dagger-native-telemetry/*.log
+            ${{ runner.temp }}/dagger-native-telemetry/SHA256SUMS
+            ${{ runner.temp }}/dagger-native-telemetry/exported-tools/tool-versions.json
           if-no-files-found: ignore
           retention-days: 7

@@ -7,6 +7,7 @@ import base64
 import copy
 import datetime
 import gzip
+import hashlib
 import http.server
 import json
 import os
@@ -585,16 +586,12 @@ def _matches_module_dagql(
     span: SpanRecord, module_name: str, object_name: str, camel_fn: str
 ) -> bool:
     expected = f"{module_name}:{object_name}.{camel_fn}"
-    if span.name != expected:
-        return False
-    return not span.scope_name or span.scope_name == DAGQL_SCOPE_NAME
+    return span.name == expected and span.scope_name == DAGQL_SCOPE_NAME
 
 
 def _matches_core(span: SpanRecord, object_name: str, camel_fn: str) -> bool:
     expected = f"{object_name}.{camel_fn}"
-    if span.name != expected:
-        return False
-    return not span.scope_name or span.scope_name == CORE_SCOPE_NAME
+    return span.name == expected and span.scope_name == CORE_SCOPE_NAME
 
 
 def _find_core_peer(
@@ -606,6 +603,7 @@ def _find_core_peer(
     camel_fn: str,
 ) -> tuple[SpanRecord | None, str | None]:
     """Locate the Core span paired with a Module DagQL span (parent in beta.16, or child)."""
+    expected_core = f"{object_name}.{camel_fn}"
     parent = (
         by_key.get((dagql_node.trace_id, dagql_node.parent_span_id))
         if dagql_node.parent_span_id
@@ -619,11 +617,16 @@ def _find_core_peer(
         if child.span_id != dagql_node.span_id
         and _matches_core(child, object_name, camel_fn)
     ]
-    if not core_children:
-        return None, "missing_core_child_span"
-    if len(core_children) > 1:
-        return None, "multiple_core_children_under_dagql"
-    return core_children[0], None
+    if core_children:
+        if len(core_children) > 1:
+            return None, "multiple_core_children_under_dagql"
+        return core_children[0], None
+    if (parent is not None and parent.name == expected_core) or any(
+        child.span_id != dagql_node.span_id and child.name == expected_core
+        for child in dagql_subtree
+    ):
+        return None, "missing_or_wrong_core_scope"
+    return None, "missing_core_child_span"
 
 
 def _discover_check_candidates(
@@ -666,7 +669,16 @@ def _discover_check_candidates(
             if _matches_module_dagql(node, module_name, object_name, camel_fn)
         ]
         if not dagql_nodes:
-            rejected.append("broken_parent_chain_or_wrong_module")
+            expected_dagql = f"{module_name}:{object_name}.{camel_fn}"
+            has_unscoped_dagql = any(
+                node.name == expected_dagql and node.scope_name != DAGQL_SCOPE_NAME
+                for node in subtree
+            )
+            rejected.append(
+                "missing_or_wrong_dagql_scope"
+                if has_unscoped_dagql
+                else "broken_parent_chain_or_wrong_module"
+            )
             continue
         if len(dagql_nodes) > 1:
             rejected.append("multiple_dagql_descendants_under_selector")
@@ -729,7 +741,16 @@ def _discover_artifact_candidates(
     rejected: list[str] = []
 
     if not dagql_nodes:
-        rejected.append("no_matching_artifact_function_spans")
+        expected_dagql = f"{module_name}:{object_name}.{camel_fn}"
+        has_unscoped = any(
+            span.name == expected_dagql and span.scope_name != DAGQL_SCOPE_NAME
+            for span in dataset.spans
+        )
+        rejected.append(
+            "missing_or_wrong_dagql_scope"
+            if has_unscoped
+            else "no_matching_artifact_function_spans"
+        )
         return candidates, rejected
 
     for dagql_node in dagql_nodes:
@@ -925,29 +946,11 @@ def _build_cache_and_origin(
         cache_status = "mixed"
         new_tool_execution = None
 
-    origin_execution: dict[str, Any] = {"status": "unknown", "matched_origin": None}
-    if (
-        cache_status == "observed_hit"
-        and cache_result_id
-        and contract
-        and prior_executions
-    ):
-        for prior in prior_executions:
-            if (
-                prior.get("cache_result_id") == cache_result_id
-                and prior.get("contract") == contract
-                and prior.get("node_level", node_level) == node_level
-            ):
-                origin_execution = {
-                    "status": "existing_execution_linked",
-                    "matched_origin": {
-                        "trace_id": prior.get("trace_id"),
-                        "span_id": prior.get("span_id"),
-                        "session_id": prior.get("session_id"),
-                        "cache_result_id": cache_result_id,
-                    },
-                }
-                break
+    origin_execution: dict[str, Any] = {
+        "status": "unknown",
+        "matched_origin": None,
+        "reason": "unverified_cross_run_origin",
+    }
 
     cache_observation = {
         "status": cache_status,
@@ -962,12 +965,20 @@ def _build_cache_and_origin(
     return cache_observation, origin_execution
 
 
+def sha256_file(path: Path) -> str:
+    """Return lowercase hexadecimal SHA-256 digest of a file."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _build_native_check_result(
     candidate: CandidateChain | None,
     *,
+    entry_kind: str,
     check_exit_code: int | None,
 ) -> dict[str, Any]:
-    if check_exit_code is None:
+    if entry_kind != "check":
+        status = "not_applicable"
+    elif check_exit_code is None:
         status = "unknown"
     elif check_exit_code == 0:
         status = "passed"
@@ -989,12 +1000,91 @@ def _build_native_check_result(
                 check_passed_attr = span.attributes[DAGGER_CHECK_PASSED_ATTR]
     return {
         "status": status,
-        "exit_code": check_exit_code,
+        "exit_code": check_exit_code if entry_kind == "check" else None,
         "span_status": span_status,
         "check_attributes": {
             DAGGER_CHECK_NAME_ATTR: check_name_attr,
             DAGGER_CHECK_PASSED_ATTR: check_passed_attr,
         },
+    }
+
+
+def _find_export_span(
+    dataset: CaptureDataset,
+    candidate: CandidateChain | None,
+    *,
+    artifact_name: str | None,
+) -> bool:
+    if candidate is None:
+        return False
+    trace_id = candidate.anchor.trace_id
+    session_id = candidate.anchor.session_id
+    engine_id = candidate.anchor.engine_instance_id
+    for span in dataset.spans:
+        if (
+            span.trace_id != trace_id
+            or span.session_id != session_id
+            or span.engine_instance_id != engine_id
+            or span.scope_name != CORE_SCOPE_NAME
+        ):
+            continue
+        if span.name == "File.export":
+            return True
+        if (
+            artifact_name
+            and span.name.startswith("export file ")
+            and artifact_name in span.name
+        ):
+            return True
+        if span.name == "Artifact.value":
+            return True
+    return False
+
+
+def _build_native_artifact_result(
+    candidate: CandidateChain | None,
+    dataset: CaptureDataset,
+    *,
+    entry_kind: str,
+    artifact_exit_code: int | None,
+    artifact_path: Path | None,
+    artifact_sha256: str | None,
+) -> dict[str, Any]:
+    if entry_kind != "artifact_function":
+        return {
+            "status": "not_applicable",
+            "exit_code": None,
+            "artifact_path": None,
+            "artifact_name": None,
+            "artifact_sha256": None,
+            "export_span_observed": False,
+        }
+
+    artifact_name = artifact_path.name if artifact_path is not None else None
+    export_span_observed = _find_export_span(
+        dataset, candidate, artifact_name=artifact_name
+    )
+    computed_sha = None
+    if artifact_path is not None and artifact_path.is_file():
+        computed_sha = sha256_file(artifact_path)
+
+    effective_sha = computed_sha or artifact_sha256
+    if artifact_sha256 and computed_sha and artifact_sha256 != computed_sha:
+        status = "sha256_mismatch"
+    elif artifact_exit_code is not None and artifact_exit_code != 0:
+        status = "failed"
+    elif artifact_exit_code == 0 and effective_sha is not None:
+        status = "exported"
+    else:
+        status = "unknown"
+
+    return {
+        "status": status,
+        "exit_code": artifact_exit_code,
+        "artifact_path": str(artifact_path) if artifact_path is not None else None,
+        "artifact_name": artifact_name,
+        "artifact_sha256": effective_sha,
+        "export_span_observed": export_span_observed,
     }
 
 
@@ -1010,6 +1100,9 @@ def correlate_capture(
     isolated_capture: bool | None = None,
     exporter_configured: str | None = None,
     check_exit_code: int | None = None,
+    artifact_exit_code: int | None = None,
+    artifact_path: Path | None = None,
+    artifact_sha256: str | None = None,
     declared_target_source_ref: str | None = None,
     required_observability: bool = False,
     prior_executions: list[dict[str, Any]] | None = None,
@@ -1067,9 +1160,13 @@ def correlate_capture(
                 sent_basis=sent_basis,
                 receiver_observed=receiver_observed,
                 check_exit_code=check_exit_code,
+                artifact_exit_code=artifact_exit_code,
+                artifact_path=artifact_path,
+                artifact_sha256=artifact_sha256,
                 declared_target_source_ref=declared_target_source_ref,
                 required_observability=required_observability,
                 prior_executions=prior_executions,
+                dataset=dataset,
             )
 
     if entry_kind == "check":
@@ -1140,9 +1237,13 @@ def correlate_capture(
         sent_basis=sent_basis,
         receiver_observed=receiver_observed,
         check_exit_code=check_exit_code,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+        artifact_sha256=artifact_sha256,
         declared_target_source_ref=declared_target_source_ref,
         required_observability=required_observability,
         prior_executions=prior_executions,
+        dataset=dataset,
     )
 
 
@@ -1165,15 +1266,28 @@ def _assemble_receipt(
     sent_basis: str,
     receiver_observed: bool,
     check_exit_code: int | None,
+    artifact_exit_code: int | None,
+    artifact_path: Path | None,
+    artifact_sha256: str | None,
     declared_target_source_ref: str | None,
     required_observability: bool,
     prior_executions: list[dict[str, Any]] | None,
+    dataset: CaptureDataset,
 ) -> dict[str, Any]:
+    del prior_executions
     cache_observation, origin_execution = _build_cache_and_origin(
-        candidate, prior_executions=prior_executions
+        candidate, prior_executions=None
     )
     native_check_result = _build_native_check_result(
-        candidate, check_exit_code=check_exit_code
+        candidate, entry_kind=entry_kind, check_exit_code=check_exit_code
+    )
+    native_artifact_result = _build_native_artifact_result(
+        candidate,
+        dataset,
+        entry_kind=entry_kind,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+        artifact_sha256=artifact_sha256,
     )
     observed_digests = (
         _collect_digests(
@@ -1238,6 +1352,7 @@ def _assemble_receipt(
             "receiver_observed": receiver_observed,
             "trace_invocation_binding": binding_status,
             "native_check_result": native_check_result,
+            "native_artifact_result": native_artifact_result,
         },
         "source_binding": {
             "source_binding_status": "unknown",
@@ -1582,71 +1697,112 @@ def _mutate_cross_session_core(raw: dict[str, Any], camel_fn: str) -> dict[str, 
     return mutated
 
 
-def _assert_receipt_positive(
-    receipt: dict[str, Any],
+def _mutate_strip_scope(raw: dict[str, Any], scope_name: str) -> dict[str, Any]:
+    mutated = copy.deepcopy(raw)
+    for batch in mutated.get("trace_batches") or []:
+        for resource in batch.get("payload", {}).get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                scope_meta = scope.get("scope") or {}
+                if scope_meta.get("name") == scope_name:
+                    scope_meta["name"] = ""
+    return mutated
+
+
+def _reconcile_receipt_with_capture(
+    label: str,
     *,
-    expected_entry_kind: str,
-    expected_target: str,
-    expected_check_status: str,
+    capture: dict[str, Any],
+    receipt: dict[str, Any],
+    entry_kind: str,
+    target_name: str,
+    traceparent: str | None,
+    check_exit_code: int | None = None,
+    artifact_exit_code: int | None = None,
+    artifact_path: Path | None = None,
 ) -> list[str]:
+    """Recompute correlation on the raw capture and verify persisted receipt identity."""
     failures: list[str] = []
-    target = receipt.get("target", {})
+    target_meta = receipt.get("target", {})
     corr = receipt.get("correlation", {})
     claims = receipt.get("claims", {})
     source_binding = receipt.get("source_binding", {})
-    cache_obs = receipt.get("cache_observation", {})
     origin = receipt.get("origin_execution", {})
     gate = receipt.get("observability_gate", {})
 
-    if target.get("entry_kind") != expected_entry_kind:
+    if corr.get("traceparent_supplied") and not traceparent:
+        failures.append(f"{label}:traceparent_supplied_without_traceparent")
+        return failures
+
+    raw_isolated = capture.get("isolated_capture")
+    if corr.get("isolated_capture") != bool(raw_isolated):
         failures.append(
-            f"{expected_target}:wrong_entry_kind:{target.get('entry_kind')}"
+            f"{label}:isolated_capture_mismatch:{corr.get('isolated_capture')}!={bool(raw_isolated)}"
         )
-    if target.get("target_name") != expected_target:
+
+    recomputed = correlate_capture(
+        capture,
+        entry_kind=entry_kind,
+        target_name=target_name,
+        module_name=str(target_meta.get("module_name") or "engineering-ci"),
+        object_name=str(target_meta.get("object_name") or "EngineeringCi"),
+        traceparent=traceparent,
+        isolated_capture=bool(raw_isolated),
+        exporter_configured=str(claims.get("exporter_configured") or "unknown"),
+        check_exit_code=check_exit_code,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+        declared_target_source_ref=source_binding.get("declared_target_source_ref"),
+        required_observability=bool(gate.get("required_observability", False)),
+    )
+
+    if recomputed["correlation"].get("status") != "bound":
         failures.append(
-            f"{expected_target}:wrong_target_name:{target.get('target_name')}"
+            f"{label}:recomputed_not_bound:"
+            f"{recomputed['correlation'].get('status')}:{recomputed['correlation'].get('reason')}"
         )
-    if corr.get("status") != "bound":
-        failures.append(
-            f"{expected_target}:not_bound:{corr.get('status')}:{corr.get('reason')}"
-        )
-    if not corr.get("matched_session_id"):
-        failures.append(f"{expected_target}:missing_matched_session_id")
-    if not corr.get("matched_engine_instance_id"):
-        failures.append(f"{expected_target}:missing_matched_engine_instance_id")
-    if (
-        claims.get("sent") != "sent"
-        or claims.get("sent_basis") != "receiver_observation"
-    ):
-        failures.append(f"{expected_target}:invalid_sent_claim:{claims}")
-    if claims.get("receiver_observed") is not True:
-        failures.append(f"{expected_target}:receiver_not_observed")
-    if claims.get("trace_invocation_binding") != "bound":
-        failures.append(f"{expected_target}:trace_invocation_binding_not_bound")
-    if claims.get("native_check_result", {}).get("status") != expected_check_status:
-        failures.append(
-            f"{expected_target}:unexpected_check_status:"
-            f"{claims.get('native_check_result', {}).get('status')}!={expected_check_status}"
-        )
+    if receipt.get("target") != recomputed["target"]:
+        failures.append(f"{label}:target_mismatch")
+
+    identity_keys = (
+        "status",
+        "reason",
+        "isolated_capture",
+        "traceparent_supplied",
+        "candidate_count",
+        "matched_trace_id",
+        "matched_session_id",
+        "matched_engine_instance_id",
+        "anchor_span_id",
+        "dagql_span_id",
+        "core_span_id",
+        "lineage_span_ids",
+    )
+    for key in identity_keys:
+        if corr.get(key) != recomputed["correlation"].get(key):
+            failures.append(
+                f"{label}:correlation_{key}_mismatch:"
+                f"{corr.get(key)}!={recomputed['correlation'].get(key)}"
+            )
+
+    if claims != recomputed["claims"]:
+        failures.append(f"{label}:claims_mismatch_with_recomputed")
     if source_binding.get("source_binding_status") != "unknown":
         failures.append(
-            f"{expected_target}:source_binding_must_stay_unknown:"
+            f"{label}:source_binding_must_stay_unknown:"
             f"{source_binding.get('source_binding_status')}"
         )
-    if (
-        cache_obs.get("node_level") == "function_only"
-        and cache_obs.get("status") == "observed_execution"
-    ):
-        if cache_obs.get("new_tool_execution") is not None:
-            failures.append(
-                f"{expected_target}:function_only_executed_claimed_new_exec"
-            )
-        if origin.get("status") != "unknown":
-            failures.append(
-                f"{expected_target}:function_only_executed_overclaimed_origin:{origin}"
-            )
+    if source_binding != recomputed["source_binding"]:
+        failures.append(f"{label}:source_binding_mismatch")
+    if receipt.get("cache_observation") != recomputed["cache_observation"]:
+        failures.append(f"{label}:cache_observation_mismatch")
+    if origin.get("status") != "unknown":
+        failures.append(f"{label}:unverified_origin_execution:{origin}")
+    if origin != recomputed["origin_execution"]:
+        failures.append(f"{label}:origin_execution_mismatch")
+    if gate != recomputed["observability_gate"]:
+        failures.append(f"{label}:observability_gate_mismatch")
     if gate.get("required_observability") and gate.get("satisfied") is not True:
-        failures.append(f"{expected_target}:observability_gate_unsatisfied:{gate}")
+        failures.append(f"{label}:observability_gate_unsatisfied:{gate}")
     return failures
 
 
@@ -1658,36 +1814,108 @@ def verify_a1_suite(
     fail_receipt: dict[str, Any],
     artifact_capture: dict[str, Any],
     artifact_receipt: dict[str, Any],
+    pass_exit_code: int,
+    fail_exit_code: int,
+    fail_log: str,
+    artifact_exit_code: int,
+    artifact_path: Path,
+    pass_log: str = "",
+    fail_diagnostic_pattern: str = r"\bF401\b",
+    artifact_expected_sha256: str | None = None,
+    pass_traceparent: str | None = None,
+    fail_traceparent: str | None = None,
+    artifact_traceparent: str | None = None,
     pass_target: str = "lint",
     fail_target: str = "lint",
     artifact_target: str = "repository-ruff-tools",
 ) -> dict[str, Any]:
-    """Run strict A.1 positive and negative verification checks on real OTLP captures."""
+    """Run strict A.1 capture/receipt/native-result reconciliation and negative controls."""
     failures: list[str] = []
+
     failures.extend(
-        _assert_receipt_positive(
-            pass_receipt,
-            expected_entry_kind="check",
-            expected_target=pass_target,
-            expected_check_status="passed",
+        _reconcile_receipt_with_capture(
+            "pass",
+            capture=pass_capture,
+            receipt=pass_receipt,
+            entry_kind="check",
+            target_name=pass_target,
+            traceparent=pass_traceparent,
+            check_exit_code=pass_exit_code,
         )
     )
+    if pass_exit_code != 0:
+        failures.append(f"pass:expected_zero_exit_got:{pass_exit_code}")
+    if (
+        pass_receipt.get("claims", {}).get("native_check_result", {}).get("status")
+        != "passed"
+    ):
+        failures.append("pass:native_check_result_not_passed")
+    clean_pass_log = re.sub(r"\x1b\[[0-9;]*m", "", pass_log or "")
+    if clean_pass_log and re.search(fail_diagnostic_pattern, clean_pass_log, re.DOTALL):
+        failures.append("pass:unexpected_failure_diagnostic_in_pass_log")
+
     failures.extend(
-        _assert_receipt_positive(
-            fail_receipt,
-            expected_entry_kind="check",
-            expected_target=fail_target,
-            expected_check_status="failed",
+        _reconcile_receipt_with_capture(
+            "fail",
+            capture=fail_capture,
+            receipt=fail_receipt,
+            entry_kind="check",
+            target_name=fail_target,
+            traceparent=fail_traceparent,
+            check_exit_code=fail_exit_code,
         )
     )
+    if fail_exit_code == 0:
+        failures.append("fail:expected_nonzero_exit_got_0")
+    if (
+        fail_receipt.get("claims", {}).get("native_check_result", {}).get("status")
+        != "failed"
+    ):
+        failures.append("fail:native_check_result_not_failed")
+    clean_fail_log = re.sub(r"\x1b\[[0-9;]*m", "", fail_log or "")
+    if not re.search(fail_diagnostic_pattern, clean_fail_log, re.DOTALL):
+        failures.append(f"fail:missing_expected_diagnostic:{fail_diagnostic_pattern}")
+
+    artifact_sha256_actual: str | None = None
+    if not artifact_path.is_file():
+        failures.append(f"artifact:missing_exported_file:{artifact_path}")
+    else:
+        raw_bytes = artifact_path.read_bytes()
+        if not raw_bytes:
+            failures.append("artifact:exported_file_empty")
+        else:
+            try:
+                json.loads(raw_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                failures.append("artifact:exported_file_invalid_json")
+        artifact_sha256_actual = hashlib.sha256(raw_bytes).hexdigest()
+        if (
+            artifact_expected_sha256
+            and artifact_expected_sha256 != artifact_sha256_actual
+        ):
+            failures.append(
+                f"artifact:sha256_mismatch:{artifact_sha256_actual}!={artifact_expected_sha256}"
+            )
+
     failures.extend(
-        _assert_receipt_positive(
-            artifact_receipt,
-            expected_entry_kind="artifact_function",
-            expected_target=artifact_target,
-            expected_check_status="unknown",
+        _reconcile_receipt_with_capture(
+            "artifact",
+            capture=artifact_capture,
+            receipt=artifact_receipt,
+            entry_kind="artifact_function",
+            target_name=artifact_target,
+            traceparent=artifact_traceparent,
+            artifact_exit_code=artifact_exit_code,
+            artifact_path=artifact_path,
         )
     )
+    if artifact_exit_code != 0:
+        failures.append(f"artifact:expected_zero_exit_got:{artifact_exit_code}")
+    art_native = artifact_receipt.get("claims", {}).get("native_artifact_result", {})
+    if art_native.get("status") != "exported":
+        failures.append(f"artifact:native_artifact_result_not_exported:{art_native}")
+    if not art_native.get("export_span_observed"):
+        failures.append("artifact:missing_export_span_in_bound_trace")
 
     neg_results: dict[str, str] = {}
     missing_engine = correlate_capture(
@@ -1752,7 +1980,26 @@ def verify_a1_suite(
     if cross_session["correlation"]["status"] == "bound":
         failures.append("neg_cross_session_split_bound")
 
-    # Verify fail capture contains negative check exit code while still binding trace.
+    stripped_dagql_scope = correlate_capture(
+        _mutate_strip_scope(pass_capture, DAGQL_SCOPE_NAME),
+        entry_kind="check",
+        target_name=pass_target,
+        isolated_capture=True,
+    )
+    neg_results["strip_dagql_scope"] = stripped_dagql_scope["correlation"]["status"]
+    if stripped_dagql_scope["correlation"]["status"] != "unbound":
+        failures.append("neg_strip_dagql_scope_bound")
+
+    stripped_core_scope = correlate_capture(
+        _mutate_strip_scope(pass_capture, CORE_SCOPE_NAME),
+        entry_kind="check",
+        target_name=pass_target,
+        isolated_capture=True,
+    )
+    neg_results["strip_core_scope"] = stripped_core_scope["correlation"]["status"]
+    if stripped_core_scope["correlation"]["status"] != "unbound":
+        failures.append("neg_strip_core_scope_bound")
+
     wrong_fn_artifact = correlate_capture(
         pass_capture,
         entry_kind="artifact_function",
@@ -1765,7 +2012,6 @@ def verify_a1_suite(
     if wrong_fn_artifact["correlation"]["status"] == "bound":
         failures.append("neg_check_impersonated_artifact")
 
-    # Verify genuine fail capture isn't empty and artifact capture refuses Check entry.
     artifact_as_check = correlate_capture(
         artifact_capture,
         entry_kind="check",
@@ -1778,9 +2024,6 @@ def verify_a1_suite(
     if artifact_as_check["correlation"]["status"] == "bound":
         failures.append("neg_artifact_impersonated_check")
 
-    if not parse_capture(fail_capture).spans:
-        failures.append("fail_capture_empty")
-
     report = {
         "schema_version": CONTRACT_VERSION,
         "kind": A1_VERIFICATION_KIND,
@@ -1788,6 +2031,29 @@ def verify_a1_suite(
         "passed": not failures,
         "failures": failures,
         "negative_controls": neg_results,
+        "native_reconciliation": {
+            "pass": {
+                "exit_code": pass_exit_code,
+                "matched_trace_id": pass_receipt.get("correlation", {}).get(
+                    "matched_trace_id"
+                ),
+            },
+            "fail": {
+                "exit_code": fail_exit_code,
+                "diagnostic_pattern": fail_diagnostic_pattern,
+                "matched_trace_id": fail_receipt.get("correlation", {}).get(
+                    "matched_trace_id"
+                ),
+            },
+            "artifact": {
+                "exit_code": artifact_exit_code,
+                "artifact_path": str(artifact_path),
+                "artifact_sha256": artifact_sha256_actual,
+                "matched_trace_id": artifact_receipt.get("correlation", {}).get(
+                    "matched_trace_id"
+                ),
+            },
+        },
         "checked_targets": {
             "pass": pass_target,
             "fail": fail_target,
@@ -1886,6 +2152,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--exporter-configured", default="unknown", choices=("yes", "no", "unknown")
     )
     corr.add_argument("--check-exit-code", type=int)
+    corr.add_argument("--artifact-exit-code", type=int)
+    corr.add_argument("--artifact-path", type=Path)
+    corr.add_argument("--artifact-sha256")
     corr.add_argument("--source-ref")
     corr.add_argument("--required-observability", action="store_true")
     corr.add_argument("--output", type=Path)
@@ -1895,15 +2164,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--pass-capture", required=True, type=Path)
     verify.add_argument("--pass-receipt", required=True, type=Path)
+    verify.add_argument("--pass-exit-file", required=True, type=Path)
+    verify.add_argument("--pass-log-file", type=Path)
     verify.add_argument("--fail-capture", required=True, type=Path)
     verify.add_argument("--fail-receipt", required=True, type=Path)
+    verify.add_argument("--fail-exit-file", required=True, type=Path)
+    verify.add_argument("--fail-log-file", required=True, type=Path)
+    verify.add_argument("--fail-diagnostic-pattern", default=r"\bF401\b")
     verify.add_argument("--artifact-capture", required=True, type=Path)
     verify.add_argument("--artifact-receipt", required=True, type=Path)
+    verify.add_argument("--artifact-exit-file", required=True, type=Path)
+    verify.add_argument("--artifact-path", required=True, type=Path)
+    verify.add_argument("--artifact-expected-sha256")
+    verify.add_argument("--pass-traceparent")
+    verify.add_argument("--fail-traceparent")
+    verify.add_argument("--artifact-traceparent")
     verify.add_argument("--pass-target", default="lint")
     verify.add_argument("--fail-target", default="lint")
     verify.add_argument("--artifact-target", default="repository-ruff-tools")
     verify.add_argument("--output", type=Path)
     return parser
+
+
+def _read_exit_file(path: Path) -> int:
+    text = path.read_text(encoding="utf-8").strip()
+    try:
+        return int(text)
+    except ValueError as error:
+        raise DaggerTelemetryError(f"invalid_exit_file:{path}") from error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1927,6 +2215,9 @@ def main(argv: list[str] | None = None) -> int:
             isolated_capture=True if args.isolated else None,
             exporter_configured=args.exporter_configured,
             check_exit_code=args.check_exit_code,
+            artifact_exit_code=args.artifact_exit_code,
+            artifact_path=args.artifact_path,
+            artifact_sha256=args.artifact_sha256,
             declared_target_source_ref=args.source_ref,
             required_observability=args.required_observability,
         )
@@ -1935,6 +2226,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0 if receipt["observability_gate"]["satisfied"] else 1
     if args.subcommand == "verify-a1":
+        pass_log = (
+            args.pass_log_file.read_text(encoding="utf-8", errors="replace")
+            if args.pass_log_file
+            else ""
+        )
+        fail_log = args.fail_log_file.read_text(encoding="utf-8", errors="replace")
         report = verify_a1_suite(
             pass_capture=_load_json_dict(args.pass_capture),
             pass_receipt=_load_json_dict(args.pass_receipt),
@@ -1942,10 +2239,38 @@ def main(argv: list[str] | None = None) -> int:
             fail_receipt=_load_json_dict(args.fail_receipt),
             artifact_capture=_load_json_dict(args.artifact_capture),
             artifact_receipt=_load_json_dict(args.artifact_receipt),
+            pass_exit_code=_read_exit_file(args.pass_exit_file),
+            pass_log=pass_log,
+            fail_exit_code=_read_exit_file(args.fail_exit_file),
+            fail_log=fail_log,
+            fail_diagnostic_pattern=args.fail_diagnostic_pattern,
+            artifact_exit_code=_read_exit_file(args.artifact_exit_file),
+            artifact_path=args.artifact_path,
+            artifact_expected_sha256=args.artifact_expected_sha256,
+            pass_traceparent=args.pass_traceparent,
+            fail_traceparent=args.fail_traceparent,
+            artifact_traceparent=args.artifact_traceparent,
             pass_target=args.pass_target,
             fail_target=args.fail_target,
             artifact_target=args.artifact_target,
         )
+        report["evidence_sha256"] = {
+            "pass_capture": sha256_file(args.pass_capture),
+            "pass_receipt": sha256_file(args.pass_receipt),
+            "pass_exit": sha256_file(args.pass_exit_file),
+            "fail_capture": sha256_file(args.fail_capture),
+            "fail_receipt": sha256_file(args.fail_receipt),
+            "fail_exit": sha256_file(args.fail_exit_file),
+            "fail_log": sha256_file(args.fail_log_file),
+            "artifact_capture": sha256_file(args.artifact_capture),
+            "artifact_receipt": sha256_file(args.artifact_receipt),
+            "artifact_exit": sha256_file(args.artifact_exit_file),
+            "exported_artifact": (
+                sha256_file(args.artifact_path)
+                if args.artifact_path.is_file()
+                else None
+            ),
+        }
         if args.output:
             _atomic_write_json(args.output, report)
         print(json.dumps(report, indent=2, sort_keys=True))

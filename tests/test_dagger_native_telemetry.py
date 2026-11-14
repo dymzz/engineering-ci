@@ -234,7 +234,7 @@ def _make_artifact_capture(
                                             trace_id=trace_id,
                                             span_id=export_id,
                                             parent_span_id=dagql_id,
-                                            name="Artifact.value",
+                                            name="File.export",
                                         ),
                                     ],
                                 },
@@ -393,8 +393,8 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(receipt["origin_execution"]["status"], "unknown")
         self.assertTrue(receipt["observability_gate"]["satisfied"])
 
-        # Linked prior origin only succeeds with matching contract/result_id/scope.
-        linked = dt.correlate_capture(
+        # Unverified self-asserted prior_executions must NOT auto-link origin in A.1.
+        unverified_prior = dt.correlate_capture(
             art,
             entry_kind="artifact_function",
             target_name="repository-ruff-tools",
@@ -409,8 +409,29 @@ class CorrelationTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(unverified_prior["origin_execution"]["status"], "unknown")
+
+        # Missing dagql/core scope must not bind (P2-1).
+        unscoped_dagql = dt.correlate_capture(
+            dt._mutate_strip_scope(art, dt.DAGQL_SCOPE_NAME),
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+            isolated_capture=True,
+        )
+        self.assertEqual(unscoped_dagql["correlation"]["status"], "unbound")
         self.assertEqual(
-            linked["origin_execution"]["status"], "existing_execution_linked"
+            unscoped_dagql["correlation"]["reason"], "missing_or_wrong_dagql_scope"
+        )
+
+        unscoped_core = dt.correlate_capture(
+            dt._mutate_strip_scope(art, dt.CORE_SCOPE_NAME),
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+            isolated_capture=True,
+        )
+        self.assertEqual(unscoped_core["correlation"]["status"], "unbound")
+        self.assertEqual(
+            unscoped_core["correlation"]["reason"], "missing_or_wrong_core_scope"
         )
 
         # Check capture cannot impersonate artifact function entry.
@@ -426,7 +447,7 @@ class CorrelationTests(unittest.TestCase):
             impersonate["correlation"]["reason"], "unexpected_check_selector_ancestor"
         )
 
-    def test_verify_a1_suite_passes_on_valid_trio_and_rejects_fake_bound(self) -> None:
+    def test_verify_a1_suite_reconciles_identity_and_native_sources(self) -> None:
         pass_cap = _make_check_capture(core_status_code=1)
         pass_rec = dt.correlate_capture(
             pass_cap,
@@ -446,34 +467,120 @@ class CorrelationTests(unittest.TestCase):
             required_observability=True,
         )
         art_cap = _make_artifact_capture()
-        art_rec = dt.correlate_capture(
-            art_cap,
-            entry_kind="artifact_function",
-            target_name="repository-ruff-tools",
-            exporter_configured="yes",
-            required_observability=True,
-        )
-        report = dt.verify_a1_suite(
-            pass_capture=pass_cap,
-            pass_receipt=pass_rec,
-            fail_capture=fail_cap,
-            fail_receipt=fail_rec,
-            artifact_capture=art_cap,
-            artifact_receipt=art_rec,
-        )
-        self.assertTrue(report["passed"], report["failures"])
 
-        fake_pass = copy.deepcopy(pass_rec)
-        fake_pass["source_binding"]["source_binding_status"] = "verified"
-        bad_report = dt.verify_a1_suite(
-            pass_capture=pass_cap,
-            pass_receipt=fake_pass,
-            fail_capture=fail_cap,
-            fail_receipt=fail_rec,
-            artifact_capture=art_cap,
-            artifact_receipt=art_rec,
-        )
-        self.assertFalse(bad_report["passed"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            art_file = Path(tmpdir) / "tool-versions.json"
+            art_file.write_text('{"ruff": "0.16.10"}\n', encoding="utf-8")
+            art_sha = dt.sha256_file(art_file)
+            art_rec = dt.correlate_capture(
+                art_cap,
+                entry_kind="artifact_function",
+                target_name="repository-ruff-tools",
+                exporter_configured="yes",
+                artifact_exit_code=0,
+                artifact_path=art_file,
+                artifact_sha256=art_sha,
+                required_observability=True,
+            )
+            fail_log_text = (
+                "F401 [*] `os` imported but unused\n"
+                " --> src/engineering_ci/_ci_negative_lint_tmp.py:1:8\n"
+            )
+
+            report = dt.verify_a1_suite(
+                pass_capture=pass_cap,
+                pass_receipt=pass_rec,
+                fail_capture=fail_cap,
+                fail_receipt=fail_rec,
+                artifact_capture=art_cap,
+                artifact_receipt=art_rec,
+                pass_exit_code=0,
+                fail_exit_code=1,
+                fail_log=fail_log_text,
+                fail_diagnostic_pattern=r"F401.*_ci_negative_lint_tmp\.py",
+                artifact_exit_code=0,
+                artifact_path=art_file,
+                artifact_expected_sha256=art_sha,
+            )
+            self.assertTrue(report["passed"], report["failures"])
+
+            base_kwargs = {
+                "pass_capture": pass_cap,
+                "pass_receipt": pass_rec,
+                "fail_capture": fail_cap,
+                "fail_receipt": fail_rec,
+                "artifact_capture": art_cap,
+                "artifact_receipt": art_rec,
+                "pass_exit_code": 0,
+                "fail_exit_code": 1,
+                "fail_log": fail_log_text,
+                "fail_diagnostic_pattern": r"F401.*_ci_negative_lint_tmp\.py",
+                "artifact_exit_code": 0,
+                "artifact_path": art_file,
+                "artifact_expected_sha256": art_sha,
+            }
+
+            # P1-1: forged trace/span IDs on receipt must fail even if status="bound".
+            forged_id = copy.deepcopy(pass_rec)
+            forged_id["correlation"]["matched_trace_id"] = "f" * 32
+            self.assertFalse(
+                dt.verify_a1_suite(**{**base_kwargs, "pass_receipt": forged_id})[
+                    "passed"
+                ]
+            )
+
+            forged_span = copy.deepcopy(pass_rec)
+            forged_span["correlation"]["core_span_id"] = "f" * 16
+            self.assertFalse(
+                dt.verify_a1_suite(**{**base_kwargs, "pass_receipt": forged_span})[
+                    "passed"
+                ]
+            )
+
+            # P1-1: cross-capture swap (fail receipt submitted for pass capture) must fail.
+            self.assertFalse(
+                dt.verify_a1_suite(**{**base_kwargs, "pass_receipt": fail_rec})[
+                    "passed"
+                ]
+            )
+
+            # P1-2: missing F401 diagnostic or zero fail exit must fail.
+            self.assertFalse(
+                dt.verify_a1_suite(
+                    **{**base_kwargs, "fail_log": "unexpected environment error"}
+                )["passed"]
+            )
+            self.assertFalse(
+                dt.verify_a1_suite(**{**base_kwargs, "fail_exit_code": 0})["passed"]
+            )
+
+            # P1-2: artifact SHA-256 mismatch must fail.
+            self.assertFalse(
+                dt.verify_a1_suite(
+                    **{**base_kwargs, "artifact_expected_sha256": "0" * 64}
+                )["passed"]
+            )
+
+            # P1-3: forged unverified origin execution linkage must fail.
+            forged_origin = copy.deepcopy(art_rec)
+            forged_origin["origin_execution"] = {
+                "status": "existing_execution_linked",
+                "matched_origin": {"cache_result_id": "res-art-1"},
+            }
+            self.assertFalse(
+                dt.verify_a1_suite(
+                    **{**base_kwargs, "artifact_receipt": forged_origin}
+                )["passed"]
+            )
+
+            # Source binding cannot be forged to verified.
+            fake_pass = copy.deepcopy(pass_rec)
+            fake_pass["source_binding"]["source_binding_status"] = "verified"
+            self.assertFalse(
+                dt.verify_a1_suite(**{**base_kwargs, "pass_receipt": fake_pass})[
+                    "passed"
+                ]
+            )
 
 
 class OtlpReceiverTests(unittest.TestCase):
