@@ -53,6 +53,7 @@ _CONFIG_KEYS = {
     "strict_modules",
     "coverage_required",
     "check_scope",
+    "push",
 }
 
 
@@ -81,6 +82,12 @@ class CheckScopeConfig:
 
 
 @dataclass(frozen=True)
+class PushPolicyConfig:
+    new_ref_baseline: str | None = None
+    target_baselines: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Config:
     schema_version: int
     tach: str
@@ -99,6 +106,7 @@ class Config:
     strict_modules: bool
     coverage_required: bool
     check_scope: CheckScopeConfig
+    push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
 
 
 @dataclass(frozen=True)
@@ -290,6 +298,28 @@ def load_config(path):
             "weaver_prefixes",
         ),
     )
+    push_raw = value.get("push", {})
+    if not isinstance(push_raw, dict) or set(push_raw) - {
+        "new_ref_baseline",
+        "target_baselines",
+    }:
+        raise SelectionError("push_policy_invalid")
+    new_ref_base = (
+        _text(push_raw["new_ref_baseline"], "new_ref_baseline")
+        if push_raw.get("new_ref_baseline") is not None
+        else None
+    )
+    target_bases_raw = push_raw.get("target_baselines", {})
+    if not isinstance(target_bases_raw, dict):
+        raise SelectionError("push_policy_invalid")
+    target_bases = {
+        _text(k, "push_target_ref"): _text(v, "new_ref_baseline")
+        for k, v in target_bases_raw.items()
+    }
+    push_policy = PushPolicyConfig(
+        new_ref_baseline=new_ref_base,
+        target_baselines=target_bases,
+    )
     return Config(
         schema_version=SCHEMA_VERSION,
         tach=tach,
@@ -316,7 +346,27 @@ def load_config(path):
         strict_modules=strict_modules,
         coverage_required=coverage_required,
         check_scope=check_scope,
+        push=push_policy,
     )
+
+
+def resolve_new_ref_baseline(
+    config=None, *, remote_ref=None, local_ref=None, explicit_baseline=None
+):
+    """Resolve controlled new-ref baseline from CLI override or ci-selection.toml [push]."""
+    if explicit_baseline:
+        return explicit_baseline
+    push_cfg = getattr(config, "push", None)
+    if push_cfg is None:
+        return None
+    target_ref = str(remote_ref or local_ref or "")
+    if target_ref:
+        if target_ref in push_cfg.target_baselines:
+            return push_cfg.target_baselines[target_ref]
+        for pattern, baseline in push_cfg.target_baselines.items():
+            if pattern.endswith("/*") and target_ref.startswith(pattern[:-1]):
+                return baseline
+    return push_cfg.new_ref_baseline
 
 
 def _git(root, *args, env=None):
@@ -656,7 +706,7 @@ def _normalize_push_ref(item, default_baseline=None):
     raise SelectionError("multi_ref_item_invalid")
 
 
-def changeset_multi(root, refs, *, new_ref_baseline=None):
+def changeset_multi(root, refs, *, new_ref_baseline=None, config=None):
     """Union of several push ref updates; execution still requires per-ref runs."""
     root = Path(root)
     normalized_refs = [_normalize_push_ref(item, new_ref_baseline) for item in refs]
@@ -671,6 +721,7 @@ def changeset_multi(root, refs, *, new_ref_baseline=None):
             local_ref=entry["local_ref"],
             remote_ref=entry["remote_ref"],
             new_ref_baseline=entry["new_ref_baseline"],
+            config=config,
         )
         for entry in normalized_refs
     ]
@@ -911,6 +962,7 @@ def changeset(
     local_ref=None,
     remote_ref=None,
     new_ref_baseline=None,
+    config=None,
 ):
     """Describe the Git snapshot behind a change set.
 
@@ -919,13 +971,19 @@ def changeset(
     """
     root = Path(root)
     if mode == "push":
+        resolved_baseline = resolve_new_ref_baseline(
+            config,
+            remote_ref=remote_ref,
+            local_ref=local_ref,
+            explicit_baseline=new_ref_baseline,
+        )
         return _push_changeset(
             root,
             before=before,
             after=after,
             local_ref=local_ref,
             remote_ref=remote_ref,
-            new_ref_baseline=new_ref_baseline,
+            new_ref_baseline=resolved_baseline,
         )
     head_commit = _resolve(root, head)
     if head_commit is None:
@@ -1714,6 +1772,7 @@ def plan(
     sources_config=None,
     sources_config_path=None,
     effective_profile=None,
+    effective_profile_path=None,
 ):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
@@ -1729,6 +1788,21 @@ def plan(
         sources_config=sources_config,
         sources_config_path=sources_config_path,
     )
+    loaded_profile = effective_profile
+    if loaded_profile is None and effective_profile_path is not None:
+        prof_path = Path(effective_profile_path)
+        if not prof_path.is_absolute():
+            prof_path = root / prof_path
+        loaded_profile = expected_checks.load_effective_profile(prof_path)
+    profile_identity = (
+        expected_checks.effective_profile_identity(
+            path=effective_profile_path,
+            profile=loaded_profile,
+            root=root,
+        )
+        if loaded_profile is not None
+        else None
+    )
     graph = _graph_validation(selection, config, root, tach_validation)
     scope = _check_scope(
         selection,
@@ -1743,6 +1817,9 @@ def plan(
         if selection.changeset.snapshot == "worktree" and selection.changeset.paths
         else None
     )
+    weaver_prefixes_map = {
+        "weaver_semantic_conventions": list(config.check_scope.weaver_prefixes)
+    }
     expected = expected_checks.derive_expected_checks(
         selection.changeset,
         scope,
@@ -1751,8 +1828,10 @@ def plan(
         hygiene_config=loaded_hygiene,
         hygiene_identity=hygiene_identity,
         sources_identity=sources_identity,
-        effective_profile=effective_profile,
+        effective_profile=loaded_profile,
         code_prefixes=config.check_scope.code_prefixes,
+        source_prefixes=config.check_scope.source_prefixes,
+        weaver_prefixes=weaver_prefixes_map,
     )
     inputs_payload = {
         "config": {"path": str(config_path), "sha256": _digest(config_path)},
@@ -1762,6 +1841,18 @@ def plan(
         inputs_payload["hygiene"] = hygiene_identity
     if sources_identity is not None:
         inputs_payload["sources"] = sources_identity
+    if profile_identity is not None:
+        inputs_payload["effective_profile"] = profile_identity
+    generator_payload = {
+        "name": "engineering-ci",
+        "version": _version(),
+        "config_sha256": _digest(config_path),
+        "tach_sha256": _digest(tach_path),
+    }
+    if loaded_profile is not None:
+        generator_payload["effective_profile_sha256"] = loaded_profile.get(
+            "profile_sha256"
+        )
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
@@ -1776,12 +1867,7 @@ def plan(
             else "targeted",
             reason=selection.escalation_reason,
         ),
-        "generator": {
-            "name": "engineering-ci",
-            "version": _version(),
-            "config_sha256": _digest(config_path),
-            "tach_sha256": _digest(tach_path),
-        },
+        "generator": generator_payload,
         "git": {
             "base_ref": selection.changeset.base_ref,
             "head_ref": selection.changeset.head_ref,
@@ -1822,6 +1908,8 @@ def plan(
             "tests_dir": config.tests_dir,
             "src_root": config.src_root,
             "code_prefixes": list(config.check_scope.code_prefixes),
+            "source_prefixes": list(config.check_scope.source_prefixes),
+            "weaver_prefixes": weaver_prefixes_map,
             "coverage_required": config.coverage_required,
             "tach_graph_validation": graph,
             "requires_tach_check": True,
@@ -2367,6 +2455,11 @@ def main(argv=None):
         help="Controlled baseline ref/commit for newly pushed remote refs",
     )
     parser.add_argument(
+        "--effective-profile",
+        type=Path,
+        help="Authoritative EffectiveProfile JSON/TOML for Expected Checks Schema v2",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="Run the full discovered test suite; it does not run every hygiene check",
@@ -2388,6 +2481,13 @@ def main(argv=None):
     mode.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
     root = args.root.resolve()
+    config_path = args.config if args.config.is_absolute() else root / args.config
+    preloaded_config = None
+    if args.mode in {"push", "multi"} and config_path.is_file():
+        try:
+            preloaded_config = load_config(config_path)
+        except SelectionError as error:
+            parser.exit(1, f"selection rejected: {error.code}\n")
     if args.index_file is not None and args.mode != "index":
         parser.exit(2, "--index-file requires --mode index\n")
     if args.mode == "multi":
@@ -2406,7 +2506,12 @@ def main(argv=None):
                     raise ValueError
         except (ValueError, SelectionError):
             parser.exit(2, "multi mode requires --refs before:after,... or --stdin\n")
-        changes = changeset_multi(root, refs, new_ref_baseline=args.new_ref_baseline)
+        changes = changeset_multi(
+            root,
+            refs,
+            new_ref_baseline=args.new_ref_baseline,
+            config=preloaded_config,
+        )
     else:
         changes = changeset(
             root,
@@ -2417,12 +2522,12 @@ def main(argv=None):
             after=args.after,
             index_file=args.index_file,
             new_ref_baseline=args.new_ref_baseline,
+            config=preloaded_config,
         )
     if getattr(changes, "source_refusal", None):
         parser.exit(4, f"source rejected: {changes.source_refusal}\n")
-    config_path = args.config if args.config.is_absolute() else root / args.config
     try:
-        config = load_config(config_path)
+        config = preloaded_config or load_config(config_path)
     except SelectionError as error:
         parser.exit(1, f"selection rejected: {error.code}\n")
     selection = select(
@@ -2432,8 +2537,8 @@ def main(argv=None):
         full=args.full,
     )
     if args.json:
-        _print(
-            plan(
+        try:
+            payload = plan(
                 selection,
                 config=config,
                 config_path=config_path,
@@ -2441,8 +2546,11 @@ def main(argv=None):
                 tach_validation=_tach_check(root, config, selection.changeset)
                 if args.validate_tach
                 else None,
+                effective_profile_path=args.effective_profile,
             )
-        )
+        except expected_checks.ExpectedError as error:
+            parser.exit(1, f"effective profile rejected: {error.code}\n")
+        _print(payload)
         return 0
     if args.list:
         print(" ".join(selection.tests))

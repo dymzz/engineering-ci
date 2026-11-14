@@ -1191,6 +1191,29 @@ def test_push_ref_classification_new_delete_force_missing_and_non_commit(repo):
     assert new_policy.complete is True
     assert new_policy.paths == ("src/pkg/sub.py",)
 
+    # Controlled [push] policy in ci-selection.toml resolves new_ref_baseline per target pattern
+    orig_sel_toml = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        orig_sel_toml
+        + f'\n[push]\nnew_ref_baseline = "{base}"\n[push.target_baselines]\n"refs/heads/*" = "{base}"\n',
+        encoding="utf-8",
+    )
+    push_cfg = selection.load_config(path / "ci-selection.toml")
+    cfg_policy = selection.changeset(
+        path,
+        base=selection.ZERO_OID,
+        mode="push",
+        before=selection.ZERO_OID,
+        after=second,
+        remote_ref="refs/heads/feature",
+        config=push_cfg,
+    )
+    assert cfg_policy.ref_action == "create"
+    assert cfg_policy.baseline_status == "policy"
+    assert cfg_policy.complete is True
+    assert cfg_policy.paths == ("src/pkg/sub.py",)
+    (path / "ci-selection.toml").write_text(orig_sel_toml, encoding="utf-8")
+
     # Deleting remote ref marks content checks not_applicable and preserves ref_deletion obligation
     deleted_cs = selection.changeset(
         path,

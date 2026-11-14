@@ -121,6 +121,7 @@ def _validate_expected(expected, git, plan):
             expected,
             git,
             check_scope,
+            plan=plan,
         )
     except expected_checks.ExpectedError as error:
         raise PlanError(error.code) from None
@@ -198,7 +199,8 @@ def _validate_expected(expected, git, plan):
             or any(
                 item.get("rule_status") != "resolved"
                 or item.get("definition_status") != "resolved"
-                or item.get("applicability", {}).get("status") == "unknown"
+                or item.get("applicability", {}).get("status")
+                in {"unknown", "incomplete"}
                 for item in checks
             )
         ):
@@ -238,6 +240,16 @@ def _validate_consumer_fields(value, chosen, git):
         raise PlanError("checks_invalid")
     if "code_prefixes" in chosen and not _string_list(chosen["code_prefixes"]):
         raise PlanError("code_prefixes_invalid")
+    if "source_prefixes" in chosen and not _string_list(chosen["source_prefixes"]):
+        raise PlanError("source_prefixes_invalid")
+    if "weaver_prefixes" in chosen and (
+        not isinstance(chosen["weaver_prefixes"], dict)
+        or any(
+            not isinstance(k, str) or not _string_list(v)
+            for k, v in chosen["weaver_prefixes"].items()
+        )
+    ):
+        raise PlanError("weaver_prefixes_invalid")
     if not _string_list(chosen.get("prerequisites", [])):
         raise PlanError("dependency_prerequisites_invalid")
     if chosen.get("tach_graph_validation") is not None and not isinstance(

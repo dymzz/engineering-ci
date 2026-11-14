@@ -169,6 +169,7 @@ def config_identity(path, config=None, *, root=None):
         "path": stored_path,
         "sha256": raw_sha,
         "schema_version": loaded.schema_version,
+        "normalized": normalized,
         "effective_check_config_ref": {
             "name": "engineering-ci.sources",
             "version": str(loaded.schema_version),

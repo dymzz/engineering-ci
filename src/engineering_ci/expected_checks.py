@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,8 +166,8 @@ def _parse_iso_datetime(value):
     return parsed
 
 
-def profile_digest(profile):
-    """Canonical digest over authoritative EffectiveProfile definition fields."""
+def _approval_digest(profile):
+    """Canonical digest over the governance-approved definition and domain fields."""
     payload = {
         "profile_ref": profile.get("profile_ref"),
         "profile_revision": profile.get("profile_revision"),
@@ -178,8 +179,39 @@ def profile_digest(profile):
         "required_obligations": profile.get("required_obligations", []),
         "advisory_checks": profile.get("advisory_checks", []),
         "allowed_inapplicability": profile.get("allowed_inapplicability", []),
+        "domain_complete": bool(profile.get("domain_complete", False)),
+        "authority_verified": bool(profile.get("authority_verified", False)),
     }
     for optional in ("valid_from", "valid_until", "declared_checks", "targets"):
+        if optional in profile:
+            payload[optional] = profile[optional]
+    return _digest(payload)
+
+
+def profile_digest(profile):
+    """Canonical digest over all EffectiveProfile authority, completeness, and evaluation fields."""
+    payload = {
+        "profile_ref": profile.get("profile_ref"),
+        "profile_revision": profile.get("profile_revision"),
+        "approval_source": profile.get("approval_source"),
+        "effective_at": profile.get("effective_at"),
+        "evaluated_at": profile.get("evaluated_at"),
+        "context": profile.get("context"),
+        "action": profile.get("action"),
+        "target": profile.get("target"),
+        "required_obligations": profile.get("required_obligations", []),
+        "advisory_checks": profile.get("advisory_checks", []),
+        "allowed_inapplicability": profile.get("allowed_inapplicability", []),
+        "domain_complete": bool(profile.get("domain_complete", False)),
+        "authority_verified": bool(profile.get("authority_verified", False)),
+    }
+    for optional in (
+        "valid_from",
+        "valid_until",
+        "declared_checks",
+        "targets",
+        "approval_binding",
+    ):
         if optional in profile:
             payload[optional] = profile[optional]
     return _digest(payload)
@@ -205,12 +237,12 @@ def build_effective_profile(
     domain_complete=False,
     authority_verified=True,
 ):
-    """Construct an EffectiveProfile carrying verifiable authority and digest."""
+    """Construct an EffectiveProfile carrying verifiable authority binding and digest."""
     profile = {
         "profile_ref": dict(profile_ref),
         "profile_revision": profile_revision,
         "approval_source": approval_source,
-        "authority_verified": authority_verified,
+        "authority_verified": bool(authority_verified),
         "effective_at": effective_at,
         "evaluated_at": evaluated_at,
         "context": context,
@@ -229,8 +261,80 @@ def build_effective_profile(
         profile["valid_until"] = valid_until
     if declared_checks is not None:
         profile["declared_checks"] = list(declared_checks)
+    profile["approval_binding"] = {
+        "approval_source": approval_source,
+        "profile_revision": profile_revision,
+        "approval_digest": _approval_digest(profile),
+    }
     profile["profile_sha256"] = profile_digest(profile)
     return profile
+
+
+def load_effective_profile(path, *, git=None):
+    """Load and validate an authoritative EffectiveProfile from JSON or TOML."""
+    resolved = Path(path)
+    try:
+        raw = resolved.read_bytes()
+    except OSError:
+        raise ExpectedError("effective_profile_missing") from None
+    try:
+        text = raw.decode("utf-8")
+        if resolved.suffix.lower() == ".toml":
+            loaded = tomllib.loads(text)
+        else:
+            loaded = json.loads(text)
+    except (ValueError, UnicodeError):
+        raise ExpectedError("effective_profile_invalid") from None
+    return validate_effective_profile(loaded, git=git)
+
+
+def effective_profile_identity(path=None, profile=None, *, root=None):
+    """Bind an EffectiveProfile and optional on-disk source into Plan inputs."""
+    raw_sha = None
+    stored_path = None
+    if path is not None:
+        resolved = Path(path).resolve()
+        try:
+            raw_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        except OSError:
+            raise ExpectedError("effective_profile_missing") from None
+        stored_path = str(resolved)
+        if root is not None:
+            base = Path(root).resolve()
+            if resolved.is_relative_to(base):
+                stored_path = resolved.relative_to(base).as_posix()
+        if profile is None:
+            profile = load_effective_profile(resolved)
+    if not isinstance(profile, dict):
+        raise ExpectedError("effective_profile_invalid")
+    validate_effective_profile(profile)
+    identity = {
+        "effective_profile_ref": {
+            "name": profile["profile_ref"]["name"],
+            "version": profile["profile_ref"]["version"],
+            "sha256": profile["profile_sha256"],
+        },
+        "profile_sha256": profile["profile_sha256"],
+        "approval_digest": profile["approval_binding"]["approval_digest"],
+        "profile_ref": dict(profile["profile_ref"]),
+        "profile_revision": profile["profile_revision"],
+        "approval_source": profile["approval_source"],
+        "effective_at": profile["effective_at"],
+        "evaluated_at": profile["evaluated_at"],
+        "context": profile["context"],
+        "action": profile["action"],
+        "target": profile["target"],
+        "domain_complete": bool(profile.get("domain_complete", False)),
+        "authority_verified": bool(profile.get("authority_verified", False)),
+    }
+    if "declared_checks" in profile:
+        identity["declared_checks"] = list(profile["declared_checks"])
+    if "targets" in profile:
+        identity["targets"] = list(profile["targets"])
+    if stored_path is not None:
+        identity["path"] = stored_path
+        identity["sha256"] = raw_sha
+    return identity
 
 
 def scope_identity(
@@ -242,6 +346,8 @@ def scope_identity(
     selection_rule_ref=None,
     hygiene_rule_ref=None,
     sources_rule_ref=None,
+    profile_sha256=None,
+    evaluated_at=None,
 ):
     payload = {
         "consumer": consumer,
@@ -255,6 +361,10 @@ def scope_identity(
         payload["hygiene_rule_ref"] = hygiene_rule_ref
     if sources_rule_ref is not None:
         payload["sources_rule_ref"] = sources_rule_ref
+    if profile_sha256 is not None:
+        payload["profile_sha256"] = profile_sha256
+    if evaluated_at is not None:
+        payload["evaluated_at"] = evaluated_at
     return _digest(payload)
 
 
@@ -343,6 +453,15 @@ def validate_effective_profile(profile, *, git=None):
         or profile.get("authority_verified") is not True
     ):
         raise ExpectedError("effective_profile_authority_untrusted")
+    binding = profile.get("approval_binding")
+    if (
+        not isinstance(binding, dict)
+        or binding.get("approval_source") != profile.get("approval_source")
+        or binding.get("profile_revision") != profile.get("profile_revision")
+    ):
+        raise ExpectedError("effective_profile_authority_untrusted")
+    if binding.get("approval_digest") != _approval_digest(profile):
+        raise ExpectedError("effective_profile_digest_mismatch")
     digest = profile.get("profile_sha256")
     if (
         not isinstance(digest, str)
@@ -401,22 +520,77 @@ def validate_effective_profile(profile, *, git=None):
                 or any(not isinstance(n, str) or not n for n in names)
             ):
                 raise ExpectedError("effective_profile_check_names_invalid")
+        for opt_list in ("target_refs", "actions"):
+            if opt_list in item:
+                vals = item[opt_list]
+                if not isinstance(vals, list) or any(
+                    not isinstance(v, str) or not v for v in vals
+                ):
+                    raise ExpectedError("effective_profile_obligations_invalid")
+    for item in advisory:
+        if isinstance(item, dict):
+            for opt_list in ("target_refs", "actions"):
+                if opt_list in item:
+                    vals = item[opt_list]
+                    if not isinstance(vals, list) or any(
+                        not isinstance(v, str) or not v for v in vals
+                    ):
+                        raise ExpectedError("effective_profile_obligations_invalid")
     if git is not None:
         _match_profile_event(profile, git)
     return profile
 
 
+def _target_matches(target_ref, allowed_targets):
+    for pattern in allowed_targets:
+        if pattern == target_ref:
+            return True
+        if pattern.endswith("/*") and target_ref.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+def _obligation_matches_scope(item, *, target_ref=None, ref_action=None):
+    if not isinstance(item, dict):
+        return True
+    target_refs = item.get("target_refs")
+    if (
+        target_ref is not None
+        and target_refs
+        and not _target_matches(str(target_ref), {str(t) for t in target_refs})
+    ):
+        return False
+    actions = item.get("actions")
+    return not (
+        ref_action is not None
+        and actions
+        and str(ref_action) not in {str(a) for a in actions}
+    )
+
+
 def _parse_profile_obligations(
-    effective_profile, *, hygiene_rule=None, sources_rule=None
+    effective_profile,
+    *,
+    hygiene_rule=None,
+    sources_rule=None,
+    selection_rule=None,
+    weaver_rule=None,
+    target_ref=None,
+    ref_action=None,
 ):
     obligations_by_check = {}
     required_by_check = {}
     advisory_by_check = {}
     explicit_rules = {}
-    allow_inapp_by_check = set(effective_profile.get("allowed_inapplicability") or ())
+    global_allow_inapp = set(effective_profile.get("allowed_inapplicability") or ())
+    waived_obligations_by_check = {}
     profile_non_check = []
 
     for ob in effective_profile.get("required_obligations", []):
+        if not _obligation_matches_scope(
+            ob, target_ref=target_ref, ref_action=ref_action
+        ):
+            continue
         ob_ref = ob["obligation_ref"]
         kind = ob.get("kind", "check")
         if kind == "non_check":
@@ -436,10 +610,16 @@ def _parse_profile_obligations(
             required_by_check.setdefault(name, []).append(ob_ref)
             if ob.get("rule_ref") is not None:
                 explicit_rules.setdefault(name, []).append(ob["rule_ref"])
-            if ob.get("allow_inapplicable"):
-                allow_inapp_by_check.add(name)
+            if ob.get("allow_inapplicable") or name in global_allow_inapp:
+                waived_obligations_by_check.setdefault(name, set()).add(
+                    _canon_key(ob_ref)
+                )
 
     for adv in effective_profile.get("advisory_checks", []):
+        if isinstance(adv, dict) and not _obligation_matches_scope(
+            adv, target_ref=target_ref, ref_action=ref_action
+        ):
+            continue
         if isinstance(adv, str):
             name, ob_ref, adv_rule = adv, None, None
         else:
@@ -458,9 +638,17 @@ def _parse_profile_obligations(
         if adv_rule is not None:
             explicit_rules.setdefault(name, []).append(adv_rule)
 
+    declared_names = set(effective_profile.get("declared_checks") or ())
     rule_by_check = {}
     rule_conflicts_by_check = {}
-    all_names = set(explicit_rules) | _HYGIENE_MANAGED | {"source"}
+    all_names = (
+        set(explicit_rules)
+        | _HYGIENE_MANAGED
+        | {"source"}
+        | set(required_by_check)
+        | set(advisory_by_check)
+        | declared_names
+    )
     for name in sorted(all_names):
         distinct = list(
             {_canon_key(r): r for r in explicit_rules.get(name, [])}.values()
@@ -501,9 +689,29 @@ def _parse_profile_obligations(
         advisory_by_check,
         rule_by_check,
         rule_conflicts_by_check,
-        allow_inapp_by_check,
+        waived_obligations_by_check,
         profile_non_check,
     )
+
+
+def _configured_domain_names(
+    scope_by_name, hygiene_config, sources_rule, *, is_delete=False
+):
+    if is_delete:
+        return set()
+    configured = set()
+    if hygiene_config is not None:
+        configured.update(hygiene.effective_checks(hygiene_config))
+    else:
+        configured.update(n for n in scope_by_name if n in _HYGIENE_MANAGED)
+    if sources_rule is not None:
+        configured.add("source")
+    for name, item in scope_by_name.items():
+        if name in _HYGIENE_MANAGED or name == "source":
+            continue
+        if item.get("status") not in {"not_applicable", "no_tests", "no_changes"}:
+            configured.add(name)
+    return configured
 
 
 def _expected_non_check_obligations(
@@ -578,8 +786,8 @@ def _ref_event_and_source(ref):
     return source_label, baseline_obj, ref_event, ref_source
 
 
-def _derive_per_ref_projections(
-    changeset,
+def _recompute_ref_projection(
+    ref,
     *,
     scope_by_name,
     selection_rule,
@@ -590,11 +798,22 @@ def _derive_per_ref_projections(
     profile_source,
     hygiene_config,
     code_prefixes,
+    source_prefixes=None,
+    weaver_prefixes=None,
     effective_profile=None,
+    root=None,
 ):
-    if changeset.snapshot != "multi" or not changeset.references:
-        return None
     schema_version = EXPECTED_V2 if effective_profile is not None else EXPECTED_VERSION
+    ref_action = ref.get("ref_action")
+    object_type = ref.get("object_type")
+    force_push = bool(ref.get("force_push", False))
+    baseline_status = ref.get("baseline_status")
+    ref_complete = bool(ref.get("complete", False))
+    ref_paths = tuple(sorted(ref.get("paths") or ()))
+    ref_deleted = tuple(sorted(ref.get("deleted_paths") or ()))
+    target_ref = ref.get("remote_ref") or ref.get("local_ref")
+    source_label, baseline_obj, ref_event, ref_source = _ref_event_and_source(ref)
+
     if effective_profile is not None:
         (
             obligations_by_check,
@@ -602,12 +821,16 @@ def _derive_per_ref_projections(
             advisory_by_check,
             rule_by_check,
             rule_conflicts_by_check,
-            allow_inapp_by_check,
+            waived_obligations_by_check,
             profile_non_check,
         ) = _parse_profile_obligations(
             effective_profile,
             hygiene_rule=hygiene_rule,
             sources_rule=sources_rule,
+            selection_rule=selection_rule,
+            weaver_rule=selection_rule,
+            target_ref=target_ref,
+            ref_action=ref_action,
         )
         hygiene_enabled = (
             frozenset(hygiene.effective_checks(hygiene_config))
@@ -635,7 +858,7 @@ def _derive_per_ref_projections(
         advisory_by_check = {}
         rule_by_check = {}
         rule_conflicts_by_check = {}
-        allow_inapp_by_check = set()
+        waived_obligations_by_check = {}
         profile_non_check = ()
         hygiene_enabled = frozenset()
         check_names = [
@@ -644,203 +867,300 @@ def _derive_per_ref_projections(
             if item.get("name") is not None
         ]
 
-    projections = []
-    for ref in changeset.references:
-        ref_action = ref.get("ref_action")
-        object_type = ref.get("object_type")
-        force_push = bool(ref.get("force_push", False))
-        baseline_status = ref.get("baseline_status")
-        ref_complete = bool(ref.get("complete", False))
-        ref_paths = tuple(sorted(ref.get("paths") or ()))
-        ref_deleted = tuple(sorted(ref.get("deleted_paths") or ()))
-        source_label, baseline_obj, ref_event, ref_source = _ref_event_and_source(ref)
-        pseudo_changes = SimpleNamespace(
-            paths=ref_paths,
-            deleted_paths=ref_deleted,
-            complete=ref_complete,
-            snapshot="push",
-            tree=ref.get("tree"),
-            execution_tree=ref.get("tree"),
-            ref_action=ref_action,
+    pseudo_changes = SimpleNamespace(
+        paths=ref_paths,
+        deleted_paths=ref_deleted,
+        deleted_paths_resolved=True,
+        complete=ref_complete,
+        snapshot="push",
+        tree=ref.get("tree"),
+        execution_tree=ref.get("tree"),
+        ref_action=ref_action,
+    )
+    hygiene_app = (
+        hygiene.check_applicability(
+            pseudo_changes,
+            hygiene_config,
+            root=root,
+            full=False,
+            code_prefixes=code_prefixes,
         )
-        hygiene_app = (
-            hygiene.check_applicability(
-                pseudo_changes,
-                hygiene_config,
-                root=changeset.root,
-                full=False,
-                code_prefixes=code_prefixes,
-            )
-            if hygiene_config is not None
-            else {}
+        if hygiene_config is not None
+        else {}
+    )
+    src_pfxs = tuple(source_prefixes or code_prefixes or ("src/", "scripts/", "tests/"))
+    wvr_pfxs = dict(weaver_prefixes or {})
+
+    ref_checks = []
+    ref_conflicts = []
+    for name in check_names:
+        if (
+            effective_profile is not None
+            and ref_action == "delete"
+            and name in scope_by_name
+            and name not in required_by_check
+            and name not in advisory_by_check
+        ):
+            continue
+        definition = check_contract.definition_for(name)
+        req_obs = list(required_by_check.get(name, []))
+        adv_obs = list(advisory_by_check.get(name, []))
+        disabled_by_hygiene = (
+            effective_profile is not None
+            and bool(req_obs)
+            and hygiene_config is not None
+            and name in _HYGIENE_MANAGED
+            and name not in hygiene_enabled
         )
-        ref_checks = []
-        ref_conflicts = []
-        for name in check_names:
-            if (
-                effective_profile is not None
-                and ref_action == "delete"
-                and name in scope_by_name
-                and name not in required_by_check
-                and name not in advisory_by_check
-            ):
-                continue
-            definition = check_contract.definition_for(name)
-            req_obs = list(required_by_check.get(name, []))
-            adv_obs = list(advisory_by_check.get(name, []))
-            disabled_by_hygiene = (
-                effective_profile is not None
-                and bool(req_obs)
-                and hygiene_config is not None
-                and name in _HYGIENE_MANAGED
-                and name not in hygiene_enabled
+        if disabled_by_hygiene:
+            ref_conflicts.append(
+                {
+                    "kind": "hygiene_profile_conflict",
+                    "check": name,
+                    "obligation_refs": req_obs,
+                    "reason": "required_by_effective_profile_disabled_by_hygiene_config",
+                }
             )
-            if disabled_by_hygiene:
-                ref_conflicts.append(
-                    {
-                        "kind": "hygiene_profile_conflict",
-                        "check": name,
-                        "obligation_refs": req_obs,
-                        "reason": "required_by_effective_profile_disabled_by_hygiene_config",
-                    }
-                )
-                app_status = "config_conflict"
-                app_reason = "disabled_by_local_hygiene_config"
-                app_inputs = []
-            elif name in hygiene_app:
-                app_status = hygiene_app[name]["status"]
-                app_reason = hygiene_app[name].get("reason")
-                app_inputs = list(hygiene_app[name].get("inputs", ()))
-            elif ref_action == "delete":
-                app_status = "not_applicable"
-                app_reason = "remote_ref_deleted"
-                app_inputs = []
-            elif not ref_complete:
-                app_status = "unknown"
-                app_reason = ref.get("error") or "ref_incomplete"
-                app_inputs = []
+            app_status = "config_conflict"
+            app_reason = "disabled_by_local_hygiene_config"
+            app_inputs = []
+        elif name in hygiene_app:
+            app_status = hygiene_app[name]["status"]
+            app_reason = hygiene_app[name].get("reason")
+            app_inputs = list(hygiene_app[name].get("inputs", ()))
+        elif ref_action == "delete":
+            app_status = "not_applicable"
+            app_reason = "remote_ref_deleted"
+            app_inputs = []
+        elif not ref_complete:
+            app_status = "unknown"
+            app_reason = ref.get("error") or "ref_incomplete"
+            app_inputs = []
+        elif name == "source" and "source" in scope_by_name:
+            src_inputs = [
+                p for p in ref_paths if p.startswith(src_pfxs) or p == "ci-sources.toml"
+            ]
+            app_status = "selected" if src_inputs else "not_applicable"
+            app_reason = "source_inputs_changed" if src_inputs else "no_source_changes"
+            app_inputs = src_inputs
+        elif str(name).startswith("weaver_") and name in scope_by_name:
+            origin = scope_by_name.get(name, {})
+            if name in wvr_pfxs:
+                pfxs = tuple(wvr_pfxs[name])
+                w_inputs = [p for p in ref_paths if p.startswith(pfxs)]
             else:
-                origin = scope_by_name.get(name, {})
+                w_inputs = [p for p in origin.get("inputs", ()) if p in ref_paths]
+            if w_inputs:
+                app_status = "selected"
+                app_reason = origin.get("reason") or "semantic_conventions_changed"
+                app_inputs = w_inputs
+            else:
+                app_status = "not_applicable"
+                app_reason = "no_changes"
+                app_inputs = []
+        else:
+            origin = scope_by_name.get(name, {})
+            app_inputs = [p for p in origin.get("inputs", ()) if p in ref_paths]
+            if (
+                origin.get("status") == "selected"
+                and not app_inputs
+                and origin.get("inputs")
+            ):
+                app_status = "not_applicable"
+                app_reason = "no_changes"
+            else:
                 app_status = origin.get("status", "unknown")
                 app_reason = origin.get("reason")
-                app_inputs = [p for p in origin.get("inputs", ()) if p in ref_paths]
-            if (
-                effective_profile is not None
-                and app_status == "not_applicable"
-                and req_obs
-                and name not in allow_inapp_by_check
-            ):
-                ref_conflicts.append(
-                    {
-                        "kind": "inapplicable_required_obligation",
-                        "check": name,
-                        "obligation_refs": req_obs,
-                        "reason": app_reason or "not_applicable_without_profile_waiver",
-                    }
-                )
-            has_rule_conflict = name in rule_conflicts_by_check
-            if has_rule_conflict:
-                ref_conflicts.append(
-                    {
-                        "kind": "conflicting_rule_requirements",
-                        "check": name,
-                        "obligation_refs": req_obs + adv_obs,
-                        "rules": rule_conflicts_by_check[name],
-                        "reason": "conflicting_rules_for_same_check",
-                    }
-                )
-                rule_ref = None
-                rule_status = "conflict"
-            else:
-                rule_ref = rule_by_check.get(name)
-                rule_status = "resolved" if rule_ref is not None else "unknown"
-            entry = {
-                "name": name,
-                "check_id": definition.check_id if definition else None,
-                "definition_version": (
-                    definition.definition_version if definition else None
-                ),
-                "definition_status": "resolved" if definition else "unknown",
-                "event_ref": json.loads(json.dumps(ref_event)),
-                "selection_rule_ref": selection_rule,
-                "rule_ref": rule_ref,
-                "rule_status": rule_status,
-                "profile_ref": profile_ref,
-                "applicability": {"status": app_status, "reason": app_reason},
-                "policy_status": (
-                    "conflict"
-                    if (disabled_by_hygiene or has_rule_conflict)
-                    else "resolved"
-                    if (effective_profile is not None and (req_obs or adv_obs))
-                    else "advisory_unmapped"
-                    if effective_profile is not None
-                    else "unknown"
-                ),
-                "source_ref": json.loads(json.dumps(ref_source)),
-                "input_refs": [{"kind": "changed_path", "path": p} for p in app_inputs],
-                "baseline_ref": json.loads(json.dumps(baseline_obj)),
-            }
-            if effective_profile is not None:
-                entry["obligation_refs"] = list(obligations_by_check.get(name, []))
-                entry["required_by_obligations"] = req_obs
-                entry["advisory_for_obligations"] = adv_obs
-            entry["expected_check_ref"] = entry_identity(entry)
-            ref_checks.append(entry)
-        non_check = _expected_non_check_obligations(
-            ref.get("non_check_obligations") or (),
-            profile_non_check,
-            source_ref=source_label,
-        )
-        if not ref_complete and ref_action != "delete":
-            ref_status = "unknown"
-        elif ref_conflicts:
-            ref_status = "partial"
-        elif (
+
+        unwaived_req_obs = [
+            ob_ref
+            for ob_ref in req_obs
+            if _canon_key(ob_ref) not in waived_obligations_by_check.get(name, set())
+        ]
+        has_inapp_conflict = (
             effective_profile is not None
-            and effective_profile.get("domain_complete")
-            and isinstance(effective_profile.get("declared_checks"), list)
-            and all(
-                item["definition_status"] == "resolved"
-                and item["rule_status"] == "resolved"
-                and item["applicability"]["status"] != "unknown"
-                for item in ref_checks
-            )
-        ):
-            ref_status = "complete"
-        else:
-            ref_status = "partial" if ref_checks else "unknown"
-        projections.append(
-            {
-                "source_ref": source_label,
-                "local_ref": ref.get("local_ref"),
-                "remote_ref": ref.get("remote_ref"),
-                "ref_action": ref_action,
-                "object_type": object_type,
-                "force_push": force_push,
-                "baseline_status": baseline_status,
-                "baseline_ref": baseline_obj,
-                "event_ref": ref_event,
-                "source": ref_source,
-                "scope_id": scope_identity(
-                    consumer,
-                    profile_ref,
-                    profile_source,
-                    ref_event,
-                    ref_source,
-                    selection_rule,
-                    hygiene_rule if effective_profile is not None else None,
-                    sources_rule if effective_profile is not None else None,
-                ),
-                "expected_set_ref": set_identity(
-                    ref_checks, non_check, schema_version=schema_version
-                ),
-                "checks": ref_checks,
-                "non_check_obligations": non_check,
-                "conflicts": ref_conflicts,
-                "status": ref_status,
-            }
+            and app_status == "not_applicable"
+            and bool(unwaived_req_obs)
         )
-    return projections
+        if has_inapp_conflict:
+            ref_conflicts.append(
+                {
+                    "kind": "inapplicable_required_obligation",
+                    "check": name,
+                    "obligation_refs": unwaived_req_obs,
+                    "reason": app_reason or "not_applicable_without_profile_waiver",
+                }
+            )
+        has_rule_conflict = name in rule_conflicts_by_check
+        if has_rule_conflict:
+            ref_conflicts.append(
+                {
+                    "kind": "conflicting_rule_requirements",
+                    "check": name,
+                    "obligation_refs": req_obs + adv_obs,
+                    "rules": rule_conflicts_by_check[name],
+                    "reason": "conflicting_rules_for_same_check",
+                }
+            )
+            rule_ref = None
+            rule_status = "conflict"
+        else:
+            rule_ref = rule_by_check.get(name)
+            rule_status = "resolved" if rule_ref is not None else "unknown"
+        entry = {
+            "name": name,
+            "check_id": definition.check_id if definition else None,
+            "definition_version": (
+                definition.definition_version if definition else None
+            ),
+            "definition_status": "resolved" if definition else "unknown",
+            "event_ref": json.loads(json.dumps(ref_event)),
+            "selection_rule_ref": selection_rule,
+            "rule_ref": rule_ref,
+            "rule_status": rule_status,
+            "profile_ref": profile_ref,
+            "applicability": {"status": app_status, "reason": app_reason},
+            "policy_status": (
+                "conflict"
+                if (disabled_by_hygiene or has_rule_conflict or has_inapp_conflict)
+                else "resolved"
+                if (effective_profile is not None and (req_obs or adv_obs))
+                else "advisory_unmapped"
+                if effective_profile is not None
+                else "unknown"
+            ),
+            "source_ref": json.loads(json.dumps(ref_source)),
+            "input_refs": [{"kind": "changed_path", "path": p} for p in app_inputs],
+            "baseline_ref": json.loads(json.dumps(baseline_obj)),
+        }
+        if effective_profile is not None:
+            entry["obligation_refs"] = list(obligations_by_check.get(name, []))
+            entry["required_by_obligations"] = req_obs
+            entry["advisory_for_obligations"] = adv_obs
+        entry["expected_check_ref"] = entry_identity(entry)
+        ref_checks.append(entry)
+
+    non_check = _expected_non_check_obligations(
+        ref.get("non_check_obligations") or (),
+        profile_non_check,
+        source_ref=source_label,
+    )
+    configured_domain = _configured_domain_names(
+        scope_by_name,
+        hygiene_config,
+        sources_rule,
+        is_delete=(ref_action == "delete"),
+    )
+    declared_checks = (
+        effective_profile.get("declared_checks")
+        if effective_profile is not None
+        else None
+    )
+    declared_complete = isinstance(declared_checks, list) and (
+        configured_domain <= set(declared_checks)
+    )
+    if (not ref_complete and ref_action != "delete") or any(
+        item["applicability"]["status"] in {"unknown", "incomplete"}
+        for item in ref_checks
+    ):
+        ref_status = "unknown"
+    elif ref_conflicts:
+        ref_status = "partial"
+    elif (
+        effective_profile is not None
+        and effective_profile.get("domain_complete")
+        and declared_complete
+        and all(
+            item["definition_status"] == "resolved"
+            and item["rule_status"] == "resolved"
+            and item["applicability"]["status"] not in {"unknown", "incomplete"}
+            for item in ref_checks
+        )
+    ):
+        ref_status = "complete"
+    else:
+        ref_status = (
+            "partial" if (ref_checks or effective_profile is not None) else "unknown"
+        )
+
+    return {
+        "source_ref": source_label,
+        "local_ref": ref.get("local_ref"),
+        "remote_ref": ref.get("remote_ref"),
+        "ref_action": ref_action,
+        "object_type": object_type,
+        "force_push": force_push,
+        "baseline_status": baseline_status,
+        "baseline_ref": baseline_obj,
+        "event_ref": ref_event,
+        "source": ref_source,
+        "scope_id": scope_identity(
+            consumer,
+            profile_ref,
+            profile_source,
+            ref_event,
+            ref_source,
+            selection_rule,
+            hygiene_rule if effective_profile is not None else None,
+            sources_rule if effective_profile is not None else None,
+            profile_sha256=(
+                effective_profile.get("profile_sha256")
+                if effective_profile is not None
+                else None
+            ),
+            evaluated_at=(
+                effective_profile.get("evaluated_at")
+                if effective_profile is not None
+                else None
+            ),
+        ),
+        "expected_set_ref": set_identity(
+            ref_checks, non_check, schema_version=schema_version
+        ),
+        "checks": ref_checks,
+        "non_check_obligations": non_check,
+        "conflicts": ref_conflicts,
+        "status": ref_status,
+    }
+
+
+def _derive_per_ref_projections(
+    changeset,
+    *,
+    scope_by_name,
+    selection_rule,
+    hygiene_rule,
+    sources_rule,
+    consumer,
+    profile_ref,
+    profile_source,
+    hygiene_config,
+    code_prefixes,
+    source_prefixes=None,
+    weaver_prefixes=None,
+    effective_profile=None,
+):
+    if changeset.snapshot != "multi" or not changeset.references:
+        return None
+    return [
+        _recompute_ref_projection(
+            ref,
+            scope_by_name=scope_by_name,
+            selection_rule=selection_rule,
+            hygiene_rule=hygiene_rule,
+            sources_rule=sources_rule,
+            consumer=consumer,
+            profile_ref=profile_ref,
+            profile_source=profile_source,
+            hygiene_config=hygiene_config,
+            code_prefixes=code_prefixes,
+            source_prefixes=source_prefixes,
+            weaver_prefixes=weaver_prefixes,
+            effective_profile=effective_profile,
+            root=changeset.root,
+        )
+        for ref in changeset.references
+    ]
 
 
 def _derive_v2_from_profile(
@@ -871,18 +1191,26 @@ def _derive_v2_from_profile(
         if hygiene_config is not None
         else frozenset(scope_by_name)
     )
+    target_ref = getattr(changeset, "base_ref", None) or getattr(
+        changeset, "head_ref", None
+    )
+    ref_action = getattr(changeset, "ref_action", None)
     (
         obligations_by_check,
         required_by_check,
         advisory_by_check,
         rule_by_check,
         rule_conflicts_by_check,
-        allow_inapp_by_check,
+        waived_obligations_by_check,
         profile_non_check,
     ) = _parse_profile_obligations(
         effective_profile,
         hygiene_rule=hygiene_rule,
         sources_rule=sources_rule,
+        selection_rule=selection_rule,
+        weaver_rule=selection_rule,
+        target_ref=target_ref if changeset.snapshot != "multi" else None,
+        ref_action=ref_action if changeset.snapshot != "multi" else None,
     )
     non_check_obligations = _expected_non_check_obligations(
         getattr(changeset, "non_check_obligations", ()),
@@ -909,7 +1237,7 @@ def _derive_v2_from_profile(
     conflicts = []
     unresolved_applicability = False
     unresolved_rules = False
-    is_delete = getattr(changeset, "ref_action", None) == "delete"
+    is_delete = ref_action == "delete"
     for name in ordered_names:
         if (
             is_delete
@@ -956,18 +1284,20 @@ def _derive_v2_from_profile(
             app_inputs = []
             unresolved_applicability = True
 
-        if app_status == "unknown":
+        if app_status in {"unknown", "incomplete"}:
             unresolved_applicability = True
-        if (
-            app_status == "not_applicable"
-            and req_obs
-            and name not in allow_inapp_by_check
-        ):
+        unwaived_req_obs = [
+            ob_ref
+            for ob_ref in req_obs
+            if _canon_key(ob_ref) not in waived_obligations_by_check.get(name, set())
+        ]
+        has_inapp_conflict = app_status == "not_applicable" and bool(unwaived_req_obs)
+        if has_inapp_conflict:
             conflicts.append(
                 {
                     "kind": "inapplicable_required_obligation",
                     "check": name,
-                    "obligation_refs": req_obs,
+                    "obligation_refs": unwaived_req_obs,
                     "reason": app_reason or "not_applicable_without_profile_waiver",
                 }
             )
@@ -995,7 +1325,7 @@ def _derive_v2_from_profile(
         all_obs = list(obligations_by_check.get(name, []))
         policy_status = (
             "conflict"
-            if (disabled_by_hygiene or has_rule_conflict)
+            if (disabled_by_hygiene or has_rule_conflict or has_inapp_conflict)
             else "resolved"
             if (req_obs or adv_obs)
             else "advisory_unmapped"
@@ -1024,8 +1354,19 @@ def _derive_v2_from_profile(
         entry["expected_check_ref"] = entry_identity(entry)
         checks.append(entry)
 
-    domain_complete = bool(effective_profile.get("domain_complete", False))
+    configured_domain = _configured_domain_names(
+        scope_by_name, hygiene_config, sources_rule, is_delete=is_delete
+    )
+    domain_complete_flag = bool(effective_profile.get("domain_complete", False))
     missing_declared_domain = not isinstance(declared_checks, list)
+    declared_domain_incomplete = isinstance(declared_checks, list) and not (
+        configured_domain <= set(declared_checks)
+    )
+    domain_complete = (
+        domain_complete_flag
+        and not missing_declared_domain
+        and not declared_domain_incomplete
+    )
     per_ref_incomplete = bool(
         per_ref and any(item.get("status") != "complete" for item in per_ref)
     )
@@ -1039,17 +1380,13 @@ def _derive_v2_from_profile(
         status = "unknown"
         reason = "applicability_or_changeset_incomplete"
         consumer_completeness = "unknown"
-    elif (
-        not domain_complete
-        or missing
-        or missing_declared_domain
-        or unresolved_rules
-        or per_ref_incomplete
-    ):
+    elif not domain_complete or missing or unresolved_rules or per_ref_incomplete:
         status = "partial"
         reason = (
             "check_rule_unresolved"
             if unresolved_rules
+            else "declared_domain_incomplete"
+            if (domain_complete_flag and declared_domain_incomplete)
             else "expected_domain_or_definitions_incomplete"
         )
         consumer_completeness = "incomplete_profile"
@@ -1062,14 +1399,14 @@ def _derive_v2_from_profile(
         "partial"
         if missing
         else "domain_complete"
-        if domain_complete and not missing_declared_domain
+        if domain_complete
         else "requested_names_complete"
     )
     applicability_status = (
         "unknown"
         if unresolved_applicability
         else "domain_complete"
-        if domain_complete and not missing_declared_domain and not conflicts
+        if domain_complete and not conflicts
         else "partial"
     )
     projection = {
@@ -1087,6 +1424,8 @@ def _derive_v2_from_profile(
             selection_rule,
             hygiene_rule,
             sources_rule,
+            profile_sha256=effective_profile.get("profile_sha256"),
+            evaluated_at=effective_profile.get("evaluated_at"),
         ),
         "selection_rule_ref": selection_rule,
         "hygiene_rule_ref": hygiene_rule,
@@ -1128,6 +1467,8 @@ def derive_expected_checks(
     sources_identity=None,
     effective_profile=None,
     code_prefixes=None,
+    source_prefixes=None,
+    weaver_prefixes=None,
 ):
     """Derive Expected Checks projection (Schema v1 partial, or Schema v2 with EffectiveProfile)."""
     config_digest = _file_digest(config_path)
@@ -1147,6 +1488,8 @@ def derive_expected_checks(
         or (effective_profile or {}).get("approval_source"),
         hygiene_config=hygiene_config,
         code_prefixes=code_prefixes,
+        source_prefixes=source_prefixes,
+        weaver_prefixes=weaver_prefixes,
         effective_profile=effective_profile,
     )
     if effective_profile is not None:
@@ -1255,19 +1598,35 @@ def derive_expected_checks(
 def _validate_profile_check_mappings(
     checks,
     *,
+    declared_checks=None,
     obligations_by_check,
     required_by_check,
     advisory_by_check,
     rule_conflicts_by_check,
+    waived_obligations_by_check=None,
     conflicts,
+    is_delete=False,
 ):
     present_names = {item.get("name") for item in checks}
     expected_names = set(required_by_check) | set(advisory_by_check)
     if not (expected_names <= present_names):
         raise ExpectedError("expected_obligation_mapping_mismatch")
+    if (
+        isinstance(declared_checks, list)
+        and not is_delete
+        and not (set(declared_checks) <= present_names)
+    ):
+        raise ExpectedError("expected_declared_check_missing")
+    waived_map = waived_obligations_by_check or {}
+    recorded_inapp = {
+        c.get("check"): c.get("obligation_refs")
+        for c in (conflicts or [])
+        if isinstance(c, dict) and c.get("kind") == "inapplicable_required_obligation"
+    }
     for item in checks:
         name = item.get("name")
-        if item.get("required_by_obligations") != required_by_check.get(name, []):
+        req_obs = required_by_check.get(name, [])
+        if item.get("required_by_obligations") != req_obs:
             raise ExpectedError("expected_obligation_mapping_mismatch")
         if item.get("advisory_for_obligations") != advisory_by_check.get(name, []):
             raise ExpectedError("expected_obligation_mapping_mismatch")
@@ -1279,6 +1638,20 @@ def _validate_profile_check_mappings(
             or item.get("policy_status") != "conflict"
         ):
             raise ExpectedError("expected_rule_conflict_unrecorded")
+        unwaived_req_obs = [
+            ob_ref
+            for ob_ref in req_obs
+            if _canon_key(ob_ref) not in waived_map.get(name, set())
+        ]
+        if (
+            item.get("applicability", {}).get("status") == "not_applicable"
+            and unwaived_req_obs
+            and (
+                item.get("policy_status") != "conflict"
+                or recorded_inapp.get(name) != unwaived_req_obs
+            )
+        ):
+            raise ExpectedError("expected_inapplicable_obligation_unrecorded")
     recorded_rule_conflicts = {
         c.get("check")
         for c in (conflicts or [])
@@ -1288,7 +1661,21 @@ def _validate_profile_check_mappings(
         raise ExpectedError("expected_rule_conflict_unrecorded")
 
 
-def _validate_per_ref(expected, git):
+def _hygiene_config_for_validation(plan):
+    if not isinstance(plan, dict):
+        return None
+    hygiene_input = (plan.get("inputs") or {}).get("hygiene")
+    if isinstance(hygiene_input, dict) and isinstance(
+        hygiene_input.get("normalized"), dict
+    ):
+        try:
+            return hygiene.config_from_identity(hygiene_input)
+        except hygiene.HygieneError as error:
+            raise ExpectedError(error.code) from None
+    return hygiene.default_config()
+
+
+def _validate_per_ref(expected, git, check_scope=None, plan=None):
     refs = git.get("references") or []
     per_ref = expected.get("per_ref")
     if git.get("snapshot") != "multi" and per_ref is None:
@@ -1296,27 +1683,31 @@ def _validate_per_ref(expected, git):
     if not isinstance(per_ref, list) or len(per_ref) != len(refs):
         raise ExpectedError("expected_per_ref_mismatch")
     schema_version = expected.get("schema_version", EXPECTED_VERSION)
-    profile = expected.get("effective_profile")
-    if schema_version == EXPECTED_V2 and profile is not None:
-        (
-            obligations_by_check,
-            required_by_check,
-            advisory_by_check,
-            _rule_by_check,
-            rule_conflicts_by_check,
-            _allow_inapp,
-            profile_non_check,
-        ) = _parse_profile_obligations(
-            profile,
-            hygiene_rule=expected.get("hygiene_rule_ref"),
-            sources_rule=expected.get("sources_rule_ref"),
-        )
-    else:
-        obligations_by_check = {}
-        required_by_check = {}
-        advisory_by_check = {}
-        rule_conflicts_by_check = {}
-        profile_non_check = ()
+    profile = (
+        expected.get("effective_profile") if schema_version == EXPECTED_V2 else None
+    )
+    scope_by_name = {
+        item.get("name"): item
+        for item in (check_scope or [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    hygiene_config = _hygiene_config_for_validation(plan)
+    selection_block = (plan or {}).get("selection") if isinstance(plan, dict) else None
+    code_prefixes = (
+        selection_block.get("code_prefixes")
+        if isinstance(selection_block, dict)
+        else None
+    )
+    source_prefixes = (
+        selection_block.get("source_prefixes")
+        if isinstance(selection_block, dict)
+        else None
+    )
+    weaver_prefixes = (
+        selection_block.get("weaver_prefixes")
+        if isinstance(selection_block, dict)
+        else None
+    )
 
     for plan_ref, proj_ref in zip(refs, per_ref, strict=True):
         if not isinstance(proj_ref, dict):
@@ -1355,9 +1746,38 @@ def _validate_per_ref(expected, git):
             expected.get("selection_rule_ref"),
             expected.get("hygiene_rule_ref"),
             expected.get("sources_rule_ref"),
+            profile_sha256=profile.get("profile_sha256") if profile else None,
+            evaluated_at=profile.get("evaluated_at") if profile else None,
         )
         if proj_ref.get("scope_id") != expected_scope:
             raise ExpectedError("expected_per_ref_scope_id_mismatch")
+
+        target_ref = plan_ref.get("remote_ref") or plan_ref.get("local_ref")
+        if schema_version == EXPECTED_V2 and profile is not None:
+            (
+                obligations_by_check,
+                required_by_check,
+                advisory_by_check,
+                _rule_by_check,
+                rule_conflicts_by_check,
+                waived_obligations_by_check,
+                profile_non_check,
+            ) = _parse_profile_obligations(
+                profile,
+                hygiene_rule=expected.get("hygiene_rule_ref"),
+                sources_rule=expected.get("sources_rule_ref"),
+                selection_rule=expected.get("selection_rule_ref"),
+                weaver_rule=expected.get("selection_rule_ref"),
+                target_ref=target_ref,
+                ref_action=ref_action,
+            )
+        else:
+            obligations_by_check = {}
+            required_by_check = {}
+            advisory_by_check = {}
+            rule_conflicts_by_check = {}
+            waived_obligations_by_check = {}
+            profile_non_check = ()
 
         plan_ref_obs = list(plan_ref.get("non_check_obligations") or ())
         if ref_action == "delete" and "ref_deletion" not in plan_ref_obs:
@@ -1410,12 +1830,53 @@ def _validate_per_ref(expected, git):
         if schema_version == EXPECTED_V2 and profile is not None:
             _validate_profile_check_mappings(
                 ref_checks,
+                declared_checks=profile.get("declared_checks"),
                 obligations_by_check=obligations_by_check,
                 required_by_check=required_by_check,
                 advisory_by_check=advisory_by_check,
                 rule_conflicts_by_check=rule_conflicts_by_check,
+                waived_obligations_by_check=waived_obligations_by_check,
                 conflicts=proj_ref.get("conflicts") or [],
+                is_delete=(ref_action == "delete"),
             )
+
+        if check_scope is not None:
+            recomputed = _recompute_ref_projection(
+                plan_ref,
+                scope_by_name=scope_by_name,
+                selection_rule=expected.get("selection_rule_ref"),
+                hygiene_rule=expected.get("hygiene_rule_ref"),
+                sources_rule=expected.get("sources_rule_ref"),
+                consumer=expected.get("consumer"),
+                profile_ref=expected.get("profile_ref"),
+                profile_source=expected.get("profile_source"),
+                hygiene_config=hygiene_config or hygiene.default_config(),
+                code_prefixes=code_prefixes,
+                source_prefixes=source_prefixes,
+                weaver_prefixes=weaver_prefixes,
+                effective_profile=profile,
+            )
+            recomputed_by_name = {c["name"]: c for c in recomputed["checks"]}
+            actual_names = [c.get("name") for c in ref_checks]
+            expected_names = [c["name"] for c in recomputed["checks"]]
+            if actual_names != expected_names:
+                raise ExpectedError("expected_per_ref_applicability_mismatch")
+            for item in ref_checks:
+                exp_item = recomputed_by_name[item["name"]]
+                if item.get("applicability") != exp_item.get("applicability"):
+                    raise ExpectedError("expected_per_ref_applicability_mismatch")
+                if item.get("input_refs") != exp_item.get("input_refs"):
+                    raise ExpectedError("expected_per_ref_input_mismatch")
+                if (
+                    item.get("policy_status") != exp_item.get("policy_status")
+                    or item.get("rule_ref") != exp_item.get("rule_ref")
+                    or item.get("rule_status") != exp_item.get("rule_status")
+                ):
+                    raise ExpectedError("expected_per_ref_conflicts_mismatch")
+            if (proj_ref.get("conflicts") or []) != recomputed["conflicts"]:
+                raise ExpectedError("expected_per_ref_conflicts_mismatch")
+            if proj_ref.get("status") != recomputed["status"]:
+                raise ExpectedError("expected_per_ref_status_invalid")
 
         if proj_ref.get("expected_set_ref") != set_identity(
             ref_checks, actual_non_check, schema_version=schema_version
@@ -1423,7 +1884,7 @@ def _validate_per_ref(expected, git):
             raise ExpectedError("expected_set_ref_mismatch")
 
 
-def validate_projection(expected, git, check_scope=None):
+def validate_projection(expected, git, check_scope=None, *, plan=None):
     """Recompute identities and cross-check the projection against Plan git."""
     if not isinstance(expected, dict):
         raise ExpectedError("expected_checks_invalid")
@@ -1441,6 +1902,7 @@ def validate_projection(expected, git, check_scope=None):
     checks = expected.get("checks")
     if not isinstance(checks, list):
         raise ExpectedError("expected_checks_invalid")
+    profile = None
     profile_non_check = ()
     if projection_source == "check_scope":
         if check_scope is None:
@@ -1458,18 +1920,46 @@ def validate_projection(expected, git, check_scope=None):
                 raise ExpectedError("expected_non_check_obligations_mismatch")
     else:
         profile = validate_effective_profile(expected.get("effective_profile"), git=git)
+        if isinstance(plan, dict):
+            prof_input = (plan.get("inputs") or {}).get("effective_profile")
+            gen_sha = (plan.get("generator") or {}).get("effective_profile_sha256")
+            if (
+                not isinstance(prof_input, dict)
+                or (prof_input.get("effective_profile_ref") or {}).get("sha256")
+                != profile.get("profile_sha256")
+                or prof_input.get("profile_ref") != profile.get("profile_ref")
+                or prof_input.get("profile_revision") != profile.get("profile_revision")
+                or prof_input.get("approval_source") != profile.get("approval_source")
+                or prof_input.get("evaluated_at") != profile.get("evaluated_at")
+                or prof_input.get("domain_complete")
+                != bool(profile.get("domain_complete", False))
+                or prof_input.get("authority_verified")
+                != bool(profile.get("authority_verified", False))
+                or gen_sha != profile.get("profile_sha256")
+            ):
+                raise ExpectedError("effective_profile_input_mismatch")
+        target_ref = (
+            (git.get("base_ref") or git.get("head_ref"))
+            if git.get("snapshot") != "multi"
+            else None
+        )
+        ref_action = git.get("ref_action") if git.get("snapshot") != "multi" else None
         (
             obligations_by_check,
             required_by_check,
             advisory_by_check,
             _rule_by_check,
             rule_conflicts_by_check,
-            _allow_inapp,
+            waived_obligations_by_check,
             profile_non_check,
         ) = _parse_profile_obligations(
             profile,
             hygiene_rule=expected.get("hygiene_rule_ref"),
             sources_rule=expected.get("sources_rule_ref"),
+            selection_rule=expected.get("selection_rule_ref"),
+            weaver_rule=expected.get("selection_rule_ref"),
+            target_ref=target_ref,
+            ref_action=ref_action,
         )
         expected_non_check = _expected_non_check_obligations(
             git.get("non_check_obligations") or (),
@@ -1481,23 +1971,79 @@ def validate_projection(expected, git, check_scope=None):
             raise ExpectedError("expected_non_check_obligations_mismatch")
         if expected.get("non_check_obligations") != expected_non_check:
             raise ExpectedError("expected_non_check_obligations_mismatch")
+        is_delete = git.get("ref_action") == "delete"
         _validate_profile_check_mappings(
             checks,
+            declared_checks=profile.get("declared_checks"),
             obligations_by_check=obligations_by_check,
             required_by_check=required_by_check,
             advisory_by_check=advisory_by_check,
             rule_conflicts_by_check=rule_conflicts_by_check,
+            waived_obligations_by_check=waived_obligations_by_check,
             conflicts=expected.get("conflicts") or [],
+            is_delete=is_delete,
+        )
+        scope_by_name = {
+            str(item.get("name")): item
+            for item in (check_scope or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        hygiene_config = _hygiene_config_for_validation(plan)
+        if check_scope is not None:
+            present_names = {str(item.get("name")) for item in checks}
+            for name, scope_item in scope_by_name.items():
+                if (
+                    not is_delete
+                    and scope_item.get("status")
+                    not in {"not_applicable", "no_tests", "no_changes"}
+                    and name not in present_names
+                ):
+                    raise ExpectedError("expected_scope_mismatch")
+            for item in checks:
+                name = str(item.get("name"))
+                origin = scope_by_name.get(name)
+                app = item.get("applicability") or {}
+                if origin is not None and app.get("status") != "config_conflict":
+                    if app.get("status") != origin.get("status") or app.get(
+                        "reason"
+                    ) != origin.get("reason"):
+                        raise ExpectedError("expected_applicability_mismatch")
+                    expected_inputs = [
+                        ref.get("path")
+                        for ref in item.get("input_refs", [])
+                        if ref.get("kind") == "changed_path"
+                    ]
+                    if expected_inputs != list(origin.get("inputs", [])):
+                        raise ExpectedError("expected_input_mismatch")
+        configured_domain = _configured_domain_names(
+            scope_by_name,
+            hygiene_config,
+            expected.get("sources_rule_ref"),
+            is_delete=is_delete,
+        )
+        declared_checks = profile.get("declared_checks")
+        declared_complete = isinstance(declared_checks, list) and (
+            configured_domain <= set(declared_checks)
+        )
+        per_ref_list = expected.get("per_ref")
+        per_ref_incomplete = bool(
+            isinstance(per_ref_list, list)
+            and any(
+                isinstance(r, dict) and r.get("status") != "complete"
+                for r in per_ref_list
+            )
         )
         if expected.get("status") == "complete" and (
             not profile.get("domain_complete")
-            or not isinstance(profile.get("declared_checks"), list)
+            or not declared_complete
             or expected.get("missing")
             or expected.get("conflicts")
+            or per_ref_incomplete
             or any(
                 item.get("definition_status") != "resolved"
                 or item.get("rule_status") != "resolved"
-                or item.get("applicability", {}).get("status") == "unknown"
+                or item.get("applicability", {}).get("status")
+                in {"unknown", "incomplete"}
                 for item in checks
             )
         ):
@@ -1562,7 +2108,7 @@ def validate_projection(expected, git, check_scope=None):
         if binding_paths != scope_paths:
             raise ExpectedError("expected_source_scope_mismatch")
 
-    _validate_per_ref(expected, git)
+    _validate_per_ref(expected, git, check_scope=check_scope, plan=plan)
     if snapshot != "multi":
         ref_action = git.get("ref_action")
         baseline_status = git.get("baseline_status")
@@ -1638,6 +2184,8 @@ def validate_projection(expected, git, check_scope=None):
         expected.get("selection_rule_ref"),
         expected.get("hygiene_rule_ref"),
         expected.get("sources_rule_ref"),
+        profile_sha256=profile.get("profile_sha256") if profile else None,
+        evaluated_at=profile.get("evaluated_at") if profile else None,
     )
     if expected.get("scope_id") != expected_scope:
         raise ExpectedError("expected_scope_id_mismatch")

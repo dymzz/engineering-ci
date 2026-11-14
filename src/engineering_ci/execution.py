@@ -137,6 +137,24 @@ def _verify_execution_binding(plan, root, *, execution_context="host"):
         return True, None, None
     if snapshot == "multi":
         return False, "multi_ref_requires_per_ref_execution", None
+    if snapshot == "push" and git.get("ref_action") == "delete":
+        if expected_tree or git.get("tree") or git.get("head_commit"):
+            return False, "deleted_ref_forged_target_tree", expected_tree
+        return False, "deleted_ref_no_execution_tree", None
+    if snapshot == "pr_merge":
+        merge_tree = git.get("merge_tree")
+        if expected_tree and merge_tree and expected_tree != merge_tree:
+            return False, "pr_merge_tree_mismatch", expected_tree
+        expected_tree = expected_tree or merge_tree
+        if not expected_tree:
+            return False, "pr_merge_tree_missing", None
+    elif snapshot in {"commit", "push"}:
+        tree_field = git.get("tree")
+        if expected_tree and tree_field and expected_tree != tree_field:
+            return False, "target_tree_mismatch", expected_tree
+        expected_tree = expected_tree or tree_field
+        if not expected_tree and explicit_snapshot in {"commit", "push"}:
+            return False, "target_tree_missing", None
     if expected_tree:
         has_git_root = (
             execution_context != "dagger_export"
@@ -312,7 +330,8 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
     wanted = tuple(selected_by_name)
-    if not wanted:
+    has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
+    if not wanted and not has_bound_hygiene:
         return [], False
     code_prefixes, prefix_reason = _resolved_code_prefixes(plan, root)
     if prefix_reason is not None:
@@ -336,6 +355,41 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         digest=digest_after,
     )
     configured = hygiene.effective_checks(config)
+    changes = _changeset_from_plan(plan, root)
+    omitted_entries = []
+    if has_bound_hygiene:
+        expected_app = hygiene.check_applicability(
+            changes,
+            config,
+            root=root,
+            full=False,
+            code_prefixes=code_prefixes,
+        )
+        raw_scope = {
+            item.get("name"): item
+            for item in (plan.get("check_scope") or ())
+            if isinstance(item, dict) and item.get("name")
+        }
+        for name in configured:
+            if (
+                expected_app.get(name, {}).get("status") == "selected"
+                and name not in selected_by_name
+            ):
+                omitted_entries.append(
+                    {
+                        "name": name,
+                        "selected": raw_scope.get(name, {}).get(
+                            "status", "omitted_from_plan"
+                        ),
+                        "status": "not_executed",
+                        "reason": "configured_check_omitted_from_plan",
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                        "rule_ref": rule,
+                        "plan_authorized": False,
+                        "routing_conflict": "configured_check_omitted_from_plan",
+                    }
+                )
     checks = tuple(name for name in configured if name in selected_by_name)
     if not checks:
         return [
@@ -347,7 +401,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "rule_ref": rule,
             }
             for name, item in selected_by_name.items()
-        ], False
+        ] + omitted_entries, False
     effective_tach = (
         dataclasses.replace(config.tach, external=False)
         if "tach_external" not in selected_by_name and config.tach.external
@@ -358,7 +412,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
     if code_prefixes is not None:
         run_kwargs["code_prefixes"] = code_prefixes
     report = hygiene.run(
-        _changeset_from_plan(plan, root),
+        changes,
         run_config,
         **run_kwargs,
     )
@@ -398,6 +452,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "rule_ref": rule,
             }
         )
+    results.extend(omitted_entries)
     return results, any_failed
 
 
@@ -1075,7 +1130,12 @@ def execute(
             "scope": "unverified",
         },
     }
-    if not tests and not selected and not prerequisites:
+    if (
+        not tests
+        and not selected
+        and not prerequisites
+        and plan["git"].get("ref_action") != "delete"
+    ):
         return report
     bound_ok, bind_reason, expected_tree = _verify_execution_binding(
         plan, root, execution_context=execution_context
@@ -1224,7 +1284,14 @@ def execute(
     elif unauthorized:
         report["status"] = "blocked"
         report["exit_code"] = 5
-        report["reason"] = "unauthorized_check_executed"
+        report["reason"] = (
+            "configured_check_omitted_from_plan"
+            if all(
+                item.get("routing_conflict") == "configured_check_omitted_from_plan"
+                for item in unauthorized
+            )
+            else "unauthorized_check_executed"
+        )
     elif invalid_contract:
         report["status"] = "blocked"
         report["exit_code"] = 5

@@ -388,12 +388,72 @@ def config_identity(path, config=None, *, root=None):
         "path": stored_path,
         "sha256": raw_sha,
         "schema_version": loaded.schema_version,
+        "normalized": normalized,
         "effective_check_config_ref": {
             "name": "engineering-ci.hygiene",
             "version": str(loaded.schema_version),
             "sha256": canonical,
         },
     }
+
+
+def config_from_identity(identity):
+    """Reconstruct and verify a Hygiene Config from a bound Plan inputs.hygiene entry."""
+    if not isinstance(identity, dict):
+        raise HygieneError("config_identity_invalid")
+    normalized = identity.get("normalized")
+    ref = identity.get("effective_check_config_ref")
+    if (
+        not isinstance(normalized, dict)
+        or not isinstance(ref, dict)
+        or ref.get("name") != "engineering-ci.hygiene"
+        or not isinstance(ref.get("sha256"), str)
+    ):
+        raise HygieneError("config_identity_invalid")
+    canonical = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    if canonical != ref["sha256"]:
+        raise HygieneError("config_identity_mismatch")
+    try:
+        docs_raw = normalized["docs"]
+        lychee_raw = normalized["lychee"]
+        forwarding_raw = normalized["forwarding"]
+        vulture_raw = normalized["vulture"]
+        tach_raw = normalized["tach"]
+        return Config(
+            schema_version=int(normalized["schema_version"]),
+            checks=tuple(str(item) for item in normalized["checks"]),
+            docs=DocsConfig(
+                suffixes=tuple(str(s) for s in docs_raw["suffixes"]),
+                excluded_prefixes=tuple(str(p) for p in docs_raw["excluded_prefixes"]),
+            ),
+            lychee=LycheeConfig(
+                executable=str(lychee_raw["executable"]),
+                arguments=tuple(str(a) for a in lychee_raw["arguments"]),
+            ),
+            forwarding=ForwardingConfig(
+                source_prefix=str(forwarding_raw["source_prefix"]),
+            ),
+            vulture=VultureConfig(
+                executable=str(vulture_raw["executable"]),
+                paths=tuple(str(p) for p in vulture_raw["paths"]),
+                min_confidence=int(vulture_raw["min_confidence"]),
+                advisory_exit_codes=frozenset(
+                    int(c) for c in vulture_raw["advisory_exit_codes"]
+                ),
+            ),
+            tach=TachConfig(
+                executable=str(tach_raw["executable"]),
+                path=str(tach_raw["path"]),
+                external=bool(tach_raw["external"]),
+            ),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HygieneError("config_identity_invalid") from None
 
 
 def _is_dependency_input(path):
@@ -404,6 +464,11 @@ def _is_dependency_input(path):
 
 
 def _deleted_paths(changes, paths, root):
+    if getattr(changes, "deleted_paths_resolved", False):
+        return {
+            str(item).replace("\\", "/")
+            for item in getattr(changes, "deleted_paths", ())
+        }
     explicit = getattr(changes, "deleted_paths", ())
     if explicit:
         return {str(item).replace("\\", "/") for item in explicit}
@@ -423,9 +488,9 @@ def _deleted_paths(changes, paths, root):
     return {path for path in paths if not (root / path).exists()}
 
 
-def check_applicability(changes, config, *, root, full=False, code_prefixes=None):
+def check_applicability(changes, config, *, root=None, full=False, code_prefixes=None):
     """One authoritative applicability model shared by selection and hygiene."""
-    root = Path(root)
+    root = Path(root) if root is not None else Path(".")
     names = effective_checks(config)
     if getattr(changes, "ref_action", None) == "delete":
         return {

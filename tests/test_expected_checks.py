@@ -941,3 +941,245 @@ def test_multi_ref_per_ref_cross_ref_tampering_and_delete_protection(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(bad_del)
     assert raised.value.code == "expected_per_ref_obligations_mismatch"
+
+    # 4. Tampering per_ref[0] check applicability (selected -> not_applicable) and recomputing refs is caught
+    bad_app = json.loads(json.dumps(p))
+    ref0_docs = next(
+        item
+        for item in bad_app["expected_checks"]["per_ref"][0]["checks"]
+        if item["name"] == "docs"
+    )
+    ref0_docs["applicability"] = {"status": "not_applicable", "reason": "no_changes"}
+    ref0_docs["input_refs"] = []
+    ref0_docs["expected_check_ref"] = expected_checks.entry_identity(ref0_docs)
+    bad_app["expected_checks"]["per_ref"][0]["expected_set_ref"] = (
+        expected_checks.set_identity(
+            bad_app["expected_checks"]["per_ref"][0]["checks"],
+            bad_app["expected_checks"]["per_ref"][0]["non_check_obligations"],
+            schema_version=1,
+        )
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(bad_app)
+    assert raised.value.code == "expected_per_ref_applicability_mismatch"
+
+    # 5. Tampering per_ref[0]["status"] to complete is caught
+    bad_status = json.loads(json.dumps(p))
+    bad_status["expected_checks"]["per_ref"][0]["status"] = "complete"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(bad_status)
+    assert raised.value.code == "expected_per_ref_status_invalid"
+
+
+def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver(
+    repo, capsys
+):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, head="HEAD", mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+
+    full_profile = _sample_effective_profile(
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs",
+                "kind": "check",
+                "check_names": ["docs"],
+            }
+        ],
+    )
+    full_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=full_profile,
+    )
+    plan_contract.validate(full_plan)
+
+    # P1-1a: Mutating domain_complete or evaluated_at invalidates profile_sha256
+    for field, mutated in (
+        ("domain_complete", False),
+        ("evaluated_at", "2026-04-20T09:00:00Z"),
+    ):
+        tampered = json.loads(json.dumps(full_plan))
+        tampered["expected_checks"]["effective_profile"][field] = mutated
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(tampered)
+        assert raised.value.code == "effective_profile_digest_mismatch"
+
+    # P1-1b: Mutating required_obligations and recomputing profile_sha256 fails approval_binding,
+    # and recomputing both approval_binding + profile_sha256 fails inputs.effective_profile binding
+    rehashed = json.loads(json.dumps(full_plan))
+    rehashed_prof = rehashed["expected_checks"]["effective_profile"]
+    rehashed_prof["required_obligations"] = []
+    rehashed_prof["profile_sha256"] = expected_checks.profile_digest(rehashed_prof)
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(rehashed)
+    assert raised.value.code == "effective_profile_digest_mismatch"
+
+    rebound = json.loads(json.dumps(full_plan))
+    rebound_prof = rebound["expected_checks"]["effective_profile"]
+    rebound_prof["evaluated_at"] = "2026-11-16T09:00:00Z"
+    rebound_prof["profile_sha256"] = expected_checks.profile_digest(rebound_prof)
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(rebound)
+    assert raised.value.code == "effective_profile_input_mismatch"
+
+    # P1-1c: domain_complete=True with partial declared_checks=["docs"] cannot produce complete
+    partial_domain_profile = _sample_effective_profile(
+        declared_checks=["docs"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs",
+                "kind": "check",
+                "check_names": ["docs"],
+            }
+        ],
+        advisory_checks=[],
+        domain_complete=True,
+    )
+    partial_domain_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=partial_domain_profile,
+    )
+    plan_contract.validate(partial_domain_plan)
+    assert partial_domain_plan["expected_checks"]["status"] == "partial"
+    assert (
+        partial_domain_plan["expected_checks"]["reason"] == "declared_domain_incomplete"
+    )
+    assert (
+        partial_domain_plan["expected_checks"]["consumer_completeness"]
+        == "incomplete_profile"
+    )
+    forged_complete = json.loads(json.dumps(partial_domain_plan))
+    forged_complete["expected_checks"]["status"] = "complete"
+    forged_complete["expected_checks"]["consumer_completeness"] = (
+        "expected_domain_complete"
+    )
+    forged_complete["expected_checks"]["definitions_status"] = "domain_complete"
+    forged_complete["expected_checks"]["applicability_status"] = "domain_complete"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(forged_complete)
+    assert raised.value.code == "expected_complete_unproven"
+
+    # P1-2: Deleting a check from declared_checks in expected_checks["checks"] and recomputing set_ref is rejected
+    unmapped_declared_profile = _sample_effective_profile(
+        declared_checks=["whitespace", "docs", "forwarding", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/ws",
+                "kind": "check",
+                "check_names": ["whitespace"],
+            }
+        ],
+        advisory_checks=[],
+    )
+    unmapped_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=unmapped_declared_profile,
+    )
+    plan_contract.validate(unmapped_plan)
+    dropped_docs = json.loads(json.dumps(unmapped_plan))
+    dropped_docs["expected_checks"]["checks"] = [
+        c for c in dropped_docs["expected_checks"]["checks"] if c["name"] != "docs"
+    ]
+    dropped_docs["expected_checks"]["expected_set_ref"] = expected_checks.set_identity(
+        dropped_docs["expected_checks"]["checks"],
+        dropped_docs["expected_checks"]["non_check_obligations"],
+        schema_version=2,
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(dropped_docs)
+    assert raised.value.code == "expected_declared_check_missing"
+
+    # P1-3: Obligation A (allow_inapplicable=True) does NOT waive Obligation B (allow_inapplicable=False) on same check
+    shared_inapp_profile = _sample_effective_profile(
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/waived",
+                "kind": "check",
+                "check_names": ["tach"],
+                "allow_inapplicable": True,
+            },
+            {
+                "obligation_ref": "ob/strict",
+                "kind": "check",
+                "check_names": ["tach"],
+                "allow_inapplicable": False,
+            },
+        ],
+        allowed_inapplicability=[],
+    )
+    shared_inapp_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=shared_inapp_profile,
+    )
+    plan_contract.validate(shared_inapp_plan)
+    sexp = shared_inapp_plan["expected_checks"]
+    assert sexp["status"] == "partial"
+    assert sexp["consumer_completeness"] == "incomplete_conflict"
+    inapp_conflicts = [
+        c
+        for c in sexp["conflicts"]
+        if c["kind"] == "inapplicable_required_obligation" and c["check"] == "tach"
+    ]
+    assert len(inapp_conflicts) == 1
+    assert inapp_conflicts[0]["obligation_refs"] == ["ob/strict"]
+    tach_check = next(c for c in sexp["checks"] if c["name"] == "tach")
+    assert tach_check["policy_status"] == "conflict"
+
+    # Suppressing the inapplicable conflict on tach is rejected
+    suppressed = json.loads(json.dumps(shared_inapp_plan))
+    suppressed["expected_checks"]["conflicts"] = []
+    sup_tach = next(
+        c for c in suppressed["expected_checks"]["checks"] if c["name"] == "tach"
+    )
+    sup_tach["policy_status"] = "resolved"
+    sup_tach["expected_check_ref"] = expected_checks.entry_identity(sup_tach)
+    suppressed["expected_checks"]["expected_set_ref"] = expected_checks.set_identity(
+        suppressed["expected_checks"]["checks"],
+        suppressed["expected_checks"]["non_check_obligations"],
+        schema_version=2,
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(suppressed)
+    assert raised.value.code == "expected_inapplicable_obligation_unrecorded"
+
+    # CLI --effective-profile loads profile from JSON file and binds inputs.effective_profile
+    profile_file = path.parent / "effective-profile.json"
+    profile_file.write_text(json.dumps(full_profile), encoding="utf-8")
+    exit_code = selection.main(
+        [
+            "--root",
+            str(path),
+            "--base",
+            base,
+            "--head",
+            "HEAD",
+            "--effective-profile",
+            str(profile_file),
+            "--json",
+        ]
+    )
+    assert exit_code == 0
+    cli_plan = json.loads(capsys.readouterr().out)
+    plan_contract.validate(cli_plan)
+    assert cli_plan["expected_checks"]["schema_version"] == 2
+    assert cli_plan["expected_checks"]["status"] == "complete"
+    assert (
+        cli_plan["inputs"]["effective_profile"]["effective_profile_ref"]["sha256"]
+        == full_profile["profile_sha256"]
+    )

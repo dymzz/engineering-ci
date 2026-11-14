@@ -1532,7 +1532,8 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     assert any("check-external" in call[0] for call in runner.calls)
     assert any("vulture" in call[0] for call in runner.calls)
 
-    # Now drop tach_external from Plan selection; execution MUST NOT start tach check-external
+    # 1. Unauthorized deletion of tach_external from Plan while ci-hygiene.toml has external = true:
+    #    execution MUST NOT start tach check-external AND MUST block the report as configured_check_omitted_from_plan
     without_ext = json.loads(json.dumps(p))
     without_ext["check_scope"] = [
         item for item in without_ext["check_scope"] if item["name"] != "tach_external"
@@ -1557,13 +1558,110 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         )
     runner_no_ext = FakeRunner()
     report_no_ext = execution.execute(without_ext, root=path, runner=runner_no_ext)
-    assert report_no_ext["status"] == "passed", (
-        f"unexpected status={report_no_ext.get('status')} "
-        f"reason={report_no_ext.get('reason')} "
-        f"checks={[(c.get('name'), c.get('status'), c.get('reason'), c.get('native_satisfaction')) for c in report_no_ext.get('checks', [])]}"
-    )
     external_calls = [
         call[0] for call in runner_no_ext.calls if "check-external" in call[0]
     ]
     assert external_calls == []
-    assert all(item["name"] != "tach_external" for item in report_no_ext["checks"])
+    assert report_no_ext["status"] == "blocked"
+    assert report_no_ext["reason"] == "configured_check_omitted_from_plan"
+    omitted_entry = next(
+        item for item in report_no_ext["checks"] if item["name"] == "tach_external"
+    )
+    assert omitted_entry["status"] == "not_executed"
+    assert omitted_entry["execution_started"] is False
+    assert omitted_entry["plan_authorized"] is False
+    assert omitted_entry["routing_conflict"] == "configured_check_omitted_from_plan"
+
+    # 2. Authorized disablement (external = false in ci-hygiene.toml):
+    #    tach check-external is not started AND report passes cleanly
+    (path / "ci-hygiene.toml").write_text(hygiene_text, encoding="utf-8")
+    p_disabled = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    runner_disabled = FakeRunner()
+    report_disabled = execution.execute(p_disabled, root=path, runner=runner_disabled)
+    assert report_disabled["status"] == "passed"
+    assert [
+        call[0] for call in runner_disabled.calls if "check-external" in call[0]
+    ] == []
+    assert all(item["name"] != "tach_external" for item in report_disabled["checks"])
+
+
+def test_execution_refuses_missing_target_tree_and_deleted_push_ref(repo):
+    path, _ = repo
+    head = run(path, "rev-parse", "HEAD").strip()
+
+    # 1. Missing target tree on commit/push/pr_merge snapshots is refused before running tools
+    for snap, expected_reason in (
+        ("commit", "target_tree_missing"),
+        ("push", "target_tree_missing"),
+        ("pr_merge", "pr_merge_tree_missing"),
+    ):
+        missing_tree_plan = plan(
+            [],
+            check_scope=[{"name": "whitespace", "status": "selected", "inputs": []}],
+            git={
+                "snapshot": snap,
+                "execution_tree": None,
+                "tree": None,
+                "merge_tree": None,
+            },
+        )
+        runner = FakeRunner()
+        report = execution.execute(missing_tree_plan, root=path, runner=runner)
+        assert report["status"] == "not_executed"
+        assert report["exit_code"] == 4
+        assert report["reason"] == expected_reason
+        assert runner.calls == []
+
+    # 2. Deleted ref push plan has no target tree and is refused by execution without fabricating PASS
+    del_changes = selection.changeset(
+        path,
+        base=head,
+        head="refs/heads/gone",
+        mode="push",
+        before=head,
+        after=selection.ZERO_OID,
+        local_ref="(delete)",
+        remote_ref="refs/heads/gone",
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
+    del_sel = selection.select(del_changes, cfg, root=path)
+    del_plan = selection.plan(
+        del_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    runner_del = FakeRunner()
+    report_del = execution.execute(del_plan, root=path, runner=runner_del)
+    assert report_del["status"] == "not_executed"
+    assert report_del["exit_code"] == 4
+    assert report_del["reason"] == "deleted_ref_no_execution_tree"
+    assert runner_del.calls == []
+
+    # 3. Forging a target tree on a deleted ref push plan is refused
+    head_tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    forged_del = plan(
+        [],
+        check_scope=[{"name": "whitespace", "status": "selected", "inputs": []}],
+        git={
+            "snapshot": "push",
+            "ref_action": "delete",
+            "execution_tree": head_tree,
+            "tree": head_tree,
+            "head_commit": None,
+        },
+    )
+    report_forged = execution.execute(forged_del, root=path, runner=FakeRunner())
+    assert report_forged["status"] == "not_executed"
+    assert report_forged["exit_code"] == 4
+    assert report_forged["reason"] == "deleted_ref_forged_target_tree"
