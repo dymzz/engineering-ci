@@ -97,6 +97,51 @@ Following Reviews 22–24 on PR #90 and merging `main`:
   configured active edges and preserving `policy_only` (`schema_version = 1`)
   otherwise.
 
+
+## PR #90 R3 evidence provenance (2026-11-14)
+
+**Evidence status: reported Engine executions; new R3 raw artifacts not yet
+independently archived. Do not treat the statements below as a new verified
+native receipt, or as a Ready/merge approval.**
+
+- The [PR #90 description](https://github.com/dymzz/engineering-ci/pull/90)
+  reports nine real Dagger Engine `v1.0.0-beta.16` R3 scenarios at
+  `5d274fa8c47681e06af5211d4047ac1b773be9b9`: binary File and nested
+  empty Directory delivery/export, configured `[[dependency_edges]]` with
+  real Git/Lychee Docs success and broken-link failure, missing `.git` with
+  Git exit 128 and no fabricated PASS, missing output, output-digest mismatch,
+  producer nonzero exit, overlapping paths, and distinct failing consumers
+  while an independent Docs check completes. These are **PR-author reported
+  outcomes**; original per-scenario Plans, stdout/stderr, Reports, enforced
+  exits, exports and digests are not linked in this repository.
+- The same PR description reports a subsequent real Engine Docs/Lychee
+  pass/fail pair using the corrected `selection-app/ci-hygiene.toml` at
+  `83d00ecd07c2f995e9bc853a060c77739797c730`. The subsequent
+  `cab8c4fc51bd5a1c2a67eedb3527e29459ba39ce` commit changes **only**
+  the two independent test status/exit-code assertions in
+  `tests/test_plan_result.py`, not the production Engine implementation.
+- [GitHub Actions run 43612468175](https://github.com/dymzz/engineering-ci/actions/runs/43612468175)
+  completed its four jobs successfully at `83d00ec`, but these are
+  repository checks, **not** a per-scenario R3 receipt. Its sole uploaded
+  artifact is `dagger-native-telemetry-a1-offline`, which is not the R3
+  Plan/Artifact bundle.
+- The historical [native-cli.json](native-cli.json),
+  [receipt.json](receipt.json), [cases](cases/README.md), and
+  [aggregation](aggregation/README.md) are retained as genuine earlier
+  Result Sharing evidence **at their original revisions**, not relabeled
+  as the new scratch-workdir / binary / Directory R3 observations.
+
+**Still required for independent R3 acceptance:** preserve the *already
+executed* native per-scenario invocation/CLI and engine version, exact source
+and Plan inputs, Report JSON, native process exit and Enforce exit,
+producer/consumer diagnostics, exported bundle structure and binary/Directory
+hashes, and a clear execution-SHA-to-result mapping. Archive existing raw
+records without reconstructing output from the expected results or rerunning
+unaffected tools. If the original local `run_r3.py` outputs are unavailable,
+report them as unavailable; these provenance notes do not substitute for
+the missing records.
+
+
 ## Remaining work
 
 - **#66**: authenticated Source/Prerequisite receipts and config/baseline proof
