@@ -392,6 +392,16 @@ async def _execute_dag(
                     blocked_by.append(
                         {"producer_ref": edge["producer_ref"], "reason": reason}
                     )
+                    if edge.get("dependency_kind") == "data":
+                        data_failures.append(
+                            {
+                                "producer_ref": edge["producer_ref"],
+                                "output_ref": edge.get("output_ref"),
+                                "reason": reason,
+                                "error_type": type(producer_out).__name__,
+                                "diagnostic": str(producer_out),
+                            }
+                        )
                     continue
                 producer_entry = (
                     producer_out[0] if isinstance(producer_out, tuple) else producer_out

@@ -380,6 +380,10 @@ def _run_command(argv, root, *, runner=None, artifact_root=None):
         completed = subprocess.CompletedProcess(
             rendered, 127, "", f"missing executable: {rendered[0]}"
         )
+    except OSError as error:
+        completed = subprocess.CompletedProcess(
+            rendered, 126, "", f"command execution failed: {error}"
+        )
     return completed, rendered
 
 
