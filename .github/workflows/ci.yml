@@ -11,6 +11,10 @@ on:
         description: 'Export core test coverage during manual release validation'
         type: boolean
         default: false
+      reverify_a1_capture:
+        description: 'Force live isolated Engine OTLP capture even if telemetry paths did not change'
+        type: boolean
+        default: false
     outputs:
       core_artifact_id:
         value: ${{ jobs.sync-tool-tests.outputs.artifact_id }}
@@ -115,3 +119,277 @@ jobs:
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Validate release metadata and root lock consistency
         run: dagger check --engineering-ci --check=version --check=lock
+
+  dagger-native-telemetry:
+    name: dagger-native-telemetry / a1-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Sync host Python dependencies
+        run: uv sync --locked
+      - name: Determine A.1 live capture scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          REVERIFY_INPUT: ${{ inputs.reverify_a1_capture }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed_file="$RUNNER_TEMP/a1-changed-files.txt"
+          : > "$changed_file"
+          pinned_doc_ok="$(python3 -c 'import tomllib; v = tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"]; doc = open("docs/verification/dagger-native-telemetry.md", encoding="utf-8").read(); print("true" if v in doc else "false")')"
+          explicit_flag=""
+          if [[ "$REVERIFY_INPUT" == "true" ]] || git log -1 --pretty=%B "$HEAD_SHA" | grep -q '\[reverify-a1\]'; then
+            explicit_flag="--explicit-reverify"
+          fi
+          base_sha=""
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+          base_commit_ok="false"
+          if [[ -n "$base_sha" && "$base_sha" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            base_commit_ok="true"
+            git diff --name-only "${base_sha}...${HEAD_SHA}" > "$changed_file"
+          fi
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry a1-scope \
+            --changed-files-file "$changed_file" \
+            --pinned-version-ok "$pinned_doc_ok" \
+            --base-commit-ok "$base_commit_ok" \
+            ${explicit_flag:+"$explicit_flag"} \
+            --github-output "$GITHUB_OUTPUT" \
+            --output "$RUNNER_TEMP/a1-scope-decision.json"
+      - name: Run offline A.1 contract regression when live inputs are unchanged
+        if: ${{ steps.scope.outputs.run_live_capture != 'true' }}
+        env:
+          SCOPE_REASON: ${{ steps.scope.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACTS_DIR="$RUNNER_TEMP/dagger-native-telemetry-offline"
+          mkdir -p "$ARTIFACTS_DIR"
+          uv run --locked pytest tests/test_dagger_native_telemetry.py -q
+          python3 - "$ARTIFACTS_DIR/a1-offline-contract.json" "$RUNNER_TEMP/a1-scope-decision.json" "${{ github.sha }}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          out_path = Path(sys.argv[1])
+          scope_path = Path(sys.argv[2])
+          source_ref = sys.argv[3]
+          scope = json.loads(scope_path.read_text(encoding="utf-8"))
+          report = {
+              "schema_version": scope["schema_version"],
+              "evidence_level": "offline_contract_pass",
+              "live_capture_executed": False,
+              "native_capture_verified": False,
+              "synthetic_fixtures_only": True,
+              "prior_live_capture_revalidated": False,
+              "source_ref": source_ref,
+              "scope_decision": scope,
+          }
+          out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          echo "Skipped live 3-Engine capture (${SCOPE_REASON}); offline synthetic contract passed (evidence_level=offline_contract_pass)."
+      - name: Upload offline A.1 contract report
+        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture != 'true' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dagger-native-telemetry-a1-offline
+          path: |
+            ${{ runner.temp }}/dagger-native-telemetry-offline/a1-offline-contract.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Install pinned Dagger CLI
+        if: ${{ steps.scope.outputs.run_live_capture == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          export DAGGER_VERSION
+          curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$RUNNER_TEMP/install-dagger.sh"
+          BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
+          echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
+      - name: Capture isolated OTLP traces and enforce A.1 gate
+        if: ${{ steps.scope.outputs.run_live_capture == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DAGGER_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"].removeprefix("v"))')"
+          ARTIFACTS_DIR="$RUNNER_TEMP/dagger-native-telemetry"
+          mkdir -p "$ARTIFACTS_DIR"
+          printf '{"telemetry":{"workloadExport":true}}\n' > "$RUNNER_TEMP/engine.json"
+          docker volume create dagger-engine-a1-data >/dev/null
+
+          run_isolated_capture() {
+            local scenario="$1"
+            local capture_out="$ARTIFACTS_DIR/${scenario}-capture.json"
+            local exit_out="$ARTIFACTS_DIR/${scenario}.exit"
+            local ready_file="$RUNNER_TEMP/${scenario}.ready"
+            local stop_file="$RUNNER_TEMP/${scenario}.stop"
+            local cname="dagger-engine-a1-${scenario}"
+            rm -f "$ready_file" "$stop_file"
+            docker rm -f "$cname" >/dev/null 2>&1 || true
+
+            uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry receive \
+              --host 0.0.0.0 \
+              --port 0 \
+              --output "$capture_out" \
+              --ready-file "$ready_file" \
+              --stop-file "$stop_file" &
+            local recv_pid=$!
+
+            for _ in $(seq 1 50); do
+              if [[ -s "$ready_file" ]]; then
+                break
+              fi
+              sleep 0.1
+            done
+            test -s "$ready_file"
+            local port
+            port="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["port"])' "$ready_file")"
+
+            docker run --pull=missing -d \
+              --name "$cname" \
+              --privileged \
+              --add-host=host.docker.internal:host-gateway \
+              -v dagger-engine-a1-data:/var/lib/dagger \
+              -v "$RUNNER_TEMP/engine.json:/etc/dagger/engine.json:ro" \
+              -e OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://host.docker.internal:${port}/v1/traces" \
+              -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://host.docker.internal:${port}/v1/metrics" \
+              -e OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf" \
+              -e OTEL_EXPORTER_OTLP_METRICS_PROTOCOL="http/protobuf" \
+              "registry.dagger.io/engine:v$DAGGER_VERSION" >/dev/null
+
+            local ready=0
+            for _ in $(seq 1 30); do
+              if [[ "$(docker inspect -f '{{.State.Running}}' "$cname" 2>/dev/null || echo false)" != "true" ]]; then
+                echo "::error::Engine container $cname exited unexpectedly"
+                docker logs "$cname" || true
+                exit 1
+              fi
+              if docker exec "$cname" test -S /run/dagger/engine.sock 2>/dev/null || docker exec "$cname" test -S /var/run/buildkit/buildkitd.sock 2>/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 0.5
+            done
+            if [[ "$ready" -ne 1 ]]; then
+              docker logs --tail 50 "$cname" || true
+              exit 1
+            fi
+
+            local log_out="$ARTIFACTS_DIR/${scenario}.log"
+            local cmd_exit=0
+            set +e
+            if [[ "$scenario" == "pass" ]]; then
+              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
+            elif [[ "$scenario" == "fail" ]]; then
+              printf 'import os\n' > src/engineering_ci/_ci_negative_lint_tmp.py
+              DAGGER_ENGINE="container://${cname}" dagger check --engineering-ci --check=lint 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
+              rm -f src/engineering_ci/_ci_negative_lint_tmp.py
+            elif [[ "$scenario" == "artifact" ]]; then
+              mkdir -p "$ARTIFACTS_DIR/exported-tools"
+              DAGGER_ENGINE="container://${cname}" dagger api call repository-ruff-tools export --path "$ARTIFACTS_DIR/exported-tools/tool-versions.json" 2>&1 | tee "$log_out"
+              cmd_exit="${PIPESTATUS[0]}"
+            fi
+            set -e
+            printf '%s\n' "$cmd_exit" > "$exit_out"
+
+            docker stop -t 30 "$cname" >/dev/null || true
+            docker rm -f "$cname" >/dev/null 2>&1 || true
+            touch "$stop_file"
+            wait "$recv_pid"
+          }
+
+          run_isolated_capture pass
+          run_isolated_capture fail
+          run_isolated_capture artifact
+
+          PASS_EXIT="$(cat "$ARTIFACTS_DIR/pass.exit")"
+          FAIL_EXIT="$(cat "$ARTIFACTS_DIR/fail.exit")"
+          ARTIFACT_EXIT="$(cat "$ARTIFACTS_DIR/artifact.exit")"
+          test "$PASS_EXIT" -eq 0
+          test "$FAIL_EXIT" -ne 0
+          test "$ARTIFACT_EXIT" -eq 0
+          ARTIFACT_FILE="$ARTIFACTS_DIR/exported-tools/tool-versions.json"
+          test -s "$ARTIFACT_FILE"
+          ARTIFACT_SHA256="$(sha256sum "$ARTIFACT_FILE" | awk '{print $1}')"
+
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry correlate \
+            --capture "$ARTIFACTS_DIR/pass-capture.json" \
+            --entry-kind check \
+            --target lint \
+            --isolated \
+            --exporter-configured yes \
+            --check-exit-code "$PASS_EXIT" \
+            --source-ref "${{ github.sha }}" \
+            --required-observability \
+            --output "$ARTIFACTS_DIR/pass-receipt.json"
+
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry correlate \
+            --capture "$ARTIFACTS_DIR/fail-capture.json" \
+            --entry-kind check \
+            --target lint \
+            --isolated \
+            --exporter-configured yes \
+            --check-exit-code "$FAIL_EXIT" \
+            --source-ref "${{ github.sha }}" \
+            --required-observability \
+            --output "$ARTIFACTS_DIR/fail-receipt.json"
+
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry correlate \
+            --capture "$ARTIFACTS_DIR/artifact-capture.json" \
+            --entry-kind artifact_function \
+            --target repository-ruff-tools \
+            --isolated \
+            --exporter-configured yes \
+            --artifact-exit-code "$ARTIFACT_EXIT" \
+            --artifact-path "$ARTIFACT_FILE" \
+            --artifact-sha256 "$ARTIFACT_SHA256" \
+            --source-ref "${{ github.sha }}" \
+            --required-observability \
+            --output "$ARTIFACTS_DIR/artifact-receipt.json"
+
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry verify-a1 \
+            --pass-capture "$ARTIFACTS_DIR/pass-capture.json" \
+            --pass-receipt "$ARTIFACTS_DIR/pass-receipt.json" \
+            --pass-exit-file "$ARTIFACTS_DIR/pass.exit" \
+            --pass-log-file "$ARTIFACTS_DIR/pass.log" \
+            --fail-capture "$ARTIFACTS_DIR/fail-capture.json" \
+            --fail-receipt "$ARTIFACTS_DIR/fail-receipt.json" \
+            --fail-exit-file "$ARTIFACTS_DIR/fail.exit" \
+            --fail-log-file "$ARTIFACTS_DIR/fail.log" \
+            --fail-diagnostic-pattern 'F401.*_ci_negative_lint_tmp\.py' \
+            --artifact-capture "$ARTIFACTS_DIR/artifact-capture.json" \
+            --artifact-receipt "$ARTIFACTS_DIR/artifact-receipt.json" \
+            --artifact-exit-file "$ARTIFACTS_DIR/artifact.exit" \
+            --artifact-path "$ARTIFACT_FILE" \
+            --artifact-expected-sha256 "$ARTIFACT_SHA256" \
+            --output "$ARTIFACTS_DIR/a1-verification.json"
+
+          (cd "$ARTIFACTS_DIR" && sha256sum *.json *.exit *.log exported-tools/tool-versions.json > SHA256SUMS)
+      - name: Upload A.1 native telemetry evidence
+        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture == 'true' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dagger-native-telemetry-a1
+          path: |
+            ${{ runner.temp }}/dagger-native-telemetry/*.json
+            ${{ runner.temp }}/dagger-native-telemetry/*.exit
+            ${{ runner.temp }}/dagger-native-telemetry/*.log
+            ${{ runner.temp }}/dagger-native-telemetry/SHA256SUMS
+            ${{ runner.temp }}/dagger-native-telemetry/exported-tools/tool-versions.json
+          if-no-files-found: ignore
+          retention-days: 7

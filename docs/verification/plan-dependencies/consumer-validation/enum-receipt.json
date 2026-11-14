@@ -1,0 +1,156 @@
+{
+  "review": "https://github.com/dymzz/engineering-ci/pull/88#pullrequestreview-5874742421",
+  "implementation_commit": "5e63db58d872f7c72c55db6bae00717cebc1c2a2",
+  "implementation_git_blob_sha256": {
+    "src/engineering_ci/plan_contract.py": "c7d2326ed0b3d1238c64fca538cc64ecdf87a219032d5932441e924879802dd1",
+    "src/engineering_ci/execution.py": "ee668a49902b9160d565d09a1610a550b75598efe3ae4eb323095edfcdc12ed2",
+    "tests/test_plan_contract.py": "1fa7efc4858f8b42c828e1d33de9193a4086f1592dbd383d9dd5a02d0294b873",
+    "tests/test_selection.py": "7837af7e7ddabda649df8a9ab935025f452e2dfdd8a963f132edd25fee8d9883"
+  },
+  "producer_values": {
+    "check_scope_status": [
+      "selected",
+      "unknown",
+      "not_applicable",
+      "targeted",
+      "escalated",
+      "no_tests",
+      "no_changes"
+    ],
+    "git_snapshot": [
+      "worktree",
+      "index",
+      "commit",
+      "push",
+      "pr_merge",
+      "multi"
+    ],
+    "producer_locations": [
+      "selection._check_scope",
+      "selection.select",
+      "selection._escalated",
+      "selection.changeset",
+      "selection.changeset_multi",
+      "selection.post_completion_plan"
+    ],
+    "notes": "full selection emits escalated/full_tests=true; CLI pr produces pr_merge; failed CLI labels are not executable identities"
+  },
+  "local_tests": {
+    "passed": 113,
+    "existing_skipped": 1,
+    "skip": "merge tree equals feature HEAD tree",
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_plan_contract.py tests/test_selection.py::test_plan_validator_accepts_all_actual_selector_scope_states tests/test_execution.py::test_execute_refuses_stale_index_tree tests/test_execution.py::test_execute_refuses_worktree_content_drift tests/test_execution.py::test_execute_push_requires_matching_head_commit tests/test_execution.py::test_execute_pr_merge_refuses_feature_head tests/test_execution.py::test_execute_passes_expected_tree_into_run_tests -q --tb=short --basetemp .test-tools/enum-pytest-temp",
+    "environment": "TEMP/TMP=.test-tools/enum-system-temp; Git core.hooksPath=NUL for subprocesses"
+  },
+  "ruff": {
+    "check": "passed",
+    "format_check": "passed",
+    "scope": [
+      "src/engineering_ci/plan_contract.py",
+      "src/engineering_ci/execution.py",
+      "tests/test_plan_contract.py",
+      "tests/test_selection.py"
+    ]
+  },
+  "native_cases": {
+    "supported-control": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-enums/supported-control.json --source .artifacts/issue86-enums/source --output .artifacts/issue86-enums/supported-control-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "passed",
+        "exit_code": 0,
+        "reason": null,
+        "tests": {
+          "exit_code": 0,
+          "status": "passed"
+        }
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": false,
+        "scope": "marker presence only"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "supported-control-plan.json",
+      "report": "supported-control-report.json"
+    },
+    "unknown-scope-status": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-enums/unknown-scope-status.json --source .artifacts/issue86-enums/source --output .artifacts/issue86-enums/unknown-scope-status-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "check_scope_status_unsupported",
+        "tests": {
+          "status": "not_executed"
+        }
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "unknown-scope-status-plan.json",
+      "report": "unknown-scope-status-report.json"
+    },
+    "unknown-snapshot": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-enums/unknown-snapshot.json --source .artifacts/issue86-enums/source --output .artifacts/issue86-enums/unknown-snapshot-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "git_snapshot_unsupported",
+        "tests": {
+          "status": "not_executed"
+        }
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "unknown-snapshot-plan.json",
+      "report": "unknown-snapshot-report.json"
+    }
+  },
+  "control_source": {
+    "archive": "inputs/enum-source.tar.gz",
+    "file_sha256": {
+      "ci-selection.toml": "26e004a663a621b8611c4feeb73620b474552fba588f0d6f337e77fff608a7f3",
+      "pyproject.toml": "39e8c435381f1bead3aa1057f740b3d94c9d65f4b5e083dabeaea8df49b77e67",
+      "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tests/test_controlled.py": "b7a9b9c0b787cac8f0918acfe14796ce2048d3a74a2d99d2f1de9aa74d90a7bd",
+      "uv.lock": "e14036b61c43102a4dd751ccbba0bee81c585dbbda9f9f4b9965dd56f386406e"
+    },
+    "content_id": "86221ae14732067451ec07168a96a7fcda3474ea0b010578f82588c80a352d50",
+    "lockfile": "Native uv lock --offline, no dependencies installed; explicit worktree cache after sandbox default-cache permission refusal"
+  },
+  "scope": "Only two enum gaps and supported control; prior type refusal, binding, ODB/Host-write/Origin evidence reused; remaining #86 stays open",
+  "artifact_sha256": {
+    "enum-native-cli.json": "7eb158616823097bf339ab1b6a381ab6bb9790d6f8d83828c5d8ef5c1e8b57f0",
+    "inputs/enum-source.tar.gz": "44a34d59e325c40bd64af51fd81bad92ddc6fbe87fcb6ede03a7e7b634fd631d",
+    "supported-control-plan.json": "0d0ca6b019f463cd65b64e9edaae7bfbacee0df741766b1d006b4c853987a118",
+    "supported-control-report.json": "2745dedd32153e674daaa090251cca56113291364979fbe9f5dbd5b5227ad0c3",
+    "unknown-scope-status-plan.json": "1baf49dfb9780c882b897d2ec96e72753d621d466527ac7301ef50833fea885d",
+    "unknown-scope-status-report.json": "765862c2d75b8766002639895fde9a7c64b76e34a7a745756a458d57ce65349d",
+    "unknown-snapshot-plan.json": "5fc47c63765954072d44465dfa4260940e65bc9dd82ee3fa47cdd3b069f0a0cb",
+    "unknown-snapshot-report.json": "caad17da5cf4a91b81e52a5c327def6f31fd0004b9e52469d35de7b05e1ba93b"
+  }
+}

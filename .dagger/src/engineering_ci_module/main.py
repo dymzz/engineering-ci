@@ -202,15 +202,22 @@ class EngineeringCi:
         import copy
         import tempfile
 
-        from engineering_ci import execution, selection
+        from engineering_ci import execution, plan_contract, selection
 
         raw = await plan.contents()
         try:
             value = json.loads(raw)
         except ValueError:
-            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
-        if value.get("kind") != selection.PLAN_KIND:
-            return json.dumps({"status": "not_executed", "reason": "plan_invalid"})
+            return json.dumps(
+                execution.plan_rejection(execution.ExecutionError("plan_invalid"))
+            )
+        try:
+            execution.validate_plan(value)
+        except execution.ExecutionError as error:
+            return json.dumps(execution.plan_rejection(error))
+        declaration_consistent = (
+            True if value["schema_version"] == plan_contract.PLAN_VERSION else None
+        )
         chosen = value.get("selection") or {}
         targets = chosen.get("tests") or []
         framework = chosen.get("framework", "unittest")
@@ -244,6 +251,7 @@ class EngineeringCi:
         input_closure_verified = "not_requested"
         with tempfile.TemporaryDirectory() as directory:
             await source.export(directory)
+            exported_content_id = selection.directory_content_id(directory)
             if source_tree_id and execution_tree:
                 source_digest = selection.directory_content_id(directory)
                 tree_verified = source_digest == source_tree_id
@@ -253,6 +261,8 @@ class EngineeringCi:
                         {
                             "kind": execution.REPORT_KIND,
                             "schema_version": execution.SCHEMA_VERSION,
+                            "plan_declaration_consistent": declaration_consistent,
+                            "source_binding_verified": "unknown",
                             "status": "not_executed",
                             "reason": "source_tree_mismatch",
                             "exit_code": 4,
@@ -270,6 +280,13 @@ class EngineeringCi:
             report = {
                 "kind": execution.REPORT_KIND,
                 "schema_version": execution.SCHEMA_VERSION,
+                "dependency_contract": value.get("dependency_contract"),
+                "plan_declaration_consistent": declaration_consistent,
+                # Preserved metadata/export identity is not a verified #66
+                # Source/Prerequisite receipt or actual-config binding.
+                "source_binding_verified": "unknown",
+                "plan": {"generator": value.get("generator"), "git": git},
+                "execution_context": "dagger_export",
                 "status": "passed",
                 "exit_code": 0,
                 "targets": targets,
@@ -287,6 +304,12 @@ class EngineeringCi:
                 "tests": {"status": "not_executed", "exit_code": 3},
                 "checks": [],
                 "prerequisites": [],
+                "source_handoff": {
+                    "original_git": git,
+                    "exported_content_id": exported_content_id,
+                    "host_context": "dagger_export",
+                    "original_git_snapshot_preserved": True,
+                },
             }
             if targets:
                 container = self._uv_container(source, python_version)
@@ -335,7 +358,9 @@ class EngineeringCi:
                 check_plan["selection"] = dict(check_plan["selection"])
                 check_plan["selection"]["tests"] = []
                 check_plan["git"] = dict(check_plan.get("git") or {})
-                # Exported Directory has no .git; identity already proven via source_tree_id.
+                # This is only the Host adapter's filesystem view. Preserve the
+                # original Git identity in source_handoff, and do not claim an
+                # exported Directory has the original ODB or verified full Tree.
                 check_plan["git"]["execution_tree"] = None
                 check_plan["git"]["index_tree"] = None
                 check_plan["git"]["content_binding"] = None
@@ -357,7 +382,9 @@ class EngineeringCi:
                     if name not in weaver_checks
                 ]
                 host = (
-                    execution.execute(check_plan, root=directory)
+                    execution.execute(
+                        check_plan, root=directory, execution_context="dagger_export"
+                    )
                     if check_plan["check_scope"] or prerequisites
                     else {
                         "status": "passed",
@@ -368,6 +395,26 @@ class EngineeringCi:
                 )
                 report["checks"] = host.get("checks") or []
                 report["prerequisites"] = host.get("prerequisites") or []
+                after_host = selection.directory_content_id(directory)
+                report["source_handoff"]["after_host_content_id"] = after_host
+                if after_host != exported_content_id:
+                    report.update(
+                        status="not_executed",
+                        reason="exported_source_changed",
+                        exit_code=4,
+                        tree_verified=False,
+                        source_tree_verified="failed_after_host_action",
+                    )
+                    report["source_handoff"]["generated_outputs_delivered"] = False
+                    report["checks"].extend(
+                        {
+                            "name": item["name"],
+                            "status": "not_executed",
+                            "reason": "exported_source_changed",
+                        }
+                        for item in selected_weaver
+                    )
+                    return json.dumps(report, sort_keys=True)
                 if report["status"] == "passed":
                     report["status"] = host.get("status", "blocked")
                     report["reason"] = host.get("reason")

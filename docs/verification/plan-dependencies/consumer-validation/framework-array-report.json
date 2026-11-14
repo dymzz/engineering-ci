@@ -1,0 +1,1 @@
+{"kind": "engineering-ci-execution-report", "schema_version": 1, "status": "not_executed", "reason": "framework_invalid", "exit_code": 2, "tests": {"status": "not_executed"}, "checks": [], "prerequisites": [], "plan_declaration_consistent": false, "source_binding_verified": "unknown", "trusted": false}

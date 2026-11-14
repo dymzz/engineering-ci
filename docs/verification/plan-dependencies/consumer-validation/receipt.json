@@ -1,0 +1,270 @@
+{
+  "review": "https://github.com/dymzz/engineering-ci/pull/88#pullrequestreview-5872984551",
+  "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+  "implementation_git_blob_sha256": {
+    "src/engineering_ci/plan_contract.py": "484df2a536c42c6eb755829711593d12f6bb204ba880c5cdaaef9243c2f915eb",
+    "src/engineering_ci/execution.py": "e5ee172bdafdab57d7881fe91b50b1fb8ccd644c9fbfd673f595b19c3d337d0a",
+    ".dagger/src/engineering_ci_module/main.py": "c9736038818622ed51e1063bbe28c0e4227aa58d0b73257e99a836d27a287666",
+    "tests/test_plan_contract.py": "c79eb877a6add91f99246c8646c05013baac749b2f3997752bc8fab20590ff6d"
+  },
+  "scope": "Focused P1-1/P1-2 regression; reuse the earlier raw ODB/Host-write/CI evidence without rerunning those tools",
+  "host_regression": {
+    "validator_suite": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/test_plan_contract.py -q --tb=short --basetemp .test-tools/review-pytest-temp",
+      "passed": 70
+    },
+    "selector_execution": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/test_selection.py tests/test_execution.py -q --tb=short -k 'not post_completion and not terminal and not closure' --basetemp .test-tools/review-host-temp",
+      "initial_passed": 67,
+      "existing_skipped": 1,
+      "deselected": 3,
+      "initial_environment_failures": [
+        "test_plan_emits_content_binding_and_source_tree_id",
+        "test_directory_content_id_matches_tree_content_id",
+        "test_directory_content_id_detects_tampering"
+      ],
+      "failure_diagnostic": "PermissionError: WinError 5 creating/cleaning the sandbox system temporary directory; no Plan assertion failure",
+      "targeted_retry_passed": 3,
+      "targeted_retry_change": "TEMP/TMP set to .test-tools/review-system-temp inside this worktree; implementation unchanged"
+    },
+    "final_distinct_passed": 140,
+    "existing_skipped": 1,
+    "deselected": 3,
+    "git_hooks": "disabled for Git subprocesses",
+    "new_test_dependencies": []
+  },
+  "ruff": {
+    "check": "passed",
+    "format_check": "passed",
+    "scope": [
+      "src/engineering_ci/plan_contract.py",
+      "src/engineering_ci/execution.py",
+      ".dagger/src/engineering_ci_module/main.py",
+      "tests/test_plan_contract.py"
+    ]
+  },
+  "native_cases": {
+    "framework-array": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/framework-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-array-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "framework_invalid",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": false,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "framework-array-plan.json",
+      "report": "framework-array-report.json"
+    },
+    "framework-object": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/framework-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-object-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "framework_invalid",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "framework-object-plan.json",
+      "report": "framework-object-report.json"
+    },
+    "action-type-array": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/action-type-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-array-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "dependency_action_unsupported",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "action-type-array-plan.json",
+      "report": "action-type-array-report.json"
+    },
+    "action-type-object": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/action-type-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-object-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "dependency_action_unsupported",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "action-type-object-plan.json",
+      "report": "action-type-object-report.json"
+    },
+    "check-scope-object": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-object-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "check_scope_invalid",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "check-scope-object-plan.json",
+      "report": "check-scope-object-report.json"
+    },
+    "check-scope-entry": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-entry.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-entry-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "check_scope_invalid",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "check-scope-entry-plan.json",
+      "report": "check-scope-entry-report.json"
+    },
+    "check-scope-status": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-status.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-status-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "not_executed",
+        "exit_code": 2,
+        "reason": "check_scope_invalid",
+        "plan_declaration_consistent": false,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "check-scope-status-plan.json",
+      "report": "check-scope-status-report.json"
+    },
+    "config-drift": {
+      "api_invocation": {
+        "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/config-drift.json --source .artifacts/issue86-review/source-drift --output .artifacts/issue86-review/config-drift-result.json",
+        "cli_exit_code": 0
+      },
+      "returned_result": {
+        "status": "passed",
+        "exit_code": 0,
+        "reason": null,
+        "plan_declaration_consistent": true,
+        "source_binding_verified": "unknown"
+      },
+      "cache_observation": {
+        "terminal_contains_cached_marker": true,
+        "scope": "marker presence only; no inferred tool execution count"
+      },
+      "origin_execution": {
+        "attributed": false,
+        "fresh_tool_execution_claimed": false,
+        "owner": "#87"
+      },
+      "plan": "config-drift-plan.json",
+      "report": "config-drift-report.json"
+    }
+  },
+  "source_drift": {
+    "plan_config_sha256": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
+    "actual_config_sha256": "9ab8faaa57f0d3c6f0b92ee11396b034a7c566e07a5f9d6cbf0a5cd8243dda56",
+    "outcome": "Declaration self-consistency only; actual binding remains unknown, not verified or trusted",
+    "remaining_B_requirement": "Consume #66 verified Source/Prerequisite handoff; verify actual config/snapshot/consumer bytes and refuse this drift before claiming binding"
+  },
+  "strict_consumer_handoff": "B must propagate Report status/exit_code; API exit 0 with refused Report must fail the actual strict consumer. Not implemented by this read-only API patch.",
+  "worktree_warning": "Retain original diagnostic; root cause investigation deferred to real ODB handoff, no Git/Dagger compatibility change",
+  "artifact_sha256": {
+    "action-type-array-plan.json": "f4454c3dc379ff96a1b89c03b7c342b6ed54627961493bbb689942586fa2239f",
+    "action-type-array-report.json": "d438be0974cf706c68e9389d5639e5fd8c12dc5801a485ab139d12e41502e4a0",
+    "action-type-object-plan.json": "11f56910442c164e08f047641fbc4c0d69efbba2b4cea7209309e546e396c9b2",
+    "action-type-object-report.json": "d438be0974cf706c68e9389d5639e5fd8c12dc5801a485ab139d12e41502e4a0",
+    "check-scope-entry-plan.json": "6c3e7aacae3e70ad593151b56f3a975ffacc63712d0655812cf2bd986f3b57ac",
+    "check-scope-entry-report.json": "b596a6e8e9cbf7b5196d1731ff5453c19b8ff4181ad3762ef44b0ff6f7a627b0",
+    "check-scope-object-plan.json": "791352e7b9f4dadb19118a12b43f40166716a74cbfd0305786fec6720ebd3b99",
+    "check-scope-object-report.json": "b596a6e8e9cbf7b5196d1731ff5453c19b8ff4181ad3762ef44b0ff6f7a627b0",
+    "check-scope-status-plan.json": "04946effd77fc859377b1211686f220671d198ac7911f5398014c669eb67ec9c",
+    "check-scope-status-report.json": "b596a6e8e9cbf7b5196d1731ff5453c19b8ff4181ad3762ef44b0ff6f7a627b0",
+    "config-drift-plan.json": "d69d8c8c20d0f19bd2d9db4996f99ff723bd33b152e164690b34019e4b461fb2",
+    "config-drift-report.json": "41ba3933edb8575a5d4ffcf3a8ebfd38c2dd403443014536d4bbb54f8da9b54b",
+    "framework-array-plan.json": "2f43b691edd1e2abc3d507ef9265e03e69e8aebab989a9272c378880de2b7800",
+    "framework-array-report.json": "7362d51c062dffe63c9bde3c4ab341a9345a04217fac197d014cddcf1f579fc2",
+    "framework-object-plan.json": "fca2e096472c4cf071ef5c83a7144e5e36eafaf601d32799e54522973f332182",
+    "framework-object-report.json": "7362d51c062dffe63c9bde3c4ab341a9345a04217fac197d014cddcf1f579fc2",
+    "inputs/source/ci-selection.toml": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
+    "inputs/source-drift/ci-selection.toml": "9ab8faaa57f0d3c6f0b92ee11396b034a7c566e07a5f9d6cbf0a5cd8243dda56",
+    "native-cli.json": "4a511cb80b33b88cd4bff3c107bee05b4ebcc2f8c84bd7c359946de2e46df9b6",
+    "README.md": "d54ac8307996b42f60b3c492923be46e9be30bff8d7df9a0247aebadaa40d905"
+  }
+}

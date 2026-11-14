@@ -214,9 +214,17 @@ def _bounded(value):
 
 
 def _result(
-    name, status, *, exit_code=None, reason=None, stdout="", stderr="", findings=()
+    name,
+    status,
+    *,
+    exit_code=None,
+    reason=None,
+    stdout="",
+    stderr="",
+    findings=(),
+    executable=None,
 ):
-    return {
+    result = {
         "name": name,
         "status": status,
         "exit_code": exit_code,
@@ -225,6 +233,9 @@ def _result(
         "stderr": _bounded(stderr),
         "findings": list(findings),
     }
+    if executable is not None:
+        result["executable"] = str(executable)
+    return result
 
 
 def _pure_reexport(content):
@@ -257,8 +268,15 @@ def _tool(
     finding_reason=None,
 ):
     result = runner(argv, root, data)
+    executable = str(argv[0])
     if result.returncode == 0:
-        return _result(name, "passed", exit_code=0, stdout=result.stdout)
+        return _result(
+            name,
+            "passed",
+            exit_code=0,
+            stdout=result.stdout,
+            executable=executable,
+        )
     if result.returncode in advisory:
         return _result(
             name,
@@ -267,6 +285,7 @@ def _tool(
             reason=finding_reason or failure_reason,
             stdout=result.stdout,
             stderr=result.stderr,
+            executable=executable,
         )
     if result.returncode == 127:
         return _result(
@@ -276,6 +295,7 @@ def _tool(
             reason="tool_unavailable",
             stdout=result.stdout,
             stderr=result.stderr,
+            executable=executable,
         )
     return _result(
         name,
@@ -284,6 +304,7 @@ def _tool(
         reason=failure_reason,
         stdout=result.stdout,
         stderr=result.stderr,
+        executable=executable,
     )
 
 
@@ -305,7 +326,7 @@ def _changed_documents(changed, config):
 def _whitespace(changes, root, runner):
     result = runner(["git", "diff", "--check", changes.base_commit], root)
     if result.returncode == 0:
-        return _result("whitespace", "passed", exit_code=0)
+        return _result("whitespace", "passed", exit_code=0, executable="git")
     return _result(
         "whitespace",
         "failed",
@@ -313,6 +334,7 @@ def _whitespace(changes, root, runner):
         reason="whitespace_errors",
         stdout=result.stdout,
         stderr=result.stderr,
+        executable="git",
     )
 
 
@@ -358,7 +380,7 @@ def _forwarding(paths, changes, root, runner, config):
     return _result("forwarding", "passed")
 
 
-def _docs(paths, tracked, changes, root, runner, config, full):
+def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
     changed_docs = _changed_documents(set(paths), config)
     removed = any(not (root / path).exists() for path in paths)
     if not (full or changed_docs or removed):
@@ -366,13 +388,23 @@ def _docs(paths, tracked, changes, root, runner, config, full):
     documents = _active_documents(root, tracked, set(paths), config)
     targets = documents if (full or removed) else documents & changed_docs
     if not targets:
+        if not inventory_ok:
+            # An unknown/failed tracked-file set is not proof that no document
+            # is applicable; the check did not start and must not become a
+            # clean not_applicable verdict.
+            return {
+                **_result("docs", "failed", reason="git_inventory_failed"),
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
         return _result("docs", "not_applicable", reason="no_applicable_documents")
+    # Lychee requires explicit inputs; passing the document set as stdin is
+    # not an accepted invocation and fails before any link is checked.
     return _tool(
         "docs",
-        [config.lychee.executable, *config.lychee.arguments],
+        [config.lychee.executable, *config.lychee.arguments, *sorted(targets)],
         root,
         runner,
-        data="\n".join(sorted(targets)) + "\n",
         failure_reason="lychee_findings",
     )
 
@@ -401,7 +433,13 @@ def _tach(paths, root, runner, config, code_changed):
     if not code_changed:
         return _result("tach", "not_applicable", reason="no_code_changes")
     if not (root / config.tach.path).is_file():
-        return _result("tach", "failed", reason="tach_config_missing")
+        # Tool has not started: preserve the preparation failure separately
+        # from a native Tach execution verdict.
+        return {
+            **_result("tach", "failed", reason="tach_config_missing"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
     return _tool(
         "tach",
         [config.tach.executable, "check"],
@@ -436,11 +474,22 @@ def run(changes, config, *, root, runner=_run, full=False):
         ]
         return report
     tracked_result = runner(["git", "ls-files", "-z"], root)
+    # The tracked-file inventory is a real native input step of the docs check,
+    # not a summary: keep its own exit and bounded output for the Check contract.
+    report["inventory"] = {
+        "tool": "git",
+        "access": "ls-files",
+        "argv": ["git", "ls-files", "-z"],
+        "exit_code": tracked_result.returncode,
+        "stdout": _bounded(tracked_result.stdout),
+        "stderr": _bounded(tracked_result.stderr),
+    }
     tracked = (
         {path for path in tracked_result.stdout.split("\0") if path}
         if tracked_result.returncode == 0
         else set()
     )
+    inventory_ok = tracked_result.returncode == 0
     code_changed = full or any(
         path.startswith(("src/", "scripts/", "tests/"))
         or path in {"tach.toml", "pyproject.toml"}
@@ -453,7 +502,18 @@ def run(changes, config, *, root, runner=_run, full=False):
         elif name == "forwarding":
             results.append(_forwarding(paths, changes, root, runner, config))
         elif name == "docs":
-            results.append(_docs(paths, tracked, changes, root, runner, config, full))
+            results.append(
+                _docs(
+                    paths,
+                    tracked,
+                    changes,
+                    root,
+                    runner,
+                    config,
+                    full,
+                    inventory_ok=inventory_ok,
+                )
+            )
         elif name == "vulture":
             results.append(_vulture(root, runner, config, code_changed))
         elif name == "tach":

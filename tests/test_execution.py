@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -204,6 +205,18 @@ def test_execute_runs_selected_docs_check_without_tests(repo):
     assert report["tests"]["status"] == "not_executed"
     assert report["checks"][0]["name"] == "docs"
     assert report["checks"][0]["status"] == "passed"
+    assert report["checks"][0]["check_id"] == "eci/hygiene/docs"
+    assert report["checks"][0]["check_version"] == 2
+    assert report["checks"][0]["result_id"].startswith("sha256:")
+    assert report["checks"][0]["native_result"]["check"]["check_id"] == (
+        "eci/hygiene/docs"
+    )
+    assert report["check_contract"] == {
+        "kind": "engineering-ci-check-contract",
+        "schema_version": 2,
+    }
+    assert report["checks"][0]["source_ref"]["snapshot"] == "worktree"
+    assert report["checks"][0]["native_result"]["check"]["rule_ref"]["sha256"]
     tools = [call[0] for call in fake.calls if call[0][0] != "git"]
     assert len(tools) == 1
     assert Path(tools[0][0]).stem == "lychee"
@@ -222,6 +235,153 @@ def test_execute_propagates_docs_failure_without_tests(repo):
     assert report["reason"] == "checks_failed"
     assert report["exit_code"] == 1
     assert report["checks"][0]["reason"] == "lychee_findings"
+
+
+def forwarding_plan(base, path="src/pkg/sub.py"):
+    return plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": [path],
+        },
+        check_scope=[{"name": "forwarding", "status": "selected"}],
+    )
+
+
+def test_forwarding_internal_result_is_valid_without_process_exit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "forwarding"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["native_exit_code"] is None
+    assert check["native_result"]["status"] == "advisory"
+    assert check["result_id"]
+
+
+def test_forwarding_parse_failure_stays_failed_and_valid(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("def broken(:\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "failed"
+    assert check["reason"] == "module_unparsable"
+    assert check["check_contract"]["status"] == "valid"
+    assert check["native_result"]["status"] == "failed"
+
+
+def test_config_failure_is_not_started_and_has_no_native_result(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "missing-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
+def test_tach_missing_config_is_pre_execution_failure(repo):
+    path, base = repo
+    (path / "tach.toml").unlink()
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["name"] == "tach"
+    assert check["status"] == "failed"
+    assert check["reason"] == "tach_config_missing"
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert report["status"] == "failed"
+
+
+def test_invalid_contract_blocks_without_erasing_native_execution(repo, monkeypatch):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+
+    def bad_contract(*args, **kwargs):
+        raise execution.check_contract.CheckContractError("fixture_invalid_contract")
+
+    monkeypatch.setattr(execution.check_contract, "native_result", bad_contract)
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"  # Real native execution fact is retained
+    assert check["check_contract"]["status"] == "fixture_invalid_contract"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+
+
+def test_missing_check_identity_preserves_successful_native_execution(
+    repo, monkeypatch
+):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    original = execution.check_contract.definition_for
+
+    def missing_docs_identity(name):
+        return None if name == "docs" else original(name)
+
+    monkeypatch.setattr(
+        execution.check_contract, "definition_for", missing_docs_identity
+    )
+    runner = FakeRunner()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
+    )
+    check = report["checks"][0]
+    assert check["status"] == "passed"
+    assert check["reason"] == "check_identity_missing"
+    assert check["check_contract"]["status"] == "identity_missing"
+    assert "native_result" not in check
+    assert report["status"] == "blocked"
+    assert report["reason"] == "check_contract_invalid"
+    assert any(Path(args[0]).stem == "lychee" for args, _ in runner.calls)
 
 
 def test_execute_blocks_when_required_checks_are_not_executed(repo):
@@ -280,6 +440,37 @@ def test_execute_runs_command_prerequisite(repo):
     assert report["status"] == "passed"
     assert report["prerequisites"][0]["status"] == "passed"
     assert report["prerequisites"][0]["exit_code"] == 0
+
+
+def test_export_without_original_odb_is_not_a_missing_commit(repo):
+    path, base = repo
+    value = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {"type": "git_commit_present", "commit": base}
+    }
+    assert execution.execute(value, root=path)["status"] == "passed"
+    exported = path.parent / "exported"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git"))
+    result = execution.execute(value, root=exported)
+    assert result["status"] == "blocked" and result["exit_code"] == 5
+    assert result["tests"]["status"] == "passed"
+    assert result["prerequisites"][0]["reason"] == "git_odb_unavailable_or_unbound"
+
+
+def test_dagger_export_context_does_not_probe_any_host_git_odb(repo, monkeypatch):
+    path, base = repo
+    value = plan([], git={"snapshot": "worktree"})
+    value["selection"]["prerequisites"] = ["identity_commit"]
+    value["prerequisite_actions"] = {
+        "identity_commit": {"type": "git_commit_present", "commit": base}
+    }
+    calls = []
+    monkeypatch.setattr(selection, "_git", lambda *a: calls.append(a))
+    result = execution.execute(value, root=path, execution_context="dagger_export")
+    assert calls == []
+    assert result["prerequisites"][0]["result_origin"] == "dagger_export_boundary"
+    assert result["prerequisites"][0]["status"] == "not_executed"
 
 
 def test_execute_runs_selected_source_check(repo):
@@ -426,6 +617,282 @@ def test_execute_refuses_stale_index_tree(repo):
     assert report["reason"] == "index_tree_mismatch"
 
 
+def _external_git(path, index, *args):
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    return subprocess.run(
+        ["git", *args],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _external_tree(path, index):
+    return _external_git(path, index, "write-tree").strip()
+
+
+def test_execute_uses_plan_index_file_when_worktree_matches(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert "checks" in report, (report.get("status"), report.get("reason"))
+    assert report["checks"][0]["check_contract"]["status"] == "valid"
+
+
+def test_execute_rejects_conflicting_index_tree_identities(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    external_tree = _external_tree(path, external)
+    default_tree = run(path, "write-tree").strip()
+    assert external_tree != default_tree
+    for execution_tree, index_tree in (
+        (external_tree, default_tree),
+        (default_tree, external_tree),
+    ):
+        fake = FakeRunner()
+        report = execution.execute(
+            plan(
+                [],
+                git={
+                    "base_ref": base,
+                    "head_ref": "HEAD",
+                    "base_commit": base,
+                    "head_commit": base,
+                    "snapshot": "index",
+                    "execution_tree": execution_tree,
+                    "index_tree": index_tree,
+                    "index_file": str(external),
+                    "changed_paths": ["docs/new.md"],
+                },
+                check_scope=[{"name": "docs", "status": "selected"}],
+            ),
+            root=path,
+            hygiene_config=path / "ci-hygiene.toml",
+            runner=fake,
+        )
+        assert report["status"] == "not_executed"
+        assert report["reason"] == "index_source_identity_mismatch"
+        assert not fake.calls
+
+
+def test_execute_runs_tests_with_single_execution_tree(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "execution_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] == "passed"
+    assert report["tests"]["exit_code"] == 0
+
+
+def test_execute_runs_tests_with_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] in {"passed", "failed"}
+    assert report["tests"].get("exit_code") != 4
+
+
+def test_execute_keeps_native_pytest_exit_four(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests/does_not_exist.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] != "index_source_refused"
+    assert report["tests"]["status"] == "failed"
+    assert report["tests"]["exit_code"] == 4
+    assert report["native_stderr"]
+
+
+def test_run_tests_reports_source_refusal_separately(repo):
+    path, _ = repo
+    capture = {}
+    code = selection.run_tests(
+        ["tests.test_pkg"],
+        root=path,
+        framework="unittest",
+        index_tree="0" * 40,
+        capture=capture,
+    )
+    assert code == 4
+    assert capture["source_refusal"] == "index_tree_mismatch"
+
+
+def test_execute_rejects_changed_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    expected = _external_tree(path, external)
+    (path / "docs/new.md").write_text("# changed index\n", encoding="utf-8")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": expected,
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_tree_mismatch"
+
+
+def test_execute_refuses_index_without_tree(repo):
+    path, base = repo
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_tree_missing"
+
+
+def test_execute_refuses_index_when_worktree_differs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_worktree_mismatch"
+
+
+def test_execute_refuses_index_with_untracked_inputs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "docs/untracked.md").write_text("# untracked\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_untracked_inputs"
+
+
 def test_execute_refuses_worktree_content_drift(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -568,3 +1035,162 @@ def test_cli_writes_json_and_exit(repo, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "engineering-ci-execution-report"
     assert payload["status"] == "passed"
+
+
+def test_docs_invokes_lychee_with_explicit_targets(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    fake = FakeRunner()
+    execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fake,
+    )
+    calls = [call for call in fake.calls if Path(call[0][0]).stem == "lychee"]
+    assert len(calls) == 1
+    argv, data = calls[0]
+    # Real Lychee rejects an invocation without explicit inputs; the document
+    # set must be passed as arguments, not as stdin data.
+    assert data is None
+    assert argv[-1].endswith("docs/guide.md")
+
+
+def test_docs_emits_inventory_and_links_native_results(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert report["status"] == "passed"
+    results = check["native_results"]
+    assert [item["tool"]["access_id"] for item in results] == [
+        "git/ls-files",
+        "lychee/docs",
+    ]
+    inventory, links = results
+    assert inventory["tool"]["executable"] == "git"
+    assert Path(links["tool"]["executable"]).stem == "lychee"
+    assert check["native_result"]["result_id"] == links["result_id"]
+    assert links["input_refs"][0] == {
+        "kind": "check_result",
+        "result_id": inventory["result_id"],
+        "path": "git/ls-files",
+    }
+    assert links["input_refs"][1]["kind"] == "config"
+    satisfaction = check["native_satisfaction"]
+    assert satisfaction["status"] == "satisfied"
+    assert satisfaction["required"] is False
+    assert satisfaction["trusted"] is False
+    assert satisfaction["consumer_scope"] == "supplied_results_only"
+
+
+def test_tool_check_emits_its_declared_entry(repo):
+    path, base = repo
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert len(check["native_results"]) == 1
+    native = check["native_results"][0]
+    assert native["tool"]["access_id"] == "tach/check"
+    assert Path(native["tool"]["executable"]).stem == "tach"
+    assert check["native_satisfaction"]["status"] == "satisfied"
+
+
+def test_unsatisfied_native_satisfaction_blocks_the_report(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    fake = FakeRunner()
+
+    def failing_inventory(argv, root, data=None):
+        # The inventory step fails while the link scan still runs and passes:
+        # without the git input the Check cannot be considered satisfied.
+        if list(argv)[:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(argv, 1, "", "inventory failed")
+        return fake(argv, root, data)
+
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=failing_inventory,
+    )
+    check = report["checks"][0]
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert report["status"] == "blocked"
+    assert report["reason"] == "native_satisfaction_incomplete"
+
+
+def test_failed_inventory_cannot_become_a_clean_not_applicable(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    fake = FakeRunner()
+
+    def failing_inventory(argv, root, data=None):
+        if list(argv)[:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(argv, 1, "", "inventory failed")
+        return fake(argv, root, data)
+
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=failing_inventory,
+    )
+    check = report["checks"][0]
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert check["status"] == "failed"
+    assert check["reason"] == "git_inventory_failed"
+    assert check["execution_started"] is False
+    assert check["inventory"]["exit_code"] == 1
+    # The inventory actually ran: its native failure must survive even though
+    # the link scan never started, and no Lychee result may be fabricated.
+    results = check["native_results"]
+    assert len(results) == 1
+    inventory = results[0]
+    assert inventory["tool"]["access_id"] == "git/ls-files"
+    assert inventory["status"] == "failed"
+    assert inventory["native_exit_code"] == 1
+    assert "inventory failed" in inventory["evidence"]["stderr"]
+    assert check["native_result"]["result_id"] == inventory["result_id"]
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert check["check_contract"]["status"] == "valid"
+
+
+def test_genuine_no_documents_does_not_become_a_failure(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert report["status"] == "passed"
+    assert check["status"] == "not_applicable"
+    assert check["reason"] == "no_applicable_documents"
+    assert check["inventory"]["exit_code"] == 0
