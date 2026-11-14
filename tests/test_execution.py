@@ -944,6 +944,48 @@ def test_execute_push_requires_matching_head_commit(repo):
     assert report["reason"] in {"tree_mismatch", "head_commit_mismatch"}
 
 
+def test_execute_commit_refuses_dirty_worktree(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 77\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "worktree_tree_mismatch"
+
+
+def test_execute_commit_refuses_untracked_inputs(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    (path / "docs/untracked.md").write_text("# untracked\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "worktree_untracked_inputs"
+
+
 def test_execute_pr_merge_refuses_feature_head(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")

@@ -98,6 +98,22 @@ def _sources_config_path(plan, root, sources_config):
     )
 
 
+def _worktree_tree_refusal(root, tree):
+    if not (Path(root) / ".git").exists():
+        return None
+    diff = selection._git(root, "diff-index", "--quiet", tree, "--")
+    if diff.returncode == 1:
+        return "worktree_tree_mismatch"
+    if diff.returncode != 0:
+        return "worktree_git_query_failed"
+    untracked = selection._git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked.returncode != 0:
+        return "worktree_git_query_failed"
+    if untracked.stdout:
+        return "worktree_untracked_inputs"
+    return None
+
+
 def _verify_execution_binding(plan, root):
     """Return (ok, reason, expected_tree). ok False means refuse execution."""
     git = plan["git"]
@@ -146,6 +162,10 @@ def _verify_execution_binding(plan, root):
         actual_head = selection._resolve(root, "HEAD")
         if actual_head != head_commit:
             return False, "head_commit_mismatch", expected_tree
+    if expected_tree and snapshot in {"commit", "push", "pr_merge"}:
+        refusal = _worktree_tree_refusal(root, expected_tree)
+        if refusal:
+            return False, refusal, expected_tree
     return True, None, expected_tree
 
 
