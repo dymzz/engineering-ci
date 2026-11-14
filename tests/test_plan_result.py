@@ -804,6 +804,19 @@ def test_v2_pre_execution_pass_gates_only_dependent_dagger_consumer(
         asyncio.run(saved.enforce())
 
 
+def test_artifact_directory_id_has_unambiguous_boundaries(tmp_path):
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "a").write_bytes(b"XF\0b\0Y")
+    second = tmp_path / "second"
+    second.mkdir()
+    (second / "a").write_bytes(b"X")
+    (second / "b").write_bytes(b"Y")
+    assert host_execution.artifact_directory_id(
+        first
+    ) != host_execution.artifact_directory_id(second)
+
+
 def test_dagger_aggregate_rejects_unsatisfied_native_check(modules):
     _, collector = modules
     report = {

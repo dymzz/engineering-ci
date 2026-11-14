@@ -82,6 +82,14 @@ def _aggregate(report):
                 reason=entry.get("reason") or "data_artifact_missing",
             )
             return report
+    delivery = report.get("artifact_delivery") or {}
+    if delivery.get("status") == "blocked":
+        report.update(
+            status="blocked",
+            exit_code=5,
+            reason=delivery.get("reason") or "data_artifact_conflict",
+        )
+        return report
     report.update(status="passed", exit_code=0, reason=None)
     return report
 
@@ -550,7 +558,7 @@ async def _execute_dag(
                 )
             if kind == "report_artifacts":
                 report_block, report_blocked_by, _ = await resolve_incoming(
-                    ("report", "artifacts")
+                    ("execution_report", "artifacts")
                 )
                 if report_block is not None:
                     report["artifact_delivery"] = {
@@ -587,8 +595,13 @@ async def _execute_dag(
                 scheduled.append(
                     (("prereq", name), ensure(("prerequisite_action", name)))
                 )
-        if ("report", "artifacts") in incoming:
-            scheduled.append((("report", "artifacts"), ensure(("report_artifacts",))))
+        if ("execution_report", "artifacts") in incoming:
+            scheduled.append(
+                (
+                    ("execution_report", "artifacts"),
+                    ensure(("report_artifacts",)),
+                )
+            )
 
         outputs = await asyncio.gather(
             *(task for _, task in scheduled), return_exceptions=True

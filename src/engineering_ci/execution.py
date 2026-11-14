@@ -489,15 +489,22 @@ def artifact_directory_id(root):
     """Artifact-local Directory identity including empty directory nodes."""
     root = Path(root)
     digest = hashlib.sha256()
+    digest.update(b"eci-artifact-directory-v1\0")
     for path in sorted(
         root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
     ):
-        rel = path.relative_to(root).as_posix()
+        rel = path.relative_to(root).as_posix().encode("utf-8")
         if path.is_dir():
-            digest.update(b"D\0" + rel.encode("utf-8") + b"\0")
+            digest.update(b"D")
+            digest.update(len(rel).to_bytes(8, "big"))
+            digest.update(rel)
         elif path.is_file():
-            digest.update(b"F\0" + rel.encode("utf-8") + b"\0")
-            digest.update(path.read_bytes())
+            content = path.read_bytes()
+            digest.update(b"F")
+            digest.update(len(rel).to_bytes(8, "big"))
+            digest.update(rel)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
     return digest.hexdigest()
 
 
@@ -1294,9 +1301,9 @@ def _execute_with_dependencies(
         for item in selected:
             ensure_check(item.get("name"))
 
-        if ("report", "artifacts") in incoming:
+        if ("execution_report", "artifacts") in incoming:
             report_block, report_blocked_by, _ = resolve_incoming(
-                ("report", "artifacts")
+                ("execution_report", "artifacts")
             )
             if report_block is not None:
                 report["artifact_delivery"] = {
@@ -1425,6 +1432,9 @@ def _finalize_report(report):
         for entry in (report.get("artifact_closure") or [])
         if not entry.get("verified")
     ]
+    delivery_blocked = (report.get("artifact_delivery") or {}).get(
+        "status"
+    ) == "blocked"
     unsatisfied_native = [
         item for item in report["checks"] if _unsatisfied_native(item)
     ]
@@ -1443,6 +1453,12 @@ def _finalize_report(report):
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "check_contract_invalid"
+    elif delivery_blocked:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = (report.get("artifact_delivery") or {}).get(
+            "reason"
+        ) or "data_artifact_conflict"
     elif unsatisfied_native:
         report["status"] = "blocked"
         report["exit_code"] = 5
