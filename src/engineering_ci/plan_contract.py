@@ -58,6 +58,10 @@ def _validate_expected(expected, git):
         raise PlanError("expected_checks_schema_unsupported")
     if expected.get("status") not in {"complete", "partial", "unknown"}:
         raise PlanError("expected_status_invalid")
+    if expected.get("status") == "complete":
+        raise PlanError("expected_complete_unproven")
+    if expected.get("consumer_completeness") != "not_claimed":
+        raise PlanError("expected_consumer_completeness_unproven")
     for key in ("scope_id", "expected_set_ref"):
         value = expected.get(key)
         if not isinstance(value, str) or not re.fullmatch(
@@ -110,6 +114,15 @@ def _validate_expected(expected, git):
         not isinstance(item, str) for item in missing
     ):
         raise PlanError("expected_missing_invalid")
+    if expected.get("conflicts"):
+        raise PlanError("expected_conflicts_unresolved")
+    if not checks and (
+        expected.get("status") != "unknown"
+        or expected.get("definitions_status") != "unknown"
+    ):
+        raise PlanError("expected_status_inconsistent")
+    if missing and expected.get("definitions_status") == "requested_names_complete":
+        raise PlanError("expected_status_inconsistent")
     return expected
 
 

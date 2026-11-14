@@ -53,26 +53,29 @@ def _event_ref(changeset):
     }
 
 
-def _source_ref(changeset):
+def _source_ref(changeset, content_binding=None):
     declared = changeset.execution_tree or changeset.tree or changeset.index_tree
-    if changeset.snapshot == "worktree":
-        status = "unknown"
-    elif declared:
-        status = "identity_only"
-    else:
-        status = "unknown"
     source = {
         "snapshot": changeset.snapshot,
         "declared_target_tree": declared,
         "actual_execution_source": "worktree",
         "verified_input_scope": sorted(changeset.paths),
         "scope_kind": "changed_paths",
-        "binding_status": status,
+        "binding_status": "unknown",
     }
     if changeset.index_tree:
         source["index_tree"] = changeset.index_tree
     if changeset.head_commit:
         source["head_commit"] = changeset.head_commit
+    if (
+        isinstance(content_binding, dict)
+        and content_binding.get("digest")
+        and source["verified_input_scope"]
+    ):
+        source["content_digest"] = content_binding["digest"]
+        source["binding_status"] = "content_digest"
+    elif changeset.snapshot != "worktree" and declared:
+        source["binding_status"] = "identity_only"
     return source
 
 
@@ -111,12 +114,13 @@ def derive_expected_checks(
     consumer=None,
     profile_ref=None,
     profile_source=None,
+    content_binding=None,
 ):
     """Derive a partial Expected projection; never claims Profile completeness."""
     config_digest = _file_digest(config_path)
     selection_rule = _selection_rule_ref(config_digest)
     event_ref = _event_ref(changeset)
-    source_ref = _source_ref(changeset)
+    source_ref = _source_ref(changeset, content_binding)
     checks = []
     missing = []
     for item in check_scope:
@@ -208,24 +212,44 @@ def validate_projection(expected, git):
         raise ExpectedError(error.code) from None
     if git.get("snapshot") is not None and source.get("snapshot") != git["snapshot"]:
         raise ExpectedError("expected_source_mismatch")
-    plan_trees = {
-        value
-        for value in (
-            git.get("execution_tree"),
-            git.get("tree"),
-            git.get("index_tree"),
-        )
-        if value
-    }
+    snapshot = git.get("snapshot")
     declared = source.get("declared_target_tree")
-    if declared and plan_trees and declared not in plan_trees:
-        raise ExpectedError("expected_source_mismatch")
+    if snapshot == "index":
+        target = git.get("execution_tree") or git.get("index_tree")
+        if not target or declared != target:
+            raise ExpectedError("expected_source_mismatch")
+    elif snapshot in {"commit", "push"}:
+        target = git.get("execution_tree") or git.get("tree")
+        if target and declared != target:
+            raise ExpectedError("expected_source_mismatch")
+    elif snapshot == "pr_merge":
+        target = git.get("merge_tree") or git.get("execution_tree")
+        if target and declared != target:
+            raise ExpectedError("expected_source_mismatch")
+    elif snapshot == "worktree":
+        target = git.get("tree")
+        if target and declared != target:
+            raise ExpectedError("expected_source_mismatch")
+    content = git.get("content_binding")
+    if (
+        isinstance(content, dict)
+        and content.get("digest")
+        and source.get("content_digest") != content["digest"]
+    ):
+        raise ExpectedError("expected_content_binding_mismatch")
     event = expected.get("event_ref")
     if not isinstance(event, dict):
         raise ExpectedError("expected_event_invalid")
     for key in ("base_ref", "head_ref", "base_commit", "head_commit"):
         if event.get(key) != git.get(key):
             raise ExpectedError("expected_event_mismatch")
+    for item in checks:
+        if item.get("event_ref") != event:
+            raise ExpectedError("expected_entry_event_mismatch")
+        if item.get("source_ref") != source:
+            raise ExpectedError("expected_entry_source_mismatch")
+        if item.get("profile_ref") != expected.get("profile_ref"):
+            raise ExpectedError("expected_entry_profile_mismatch")
     expected_scope = scope_identity(
         expected.get("consumer"),
         expected.get("profile_ref"),

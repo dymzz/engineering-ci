@@ -98,6 +98,101 @@ def test_expected_public_api_cannot_forge_complete(repo):
     assert empty["definitions_status"] == "unknown"
 
 
+def refresh_expected(expected):
+    for entry in expected["checks"]:
+        entry["expected_check_ref"] = expected_checks.entry_identity(entry)
+    expected["expected_set_ref"] = expected_checks._digest(expected["checks"])
+    expected["scope_id"] = expected_checks.scope_identity(
+        expected.get("consumer"),
+        expected.get("profile_ref"),
+        expected.get("profile_source"),
+        expected.get("event_ref"),
+        expected.get("source_ref"),
+    )
+
+
+def test_expected_complete_requires_evidence(repo):
+    plan = make_plan(repo)
+    plan["expected_checks"]["status"] = "complete"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_complete_unproven"
+    plan = make_plan(repo)
+    plan["expected_checks"]["consumer_completeness"] = "complete"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_consumer_completeness_unproven"
+
+
+def test_expected_entry_must_match_parent_scope(repo):
+    cases = (
+        ("event_ref", "head_ref", "refs/heads/other", "expected_entry_event_mismatch"),
+        (
+            "profile_ref",
+            None,
+            {"name": "other", "version": "1"},
+            "expected_entry_profile_mismatch",
+        ),
+    )
+    for field, key, value, code in cases:
+        plan = make_plan(repo)
+        entry = plan["expected_checks"]["checks"][0]
+        if key is None:
+            entry[field] = value
+        else:
+            entry[field][key] = value
+        refresh_expected(plan["expected_checks"])
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(plan)
+        assert raised.value.code == code
+    plan = make_plan(repo)
+    entry = plan["expected_checks"]["checks"][0]
+    entry["source_ref"]["snapshot"] = "commit"
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_entry_source_mismatch"
+
+
+def test_expected_index_target_is_not_head_tree(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    config = selection.load_config(path / "ci-selection.toml")
+    changes = selection.changeset(path, base=base, mode="index")
+    chosen = selection.select(changes, config, root=path)
+    plan = selection.plan(
+        chosen, config=config, config_path=path / "ci-selection.toml", root=path
+    )
+    expected_checks.validate_projection(plan["expected_checks"], plan["git"])
+    tampered = json.loads(json.dumps(plan["expected_checks"]))
+    tampered["source_ref"]["declared_target_tree"] = plan["git"]["tree"]
+    for entry in tampered["checks"]:
+        entry["source_ref"]["declared_target_tree"] = plan["git"]["tree"]
+    refresh_expected(tampered)
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        expected_checks.validate_projection(tampered, plan["git"])
+    assert raised.value.code == "expected_source_mismatch"
+
+
+def test_expected_worktree_content_binding_changes_identity(repo):
+    path, _ = repo
+    (path / "docs/guide.md").write_text("# one\n", encoding="utf-8")
+    first = make_plan(repo)
+    (path / "docs/guide.md").write_text("# two\n", encoding="utf-8")
+    second = make_plan(repo)
+    assert first["expected_checks"]["source_ref"]["content_digest"]
+    assert (
+        first["expected_checks"]["expected_set_ref"]
+        != second["expected_checks"]["expected_set_ref"]
+    )
+    tampered = json.loads(json.dumps(first))
+    tampered["git"]["content_binding"]["digest"] = "0" * 64
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_content_binding_mismatch"
+
+
 def test_expected_source_and_rule_match_check_contract(repo):
     plan = make_plan(repo)
     entry = plan["expected_checks"]["checks"][0]

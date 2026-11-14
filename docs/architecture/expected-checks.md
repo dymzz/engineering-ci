@@ -65,8 +65,12 @@ no `job_refs`/scheduler activation.
 - `source_ref` uses the #52 Source proof fields (`verified_input_scope`,
   `scope_kind`, `binding_status`); this slice claims at most `identity_only` or
   `unknown`, never a full input closure.
-- `status` is only `partial` or `unknown`; the public API never fabricates
-  `complete` from arbitrary Profile strings. An empty selection is `unknown`.
+- `status` is only `partial` or `unknown`; Schema v1 rejects `complete` and
+  `consumer_completeness != not_claimed` at the public Plan validator. An empty
+  selection is `unknown`.
+- Worktree Source identity includes the existing changed-path `content_digest`;
+  same HEAD/paths but different file bytes changes Expected identity. This is
+  not a full Check input closure.
 - `policy_status=unknown`; Required/Advisory is not inferred here.
 
 ## Validation
@@ -78,6 +82,10 @@ rejects:
 - malformed `scope_id`/`expected_set_ref`/`expected_check_ref`;
 - recomputed `expected_check_ref`, `expected_set_ref`, `scope_id` mismatches;
 - duplicate expected identity;
+- Entry Event/Source/Profile inconsistent with parent scope;
+- Index target not equal to the effective Index tree (HEAD Tree is not used);
+- Worktree content digest inconsistent with Plan `git.content_binding`;
+- `complete` or unknown consumer-completeness claims without authority;
 - `job_refs`/`job_ref` in Expected;
 - source snapshot/tree or event/ref mismatch with Plan Git;
 - missing application/policy fields.
