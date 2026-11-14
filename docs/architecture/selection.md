@@ -400,7 +400,7 @@ on the provided Source computation, not #66 target-Source verification, #63
 evidence admission or #61 Required coverage. A returned Result, especially a
 cached Result, is not proof of a new tool execution in this invocation.
 
-### Native Plan result object (first #86 B delivery)
+### Native Plan result object (#86 B delivery & v2 dependency closure)
 
 `plan-execution(plan, source)` returns a `PlanExecution` with one real
 `artifacts` Directory. `report` reads its `report.json`; `enforce` checks the
@@ -408,37 +408,23 @@ Report kind/version, status, integer exit and matching `exit-code.txt`, raising
 on failed/blocked/not-executed results. `execute-plan` remains the convenience
 Report API and does not become a strict process gate.
 
-The collector resolves independent selected tests/Weaver computations
-concurrently through the existing Dagger Container/Directory APIs, retaining
-each native result. Pytest uses `_run_pytest/_pytest_bundle`, with exact Plan
-targets, native exit, stdout/stderr and JUnit; mixed module/file targets use
-`python -m pytest`. Weaver contributes its original `weaver_artifacts` `/out`
-Directory. The existing Host test-only Tach-graph/coverage prerequisite policy
-is shared before the native test branch: unsatisfied requirements block tests
-without cancelling independent Weaver computations. This is the existing
-Plan requirement, not support for new generic PASS/data edge kinds.
-Host checks and legacy prerequisite policies retain their Host
-boundary and run after native collection. A Host source write still refuses
-the old binding; already collected native results describe the immutable input
-before that action, not delivered Host-generated inputs.
+In `selection.py`, optional `[[dependency_edges]]` tables activate active edges
+for selected checks (`check_scope` non-test entries + `tests` when test targets
+exist) and emit `dependency_contract.schema_version = 2`; configurations without
+`[[dependency_edges]]` retain `schema_version = 1` (`policy_only`). Unresolved
+declared actions stay `unresolved`.
 
-After Native and Host collection, the top-level verdict is derived once from
-the retained tests/checks/prerequisites. Actual failure takes precedence over
-local prerequisite blockage; a failed independent Check yields `checks_failed`
-while the unstarted test keeps its own `not_executed` status and reason. Native
-exits, gate exits and artifacts stay in their original child results. Shared
-Source mismatch/write refusals still return through their earlier boundary;
-they are not converted into ordinary local Check aggregation.
-
-Within one composite consumer, hold the object once, retain/export its
-Directory, read its Report, then enforce that same object. A strict call that
-raises cannot simultaneously return an Artifact; retain the earlier reference
-or export before enforcement. Independent CLI calls may receive Engine-cached
-results and are not automatically one execution or one Origin. Root Check
-defaults and lightweight Host execution remain unchanged.
-
-This slice does not implement new PASS/data edge semantics, #66 receipts,
-Host-generated File/Directory materialization, historical Verdict reuse or
-Expected/Required admission. Unknown binding remains explicit. The
-[native result-sharing verification](../verification/plan-result-sharing/README.md)
-records actual scope, native failures, unchanged evidence and remaining B/D work.
+In Dagger `plan-execution`, v2 `pre_execution_pass` and `data` edges run
+concurrently before dependent consumers, while independent consumers proceed
+without waiting on unrelated producers. `command` prerequisite actions execute
+under a module-local `/scratch` directory (`execution_location =
+"dagger_module_scratch"`, `result_origin = "module_local_subprocess"`,
+`engine_cached = false`), materialize outputs into immutable Dagger Engine
+`File`/`Directory` objects via `dag.current_module().workdir`/`workdir_file`
+and `sync()`, verify consumer path conflicts/overlaps/digests, overlay them
+onto immutable consumer `Directory` inputs (`tests`, `docs` with container
+`git`/`lychee` fallback via `_exec_capture`, `weaver_*`), and publish them
+under `produced/<kind>/<name>/<rel>`. Host source writes remain refused,
+#66 receipts and #63/#61 Admission/Required decisions remain separate, and
+Container-native producer actions remain follow-up `#86 D` work. See also
+[native result-sharing verification](../verification/plan-result-sharing/README.md).

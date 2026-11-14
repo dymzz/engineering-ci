@@ -17,56 +17,162 @@ MODULE = Path(__file__).resolve().parents[1] / ".dagger/src/engineering_ci_modul
 
 
 class MemoryFile:
-    def __init__(self, contents):
-        self.text = contents
+    def __init__(self, contents=b"", *, _loader=None):
+        self._loader = _loader
+        if isinstance(contents, bytes):
+            self._data = contents
+        else:
+            self._data = contents.encode("utf-8")
+
+    @property
+    def data(self):
+        if self._loader is not None:
+            loaded = self._loader()
+            return loaded if isinstance(loaded, bytes) else loaded.encode("utf-8")
+        return self._data
+
+    @property
+    def text(self):
+        return self.data.decode("utf-8")
+
+    async def sync(self):
+        return MemoryFile(self.data)
 
     async def contents(self):
         return self.text
 
 
 class MemoryDirectory:
-    def __init__(self, files=None):
-        self.files = dict(files or {})
+    def __init__(self, files=None, *, dirs=None, _loader=None):
+        self._loader = _loader
+        raw_files = dict(files or {})
+        self.files = dict(raw_files)
+        inferred_dirs = set(dirs or ())
+        for rel in raw_files:
+            parent = Path(rel).parent
+            while parent != Path("."):
+                inferred_dirs.add(parent.as_posix())
+                parent = parent.parent
+        self.dirs = frozenset(inferred_dirs)
+
+    def _materialize(self):
+        if self._loader is not None:
+            loaded_files, loaded_dirs = self._loader()
+            return dict(loaded_files), frozenset(loaded_dirs)
+        return dict(self.files), frozenset(self.dirs)
+
+    async def sync(self):
+        loaded_files, loaded_dirs = self._materialize()
+        return MemoryDirectory(loaded_files, dirs=loaded_dirs)
 
     def with_new_file(self, path, contents):
-        return MemoryDirectory({**self.files, path: contents})
+        cur_files, cur_dirs = self._materialize()
+        return MemoryDirectory({**cur_files, path: contents}, dirs=cur_dirs)
 
     def with_file(self, path, file):
-        return MemoryDirectory({**self.files, path: file.text})
+        cur_files, cur_dirs = self._materialize()
+        return MemoryDirectory({**cur_files, path: file.data}, dirs=cur_dirs)
 
     def with_directory(self, prefix, directory):
-        return MemoryDirectory(
-            {**self.files, **{prefix + "/" + k: v for k, v in directory.files.items()}}
-        )
+        cur_files, cur_dirs = self._materialize()
+        add_files, add_dirs = directory._materialize()
+        clean_prefix = prefix.strip("/")
+        merged_files = {
+            **cur_files,
+            **{
+                f"{clean_prefix}/{k}" if clean_prefix else k: v
+                for k, v in add_files.items()
+            },
+        }
+        merged_dirs = set(cur_dirs)
+        if clean_prefix:
+            merged_dirs.add(clean_prefix)
+        for item in add_dirs:
+            merged_dirs.add(f"{clean_prefix}/{item}" if clean_prefix else item)
+        return MemoryDirectory(merged_files, dirs=merged_dirs)
 
     def file(self, path):
-        return MemoryFile(self.files[path])
+        cur_files, _ = self._materialize()
+        return MemoryFile(cur_files[path])
+
+    async def id(self):
+        cur_files, cur_dirs = self._materialize()
+        return json.dumps(
+            {
+                "files": sorted((k, repr(v)) for k, v in cur_files.items()),
+                "dirs": sorted(cur_dirs),
+            },
+            sort_keys=True,
+        )
 
     async def export(self, directory):
-        for name, value in self.files.items():
-            target = Path(directory) / name
+        cur_files, cur_dirs = self._materialize()
+        dest = Path(directory)
+        for rel_dir in sorted(cur_dirs):
+            (dest / rel_dir).mkdir(parents=True, exist_ok=True)
+        for name, value in cur_files.items():
+            target = dest / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(value, encoding="utf-8")
+            if isinstance(value, bytes):
+                target.write_bytes(value)
+            else:
+                target.write_text(value, encoding="utf-8")
 
 
 @pytest.fixture
-def modules(monkeypatch):
+def modules(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    def _resolve_workdir(path):
+        raw = str(path)
+        if not raw or Path(raw).is_absolute():
+            raise RuntimeError(f'workdir path "{raw}" escapes workdir')
+        root = Path.cwd().resolve()
+        candidate = (root / raw).resolve()
+        if not candidate.is_relative_to(root):
+            raise RuntimeError(f'workdir path "{raw}" escapes workdir')
+        return candidate
+
+    def workdir_file(path):
+        target = _resolve_workdir(path)
+
+        def load():
+            if not target.is_file():
+                raise FileNotFoundError(target)
+            return target.read_bytes()
+
+        return MemoryFile(_loader=load)
+
+    def workdir(path):
+        target = _resolve_workdir(path)
+
+        def load():
+            if not target.is_dir():
+                raise FileNotFoundError(target)
+            loaded_files = {}
+            loaded_dirs = set()
+            for entry in sorted(target.rglob("*")):
+                rel = entry.relative_to(target).as_posix()
+                if entry.is_dir():
+                    loaded_dirs.add(rel)
+                elif entry.is_file():
+                    loaded_files[rel] = entry.read_bytes()
+            return loaded_files, loaded_dirs
+
+        return MemoryDirectory(_loader=load)
+
     stub = types.ModuleType("dagger")
     stub.Directory = MemoryDirectory
+    stub.File = MemoryFile
+    stub.Container = object
     stub.field = dataclasses.field
     stub.function = lambda function: function
     stub.object_type = dataclasses.dataclass
     stub.dag = types.SimpleNamespace(
         directory=MemoryDirectory,
-        host=lambda: types.SimpleNamespace(
-            file=lambda path: MemoryFile(Path(path).read_text(encoding="utf-8")),
-            directory=lambda path: MemoryDirectory(
-                {
-                    file.relative_to(path).as_posix(): file.read_text(encoding="utf-8")
-                    for file in Path(path).rglob("*")
-                    if file.is_file()
-                }
-            ),
+        current_module=lambda: types.SimpleNamespace(
+            workdir=workdir,
+            workdir_file=workdir_file,
         ),
     )
     stub.ReturnType = types.SimpleNamespace(ANY=object())
@@ -1030,3 +1136,379 @@ def test_v2_host_direct_mutation_of_exported_source_still_fails(modules):
     assert report["source_handoff"]["generated_outputs_delivered"] is False
     with pytest.raises(RuntimeError):
         asyncio.run(saved.enforce())
+
+
+def test_dagger_double_exposes_no_host_and_enforces_workdir_boundaries(modules):
+    import sys as _sys
+
+    dagger_stub = _sys.modules["dagger"]
+    assert not hasattr(dagger_stub.dag, "host")
+    with pytest.raises(RuntimeError, match="escapes workdir"):
+        dagger_stub.dag.current_module().workdir("/tmp/outside")
+    with pytest.raises(RuntimeError, match="escapes workdir"):
+        dagger_stub.dag.current_module().workdir_file("../outside.txt")
+
+
+def test_v2_data_dependency_preserves_binary_bytes_and_empty_nested_dirs(
+    modules, tmp_path
+):
+    _, collector = modules
+    import hashlib
+
+    raw_bytes = b"\x00\xff\x80\x01\xfe\xed\x10binary"
+    nested_bytes = b"\x89PNG\r\n\x1a\n"
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'generated'; "
+        "(root / 'bundle' / 'empty_direct').mkdir(parents=True, exist_ok=True); "
+        "(root / 'bundle' / 'nested' / 'empty_child' / 'deep_empty').mkdir(parents=True, exist_ok=True); "
+        "mixed = root / 'bundle' / 'mixed'; "
+        "(mixed / 'empty_sub').mkdir(parents=True, exist_ok=True); "
+        f"(root / 'payload.bin').write_bytes({raw_bytes!r}); "
+        f"(mixed / 'data.bin').write_bytes({nested_bytes!r})"
+    )
+    actions = {"gen": {"type": "command", "argv": [sys.executable, "-c", writer]}}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": "generated/payload.bin",
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "check", "name": "weaver_registry"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "directory", "path": "generated/bundle"},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+    ]
+    plan = _v2_dagger_plan(edges=edges, prerequisites=["gen"], actions=actions)
+
+    class Native(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.test_source = None
+            self.weaver_source = None
+
+        def _uv_container(self, source, version):
+            self.test_source = source
+            return self
+
+        async def exit_code(self):
+            return 0
+
+        async def weaver_artifacts(self, source, kind, config):
+            self.weaver_source = source
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed" and report["exit_code"] == 0
+    assert report["source_handoff"]["generated_outputs_delivered"] is True
+    assert report["prerequisites"][0]["execution_location"] == "dagger_module_scratch"
+    assert report["prerequisites"][0]["result_origin"] == "module_local_subprocess"
+    assert report["prerequisites"][0]["engine_cached"] is False
+    assert report["tests"]["generated_input_refs"][0]["path"] == "generated/payload.bin"
+    assert report["checks"][0]["generated_input_refs"][0]["path"] == "generated/bundle"
+    assert native.test_source.files["generated/payload.bin"] == raw_bytes
+    assert "generated/bundle/nested/empty_child/deep_empty" in native.weaver_source.dirs
+    exported = tmp_path / "post-cleanup-export"
+    asyncio.run(saved.artifacts.export(exported))
+    produced_root = exported / "produced" / "prerequisite_action" / "gen" / "generated"
+    assert (produced_root / "payload.bin").read_bytes() == raw_bytes
+    assert (produced_root / "bundle" / "empty_direct").is_dir()
+    assert (produced_root / "bundle" / "mixed" / "empty_sub").is_dir()
+    assert (produced_root / "bundle" / "nested" / "empty_child" / "deep_empty").is_dir()
+    assert (
+        produced_root / "bundle" / "mixed" / "data.bin"
+    ).read_bytes() == nested_bytes
+    asyncio.run(saved.enforce())
+
+
+def test_v2_multi_consumer_different_failures_preserved_while_independent_check_runs(
+    modules,
+):
+    _, collector = modules
+    writer = (
+        "import os; from pathlib import Path; "
+        "d = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'generated'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        "(d / 'actual.txt').write_text('actual', encoding='utf-8')"
+    )
+    actions = {
+        "missing_gen": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+        "bad_digest": {"type": "command", "argv": [sys.executable, "-c", writer]},
+    }
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "missing_gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": "generated/missing.txt"},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("missing_gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "bad_digest"},
+            "consumer_ref": {"kind": "execution_report", "name": "artifacts"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": "generated/actual.txt",
+                "sha256": "0" * 64,
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("bad_digest"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+    ]
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["missing_gen", "bad_digest"],
+        actions=actions,
+        checks=["weaver_registry"],
+    )
+
+    class Native(NativeDouble):
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    saved = asyncio.run(
+        collector.execute(
+            Native(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "blocked" and report["exit_code"] == 5
+    assert report["checks"][0]["name"] == "weaver_registry"
+    assert report["checks"][0]["status"] == "passed"
+    assert report["source_handoff"]["generated_outputs_delivered"] is False
+    consumers = {
+        (c["consumer_ref"]["kind"], c["consumer_ref"].get("name")): [
+            f["reason"] for f in c["failures"]
+        ]
+        for c in report["artifact_delivery"]["consumers"]
+    }
+    assert consumers == {
+        ("execution_report", "artifacts"): ["data_artifact_digest_mismatch"],
+        ("tests", None): ["data_artifact_missing"],
+    }
+
+
+@pytest.mark.parametrize("has_git", [True, False])
+def test_docs_check_bridges_lychee_and_git_containers_honestly(
+    modules, monkeypatch, has_git
+):
+    _, collector = modules
+    import hashlib
+    import shutil
+
+    content = "# Generated Doc\n\nSee [anchor](README.md).\n"
+    writer = (
+        "import os; from pathlib import Path; "
+        "d = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'docs'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        f"(d / 'generated.md').write_bytes({content!r}.encode('utf-8'))"
+    )
+    actions = {"gen_docs": {"type": "command", "argv": [sys.executable, "-c", writer]}}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen_docs"},
+            "consumer_ref": {"kind": "check", "name": "docs"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": "docs/generated.md",
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen_docs"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen_docs"],
+        actions=actions,
+        tests=[],
+        checks=["docs"],
+    )
+    plan["git"] = {
+        "snapshot": "worktree",
+        "base_commit": "0" * 40,
+        "changed_paths": [],
+    }
+    hygiene_toml = (
+        "schema_version = 1\n"
+        'checks = ["docs"]\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--offline", "--no-progress"]\n'
+    )
+    source_files = {
+        "ci-selection.toml": "# clean\n",
+        "ci-hygiene.toml": hygiene_toml,
+        "README.md": "# Root\n",
+    }
+    if has_git:
+        source_files[".git/HEAD"] = "ref: refs/heads/main\n"
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **kw: (
+            None if cmd in {"lychee", "git"} else real_which(cmd, *a, **kw)
+        ),
+    )
+
+    class DocsNative(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.git_calls = []
+            self.lychee_calls = []
+
+        async def _run_git(self, source, argv_tail):
+            self.git_calls.append(list(argv_tail))
+            if ".git/HEAD" not in source.files:
+                return {
+                    "exit_code": 128,
+                    "stdout": "",
+                    "stderr": "fatal: not a git repository",
+                }
+            return {
+                "exit_code": 0,
+                "stdout": "README.md\0",
+                "stderr": "",
+            }
+
+        async def _run_lychee(self, source, argv_tail):
+            self.lychee_calls.append((set(source.files), list(argv_tail)))
+            assert "docs/generated.md" in source.files
+            return {"exit_code": 0, "stdout": "1 OK\n", "stderr": ""}
+
+    native = DocsNative()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(source_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert native.git_calls == [["ls-files", "-z"]]
+    docs_check = report["checks"][0]
+    assert docs_check["name"] == "docs"
+    if has_git:
+        assert native.lychee_calls == [
+            (
+                set(source_files) | {"docs/generated.md"},
+                ["--offline", "--no-progress", "docs/generated.md"],
+            )
+        ]
+        assert report["status"] == "passed" and report["exit_code"] == 0
+        assert docs_check["status"] == "passed"
+        assert any(
+            ref.get("kind") == "generated_input"
+            and ref.get("path") == "docs/generated.md"
+            for ref in docs_check["native_results"][1]["input_refs"]
+        )
+        asyncio.run(saved.enforce())
+    else:
+        docs_native_ids = {
+            r["tool"]["access_id"]: r for r in docs_check["native_results"]
+        }
+        assert docs_native_ids["git/ls-files"]["status"] == "failed"
+        assert docs_check["native_satisfaction"]["status"] == "unsatisfied"
+        assert report["status"] == "blocked"
+        assert report["reason"] == "native_satisfaction_incomplete"
+        with pytest.raises(RuntimeError):
+            asyncio.run(saved.enforce())
+
+        # When targets do not expand onto disk without Git inventory, Lychee never runs.
+        no_target_plan = _v2_dagger_plan(
+            edges=[],
+            prerequisites=[],
+            actions={},
+            tests=[],
+            checks=["docs"],
+        )
+        no_target_plan["git"] = {
+            "snapshot": "worktree",
+            "base_commit": "0" * 40,
+            "changed_paths": ["docs/deleted.md"],
+        }
+        native_empty = DocsNative()
+        saved_empty = asyncio.run(
+            collector.execute(
+                native_empty,
+                MemoryFile(json.dumps(no_target_plan)),
+                MemoryDirectory(
+                    {
+                        "ci-selection.toml": "# clean\n",
+                        "ci-hygiene.toml": hygiene_toml,
+                    }
+                ),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        empty_report = json.loads(asyncio.run(saved_empty.report()))
+        assert native_empty.lychee_calls == []
+        assert empty_report["status"] == "failed"
+        assert empty_report["checks"][0]["reason"] == "git_inventory_failed"
+        with pytest.raises(RuntimeError):
+            asyncio.run(saved_empty.enforce())

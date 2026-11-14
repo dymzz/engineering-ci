@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 import time
@@ -69,6 +70,45 @@ _READ_OPTIONAL = (
     "target=pathlib.Path(sys.argv[1]);"
     "sys.stdout.write(target.read_text(encoding='utf-8') if target.is_file() else '')"
 )
+# Capture arbitrary 0-255 exit codes cleanly because Dagger ReturnType.ANY omits 128-191
+# (including git exit 128 when .git is absent or invalid).
+_EXEC_CAPTURE_SCRIPT = (
+    "import base64, json, subprocess, sys\n"
+    "try:\n"
+    "    proc = subprocess.run(\n"
+    "        sys.argv[1:], stdin=subprocess.DEVNULL, capture_output=True, check=False\n"
+    "    )\n"
+    "    code, out, err = proc.returncode, proc.stdout, proc.stderr\n"
+    "except FileNotFoundError:\n"
+    "    code = 127\n"
+    "    out = b''\n"
+    "    name = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+    "    err = f'Command not found: {name}'.encode('utf-8')\n"
+    "print(\n"
+    "    json.dumps(\n"
+    "        {\n"
+    "            'exit_code': code,\n"
+    "            'stdout_b64': base64.b64encode(out).decode('ascii'),\n"
+    "            'stderr_b64': base64.b64encode(err).decode('ascii'),\n"
+    "        }\n"
+    "    )\n"
+    ")\n"
+)
+
+
+async def _exec_capture(container: dagger.Container, argv: list[str]) -> dict:
+    """Capture container command exit/output across 0-255 cleanly."""
+    executed = container.with_exec(["python", "-I", "-c", _EXEC_CAPTURE_SCRIPT, *argv])
+    payload = json.loads(await executed.stdout())
+    return {
+        "exit_code": int(payload["exit_code"]),
+        "stdout": base64.b64decode(payload["stdout_b64"]).decode(
+            "utf-8", errors="replace"
+        ),
+        "stderr": base64.b64decode(payload["stderr_b64"]).decode(
+            "utf-8", errors="replace"
+        ),
+    }
 
 
 @object_type
@@ -827,6 +867,73 @@ class EngineeringCi:
             sort_keys=True,
         )
 
+    async def _lychee_container(self) -> tuple[dagger.Container, dict | None]:
+        """Install pinned Lychee inside the cached uv image."""
+        download = (
+            "import io,os,tarfile,urllib.request;"
+            f"data=urllib.request.urlopen({tooling.LYCHEE_ASSET!r}).read();"
+            "tar=tarfile.open(fileobj=io.BytesIO(data));"
+            "member=tar.extractfile('lychee-x86_64-unknown-linux-gnu/lychee');"
+            "open('/usr/local/bin/lychee','wb').write(member.read());"
+            "os.chmod('/usr/local/bin/lychee',0o755)"
+        )
+        installed = (
+            dag.container()
+            .from_(tooling.UV_IMAGE)
+            .with_exec(["python", "-c", download], expect=dagger.ReturnType.ANY)
+        )
+        install_exit = await installed.exit_code()
+        if install_exit != 0:
+            return installed, {
+                "tool": "lychee",
+                "version": tooling.LYCHEE_VERSION,
+                "status": "failed",
+                "exit_code": install_exit,
+                "stdout": await installed.stdout(),
+                "stderr": await installed.stderr(),
+                "reason": "tool_install_failed",
+            }
+        return installed, None
+
+    async def _run_lychee(
+        self,
+        source: dagger.Directory,
+        argv_tail: list[str],
+        *,
+        installed: dagger.Container | None = None,
+    ) -> dict:
+        """Run pinned Lychee inside a container over an immutable Directory."""
+        if installed is None:
+            installed, error = await self._lychee_container()
+            if error is not None:
+                return {
+                    "exit_code": 127,
+                    "stdout": error.get("stdout", ""),
+                    "stderr": (
+                        f"{error.get('reason', 'tool_install_failed')}: "
+                        f"{error.get('stderr', '')}"
+                    ).strip(),
+                }
+        container = installed.with_directory(
+            "/workspace", source, exclude=list(tooling.SOURCE_NOISE)
+        ).with_workdir("/workspace")
+        return await _exec_capture(container, ["/usr/local/bin/lychee", *argv_tail])
+
+    async def _run_git(
+        self,
+        source: dagger.Directory,
+        argv_tail: list[str],
+    ) -> dict:
+        """Run git inside a container when the Python module lacks git."""
+        container = (
+            prepare_private_git(dag.container().from_(tooling.UV_IMAGE))
+            .with_directory("/workspace", source)
+            .with_workdir("/workspace")
+        )
+        return await _exec_capture(
+            container, ["git", "-c", "safe.directory=/workspace", *argv_tail]
+        )
+
     @function
     async def lychee_check(
         self,
@@ -848,50 +955,23 @@ class EngineeringCi:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-        download = (
-            "import io,os,tarfile,urllib.request;"
-            f"data=urllib.request.urlopen({tooling.LYCHEE_ASSET!r}).read();"
-            "tar=tarfile.open(fileobj=io.BytesIO(data));"
-            "member=tar.extractfile('lychee-x86_64-unknown-linux-gnu/lychee');"
-            "open('/usr/local/bin/lychee','wb').write(member.read());"
-            "os.chmod('/usr/local/bin/lychee',0o755)"
+        installed, error = await self._lychee_container()
+        if error is not None:
+            return json.dumps(error, ensure_ascii=False, sort_keys=True)
+        result = await self._run_lychee(
+            source,
+            ["--offline", "--no-progress", *targets],
+            installed=installed,
         )
-        installed = (
-            dag.container()
-            .from_(tooling.UV_IMAGE)
-            .with_exec(["python", "-c", download], expect=dagger.ReturnType.ANY)
-        )
-        install_exit = await installed.exit_code()
-        if install_exit != 0:
-            return json.dumps(
-                {
-                    "tool": "lychee",
-                    "version": tooling.LYCHEE_VERSION,
-                    "status": "failed",
-                    "exit_code": install_exit,
-                    "stdout": await installed.stdout(),
-                    "stderr": await installed.stderr(),
-                    "reason": "tool_install_failed",
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        container = installed.with_directory(
-            "/workspace", source, exclude=list(tooling.SOURCE_NOISE)
-        ).with_workdir("/workspace")
-        result = container.with_exec(
-            ["/usr/local/bin/lychee", "--offline", "--no-progress", *targets],
-            expect=dagger.ReturnType.ANY,
-        )
-        exit_code = await result.exit_code()
+        exit_code = result["exit_code"]
         return json.dumps(
             {
                 "tool": "lychee",
                 "version": tooling.LYCHEE_VERSION,
                 "status": "passed" if exit_code == 0 else "failed",
                 "exit_code": exit_code,
-                "stdout": await result.stdout(),
-                "stderr": await result.stderr(),
+                "stdout": result["stdout"],
+                "stderr": result["stderr"],
             },
             ensure_ascii=False,
             sort_keys=True,

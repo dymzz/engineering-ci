@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import dagger
@@ -271,37 +273,147 @@ async def _native_results(
     return artifacts
 
 
-def _overlay_files(target_dir, artifacts):
-    """Materialize producer-isolated File/Directory objects."""
+def _overlay_files(target_dir, objects):
+    """Materialize producer-isolated File/Directory objects onto a Directory."""
     updated = target_dir
-    for producer_root, rel, kind in sorted(set(artifacts)):
+    for rel, kind, obj in sorted(objects, key=lambda item: (item[0], item[1])):
         if kind == "directory":
-            updated = updated.with_directory(
-                rel, dag.host().directory(str(Path(producer_root) / rel))
-            )
+            updated = updated.with_directory(rel, obj)
         else:
-            updated = updated.with_file(
-                rel, dag.host().file(str(Path(producer_root) / rel))
-            )
+            updated = updated.with_file(rel, obj)
     return updated
 
 
-def _bundle_produced(artifacts, artifacts_files):
+def _bundle_produced(artifacts, produced_objects):
+    """Add deduplicated producer objects under produced/<kind>/<name>/<rel>."""
     updated = artifacts
-    for producer_ref, producer_root, rel, kind in sorted(
-        artifacts_files,
-        key=lambda item: (item[0]["kind"], item[0]["name"], item[2]),
+    seen = set()
+    for producer_ref, rel, kind, obj in sorted(
+        produced_objects,
+        key=lambda item: (item[0]["kind"], item[0]["name"], item[1], item[2]),
     ):
         target = f"produced/{producer_ref['kind']}/{producer_ref['name']}/{rel}"
+        if target in seen:
+            continue
+        seen.add(target)
         if kind == "directory":
-            updated = updated.with_directory(
-                target, dag.host().directory(str(Path(producer_root) / rel))
-            )
+            updated = updated.with_directory(target, obj)
         else:
-            updated = updated.with_file(
-                target, dag.host().file(str(Path(producer_root) / rel))
-            )
+            updated = updated.with_file(target, obj)
     return updated
+
+
+def _scratch_relative(target: Path, scratch_root: Path) -> str:
+    """Resolve one scratch-confined path relative to current_module workdir."""
+    resolved_target = target.resolve()
+    resolved_root = scratch_root.resolve()
+    try:
+        rel = resolved_target.relative_to(resolved_root).as_posix()
+    except ValueError as error:
+        raise ValueError(
+            f"workdir path {resolved_target!s} escapes scratch root {resolved_root!s}"
+        ) from error
+    if not rel or rel == ".":
+        raise ValueError("workdir relative path cannot be empty")
+    return rel
+
+
+def _record_delivery_failure(report, consumer_ref, failures):
+    """Record per-consumer artifact delivery failures without clobbering siblings."""
+    delivery = report.setdefault(
+        "artifact_delivery", {"status": "blocked", "consumers": []}
+    )
+    delivery["status"] = "blocked"
+    normalized_ref = dict(consumer_ref)
+    normalized_failures = [dict(failure) for failure in failures]
+    existing = next(
+        (
+            consumer
+            for consumer in delivery["consumers"]
+            if consumer.get("consumer_ref") == normalized_ref
+        ),
+        None,
+    )
+    if existing is None:
+        delivery["consumers"].append(
+            {"consumer_ref": normalized_ref, "failures": normalized_failures}
+        )
+    else:
+        seen = {
+            json.dumps(item, sort_keys=True) for item in existing.get("failures", [])
+        }
+        for item in normalized_failures:
+            key = json.dumps(item, sort_keys=True)
+            if key not in seen:
+                existing.setdefault("failures", []).append(item)
+                seen.add(key)
+    if normalized_failures and not delivery.get("reason"):
+        delivery["reason"] = normalized_failures[0].get("reason")
+
+
+def _consumer_ref_from_key(consumer_key):
+    if consumer_key == "tests":
+        return {"kind": "tests"}
+    if isinstance(consumer_key, tuple) and len(consumer_key) == 2:
+        return {"kind": consumer_key[0], "name": consumer_key[1]}
+    if isinstance(consumer_key, dict):
+        return dict(consumer_key)
+    return {"kind": str(consumer_key)}
+
+
+def _make_hygiene_runner(module, consumer_source, loop):
+    """Delegate missing Lychee / read-only Git calls to Dagger containers."""
+    from engineering_ci import hygiene
+
+    _readonly_git = {"ls-files", "diff", "show", "cat-file"}
+
+    def _runner(argv, cwd, data=None):
+        argv_list = [str(item) for item in argv]
+        tool = argv_list[0] if argv_list else ""
+        tool_name = Path(tool).name if tool else ""
+        if (
+            (tool == "/usr/local/bin/lychee" or tool_name == "lychee")
+            and shutil.which(tool) is None
+            and hasattr(module, "_run_lychee")
+        ):
+            outcome = asyncio.run_coroutine_threadsafe(
+                module._run_lychee(consumer_source, argv_list[1:]), loop
+            ).result()
+            return subprocess.CompletedProcess(
+                argv_list,
+                outcome["exit_code"],
+                outcome["stdout"],
+                outcome["stderr"],
+            )
+        if (
+            tool_name == "git"
+            and len(argv_list) > 1
+            and argv_list[1] in _readonly_git
+            and shutil.which(tool) is None
+            and hasattr(module, "_run_git")
+        ):
+            outcome = asyncio.run_coroutine_threadsafe(
+                module._run_git(consumer_source, argv_list[1:]), loop
+            ).result()
+            return subprocess.CompletedProcess(
+                argv_list,
+                outcome["exit_code"],
+                outcome["stdout"],
+                outcome["stderr"],
+            )
+        return hygiene._run(argv, cwd, data)
+
+    return _runner
+
+
+def _tag_command_prerequisites(entries):
+    """Label module-local command prerequisites without fabricating Engine cache."""
+    for entry in entries or ():
+        if isinstance(entry, dict) and entry.get("type") == "command":
+            entry.setdefault("execution_context", "dagger_export")
+            entry.setdefault("execution_location", "dagger_module_scratch")
+            entry.setdefault("result_origin", "module_local_subprocess")
+            entry.setdefault("engine_cached", False)
 
 
 def _host_adapter_plan(value, selected_host_checks):
@@ -356,15 +468,39 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
-    host_import_supported = hasattr(dag, "host")
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    scratch_root = Path.cwd().resolve()
     closure_records = []
     produced_files = []
+    materialized_cache = {}
 
-    with tempfile.TemporaryDirectory() as artifact_dir:
-        artifact_root = Path(artifact_dir)
+    with tempfile.TemporaryDirectory(
+        dir=scratch_root, prefix=".eci-artifacts-"
+    ) as artifact_dir:
+        artifact_root = Path(artifact_dir).resolve()
+        (artifact_root / "prerequisite_action").mkdir(parents=True, exist_ok=True)
         tasks = {}
+
+        def ensure_materialized(producer_root, rel, kind):
+            key = (str(producer_root), rel, kind)
+            if key not in materialized_cache:
+
+                async def _materialize():
+                    scratch_rel = _scratch_relative(
+                        Path(producer_root) / rel, scratch_root
+                    )
+                    current = dag.current_module()
+                    obj = (
+                        current.workdir(scratch_rel)
+                        if kind == "directory"
+                        else current.workdir_file(scratch_rel)
+                    )
+                    return await obj.sync()
+
+                materialized_cache[key] = asyncio.create_task(_materialize())
+            return materialized_cache[key]
 
         async def resolve_incoming(consumer_key):
             edges = incoming.get(consumer_key, ())
@@ -382,26 +518,41 @@ async def _execute_dag(
             block_reasons = []
             blocked_by = []
             data_failures = []
-            files = []
+            delivered = []
             seen_paths = {}
+            seen_consumer_objects = set()
+
+            def record_data_failure(producer_ref, edge_item, reason_code, extra=None):
+                block_reasons.append(reason_code)
+                blocked_by.append({"producer_ref": producer_ref, "reason": reason_code})
+                failure = {
+                    "producer_ref": producer_ref,
+                    "output_ref": edge_item.get("output_ref"),
+                    "reason": reason_code,
+                }
+                if extra:
+                    failure.update(extra)
+                data_failures.append(failure)
+
             for edge, producer_out in zip(edges, upstream, strict=True):
                 if isinstance(producer_out, BaseException):
                     if not isinstance(producer_out, Exception):
                         raise producer_out
                     reason = "pre_execution_prerequisite_not_executed"
-                    block_reasons.append(reason)
-                    blocked_by.append(
-                        {"producer_ref": edge["producer_ref"], "reason": reason}
-                    )
                     if edge.get("dependency_kind") == "data":
-                        data_failures.append(
+                        record_data_failure(
+                            edge["producer_ref"],
+                            edge,
+                            reason,
                             {
-                                "producer_ref": edge["producer_ref"],
-                                "output_ref": edge.get("output_ref"),
-                                "reason": reason,
                                 "error_type": type(producer_out).__name__,
                                 "diagnostic": str(producer_out),
-                            }
+                            },
+                        )
+                    else:
+                        block_reasons.append(reason)
+                        blocked_by.append(
+                            {"producer_ref": edge["producer_ref"], "reason": reason}
                         )
                     continue
                 producer_entry = (
@@ -413,15 +564,7 @@ async def _execute_dag(
                     and p_ref["kind"] != "prerequisite_action"
                 ):
                     reason = "data_check_producer_unsupported"
-                    block_reasons.append(reason)
-                    blocked_by.append({"producer_ref": p_ref, "reason": reason})
-                    data_failures.append(
-                        {
-                            "producer_ref": p_ref,
-                            "output_ref": edge.get("output_ref"),
-                            "reason": reason,
-                        }
-                    )
+                    record_data_failure(p_ref, edge, reason)
                     closure_records.append(
                         {
                             "producer_ref": p_ref,
@@ -445,25 +588,17 @@ async def _execute_dag(
                 if closure is not None:
                     closure_records.append(closure)
                     if closure.get("verified"):
+                        materialized_for_edge = []
+                        import_error = None
+                        pending_seen = {}
                         for obj in closure.get("materialized_objects") or ():
                             rel = obj["path"]
                             kind = obj["kind"]
                             if rel in seen_paths and seen_paths[rel] != str(
                                 producer_root
                             ):
-                                block_reasons.append("data_artifact_conflict")
-                                blocked_by.append(
-                                    {
-                                        "producer_ref": p_ref,
-                                        "reason": "data_artifact_conflict",
-                                    }
-                                )
-                                data_failures.append(
-                                    {
-                                        "producer_ref": p_ref,
-                                        "output_ref": edge.get("output_ref"),
-                                        "reason": "data_artifact_conflict",
-                                    }
+                                record_data_failure(
+                                    p_ref, edge, "data_artifact_conflict"
                                 )
                                 continue
                             if any(
@@ -471,63 +606,75 @@ async def _execute_dag(
                                 and owner != str(producer_root)
                                 for existing, owner in seen_paths.items()
                             ):
-                                block_reasons.append("data_artifact_conflict")
-                                blocked_by.append(
-                                    {
-                                        "producer_ref": p_ref,
-                                        "reason": "data_artifact_conflict",
-                                    }
-                                )
-                                data_failures.append(
-                                    {
-                                        "producer_ref": p_ref,
-                                        "output_ref": edge.get("output_ref"),
-                                        "reason": "data_artifact_conflict",
-                                    }
+                                record_data_failure(
+                                    p_ref, edge, "data_artifact_conflict"
                                 )
                                 continue
-                            seen_paths[rel] = str(producer_root)
-                            files.append((producer_root, rel, kind))
-                            produced_files.append((p_ref, producer_root, rel, kind))
+                            (outcome,) = await asyncio.gather(
+                                ensure_materialized(producer_root, rel, kind),
+                                return_exceptions=True,
+                            )
+                            if isinstance(outcome, BaseException):
+                                if not isinstance(outcome, Exception):
+                                    raise outcome
+                                import_error = outcome
+                                break
+                            pending_seen[rel] = str(producer_root)
+                            materialized_for_edge.append((rel, kind, outcome))
+                        if import_error is not None:
+                            reason = "dagger_workdir_import_failed"
+                            closure["verified"] = False
+                            closure["reason"] = reason
+                            record_data_failure(
+                                p_ref,
+                                edge,
+                                reason,
+                                {
+                                    "error_type": type(import_error).__name__,
+                                    "diagnostic": str(import_error),
+                                },
+                            )
+                            continue
+                        seen_paths.update(pending_seen)
+                        for rel, kind, engine_obj in materialized_for_edge:
+                            obj_key = (str(producer_root), rel, kind)
+                            if obj_key not in seen_consumer_objects:
+                                seen_consumer_objects.add(obj_key)
+                                delivered.append((producer_root, rel, kind, engine_obj))
+                            produced_files.append((p_ref, rel, kind, engine_obj))
                 if not ok:
-                    block_reasons.append(reason)
-                    blocked_by.append(
-                        {"producer_ref": edge["producer_ref"], "reason": reason}
-                    )
                     if edge.get("dependency_kind") == "data":
-                        data_failures.append(
-                            {
-                                "producer_ref": edge["producer_ref"],
-                                "output_ref": edge.get("output_ref"),
-                                "reason": reason,
-                            }
+                        record_data_failure(p_ref, edge, reason)
+                    else:
+                        block_reasons.append(reason)
+                        blocked_by.append(
+                            {"producer_ref": edge["producer_ref"], "reason": reason}
                         )
             if data_failures:
-                if isinstance(consumer_key, tuple):
-                    consumer_ref = {
-                        "kind": consumer_key[0],
-                        "name": consumer_key[1],
-                    }
-                elif isinstance(consumer_key, dict):
-                    consumer_ref = dict(consumer_key)
-                else:
-                    consumer_ref = {"kind": str(consumer_key)}
-                delivery = report.setdefault(
-                    "artifact_delivery", {"status": "blocked", "consumers": []}
+                _record_delivery_failure(
+                    report, _consumer_ref_from_key(consumer_key), data_failures
                 )
-                delivery["status"] = "blocked"
-                delivery.setdefault("reason", data_failures[0]["reason"])
-                delivery["consumers"].append(
-                    {"consumer_ref": consumer_ref, "failures": data_failures}
+            elif block_reasons and consumer_key == ("execution_report", "artifacts"):
+                _record_delivery_failure(
+                    report,
+                    {"kind": "execution_report", "name": "artifacts"},
+                    [
+                        {
+                            "producer_ref": item.get("producer_ref"),
+                            "reason": item.get("reason"),
+                        }
+                        for item in blocked_by
+                    ]
+                    or [{"reason": block_reasons[0]}],
                 )
-            return (block_reasons[0] if block_reasons else None), blocked_by, files
+            return (block_reasons[0] if block_reasons else None), blocked_by, delivered
 
         async def compute_node(node_key):
             kind = node_key[0]
             if kind == "prerequisite_action":
                 name = node_key[1]
                 producer_ref = {"kind": "prerequisite_action", "name": name}
-                return await asyncio.to_thread(
+                entry = await asyncio.to_thread(
                     execution.run_prerequisite_action,
                     name,
                     actions.get(name),
@@ -537,10 +684,12 @@ async def _execute_dag(
                         artifact_root, producer_ref
                     ),
                 )
+                _tag_command_prerequisites([entry])
+                return entry
             if kind == "check_result":
                 name = node_key[1]
                 item = selected_by_name[name]
-                block_reason, blocked_by, files = await resolve_incoming(
+                block_reason, blocked_by, delivered = await resolve_incoming(
                     ("check", name)
                 )
                 if block_reason is not None:
@@ -555,8 +704,14 @@ async def _execute_dag(
                             run_instance=run_instance,
                         )[0]
                     return entry, None, {}
+                generated_refs = execution.generated_input_refs(
+                    list(closure_records), {"kind": "check", "name": name}
+                )
+                dag_objects = [
+                    (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
+                ]
+                consumer_source = _overlay_files(source, dag_objects)
                 if name in weaver_checks:
-                    consumer_source = _overlay_files(source, files)
                     native, check_files, metadata = await _weaver(
                         module,
                         consumer_source,
@@ -566,51 +721,39 @@ async def _execute_dag(
                         weaver_config,
                         report["source_tree_verified"],
                     )
+                    if generated_refs and isinstance(native, dict):
+                        native["generated_input_refs"] = generated_refs
                     return native, check_files, metadata
-                generated_refs = execution.generated_input_refs(
-                    closure_records, {"kind": "check", "name": name}
-                )
-                if files and not host_import_supported:
-                    return (
-                        execution._blocked_consumer_entry(
-                            name,
-                            item.get("status"),
-                            "dagger_host_import_unsupported",
-                            [],
-                        ),
-                        None,
-                        {},
-                    )
-                if files:
+                fs_files = [
+                    (p_root, rel, obj_kind) for p_root, rel, obj_kind, _ in delivered
+                ]
+                runner = _make_hygiene_runner(module, consumer_source, loop)
+                temporary = None
+                consumer_root = Path(directory)
+                artifact_paths = ()
+                if fs_files:
                     temporary, consumer_root = execution.build_consumer_view(
-                        Path(directory), files
+                        consumer_root, fs_files
                     )
-                    try:
-                        entry = await asyncio.to_thread(
-                            execution.run_host_check,
-                            host_plan,
-                            item,
-                            root=consumer_root,
-                            execution_context="dagger_export",
-                            run_instance=run_instance,
-                            artifact_paths=execution.artifact_target_paths(files),
-                            generated_input_refs=generated_refs,
-                        )
-                    finally:
+                    artifact_paths = execution.artifact_target_paths(fs_files)
+                try:
+                    entry = await asyncio.to_thread(
+                        execution.run_host_check,
+                        host_plan,
+                        item,
+                        root=consumer_root,
+                        runner=runner,
+                        execution_context="dagger_export",
+                        run_instance=run_instance,
+                        artifact_paths=artifact_paths,
+                        generated_input_refs=generated_refs,
+                    )
+                finally:
+                    if temporary is not None:
                         temporary.cleanup()
-                    return entry, None, {}
-                entry = await asyncio.to_thread(
-                    execution.run_host_check,
-                    host_plan,
-                    item,
-                    root=Path(directory),
-                    execution_context="dagger_export",
-                    run_instance=run_instance,
-                    generated_input_refs=generated_refs,
-                )
                 return entry, None, {}
             if kind == "tests":
-                block_reason, blocked_by, files = await resolve_incoming("tests")
+                block_reason, blocked_by, delivered = await resolve_incoming("tests")
                 requirement = execution.test_requirement_failure(value)
                 if requirement:
                     return (
@@ -635,40 +778,23 @@ async def _execute_dag(
                         },
                         None,
                     )
-                consumer_source = _overlay_files(source, files)
-                return await _tests(
+                generated_refs = execution.generated_input_refs(
+                    list(closure_records), {"kind": "tests"}
+                )
+                dag_objects = [
+                    (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
+                ]
+                consumer_source = _overlay_files(source, dag_objects)
+                payload, test_files = await _tests(
                     module, consumer_source, targets, framework, python_version
                 )
-            if kind == "report_artifacts":
-                report_block, report_blocked_by, _ = await resolve_incoming(
-                    ("execution_report", "artifacts")
-                )
-                if report_block is not None:
-                    delivery = report.setdefault(
-                        "artifact_delivery", {"status": "blocked", "consumers": []}
+                if generated_refs and isinstance(payload, dict):
+                    payload.setdefault("tests", {})["generated_input_refs"] = (
+                        generated_refs
                     )
-                    delivery["status"] = "blocked"
-                    delivery.setdefault("reason", report_block)
-                    if not any(
-                        consumer.get("consumer_ref")
-                        == {"kind": "execution_report", "name": "artifacts"}
-                        for consumer in delivery["consumers"]
-                    ):
-                        delivery["consumers"].append(
-                            {
-                                "consumer_ref": {
-                                    "kind": "execution_report",
-                                    "name": "artifacts",
-                                },
-                                "failures": [
-                                    {
-                                        "producer_ref": item.get("producer_ref"),
-                                        "reason": item.get("reason"),
-                                    }
-                                    for item in report_blocked_by
-                                ],
-                            }
-                        )
+                return payload, test_files
+            if kind == "report_artifacts":
+                await resolve_incoming(("execution_report", "artifacts"))
                 return None
 
         def ensure(node_key):
@@ -768,25 +894,16 @@ async def _execute_dag(
             ):
                 if not isinstance(output, Exception):
                     raise output
-                delivery = report.setdefault(
-                    "artifact_delivery", {"status": "blocked", "consumers": []}
-                )
-                delivery["status"] = "blocked"
-                delivery.setdefault("reason", "artifact_delivery_error")
-                delivery["consumers"].append(
-                    {
-                        "consumer_ref": {
-                            "kind": "execution_report",
-                            "name": "artifacts",
-                        },
-                        "failures": [
-                            {
-                                "reason": "artifact_delivery_error",
-                                "error_type": type(output).__name__,
-                                "diagnostic": str(output),
-                            }
-                        ],
-                    }
+                _record_delivery_failure(
+                    report,
+                    {"kind": "execution_report", "name": "artifacts"},
+                    [
+                        {
+                            "reason": "artifact_delivery_error",
+                            "error_type": type(output).__name__,
+                            "diagnostic": str(output),
+                        }
+                    ],
                 )
 
         for name in post_prerequisites:
@@ -807,20 +924,30 @@ async def _execute_dag(
             else:
                 report["prerequisites"].append(output)
 
-        if produced_files and not host_import_supported:
-            report["artifact_delivery"] = {
-                "status": "blocked",
-                "reason": "dagger_host_import_unsupported",
-                "consumers": [
-                    {
-                        "consumer_ref": {"kind": "artifact_bundle"},
-                        "failures": [{"reason": "dagger_host_import_unsupported"}],
-                    }
-                ],
-            }
-            report["source_handoff"]["generated_outputs_delivered"] = False
-        elif produced_files:
-            artifacts = _bundle_produced(artifacts, produced_files)
+        if produced_files:
+
+            async def _finalize_artifacts():
+                return await _bundle_produced(artifacts, produced_files).sync()
+
+            (bundle_outcome,) = await asyncio.gather(
+                _finalize_artifacts(), return_exceptions=True
+            )
+            if isinstance(bundle_outcome, BaseException):
+                if not isinstance(bundle_outcome, Exception):
+                    raise bundle_outcome
+                _record_delivery_failure(
+                    report,
+                    {"kind": "artifact_bundle"},
+                    [
+                        {
+                            "reason": "dagger_workdir_import_failed",
+                            "error_type": type(bundle_outcome).__name__,
+                            "diagnostic": str(bundle_outcome),
+                        }
+                    ],
+                )
+            else:
+                artifacts = bundle_outcome
         if closure_records:
             closure_records.sort(
                 key=lambda entry: (
@@ -1024,9 +1151,14 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 if item.get("name") not in weaver_checks
             ]
             check_plan = _host_adapter_plan(value, host_checks)
+            loop = asyncio.get_running_loop()
             host = (
-                execution.execute(
-                    check_plan, root=directory, execution_context="dagger_export"
+                await asyncio.to_thread(
+                    execution.execute,
+                    check_plan,
+                    root=directory,
+                    execution_context="dagger_export",
+                    runner=_make_hygiene_runner(module, source, loop),
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {
@@ -1036,8 +1168,10 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     "prerequisites": [],
                 }
             )
+            host_prerequisites = host.get("prerequisites") or []
+            _tag_command_prerequisites(host_prerequisites)
             report["checks"].extend(host.get("checks") or [])
-            report["prerequisites"] = host.get("prerequisites") or []
+            report["prerequisites"] = host_prerequisites
             after_host = selection.directory_content_id(directory)
             report["source_handoff"]["after_host_content_id"] = after_host
             if after_host != exported_content_id:

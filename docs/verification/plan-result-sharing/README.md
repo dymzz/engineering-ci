@@ -76,13 +76,37 @@ probe for scoped prerequisite failure; it does not rerun live/OTLP or a matrix.
 No full local matrix or unchanged Weaver/OTLP scan was repeated. Root CI is
 left to the PR's normal automatic workflow.
 
+## PR #90 review revision (v2 DAG, `/scratch` `workdir` & `[[dependency_edges]]`)
+
+Following Reviews 22–24 on PR #90 and merging `main`:
+
+- Removed the nonexistent `dag.host()` / `dagger_host_import_unsupported` bypass.
+  Prerequisite `command` outputs now materialize under the module `/scratch`
+  workdir via `dag.current_module().workdir`/`workdir_file` + `.sync()` before
+  cleanup, preserving binary files and empty/nested directories in one immutable
+  Dagger `File`/`Directory` closure shared across consumers and exported under
+  `produced/<kind>/<name>/<rel>`.
+- Module-local `command` prerequisites explicitly carry
+  `execution_location="dagger_module_scratch"`,
+  `result_origin="module_local_subprocess"`, and `engine_cached=false`.
+- `docs` check inside Dagger delegates missing `lychee` and read-only `git`
+  (`ls-files`, `diff`, `show`, `cat-file`) to Dagger containers via
+  `_exec_capture`, capturing full exit codes `0-255` (including git exit `128`).
+- `selection.py` wires optional `[[dependency_edges]]` into `load_config`,
+  `select`, and `plan`, emitting `dependency_contract.schema_version = 2` for
+  configured active edges and preserving `policy_only` (`schema_version = 1`)
+  otherwise.
+
 ## Remaining work
 
-New `data` and `pre_execution_pass` semantics remain unsupported and refused by
-the shared validator. No production PASS relation was invented from legacy
-prerequisite names. B still needs actual #66 producer/consumer binding, scoped
-generic PASS startup failure, generated-output handoff, historical-Verdict/data closure
-and broader native mapping. D cache/dynamic input, #63 cross-Run admission and
-#61 Expected/Required/Release remain separate. Issue #86 stays open.
+- **#66**: authenticated Source/Prerequisite receipts and config/baseline proof
+  (`source_binding_verified` remains `"unknown"` in `source_handoff`).
+- **#86 D**: container-native producer actions (replacing
+  `module_local_subprocess` command prerequisites) and dynamic cache/input
+  expansion.
+- **#63 / #61**: historical Verdict/cross-Run evidence admission and Expected /
+  Required / Release policy gates.
+
+Issue #86 stays open.
 
 Parent: [verification records](../README.md).

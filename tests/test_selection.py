@@ -1109,3 +1109,123 @@ def test_cli_run_without_tests_is_not_success(repo):
         )
         == 3
     )
+
+
+def test_dependency_edges_config_activates_prerequisites_and_emits_v2_graph(repo):
+    path, base = repo
+    selection_toml = path / "ci-selection.toml"
+    selection_toml.write_text(
+        selection_toml.read_text(encoding="utf-8")
+        + "\n[prerequisite_actions.gen_docs]\n"
+        + 'type = "command"\n'
+        + 'argv = ["python", "-c", "pass"]\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "check", name = "docs" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "execution_report", name = "artifacts" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "check", name = "tach" }\n'
+        + 'consumer_ref = { kind = "tests" }\n'
+        + 'dependency_kind = "pre_execution_pass"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "configure dependency edges")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # Document-only change activates gen_docs -> docs + execution_report/artifacts, not tach -> tests.
+    (path / "docs/guide.md").write_text("# Updated\n", encoding="utf-8")
+    doc_sel = select(path, base)
+    assert doc_sel.prerequisites == frozenset({"gen_docs"})
+    doc_plan = selection.plan(
+        doc_sel, config=config(path), config_path=selection_toml, root=path
+    )
+    execution.validate_plan(doc_plan)
+    doc_contract = doc_plan["dependency_contract"]
+    assert doc_contract["schema_version"] == 2
+    assert {
+        (e["producer_ref"]["name"], e["consumer_ref"]["kind"])
+        for e in doc_contract["edges"]
+    } == {("gen_docs", "check"), ("gen_docs", "execution_report")}
+
+    # Code change activates tach -> tests + [prerequisites] policy_only edges, without gen_docs.
+    run(path, "checkout", "--", "docs/guide.md")
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    code_sel = select(path, base)
+    assert "gen_docs" not in code_sel.prerequisites
+    assert "identity_commit" in code_sel.prerequisites
+    code_plan = selection.plan(
+        code_sel, config=config(path), config_path=selection_toml, root=path
+    )
+    execution.validate_plan(code_plan)
+    code_contract = code_plan["dependency_contract"]
+    assert code_contract["schema_version"] == 2
+    assert any(
+        e["producer_ref"] == {"kind": "check", "name": "tach"}
+        and e["consumer_ref"] == {"kind": "tests"}
+        and e["dependency_kind"] == "pre_execution_pass"
+        for e in code_contract["edges"]
+    )
+    assert any(
+        e["producer_ref"] == {"kind": "prerequisite_action", "name": "identity_commit"}
+        and e["dependency_kind"] == "policy_only"
+        for e in code_contract["edges"]
+    )
+
+
+def test_dependency_edges_preserve_unresolved_action_and_reject_invalid(repo):
+    path, base = repo
+    selection_toml = path / "ci-selection.toml"
+    base_text = selection_toml.read_text(encoding="utf-8")
+    selection_toml.write_text(
+        base_text
+        + "\n[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "missing_gen" }\n'
+        + 'consumer_ref = { kind = "check", name = "docs" }\n'
+        + 'dependency_kind = "data"\n'
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n',
+        encoding="utf-8",
+    )
+    (path / "docs/guide.md").write_text("# Dirty doc\n", encoding="utf-8")
+    sel = select(path, base)
+    value = selection.plan(
+        sel, config=config(path), config_path=selection_toml, root=path
+    )
+    execution.validate_plan(value)
+    edge = value["dependency_contract"]["edges"][0]
+    assert edge["resolution"] == "unresolved"
+    assert edge["unresolved_reason"] == "action_parameters_missing"
+
+    for bad_snippet in (
+        (
+            'producer_ref = { kind = "check", name = "tach" }\n'
+            'consumer_ref = { kind = "tests" }\n'
+            'dependency_kind = "data"\n'
+            'output_ref = { kind = "file", path = "out.txt" }\n'
+        ),
+        (
+            'producer_ref = { kind = "prerequisite_action", name = "gen" }\n'
+            'consumer_ref = { kind = "tests" }\n'
+            'dependency_kind = "data"\n'
+            'output_ref = { kind = "file", path = "../escape.txt" }\n'
+        ),
+        (
+            'producer_ref = { kind = "check", name = "docs" }\n'
+            'consumer_ref = { kind = "check", name = "docs" }\n'
+            'dependency_kind = "pre_execution_pass"\n'
+        ),
+    ):
+        selection_toml.write_text(
+            base_text + "\n[[dependency_edges]]\n" + bad_snippet,
+            encoding="utf-8",
+        )
+        with pytest.raises(selection.SelectionError, match="dependency_edges_invalid"):
+            selection.load_config(selection_toml)
