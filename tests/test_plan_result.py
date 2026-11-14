@@ -31,6 +31,9 @@ class MemoryDirectory:
     def with_new_file(self, path, contents):
         return MemoryDirectory({**self.files, path: contents})
 
+    def with_file(self, path, file):
+        return MemoryDirectory({**self.files, path: file.text})
+
     def with_directory(self, prefix, directory):
         return MemoryDirectory(
             {**self.files, **{prefix + "/" + k: v for k, v in directory.files.items()}}
@@ -53,7 +56,12 @@ def modules(monkeypatch):
     stub.field = dataclasses.field
     stub.function = lambda function: function
     stub.object_type = dataclasses.dataclass
-    stub.dag = types.SimpleNamespace(directory=MemoryDirectory)
+    stub.dag = types.SimpleNamespace(
+        directory=MemoryDirectory,
+        host=lambda: types.SimpleNamespace(
+            file=lambda path: MemoryFile(Path(path).read_text(encoding="utf-8"))
+        ),
+    )
     stub.ReturnType = types.SimpleNamespace(ANY=object())
     monkeypatch.setitem(sys.modules, "dagger", stub)
     package = types.ModuleType("plan_result_unit")
