@@ -1385,10 +1385,11 @@ def _match_export_target_identity(
             normalized_host = host_path.replace("\\", "/")
             if normalized_host == expected_posix:
                 return True, True, "export_host_path_matched"
-            if (
-                artifact_path.is_absolute()
-                and normalized_host.startswith("/")
-                and expected_posix.startswith("/")
+            if (normalized_host.startswith("/") and expected_posix.startswith("/")) or (
+                len(normalized_host) >= 3
+                and len(expected_posix) >= 3
+                and normalized_host[1:3] == ":/"
+                and expected_posix[1:3] == ":/"
             ):
                 # Same filename exported to a different explicit directory mismatches.
                 continue
@@ -1461,6 +1462,7 @@ def _attribute_export_span(
     observed_export_ids = [span.span_id for span in preferred_roots]
 
     ambiguous_match: dict[str, Any] | None = None
+    attributed_target_mismatch: dict[str, Any] | None = None
     unlinked_target_match: tuple[bool, str] = (False, "no_matching_export_span")
 
     for exp in preferred_roots:
@@ -1468,9 +1470,6 @@ def _attribute_export_span(
         compatible, target_matched, target_basis = _match_export_target_identity(
             exp, exp_subtree, artifact_path
         )
-        if not compatible:
-            unlinked_target_match = (False, target_basis)
-            continue
 
         parent_owned = (exp.trace_id, exp.span_id) in candidate_owned_ids
         candidate_cause_hit = False
@@ -1507,7 +1506,7 @@ def _attribute_export_span(
 
         causality_status = "parent_subtree" if parent_owned else "causally_linked"
         attribution_basis = "parent_subtree" if parent_owned else "span_link"
-        return {
+        result = {
             "export_span_observed": True,
             "export_causality_status": causality_status,
             "export_attribution_status": "attributed",
@@ -1517,6 +1516,14 @@ def _attribute_export_span(
             "export_target_matched": target_matched,
             "export_target_match_basis": target_basis,
         }
+        if not compatible:
+            if attributed_target_mismatch is None:
+                attributed_target_mismatch = result
+            continue
+        return result
+
+    if attributed_target_mismatch is not None:
+        return attributed_target_mismatch
 
     if ambiguous_match is not None:
         return ambiguous_match

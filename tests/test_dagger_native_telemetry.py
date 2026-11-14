@@ -199,6 +199,7 @@ def _make_artifact_capture(
     isolated_capture: bool = True,
     include_export_file_span: bool = True,
     export_filename: str = "tool-versions.json",
+    export_host_path: str | None = None,
 ) -> dict:
     resource_attrs = [
         _kv("service.name", "dagger-engine"),
@@ -230,12 +231,17 @@ def _make_artifact_capture(
         ),
     ]
     if include_export_file_span:
+        export_span_name = (
+            f"export file {export_filename} to host {export_host_path}"
+            if export_host_path
+            else f"export file {export_filename}"
+        )
         core_spans.append(
             _span(
                 trace_id=trace_id,
                 span_id=export_file_id,
                 parent_span_id=export_id,
-                name=f"export file {export_filename} to host /tmp/{export_filename}",
+                name=export_span_name,
             )
         )
     scope_meta = (
@@ -696,12 +702,11 @@ class CorrelationTests(unittest.TestCase):
             check_exit_code=1,
             required_observability=True,
         )
-        art_cap = _make_artifact_capture()
-
         with tempfile.TemporaryDirectory() as tmpdir:
             art_file = Path(tmpdir) / "tool-versions.json"
             art_file.write_text('{"ruff": "0.16.10"}\n', encoding="utf-8")
             art_sha = dt.sha256_file(art_file)
+            art_cap = _make_artifact_capture(export_host_path=art_file.as_posix())
             art_rec = dt.correlate_capture(
                 art_cap,
                 entry_kind="artifact_function",
@@ -1349,6 +1354,25 @@ class OtlpReceiverTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             gh_text = gh_out.read_text(encoding="utf-8")
             self.assertIn("run_live_capture=true", gh_text)
+
+    def test_explicit_mismatched_host_path_preserves_attribution_without_binding(
+        self,
+    ) -> None:
+        capture = _make_artifact_capture(
+            export_host_path="/other/dir/tool-versions.json"
+        )
+        receipt = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+            artifact_exit_code=0,
+            artifact_path=Path("/expected/dir/tool-versions.json"),
+        )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertEqual(art["export_attribution_status"], "attributed")
+        self.assertIs(art["export_target_matched"], False)
+        self.assertEqual(art["export_target_match_basis"], "export_path_mismatch")
+        self.assertFalse(art["artifact_binding_verified"])
 
 
 if __name__ == "__main__":
