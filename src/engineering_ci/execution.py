@@ -110,13 +110,16 @@ def _verify_execution_binding(plan, root):
     if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
-        expected_tree = expected_tree or git.get("index_tree")
-        if not expected_tree:
-            return True, None, None
-        current = selection._git(root, "write-tree")
-        actual = current.stdout.strip() if current.returncode == 0 else None
-        if actual != expected_tree:
-            return False, "index_tree_mismatch", expected_tree
+        execution_tree = git.get("execution_tree")
+        index_tree = git.get("index_tree")
+        if execution_tree and index_tree and execution_tree != index_tree:
+            return False, "index_source_identity_mismatch", execution_tree
+        expected_tree = expected_tree or index_tree
+        refusal = selection.index_source_refusal(
+            root, expected_tree, index_file=git.get("index_file")
+        )
+        if refusal:
+            return False, refusal, expected_tree
         return True, None, expected_tree
     if snapshot == "worktree":
         binding = git.get("content_binding")
@@ -163,6 +166,7 @@ def _changeset_from_plan(plan, root):
         error=None if complete else "incomplete_plan_git",
         snapshot=str(git.get("snapshot") or "worktree"),
         index_tree=git.get("index_tree"),
+        index_file=git.get("index_file"),
         merge_tree=git.get("merge_tree"),
         base_tip=git.get("base_tip"),
     )
@@ -894,9 +898,23 @@ def execute(
             framework=framework,
             src_root=chosen.get("src_root", "src"),
             expected_tree=expected_tree,
+            index_tree=expected_tree
+            if plan["git"].get("snapshot") == "index"
+            else None,
+            index_file=plan["git"].get("index_file"),
             junit_path=junit_path,
             capture=native,
         )
+        if native.get("source_refusal"):
+            report["status"] = "not_executed"
+            report["exit_code"] = 4
+            report["reason"] = native["source_refusal"]
+            report["tests"] = {
+                "status": "not_executed",
+                "exit_code": 4,
+                "source_refusal": native["source_refusal"],
+            }
+            return report
         report["exit_code"] = exit_code
         report["native_stdout"] = native.get("stdout", "")
         report["native_stderr"] = native.get("stderr", "")

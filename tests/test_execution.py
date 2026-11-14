@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -614,6 +615,282 @@ def test_execute_refuses_stale_index_tree(repo):
     assert report["status"] == "not_executed"
     assert report["exit_code"] == 4
     assert report["reason"] == "index_tree_mismatch"
+
+
+def _external_git(path, index, *args):
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    return subprocess.run(
+        ["git", *args],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _external_tree(path, index):
+    return _external_git(path, index, "write-tree").strip()
+
+
+def test_execute_uses_plan_index_file_when_worktree_matches(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert "checks" in report, (report.get("status"), report.get("reason"))
+    assert report["checks"][0]["check_contract"]["status"] == "valid"
+
+
+def test_execute_rejects_conflicting_index_tree_identities(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    external_tree = _external_tree(path, external)
+    default_tree = run(path, "write-tree").strip()
+    assert external_tree != default_tree
+    for execution_tree, index_tree in (
+        (external_tree, default_tree),
+        (default_tree, external_tree),
+    ):
+        fake = FakeRunner()
+        report = execution.execute(
+            plan(
+                [],
+                git={
+                    "base_ref": base,
+                    "head_ref": "HEAD",
+                    "base_commit": base,
+                    "head_commit": base,
+                    "snapshot": "index",
+                    "execution_tree": execution_tree,
+                    "index_tree": index_tree,
+                    "index_file": str(external),
+                    "changed_paths": ["docs/new.md"],
+                },
+                check_scope=[{"name": "docs", "status": "selected"}],
+            ),
+            root=path,
+            hygiene_config=path / "ci-hygiene.toml",
+            runner=fake,
+        )
+        assert report["status"] == "not_executed"
+        assert report["reason"] == "index_source_identity_mismatch"
+        assert not fake.calls
+
+
+def test_execute_runs_tests_with_single_execution_tree(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "execution_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] == "passed"
+    assert report["tests"]["exit_code"] == 0
+
+
+def test_execute_runs_tests_with_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] != "not_executed", report.get("reason")
+    assert report["tests"]["status"] in {"passed", "failed"}
+    assert report["tests"].get("exit_code") != 4
+
+
+def test_execute_keeps_native_pytest_exit_four(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            ["tests/does_not_exist.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": _external_tree(path, external),
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+        ),
+        root=path,
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] != "index_source_refused"
+    assert report["tests"]["status"] == "failed"
+    assert report["tests"]["exit_code"] == 4
+    assert report["native_stderr"]
+
+
+def test_run_tests_reports_source_refusal_separately(repo):
+    path, _ = repo
+    capture = {}
+    code = selection.run_tests(
+        ["tests.test_pkg"],
+        root=path,
+        framework="unittest",
+        index_tree="0" * 40,
+        capture=capture,
+    )
+    assert code == 4
+    assert capture["source_refusal"] == "index_tree_mismatch"
+
+
+def test_execute_rejects_changed_external_index(repo, tmp_path):
+    path, base = repo
+    external = tmp_path / "external-index"
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    _external_git(path, external, "read-tree", "HEAD")
+    _external_git(path, external, "add", "docs/new.md")
+    expected = _external_tree(path, external)
+    (path / "docs/new.md").write_text("# changed index\n", encoding="utf-8")
+    _external_git(path, external, "add", "docs/new.md")
+    report = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "index",
+                "index_tree": expected,
+                "index_file": str(external),
+                "changed_paths": ["docs/new.md"],
+            },
+            check_scope=[{"name": "docs", "status": "selected"}],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_tree_mismatch"
+
+
+def test_execute_refuses_index_without_tree(repo):
+    path, base = repo
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_tree_missing"
+
+
+def test_execute_refuses_index_when_worktree_differs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_worktree_mismatch"
+
+
+def test_execute_refuses_index_with_untracked_inputs(repo):
+    path, base = repo
+    index_tree = run(path, "write-tree").strip()
+    (path / "docs/untracked.md").write_text("# untracked\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_untracked_inputs"
 
 
 def test_execute_refuses_worktree_content_drift(repo):

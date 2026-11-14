@@ -317,10 +317,14 @@ def check_id_for(name):
     return CHECK_IDS.get(name)
 
 
-def definition_for(name):
-    """Return the current definition for a built-in display name, or None."""
+def definition_for(name, version=None):
+    """Return the current definition, or a historical version when asked."""
     check_id = check_id_for(name)
-    return _CURRENT_BY_ID.get(check_id) if check_id else None
+    if not check_id:
+        return None
+    if version is None:
+        return _CURRENT_BY_ID.get(check_id)
+    return _BUILTIN_BY_VERSION.get((check_id, version))
 
 
 # Exact old→new checks consume the old source as native input. Other checks

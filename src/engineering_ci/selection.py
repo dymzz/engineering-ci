@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-from engineering_ci import plan_contract
+from engineering_ci import expected_checks, plan_contract
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -109,9 +109,11 @@ class ChangeSet:
     error: str | None = None
     snapshot: str = "worktree"
     index_tree: str | None = None
+    index_file: str | None = None
     merge_tree: str | None = None
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
+    source_refusal: str | None = None
 
     @property
     def execution_tree(self):
@@ -305,7 +307,8 @@ def load_config(path):
     )
 
 
-def _git(root, *args):
+def _git(root, *args, env=None):
+    environment = {**os.environ, **env} if env else None
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -314,7 +317,76 @@ def _git(root, *args):
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=environment,
     )
+
+
+def _git_bytes(root, *args, env=None):
+    environment = {**os.environ, **env} if env else None
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+
+
+def index_source_refusal(root, expected_tree, *, index_file=None):
+    """One Index source judgment shared by selection and execution.
+
+    Returns an explicit refusal code, or None only when the selected Index tree
+    and the worktree bytes consumed by native tools are provably equivalent.
+    """
+    if not expected_tree:
+        return "index_tree_missing"
+    env = (
+        {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
+        if index_file is not None
+        else None
+    )
+    written = _git(root, "write-tree", env=env)
+    if written.returncode != 0:
+        return "index_tree_unavailable"
+    if written.stdout.strip() != expected_tree:
+        return "index_tree_mismatch"
+    diff = _git(root, "diff", "--quiet", "--", env=env)
+    if diff.returncode == 1:
+        return "index_worktree_mismatch"
+    if diff.returncode != 0:
+        return "index_git_check_failed"
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env)
+    if untracked.returncode != 0:
+        return "index_git_check_failed"
+    if untracked.stdout:
+        return "index_untracked_inputs"
+    tracked = _git(root, "ls-files", "-v", "-z", env=env)
+    if tracked.returncode != 0:
+        return "index_git_check_failed"
+    for entry in tracked.stdout.split("\0"):
+        if not entry:
+            continue
+        tag, path = entry[0], entry[2:]
+        if tag != "S" and not tag.islower():
+            continue
+        blob = _git_bytes(root, "cat-file", "blob", f":{path}", env=env)
+        file = Path(root) / path
+        if blob.returncode != 0 or not file.is_file():
+            reason = (
+                "index_skip_worktree_bytes_mismatch"
+                if tag == "S"
+                else "index_assume_unchanged_bytes_mismatch"
+            )
+            return reason
+        if file.read_bytes() != blob.stdout:
+            reason = (
+                "index_skip_worktree_bytes_mismatch"
+                if tag == "S"
+                else "index_assume_unchanged_bytes_mismatch"
+            )
+            return reason
+    return None
+    return None
 
 
 def _resolve(root, ref):
@@ -465,6 +537,7 @@ def changeset(
     mode="worktree",
     before=None,
     after=None,
+    index_file=None,
 ):
     """Describe the Git snapshot behind a change set.
 
@@ -563,6 +636,11 @@ def changeset(
             snapshot="commit",
         )
     if mode == "index":
+        index_env = (
+            {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
+            if index_file is not None
+            else None
+        )
         diff = _git(
             root,
             "diff",
@@ -571,14 +649,28 @@ def changeset(
             "-z",
             "--cached",
             base_commit,
+            env=index_env,
         )
         index_tree = None
-        write_tree = _git(root, "write-tree")
+        write_tree = _git(root, "write-tree", env=index_env)
         index_tree = (
             write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
-        status = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+        status = _git(
+            root,
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            env=index_env,
+        )
+        if index_tree is None:
+            refusal = "index_tree_unavailable"
+        elif diff.returncode != 0:
+            refusal = "index_diff_failed"
+        else:
+            refusal = index_source_refusal(root, index_tree, index_file=index_file)
         return ChangeSet(
             root,
             base,
@@ -588,10 +680,14 @@ def changeset(
             tree,
             tuple(sorted(set(paths))),
             bool(status.stdout) if status.returncode == 0 else False,
-            diff.returncode == 0,
-            None if diff.returncode == 0 else "diff_failed",
+            diff.returncode == 0 and refusal is None,
+            refusal or (None if diff.returncode == 0 else "diff_failed"),
             snapshot="index",
             index_tree=index_tree,
+            index_file=str(Path(index_file).resolve())
+            if index_file is not None
+            else None,
+            source_refusal=refusal,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -798,6 +894,8 @@ def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=Fal
 
 def select(changes, config, *, root, full=False):
     """Select tests for one change set; unknown coverage escalates, never passes."""
+    if getattr(changes, "source_refusal", None):
+        raise SelectionError(changes.source_refusal)
     root = Path(root)
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
@@ -1106,6 +1204,18 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     root, config_path = Path(root), Path(config_path)
     tach_path = root / config.tach
     graph = _graph_validation(selection, config, root, tach_validation)
+    scope = _check_scope(selection, config, root)
+    content_binding = (
+        worktree_content_binding(root, selection.changeset.paths)
+        if selection.changeset.snapshot == "worktree" and selection.changeset.paths
+        else None
+    )
+    expected = expected_checks.derive_expected_checks(
+        selection.changeset,
+        scope,
+        config_path=config_path,
+        content_binding=content_binding,
+    )
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
@@ -1136,15 +1246,12 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "worktree_dirty": selection.changeset.worktree_dirty,
             "snapshot": selection.changeset.snapshot,
             "index_tree": selection.changeset.index_tree,
+            "index_file": selection.changeset.index_file,
             "merge_tree": selection.changeset.merge_tree,
             "execution_tree": selection.changeset.execution_tree,
             "references": list(selection.changeset.references),
             "changed_paths": list(selection.changeset.paths),
-            "content_binding": (
-                worktree_content_binding(root, selection.changeset.paths)
-                if selection.changeset.snapshot == "worktree"
-                else None
-            ),
+            "content_binding": content_binding,
             "source_tree_id": (
                 tree_content_id(root, selection.changeset.execution_tree)
                 if selection.changeset.execution_tree
@@ -1169,7 +1276,8 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
                 name: list(items) for name, items in sorted(selection.reasons.items())
             },
         },
-        "check_scope": _check_scope(selection, config, root),
+        "check_scope": scope,
+        "expected_checks": expected,
         "prerequisite_actions": {
             name: dict(spec)
             for name, spec in sorted(config.prerequisite_actions.items())
@@ -1615,6 +1723,8 @@ def run_tests(
     src_root="src",
     python=None,
     expected_tree=None,
+    index_tree=None,
+    index_file=None,
     junit_path=None,
     capture=None,
 ):
@@ -1623,9 +1733,18 @@ def run_tests(
     if not modules:
         return 3
     root = Path(root)
-    if expected_tree is not None:
+    if index_tree is not None:
+        refusal = index_source_refusal(root, index_tree, index_file=index_file)
+        if refusal:
+            if capture is not None:
+                capture["source_refusal"] = refusal
+            print(f"execution refused: {refusal}", file=sys.stderr)
+            return 4
+    elif expected_tree is not None:
         current = _tree_of(root, "HEAD")
         if current != expected_tree:
+            if capture is not None:
+                capture["source_refusal"] = "checkout_tree_mismatch"
             print(
                 "execution refused: checkout tree does not match the selected snapshot",
                 file=sys.stderr,
@@ -1683,6 +1802,11 @@ def main(argv=None):
     parser.add_argument("--before")
     parser.add_argument("--after")
     parser.add_argument(
+        "--index-file",
+        type=Path,
+        help="Use this Git index for --mode index instead of the default index",
+    )
+    parser.add_argument(
         "--refs",
         help="Comma-separated before:after pairs for --mode multi",
     )
@@ -1708,11 +1832,8 @@ def main(argv=None):
     mode.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    config_path = args.config if args.config.is_absolute() else root / args.config
-    try:
-        config = load_config(config_path)
-    except SelectionError as error:
-        parser.exit(1, f"selection rejected: {error.code}\n")
+    if args.index_file is not None and args.mode != "index":
+        parser.exit(2, "--index-file requires --mode index\n")
     if args.mode == "multi":
         try:
             refs = [
@@ -1733,7 +1854,15 @@ def main(argv=None):
             mode=args.mode,
             before=args.before,
             after=args.after,
+            index_file=args.index_file,
         )
+    if getattr(changes, "source_refusal", None):
+        parser.exit(4, f"source rejected: {changes.source_refusal}\n")
+    config_path = args.config if args.config.is_absolute() else root / args.config
+    try:
+        config = load_config(config_path)
+    except SelectionError as error:
+        parser.exit(1, f"selection rejected: {error.code}\n")
     selection = select(
         changes,
         config,
@@ -1775,6 +1904,8 @@ def main(argv=None):
             framework=config.framework,
             src_root=config.src_root,
             expected_tree=selection.changeset.execution_tree,
+            index_tree=selection.changeset.index_tree,
+            index_file=selection.changeset.index_file,
             junit_path=args.junit,
         )
     print(f"status: {selection.status}")
