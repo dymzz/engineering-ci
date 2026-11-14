@@ -944,6 +944,48 @@ def test_execute_push_requires_matching_head_commit(repo):
     assert report["reason"] in {"tree_mismatch", "head_commit_mismatch"}
 
 
+def test_execute_commit_refuses_dirty_worktree(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    (path / "src/pkg/sub.py").write_text("VALUE = 77\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "worktree_tree_mismatch"
+
+
+def test_execute_commit_refuses_untracked_inputs(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    (path / "docs/untracked.md").write_text("# untracked\n", encoding="utf-8")
+    value = plan(
+        ["tests.test_pkg"],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+    )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "worktree_untracked_inputs"
+
+
 def test_execute_pr_merge_refuses_feature_head(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")
@@ -1194,3 +1236,432 @@ def test_genuine_no_documents_does_not_become_a_failure(repo):
     assert check["status"] == "not_applicable"
     assert check["reason"] == "no_applicable_documents"
     assert check["inventory"]["exit_code"] == 0
+
+
+def test_execute_refuses_skip_worktree_and_assume_unchanged_on_commit(repo):
+    path, base = repo
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    git = {
+        "base_ref": base,
+        "head_ref": "HEAD",
+        "base_commit": base,
+        "head_commit": base,
+        "snapshot": "commit",
+        "execution_tree": tree,
+        "changed_paths": [],
+    }
+    value = plan(["tests.test_pkg"], tree=tree, git=git)
+
+    run(path, "update-index", "--skip-worktree", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 50\n", encoding="utf-8")
+    try:
+        report_skip = execution.execute(value, root=path)
+        assert report_skip["status"] == "not_executed"
+        assert report_skip["exit_code"] == 4
+        assert report_skip["reason"] == "checkout_skip_worktree_bytes_mismatch"
+    finally:
+        run(path, "update-index", "--no-skip-worktree", "src/pkg/sub.py")
+        run(path, "checkout", "--", "src/pkg/sub.py")
+
+    run(path, "update-index", "--assume-unchanged", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 51\n", encoding="utf-8")
+    try:
+        report_assume = execution.execute(value, root=path)
+        assert report_assume["status"] == "not_executed"
+        assert report_assume["exit_code"] == 4
+        assert report_assume["reason"] == "checkout_assume_unchanged_bytes_mismatch"
+    finally:
+        run(path, "update-index", "--no-assume-unchanged", "src/pkg/sub.py")
+        run(path, "checkout", "--", "src/pkg/sub.py")
+
+
+def test_execute_verifies_declared_hygiene_and_sources_configs(repo, tmp_path):
+    path, _base = repo
+    runner = FakeRunner()
+
+    # 1. Digest drift in declared hygiene config refuses tool execution
+    hygiene_path = path / "ci-hygiene.toml"
+    drift_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    drift_plan["inputs"] = {
+        "hygiene": {
+            "path": "ci-hygiene.toml",
+            "sha256": "0" * 64,
+            "schema_version": 1,
+        }
+    }
+    drift_report = execution.execute(drift_plan, root=path, runner=runner)
+    assert drift_report["status"] == "failed"
+    assert drift_report["checks"][0]["reason"] == "hygiene_config_digest_mismatch"
+    assert not runner.calls
+
+    # 2. Override path mismatch is refused
+    other_hygiene = path / "alt-hygiene.toml"
+    other_hygiene.write_bytes(hygiene_path.read_bytes())
+    real_sha = hashlib.sha256(hygiene_path.read_bytes()).hexdigest()
+    override_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    override_plan["inputs"] = {
+        "hygiene": {"path": "ci-hygiene.toml", "sha256": real_sha, "schema_version": 1}
+    }
+    override_report = execution.execute(
+        override_plan, root=path, hygiene_config=other_hygiene, runner=runner
+    )
+    assert override_report["checks"][0]["reason"] == "hygiene_config_override_mismatch"
+
+    # 3. Path escape outside repository root is refused
+    escape_cfg = tmp_path / "outside-hygiene.toml"
+    escape_cfg.write_bytes(hygiene_path.read_bytes())
+    escape_plan = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    escape_plan["inputs"] = {"hygiene": {"path": "../outside-hygiene.toml"}}
+    escape_report = execution.execute(escape_plan, root=path, runner=runner)
+    assert escape_report["checks"][0]["reason"] == "hygiene_config_outside_root"
+
+    # 4. Sources config digest drift is also refused without invoking tools
+    (path / "ci-sources.toml").write_text(
+        'schema_version = 1\nmanifest = "data/manifest.json"\nacquired_roots = ["data/acquired"]\n',
+        encoding="utf-8",
+    )
+    src_drift = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "source", "status": "selected"}],
+    )
+    src_drift["inputs"] = {
+        "sources": {"path": "ci-sources.toml", "sha256": "1" * 64, "schema_version": 1}
+    }
+    src_report = execution.execute(src_drift, root=path, runner=runner)
+    assert src_report["status"] == "failed"
+    assert src_report["checks"][0]["reason"] == "sources_config_digest_mismatch"
+    assert not runner.calls
+
+
+def test_tach_external_unauthorized_failure_is_preserved_with_attribution(
+    repo, monkeypatch
+):
+    path, _base = repo
+    value = plan(
+        [],
+        git={"snapshot": "worktree"},
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+
+    def fake_hygiene_run(changes, cfg, *, root, runner):
+        return {
+            "status": "failed",
+            "checks": [
+                {"name": "tach", "status": "passed", "exit_code": 0, "findings": []},
+                {
+                    "name": "tach_external",
+                    "status": "failed",
+                    "exit_code": 1,
+                    "reason": "tach_external_failed",
+                    "findings": [],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(hygiene, "run", fake_hygiene_run)
+    report = execution.execute(
+        value, root=path, hygiene_config=path / "ci-hygiene.toml", runner=FakeRunner()
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert report["routing_conflicts"][0]["check"] == "tach_external"
+    by_name = {item["name"]: item for item in report["checks"]}
+    assert by_name["tach"]["plan_authorized"] is True
+    assert by_name["tach"]["status"] == "passed"
+    assert by_name["tach_external"]["plan_authorized"] is False
+    assert by_name["tach_external"]["selected"] == "not_selected"
+    assert by_name["tach_external"]["status"] == "failed"
+    assert by_name["tach_external"]["native_result"]["status"] == "failed"
+
+
+def test_dagger_export_check_origin_is_host_with_dagger_parent(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["docs/guide.md"],
+        },
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert check["execution_context"] == "dagger_export"
+    assert check["parent_execution_context"] == "dagger"
+    assert check["result_origin"] == "host"
+    assert check["native_result"]["result_origin"] == "host"
+    assert check["native_result"]["runner_ref"] == "execution:dagger_export"
+    assert check["source_ref"]["actual_execution_source"] == "dagger_directory"
+
+
+def test_target_test_gate_blocks_before_container_startup():
+    gated_tach = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    gated_tach["selection"]["requires_tach_check"] = True
+    gated_tach["selection"]["tach_graph_validation"] = {"status": "not_executed"}
+    assert execution.target_test_gate(gated_tach) == ("tach_graph_unvalidated", None)
+
+    gated_cov = plan(["tests.test_pkg"], git={"snapshot": "worktree"})
+    gated_cov["selection"]["coverage_required"] = True
+    assert execution.target_test_gate(gated_cov) == (
+        "coverage_evidence_required",
+        "not_measured",
+    )
+
+    main_source = (ROOT / ".dagger/src/engineering_ci_module/main.py").read_text(
+        encoding="utf-8"
+    )
+    gate_pos = main_source.index("execution.target_test_gate(value)")
+    container_pos = main_source.index("self._uv_container(")
+    assert gate_pos < container_pos
+
+
+def test_execute_refuses_ignored_export_subdir_inside_parent_repo(repo):
+    path, _base = repo
+    (path / ".gitignore").write_text("exports/\n", encoding="utf-8")
+    run(path, "add", ".gitignore")
+    run(path, "commit", "-q", "-m", "ignore exports")
+    head = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+
+    exported = path / "exports/sub"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git", "exports"))
+    # Diverge the exported subdirectory bytes while parent repo stays completely clean
+    (exported / "src/pkg/sub.py").write_text("VALUE = 999\n", encoding="utf-8")
+
+    assert selection._resolve_git_dir(exported) is None
+    assert selection.worktree_tree_refusal(exported, tree) == "source_git_root_mismatch"
+
+    commit_plan = plan(
+        [],
+        tree=tree,
+        git={
+            "base_ref": head,
+            "head_ref": "HEAD",
+            "base_commit": head,
+            "head_commit": head,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": [],
+        },
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    report = execution.execute(commit_plan, root=exported)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] == "source_git_root_mismatch"
+
+    # Even with source_tree_id handoff, modified export directory must be rejected
+    tampered_plan = json.loads(json.dumps(commit_plan))
+    tampered_plan["git"]["source_tree_id"] = selection.tree_content_id(path, tree)
+    tampered_plan["check_scope"] = [{"name": "docs", "status": "selected"}]
+    tampered_report = execution.execute(tampered_plan, root=exported)
+    assert tampered_report["status"] == "not_executed"
+    assert tampered_report["reason"] == "source_tree_mismatch"
+
+
+def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(repo):
+    path, _base = repo
+    (path / "custom_pkg").mkdir()
+    (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "add custom pkg")
+    base = run(path, "rev-parse", "HEAD~1").strip()
+
+    sel_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        sel_text.split("[prerequisites]")[0]
+        + '\n[check_scope]\ncode_prefixes = ["custom_pkg/"]\n',
+        encoding="utf-8",
+    )
+    hygiene_text = (path / "ci-hygiene.toml").read_text(encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        hygiene_text.replace("external = false", "external = true"),
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml", "ci-hygiene.toml")
+    run(path, "commit", "-q", "-m", "custom code prefix and tach external")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # Modify custom_pkg/mod.py only; default code_prefixes would miss it
+    (path / "custom_pkg/mod.py").write_text("X = 2\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    assert p["selection"]["code_prefixes"] == ["custom_pkg/"]
+
+    runner = FakeRunner()
+    report = execution.execute(p, root=path, runner=runner)
+    by_name = {item["name"]: item for item in report["checks"]}
+    assert by_name["tach"]["status"] == "passed"
+    assert by_name["tach_external"]["status"] == "passed"
+    assert any("check-external" in call[0] for call in runner.calls)
+    assert any("vulture" in call[0] for call in runner.calls)
+
+    # 1. Unauthorized deletion of tach_external from Plan while ci-hygiene.toml has external = true:
+    #    execution MUST NOT start tach check-external AND MUST block the report as configured_check_omitted_from_plan
+    without_ext = json.loads(json.dumps(p))
+    without_ext["check_scope"] = [
+        item for item in without_ext["check_scope"] if item["name"] != "tach_external"
+    ]
+    without_ext["selection"]["check_scope"] = [
+        item
+        for item in without_ext["selection"].get("check_scope", [])
+        if item["name"] != "tach_external"
+    ]
+    if "expected_checks" in without_ext:
+        without_ext["expected_checks"]["checks"] = [
+            item
+            for item in without_ext["expected_checks"].get("checks", [])
+            if item.get("name") != "tach_external"
+        ]
+        without_ext["expected_checks"]["expected_set_ref"] = (
+            selection.expected_checks.set_identity(
+                without_ext["expected_checks"]["checks"],
+                without_ext["expected_checks"].get("non_check_obligations"),
+                schema_version=without_ext["expected_checks"].get("schema_version", 1),
+            )
+        )
+    runner_no_ext = FakeRunner()
+    report_no_ext = execution.execute(without_ext, root=path, runner=runner_no_ext)
+    external_calls = [
+        call[0] for call in runner_no_ext.calls if "check-external" in call[0]
+    ]
+    assert external_calls == []
+    assert report_no_ext["status"] == "blocked"
+    assert report_no_ext["reason"] == "configured_check_omitted_from_plan"
+    omitted_entry = next(
+        item for item in report_no_ext["checks"] if item["name"] == "tach_external"
+    )
+    assert omitted_entry["status"] == "not_executed"
+    assert omitted_entry["execution_started"] is False
+    assert omitted_entry["plan_authorized"] is False
+    assert omitted_entry["routing_conflict"] == "configured_check_omitted_from_plan"
+
+    # 2. Authorized disablement (external = false in ci-hygiene.toml):
+    #    tach check-external is not started AND report passes cleanly
+    (path / "ci-hygiene.toml").write_text(hygiene_text, encoding="utf-8")
+    p_disabled = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    runner_disabled = FakeRunner()
+    report_disabled = execution.execute(p_disabled, root=path, runner=runner_disabled)
+    assert report_disabled["status"] == "passed"
+    assert [
+        call[0] for call in runner_disabled.calls if "check-external" in call[0]
+    ] == []
+    assert all(item["name"] != "tach_external" for item in report_disabled["checks"])
+
+
+def test_execution_refuses_missing_target_tree_and_deleted_push_ref(repo):
+    path, _ = repo
+    head = run(path, "rev-parse", "HEAD").strip()
+
+    # 1. Missing target tree on commit/push/pr_merge snapshots is refused before running tools
+    for snap, expected_reason in (
+        ("commit", "target_tree_missing"),
+        ("push", "target_tree_missing"),
+        ("pr_merge", "pr_merge_tree_missing"),
+    ):
+        missing_tree_plan = plan(
+            [],
+            check_scope=[{"name": "whitespace", "status": "selected", "inputs": []}],
+            git={
+                "snapshot": snap,
+                "execution_tree": None,
+                "tree": None,
+                "merge_tree": None,
+            },
+        )
+        runner = FakeRunner()
+        report = execution.execute(missing_tree_plan, root=path, runner=runner)
+        assert report["status"] == "not_executed"
+        assert report["exit_code"] == 4
+        assert report["reason"] == expected_reason
+        assert runner.calls == []
+
+    # 2. Deleted ref push plan has no target tree and is refused by execution without fabricating PASS
+    del_changes = selection.changeset(
+        path,
+        base=head,
+        head="refs/heads/gone",
+        mode="push",
+        before=head,
+        after=selection.ZERO_OID,
+        local_ref="(delete)",
+        remote_ref="refs/heads/gone",
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
+    del_sel = selection.select(del_changes, cfg, root=path)
+    del_plan = selection.plan(
+        del_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    runner_del = FakeRunner()
+    report_del = execution.execute(del_plan, root=path, runner=runner_del)
+    assert report_del["status"] == "not_executed"
+    assert report_del["exit_code"] == 4
+    assert report_del["reason"] == "deleted_ref_no_execution_tree"
+    assert runner_del.calls == []
+
+    # 3. Forging a target tree on a deleted ref push plan is refused
+    head_tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    forged_del = plan(
+        [],
+        check_scope=[{"name": "whitespace", "status": "selected", "inputs": []}],
+        git={
+            "snapshot": "push",
+            "ref_action": "delete",
+            "execution_tree": head_tree,
+            "tree": head_tree,
+            "head_commit": None,
+        },
+    )
+    report_forged = execution.execute(forged_del, root=path, runner=FakeRunner())
+    assert report_forged["status"] == "not_executed"
+    assert report_forged["exit_code"] == 4
+    assert report_forged["reason"] == "deleted_ref_forged_target_tree"

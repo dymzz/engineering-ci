@@ -1109,3 +1109,200 @@ def test_cli_run_without_tests_is_not_success(repo):
         )
         == 3
     )
+
+
+def test_linked_worktree_tree_content_id_and_worktree_tree_refusal(repo, tmp_path):
+    path, base = repo
+    linked = tmp_path / "linked-wt"
+    run(path, "worktree", "add", "-q", "-b", "wt-branch", str(linked), base)
+    try:
+        tree = run(linked, "rev-parse", "HEAD^{tree}").strip()
+        assert selection._resolve_git_dir(linked) is not None
+        assert selection.tree_content_id(
+            linked, tree
+        ) == selection.directory_content_id(linked)
+        assert selection.worktree_tree_refusal(linked, tree) is None
+
+        (linked / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
+        assert selection.worktree_tree_refusal(linked, tree) == "worktree_tree_mismatch"
+        run(linked, "update-index", "--skip-worktree", "src/pkg/sub.py")
+        assert (
+            selection.worktree_tree_refusal(linked, tree)
+            == "checkout_skip_worktree_bytes_mismatch"
+        )
+        assert (
+            selection.run_tests(("tests.test_pkg",), root=linked, expected_tree=tree)
+            == 4
+        )
+        tach_result = selection._tach_check(
+            linked,
+            config(linked),
+            selection.changeset(linked, base=base, head="HEAD", mode="commit"),
+        )
+        assert tach_result["status"] == "refused"
+        assert tach_result["reason"] == "checkout_skip_worktree_bytes_mismatch"
+        run(linked, "update-index", "--no-skip-worktree", "src/pkg/sub.py")
+        run(linked, "checkout", "--", "src/pkg/sub.py")
+
+        run(linked, "update-index", "--assume-unchanged", "src/pkg/sub.py")
+        (linked / "src/pkg/sub.py").write_text("VALUE = 100\n", encoding="utf-8")
+        assert (
+            selection.worktree_tree_refusal(linked, tree)
+            == "checkout_assume_unchanged_bytes_mismatch"
+        )
+    finally:
+        run(linked, "update-index", "--no-assume-unchanged", "src/pkg/sub.py")
+        run(path, "worktree", "remove", "--force", str(linked))
+
+
+def test_push_ref_classification_new_delete_force_missing_and_non_commit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "second")
+    second = run(path, "rev-parse", "HEAD").strip()
+
+    # New ref without controlled policy baseline never assumes origin/main merge-base
+    new_unknown = selection.changeset(
+        path,
+        base=selection.ZERO_OID,
+        mode="push",
+        before=selection.ZERO_OID,
+        after=second,
+        remote_ref="refs/heads/feature",
+    )
+    assert new_unknown.ref_action == "create"
+    assert new_unknown.baseline_status == "unknown"
+    assert new_unknown.complete is False
+    assert new_unknown.error == "new_ref_baseline_unknown"
+
+    # Explicit controlled baseline allows scoped diff
+    new_policy = selection.changeset(
+        path,
+        base=selection.ZERO_OID,
+        mode="push",
+        before=selection.ZERO_OID,
+        after=second,
+        remote_ref="refs/heads/feature",
+        new_ref_baseline=base,
+    )
+    assert new_policy.ref_action == "create"
+    assert new_policy.baseline_status == "policy"
+    assert new_policy.complete is True
+    assert new_policy.paths == ("src/pkg/sub.py",)
+
+    # Controlled [push] policy in ci-selection.toml resolves new_ref_baseline per target pattern
+    orig_sel_toml = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        orig_sel_toml
+        + f'\n[push]\nnew_ref_baseline = "{base}"\n[push.target_baselines]\n"refs/heads/*" = "{base}"\n',
+        encoding="utf-8",
+    )
+    push_cfg = selection.load_config(path / "ci-selection.toml")
+    cfg_policy = selection.changeset(
+        path,
+        base=selection.ZERO_OID,
+        mode="push",
+        before=selection.ZERO_OID,
+        after=second,
+        remote_ref="refs/heads/feature",
+        config=push_cfg,
+    )
+    assert cfg_policy.ref_action == "create"
+    assert cfg_policy.baseline_status == "policy"
+    assert cfg_policy.complete is True
+    assert cfg_policy.paths == ("src/pkg/sub.py",)
+    (path / "ci-selection.toml").write_text(orig_sel_toml, encoding="utf-8")
+
+    # Deleting remote ref marks content checks not_applicable and preserves ref_deletion obligation
+    deleted_cs = selection.changeset(
+        path,
+        base=base,
+        mode="push",
+        before=base,
+        after=selection.ZERO_OID,
+        remote_ref="refs/heads/old",
+    )
+    assert deleted_cs.ref_action == "delete"
+    assert deleted_cs.complete is True
+    assert deleted_cs.non_check_obligations == ("ref_deletion",)
+    deleted_sel = selection.select(deleted_cs, config(path), root=path)
+    assert deleted_sel.status == "not_applicable"
+    deleted_plan = selection.plan(
+        deleted_sel,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    scope = {item["name"]: item for item in deleted_plan["check_scope"]}
+    assert scope["docs"]["status"] == "not_applicable"
+    assert scope["docs"]["reason"] == "remote_ref_deleted"
+    assert any(
+        ob["kind"] == "ref_deletion"
+        for ob in deleted_plan["expected_checks"].get("non_check_obligations", [])
+    )
+
+    # Non-fast-forward force push with available old OID computes exact diff
+    run(path, "checkout", "-q", "-b", "alt", base)
+    (path / "src/pkg/other.py").write_text("VALUE = 3\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "alt")
+    alt = run(path, "rev-parse", "HEAD").strip()
+    force_cs = selection.changeset(
+        path, base=second, mode="push", before=second, after=alt
+    )
+    assert force_cs.ref_action == "force_update"
+    assert force_cs.force_push is True
+    assert force_cs.complete is True
+    assert set(force_cs.paths) == {"src/pkg/other.py", "src/pkg/sub.py"}
+
+    # Missing old OID stays incomplete without fake pass
+    missing_old = selection.changeset(
+        path, base="f" * 40, mode="push", before="f" * 40, after=alt
+    )
+    assert missing_old.complete is False
+    assert missing_old.error == "old_object_unavailable"
+    assert missing_old.baseline_status == "old_object_unavailable"
+
+    # Non-commit object (tree/blob OID) is classified explicitly
+    tree_oid = run(path, "rev-parse", f"{alt}^{{tree}}").strip()
+    non_commit = selection.changeset(
+        path, base=base, mode="push", before=base, after=tree_oid
+    )
+    assert non_commit.complete is False
+    assert non_commit.error == "non_commit_object"
+    assert non_commit.object_type == "tree"
+
+
+def test_pre_push_stdin_and_plan_records_hygiene_and_sources_inputs(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 5\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "c1")
+    c1 = run(path, "rev-parse", "HEAD").strip()
+
+    parsed = selection.parse_pre_push_stdin(
+        f"refs/heads/main {c1} refs/heads/main {base}\n"
+        f"refs/heads/del {selection.ZERO_OID} refs/heads/del {base}\n"
+    )
+    multi = selection.changeset_multi(path, parsed)
+    assert multi.snapshot == "multi"
+    assert multi.base_commit is None
+    assert multi.head_commit is None
+    assert len(multi.references) == 2
+
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding", "docs", "vulture", "tach"]\n'
+        "[tach]\nexternal = true\n",
+        encoding="utf-8",
+    )
+    sel = select(path, base)
+    p = selection.plan(
+        sel, config=config(path), config_path=path / "ci-selection.toml", root=path
+    )
+    assert "hygiene" in p["inputs"]
+    assert p["inputs"]["hygiene"]["path"] == "ci-hygiene.toml"
+    scope = {item["name"]: item for item in p["check_scope"]}
+    assert "whitespace" in scope
+    assert "forwarding" in scope
+    assert "tach_external" in scope

@@ -19,7 +19,9 @@ from . import check_contract, hygiene, plan_contract, selection, sources
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
-_HYGIENE_CHECKS = frozenset({"docs", "tach", "vulture", "whitespace", "forwarding"})
+_HYGIENE_CHECKS = frozenset(
+    {"docs", "tach", "tach_external", "vulture", "whitespace", "forwarding"}
+)
 
 
 class ExecutionError(ValueError):
@@ -98,11 +100,12 @@ def _sources_config_path(plan, root, sources_config):
     )
 
 
-def _verify_execution_binding(plan, root):
+def _verify_execution_binding(plan, root, *, execution_context="host"):
     """Return (ok, reason, expected_tree). ok False means refuse execution."""
     git = plan["git"]
     expected_tree = git.get("execution_tree")
-    snapshot = git.get("snapshot")
+    explicit_snapshot = git.get("snapshot")
+    snapshot = explicit_snapshot
     if snapshot is not None and (
         not isinstance(snapshot, str) or snapshot not in plan_contract.GIT_SNAPSHOTS
     ):
@@ -110,6 +113,8 @@ def _verify_execution_binding(plan, root):
     if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
+        if execution_context == "dagger_export":
+            return False, "dagger_export_index_unsupported", expected_tree
         execution_tree = git.get("execution_tree")
         index_tree = git.get("index_tree")
         if execution_tree and index_tree and execution_tree != index_tree:
@@ -132,7 +137,50 @@ def _verify_execution_binding(plan, root):
         return True, None, None
     if snapshot == "multi":
         return False, "multi_ref_requires_per_ref_execution", None
+    if snapshot == "push" and git.get("ref_action") == "delete":
+        if expected_tree or git.get("tree") or git.get("head_commit"):
+            return False, "deleted_ref_forged_target_tree", expected_tree
+        return False, "deleted_ref_no_execution_tree", None
+    if snapshot == "pr_merge":
+        merge_tree = git.get("merge_tree")
+        if expected_tree and merge_tree and expected_tree != merge_tree:
+            return False, "pr_merge_tree_mismatch", expected_tree
+        expected_tree = expected_tree or merge_tree
+        if not expected_tree:
+            return False, "pr_merge_tree_missing", None
+    elif snapshot in {"commit", "push"}:
+        tree_field = git.get("tree")
+        if expected_tree and tree_field and expected_tree != tree_field:
+            return False, "target_tree_mismatch", expected_tree
+        expected_tree = expected_tree or tree_field
+        if not expected_tree and explicit_snapshot in {"commit", "push"}:
+            return False, "target_tree_missing", None
     if expected_tree:
+        has_git_root = (
+            execution_context != "dagger_export"
+            and selection._resolve_git_dir(root) is not None
+        )
+        if not has_git_root:
+            source_tree_id = git.get("source_tree_id")
+            if source_tree_id:
+                if selection.directory_content_id(root) != source_tree_id:
+                    return False, "source_tree_mismatch", expected_tree
+                return True, None, expected_tree
+            in_parent_repo = False
+            if execution_context != "dagger_export":
+                top = selection._git(root, "rev-parse", "--show-toplevel")
+                in_parent_repo = bool(top and top.returncode == 0)
+            if (
+                explicit_snapshot is not None
+                or in_parent_repo
+                or execution_context == "dagger_export"
+            ):
+                reason = (
+                    "dagger_export_source_identity_missing"
+                    if execution_context == "dagger_export"
+                    else "source_git_root_mismatch"
+                )
+                return False, reason, expected_tree
         actual = selection._tree_of(root, "HEAD")
         if actual != expected_tree:
             reason = (
@@ -141,18 +189,25 @@ def _verify_execution_binding(plan, root):
                 else "tree_mismatch"
             )
             return False, reason, expected_tree
-    head_commit = git.get("head_commit")
-    if snapshot in {"commit", "push"} and head_commit:
-        actual_head = selection._resolve(root, "HEAD")
-        if actual_head != head_commit:
-            return False, "head_commit_mismatch", expected_tree
+        head_commit = git.get("head_commit")
+        if snapshot in {"commit", "push"} and head_commit:
+            actual_head = selection._resolve(root, "HEAD")
+            if actual_head != head_commit:
+                return False, "head_commit_mismatch", expected_tree
+        if has_git_root and snapshot in {"commit", "push", "pr_merge"}:
+            refusal = selection.worktree_tree_refusal(root, expected_tree)
+            if refusal:
+                return False, refusal, expected_tree
     return True, None, expected_tree
 
 
 def _changeset_from_plan(plan, root):
     git = plan["git"]
     paths = tuple(git.get("changed_paths") or ())
-    complete = bool(git.get("base_commit")) and "changed_paths" in git
+    deleted = tuple(git.get("deleted_paths") or ())
+    complete = (
+        bool(git.get("base_commit")) or git.get("ref_action") == "delete"
+    ) and "changed_paths" in git
     return selection.ChangeSet(
         root=Path(root),
         base_ref=str(git.get("base_ref") or ""),
@@ -169,7 +224,105 @@ def _changeset_from_plan(plan, root):
         index_file=git.get("index_file"),
         merge_tree=git.get("merge_tree"),
         base_tip=git.get("base_tip"),
+        deleted_paths=deleted,
+        ref_action=git.get("ref_action"),
+        object_type=git.get("object_type"),
+        force_push=bool(git.get("force_push", False)),
+        baseline_status=git.get("baseline_status"),
     )
+
+
+def _load_verified_config(
+    plan,
+    root,
+    override,
+    *,
+    key,
+    default_name,
+    loader,
+    error_type,
+    identity_fn,
+):
+    resolved_root = Path(root).resolve()
+    inputs = plan.get("inputs") or {}
+    declared = inputs.get(key) if isinstance(inputs, dict) else None
+    config_path = _config_path(
+        plan, resolved_root, override, key=key, default_name=default_name
+    )
+    try:
+        resolved_path = config_path.resolve()
+    except OSError:
+        return None, None, None, f"{key}_config_read_failed"
+    if not resolved_path.is_relative_to(resolved_root):
+        return None, None, None, f"{key}_config_outside_root"
+    if override is not None and isinstance(declared, dict) and declared.get("path"):
+        declared_raw = Path(declared["path"])
+        declared_resolved = (
+            declared_raw if declared_raw.is_absolute() else resolved_root / declared_raw
+        ).resolve()
+        if declared_resolved != resolved_path:
+            return None, None, None, f"{key}_config_override_mismatch"
+    try:
+        digest_before = check_contract.file_digest(resolved_path)
+        loaded = loader(resolved_path)
+        digest_after = check_contract.file_digest(resolved_path)
+    except (OSError, error_type) as error:
+        code = getattr(error, "code", "read_failed")
+        return None, None, None, f"{key}_config_{code}"
+    if digest_before != digest_after:
+        return None, None, None, f"{key}_config_changed_during_read"
+    if isinstance(declared, dict):
+        if declared.get("sha256") is not None and digest_after != declared["sha256"]:
+            return None, None, None, f"{key}_config_digest_mismatch"
+        if declared.get("effective_check_config_ref") is not None:
+            actual_identity = identity_fn(resolved_path, loaded, root=resolved_root)
+            if (
+                actual_identity.get("effective_check_config_ref")
+                != declared["effective_check_config_ref"]
+            ):
+                return None, None, None, f"{key}_config_identity_mismatch"
+    return loaded, resolved_path, digest_after, None
+
+
+def _hygiene_failure_results(wanted, selected_by_name, reason):
+    return [
+        {
+            "name": name,
+            "selected": selected_by_name[name].get("status"),
+            "status": "failed",
+            "reason": reason,
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+        for name in wanted
+    ], True
+
+
+def _resolved_code_prefixes(plan, root):
+    selection_block = plan.get("selection") or {}
+    code_prefixes = selection_block.get("code_prefixes")
+    if code_prefixes is not None and not (
+        isinstance(code_prefixes, list)
+        and all(isinstance(item, str) and item for item in code_prefixes)
+    ):
+        return None, "selection_code_prefixes_invalid"
+    sel_path = Path(root).resolve() / "ci-selection.toml"
+    gen_sha = (plan.get("generator") or {}).get("config_sha256")
+    if (
+        isinstance(gen_sha, str)
+        and sel_path.is_file()
+        and check_contract.file_digest(sel_path) == gen_sha
+    ):
+        try:
+            loaded_sel = selection.load_config(sel_path)
+        except (OSError, selection.SelectionError):
+            return None, "selection_config_invalid"
+        expected_prefixes = list(loaded_sel.check_scope.code_prefixes)
+        if code_prefixes is None:
+            code_prefixes = expected_prefixes
+        elif list(code_prefixes) != expected_prefixes:
+            return None, "selection_code_prefixes_mismatch"
+    return (tuple(code_prefixes) if code_prefixes is not None else None), None
 
 
 def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
@@ -177,70 +330,112 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
     wanted = tuple(selected_by_name)
-    if not wanted:
+    has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
+    if not wanted and not has_bound_hygiene:
         return [], False
-    config_path = _hygiene_config_path(plan, root, hygiene_config)
-    try:
-        digest_before = check_contract.file_digest(config_path)
-        config = hygiene.load_config(config_path)
-        digest_after = check_contract.file_digest(config_path)
-    except (OSError, hygiene.HygieneError) as error:
-        code = getattr(error, "code", "read_failed")
-        return [
-            {
-                "name": name,
-                "selected": selected_by_name[name].get("status"),
-                "status": "failed",
-                "reason": f"hygiene_config_{code}",
-                "execution_started": False,
-                "execution_kind": "not_started",
-            }
-            for name in wanted
-        ], True
-    if digest_before != digest_after:
-        return [
-            {
-                "name": name,
-                "selected": selected_by_name[name].get("status"),
-                "status": "failed",
-                "reason": "hygiene_config_changed_during_read",
-                "execution_started": False,
-                "execution_kind": "not_started",
-            }
-            for name in wanted
-        ], True
+    code_prefixes, prefix_reason = _resolved_code_prefixes(plan, root)
+    if prefix_reason is not None:
+        return _hygiene_failure_results(wanted, selected_by_name, prefix_reason)
+    config, config_path, digest_after, reason = _load_verified_config(
+        plan,
+        root,
+        hygiene_config,
+        key="hygiene",
+        default_name="ci-hygiene.toml",
+        loader=hygiene.load_config,
+        error_type=hygiene.HygieneError,
+        identity_fn=hygiene.config_identity,
+    )
+    if reason is not None:
+        return _hygiene_failure_results(wanted, selected_by_name, reason)
     rule = check_contract.rule_ref(
         "engineering-ci.hygiene",
         1,
         path=str(config_path),
         digest=digest_after,
     )
-    checks = tuple(name for name in config.checks if name in selected_by_name)
+    configured = hygiene.effective_checks(config)
+    changes = _changeset_from_plan(plan, root)
+    omitted_entries = []
+    if has_bound_hygiene:
+        expected_app = hygiene.check_applicability(
+            changes,
+            config,
+            root=root,
+            full=False,
+            code_prefixes=code_prefixes,
+        )
+        raw_scope = {
+            item.get("name"): item
+            for item in (plan.get("check_scope") or ())
+            if isinstance(item, dict) and item.get("name")
+        }
+        for name in configured:
+            if (
+                expected_app.get(name, {}).get("status") == "selected"
+                and name not in selected_by_name
+            ):
+                omitted_entries.append(
+                    {
+                        "name": name,
+                        "selected": raw_scope.get(name, {}).get(
+                            "status", "omitted_from_plan"
+                        ),
+                        "status": "not_executed",
+                        "reason": "configured_check_omitted_from_plan",
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                        "rule_ref": rule,
+                        "plan_authorized": False,
+                        "routing_conflict": "configured_check_omitted_from_plan",
+                    }
+                )
+    checks = tuple(name for name in configured if name in selected_by_name)
     if not checks:
-        checks = wanted
+        return [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "hygiene_check_disabled",
+                "rule_ref": rule,
+            }
+            for name, item in selected_by_name.items()
+        ] + omitted_entries, False
+    effective_tach = (
+        dataclasses.replace(config.tach, external=False)
+        if "tach_external" not in selected_by_name and config.tach.external
+        else config.tach
+    )
+    run_config = dataclasses.replace(config, checks=checks, tach=effective_tach)
+    run_kwargs = {"root": root, "runner": runner or hygiene._run}
+    if code_prefixes is not None:
+        run_kwargs["code_prefixes"] = code_prefixes
     report = hygiene.run(
-        _changeset_from_plan(plan, root),
-        dataclasses.replace(config, checks=checks),
-        root=root,
-        runner=runner or hygiene._run,
+        changes,
+        run_config,
+        **run_kwargs,
     )
     results = []
     seen = set()
+    any_failed = report["status"] == "failed"
     for native in report["checks"]:
         name = native["name"]
-        base = name.removesuffix("_external")
-        if base not in selected_by_name and name not in selected_by_name:
-            continue
+        authorized = name in selected_by_name
         payload = dict(native)
         payload["rule_ref"] = rule
+        payload["plan_authorized"] = authorized
+        if not authorized:
+            payload["routing_conflict"] = "unauthorized_check_executed"
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
-        origin = selected_by_name.get(base) or selected_by_name.get(name)
-        payload["selected"] = origin.get("status") if origin else "selected"
+        origin = selected_by_name.get(name)
+        payload["selected"] = origin.get("status") if origin else "not_selected"
+        if payload.get("status") == "failed":
+            any_failed = True
         results.append(payload)
         seen.add(name)
-        seen.add(base)
     for name, item in selected_by_name.items():
         if name in seen:
             continue
@@ -249,38 +444,38 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
                 "name": name,
                 "selected": item.get("status"),
                 "status": "not_executed",
-                "reason": "hygiene_check_missing",
+                "reason": (
+                    "hygiene_check_disabled"
+                    if name not in configured
+                    else "hygiene_check_missing"
+                ),
                 "rule_ref": rule,
             }
         )
-    return results, report["status"] == "failed"
+    results.extend(omitted_entries)
+    return results, any_failed
 
 
 def _run_source_check(plan, selected, *, root, sources_config, runner):
     item = next((entry for entry in selected if entry.get("name") == "source"), None)
     if item is None:
         return None, False
-    config_path = _sources_config_path(plan, root, sources_config)
-    try:
-        digest_before = check_contract.file_digest(config_path)
-        config = sources.load_config(config_path)
-        digest_after = check_contract.file_digest(config_path)
-    except (OSError, sources.SourcesError) as error:
-        code = getattr(error, "code", "read_failed")
+    config, config_path, digest_after, reason = _load_verified_config(
+        plan,
+        root,
+        sources_config,
+        key="sources",
+        default_name="ci-sources.toml",
+        loader=sources.load_config,
+        error_type=sources.SourcesError,
+        identity_fn=sources.config_identity,
+    )
+    if reason is not None:
         return {
             "name": "source",
             "selected": item.get("status"),
             "status": "failed",
-            "reason": f"sources_config_{code}",
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }, True
-    if digest_before != digest_after:
-        return {
-            "name": "source",
-            "selected": item.get("status"),
-            "status": "failed",
-            "reason": "sources_config_changed_during_read",
+            "reason": reason,
             "execution_started": False,
             "execution_kind": "not_started",
         }, True
@@ -563,8 +758,28 @@ def _observed_tool(definition, access_id, item):
     return _tool_observation(definition, access_id, executable=item.get("executable"))
 
 
+def _result_origin_and_runner(execution_context):
+    if execution_context == "dagger_export":
+        return "host", "execution:dagger_export", "dagger"
+    if execution_context in check_contract.ORIGINS:
+        return execution_context, f"execution:{execution_context}", None
+    return "unknown", "execution:unknown", None
+
+
 def _inventory_result(
-    definition, item, *, name, source, rule, baseline, origin, run_instance, index
+    definition,
+    item,
+    *,
+    name,
+    source,
+    rule,
+    baseline,
+    origin,
+    run_instance,
+    index,
+    runner_ref=None,
+    execution_context=None,
+    parent_execution_context=None,
 ):
     """Native Result for the tracked-file inventory that actually ran."""
     inventory = item["inventory"]
@@ -580,33 +795,59 @@ def _inventory_result(
         raise check_contract.CheckContractError("result_tool_undeclared")
     access_id = requirement.alternatives[0].access_id
     status = "passed" if inventory.get("exit_code") == 0 else "failed"
+    evidence = {
+        "stdout": inventory.get("stdout", ""),
+        "stderr": inventory.get("stderr", ""),
+    }
+    if parent_execution_context is not None:
+        evidence["execution_context"] = execution_context
+        evidence["parent_execution_context"] = parent_execution_context
     return check_contract.native_result(
         definition,
         source=source,
         status=status,
         native_exit_code=inventory.get("exit_code"),
         result_origin=origin,
-        runner_ref=f"execution:{origin}",
+        runner_ref=runner_ref or f"execution:{origin}",
         result_instance=f"{run_instance}:{origin}:{index}:{name}:{access_id}",
         input_refs=[],
         rule_ref=rule,
         tool=_tool_observation(definition, access_id, executable=inventory.get("tool")),
-        evidence={
-            "stdout": inventory.get("stdout", ""),
-            "stderr": inventory.get("stderr", ""),
-        },
+        evidence=evidence,
         baseline_ref=baseline,
         reason=None if status == "passed" else "git_inventory_failed",
     )
 
 
 def _native_results(
-    definition, item, *, name, source, rule, baseline, origin, run_instance, index
+    definition,
+    item,
+    *,
+    name,
+    source,
+    rule,
+    baseline,
+    origin,
+    run_instance,
+    index,
+    runner_ref=None,
+    execution_context=None,
+    parent_execution_context=None,
 ):
     inputs = _input_refs(rule)
+    resolved_runner = runner_ref or f"execution:{origin}"
 
     def instance(access_id):
         return f"{run_instance}:{origin}:{index}:{name}:{access_id}"
+
+    def with_context(evidence):
+        if parent_execution_context is None:
+            return evidence
+        return {
+            **(evidence or {}),
+            "execution_context": execution_context,
+            "parent_execution_context": parent_execution_context,
+        }
 
     if name == "docs" and isinstance(item.get("inventory"), dict):
         requirements = {
@@ -628,6 +869,9 @@ def _native_results(
             origin=origin,
             run_instance=run_instance,
             index=index,
+            runner_ref=resolved_runner,
+            execution_context=execution_context,
+            parent_execution_context=parent_execution_context,
         )
         links_inputs = [
             {
@@ -643,12 +887,12 @@ def _native_results(
             status=item.get("status", "not_executed"),
             native_exit_code=item.get("exit_code"),
             result_origin=origin,
-            runner_ref=f"execution:{origin}",
+            runner_ref=resolved_runner,
             result_instance=instance(links_access),
             input_refs=links_inputs,
             rule_ref=rule,
             tool=_observed_tool(definition, links_access, item),
-            evidence=_check_evidence(item, name),
+            evidence=with_context(_check_evidence(item, name)),
             baseline_ref=baseline,
             reason=item.get("reason"),
         )
@@ -663,12 +907,12 @@ def _native_results(
         status=item.get("status", "not_executed"),
         native_exit_code=item.get("exit_code"),
         result_origin=origin,
-        runner_ref=f"execution:{origin}",
+        runner_ref=resolved_runner,
         result_instance=instance(access_id),
         input_refs=inputs,
         rule_ref=rule,
         tool=_observed_tool(definition, access_id, item) if requirement else None,
-        evidence=_check_evidence(item, name),
+        evidence=with_context(_check_evidence(item, name)),
         baseline_ref=baseline,
         reason=item.get("reason"),
     )
@@ -678,11 +922,12 @@ def _native_results(
 def _decorate_checks(plan, checks, *, execution_context, run_instance):
     source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
-    origin = (
-        execution_context if execution_context in check_contract.ORIGINS else "unknown"
-    )
+    origin, runner_ref, parent_ctx = _result_origin_and_runner(execution_context)
     for index, item in enumerate(checks):
         name = item.get("name")
+        item["execution_context"] = execution_context
+        if parent_ctx is not None:
+            item["parent_execution_context"] = parent_ctx
         definition = check_contract.definition_for(name)
         if definition is None:
             item["check_id"] = None
@@ -714,6 +959,9 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                         origin=origin,
                         run_instance=run_instance,
                         index=index,
+                        runner_ref=runner_ref,
+                        execution_context=execution_context,
+                        parent_execution_context=parent_ctx,
                     )
                     check_contract.validate_result(inventory_result)
                     satisfaction = check_contract.evaluate_check_satisfaction(
@@ -750,6 +998,9 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 origin=origin,
                 run_instance=run_instance,
                 index=index,
+                runner_ref=runner_ref,
+                execution_context=execution_context,
+                parent_execution_context=parent_ctx,
             )
             for native in native_results:
                 check_contract.validate_result(native)
@@ -779,6 +1030,24 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
         item["result_origin"] = origin
         item["source_ref"] = source
     return checks
+
+
+def target_test_gate(plan):
+    """Return blocked (reason, coverage_scope) before launching any test runner."""
+    chosen = (plan or {}).get("selection") or {}
+    tests = tuple(chosen.get("tests") or ())
+    if not tests:
+        return None
+    graph = chosen.get("tach_graph_validation") or {}
+    if (
+        chosen.get("requires_tach_check")
+        and not chosen.get("full_tests")
+        and graph.get("status") != "passed"
+    ):
+        return "tach_graph_unvalidated", None
+    if chosen.get("coverage_required"):
+        return "coverage_evidence_required", "not_measured"
+    return None
 
 
 def _unsatisfied_native(check):
@@ -861,9 +1130,16 @@ def execute(
             "scope": "unverified",
         },
     }
-    if not tests and not selected and not prerequisites:
+    if (
+        not tests
+        and not selected
+        and not prerequisites
+        and plan["git"].get("ref_action") != "delete"
+    ):
         return report
-    bound_ok, bind_reason, expected_tree = _verify_execution_binding(plan, root)
+    bound_ok, bind_reason, expected_tree = _verify_execution_binding(
+        plan, root, execution_context=execution_context
+    )
     if not bound_ok:
         report["status"] = "not_executed"
         report["exit_code"] = (
@@ -871,33 +1147,33 @@ def execute(
         )
         report["reason"] = bind_reason
         return report
-    graph = chosen.get("tach_graph_validation") or {}
-    if (
-        tests
-        and chosen.get("requires_tach_check")
-        and not chosen.get("full_tests")
-        and graph.get("status") != "passed"
-    ):
+    gate = target_test_gate(plan)
+    if gate is not None:
+        gate_reason, coverage_scope = gate
         report["status"] = "blocked"
         report["exit_code"] = 5
-        report["reason"] = "tach_graph_unvalidated"
-        return report
-    if tests and chosen.get("coverage_required"):
-        report["status"] = "blocked"
-        report["exit_code"] = 5
-        report["reason"] = "coverage_evidence_required"
-        report["coverage"]["scope"] = "not_measured"
+        report["reason"] = gate_reason
+        if coverage_scope is not None:
+            report["coverage"]["scope"] = coverage_scope
         return report
 
     exit_code = 0
     if tests:
         native = {}
+        test_expected_tree = (
+            expected_tree
+            if (
+                execution_context != "dagger_export"
+                and selection._resolve_git_dir(root) is not None
+            )
+            else None
+        )
         exit_code = selection.run_tests(
             tests,
             root=root,
             framework=framework,
             src_root=chosen.get("src_root", "src"),
-            expected_tree=expected_tree,
+            expected_tree=test_expected_tree,
             index_tree=expected_tree
             if plan["git"].get("snapshot") == "index"
             else None,
@@ -941,7 +1217,6 @@ def execute(
     if source_result is not None:
         native_checks.append(source_result)
     covered = {item["name"] for item in native_checks}
-    covered.update(name.removesuffix("_external") for name in covered)
     remaining = [
         {
             "name": item.get("name"),
@@ -983,6 +1258,19 @@ def execute(
     unsatisfied_native = [
         item for item in report["checks"] if _unsatisfied_native(item)
     ]
+    unauthorized = [
+        item for item in report["checks"] if item.get("plan_authorized") is False
+    ]
+    if unauthorized:
+        report["routing_conflicts"] = [
+            {
+                "check": item.get("name"),
+                "reason": item.get("routing_conflict") or "unauthorized_check_executed",
+                "selected": item.get("selected"),
+                "status": item.get("status"),
+            }
+            for item in unauthorized
+        ]
     if tests and exit_code != 0:
         report["status"], report["reason"] = "failed", "tests_failed"
     elif hygiene_failed or source_failed:
@@ -993,6 +1281,17 @@ def execute(
         report["status"] = "failed"
         report["exit_code"] = 1
         report["reason"] = "prerequisites_failed"
+    elif unauthorized:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = (
+            "configured_check_omitted_from_plan"
+            if all(
+                item.get("routing_conflict") == "configured_check_omitted_from_plan"
+                for item in unauthorized
+            )
+            else "unauthorized_check_executed"
+        )
     elif invalid_contract:
         report["status"] = "blocked"
         report["exit_code"] = 5
