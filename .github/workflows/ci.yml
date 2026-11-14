@@ -174,7 +174,7 @@ jobs:
             local port
             port="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["port"])' "$ready_file")"
 
-            docker run --pull=missing -d --rm \
+            docker run --pull=missing -d \
               --name "$cname" \
               --privileged \
               --network host \
@@ -187,8 +187,13 @@ jobs:
               "registry.dagger.io/engine:v$DAGGER_VERSION" >/dev/null
 
             local ready=0
-            for _ in $(seq 1 60); do
-              if DAGGER_ENGINE="container://${cname}" dagger version >/dev/null 2>&1; then
+            for _ in $(seq 1 30); do
+              if [[ "$(docker inspect -f '{{.State.Running}}' "$cname" 2>/dev/null || echo false)" != "true" ]]; then
+                echo "::error::Engine container $cname exited unexpectedly"
+                docker logs "$cname" || true
+                exit 1
+              fi
+              if docker exec "$cname" test -S /run/dagger/engine.sock 2>/dev/null || docker exec "$cname" test -S /var/run/buildkit/buildkitd.sock 2>/dev/null; then
                 ready=1
                 break
               fi
@@ -218,6 +223,7 @@ jobs:
             printf '%s\n' "$cmd_exit" > "$exit_out"
 
             docker stop -t 30 "$cname" >/dev/null || true
+            docker rm -f "$cname" >/dev/null 2>&1 || true
             touch "$stop_file"
             wait "$recv_pid"
           }
