@@ -1025,6 +1025,40 @@ def result_covers_expected(result, expected):
     return False
 
 
+
+def results_cover_expected(results, expected):
+    """Match multiple Native Results to one resolved Check expectation.
+
+    This is not pre-execution Expected projection, ExpectedSet completeness,
+    trust admission, or a Required policy decision.
+    """
+    validate_expected_instance(expected)
+    if not isinstance(results, (list, tuple)):
+        raise CheckContractError("satisfaction_results_invalid")
+    validate_result_set(results)
+    if not results:
+        return False
+    definition = _registered_definition(
+        expected["check_id"], expected["definition_version"]
+    )
+    if any(not result_matches_expected(item, expected) for item in results):
+        return False
+    if not definition.tool_requirements:
+        return len(results) == 1 and result_covers_expected(results[0], expected)
+    decision = evaluate_check_satisfaction(definition, results)
+    if decision["status"] != "satisfied":
+        return False
+    observed_inputs = [
+        ref for item in results for ref in item["input_refs"]
+    ]
+    if any(ref not in observed_inputs for ref in expected.get("input_refs", [])):
+        return False
+    if "coverage" in expected and not any(
+        item.get("coverage") == expected["coverage"] for item in results
+    ):
+        return False
+    return True
+
 def _requirement_order(requirements):
     graph = {item.requirement_id: tuple(item.after) for item in requirements}
     ordered = []
