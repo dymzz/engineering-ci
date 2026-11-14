@@ -899,7 +899,7 @@ def test_failed_inventory_cannot_become_a_clean_not_applicable(repo):
     assert "inventory failed" in inventory["evidence"]["stderr"]
     assert check["native_result"]["result_id"] == inventory["result_id"]
     assert check["native_satisfaction"]["status"] == "unsatisfied"
-    assert check["check_contract"]["status"] == "not_started"
+    assert check["check_contract"]["status"] == "valid"
 
 
 def test_genuine_no_documents_does_not_become_a_failure(repo):

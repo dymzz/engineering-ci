@@ -731,7 +731,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
             item["check_contract"] = {
                 "kind": check_contract.CHECK_CONTRACT_KIND,
                 "schema_version": check_contract.CONTRACT_VERSION,
-                "status": "not_started",
+                "status": ("valid" if item.get("native_result") else "not_started"),
             }
             continue
         rule = item.get("rule_ref")
