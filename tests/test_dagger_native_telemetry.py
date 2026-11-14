@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import hashlib
 import json
 import sys
 import tempfile
@@ -377,6 +378,185 @@ class CorrelationTests(unittest.TestCase):
             bad_parent["correlation"]["reason"], "traceparent_parent_not_in_lineage"
         )
 
+    def test_unisolated_expected_session_id_does_not_prove_invocation(self) -> None:
+        capture = _make_check_capture(
+            trace_id="4" * 32,
+            session_id="sess-shared",
+            engine_instance_id="eng-shared",
+            external_parent_id="aaaa111111111111",
+            isolated_capture=False,
+        )
+        # Expected session_id filters candidates, NOT an invocation-level proof.
+        rejected = dt.correlate_capture(
+            capture,
+            entry_kind="check",
+            target_name="lint",
+            expected_session_id="sess-shared",
+            isolated_capture=False,
+        )
+        self.assertEqual(rejected["correlation"]["status"], "unbound")
+        self.assertEqual(
+            rejected["correlation"]["reason"],
+            "unisolated_capture_without_traceparent",
+        )
+
+        # Same unisolated data with propagated traceparent binds cleanly.
+        bound = dt.correlate_capture(
+            capture,
+            entry_kind="check",
+            target_name="lint",
+            expected_session_id="sess-shared",
+            traceparent=f"00-{'4' * 32}-aaaa111111111111-01",
+            isolated_capture=False,
+        )
+        self.assertEqual(bound["correlation"]["status"], "bound")
+        self.assertEqual(bound["correlation"]["reason"], "matched_traceparent")
+
+    def test_same_trace_export_span_attribution_does_not_cross_functions(self) -> None:
+        trace_id = "5" * 32
+        query_id = "5000000000000001"
+        core_a = "5000000000000002"
+        dagql_a = "5000000000000003"
+        core_b = "5000000000000004"
+        dagql_b = "5000000000000005"
+        export_b = "5000000000000006"
+        resume_b = "5000000000000007"
+        capture = {
+            "isolated_capture": True,
+            "trace_batches": [
+                {
+                    "batch_index": 0,
+                    "payload": {
+                        "resourceSpans": [
+                            {
+                                "resource": {
+                                    "attributes": [
+                                        _kv("service.name", "dagger-engine"),
+                                        _kv(dt.DAGGER_SESSION_ID_ATTR, "sess-multi"),
+                                        _kv(dt.DAGGER_ENGINE_INSTANCE_ID_ATTR, "eng-1"),
+                                    ]
+                                },
+                                "scopeSpans": [
+                                    {
+                                        "scope": {"name": dt.DAGQL_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_a,
+                                                parent_span_id=core_a,
+                                                name="engineering-ci:EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_b,
+                                                parent_span_id=core_b,
+                                                name="engineering-ci:EngineeringCi.repositoryTestArtifacts",
+                                            ),
+                                        ],
+                                    },
+                                    {
+                                        "scope": {"name": dt.CORE_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=query_id,
+                                                parent_span_id="",
+                                                name="POST /query",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_a,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_b,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryTestArtifacts",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=export_b,
+                                                parent_span_id=query_id,
+                                                name="File.export",
+                                            ),
+                                            {
+                                                **_span(
+                                                    trace_id=trace_id,
+                                                    span_id=resume_b,
+                                                    parent_span_id=export_b,
+                                                    name="resume file",
+                                                ),
+                                                "links": [
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": query_id,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_b,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+
+        rec_a = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+            artifact_exit_code=0,
+            artifact_sha256="deadbeef",
+        )
+        self.assertEqual(rec_a["correlation"]["status"], "bound")
+        art_a = rec_a["claims"]["native_artifact_result"]
+        self.assertTrue(art_a["export_span_observed"])
+        self.assertEqual(art_a["export_attribution_status"], "unknown")
+        self.assertEqual(
+            art_a["export_attribution_basis"], "unattributed_export_in_trace"
+        )
+        self.assertIsNone(art_a["attributed_export_span_id"])
+
+        rec_b = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-test-artifacts",
+            artifact_exit_code=0,
+            artifact_sha256="deadbeef",
+        )
+        self.assertEqual(rec_b["correlation"]["status"], "bound")
+        art_b = rec_b["claims"]["native_artifact_result"]
+        self.assertTrue(art_b["export_span_observed"])
+        self.assertEqual(art_b["export_attribution_status"], "attributed")
+        self.assertEqual(art_b["export_attribution_basis"], "span_link")
+        self.assertEqual(art_b["attributed_export_span_id"], export_b)
+
+    def test_beta16_capabilities_distinguishes_traceparent_layers(self) -> None:
+        caps = dt.get_beta16_capabilities()
+        tp = caps["traceparent_propagation"]
+        self.assertEqual(tp["correlator_parsing_and_matching"], "supported")
+        self.assertEqual(tp["engine_end_to_end_parent_propagation"], "unverified")
+
     def test_artifact_function_entry_and_no_check_impersonation(self) -> None:
         art = _make_artifact_capture()
         receipt = dt.correlate_capture(
@@ -503,6 +683,16 @@ class CorrelationTests(unittest.TestCase):
                 artifact_expected_sha256=art_sha,
             )
             self.assertTrue(report["passed"], report["failures"])
+            self.assertEqual(
+                report["negative_controls"][
+                    "unisolated_expected_session_without_traceparent"
+                ],
+                "unbound",
+            )
+            self.assertEqual(
+                report["negative_controls"]["unattributed_export_in_trace"],
+                "unknown",
+            )
 
             base_kwargs = {
                 "pass_capture": pass_cap,
@@ -580,6 +770,28 @@ class CorrelationTests(unittest.TestCase):
                 dt.verify_a1_suite(**{**base_kwargs, "pass_receipt": fake_pass})[
                     "passed"
                 ]
+            )
+
+            # Export span present in trace without function attribution must fail verify_a1_suite.
+            unattr_art_cap = dt._mutate_unattribute_export(art_cap)
+            unattr_art_rec = dt.correlate_capture(
+                unattr_art_cap,
+                entry_kind="artifact_function",
+                target_name="repository-ruff-tools",
+                exporter_configured="yes",
+                artifact_exit_code=0,
+                artifact_path=art_file,
+                artifact_sha256=art_sha,
+                required_observability=True,
+            )
+            self.assertFalse(
+                dt.verify_a1_suite(
+                    **{
+                        **base_kwargs,
+                        "artifact_capture": unattr_art_cap,
+                        "artifact_receipt": unattr_art_rec,
+                    }
+                )["passed"]
             )
 
 
@@ -669,8 +881,32 @@ class OtlpReceiverTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmpdir:
                 out_file = Path(tmpdir) / "capture.json"
                 snapshot = server.stop(output_path=out_file)
+                self.assertEqual(
+                    snapshot["capture_format"], "decoded_normalized_otlp_json"
+                )
                 self.assertEqual(len(snapshot["trace_batches"]), 5)
                 self.assertEqual(len(snapshot["metric_batches"]), 1)
+                expected_proto_sha = hashlib.sha256(proto_bytes).hexdigest()
+                proto_batches = [
+                    b
+                    for b in snapshot["trace_batches"]
+                    if b["content_type"] == "application/x-protobuf"
+                ]
+                self.assertEqual(len(proto_batches), 4)
+                for batch in proto_batches:
+                    self.assertEqual(
+                        batch["payload_representation"],
+                        "decoded_normalized_otlp_json",
+                    )
+                    self.assertEqual(batch["content_encoding"], "identity")
+                    self.assertEqual(batch["raw_payload_sha256"], expected_proto_sha)
+                    self.assertEqual(batch["raw_payload_bytes"], len(proto_bytes))
+                gzip_batches = [
+                    b
+                    for b in snapshot["trace_batches"]
+                    if b["content_encoding"] == "gzip"
+                ]
+                self.assertEqual(len(gzip_batches), 1)
                 loaded = json.loads(out_file.read_text(encoding="utf-8"))
                 self.assertEqual(len(loaded["trace_batches"]), 5)
                 # All spans should parse cleanly after atomic seal.

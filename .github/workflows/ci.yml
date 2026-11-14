@@ -11,6 +11,10 @@ on:
         description: 'Export core test coverage during manual release validation'
         type: boolean
         default: false
+      reverify_a1_capture:
+        description: 'Force live isolated Engine OTLP capture even if telemetry paths did not change'
+        type: boolean
+        default: false
     outputs:
       core_artifact_id:
         value: ${{ jobs.sync-tool-tests.outputs.artifact_id }}
@@ -123,11 +127,73 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Determine A.1 live capture scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          REVERIFY_INPUT: ${{ inputs.reverify_a1_capture }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_live="false"
+          reason="unaffected_paths_offline_contract_verified"
+          pinned_doc_version="$(python3 -c 'import tomllib; v = tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"]; doc = open("docs/verification/dagger-native-telemetry.md", encoding="utf-8").read(); print("ok" if v in doc else "mismatch")')"
+          base_sha=""
+          if [[ "$pinned_doc_version" != "ok" ]]; then
+            run_live="true"
+            reason="pinned_engine_version_doc_mismatch"
+          elif [[ "$REVERIFY_INPUT" == "true" ]]; then
+            run_live="true"
+            reason="explicit_reverify_input"
+          elif git log -1 --pretty=%B "$HEAD_SHA" | grep -q '\[reverify-a1\]'; then
+            run_live="true"
+            reason="explicit_reverify_commit_tag"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+
+          if [[ "$run_live" == "false" ]]; then
+            if [[ -z "$base_sha" || "$base_sha" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+              run_live="true"
+              reason="missing_or_initial_base_commit"
+            else
+              changed="$(git diff --name-only "${base_sha}...${HEAD_SHA}")"
+              while IFS= read -r path; do
+                [[ -z "$path" ]] && continue
+                case "$path" in
+                  src/engineering_ci/dagger_telemetry.py|src/engineering_ci/cicd_telemetry.py|src/engineering_ci/cli.py|tests/test_dagger_native_telemetry.py|dagger.json|dagger-module.toml|pyproject.toml|uv.lock|.github/workflows/ci.yml|.dagger/*)
+                    run_live="true"
+                    reason="changed:${path}"
+                    break
+                    ;;
+                esac
+              done <<< "$changed"
+            fi
+          fi
+          echo "run_live_capture=${run_live}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          echo "A.1 scope decision: run_live_capture=${run_live} (${reason})"
       - uses: astral-sh/setup-uv@v7
       - name: Sync host Python dependencies
-        run: uv sync --locked --no-dev
+        run: uv sync --locked
+      - name: Run offline A.1 contract regression when live inputs are unchanged
+        if: ${{ steps.scope.outputs.run_live_capture != 'true' }}
+        env:
+          SCOPE_REASON: ${{ steps.scope.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --locked pytest tests/test_dagger_native_telemetry.py -q
+          echo "Skipped live 3-Engine capture (${SCOPE_REASON}); offline fixed-capture contract tests passed."
       - name: Install pinned Dagger CLI
+        if: ${{ steps.scope.outputs.run_live_capture == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -137,6 +203,7 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Capture isolated OTLP traces and enforce A.1 gate
+        if: ${{ steps.scope.outputs.run_live_capture == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -297,7 +364,7 @@ jobs:
 
           (cd "$ARTIFACTS_DIR" && sha256sum *.json *.exit *.log exported-tools/tool-versions.json > SHA256SUMS)
       - name: Upload A.1 native telemetry evidence
-        if: ${{ always() && !cancelled() }}
+        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture == 'true' }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: dagger-native-telemetry-a1
