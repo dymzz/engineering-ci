@@ -144,28 +144,56 @@ claim one. `direct_tool` results additionally require
 `authority=runtime_tool_access` with a matching verified `tool_id`, so no
 built-in Check currently accepts them.
 
-`evaluate_check_satisfaction(definition, results)` combines the Native Results
-of one Check:
+`evaluate_check_satisfaction(definition, results, *, expected=None)` combines
+the Native Results of one Check:
 
 - `satisfied` only when every requirement has a native PASS result matching a
-  declared alternative and every `after` edge is evidenced;
-- otherwise `unsatisfied` with per-requirement `result_missing`,
-  `result_not_passed`, `prerequisite_unmet` or `prerequisite_unevidenced`;
+  declared alternative and every `after` edge is evidenced (and when `expected`
+  is supplied, resolved `input_refs`, terminal/per-requirement `coverage`, and
+  identity constraints hold on that **same** chosen witness tuple);
+- otherwise `unsatisfied` with top-level `native_result_missing` when the
+  candidate `results` set itself is empty, or per-requirement `result_missing`,
+  `result_not_passed`, `prerequisite_unmet`, `prerequisite_unevidenced`, or
+  Expected witness failures (`expected_inputs_uncovered`,
+  `expected_coverage_unproven`) while keeping each requirement's
+  `requirements[].reason` (`result_missing` when that requirement has no
+  matching result);
 - all supplied results must describe one composable Check instance: equal
-  rule/profile/Source/baseline; a mixed set is refused with
-  `satisfaction_instance_mismatch`. Different run instances are allowed when
-  those facts are equal; stronger cross-Job equivalence remains #63 work;
-- a tool-less Check returns `not_applicable/no_tool_requirements`;
-- the decision always carries `consumer_scope=supplied_results_only`,
-  `required=false`, `trusted=false`. It is not an ExpectedSet, Evidence
-  Admission or Required decision.
+  check ID, definition version, rule/profile/Source/baseline; a mixed bag is
+  refused with `CheckContractError` (`satisfaction_check_mismatch`,
+  `satisfaction_definition_version_mismatch`, `satisfaction_instance_mismatch`).
+  Different run/retry instances with equal identity facts are allowed for
+  deterministic `result_id` selection only; `#66-C` binds Run/Attempt/Job
+  routing eligibility before supplying candidates, and cross-Run trusted reuse
+  remains `#63` work;
+- for a tool-less Check (`forwarding`, `source`, or historical `v1`),
+  `expected=None` keeps `not_applicable/no_tool_requirements`, while an explicit
+  `expected` selects a deterministic passing witness matching Expected
+  constraints (supporting retries without forcing `len(results) == 1`);
+- `selected_result_ids` holds ONLY the witness IDs that satisfied the complete
+  Check (including `expected` when given), remaining strictly `[]` on
+  `unsatisfied`; `requirements[].satisfied_by` remains local native tool
+  satisfaction and does not prove Expected coverage on its own;
+- `expected_failures`, `expected_failures_complete`, and deduplicated
+  `failure_reasons` record every tool-valid combination (or tool-less
+  attempt) rejected by Expected constraints;
+- the decision always carries `consumer_scope=supplied_results_only` (or
+  `supplied_expected_only` with `expected`), `required=false`, `trusted=false`.
+  It is not an ExpectedSet, Evidence Admission or Required decision.
 
-`result_covers_expected()` is a single-result primitive that **reuses the same
-requirement judgement**: for a tool-bound Check the result must have a matching
-declared Tool Observation, so a structurally valid native PASS without its tool
-cannot cover the Expected instance. A multi-requirement Check can never be
-covered by one result because its other requirements stay unsatisfied.
-Tool-less internal Checks keep their existing single-result coverage semantics.
+`evaluate_expected_satisfaction(results, expected)` and
+`results_cover_expected(results, expected)` evaluate one resolved Expected
+Check instance against a coherent candidate set:
+
+- coherent results whose own check/definition/source/rule/baseline differs from
+  the target `expected` return `status="unsatisfied"` with
+  `reason="native_result_mismatched"` (whereas a heterogeneous mix inside
+  `results` raises `CheckContractError`);
+- tool-bound Checks (single- and multi-requirement) share
+  `evaluate_check_satisfaction(..., expected=expected)`, including
+  `coverage_by_requirement` and terminal requirement `coverage` checks;
+- `result_covers_expected(result, expected)` shares those same single-tool,
+  multi-tool, and tool-less semantics for one result without recursion.
 
 ## Public API
 
@@ -199,11 +227,13 @@ tool_ref(access_id, *, tool_id=None, tool_id_source=None, version=None,
 native_result(definition, *, source, status, result_origin, result_instance, ..., tool=None) -> dict
 validate_result(result) -> dict
 validate_result_set(results) -> bool
-evaluate_check_satisfaction(definition, results) -> dict  # one Check, supplied results only
+evaluate_check_satisfaction(definition, results, *, expected=None) -> dict  # one Check (+ optional Expected)
+evaluate_expected_satisfaction(results, expected) -> dict  # coherent candidates vs one resolved Expected
 resolve_definitions(required=None) -> dict   # requested_names only
 result_matches_expected(result, expected) -> bool  # candidate identity only
 validate_expected_instance(expected) -> dict  # one supplied scoped Check, no completeness
-result_covers_expected(result, expected) -> bool  # one result; reuses requirement satisfaction
+result_covers_expected(result, expected) -> bool  # one result; unified requirement/Expected check
+results_cover_expected(results, expected) -> bool  # boolean wrapper over evaluate_expected_satisfaction
 ```
 
 Result origins: `host`, `dagger`, `actions`, `direct_tool`, `unknown`. Result
@@ -295,24 +325,29 @@ not assert native PASS, input-equivalence coverage, an ExpectedSet-complete
 scope, Evidence Admission or Required Gate. For comparison-dependent built-in
 Checks, a missing or mismatched expected `baseline_ref` does not match.
 
-`validate_expected_instance` and `result_covers_expected` remain
-**single-supplied-Check primitives**: a scoped rule/source/definition/baseline
-can be structurally checked and an actual native PASS associated with that
-instance. They do **not** establish the completeness or authenticity of the
-consumer's Expected collection, input closure provenance, Evidence Admission
-or Required Gate. For a built-in comparison-dependent Check, the supplied
-Expected instance must include the real baseline.
+`validate_expected_instance`, `result_covers_expected`, `results_cover_expected`,
+and `evaluate_expected_satisfaction` remain **single-supplied-Check primitives**:
+a scoped rule/source/definition/baseline can be structurally checked and an
+actual native PASS tuple associated with that instance. They do **not**
+establish the completeness or authenticity of the consumer's Expected
+collection, input closure provenance, Run/Attempt routing qualification,
+Evidence Admission or Required Gate. For a built-in comparison-dependent Check,
+the supplied Expected instance must include the real baseline.
 When an Expected instance explicitly declares `input_refs`, each declared
-input must be represented by an identical Native Result input reference.
-Additional real inputs are allowed; a mismatched digest cannot be overlooked.
-An explicitly declared `coverage` claim must also match the Native Result.
-For a tool-bound Check, `result_covers_expected()` also requires the result's
-matching declared Tool Observation (the same requirement judgement used by
-`evaluate_check_satisfaction()`); a structurally valid PASS without it covers
-nothing. A Check with more than one requirement can never be covered by one
-result, so callers must use `evaluate_check_satisfaction()` there. These local
-comparisons do not prove consumer-wide Expected completeness or trusted source
-provenance.
+input must be represented by an identical Native Result input reference across
+the selected witness tuple (for `results_cover_expected` /
+`evaluate_expected_satisfaction`, on the selected successful candidates, never
+completed by failed or unselected attempts). Additional real inputs are allowed;
+a mismatched digest cannot be overlooked. An explicitly declared `coverage`
+claim is checked against terminal requirements (or per requirement when
+`coverage_by_requirement` is supplied, so an upstream `inventory` cannot stand
+in for terminal `lychee/docs` link coverage). For a tool-bound Check, both
+`result_covers_expected()` and `evaluate_expected_satisfaction()` route through
+`evaluate_check_satisfaction()`; a multi-requirement Check can never be covered
+by one result, so callers (`#66-C`) pass the instance's candidate list to
+`evaluate_expected_satisfaction(results, expected)` and cite `selected_result_ids`.
+These local comparisons do not prove consumer-wide Expected completeness or
+trusted source provenance.
 
 **No consumer-wide Expected/Required coverage API is produced by this #52
 slice.** The earlier `validate_completeness_receipt` and

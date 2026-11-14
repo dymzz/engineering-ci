@@ -945,6 +945,16 @@ def validate_expected_instance(expected):
             not isinstance(item, dict) for item in refs
         ):
             raise CheckContractError("expected_input_refs_invalid")
+    if "coverage_by_requirement" in expected:
+        mapping = expected["coverage_by_requirement"]
+        if not isinstance(mapping, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in mapping.items()
+        ):
+            raise CheckContractError("expected_coverage_mapping_invalid")
+        requirement_ids = {item.requirement_id for item in definition.tool_requirements}
+        if not mapping or set(mapping) - requirement_ids:
+            raise CheckContractError("expected_coverage_requirement_unknown")
     if expected.get("profile_ref") is not None:
         _validate_reference(expected["profile_ref"], "profile_ref")
     baseline = expected.get("baseline_ref")
@@ -984,6 +994,78 @@ def result_matches_expected(result, expected):
     return True
 
 
+def _expected_decision_base(check_id, definition_version, observed, *, expected_scope):
+    return {
+        "kind": SATISFACTION_KIND,
+        "schema_version": CONTRACT_VERSION,
+        "check_id": check_id,
+        "definition_version": definition_version,
+        "consumer_scope": (
+            "supplied_expected_only" if expected_scope else "supplied_results_only"
+        ),
+        "required": False,
+        "trusted": False,
+        "result_ids": [item["result_id"] for item in observed],
+    }
+
+
+def _validate_coherent_results(results):
+    """Validate result payloads and refuse mixed Check/Source/Rule/Baseline bags.
+
+    All supplied candidates may include failed attempts or multiple runs with the
+    same identity facts, but never a heterogeneous bag from different Checks,
+    definitions, Rules, Profiles, Sources, or Baselines. #66-C owns routing
+    and Run/Attempt qualification before passing a Check's candidate group.
+    """
+    if not isinstance(results, (list, tuple)):
+        raise CheckContractError("satisfaction_results_invalid")
+    validate_result_set(results)
+    observed = list(results)
+    if len(observed) > 1:
+        reference = observed[0]
+        ref_check = reference["check"]
+        for item in observed[1:]:
+            check = item["check"]
+            if check["check_id"] != ref_check["check_id"]:
+                raise CheckContractError("satisfaction_check_mismatch")
+            if check["definition_version"] != ref_check["definition_version"]:
+                raise CheckContractError("satisfaction_definition_version_mismatch")
+            if (
+                check.get("rule_ref") != ref_check.get("rule_ref")
+                or check.get("profile_ref") != ref_check.get("profile_ref")
+                or item.get("source_ref") != reference.get("source_ref")
+                or item.get("baseline_ref") != reference.get("baseline_ref")
+            ):
+                raise CheckContractError("satisfaction_instance_mismatch")
+    return observed
+
+
+def _single_result_expected_failure(result, expected):
+    """Pure local Expected check for one Native Result (no ToolRequirement DAG).
+
+    Callers evaluating tool-bound Checks must use evaluate_check_satisfaction()
+    so declared Tool Observations and coverage_by_requirement are verified.
+    """
+    if not result_matches_expected(result, expected):
+        return "native_result_mismatched"
+    if result["status"] != "passed":
+        return "result_not_passed"
+    kind = _execution_kind(result["check"]["check_id"])
+    if kind == "process" and (
+        result["native_exit_code"] != 0 or not result.get("evidence")
+    ):
+        return "result_not_passed"
+    if kind == "internal" and not result.get("evidence"):
+        return "result_not_passed"
+    if "input_refs" in expected and any(
+        ref not in result["input_refs"] for ref in expected["input_refs"]
+    ):
+        return "expected_inputs_uncovered"
+    if "coverage" in expected and expected["coverage"] != result.get("coverage"):
+        return "expected_coverage_unproven"
+    return None
+
+
 def result_covers_expected(result, expected):
     """Single supplied Check's native satisfaction, NOT ExpectedSet completeness.
 
@@ -996,33 +1078,148 @@ def result_covers_expected(result, expected):
     definition = _registered_definition(
         result["check"]["check_id"], result["check"]["definition_version"]
     )
-    # Reuse the single-Check requirement judgement so a structurally valid
-    # Native PASS without its declared Tool Observation cannot be reported as
-    # covering the Expected instance. A multi-tool Check can never be covered
-    # by one result because its other requirements stay unsatisfied.
-    if definition.tool_requirements:
-        decision = evaluate_check_satisfaction(definition, [result])
-        if decision["status"] != "satisfied":
-            return False
     if not result_matches_expected(result, expected):
         return False
-    # Compare explicit input dependencies, not just the outer Source identity.
-    # Extra observed inputs are allowed; missing or different declared inputs
-    # cannot satisfy the supplied Check expectation.
-    if "input_refs" in expected and any(
-        ref not in result["input_refs"] for ref in expected["input_refs"]
+    # Tool-bound Checks (single-requirement and multi-requirement alike) share
+    # evaluate_check_satisfaction() so Tool Observations, prerequisite chains,
+    # and coverage_by_requirement have one authoritative enforcement path.
+    if definition.tool_requirements:
+        decision = evaluate_check_satisfaction(definition, [result], expected=expected)
+        return decision["status"] == "satisfied"
+    return _single_result_expected_failure(result, expected) is None
+
+
+def results_cover_expected(results, expected):
+    """Whether selected successful native witnesses cover one resolved Expected.
+
+    For selected result identities and structured reasons, consumers should
+    use evaluate_expected_satisfaction(). Neither API admits trusted evidence.
+    """
+    return evaluate_expected_satisfaction(results, expected)["status"] == "satisfied"
+
+
+def _evaluate_toolless_expected(definition, observed, expected):
+    """Select one deterministic passing witness for a tool-less Check.
+
+    Ordering by result_id guarantees determinism only; it does not encode
+    chronology or authorize cross-Run reuse (#66-C/#63 remain separate).
+    """
+    decision = _expected_decision_base(
+        definition.check_id,
+        definition.definition_version,
+        observed,
+        expected_scope=True,
+    )
+    if not observed:
+        return {
+            **decision,
+            "status": "unsatisfied",
+            "reason": "native_result_missing",
+            "requirements": [],
+            "selected_result_ids": [],
+            "expected_failures": [],
+            "expected_failures_complete": True,
+            "failure_reasons": ["native_result_missing"],
+        }
+    expected_failures = []
+    failure_reasons = []
+    passed_failure = None
+    for item in sorted(observed, key=lambda entry: entry["result_id"]):
+        failure = _single_result_expected_failure(item, expected)
+        if failure is None:
+            return {
+                **decision,
+                "status": "satisfied",
+                "reason": "native_pass",
+                "requirements": [],
+                "selected_result_ids": [item["result_id"]],
+                "expected_failures": expected_failures,
+                "expected_failures_complete": False,
+                "failure_reasons": failure_reasons,
+            }
+        expected_failures.append(
+            {
+                "selection": {},
+                "result_ids": [item["result_id"]],
+                "reason": failure,
+            }
+        )
+        if failure not in failure_reasons:
+            failure_reasons.append(failure)
+        if item["status"] == "passed" and passed_failure is None:
+            passed_failure = failure
+    return {
+        **decision,
+        "status": "unsatisfied",
+        "reason": passed_failure or failure_reasons[0],
+        "requirements": [],
+        "selected_result_ids": [],
+        "expected_failures": expected_failures,
+        "expected_failures_complete": True,
+        "failure_reasons": failure_reasons,
+    }
+
+
+def evaluate_expected_satisfaction(results, expected):
+    """Compose native witnesses against one independently bound Expected.
+
+    The selected identities are the SAME results that prove input and
+    coverage; #66-C may reference them with the immutable expected_check_ref.
+    Deterministic result_id tie-breaking does not establish retry chronology
+    or cross-Run trusted reuse; #66-C Routing and #63 Admission remain separate.
+    """
+    validate_expected_instance(expected)
+    observed = _validate_coherent_results(results)
+    definition = _registered_definition(
+        expected["check_id"], expected["definition_version"]
+    )
+    if observed and any(
+        not result_matches_expected(item, expected) for item in observed
     ):
-        return False
-    if "coverage" in expected and expected["coverage"] != result.get("coverage"):
-        return False
-    if result["status"] != "passed":
-        return False
-    kind = _execution_kind(result["check"]["check_id"])
-    if kind == "process":
-        return result["native_exit_code"] == 0 and bool(result.get("evidence"))
-    if kind == "internal":
-        return bool(result.get("evidence"))
-    return False
+        return {
+            **_expected_decision_base(
+                expected["check_id"],
+                expected["definition_version"],
+                observed,
+                expected_scope=True,
+            ),
+            "status": "unsatisfied",
+            "reason": "native_result_mismatched",
+            "requirements": [],
+            "selected_result_ids": [],
+            "expected_failures": [],
+            "expected_failures_complete": True,
+            "failure_reasons": ["native_result_mismatched"],
+        }
+    if not definition.tool_requirements:
+        return _evaluate_toolless_expected(definition, observed, expected)
+    return evaluate_check_satisfaction(definition, observed, expected=expected)
+
+
+def _expected_witness_failure(requirements, chosen, expected):
+    """Why this otherwise successful native witness cannot prove Expected."""
+    observed_inputs = [ref for item in chosen.values() for ref in item["input_refs"]]
+    if any(ref not in observed_inputs for ref in expected.get("input_refs", [])):
+        return "expected_inputs_uncovered"
+
+    # Only terminal native Checks can witness final Check coverage. Inventory
+    # may provide data to Lychee, but is not the link scan outcome.
+    predecessors = {predecessor for item in requirements for predecessor in item.after}
+    terminal_ids = {
+        item.requirement_id
+        for item in requirements
+        if item.requirement_id not in predecessors
+    }
+    mapping = expected.get("coverage_by_requirement")
+    if mapping is not None and any(
+        chosen[key].get("coverage") != coverage for key, coverage in mapping.items()
+    ):
+        return "expected_coverage_unproven"
+    if "coverage" in expected and any(
+        chosen[key].get("coverage") != expected["coverage"] for key in terminal_ids
+    ):
+        return "expected_coverage_unproven"
+    return None
 
 
 def _requirement_order(requirements):
@@ -1081,14 +1278,14 @@ def _consumed_result_ids(result):
     }
 
 
-def evaluate_check_satisfaction(definition, results):
-    """Native satisfaction of one Check from the supplied results.
+def evaluate_check_satisfaction(definition, results, *, expected=None):
+    """Select native witnesses for every ToolRequirement and its prerequisites.
 
-    Every declared requirement must be satisfied. An alternative satisfies its
-    requirement only when its own Native Result passed; a requirement that
-    declares ``after`` is satisfied only when the dependent result references
-    the prerequisite ``result_id`` it consumed. This is not an ExpectedSet,
-    Evidence Admission or Required decision.
+    Optional expected further constrains that SAME selection by resolved
+    input and terminal Check coverage, without weakening valid alternatives.
+    For tool-less Checks, expected=None preserves ``not_applicable``, while an
+    explicit expected applies the same local single-result validation and
+    deterministic candidate selection without cross-Run trust claims.
     """
     definition = validate_definition(definition)
     registered = _registered_definition(
@@ -1096,101 +1293,205 @@ def evaluate_check_satisfaction(definition, results):
     )
     if definition.tool_requirements != registered.tool_requirements:
         raise CheckContractError("result_tool_requirements_mismatch")
-    if not isinstance(results, (list, tuple)):
-        raise CheckContractError("satisfaction_results_invalid")
-    observed = []
-    for result in results:
-        validate_result(result)
-        check = result["check"]
+    observed = _validate_coherent_results(results)
+    for item in observed:
+        check = item["check"]
         if check["check_id"] != definition.check_id:
             raise CheckContractError("satisfaction_check_mismatch")
         if check["definition_version"] != definition.definition_version:
             raise CheckContractError("satisfaction_definition_version_mismatch")
-        observed.append(result)
-    if len(observed) > 1:
-        # The supplied results must describe one composable Check instance.
-        # Equal rule/profile/Source/baseline is the contract-visible
-        # equivalence; stronger cross-Job reuse evidence remains #63 work.
-        reference = observed[0]
-        for result in observed[1:]:
-            if (
-                result["check"].get("rule_ref") != reference["check"].get("rule_ref")
-                or result["check"].get("profile_ref")
-                != reference["check"].get("profile_ref")
-                or result.get("source_ref") != reference.get("source_ref")
-                or result.get("baseline_ref") != reference.get("baseline_ref")
-            ):
-                raise CheckContractError("satisfaction_instance_mismatch")
-    decision = {
-        "kind": SATISFACTION_KIND,
-        "schema_version": CONTRACT_VERSION,
-        "check_id": definition.check_id,
-        "definition_version": definition.definition_version,
-        "consumer_scope": "supplied_results_only",
-        "required": False,
-        "trusted": False,
-        "result_ids": [item["result_id"] for item in observed],
-    }
+    if expected is not None:
+        validate_expected_instance(expected)
+        if (
+            expected["check_id"] != definition.check_id
+            or expected["definition_version"] != definition.definition_version
+        ):
+            raise CheckContractError("satisfaction_expected_definition_mismatch")
+        if observed and any(
+            not result_matches_expected(item, expected) for item in observed
+        ):
+            return {
+                **_expected_decision_base(
+                    definition.check_id,
+                    definition.definition_version,
+                    observed,
+                    expected_scope=True,
+                ),
+                "status": "unsatisfied",
+                "reason": "native_result_mismatched",
+                "requirements": [],
+                "selected_result_ids": [],
+                "expected_failures": [],
+                "expected_failures_complete": True,
+                "failure_reasons": ["native_result_mismatched"],
+            }
+
+    decision = _expected_decision_base(
+        definition.check_id,
+        definition.definition_version,
+        observed,
+        expected_scope=expected is not None,
+    )
     if not definition.tool_requirements:
+        if expected is not None:
+            return _evaluate_toolless_expected(definition, observed, expected)
         return {
             **decision,
             "status": "not_applicable",
             "reason": "no_tool_requirements",
             "requirements": [],
+            "selected_result_ids": [],
         }
-    satisfied = {}
-    entries = []
-    for requirement in _requirement_order(definition.tool_requirements):
-        candidates = [
+
+    requirements = _requirement_order(definition.tool_requirements)
+    candidates = {
+        requirement.requirement_id: [
             item for item in observed if _result_matches_requirement(requirement, item)
         ]
-        passed = sorted(
-            (item for item in candidates if item["status"] == "passed"),
+        for requirement in requirements
+    }
+    passing = {
+        key: sorted(
+            (item for item in choices if item["status"] == "passed"),
             key=lambda item: item["result_id"],
         )
+        for key, choices in candidates.items()
+    }
+
+    chosen = {}
+    first_tool_witness = None
+    expected_failures = []
+    failure_reasons = []
+
+    def visit(position):
+        nonlocal first_tool_witness
+        if position == len(requirements):
+            if first_tool_witness is None:
+                first_tool_witness = dict(chosen)
+            if expected is None:
+                return dict(chosen)
+            failure = _expected_witness_failure(requirements, chosen, expected)
+            if failure is None:
+                return dict(chosen)
+            expected_failures.append(
+                {
+                    "selection": {
+                        item.requirement_id: chosen[item.requirement_id]["result_id"]
+                        for item in requirements
+                    },
+                    "result_ids": [
+                        chosen[item.requirement_id]["result_id"]
+                        for item in requirements
+                    ],
+                    "reason": failure,
+                }
+            )
+            if failure not in failure_reasons:
+                failure_reasons.append(failure)
+            return None
+        requirement = requirements[position]
+        for result in passing[requirement.requirement_id]:
+            if any(
+                chosen[predecessor]["result_id"] not in _consumed_result_ids(result)
+                for predecessor in requirement.after
+            ):
+                continue
+            chosen[requirement.requirement_id] = result
+            witness = visit(position + 1)
+            if witness is not None:
+                return witness
+        chosen.pop(requirement.requirement_id, None)
+        return None
+
+    selected = visit(0)
+    tool_witness = selected if selected is not None else first_tool_witness
+
+    # Preserve precise native failure diagnostics for incomplete job sets.
+    # requirements[].satisfied_by reflects native ToolRequirement satisfaction
+    # only; when Expected constraints fail, selected_result_ids stays empty.
+    partial = {}
+    entries = []
+    for requirement in requirements:
+        key = requirement.requirement_id
+        choices = candidates[key]
         entry = {
-            "requirement_id": requirement.requirement_id,
+            "requirement_id": key,
             "after": list(requirement.after),
             "alternatives": [
                 alternative.access_id for alternative in requirement.alternatives
             ],
-            "observed": [item["result_id"] for item in candidates],
+            "observed": [item["result_id"] for item in choices],
             "satisfied_by": None,
             "status": "unsatisfied",
-            "reason": "result_missing" if not candidates else "result_not_passed",
+            "reason": "result_missing" if not choices else "result_not_passed",
         }
-        selected = None
-        for candidate in passed:
-            blocker = None
-            for prerequisite in requirement.after:
-                prerequisite_entry = satisfied[prerequisite]
-                if prerequisite_entry["status"] != "satisfied":
-                    blocker = "prerequisite_unmet"
+        picked = tool_witness[key] if tool_witness is not None else None
+        if picked is None:
+            for candidate in passing[key]:
+                blocker = None
+                for predecessor in requirement.after:
+                    previous = partial[predecessor]
+                    if previous["status"] != "satisfied":
+                        blocker = "prerequisite_unmet"
+                        break
+                    if previous["satisfied_by"] not in _consumed_result_ids(candidate):
+                        blocker = "prerequisite_unevidenced"
+                        break
+                if blocker is None:
+                    picked = candidate
                     break
-                if prerequisite_entry["satisfied_by"] not in _consumed_result_ids(
-                    candidate
-                ):
-                    blocker = "prerequisite_unevidenced"
-                    break
-            if blocker is None:
-                selected = candidate
-                break
-            entry["reason"] = blocker
-        if selected is not None:
+                entry["reason"] = blocker
+        if picked is not None:
             entry.update(
                 status="satisfied",
                 reason="native_pass",
-                satisfied_by=selected["result_id"],
+                satisfied_by=picked["result_id"],
             )
-        satisfied[requirement.requirement_id] = entry
+        partial[key] = entry
         entries.append(entry)
+
     unmet = [item for item in entries if item["status"] != "satisfied"]
-    return {
+    if tool_witness is None and not unmet:
+        # Per-requirement local choices do not certify one coherent chain.
+        entries[-1].update(
+            status="unsatisfied",
+            reason="prerequisite_combination_unproven",
+            satisfied_by=None,
+        )
+        unmet = [entries[-1]]
+    if selected is not None:
+        status, reason = "satisfied", "all_requirements_satisfied"
+    elif tool_witness is not None and expected is not None:
+        status, reason = "unsatisfied", expected_failures[0]["reason"]
+    elif not observed:
+        status, reason = "unsatisfied", "native_result_missing"
+        if expected is not None and reason not in failure_reasons:
+            failure_reasons.append(reason)
+    else:
+        status, reason = (
+            "unsatisfied",
+            unmet[0]["reason"] if unmet else "prerequisite_unevidenced",
+        )
+        if expected is not None and reason not in failure_reasons:
+            failure_reasons.append(reason)
+    result_payload = {
         **decision,
-        "status": "unsatisfied" if unmet else "satisfied",
-        "reason": unmet[0]["reason"] if unmet else "all_requirements_satisfied",
+        "status": status,
+        "reason": reason,
         "requirements": entries,
+        "selected_result_ids": (
+            [selected[item.requirement_id]["result_id"] for item in requirements]
+            if selected is not None
+            else []
+        ),
     }
+    if expected is not None:
+        result_payload.update(
+            expected_failures=expected_failures,
+            expected_failures_complete=selected is None,
+            failure_reasons=failure_reasons,
+        )
+    return result_payload
 
 
 def _definition_payload(definition):

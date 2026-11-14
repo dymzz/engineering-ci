@@ -527,3 +527,705 @@ def test_duplicate_result_id_is_refused():
     one = result(instance="job-1")
     with pytest.raises(check_contract.CheckContractError):
         check_contract.validate_result_set([one, one])
+
+
+def test_composed_docs_result_matches_one_expected_not_the_whole_expected_set():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {
+        "kind": "data",
+        "path": "docs/guide.md",
+        "sha256": "b" * 64,
+    }
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [required_input],
+    }
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    links = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[
+            {"kind": "check_result", "result_id": inventory["result_id"]},
+            required_input,
+        ],
+        evidence={"stdout": "ok"},
+    )
+    assert check_contract.results_cover_expected([inventory, links], expected)
+    assert not check_contract.results_cover_expected([inventory], expected)
+    assert not check_contract.results_cover_expected([links], expected)
+    assert not check_contract.result_covers_expected(inventory, expected)
+    assert not check_contract.result_covers_expected(links, expected)
+    assert not check_contract.results_cover_expected(
+        [inventory, links],
+        {**expected, "source_ref": closed_source("c" * 40)},
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, links],
+        {**expected, "input_refs": [{"kind": "other"}]},
+    )
+    with pytest.raises(check_contract.CheckContractError, match="result_id_duplicate"):
+        check_contract.results_cover_expected([inventory, inventory], expected)
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_rule_unproven"
+    ):
+        check_contract.results_cover_expected(
+            [inventory, links], {**expected, "rule_ref": None}
+        )
+    unlinked = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="unlinked",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[required_input],
+        evidence={"stdout": "ok"},
+    )
+    assert not check_contract.results_cover_expected([inventory, unlinked], expected)
+
+
+def test_failed_native_result_cannot_supply_missing_expected_coverage():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {
+        "kind": "data",
+        "path": "docs/guide.md",
+        "sha256": "b" * 64,
+    }
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    links = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[{"kind": "check_result", "result_id": inventory["result_id"]}],
+        evidence={"stdout": "ok"},
+    )
+    failed = check_contract.native_result(
+        definition,
+        source=checked,
+        status="failed",
+        result_origin="host",
+        result_instance="failed-links",
+        native_exit_code=1,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[required_input],
+        coverage={"paths": ["docs/guide.md"]},
+        evidence={"stderr": "bad link"},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [required_input],
+    }
+    assert not check_contract.results_cover_expected(
+        [inventory, links, failed], expected
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, links, failed],
+        {
+            **expected,
+            "input_refs": [],
+            "coverage": {"paths": ["docs/guide.md"]},
+        },
+    )
+
+
+def test_expected_satisfaction_selects_valid_successful_alternative():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {"kind": "data", "path": "docs/guide.md", "sha256": "b" * 64}
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+
+    def link_result(label, *, inputs=(), coverage=None, status="passed"):
+        return check_contract.native_result(
+            definition,
+            source=checked,
+            status=status,
+            result_origin="host",
+            result_instance=label,
+            native_exit_code=0 if status == "passed" else 1,
+            rule_ref=rule,
+            tool=check_contract.tool_ref("lychee/docs"),
+            input_refs=[
+                {"kind": "check_result", "result_id": inventory["result_id"]},
+                *inputs,
+            ],
+            coverage=coverage,
+            evidence={"stdout": "ok"} if status == "passed" else {"stderr": "bad"},
+        )
+
+    coverage = {"paths": ["docs/guide.md"]}
+    incomplete = link_result("incomplete")
+    complete = link_result("complete", inputs=[required_input], coverage=coverage)
+    failed = link_result(
+        "failed", inputs=[required_input], coverage=coverage, status="failed"
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [required_input],
+        "coverage": coverage,
+    }
+    decision = check_contract.evaluate_expected_satisfaction(
+        [inventory, incomplete, failed, complete], expected
+    )
+    assert decision["status"] == "satisfied"
+    assert decision["selected_result_ids"] == [
+        inventory["result_id"],
+        complete["result_id"],
+    ]
+    assert check_contract.results_cover_expected(
+        [inventory, incomplete, failed, complete], expected
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, incomplete, failed],
+        expected,
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, incomplete, failed],
+        {**expected, "input_refs": []},
+    )
+
+
+def test_expected_coverage_requires_terminal_native_result():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    coverage = {"paths": ["docs/guide.md"]}
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        coverage=coverage,
+        evidence={"stdout": "docs/guide.md"},
+    )
+    links = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[{"kind": "check_result", "result_id": inventory["result_id"]}],
+        evidence={"stdout": "ok"},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "coverage": coverage,
+    }
+    decision = check_contract.evaluate_expected_satisfaction(
+        [inventory, links], expected
+    )
+    assert decision["status"] == "unsatisfied"
+    assert decision["reason"] == "expected_coverage_unproven"
+    assert not check_contract.results_cover_expected([inventory, links], expected)
+    # A per-requirement proof may describe producer inventory, but cannot
+    # suppress an independently declared terminal scan coverage obligation.
+    assert check_contract.results_cover_expected(
+        [inventory, links],
+        {
+            **{key: value for key, value in expected.items() if key != "coverage"},
+            "coverage_by_requirement": {"inventory": coverage},
+        },
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, links],
+        {
+            **expected,
+            "coverage_by_requirement": {"inventory": coverage},
+        },
+    )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="expected_coverage_requirement_unknown",
+    ):
+        check_contract.evaluate_expected_satisfaction(
+            [inventory, links],
+            {
+                **expected,
+                "coverage_by_requirement": {"not-a-requirement": coverage},
+            },
+        )
+
+
+def test_composed_result_contract_preserves_single_native_check_semantics():
+    definition = check_contract.definition_for("tach")
+    checked = closed_source()
+    rule = check_contract.rule_ref("tach", 1, digest="a" * 64)
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    passed = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="single",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
+        evidence={"stdout": "ok"},
+    )
+    assert check_contract.results_cover_expected([passed], expected)
+    assert not check_contract.results_cover_expected(
+        [passed], {**expected, "definition_version": 1}
+    )
+
+
+def test_single_tool_result_covers_expected_enforces_coverage_by_requirement():
+    definition = check_contract.definition_for("tach")
+    checked = closed_source()
+    rule = check_contract.rule_ref("tach", 1, digest="a" * 64)
+    coverage = {"modules": ["engineering_ci"]}
+    bare_coverage = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="no-cov",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
+        evidence={"stdout": "ok"},
+    )
+    covered = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="with-cov",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
+        coverage=coverage,
+        evidence={"stdout": "ok"},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "coverage_by_requirement": {"module-graph": coverage},
+    }
+    assert not check_contract.result_covers_expected(bare_coverage, expected)
+    assert not check_contract.results_cover_expected([bare_coverage], expected)
+    assert check_contract.result_covers_expected(covered, expected)
+    assert check_contract.results_cover_expected([covered], expected)
+
+
+def test_toolless_expected_satisfaction_supports_retries_and_direct_expected():
+    forwarding = check_contract.definition_for("forwarding")
+    checked = closed_source()
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    baseline = {"base_commit": "a" * 40}
+    coverage = {"paths": ["src/engineering_ci/check_contract.py"]}
+    required_input = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "b" * 64}
+    expected = {
+        "check_id": forwarding.check_id,
+        "definition_version": forwarding.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "baseline_ref": baseline,
+        "input_refs": [required_input],
+        "coverage": coverage,
+    }
+    failed = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="failed",
+        result_origin="host",
+        result_instance="attempt-1",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        input_refs=[required_input],
+        coverage=coverage,
+        evidence={"findings": ["broken"]},
+    )
+    incomplete_pass = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="attempt-2-missing-cov",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        input_refs=[required_input],
+        evidence={"analysis": "forwarding"},
+    )
+    passed = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="attempt-3",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        input_refs=[required_input],
+        coverage=coverage,
+        evidence={"analysis": "forwarding"},
+    )
+    passed_alt = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="attempt-4",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        input_refs=[required_input],
+        coverage=coverage,
+        evidence={"analysis": "forwarding"},
+    )
+
+    # expected=None retains historical not_applicable behavior.
+    legacy = check_contract.evaluate_check_satisfaction(forwarding, [failed])
+    assert legacy["status"] == "not_applicable"
+    assert legacy["reason"] == "no_tool_requirements"
+
+    # Retry Fail -> PASS succeeds through both entrypoints cleanly.
+    for decision in (
+        check_contract.evaluate_expected_satisfaction([failed, passed], expected),
+        check_contract.evaluate_check_satisfaction(
+            forwarding, [failed, passed], expected=expected
+        ),
+    ):
+        assert decision["status"] == "satisfied"
+        assert decision["selected_result_ids"] == [passed["result_id"]]
+        assert decision["consumer_scope"] == "supplied_expected_only"
+
+    # Multiple passing candidates pick deterministically by result_id.
+    multi = check_contract.evaluate_expected_satisfaction(
+        [passed, passed_alt], expected
+    )
+    assert multi["status"] == "satisfied"
+    assert multi["selected_result_ids"] == [
+        min(passed["result_id"], passed_alt["result_id"])
+    ]
+
+    # All failing attempts preserve complete structured diagnostics.
+    rejected = check_contract.evaluate_expected_satisfaction(
+        [failed, incomplete_pass], expected
+    )
+    assert rejected["status"] == "unsatisfied"
+    assert rejected["reason"] == "expected_coverage_unproven"
+    assert rejected["selected_result_ids"] == []
+    assert rejected["expected_failures_complete"] is True
+    assert set(rejected["failure_reasons"]) == {
+        "result_not_passed",
+        "expected_coverage_unproven",
+    }
+
+    # Empty result set reports missing cleanly.
+    empty = check_contract.evaluate_expected_satisfaction([], expected)
+    assert empty["status"] == "unsatisfied"
+    assert empty["reason"] == "native_result_missing"
+    assert empty["selected_result_ids"] == []
+
+
+def test_mixed_results_raise_while_coherent_mismatch_returns_unsatisfied():
+    docs = check_contract.definition_for("docs")
+    tach = check_contract.definition_for("tach")
+    checked = closed_source("a" * 40)
+    other_source = closed_source("b" * 40)
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    other_rule = check_contract.rule_ref("hygiene", 2, digest="c" * 64)
+
+    doc_inv = check_contract.native_result(
+        docs,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inv",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    doc_inv_other_src = check_contract.native_result(
+        docs,
+        source=other_source,
+        status="passed",
+        result_origin="host",
+        result_instance="inv-b",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    doc_inv_other_rule = check_contract.native_result(
+        docs,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inv-r2",
+        native_exit_code=0,
+        rule_ref=other_rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    tach_pass = check_contract.native_result(
+        tach,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="tach-1",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("tach/check"),
+        evidence={"stdout": "ok"},
+    )
+    expected_docs = {
+        "check_id": docs.check_id,
+        "definition_version": docs.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    expected_tach_other_src = {
+        "check_id": tach.check_id,
+        "definition_version": tach.definition_version,
+        "rule_ref": rule,
+        "source_ref": other_source,
+    }
+
+    # Mixed check IDs, sources, or rules inside results always raise CheckContractError.
+    with pytest.raises(
+        check_contract.CheckContractError, match="satisfaction_check_mismatch"
+    ):
+        check_contract.evaluate_expected_satisfaction(
+            [doc_inv, tach_pass], expected_docs
+        )
+    for mixed in ([doc_inv, doc_inv_other_src], [doc_inv, doc_inv_other_rule]):
+        with pytest.raises(
+            check_contract.CheckContractError, match="satisfaction_instance_mismatch"
+        ):
+            check_contract.evaluate_expected_satisfaction(mixed, expected_docs)
+        with pytest.raises(
+            check_contract.CheckContractError, match="satisfaction_instance_mismatch"
+        ):
+            check_contract.evaluate_check_satisfaction(
+                docs, mixed, expected=expected_docs
+            )
+
+    # Contradictory definition vs expected raises.
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="satisfaction_expected_definition_mismatch",
+    ):
+        check_contract.evaluate_check_satisfaction(
+            docs, [doc_inv], expected=expected_tach_other_src
+        )
+
+    # Coherent candidate set mismatching target Expected returns unsatisfied.
+    coherent_other_check = check_contract.evaluate_expected_satisfaction(
+        [tach_pass], expected_docs
+    )
+    assert coherent_other_check["status"] == "unsatisfied"
+    assert coherent_other_check["reason"] == "native_result_mismatched"
+    assert coherent_other_check["selected_result_ids"] == []
+
+    coherent_other_src = check_contract.evaluate_check_satisfaction(
+        tach, [tach_pass], expected=expected_tach_other_src
+    )
+    assert coherent_other_src["status"] == "unsatisfied"
+    assert coherent_other_src["reason"] == "native_result_mismatched"
+    assert coherent_other_src["selected_result_ids"] == []
+
+
+def test_multipath_expected_failure_records_all_reasons_without_selecting_witness():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {"kind": "data", "path": "docs/guide.md", "sha256": "b" * 64}
+    coverage = {"paths": ["docs/guide.md"]}
+
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    links_missing_cov = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links-no-cov",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[
+            {"kind": "check_result", "result_id": inventory["result_id"]},
+            required_input,
+        ],
+        evidence={"stdout": "ok"},
+    )
+    links_missing_input = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links-no-input",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[{"kind": "check_result", "result_id": inventory["result_id"]}],
+        coverage=coverage,
+        evidence={"stdout": "ok"},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [required_input],
+        "coverage": coverage,
+    }
+    decision = check_contract.evaluate_expected_satisfaction(
+        [inventory, links_missing_input, links_missing_cov], expected
+    )
+    assert decision["status"] == "unsatisfied"
+    assert decision["selected_result_ids"] == []
+    assert decision["expected_failures_complete"] is True
+    assert len(decision["expected_failures"]) == 2
+    assert set(decision["failure_reasons"]) == {
+        "expected_inputs_uncovered",
+        "expected_coverage_unproven",
+    }
+    # requirements[].satisfied_by reflects local tool satisfaction only;
+    # selected_result_ids stays strictly empty when Expected is unmet.
+    assert decision["requirements"][0]["satisfied_by"] == inventory["result_id"]
+    assert decision["requirements"][1]["satisfied_by"] in {
+        links_missing_cov["result_id"],
+        links_missing_input["result_id"],
+    }
+
+
+def test_empty_results_use_layered_native_result_missing_reason():
+    checked = closed_source("a" * 40)
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+
+    for name in ("forwarding", "tach", "docs"):
+        definition = check_contract.definition_for(name)
+        expected = {
+            "check_id": definition.check_id,
+            "definition_version": definition.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+            "input_refs": [],
+            "coverage": {"scope": "all"},
+        }
+        if definition.requires_baseline:
+            expected["baseline_ref"] = {"base_commit": "a" * 40}
+        decision = check_contract.evaluate_expected_satisfaction([], expected)
+        assert decision["status"] == "unsatisfied"
+        assert decision["reason"] == "native_result_missing"
+        assert decision["selected_result_ids"] == []
+        assert decision["expected_failures"] == []
+        assert decision["expected_failures_complete"] is True
+        assert decision["failure_reasons"] == ["native_result_missing"]
+        assert [item["reason"] for item in decision["requirements"]] == [
+            "result_missing" for _ in definition.tool_requirements
+        ]
+
+        if definition.tool_requirements:
+            native_empty = check_contract.evaluate_check_satisfaction(definition, [])
+            assert native_empty["status"] == "unsatisfied"
+            assert native_empty["reason"] == "native_result_missing"
+            assert native_empty["selected_result_ids"] == []
+            assert [item["reason"] for item in native_empty["requirements"]] == [
+                "result_missing" for _ in definition.tool_requirements
+            ]
+
+    # Partial tool-bound results still surface per-requirement result_missing.
+    docs_def = check_contract.definition_for("docs")
+    only_links = check_contract.native_result(
+        docs_def,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links-only",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        evidence={"stdout": "ok"},
+    )
+    partial = check_contract.evaluate_check_satisfaction(docs_def, [only_links])
+    assert partial["status"] == "unsatisfied"
+    assert partial["reason"] == "result_missing"
+    assert [item["reason"] for item in partial["requirements"]] == [
+        "result_missing",
+        "prerequisite_unmet",
+    ]

@@ -24,9 +24,13 @@ Provider 的可选能力是 `Context`（repo/source/Run/Attempt/环境）、`Dis
 
 **拒绝/降级：** Required Profile 不存在或不可信、有效性/目标绑定无法证明、Expected 缺失、选中集遗漏或不适用无授权时，该动作不能获得完整 Required PASS；局部可执行 Check 可保留自身原生结果，不得全部伪装为失败。Profile 解析或授权状态缺失不强制阻断不依赖该 Profile 的普通本地检查。
 
-### 1.2 CheckDefinition / Expected / Native Result：统一 Profile 交接提案（待审，不是已验收规范）
+### 1.2 CheckDefinition / Expected / Native Result：统一 Profile 交接设计基线
 
-**地位：** 本节是针对 §1.1 既有 `Profile → Expected Requirements → Plan → Assessment` 的**设计修订提案**；随本 PR 通过设计审阅后，才可作为 #52/#66 的后续实施基线。它不因写入本文件自动凌驾现有 Issue、已交付公共接口或原生工具语义。实际 Profile→Expected API 尚未交付；若设计冲突，应在原专题原位裁决并记录差异，不依赖“较新条款优先”。
+**地位：** 本节已随 PR #92 合并，是 #52/#66/#63/#61 分工与交接的设计基线，**不是已实现的完整 Profile→Expected API**。已交付 #93/#95 的局部 Check/Native Result 与 #96 的局部 Expected 投影继续有效；剩余完整 Profile 派生、#66-C Routing/Observed Binding、#63 受信及 #61 Required 按其真实接口分别交付。设计基线不自动改写原生 Tool 语义或现有已验收行为，具体冲突在所属专题以实际事实修正。
+
+**单 Check 多 Native Result 的已实现接口（PR #98 待验收）：** #52 `evaluate_check_satisfaction(definition, results)` 维护 ToolRequirement/前置关系；`evaluate_expected_satisfaction(results, resolved_expected)` 在**同一次成功 Witness 选择**中检验 Expected 的 Rule/Source/Baseline/Input/Coverage，并返回 `selected_result_ids`、状态和原因。失败、未执行、未选中的结果不为该组合补足覆盖；合法的其他成功候选仍可组成满足条件的 Witness。旧 `results_cover_expected` 布尔入口保持可用，不能另建第二套 DAG/Result 选择器。默认最终 Check Coverage 取声明依赖图的终端 Requirement，明确 `coverage_by_requirement` 时按指定受控 Requirement 逐项核对，不把 Inventory 等前置数据误当最终扫描结果。
+
+**#66-B/C 执行前后绑定：** #66-B 在相关 Job 之前产出不变的 `expected_check_ref`、`expected_set_ref`、`scope_id` 和带未知项的预投影；#66-C 在保持该 Expected 不变的前提下，依据来源有权的规则/配置、#66-P0 Source 物化、真实 Job/Result 输入和比较基线形成独立 Observed Binding Receipt。Receipt 关联上述三个身份、解析后的调用参数与原生 Witness 身份、验证的来源/摘要、缺失项和原因；只有来源与约束等价已证明时调用 #52 严格组合判定。Result 本身只能证明实际观察，不能凭其 Source、Rule 或 Input 值倒造预期策略。未知 Source/Rule/Closure 为 unknown/insufficient，保留真实已执行事实；#63/#61 继续独立裁定可信及 Required。
 
 **唯一规范性策略来源：** 对某次 Context×Action×Target，项目/组织有权生效的 Engineering Profile 决定 Required Obligations 与允许的不适用条件；受控项目检查配置还可以声明适用的非 Required/Advisory Check。原生标准/工具仍拥有其规则语义，Knowledge 保留已接纳工程知识和领域规则权威；CheckDefinition 是 ECI 对原生 Check 的身份及适配合同，Expected 是固定作用域下的派生事实，**均不是第二份可编辑 Required Policy**。具体输入范围、批准来源及有效时点按 §1.1 固定；不能用 RDF 空查询、Selection 未选中、Hook Job 缺席或结果 PASS 改写策略。
 
