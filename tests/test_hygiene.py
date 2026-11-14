@@ -115,7 +115,9 @@ def test_docs_runs_lychee_once_with_active_files(repo):
     assert len(tools) == 1
     argv, data = tools[0]
     assert Path(argv[0]).stem == "lychee"
-    assert "docs/guide.md" in data
+    # Lychee takes explicit inputs; stdin is not an accepted invocation.
+    assert data is None
+    assert "docs/guide.md" in argv
 
 
 def test_missing_link_checker_is_a_failure(repo):

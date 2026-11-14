@@ -7,12 +7,14 @@
 - [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
 - [Plan 依赖盘点](plan-dependencies/README.md) — #86 A 实例矩阵、版本拒绝与 Host/Dagger 上下文证据。
 - [Plan 原生结果共享](plan-result-sharing/README.md) — #86 B 首批同一结果对象、原生失败、产物与 Enforce 定向验证。
+- [原生工具合同](native-tool-contract/README.md) — #52 多工具满足关系与 Host `git`+Lychee 真实执行证据。
 - [变更影响选择](selection.md) — Git 对象、Tach 闭包、plan 身份与原生 unittest 的本地验证。
 - [Python 包合并](python-package.md) — 单一命名空间、隔离 wheel 安装及 Dagger 共享包接线的验证。
 - [仓库 Hygiene](hygiene.md) — whitespace/forwarding/docs/Vulture/Tach 原生结果与 CLI 的本地验证。
 - [来源集合对账](sources.md) — Manifest 投影、集合差/冲突/摘要/属性及 Dagger 调用的本地验证。
 - [Weaver 原生检查](weaver.md) — 固定 Registry、OTLP 回放、终态证据与 Dagger Check/Artifact 契约。
 - [CI/CD 遥测](cicd-telemetry.md) — GitHub Run/Job 事实 → Pipeline/Task 产物与负例本地验证。
+- [Dagger 原生 OTel Telemetry](dagger-native-telemetry.md) — 固定 Engine OTLP 捕获、父图关联与 A.1 证据索引。
 - [Weaver](weaver.md) — Registry/Live/Terminal 原生检查与 [证据摘要](weaver-evidence/README.md)。
 - [性能测量](performance/README.md) — CI 性能测量、原生缓存改造及采样数据。
 

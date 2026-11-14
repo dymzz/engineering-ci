@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-from engineering_ci import plan_contract
+from engineering_ci import expected_checks, plan_contract
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -1204,6 +1204,18 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     root, config_path = Path(root), Path(config_path)
     tach_path = root / config.tach
     graph = _graph_validation(selection, config, root, tach_validation)
+    scope = _check_scope(selection, config, root)
+    content_binding = (
+        worktree_content_binding(root, selection.changeset.paths)
+        if selection.changeset.snapshot == "worktree" and selection.changeset.paths
+        else None
+    )
+    expected = expected_checks.derive_expected_checks(
+        selection.changeset,
+        scope,
+        config_path=config_path,
+        content_binding=content_binding,
+    )
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
@@ -1239,11 +1251,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "execution_tree": selection.changeset.execution_tree,
             "references": list(selection.changeset.references),
             "changed_paths": list(selection.changeset.paths),
-            "content_binding": (
-                worktree_content_binding(root, selection.changeset.paths)
-                if selection.changeset.snapshot == "worktree"
-                else None
-            ),
+            "content_binding": content_binding,
             "source_tree_id": (
                 tree_content_id(root, selection.changeset.execution_tree)
                 if selection.changeset.execution_tree
@@ -1268,7 +1276,8 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
                 name: list(items) for name, items in sorted(selection.reasons.items())
             },
         },
-        "check_scope": _check_scope(selection, config, root),
+        "check_scope": scope,
+        "expected_checks": expected,
         "prerequisite_actions": {
             name: dict(spec)
             for name, spec in sorted(config.prerequisite_actions.items())

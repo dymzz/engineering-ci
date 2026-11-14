@@ -58,6 +58,122 @@ def _string_list(value):
     return isinstance(value, list) and all(isinstance(s, str) and s for s in value)
 
 
+def _validate_expected(expected, git, plan):
+    from . import check_contract, expected_checks
+
+    if not isinstance(expected, dict):
+        raise PlanError("expected_checks_invalid")
+    if expected.get("kind") != "engineering-ci-expected-checks":
+        raise PlanError("expected_checks_invalid")
+    if expected.get("schema_version") != 1:
+        raise PlanError("expected_checks_schema_unsupported")
+    if expected.get("status") not in {"complete", "partial", "unknown"}:
+        raise PlanError("expected_status_invalid")
+    if expected.get("status") == "complete":
+        raise PlanError("expected_complete_unproven")
+    if expected.get("consumer_completeness") != "not_claimed":
+        raise PlanError("expected_consumer_completeness_unproven")
+    if expected.get("projection_source") != "check_scope":
+        raise PlanError("expected_projection_source_unsupported")
+    check_scope = plan.get("check_scope") or (plan.get("selection") or {}).get(
+        "check_scope"
+    )
+    if check_scope is None:
+        raise PlanError("expected_check_scope_missing")
+    rule = expected.get("selection_rule_ref")
+    generator = plan.get("generator")
+    if (
+        not isinstance(rule, dict)
+        or rule.get("name") != "engineering-ci.selection"
+        or not isinstance(rule.get("sha256"), str)
+        or not isinstance(generator, dict)
+        or not isinstance(generator.get("config_sha256"), str)
+        or rule["sha256"] != f"sha256:{generator['config_sha256']}"
+    ):
+        raise PlanError("expected_selection_rule_mismatch")
+    for key in ("scope_id", "expected_set_ref"):
+        value = expected.get(key)
+        if not isinstance(value, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", value
+        ):
+            raise PlanError(f"expected_{key}_invalid")
+    checks = expected.get("checks")
+    if not isinstance(checks, list):
+        raise PlanError("expected_checks_invalid")
+    refs = [item.get("expected_check_ref") for item in checks if isinstance(item, dict)]
+    if len(refs) != len(set(refs)):
+        raise PlanError("expected_duplicate")
+    try:
+        expected_checks.validate_projection(
+            expected,
+            git,
+            check_scope,
+        )
+    except expected_checks.ExpectedError as error:
+        raise PlanError(error.code) from None
+    seen = set()
+    for item in checks:
+        if not isinstance(item, dict):
+            raise PlanError("expected_check_invalid")
+        if item.get("definition_status") not in {"resolved", "unknown"}:
+            raise PlanError("expected_definition_status_invalid")
+        definition = check_contract.definition_for(
+            item.get("name"), item.get("definition_version")
+        )
+        check_id = item.get("check_id")
+        if item.get("definition_status") == "resolved":
+            if (
+                definition is None
+                or check_id != definition.check_id
+                or item.get("definition_version") != definition.definition_version
+            ):
+                raise PlanError("expected_definition_mismatch")
+        elif definition is not None or check_id is not None:
+            raise PlanError("expected_definition_mismatch")
+        if check_id is not None and (
+            not isinstance(check_id, str)
+            or not re.fullmatch(
+                r"eci/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+", check_id
+            )
+        ):
+            raise PlanError("expected_check_id_invalid")
+        ref = item.get("expected_check_ref")
+        if not isinstance(ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", ref):
+            raise PlanError("expected_check_ref_invalid")
+        if ref in seen:
+            raise PlanError("expected_duplicate")
+        seen.add(ref)
+        applicability = item.get("applicability")
+        if not isinstance(applicability, dict) or not isinstance(
+            applicability.get("status"), str
+        ):
+            raise PlanError("expected_applicability_invalid")
+        if not isinstance(item.get("policy_status"), str):
+            raise PlanError("expected_policy_invalid")
+    missing = expected.get("missing")
+    if not isinstance(missing, list) or any(
+        not isinstance(item, str) for item in missing
+    ):
+        raise PlanError("expected_missing_invalid")
+    if expected.get("conflicts"):
+        raise PlanError("expected_conflicts_unresolved")
+    if not checks and (
+        expected.get("status") != "unknown"
+        or expected.get("definitions_status") != "unknown"
+    ):
+        raise PlanError("expected_status_inconsistent")
+    if missing and expected.get("definitions_status") == "requested_names_complete":
+        raise PlanError("expected_status_inconsistent")
+    unknown_names = sorted(
+        str(item.get("name"))
+        for item in checks
+        if item.get("definition_status") == "unknown"
+    )
+    if sorted(missing) != unknown_names:
+        raise PlanError("expected_status_inconsistent")
+    return expected
+
+
 def _validate_consumer_fields(value, chosen, git):
     """Validate nested shapes before consumers dereference them or start tools."""
     for container in (value, chosen):
@@ -454,6 +570,10 @@ def validate(value):
     if not isinstance(framework, str) or framework not in {"pytest", "unittest"}:
         raise PlanError("framework_invalid")
     _validate_consumer_fields(value, chosen, git)
+    if "expected_checks" in value:
+        if version != PLAN_VERSION:
+            raise PlanError("expected_checks_requires_plan_v2")
+        _validate_expected(value["expected_checks"], git, value)
     contract = value.get("dependency_contract")
     if version == 1:
         if "dependency_contract" in value:

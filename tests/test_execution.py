@@ -206,14 +206,14 @@ def test_execute_runs_selected_docs_check_without_tests(repo):
     assert report["checks"][0]["name"] == "docs"
     assert report["checks"][0]["status"] == "passed"
     assert report["checks"][0]["check_id"] == "eci/hygiene/docs"
-    assert report["checks"][0]["check_version"] == 1
+    assert report["checks"][0]["check_version"] == 2
     assert report["checks"][0]["result_id"].startswith("sha256:")
     assert report["checks"][0]["native_result"]["check"]["check_id"] == (
         "eci/hygiene/docs"
     )
     assert report["check_contract"] == {
         "kind": "engineering-ci-check-contract",
-        "schema_version": 1,
+        "schema_version": 2,
     }
     assert report["checks"][0]["source_ref"]["snapshot"] == "worktree"
     assert report["checks"][0]["native_result"]["check"]["rule_ref"]["sha256"]
@@ -1035,3 +1035,162 @@ def test_cli_writes_json_and_exit(repo, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "engineering-ci-execution-report"
     assert payload["status"] == "passed"
+
+
+def test_docs_invokes_lychee_with_explicit_targets(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    fake = FakeRunner()
+    execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fake,
+    )
+    calls = [call for call in fake.calls if Path(call[0][0]).stem == "lychee"]
+    assert len(calls) == 1
+    argv, data = calls[0]
+    # Real Lychee rejects an invocation without explicit inputs; the document
+    # set must be passed as arguments, not as stdin data.
+    assert data is None
+    assert argv[-1].endswith("docs/guide.md")
+
+
+def test_docs_emits_inventory_and_links_native_results(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert report["status"] == "passed"
+    results = check["native_results"]
+    assert [item["tool"]["access_id"] for item in results] == [
+        "git/ls-files",
+        "lychee/docs",
+    ]
+    inventory, links = results
+    assert inventory["tool"]["executable"] == "git"
+    assert Path(links["tool"]["executable"]).stem == "lychee"
+    assert check["native_result"]["result_id"] == links["result_id"]
+    assert links["input_refs"][0] == {
+        "kind": "check_result",
+        "result_id": inventory["result_id"],
+        "path": "git/ls-files",
+    }
+    assert links["input_refs"][1]["kind"] == "config"
+    satisfaction = check["native_satisfaction"]
+    assert satisfaction["status"] == "satisfied"
+    assert satisfaction["required"] is False
+    assert satisfaction["trusted"] is False
+    assert satisfaction["consumer_scope"] == "supplied_results_only"
+
+
+def test_tool_check_emits_its_declared_entry(repo):
+    path, base = repo
+    value = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "changed_paths": ["src/pkg/sub.py"],
+        },
+        check_scope=[{"name": "tach", "status": "selected"}],
+    )
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert len(check["native_results"]) == 1
+    native = check["native_results"][0]
+    assert native["tool"]["access_id"] == "tach/check"
+    assert Path(native["tool"]["executable"]).stem == "tach"
+    assert check["native_satisfaction"]["status"] == "satisfied"
+
+
+def test_unsatisfied_native_satisfaction_blocks_the_report(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    fake = FakeRunner()
+
+    def failing_inventory(argv, root, data=None):
+        # The inventory step fails while the link scan still runs and passes:
+        # without the git input the Check cannot be considered satisfied.
+        if list(argv)[:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(argv, 1, "", "inventory failed")
+        return fake(argv, root, data)
+
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=failing_inventory,
+    )
+    check = report["checks"][0]
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert report["status"] == "blocked"
+    assert report["reason"] == "native_satisfaction_incomplete"
+
+
+def test_failed_inventory_cannot_become_a_clean_not_applicable(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    fake = FakeRunner()
+
+    def failing_inventory(argv, root, data=None):
+        if list(argv)[:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(argv, 1, "", "inventory failed")
+        return fake(argv, root, data)
+
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=failing_inventory,
+    )
+    check = report["checks"][0]
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert check["status"] == "failed"
+    assert check["reason"] == "git_inventory_failed"
+    assert check["execution_started"] is False
+    assert check["inventory"]["exit_code"] == 1
+    # The inventory actually ran: its native failure must survive even though
+    # the link scan never started, and no Lychee result may be fabricated.
+    results = check["native_results"]
+    assert len(results) == 1
+    inventory = results[0]
+    assert inventory["tool"]["access_id"] == "git/ls-files"
+    assert inventory["status"] == "failed"
+    assert inventory["native_exit_code"] == 1
+    assert "inventory failed" in inventory["evidence"]["stderr"]
+    assert check["native_result"]["result_id"] == inventory["result_id"]
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert check["check_contract"]["status"] == "valid"
+
+
+def test_genuine_no_documents_does_not_become_a_failure(repo):
+    path, base = repo
+    (path / "docs/guide.md").unlink()
+    (path / "README.md").unlink()
+    report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    assert report["status"] == "passed"
+    assert check["status"] == "not_applicable"
+    assert check["reason"] == "no_applicable_documents"
+    assert check["inventory"]["exit_code"] == 0
