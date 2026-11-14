@@ -772,6 +772,162 @@ def test_index_snapshot_excludes_unstaged_worktree_changes(repo):
     assert {"src/pkg/sub.py", "src/pkg/other.py"} <= set(worktree.paths)
 
 
+def test_changeset_index_file_reads_alternate_index(repo, tmp_path):
+    path, base = repo
+    (path / "docs/new.md").write_text("# new\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/new.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    external_tree = subprocess.run(
+        ["git", "write-tree"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    default_tree = run(path, "write-tree").strip()
+    assert external_tree != default_tree
+    changeset = selection.changeset(path, base=base, mode="index", index_file=index)
+    assert changeset.index_tree == external_tree
+    assert "docs/new.md" in changeset.paths
+
+
+def test_changeset_index_file_refuses_worktree_mismatch(repo, tmp_path):
+    path, base = repo
+    (path / "docs/indexed.md").write_text("# indexed\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/indexed.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    (path / "docs/indexed.md").write_text("# worktree\n", encoding="utf-8")
+    changeset = selection.changeset(path, base=base, mode="index", index_file=index)
+    assert changeset.source_refusal == "index_worktree_mismatch"
+    assert changeset.complete is False
+    with pytest.raises(selection.SelectionError, match="index_worktree_mismatch"):
+        selection.select(changeset, config(path), root=path)
+
+
+def test_changeset_index_write_tree_failure_is_explicit(repo, tmp_path):
+    path, base = repo
+    missing = tmp_path / "missing" / "index"
+    changeset = selection.changeset(path, base=base, mode="index", index_file=missing)
+    assert changeset.index_tree is None
+    assert changeset.source_refusal == "index_tree_unavailable"
+
+
+def test_index_source_refusal_rejects_git_query_failure(repo, monkeypatch):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    real = selection._git
+
+    def fake(root, *args, env=None):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 2, "", "git failure")
+        return real(root, *args, env=env)
+
+    monkeypatch.setattr(selection, "_git", fake)
+    assert selection.index_source_refusal(path, tree) == "index_git_check_failed"
+
+
+def test_select_run_refuses_index_worktree_mismatch(repo, tmp_path):
+    path, base = repo
+    (path / "docs/indexed.md").write_text("# indexed\n", encoding="utf-8")
+    index = tmp_path / "index-b"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "HEAD"], cwd=path, env=env, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs/indexed.md"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    (path / "docs/indexed.md").write_text("# worktree\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        selection.main(
+            [
+                "--root",
+                str(path),
+                "--config",
+                "ci-selection.toml",
+                "--base",
+                base,
+                "--mode",
+                "index",
+                "--index-file",
+                str(index),
+                "--run",
+            ]
+        )
+    assert raised.value.code == 4
+
+
+def test_index_source_refusal_allows_eol_checkout_representation(repo):
+    path, _ = repo
+    run(path, "config", "core.autocrlf", "false")
+    (path / ".gitattributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+    (path / "input.txt").write_text("one\ntwo\n", encoding="utf-8")
+    run(path, "add", ".gitattributes", "input.txt")
+    run(path, "commit", "-q", "-m", "attributes")
+    tree = run(path, "write-tree").strip()
+    (path / "input.txt").write_bytes(b"one\r\ntwo\r\n")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert selection.index_source_refusal(path, tree) is None
+
+
+def test_index_source_refusal_rejects_skip_worktree_bytes(repo):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    run(path, "update-index", "--skip-worktree", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert (
+        selection.index_source_refusal(path, tree)
+        == "index_skip_worktree_bytes_mismatch"
+    )
+
+
+def test_index_source_refusal_rejects_assume_unchanged_bytes(repo):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+    run(path, "update-index", "--assume-unchanged", "src/pkg/sub.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 100\n", encoding="utf-8")
+    assert (
+        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
+        == 0
+    )
+    assert (
+        selection.index_source_refusal(path, tree)
+        == "index_assume_unchanged_bytes_mismatch"
+    )
+
+
 def test_push_snapshot_uses_before_after_commits(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 8\n", encoding="utf-8")
