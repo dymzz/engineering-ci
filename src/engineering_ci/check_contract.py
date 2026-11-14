@@ -945,6 +945,16 @@ def validate_expected_instance(expected):
             not isinstance(item, dict) for item in refs
         ):
             raise CheckContractError("expected_input_refs_invalid")
+    if "coverage_by_requirement" in expected:
+        mapping = expected["coverage_by_requirement"]
+        if not isinstance(mapping, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in mapping.items()
+        ):
+            raise CheckContractError("expected_coverage_mapping_invalid")
+        requirement_ids = {item.requirement_id for item in definition.tool_requirements}
+        if not mapping or set(mapping) - requirement_ids:
+            raise CheckContractError("expected_coverage_requirement_unknown")
     if expected.get("profile_ref") is not None:
         _validate_reference(expected["profile_ref"], "profile_ref")
     baseline = expected.get("baseline_ref")
@@ -1025,37 +1035,98 @@ def result_covers_expected(result, expected):
     return False
 
 
-
 def results_cover_expected(results, expected):
-    """Match multiple Native Results to one resolved Check expectation.
+    """Whether selected successful native witnesses cover one resolved Expected.
 
-    Only the results selected by ToolRequirement satisfaction may prove
-    Expected input and coverage. This is not ExpectedSet completeness.
+    For selected result identities and structured reasons, consumers should
+    use evaluate_expected_satisfaction(). Neither API admits trusted evidence.
+    """
+    return evaluate_expected_satisfaction(results, expected)["status"] == "satisfied"
+
+
+def evaluate_expected_satisfaction(results, expected):
+    """Compose native witnesses against one independently bound Expected.
+
+    The selected identities are the SAME results that prove input and
+    coverage; #66-C may reference them with the immutable expected_check_ref.
     """
     validate_expected_instance(expected)
     if not isinstance(results, (list, tuple)):
         raise CheckContractError("satisfaction_results_invalid")
     validate_result_set(results)
-    if not results:
-        return False
     definition = _registered_definition(
         expected["check_id"], expected["definition_version"]
     )
-    if any(not result_matches_expected(item, expected) for item in results):
-        return False
+    if not results or any(
+        not result_matches_expected(item, expected) for item in results
+    ):
+        return {
+            "kind": SATISFACTION_KIND,
+            "schema_version": CONTRACT_VERSION,
+            "check_id": expected["check_id"],
+            "definition_version": expected["definition_version"],
+            "status": "unsatisfied",
+            "reason": "native_result_missing_or_mismatched",
+            "selected_result_ids": [],
+            "result_ids": [item["result_id"] for item in results],
+            "consumer_scope": "supplied_expected_only",
+            "trusted": False,
+            "required": False,
+        }
     if not definition.tool_requirements:
-        return len(results) == 1 and result_covers_expected(results[0], expected)
-    decision = evaluate_check_satisfaction(definition, results)
-    if decision["status"] != "satisfied":
-        return False
-    selected_ids = {entry["satisfied_by"] for entry in decision["requirements"]}
-    selected = [item for item in results if item["result_id"] in selected_ids]
-    observed_inputs = [ref for item in selected for ref in item["input_refs"]]
+        covered = (
+            len(results) == 1 and result_covers_expected(results[0], expected)
+        )
+        return {
+            "kind": SATISFACTION_KIND,
+            "schema_version": CONTRACT_VERSION,
+            "check_id": definition.check_id,
+            "definition_version": definition.definition_version,
+            "status": "satisfied" if covered else "unsatisfied",
+            "reason": "native_pass" if covered else "native_result_uncovered",
+            "selected_result_ids": [results[0]["result_id"]] if covered else [],
+            "result_ids": [item["result_id"] for item in results],
+            "consumer_scope": "supplied_expected_only",
+            "trusted": False,
+            "required": False,
+        }
+    return evaluate_check_satisfaction(definition, results, expected=expected)
+
+
+def _expected_witness_failure(requirements, chosen, expected):
+    """Why this otherwise successful native witness cannot prove Expected."""
+    observed_inputs = [
+        ref for item in chosen.values() for ref in item["input_refs"]
+    ]
     if any(ref not in observed_inputs for ref in expected.get("input_refs", [])):
-        return False
-    return "coverage" not in expected or any(
-        item.get("coverage") == expected["coverage"] for item in selected
-    )
+        return "expected_inputs_uncovered"
+
+    # Only terminal native Checks can witness final Check coverage. Inventory
+    # may provide data to Lychee, but is not the link scan outcome.
+    predecessors = {
+        predecessor for item in requirements for predecessor in item.after
+    }
+    terminal_ids = {
+        item.requirement_id
+        for item in requirements
+        if item.requirement_id not in predecessors
+    }
+    mapping = expected.get("coverage_by_requirement")
+    if mapping is not None:
+        if terminal_ids != set(mapping):
+            return "expected_coverage_mapping_incomplete"
+        if any(
+            chosen[key].get("coverage") != coverage
+            for key, coverage in mapping.items()
+        ):
+            return "expected_coverage_unproven"
+    elif "coverage" in expected:
+        if any(
+            chosen[key].get("coverage") != expected["coverage"]
+            for key in terminal_ids
+        ):
+            return "expected_coverage_unproven"
+    return None
 
 
 def _requirement_order(requirements):
@@ -1114,14 +1185,11 @@ def _consumed_result_ids(result):
     }
 
 
-def evaluate_check_satisfaction(definition, results):
-    """Native satisfaction of one Check from the supplied results.
+def evaluate_check_satisfaction(definition, results, *, expected=None):
+    """Select native witnesses for every ToolRequirement and its prerequisites.
 
-    Every declared requirement must be satisfied. An alternative satisfies its
-    requirement only when its own Native Result passed; a requirement that
-    declares ``after`` is satisfied only when the dependent result references
-    the prerequisite ``result_id`` it consumed. This is not an ExpectedSet,
-    Evidence Admission or Required decision.
+    Optional expected further constrains that SAME selection by resolved
+    input and terminal Check coverage, without weakening valid alternatives.
     """
     definition = validate_definition(definition)
     registered = _registered_definition(
@@ -1141,9 +1209,6 @@ def evaluate_check_satisfaction(definition, results):
             raise CheckContractError("satisfaction_definition_version_mismatch")
         observed.append(result)
     if len(observed) > 1:
-        # The supplied results must describe one composable Check instance.
-        # Equal rule/profile/Source/baseline is the contract-visible
-        # equivalence; stronger cross-Job reuse evidence remains #63 work.
         reference = observed[0]
         for result in observed[1:]:
             if (
@@ -1154,12 +1219,24 @@ def evaluate_check_satisfaction(definition, results):
                 or result.get("baseline_ref") != reference.get("baseline_ref")
             ):
                 raise CheckContractError("satisfaction_instance_mismatch")
+    if expected is not None:
+        validate_expected_instance(expected)
+        if (
+            expected["check_id"] != definition.check_id
+            or expected["definition_version"] != definition.definition_version
+        ):
+            raise CheckContractError("satisfaction_expected_definition_mismatch")
+        if any(not result_matches_expected(item, expected) for item in observed):
+            raise CheckContractError("satisfaction_expected_instance_mismatch")
+
     decision = {
         "kind": SATISFACTION_KIND,
         "schema_version": CONTRACT_VERSION,
         "check_id": definition.check_id,
         "definition_version": definition.definition_version,
-        "consumer_scope": "supplied_results_only",
+        "consumer_scope": "supplied_results_only"
+        if expected is None
+        else "supplied_expected_only",
         "required": False,
         "trusted": False,
         "result_ids": [item["result_id"] for item in observed],
@@ -1170,59 +1247,123 @@ def evaluate_check_satisfaction(definition, results):
             "status": "not_applicable",
             "reason": "no_tool_requirements",
             "requirements": [],
+            "selected_result_ids": [],
         }
-    satisfied = {}
-    entries = []
-    for requirement in _requirement_order(definition.tool_requirements):
-        candidates = [
-            item for item in observed if _result_matches_requirement(requirement, item)
+
+    requirements = _requirement_order(definition.tool_requirements)
+    candidates = {
+        requirement.requirement_id: [
+            item
+            for item in observed
+            if _result_matches_requirement(requirement, item)
         ]
-        passed = sorted(
-            (item for item in candidates if item["status"] == "passed"),
+        for requirement in requirements
+    }
+    passing = {
+        key: sorted(
+            (item for item in choices if item["status"] == "passed"),
             key=lambda item: item["result_id"],
         )
+        for key, choices in candidates.items()
+    }
+
+    def find_witness(*, check_expected):
+        """Explore declared alternatives against actual consumed result IDs."""
+        chosen = {}
+
+        def visit(position):
+            if position == len(requirements):
+                if check_expected and _expected_witness_failure(
+                    requirements, chosen, expected
+                ):
+                    return None
+                return dict(chosen)
+            requirement = requirements[position]
+            for result in passing[requirement.requirement_id]:
+                if any(
+                    chosen[predecessor]["result_id"]
+                    not in _consumed_result_ids(result)
+                    for predecessor in requirement.after
+                ):
+                    continue
+                chosen[requirement.requirement_id] = result
+                witness = visit(position + 1)
+                if witness is not None:
+                    return witness
+            chosen.pop(requirement.requirement_id, None)
+            return None
+
+        return visit(0)
+
+    selected = find_witness(check_expected=expected is not None)
+    tool_witness = selected
+    if selected is None and expected is not None:
+        tool_witness = find_witness(check_expected=False)
+
+    # Preserve precise native failure diagnostics for incomplete job sets.
+    partial = {}
+    entries = []
+    for requirement in requirements:
+        key = requirement.requirement_id
+        choices = candidates[key]
         entry = {
-            "requirement_id": requirement.requirement_id,
+            "requirement_id": key,
             "after": list(requirement.after),
             "alternatives": [
                 alternative.access_id for alternative in requirement.alternatives
             ],
-            "observed": [item["result_id"] for item in candidates],
+            "observed": [item["result_id"] for item in choices],
             "satisfied_by": None,
             "status": "unsatisfied",
-            "reason": "result_missing" if not candidates else "result_not_passed",
+            "reason": "result_missing" if not choices else "result_not_passed",
         }
-        selected = None
-        for candidate in passed:
-            blocker = None
-            for prerequisite in requirement.after:
-                prerequisite_entry = satisfied[prerequisite]
-                if prerequisite_entry["status"] != "satisfied":
-                    blocker = "prerequisite_unmet"
+        picked = tool_witness[key] if tool_witness is not None else None
+        if picked is None:
+            for candidate in passing[key]:
+                blocker = None
+                for predecessor in requirement.after:
+                    previous = partial[predecessor]
+                    if previous["status"] != "satisfied":
+                        blocker = "prerequisite_unmet"
+                        break
+                    if previous["satisfied_by"] not in _consumed_result_ids(candidate):
+                        blocker = "prerequisite_unevidenced"
+                        break
+                if blocker is None:
+                    picked = candidate
                     break
-                if prerequisite_entry["satisfied_by"] not in _consumed_result_ids(
-                    candidate
-                ):
-                    blocker = "prerequisite_unevidenced"
-                    break
-            if blocker is None:
-                selected = candidate
-                break
-            entry["reason"] = blocker
-        if selected is not None:
+                entry["reason"] = blocker
+        if picked is not None:
             entry.update(
                 status="satisfied",
                 reason="native_pass",
-                satisfied_by=selected["result_id"],
+                satisfied_by=picked["result_id"],
             )
-        satisfied[requirement.requirement_id] = entry
+        partial[key] = entry
         entries.append(entry)
+
     unmet = [item for item in entries if item["status"] != "satisfied"]
+    if selected is not None:
+        status, reason = "satisfied", "all_requirements_satisfied"
+    elif tool_witness is not None and expected is not None:
+        status, reason = "unsatisfied", _expected_witness_failure(
+            requirements, tool_witness, expected
+        )
+    else:
+        status, reason = (
+            "unsatisfied",
+            unmet[0]["reason"] if unmet else "prerequisite_unevidenced",
+        )
     return {
         **decision,
-        "status": "unsatisfied" if unmet else "satisfied",
-        "reason": unmet[0]["reason"] if unmet else "all_requirements_satisfied",
+        "status": status,
+        "reason": reason,
         "requirements": entries,
+        "selected_result_ids": (
+            [tool_witness[item.requirement_id]["result_id"] for item in requirements]
+            if selected is not None
+            else []
+        ),
     }
 
 
