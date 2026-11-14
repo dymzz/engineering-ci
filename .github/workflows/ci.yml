@@ -129,6 +129,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Sync host Python dependencies
+        run: uv sync --locked
       - name: Determine A.1 live capture scope
         id: scope
         env:
@@ -140,49 +143,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run_live="false"
-          reason="unaffected_paths_offline_contract_verified"
-          pinned_doc_version="$(python3 -c 'import tomllib; v = tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"]; doc = open("docs/verification/dagger-native-telemetry.md", encoding="utf-8").read(); print("ok" if v in doc else "mismatch")')"
+          changed_file="$RUNNER_TEMP/a1-changed-files.txt"
+          : > "$changed_file"
+          pinned_doc_ok="$(python3 -c 'import tomllib; v = tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"]; doc = open("docs/verification/dagger-native-telemetry.md", encoding="utf-8").read(); print("true" if v in doc else "false")')"
+          explicit_flag=""
+          if [[ "$REVERIFY_INPUT" == "true" ]] || git log -1 --pretty=%B "$HEAD_SHA" | grep -q '\[reverify-a1\]'; then
+            explicit_flag="--explicit-reverify"
+          fi
           base_sha=""
-          if [[ "$pinned_doc_version" != "ok" ]]; then
-            run_live="true"
-            reason="pinned_engine_version_doc_mismatch"
-          elif [[ "$REVERIFY_INPUT" == "true" ]]; then
-            run_live="true"
-            reason="explicit_reverify_input"
-          elif git log -1 --pretty=%B "$HEAD_SHA" | grep -q '\[reverify-a1\]'; then
-            run_live="true"
-            reason="explicit_reverify_commit_tag"
-          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
             base_sha="$PR_BASE_SHA"
           elif [[ "$EVENT_NAME" == "push" ]]; then
             base_sha="$PUSH_BEFORE_SHA"
           fi
-
-          if [[ "$run_live" == "false" ]]; then
-            if [[ -z "$base_sha" || "$base_sha" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
-              run_live="true"
-              reason="missing_or_initial_base_commit"
-            else
-              changed="$(git diff --name-only "${base_sha}...${HEAD_SHA}")"
-              while IFS= read -r path; do
-                [[ -z "$path" ]] && continue
-                case "$path" in
-                  src/engineering_ci/dagger_telemetry.py|src/engineering_ci/cicd_telemetry.py|src/engineering_ci/cli.py|tests/test_dagger_native_telemetry.py|dagger.json|dagger-module.toml|pyproject.toml|uv.lock|.github/workflows/ci.yml|.dagger/*)
-                    run_live="true"
-                    reason="changed:${path}"
-                    break
-                    ;;
-                esac
-              done <<< "$changed"
-            fi
+          base_commit_ok="false"
+          if [[ -n "$base_sha" && "$base_sha" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            base_commit_ok="true"
+            git diff --name-only "${base_sha}...${HEAD_SHA}" > "$changed_file"
           fi
-          echo "run_live_capture=${run_live}" >> "$GITHUB_OUTPUT"
-          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-          echo "A.1 scope decision: run_live_capture=${run_live} (${reason})"
-      - uses: astral-sh/setup-uv@v7
-      - name: Sync host Python dependencies
-        run: uv sync --locked
+          uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry a1-scope \
+            --changed-files-file "$changed_file" \
+            --pinned-version-ok "$pinned_doc_ok" \
+            --base-commit-ok "$base_commit_ok" \
+            ${explicit_flag:+"$explicit_flag"} \
+            --github-output "$GITHUB_OUTPUT" \
+            --output "$RUNNER_TEMP/a1-scope-decision.json"
       - name: Run offline A.1 contract regression when live inputs are unchanged
         if: ${{ steps.scope.outputs.run_live_capture != 'true' }}
         env:
@@ -190,8 +175,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ARTIFACTS_DIR="$RUNNER_TEMP/dagger-native-telemetry-offline"
+          mkdir -p "$ARTIFACTS_DIR"
           uv run --locked pytest tests/test_dagger_native_telemetry.py -q
-          echo "Skipped live 3-Engine capture (${SCOPE_REASON}); offline fixed-capture contract tests passed."
+          python3 - "$ARTIFACTS_DIR/a1-offline-contract.json" "$RUNNER_TEMP/a1-scope-decision.json" "${{ github.sha }}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          out_path = Path(sys.argv[1])
+          scope_path = Path(sys.argv[2])
+          source_ref = sys.argv[3]
+          scope = json.loads(scope_path.read_text(encoding="utf-8"))
+          report = {
+              "schema_version": scope["schema_version"],
+              "evidence_level": "offline_contract_pass",
+              "live_capture_executed": False,
+              "native_capture_verified": False,
+              "synthetic_fixtures_only": True,
+              "prior_live_capture_revalidated": False,
+              "source_ref": source_ref,
+              "scope_decision": scope,
+          }
+          out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          echo "Skipped live 3-Engine capture (${SCOPE_REASON}); offline synthetic contract passed (evidence_level=offline_contract_pass)."
+      - name: Upload offline A.1 contract report
+        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture != 'true' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: dagger-native-telemetry-a1-offline
+          path: |
+            ${{ runner.temp }}/dagger-native-telemetry-offline/a1-offline-contract.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Install pinned Dagger CLI
         if: ${{ steps.scope.outputs.run_live_capture == 'true' }}
         shell: bash

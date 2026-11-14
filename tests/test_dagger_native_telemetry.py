@@ -141,8 +141,22 @@ def _make_check_capture(
         )
     ]
 
+    scope_meta = (
+        {
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
+        }
+        if isolated_capture
+        else {}
+    )
     return {
         "isolated_capture": isolated_capture,
+        **scope_meta,
         "trace_batches": [
             {
                 "batch_index": 0,
@@ -183,6 +197,8 @@ def _make_artifact_capture(
     dag_digest: str = "sha256:art999",
     cache_outcome: str = "hit",
     isolated_capture: bool = True,
+    include_export_file_span: bool = True,
+    export_filename: str = "tool-versions.json",
 ) -> dict:
     resource_attrs = [
         _kv("service.name", "dagger-engine"),
@@ -192,8 +208,52 @@ def _make_artifact_capture(
     dagql_id = "2000000000000001"
     core_id = "2000000000000002"
     export_id = "2000000000000003"
+    export_file_id = "2000000000000004"
+    core_spans = [
+        _span(
+            trace_id=trace_id,
+            span_id=core_id,
+            parent_span_id=dagql_id,
+            name=f"EngineeringCi.{camel_fn}",
+            attributes={
+                dt.DAGGER_CACHE_CONTRACT_ATTR: "contract-art",
+                dt.DAGGER_CACHE_OUTCOME_ATTR: cache_outcome,
+                dt.DAGGER_CACHE_RESULT_ID_ATTR: "res-art-1",
+                dt.DAGGER_CACHE_HIT_ROUTE_ATTR: "content",
+            },
+        ),
+        _span(
+            trace_id=trace_id,
+            span_id=export_id,
+            parent_span_id=dagql_id,
+            name="File.export",
+        ),
+    ]
+    if include_export_file_span:
+        core_spans.append(
+            _span(
+                trace_id=trace_id,
+                span_id=export_file_id,
+                parent_span_id=export_id,
+                name=f"export file {export_filename} to host /tmp/{export_filename}",
+            )
+        )
+    scope_meta = (
+        {
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
+        }
+        if isolated_capture
+        else {}
+    )
     return {
         "isolated_capture": isolated_capture,
+        **scope_meta,
         "trace_batches": [
             {
                 "batch_index": 0,
@@ -218,26 +278,7 @@ def _make_artifact_capture(
                                 },
                                 {
                                     "scope": {"name": "dagger.io/core"},
-                                    "spans": [
-                                        _span(
-                                            trace_id=trace_id,
-                                            span_id=core_id,
-                                            parent_span_id=dagql_id,
-                                            name=f"EngineeringCi.{camel_fn}",
-                                            attributes={
-                                                dt.DAGGER_CACHE_CONTRACT_ATTR: "contract-art",
-                                                dt.DAGGER_CACHE_OUTCOME_ATTR: cache_outcome,
-                                                dt.DAGGER_CACHE_RESULT_ID_ATTR: "res-art-1",
-                                                dt.DAGGER_CACHE_HIT_ROUTE_ATTR: "content",
-                                            },
-                                        ),
-                                        _span(
-                                            trace_id=trace_id,
-                                            span_id=export_id,
-                                            parent_span_id=dagql_id,
-                                            name="File.export",
-                                        ),
-                                    ],
+                                    "spans": core_spans,
                                 },
                             ],
                         }
@@ -351,6 +392,8 @@ class CorrelationTests(unittest.TestCase):
         c2["trace_batches"][0] = _rewrite_span_ids(c2["trace_batches"][0], "99")
         combined = {
             "isolated_capture": True,
+            "receiver_observed": True,
+            "capture_scope": c1["capture_scope"],
             "trace_batches": [c1["trace_batches"][0], c2["trace_batches"][0]],
         }
 
@@ -423,6 +466,13 @@ class CorrelationTests(unittest.TestCase):
         resume_b = "5000000000000007"
         capture = {
             "isolated_capture": True,
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
             "trace_batches": [
                 {
                     "batch_index": 0,
@@ -693,6 +743,18 @@ class CorrelationTests(unittest.TestCase):
                 report["negative_controls"]["unattributed_export_in_trace"],
                 "unknown",
             )
+            self.assertEqual(
+                report["negative_controls"]["non_cause_export_link"],
+                "unknown",
+            )
+            self.assertEqual(
+                report["negative_controls"]["missing_native_artifact_identity"],
+                "False",
+            )
+            self.assertEqual(
+                report["negative_controls"]["non_isolated_override_rejected"],
+                "unbound",
+            )
 
             base_kwargs = {
                 "pass_capture": pass_cap,
@@ -909,12 +971,384 @@ class OtlpReceiverTests(unittest.TestCase):
                 self.assertEqual(len(gzip_batches), 1)
                 loaded = json.loads(out_file.read_text(encoding="utf-8"))
                 self.assertEqual(len(loaded["trace_batches"]), 5)
+                self.assertEqual(
+                    loaded["capture_scope"]["scope_kind"],
+                    "controlled_isolated_receiver",
+                )
                 # All spans should parse cleanly after atomic seal.
                 parsed = dt.parse_capture(out_file)
                 self.assertEqual(len(parsed.spans), 20)
         finally:
             if server._thread is not None:
                 server.stop()
+
+    def test_non_cause_link_does_not_prove_export_causality_or_attribution(
+        self,
+    ) -> None:
+        trace_id = "6" * 32
+        query_id = "6000000000000001"
+        core_id = "6000000000000002"
+        dagql_id = "6000000000000003"
+        export_id = "6000000000000004"
+        resume_id = "6000000000000005"
+        capture = {
+            "isolated_capture": True,
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
+            "trace_batches": [
+                {
+                    "batch_index": 0,
+                    "payload": {
+                        "resourceSpans": [
+                            {
+                                "resource": {
+                                    "attributes": [
+                                        _kv("service.name", "dagger-engine"),
+                                        _kv(dt.DAGGER_SESSION_ID_ATTR, "sess-noncause"),
+                                        _kv(
+                                            dt.DAGGER_ENGINE_INSTANCE_ID_ATTR, "eng-nc"
+                                        ),
+                                    ]
+                                },
+                                "scopeSpans": [
+                                    {
+                                        "scope": {"name": dt.DAGQL_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_id,
+                                                parent_span_id=core_id,
+                                                name="engineering-ci:EngineeringCi.repositoryRuffTools",
+                                            )
+                                        ],
+                                    },
+                                    {
+                                        "scope": {"name": dt.CORE_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=query_id,
+                                                parent_span_id="",
+                                                name="POST /query",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_id,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=export_id,
+                                                parent_span_id=query_id,
+                                                name="File.export",
+                                            ),
+                                            {
+                                                **_span(
+                                                    trace_id=trace_id,
+                                                    span_id=resume_id,
+                                                    parent_span_id=export_id,
+                                                    name="resume file",
+                                                ),
+                                                "links": [
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_id,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "related",
+                                                            )
+                                                        ],
+                                                    }
+                                                ],
+                                            },
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id="6000000000000006",
+                                                parent_span_id=export_id,
+                                                name="export file tool-versions.json to host /tmp/tool-versions.json",
+                                            ),
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        receipt = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+        )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertTrue(art["export_span_observed"])
+        self.assertEqual(art["export_causality_status"], "observed_unlinked")
+        self.assertEqual(art["export_attribution_status"], "unknown")
+        self.assertIsNone(art["attributed_export_span_id"])
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_multi_function_cause_links_on_single_export_mark_ambiguous(self) -> None:
+        trace_id = "7" * 32
+        query_id = "7000000000000001"
+        core_a = "7000000000000002"
+        dagql_a = "7000000000000003"
+        core_b = "7000000000000004"
+        dagql_b = "7000000000000005"
+        export_id = "7000000000000006"
+        resume_id = "7000000000000007"
+        capture = {
+            "isolated_capture": True,
+            "receiver_observed": True,
+            "capture_scope": {
+                "scope_kind": "controlled_isolated_receiver",
+                "evidence_level": "controlled_single_invocation",
+                "source": "ephemeral_otlp_http_receiver",
+                "single_invocation_window": True,
+            },
+            "trace_batches": [
+                {
+                    "batch_index": 0,
+                    "payload": {
+                        "resourceSpans": [
+                            {
+                                "resource": {
+                                    "attributes": [
+                                        _kv("service.name", "dagger-engine"),
+                                        _kv(dt.DAGGER_SESSION_ID_ATTR, "sess-ambig"),
+                                        _kv(
+                                            dt.DAGGER_ENGINE_INSTANCE_ID_ATTR,
+                                            "eng-ambig",
+                                        ),
+                                    ]
+                                },
+                                "scopeSpans": [
+                                    {
+                                        "scope": {"name": dt.DAGQL_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_a,
+                                                parent_span_id=core_a,
+                                                name="engineering-ci:EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=dagql_b,
+                                                parent_span_id=core_b,
+                                                name="engineering-ci:EngineeringCi.repositoryTestArtifacts",
+                                            ),
+                                        ],
+                                    },
+                                    {
+                                        "scope": {"name": dt.CORE_SCOPE_NAME},
+                                        "spans": [
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=query_id,
+                                                parent_span_id="",
+                                                name="POST /query",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_a,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryRuffTools",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=core_b,
+                                                parent_span_id=query_id,
+                                                name="EngineeringCi.repositoryTestArtifacts",
+                                            ),
+                                            _span(
+                                                trace_id=trace_id,
+                                                span_id=export_id,
+                                                parent_span_id=query_id,
+                                                name="File.export",
+                                            ),
+                                            {
+                                                **_span(
+                                                    trace_id=trace_id,
+                                                    span_id=resume_id,
+                                                    parent_span_id=export_id,
+                                                    name="resume file",
+                                                ),
+                                                "links": [
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_a,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                    {
+                                                        "traceId": trace_id,
+                                                        "spanId": core_b,
+                                                        "attributes": [
+                                                            _kv(
+                                                                "dagger.io/link.purpose",
+                                                                "cause",
+                                                            )
+                                                        ],
+                                                    },
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        receipt = dt.correlate_capture(
+            capture,
+            entry_kind="artifact_function",
+            target_name="repository-ruff-tools",
+        )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertTrue(art["export_span_observed"])
+        self.assertEqual(art["export_causality_status"], "causally_linked")
+        self.assertEqual(art["export_attribution_status"], "ambiguous")
+        self.assertEqual(art["export_attribution_basis"], "multiple_cause_targets")
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_missing_local_file_with_self_reported_sha256_cannot_claim_exported(
+        self,
+    ) -> None:
+        capture = _make_artifact_capture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_file = Path(tmpdir) / "tool-versions.json"
+            receipt = dt.correlate_capture(
+                capture,
+                entry_kind="artifact_function",
+                target_name="repository-ruff-tools",
+                artifact_exit_code=0,
+                artifact_path=missing_file,
+                artifact_sha256="a" * 64,
+            )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertEqual(art["export_attribution_status"], "attributed")
+        self.assertEqual(art["status"], "unknown")
+        self.assertEqual(art["status_reason"], "missing_local_artifact_file")
+        self.assertFalse(art["local_file_verified"])
+        self.assertIsNone(art["artifact_sha256"])
+        self.assertEqual(art["declared_artifact_sha256"], "a" * 64)
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_generic_file_export_without_concrete_target_keeps_binding_unverified(
+        self,
+    ) -> None:
+        capture = _make_artifact_capture(include_export_file_span=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            art_file = Path(tmpdir) / "tool-versions.json"
+            art_file.write_text('{"ruff":"0.15.8"}\n', encoding="utf-8")
+            art_sha = dt.sha256_file(art_file)
+            receipt = dt.correlate_capture(
+                capture,
+                entry_kind="artifact_function",
+                target_name="repository-ruff-tools",
+                artifact_exit_code=0,
+                artifact_path=art_file,
+                artifact_sha256=art_sha,
+            )
+        art = receipt["claims"]["native_artifact_result"]
+        self.assertEqual(art["export_attribution_status"], "attributed")
+        self.assertTrue(art["local_file_verified"])
+        self.assertEqual(art["status"], "exported")
+        self.assertIs(art["export_target_matched"], False)
+        self.assertFalse(art["artifact_binding_verified"])
+
+    def test_caller_isolated_true_cannot_override_non_isolated_or_bare_capture(
+        self,
+    ) -> None:
+        for base_flag, expected_level in (
+            (False, "unisolated"),
+            (None, "caller_declared_only_rejected"),
+        ):
+            cap = _make_check_capture(isolated_capture=False)
+            cap["isolated_capture"] = base_flag
+            receipt = dt.correlate_capture(
+                cap,
+                entry_kind="check",
+                target_name="lint",
+                isolated_capture=True,
+                expected_session_id="sess-lint-001",
+            )
+            self.assertEqual(receipt["correlation"]["status"], "unbound")
+            self.assertIs(
+                receipt["correlation"]["isolation_evidence"]["override_rejected"],
+                True,
+            )
+            self.assertEqual(
+                receipt["correlation"]["isolation_evidence"]["evidence_level"],
+                expected_level,
+            )
+
+        bare_true = _make_check_capture(isolated_capture=True)
+        bare_true.pop("receiver_observed", None)
+        bare_true.pop("capture_scope", None)
+        bare_receipt = dt.correlate_capture(
+            bare_true,
+            entry_kind="check",
+            target_name="lint",
+            isolated_capture=True,
+        )
+        self.assertEqual(bare_receipt["correlation"]["status"], "unbound")
+        self.assertIs(
+            bare_receipt["correlation"]["isolation_evidence"]["override_rejected"],
+            True,
+        )
+        self.assertEqual(
+            bare_receipt["correlation"]["isolation_evidence"]["evidence_level"],
+            "capture_declared_only_unverified",
+        )
+
+    def test_select_a1_capture_scope_covers_cli_package_and_marks_offline_honestly(
+        self,
+    ) -> None:
+        cli_decision = dt.select_a1_capture_scope(
+            ["src/engineering_ci/cli/__init__.py"]
+        )
+        self.assertTrue(cli_decision["run_live_capture"])
+        self.assertEqual(
+            cli_decision["matched_paths"], ["src/engineering_ci/cli/__init__.py"]
+        )
+
+        doc_decision = dt.select_a1_capture_scope(["README.md"])
+        self.assertFalse(doc_decision["run_live_capture"])
+        self.assertEqual(doc_decision["evidence_level"], "offline_contract_only")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            changed_list = Path(tmpdir) / "changed.txt"
+            changed_list.write_text(
+                "src/engineering_ci/cli/release.py\n", encoding="utf-8"
+            )
+            gh_out = Path(tmpdir) / "github_output.txt"
+            exit_code = dt.main(
+                [
+                    "a1-scope",
+                    "--changed-files-file",
+                    str(changed_list),
+                    "--github-output",
+                    str(gh_out),
+                ]
+            )
+            self.assertEqual(exit_code, 0)
+            gh_text = gh_out.read_text(encoding="utf-8")
+            self.assertIn("run_live_capture=true", gh_text)
 
 
 if __name__ == "__main__":

@@ -132,6 +132,92 @@ class SpanRecord:
     links: tuple[SpanLinkRecord, ...] = ()
 
 
+A1_LIVE_SENSITIVE_FILES = frozenset(
+    {
+        "src/engineering_ci/__init__.py",
+        "src/engineering_ci/_paths.py",
+        "src/engineering_ci/dagger_telemetry.py",
+        "src/engineering_ci/cicd_telemetry.py",
+        "tests/test_dagger_native_telemetry.py",
+        "dagger.json",
+        "dagger-module.toml",
+        "pyproject.toml",
+        "uv.lock",
+        ".github/workflows/ci.yml",
+    }
+)
+A1_LIVE_SENSITIVE_PREFIXES = (
+    "src/engineering_ci/cli/",
+    ".dagger/",
+)
+
+
+def select_a1_capture_scope(
+    changed_paths: list[str],
+    *,
+    explicit_reverify: bool = False,
+    pinned_version_matches: bool = True,
+    base_commit_available: bool = True,
+) -> dict[str, Any]:
+    """Classify whether A.1 CI must run 3 live Engine captures or offline contract regression."""
+    normalized = [
+        path.replace("\\", "/").strip().lstrip("./")
+        for path in changed_paths
+        if path and path.strip()
+    ]
+    matched_paths: list[str] = []
+    for path in normalized:
+        if path in A1_LIVE_SENSITIVE_FILES or any(
+            path.startswith(prefix) for prefix in A1_LIVE_SENSITIVE_PREFIXES
+        ):
+            matched_paths.append(path)
+
+    if not pinned_version_matches:
+        return {
+            "schema_version": CONTRACT_VERSION,
+            "run_live_capture": True,
+            "evidence_level": "pending_native_capture",
+            "reason": "pinned_engine_version_doc_mismatch",
+            "matched_paths": matched_paths,
+            "inspected_changed_paths": normalized,
+        }
+    if explicit_reverify:
+        return {
+            "schema_version": CONTRACT_VERSION,
+            "run_live_capture": True,
+            "evidence_level": "pending_native_capture",
+            "reason": "explicit_reverify_requested",
+            "matched_paths": matched_paths,
+            "inspected_changed_paths": normalized,
+        }
+    if not base_commit_available:
+        return {
+            "schema_version": CONTRACT_VERSION,
+            "run_live_capture": True,
+            "evidence_level": "pending_native_capture",
+            "reason": "missing_or_initial_base_commit",
+            "matched_paths": matched_paths,
+            "inspected_changed_paths": normalized,
+        }
+    if matched_paths:
+        return {
+            "schema_version": CONTRACT_VERSION,
+            "run_live_capture": True,
+            "evidence_level": "pending_native_capture",
+            "reason": f"changed:{matched_paths[0]}",
+            "matched_paths": matched_paths,
+            "inspected_changed_paths": normalized,
+        }
+    return {
+        "schema_version": CONTRACT_VERSION,
+        "run_live_capture": False,
+        "evidence_level": "offline_contract_only",
+        "reason": "unaffected_paths_offline_contract_only",
+        "matched_paths": [],
+        "inspected_changed_paths": normalized,
+    }
+
+
 @dataclass
 class CaptureDataset:
     """Parsed OTLP spans plus transport/receiver observation metadata."""
@@ -142,6 +228,7 @@ class CaptureDataset:
     isolated_capture: bool | None = None
     receiver_observed: bool | None = None
     exporter_configured: str | None = None
+    capture_scope: dict[str, Any] | None = None
 
 
 @dataclass
@@ -479,6 +566,11 @@ def parse_capture(source: dict[str, Any] | list[Any] | str | Path) -> CaptureDat
             isolated_capture=source.get("isolated_capture"),
             receiver_observed=source.get("receiver_observed"),
             exporter_configured=source.get("exporter_configured"),
+            capture_scope=(
+                dict(source["capture_scope"])
+                if isinstance(source.get("capture_scope"), dict)
+                else None
+            ),
         )
 
     spans = _extract_spans_from_export_dict(source)
@@ -488,6 +580,11 @@ def parse_capture(source: dict[str, Any] | list[Any] | str | Path) -> CaptureDat
         isolated_capture=source.get("isolated_capture"),
         receiver_observed=source.get("receiver_observed"),
         exporter_configured=source.get("exporter_configured"),
+        capture_scope=(
+            dict(source["capture_scope"])
+            if isinstance(source.get("capture_scope"), dict)
+            else None
+        ),
     )
 
 
@@ -498,6 +595,7 @@ def _merge_datasets(datasets: list[CaptureDataset]) -> CaptureDataset:
     isolated: bool | None = None
     receiver_obs: bool | None = None
     exporter_cfg: str | None = None
+    capture_scope: dict[str, Any] | None = None
     for ds in datasets:
         merged_spans.extend(ds.spans)
         trace_batches += ds.trace_batch_count
@@ -508,6 +606,8 @@ def _merge_datasets(datasets: list[CaptureDataset]) -> CaptureDataset:
             receiver_obs = ds.receiver_observed
         if ds.exporter_configured is not None:
             exporter_cfg = ds.exporter_configured
+        if ds.capture_scope is not None:
+            capture_scope = ds.capture_scope
     return CaptureDataset(
         spans=merged_spans,
         trace_batch_count=trace_batches,
@@ -515,6 +615,7 @@ def _merge_datasets(datasets: list[CaptureDataset]) -> CaptureDataset:
         isolated_capture=isolated,
         receiver_observed=receiver_obs,
         exporter_configured=exporter_cfg,
+        capture_scope=capture_scope,
     )
 
 
@@ -866,6 +967,129 @@ def _matches_traceparent_lineage(
     return False, "traceparent_parent_not_in_lineage"
 
 
+def _resolve_isolation_evidence(
+    dataset: CaptureDataset,
+    caller_isolated: bool | None,
+) -> tuple[bool, dict[str, Any], str | None]:
+    """Resolve single-invocation isolation without letting unverified booleans upgrade."""
+    scope = dataset.capture_scope if isinstance(dataset.capture_scope, dict) else {}
+    controlled_scope = (
+        scope.get("scope_kind") == "controlled_isolated_receiver"
+        and scope.get("single_invocation_window") is True
+        and dataset.isolated_capture is True
+    )
+    receiver_legacy_isolated = (
+        dataset.isolated_capture is True
+        and dataset.receiver_observed is True
+        and scope.get("single_invocation_window") is not False
+    )
+
+    if caller_isolated is False:
+        return (
+            False,
+            {
+                "effective_isolated": False,
+                "evidence_level": "caller_forced_unisolated",
+                "source": "caller_argument",
+                "override_rejected": False,
+                "limitations": (
+                    "Caller explicitly treated capture as unisolated; requires traceparent."
+                ),
+            },
+            None,
+        )
+
+    if dataset.isolated_capture is False:
+        override_rejected = caller_isolated is True
+        return (
+            False,
+            {
+                "effective_isolated": False,
+                "evidence_level": "unisolated",
+                "source": str(scope.get("source") or "capture_flag"),
+                "override_rejected": override_rejected,
+                "limitations": (
+                    "Capture recorded non-isolated scope; caller isolated_capture=True "
+                    "cannot override non-isolated capture without traceparent."
+                ),
+            },
+            (
+                "isolated_override_rejected_non_isolated_capture"
+                if override_rejected
+                else None
+            ),
+        )
+
+    if controlled_scope:
+        return (
+            True,
+            {
+                "effective_isolated": True,
+                "evidence_level": "controlled_single_invocation",
+                "source": str(scope.get("source") or "ephemeral_otlp_http_receiver"),
+                "override_rejected": False,
+                "limitations": (
+                    "Controlled single-invocation receiver window only; does not establish "
+                    "Git source verification or cross-run trust."
+                ),
+            },
+            None,
+        )
+
+    if receiver_legacy_isolated:
+        return (
+            True,
+            {
+                "effective_isolated": True,
+                "evidence_level": "receiver_observed_isolated",
+                "source": "receiver_observed_capture_flag",
+                "override_rejected": False,
+                "limitations": (
+                    "Relies on receiver_observed + capture isolated_capture flag without "
+                    "explicit capture_scope window metadata."
+                ),
+            },
+            None,
+        )
+
+    if dataset.isolated_capture is True:
+        override_rejected = caller_isolated is True
+        return (
+            False,
+            {
+                "effective_isolated": False,
+                "evidence_level": "capture_declared_only_unverified",
+                "source": "capture_flag_without_receiver_scope",
+                "override_rejected": override_rejected,
+                "limitations": (
+                    "Bare stored isolated_capture=True boolean without controlled capture_scope "
+                    "or receiver_observed proof cannot grant unconditional invocation bound."
+                ),
+            },
+            "unverified_isolation_declaration_without_traceparent",
+        )
+
+    override_rejected = caller_isolated is True
+    return (
+        False,
+        {
+            "effective_isolated": False,
+            "evidence_level": (
+                "caller_declared_only_rejected" if override_rejected else "undeclared"
+            ),
+            "source": "caller_argument" if override_rejected else "none",
+            "override_rejected": override_rejected,
+            "limitations": (
+                "No isolated capture_scope metadata present; caller isolated_capture=True "
+                "alone cannot upgrade unverified capture without traceparent."
+            ),
+        },
+        "unverified_caller_isolation_without_traceparent"
+        if override_rejected
+        else None,
+    )
+
+
 def _apply_correlation_proof(
     candidates: list[CandidateChain],
     rejected: list[str],
@@ -873,6 +1097,7 @@ def _apply_correlation_proof(
     traceparent: str | None,
     expected_session_id: str | None,
     isolated_capture: bool,
+    isolation_reject_reason: str | None = None,
 ) -> tuple[list[CandidateChain], list[str], str]:
     filtered = list(candidates)
     reasons = list(rejected)
@@ -902,10 +1127,15 @@ def _apply_correlation_proof(
     elif isolated_capture:
         proof_mode = "matched_isolated_capture"
     else:
-        if filtered or (expected_session_id and not reasons):
-            reasons.append("unisolated_capture_without_traceparent")
+        deny_reason = (
+            isolation_reject_reason or "unisolated_capture_without_traceparent"
+        )
+        if filtered or isolation_reject_reason or (expected_session_id and not reasons):
+            reasons.insert(
+                0, deny_reason
+            ) if isolation_reject_reason else reasons.append(deny_reason)
         filtered = []
-        proof_mode = "unisolated_capture_without_traceparent"
+        proof_mode = deny_reason
 
     return filtered, _unique_preserve_order(reasons), proof_mode
 
@@ -1065,33 +1295,131 @@ def _is_export_span(span: SpanRecord) -> bool:
     )
 
 
-def _export_matches_artifact_name(
-    export_span: SpanRecord,
+def _discover_other_function_subtrees(
+    dataset: CaptureDataset,
+    candidate: CandidateChain,
+    by_key: dict[tuple[str, str], SpanRecord],
+    children_by_key: dict[tuple[str, str], list[SpanRecord]],
+    candidate_owned_ids: set[tuple[str, str]],
+) -> list[tuple[str, set[tuple[str, str]]]]:
+    """Collect disjoint module-function owned span IDs in the same trace/session/engine."""
+    trace_id = candidate.anchor.trace_id
+    session_id = candidate.anchor.session_id
+    engine_id = candidate.anchor.engine_instance_id
+    prefix = (
+        f"{candidate.dagql_span.name.split(':', 1)[0]}:"
+        if ":" in candidate.dagql_span.name
+        else ""
+    )
+    others: list[tuple[str, set[tuple[str, str]]]] = []
+    seen_roots: set[tuple[str, str]] = set()
+    for span in dataset.spans:
+        if (
+            span.trace_id != trace_id
+            or span.session_id != session_id
+            or span.engine_instance_id != engine_id
+            or span.scope_name != DAGQL_SCOPE_NAME
+            or (span.trace_id, span.span_id) in candidate_owned_ids
+            or (span.trace_id, span.span_id) in seen_roots
+        ):
+            continue
+        if ":" not in span.name or (prefix and not span.name.startswith(prefix)):
+            continue
+        _, qualified_fn = span.name.split(":", 1)
+        if "." not in qualified_fn:
+            continue
+        obj_name, fn_name = qualified_fn.split(".", 1)
+        dagql_sub = _collect_subtree(span, children_by_key)
+        core_peer, _ = _find_core_peer(
+            span,
+            dagql_sub,
+            by_key,
+            object_name=obj_name,
+            camel_fn=fn_name,
+        )
+        owned_spans = list(dagql_sub)
+        root_key = (span.trace_id, span.span_id)
+        if core_peer is not None:
+            owned_spans.extend(_collect_subtree(core_peer, children_by_key))
+            root_key = (core_peer.trace_id, core_peer.span_id)
+        seen_roots.add(root_key)
+        seen_roots.add((span.trace_id, span.span_id))
+        owned_ids = {
+            (node.trace_id, node.span_id) for node in owned_spans
+        } - candidate_owned_ids
+        if owned_ids:
+            others.append((span.span_id, owned_ids))
+    return others
+
+
+def _parse_export_file_span_target(span_name: str) -> tuple[str | None, str | None]:
+    if not span_name.startswith("export file "):
+        return None, None
+    rest = span_name[len("export file ") :]
+    if " to host " in rest:
+        exported_name, host_path = rest.split(" to host ", 1)
+        return exported_name.strip() or None, host_path.strip() or None
+    return rest.strip() or None, None
+
+
+def _match_export_target_identity(
+    exp: SpanRecord,
     exp_subtree: list[SpanRecord],
-    artifact_name: str | None,
-) -> bool:
-    if not artifact_name:
-        return True
-    if export_span.name.startswith("export file "):
-        return artifact_name in export_span.name
-    named_children = [
-        node for node in exp_subtree if node.name.startswith("export file ")
-    ]
-    if named_children:
-        return any(artifact_name in node.name for node in named_children)
-    return True
+    artifact_path: Path | None,
+) -> tuple[bool, bool, str]:
+    """Evaluate Export->Artifact path/name identity independently of SHA-256 bytes."""
+    file_spans = [node for node in exp_subtree if node.name.startswith("export file ")]
+    if not file_spans and exp.name.startswith("export file "):
+        file_spans = [exp]
+    if not file_spans:
+        return True, False, "missing_native_artifact_identity_on_export_span"
+    if artifact_path is None:
+        return True, False, "artifact_path_not_provided"
+
+    expected_name = artifact_path.name
+    expected_posix = artifact_path.as_posix()
+    name_matched = False
+    for node in file_spans:
+        exported_name, host_path = _parse_export_file_span_target(node.name)
+        if host_path is not None:
+            normalized_host = host_path.replace("\\", "/")
+            if normalized_host == expected_posix:
+                return True, True, "export_host_path_matched"
+            if (
+                artifact_path.is_absolute()
+                and normalized_host.startswith("/")
+                and expected_posix.startswith("/")
+            ):
+                # Same filename exported to a different explicit directory mismatches.
+                continue
+        if exported_name == expected_name or expected_name in node.name:
+            name_matched = True
+
+    if name_matched:
+        return True, True, "export_filename_matched"
+    return False, False, "export_path_mismatch"
 
 
 def _attribute_export_span(
     dataset: CaptureDataset,
     candidate: CandidateChain | None,
+    by_key: dict[tuple[str, str], SpanRecord],
     children_by_key: dict[tuple[str, str], list[SpanRecord]],
     *,
-    artifact_name: str | None,
-) -> tuple[bool, str, str, str | None]:
-    """Verify whether an observed export span belongs to the correlated function."""
+    artifact_path: Path | None,
+) -> dict[str, Any]:
+    """Separate export observation, cause semantics, unique ownership, and target match."""
     if candidate is None:
-        return False, "unknown", "no_bound_candidate", None
+        return {
+            "export_span_observed": False,
+            "export_causality_status": "none",
+            "export_attribution_status": "unknown",
+            "export_attribution_basis": "no_bound_candidate",
+            "attributed_export_span_id": None,
+            "observed_export_span_ids": [],
+            "export_target_matched": False,
+            "export_target_match_basis": "no_bound_candidate",
+        }
 
     trace_id = candidate.anchor.trace_id
     session_id = candidate.anchor.session_id
@@ -1105,7 +1433,16 @@ def _attribute_export_span(
         and _is_export_span(span)
     ]
     if not export_spans:
-        return False, "unknown", "no_export_span_observed", None
+        return {
+            "export_span_observed": False,
+            "export_causality_status": "none",
+            "export_attribution_status": "unknown",
+            "export_attribution_basis": "no_export_span_observed",
+            "attributed_export_span_id": None,
+            "observed_export_span_ids": [],
+            "export_target_matched": False,
+            "export_target_match_basis": "no_export_span_observed",
+        }
 
     candidate_owned_spans = [
         *_collect_subtree(candidate.core_span, children_by_key),
@@ -1114,29 +1451,92 @@ def _attribute_export_span(
     candidate_owned_ids = {
         (span.trace_id, span.span_id) for span in candidate_owned_spans
     }
+    other_functions = _discover_other_function_subtrees(
+        dataset, candidate, by_key, children_by_key, candidate_owned_ids
+    )
 
     preferred_roots = [
         span for span in export_spans if span.name in ("File.export", "Artifact.value")
     ] or export_spans
+    observed_export_ids = [span.span_id for span in preferred_roots]
+
+    ambiguous_match: dict[str, Any] | None = None
+    unlinked_target_match: tuple[bool, str] = (False, "no_matching_export_span")
 
     for exp in preferred_roots:
         exp_subtree = _collect_subtree(exp, children_by_key)
-        if not _export_matches_artifact_name(exp, exp_subtree, artifact_name):
+        compatible, target_matched, target_basis = _match_export_target_identity(
+            exp, exp_subtree, artifact_path
+        )
+        if not compatible:
+            unlinked_target_match = (False, target_basis)
             continue
-        if (exp.trace_id, exp.span_id) in candidate_owned_ids:
-            return True, "attributed", "parent_subtree", exp.span_id
+
+        parent_owned = (exp.trace_id, exp.span_id) in candidate_owned_ids
+        candidate_cause_hit = False
+        other_cause_hits: set[str] = set()
         for node in exp_subtree:
             for link in node.links:
-                target_trace = link.trace_id or node.trace_id
-                if (target_trace, link.span_id) in candidate_owned_ids:
-                    return True, "attributed", "span_link", exp.span_id
+                if link.purpose != "cause":
+                    continue
+                target_key = (link.trace_id or node.trace_id, link.span_id)
+                if target_key in candidate_owned_ids:
+                    candidate_cause_hit = True
+                    continue
+                for other_id, other_owned in other_functions:
+                    if target_key in other_owned:
+                        other_cause_hits.add(other_id)
 
-    return True, "unknown", "unattributed_export_in_trace", None
+        if not parent_owned and not candidate_cause_hit:
+            if not unlinked_target_match[0]:
+                unlinked_target_match = (target_matched, target_basis)
+            continue
+
+        if other_cause_hits:
+            ambiguous_match = {
+                "export_span_observed": True,
+                "export_causality_status": "causally_linked",
+                "export_attribution_status": "ambiguous",
+                "export_attribution_basis": "multiple_cause_targets",
+                "attributed_export_span_id": None,
+                "observed_export_span_ids": observed_export_ids,
+                "export_target_matched": target_matched,
+                "export_target_match_basis": target_basis,
+            }
+            continue
+
+        causality_status = "parent_subtree" if parent_owned else "causally_linked"
+        attribution_basis = "parent_subtree" if parent_owned else "span_link"
+        return {
+            "export_span_observed": True,
+            "export_causality_status": causality_status,
+            "export_attribution_status": "attributed",
+            "export_attribution_basis": attribution_basis,
+            "attributed_export_span_id": exp.span_id,
+            "observed_export_span_ids": observed_export_ids,
+            "export_target_matched": target_matched,
+            "export_target_match_basis": target_basis,
+        }
+
+    if ambiguous_match is not None:
+        return ambiguous_match
+
+    return {
+        "export_span_observed": True,
+        "export_causality_status": "observed_unlinked",
+        "export_attribution_status": "unknown",
+        "export_attribution_basis": "unattributed_export_in_trace",
+        "attributed_export_span_id": None,
+        "observed_export_span_ids": observed_export_ids,
+        "export_target_matched": unlinked_target_match[0],
+        "export_target_match_basis": unlinked_target_match[1],
+    }
 
 
 def _build_native_artifact_result(
     candidate: CandidateChain | None,
     dataset: CaptureDataset,
+    by_key: dict[tuple[str, str], SpanRecord],
     children_by_key: dict[tuple[str, str], list[SpanRecord]],
     *,
     entry_kind: str,
@@ -1147,49 +1547,99 @@ def _build_native_artifact_result(
     if entry_kind != "artifact_function":
         return {
             "status": "not_applicable",
+            "status_reason": None,
             "exit_code": None,
             "artifact_path": None,
             "artifact_name": None,
             "artifact_sha256": None,
+            "declared_artifact_sha256": None,
+            "local_file_verified": False,
             "export_span_observed": False,
+            "export_causality_status": "not_applicable",
             "export_attribution_status": "not_applicable",
             "export_attribution_basis": None,
             "attributed_export_span_id": None,
+            "observed_export_span_ids": [],
+            "export_target_matched": False,
+            "export_target_match_basis": None,
+            "artifact_binding_verified": False,
+            "artifact_binding_reason": "not_applicable",
         }
 
     artifact_name = artifact_path.name if artifact_path is not None else None
-    (
-        export_span_observed,
-        export_attribution_status,
-        export_attribution_basis,
-        attributed_export_span_id,
-    ) = _attribute_export_span(
-        dataset, candidate, children_by_key, artifact_name=artifact_name
+    export_meta = _attribute_export_span(
+        dataset, candidate, by_key, children_by_key, artifact_path=artifact_path
     )
     computed_sha = None
     if artifact_path is not None and artifact_path.is_file():
         computed_sha = sha256_file(artifact_path)
 
-    effective_sha = computed_sha or artifact_sha256
     if artifact_sha256 and computed_sha and artifact_sha256 != computed_sha:
         status = "sha256_mismatch"
+        status_reason = "local_sha256_mismatch"
+        local_file_verified = False
     elif artifact_exit_code is not None and artifact_exit_code != 0:
         status = "failed"
-    elif artifact_exit_code == 0 and effective_sha is not None:
+        status_reason = "nonzero_artifact_exit"
+        local_file_verified = bool(computed_sha is not None)
+    elif artifact_exit_code == 0 and computed_sha is not None:
         status = "exported"
+        status_reason = "local_file_verified"
+        local_file_verified = True
+    elif artifact_exit_code == 0 and computed_sha is None:
+        status = "unknown"
+        status_reason = "missing_local_artifact_file"
+        local_file_verified = False
     else:
         status = "unknown"
+        status_reason = "unverified_artifact_exit"
+        local_file_verified = bool(computed_sha is not None)
+
+    attr_status = export_meta["export_attribution_status"]
+    target_matched = bool(export_meta["export_target_matched"])
+    if (
+        attr_status == "attributed"
+        and target_matched
+        and local_file_verified
+        and status == "exported"
+    ):
+        artifact_binding_verified = True
+        artifact_binding_reason = "verified_export_target_and_local_file"
+    elif not local_file_verified:
+        artifact_binding_verified = False
+        artifact_binding_reason = status_reason
+    elif not export_meta["export_span_observed"]:
+        artifact_binding_verified = False
+        artifact_binding_reason = "no_export_span_observed"
+    elif attr_status != "attributed":
+        artifact_binding_verified = False
+        artifact_binding_reason = str(export_meta["export_attribution_basis"])
+    elif not target_matched:
+        artifact_binding_verified = False
+        artifact_binding_reason = str(export_meta["export_target_match_basis"])
+    else:
+        artifact_binding_verified = False
+        artifact_binding_reason = "unverified_artifact_binding"
 
     return {
         "status": status,
+        "status_reason": status_reason,
         "exit_code": artifact_exit_code,
         "artifact_path": str(artifact_path) if artifact_path is not None else None,
         "artifact_name": artifact_name,
-        "artifact_sha256": effective_sha,
-        "export_span_observed": export_span_observed,
-        "export_attribution_status": export_attribution_status,
-        "export_attribution_basis": export_attribution_basis,
-        "attributed_export_span_id": attributed_export_span_id,
+        "artifact_sha256": computed_sha,
+        "declared_artifact_sha256": artifact_sha256,
+        "local_file_verified": local_file_verified,
+        "export_span_observed": export_meta["export_span_observed"],
+        "export_causality_status": export_meta["export_causality_status"],
+        "export_attribution_status": attr_status,
+        "export_attribution_basis": export_meta["export_attribution_basis"],
+        "attributed_export_span_id": export_meta["attributed_export_span_id"],
+        "observed_export_span_ids": export_meta["observed_export_span_ids"],
+        "export_target_matched": target_matched,
+        "export_target_match_basis": export_meta["export_target_match_basis"],
+        "artifact_binding_verified": artifact_binding_verified,
+        "artifact_binding_reason": artifact_binding_reason,
     }
 
 
@@ -1217,10 +1667,8 @@ def correlate_capture(
         raise DaggerTelemetryError(f"unsupported_entry_kind:{entry_kind}")
     dataset = capture if isinstance(capture, CaptureDataset) else parse_capture(capture)
     camel_fn = kebab_to_camel(target_name)
-    effective_isolated = (
-        bool(isolated_capture)
-        if isolated_capture is not None
-        else bool(dataset.isolated_capture)
+    effective_isolated, isolation_evidence, isolation_reject_reason = (
+        _resolve_isolation_evidence(dataset, isolated_capture)
     )
     effective_exporter = exporter_configured or dataset.exporter_configured or "unknown"
     if effective_exporter not in ("yes", "no", "unknown"):
@@ -1259,6 +1707,7 @@ def correlate_capture(
                 candidate=None,
                 candidate_count=0,
                 isolated_capture=effective_isolated,
+                isolation_evidence=isolation_evidence,
                 traceparent_supplied=True,
                 exporter_configured=effective_exporter,
                 sent_status=sent_status,
@@ -1272,6 +1721,8 @@ def correlate_capture(
                 required_observability=required_observability,
                 prior_executions=prior_executions,
                 dataset=dataset,
+                by_key=by_key,
+                children_by_key=children_by_key,
             )
 
     if entry_kind == "check":
@@ -1302,6 +1753,7 @@ def correlate_capture(
         traceparent=traceparent,
         expected_session_id=expected_session_id,
         isolated_capture=effective_isolated,
+        isolation_reject_reason=isolation_reject_reason,
     )
 
     if len(matched) == 1:
@@ -1336,6 +1788,7 @@ def correlate_capture(
         candidate=chosen,
         candidate_count=len(matched),
         isolated_capture=effective_isolated,
+        isolation_evidence=isolation_evidence,
         traceparent_supplied=bool(traceparent),
         exporter_configured=effective_exporter,
         sent_status=sent_status,
@@ -1349,6 +1802,7 @@ def correlate_capture(
         required_observability=required_observability,
         prior_executions=prior_executions,
         dataset=dataset,
+        by_key=by_key,
         children_by_key=children_by_key,
     )
 
@@ -1366,6 +1820,7 @@ def _assemble_receipt(
     candidate: CandidateChain | None,
     candidate_count: int,
     isolated_capture: bool,
+    isolation_evidence: dict[str, Any],
     traceparent_supplied: bool,
     exporter_configured: str,
     sent_status: str,
@@ -1379,6 +1834,7 @@ def _assemble_receipt(
     required_observability: bool,
     prior_executions: list[dict[str, Any]] | None,
     dataset: CaptureDataset,
+    by_key: dict[tuple[str, str], SpanRecord] | None = None,
     children_by_key: dict[tuple[str, str], list[SpanRecord]] | None = None,
 ) -> dict[str, Any]:
     del prior_executions
@@ -1391,6 +1847,7 @@ def _assemble_receipt(
     native_artifact_result = _build_native_artifact_result(
         candidate,
         dataset,
+        by_key or {},
         children_by_key or {},
         entry_kind=entry_kind,
         artifact_exit_code=artifact_exit_code,
@@ -1436,6 +1893,7 @@ def _assemble_receipt(
             "status": binding_status,
             "reason": binding_reason,
             "isolated_capture": isolated_capture,
+            "isolation_evidence": isolation_evidence,
             "traceparent_supplied": traceparent_supplied,
             "candidate_count": candidate_count,
             "matched_trace_id": candidate.anchor.trace_id if candidate else None,
@@ -1508,6 +1966,7 @@ class _OtlpCaptureState:
         self._trace_batches: list[dict[str, Any]] = []
         self._metric_batches: list[dict[str, Any]] = []
         self._isolated_capture = isolated_capture
+        self._started_at = datetime.datetime.now(datetime.UTC).isoformat()
 
     def record_traces(
         self,
@@ -1549,6 +2008,7 @@ class _OtlpCaptureState:
             )
 
     def snapshot(self) -> dict[str, Any]:
+        stopped_at = datetime.datetime.now(datetime.UTC).isoformat()
         with self._lock:
             return {
                 "schema_version": CONTRACT_VERSION,
@@ -1556,6 +2016,22 @@ class _OtlpCaptureState:
                 "capture_format": "decoded_normalized_otlp_json",
                 "isolated_capture": self._isolated_capture,
                 "receiver_observed": len(self._trace_batches) > 0,
+                "capture_scope": {
+                    "scope_kind": (
+                        "controlled_isolated_receiver"
+                        if self._isolated_capture
+                        else "shared_or_unisolated_receiver"
+                    ),
+                    "evidence_level": (
+                        "controlled_single_invocation"
+                        if self._isolated_capture
+                        else "unisolated"
+                    ),
+                    "source": "ephemeral_otlp_http_receiver",
+                    "single_invocation_window": self._isolated_capture,
+                    "started_at": self._started_at,
+                    "stopped_at": stopped_at,
+                },
                 "trace_batches": copy.deepcopy(self._trace_batches),
                 "metric_batches": copy.deepcopy(self._metric_batches),
             }
@@ -1862,6 +2338,55 @@ def _mutate_unattribute_export(raw: dict[str, Any]) -> dict[str, Any]:
     return mutated
 
 
+def _mutate_non_cause_export_links(raw: dict[str, Any]) -> dict[str, Any]:
+    """Downgrade File.export link purpose so no valid cause link points to candidate."""
+    mutated = copy.deepcopy(raw)
+    for batch in mutated.get("trace_batches") or []:
+        for resource in batch.get("payload", {}).get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                for span in scope.get("spans") or []:
+                    for link in span.get("links") or []:
+                        if not isinstance(link, dict):
+                            continue
+                        for attr in link.get("attributes") or []:
+                            if (
+                                isinstance(attr, dict)
+                                and attr.get("key") == "dagger.io/link.purpose"
+                            ):
+                                attr["value"] = {"stringValue": "related"}
+                    name = str(span.get("name") or "")
+                    if name in ("File.export", "Artifact.value") or name.startswith(
+                        "export file "
+                    ):
+                        span["parentSpanId"] = "f" * 16
+    return mutated
+
+
+def _mutate_strip_export_filename(raw: dict[str, Any]) -> dict[str, Any]:
+    """Replace concrete export-file target spans with generic File.export identity."""
+    mutated = copy.deepcopy(raw)
+    for batch in mutated.get("trace_batches") or []:
+        for resource in batch.get("payload", {}).get("resourceSpans") or []:
+            for scope in resource.get("scopeSpans") or []:
+                for span in scope.get("spans") or []:
+                    name = str(span.get("name") or "")
+                    if name.startswith(("export file ", "downloading ")):
+                        span["name"] = "File.export"
+    return mutated
+
+
+def _mutate_force_non_isolated(raw: dict[str, Any]) -> dict[str, Any]:
+    mutated = copy.deepcopy(raw)
+    mutated["isolated_capture"] = False
+    mutated["capture_scope"] = {
+        "scope_kind": "shared_or_unisolated_receiver",
+        "evidence_level": "unisolated",
+        "source": "shared_receiver",
+        "single_invocation_window": False,
+    }
+    return mutated
+
+
 def _reconcile_receipt_with_capture(
     label: str,
     *,
@@ -1900,11 +2425,14 @@ def _reconcile_receipt_with_capture(
         module_name=str(target_meta.get("module_name") or "engineering-ci"),
         object_name=str(target_meta.get("object_name") or "EngineeringCi"),
         traceparent=traceparent,
-        isolated_capture=bool(raw_isolated),
+        isolated_capture=None,
         exporter_configured=str(claims.get("exporter_configured") or "unknown"),
         check_exit_code=check_exit_code,
         artifact_exit_code=artifact_exit_code,
         artifact_path=artifact_path,
+        artifact_sha256=claims.get("native_artifact_result", {}).get(
+            "declared_artifact_sha256"
+        ),
         declared_target_source_ref=source_binding.get("declared_target_source_ref"),
         required_observability=bool(gate.get("required_observability", False)),
     )
@@ -1921,6 +2449,7 @@ def _reconcile_receipt_with_capture(
         "status",
         "reason",
         "isolated_capture",
+        "isolation_evidence",
         "traceparent_supplied",
         "candidate_count",
         "matched_trace_id",
@@ -2068,11 +2597,17 @@ def verify_a1_suite(
     art_native = artifact_receipt.get("claims", {}).get("native_artifact_result", {})
     if art_native.get("status") != "exported":
         failures.append(f"artifact:native_artifact_result_not_exported:{art_native}")
+    if not art_native.get("local_file_verified"):
+        failures.append("artifact:local_file_not_verified")
     if not art_native.get("export_span_observed"):
         failures.append("artifact:missing_export_span_in_bound_trace")
     if art_native.get("export_attribution_status") != "attributed":
         failures.append(
             f"artifact:export_span_not_attributed:{art_native.get('export_attribution_status')}:{art_native.get('export_attribution_basis')}"
+        )
+    if not art_native.get("artifact_binding_verified"):
+        failures.append(
+            f"artifact:binding_not_verified:{art_native.get('artifact_binding_reason')}"
         )
 
     neg_results: dict[str, str] = {}
@@ -2149,6 +2684,52 @@ def verify_a1_suite(
     neg_results["unattributed_export_in_trace"] = str(unattr_status)
     if unattr_status == "attributed":
         failures.append("neg_unattributed_export_claimed_attributed")
+
+    non_cause_art = correlate_capture(
+        _mutate_non_cause_export_links(artifact_capture),
+        entry_kind="artifact_function",
+        target_name=artifact_target,
+        isolated_capture=True,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+    )
+    non_cause_status = (
+        non_cause_art.get("claims", {})
+        .get("native_artifact_result", {})
+        .get("export_attribution_status")
+    )
+    neg_results["non_cause_export_link"] = str(non_cause_status)
+    if non_cause_status == "attributed":
+        failures.append("neg_non_cause_export_link_claimed_attributed")
+
+    missing_name_art = correlate_capture(
+        _mutate_strip_export_filename(artifact_capture),
+        entry_kind="artifact_function",
+        target_name=artifact_target,
+        isolated_capture=True,
+        artifact_exit_code=artifact_exit_code,
+        artifact_path=artifact_path,
+    )
+    missing_name_verified = (
+        missing_name_art.get("claims", {})
+        .get("native_artifact_result", {})
+        .get("artifact_binding_verified")
+    )
+    neg_results["missing_native_artifact_identity"] = str(missing_name_verified)
+    if missing_name_verified:
+        failures.append("neg_missing_native_artifact_identity_claimed_verified")
+
+    forced_non_iso = correlate_capture(
+        _mutate_force_non_isolated(pass_capture),
+        entry_kind="check",
+        target_name=pass_target,
+        isolated_capture=True,
+    )
+    neg_results["non_isolated_override_rejected"] = forced_non_iso["correlation"][
+        "status"
+    ]
+    if forced_non_iso["correlation"]["status"] == "bound":
+        failures.append("neg_non_isolated_override_bound")
 
     wrong_mod = correlate_capture(
         _mutate_wrong_module_prefix(pass_capture, kebab_to_camel(pass_target)),
@@ -2373,6 +2954,26 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--fail-target", default="lint")
     verify.add_argument("--artifact-target", default="repository-ruff-tools")
     verify.add_argument("--output", type=Path)
+
+    scope = sub.add_parser(
+        "a1-scope",
+        help="Determine whether CI must run live 3-Engine capture or offline contract verification",
+    )
+    scope.add_argument("--changed-files-file", type=Path)
+    scope.add_argument("--changed-file", action="append", default=[])
+    scope.add_argument("--explicit-reverify", action="store_true")
+    scope.add_argument(
+        "--pinned-version-ok",
+        choices=("true", "false"),
+        default="true",
+    )
+    scope.add_argument(
+        "--base-commit-ok",
+        choices=("true", "false"),
+        default="true",
+    )
+    scope.add_argument("--github-output", type=Path)
+    scope.add_argument("--output", type=Path)
     return parser
 
 
@@ -2465,6 +3066,32 @@ def main(argv: list[str] | None = None) -> int:
             _atomic_write_json(args.output, report)
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["passed"] else 1
+    if args.subcommand == "a1-scope":
+        changed_paths = list(args.changed_file)
+        if args.changed_files_file and args.changed_files_file.is_file():
+            changed_paths.extend(
+                args.changed_files_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            )
+        decision = select_a1_capture_scope(
+            changed_paths,
+            explicit_reverify=args.explicit_reverify,
+            pinned_version_matches=(args.pinned_version_ok == "true"),
+            base_commit_available=(args.base_commit_ok == "true"),
+        )
+        if args.output:
+            _atomic_write_json(args.output, decision)
+        if args.github_output:
+            args.github_output.parent.mkdir(parents=True, exist_ok=True)
+            with args.github_output.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"run_live_capture={'true' if decision['run_live_capture'] else 'false'}\n"
+                )
+                handle.write(f"reason={decision['reason']}\n")
+                handle.write(f"evidence_level={decision['evidence_level']}\n")
+        print(json.dumps(decision, indent=2, sort_keys=True))
+        return 0
     parser.error(f"unknown subcommand: {args.subcommand}")
     return 2
 
