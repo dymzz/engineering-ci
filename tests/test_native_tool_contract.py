@@ -2,7 +2,7 @@
 
 import pytest
 
-from engineering_ci import check_contract
+from engineering_ci import check_contract, weaver_tool
 
 
 def closed_source(tree="a" * 40):
@@ -714,3 +714,439 @@ def test_tool_entry_authority_and_asset_identity_are_separate_facts():
     )
     assert observed_runtime["authority"] == "runtime_tool_access"
     assert observed_runtime["tool_id_source"] == "runtime_tool_asset"
+
+
+def _weaver_observed(
+    access_id,
+    *,
+    tool_id="weaver",
+    tool_id_source="eci_pinned_asset",
+    version=weaver_tool.VERSION,
+    artifact_sha256=weaver_tool.LINUX_SHA256,
+    authority="eci_local_entry",
+):
+    return check_contract.tool_ref(
+        access_id,
+        tool_id=tool_id,
+        tool_id_source=tool_id_source,
+        version=version,
+        artifact_sha256=artifact_sha256,
+        authority=authority,
+        executable="/usr/local/bin/weaver",
+    )
+
+
+def test_test_process_definitions_keep_distinct_engine_identities():
+    unittest_def = check_contract.definition_for("unittest")
+    pytest_def = check_contract.definition_for("pytest")
+    assert unittest_def is not None and pytest_def is not None
+    assert unittest_def.check_id == "eci/tests/unittest"
+    assert pytest_def.check_id == "eci/tests/pytest"
+    assert unittest_def.check_id in check_contract.PROCESS_CHECK_IDS
+    assert pytest_def.check_id in check_contract.PROCESS_CHECK_IDS
+    assert unittest_def.definition_version == 1
+    assert pytest_def.definition_version == 1
+    assert not unittest_def.requires_baseline
+    assert not pytest_def.requires_baseline
+    assert not unittest_def.requires_post_completion
+    assert not pytest_def.requires_post_completion
+    assert [
+        item.alternatives[0].access_id for item in unittest_def.tool_requirements
+    ] == ["python/unittest"]
+    assert [
+        item.alternatives[0].access_id for item in pytest_def.tool_requirements
+    ] == ["python/pytest"]
+
+    checked = closed_source()
+    rule = check_contract.rule_ref("tests", 1, digest="a" * 64)
+    pytest_pass = check_contract.native_result(
+        pytest_def,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="pytest-run",
+        native_exit_code=0,
+        evidence={"stdout": "2 passed"},
+        rule_ref=rule,
+        tool=observed("python/pytest", executable="pytest"),
+    )
+    expected_pytest = {
+        "check_id": pytest_def.check_id,
+        "definition_version": pytest_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    expected_unittest = {
+        "check_id": unittest_def.check_id,
+        "definition_version": unittest_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    assert (
+        check_contract.evaluate_expected_satisfaction([pytest_pass], expected_pytest)[
+            "status"
+        ]
+        == "satisfied"
+    )
+    assert not check_contract.result_matches_expected(pytest_pass, expected_unittest)
+    mismatch = check_contract.evaluate_expected_satisfaction(
+        [pytest_pass], expected_unittest
+    )
+    assert mismatch["status"] == "unsatisfied"
+    assert mismatch["reason"] == "native_result_mismatched"
+    with pytest.raises(
+        check_contract.CheckContractError, match="satisfaction_check_mismatch"
+    ):
+        check_contract.evaluate_check_satisfaction(unittest_def, [pytest_pass])
+
+    forged = check_contract.CheckDefinition(
+        check_id=unittest_def.check_id,
+        definition_version=unittest_def.definition_version,
+        tool_requirements=pytest_def.tool_requirements,
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_tool_requirements_mismatch"
+    ):
+        check_contract.native_result(
+            forged,
+            source=checked,
+            status="passed",
+            result_origin="host",
+            result_instance="forged",
+            native_exit_code=0,
+            evidence={"stdout": "ok"},
+            tool=observed("python/pytest"),
+        )
+
+
+def test_weaver_definitions_pin_tool_asset_and_prerequisite_stages():
+    registry_def = check_contract.definition_for("weaver_registry")
+    live_def = check_contract.definition_for("weaver_live")
+    terminal_def = check_contract.definition_for("weaver_terminal")
+    for definition in (registry_def, live_def, terminal_def):
+        assert definition is not None
+        assert definition.check_id in check_contract.PROCESS_CHECK_IDS
+        assert definition.definition_version == 1
+        assert not definition.requires_baseline
+    assert not registry_def.requires_post_completion
+    assert not live_def.requires_post_completion
+    assert terminal_def.requires_post_completion
+
+    reg_reqs = requirements(registry_def)
+    assert list(reg_reqs) == ["registry-check", "registry-package"]
+    assert reg_reqs["registry-package"].after == ("registry-check",)
+
+    live_reqs = requirements(live_def)
+    assert list(live_reqs) == ["registry-package", "live-check"]
+    assert live_reqs["live-check"].after == ("registry-package",)
+
+    term_reqs = requirements(terminal_def)
+    assert list(term_reqs) == ["registry-package", "terminal-live-check"]
+    assert term_reqs["terminal-live-check"].after == ("registry-package",)
+
+    for alt in (
+        reg_reqs["registry-check"].alternatives[0],
+        reg_reqs["registry-package"].alternatives[0],
+        live_reqs["registry-package"].alternatives[0],
+        live_reqs["live-check"].alternatives[0],
+        term_reqs["registry-package"].alternatives[0],
+        term_reqs["terminal-live-check"].alternatives[0],
+    ):
+        assert alt.tool_id == "weaver"
+        assert alt.tool_id_source == "eci_pinned_asset"
+        assert alt.version == weaver_tool.VERSION
+        assert alt.artifact_sha256 == weaver_tool.LINUX_SHA256
+        assert alt.authority == "eci_local_entry"
+
+    # Container is NOT a Check Origin; native Dagger container execution uses dagger.
+    assert "container" not in check_contract.ORIGINS
+    checked = closed_source()
+    rule = check_contract.rule_ref("weaver", 1, digest="b" * 64)
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_origin_invalid"
+    ):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="container",
+            result_instance="bad-origin",
+            native_exit_code=0,
+            evidence={"stdout": ""},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/registry-package"),
+        )
+
+    pkg = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-pkg",
+        native_exit_code=0,
+        evidence={"resolved_sha256": "d" * 64},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/registry-package"),
+    )
+    unlinked_live = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-unlinked",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+    )
+    missing_link = check_contract.evaluate_check_satisfaction(
+        live_def, [pkg, unlinked_live]
+    )
+    assert missing_link["status"] == "unsatisfied"
+    assert missing_link["reason"] == "prerequisite_unevidenced"
+
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-wrong-version",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/live-check", version="0.0.1"),
+            input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+        )
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-wrong-sha",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/live-check", artifact_sha256="0" * 64),
+            input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+        )
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-unpinned",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=check_contract.tool_ref("weaver/live-check"),
+            input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+        )
+
+    valid_live = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-valid",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+        input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+    )
+    expected_live = {
+        "check_id": live_def.check_id,
+        "definition_version": live_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    decision = check_contract.evaluate_expected_satisfaction(
+        [pkg, valid_live], expected_live
+    )
+    assert decision["status"] == "satisfied"
+    assert decision["selected_result_ids"] == [
+        pkg["result_id"],
+        valid_live["result_id"],
+    ]
+
+
+def test_weaver_terminal_enforces_post_completion_phase_semantics():
+    terminal_def = check_contract.definition_for("weaver_terminal")
+    live_def = check_contract.definition_for("weaver_live")
+    checked = closed_source()
+    rule = check_contract.rule_ref("weaver", 1, digest="e" * 64)
+
+    with pytest.raises(check_contract.CheckContractError, match="result_phase_invalid"):
+        check_contract.native_result(
+            terminal_def,
+            source=checked,
+            status="not_applicable",
+            result_origin="host",
+            result_instance="bad-phase",
+            rule_ref=rule,
+            phase="pre_merge",
+        )
+
+    for bad_phase in (None, check_contract.EXECUTION_PHASE):
+        with pytest.raises(
+            check_contract.CheckContractError,
+            match="result_post_completion_phase_required",
+        ):
+            check_contract.native_result(
+                terminal_def,
+                source=checked,
+                status="passed",
+                result_origin="dagger",
+                result_instance=f"term-bad-{bad_phase}",
+                native_exit_code=0,
+                evidence={"findings": 0},
+                rule_ref=rule,
+                tool=_weaver_observed("weaver/terminal-live-check"),
+                phase=bad_phase,
+            )
+
+    normal_pr_na = check_contract.native_result(
+        terminal_def,
+        source=checked,
+        status="not_applicable",
+        result_origin="host",
+        result_instance="pr-na",
+        rule_ref=rule,
+        reason="requires post-completion plan",
+    )
+    assert check_contract.validate_result(normal_pr_na) is normal_pr_na
+
+    # Tampered raw payload claiming passed without post_completion is rejected too.
+    mutated = dict(normal_pr_na)
+    mutated["status"] = "passed"
+    mutated["native_exit_code"] = 0
+    mutated["evidence"] = {"findings": 0}
+    mutated["phase"] = check_contract.EXECUTION_PHASE
+    content = {
+        key: value
+        for key, value in mutated.items()
+        if key not in {"result_instance", "content_id", "result_id"}
+    }
+    mutated["content_id"] = check_contract._digest(content)
+    mutated["result_id"] = check_contract._digest(
+        {key: value for key, value in mutated.items() if key != "result_id"}
+    )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="result_post_completion_phase_required",
+    ):
+        check_contract.validate_result(mutated)
+
+    for missing_phase_expected in (
+        {
+            "check_id": terminal_def.check_id,
+            "definition_version": terminal_def.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+        },
+        {
+            "check_id": terminal_def.check_id,
+            "definition_version": terminal_def.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+            "phase": check_contract.EXECUTION_PHASE,
+        },
+    ):
+        with pytest.raises(
+            check_contract.CheckContractError,
+            match="expected_post_completion_phase_required",
+        ):
+            check_contract.validate_expected_instance(missing_phase_expected)
+
+    expected_terminal = {
+        "check_id": terminal_def.check_id,
+        "definition_version": terminal_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "phase": check_contract.POST_COMPLETION_PHASE,
+    }
+    assert (
+        check_contract.validate_expected_instance(expected_terminal)
+        is expected_terminal
+    )
+    assert not check_contract.result_matches_expected(normal_pr_na, expected_terminal)
+    assert (
+        check_contract.evaluate_expected_satisfaction(
+            [normal_pr_na], expected_terminal
+        )["status"]
+        == "unsatisfied"
+    )
+
+    live_in_post = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-post",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    assert not check_contract.result_matches_expected(live_in_post, expected_terminal)
+
+    forged = check_contract.CheckDefinition(
+        check_id=terminal_def.check_id,
+        definition_version=terminal_def.definition_version,
+        requires_post_completion=False,
+        tool_requirements=terminal_def.tool_requirements,
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.native_result(
+            forged,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="forged-term",
+            native_exit_code=0,
+            evidence={"findings": 0},
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.evaluate_check_satisfaction(forged, [])
+
+    term_pkg = check_contract.native_result(
+        terminal_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="term-pkg",
+        native_exit_code=0,
+        evidence={"resolved_sha256": "f" * 64},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/registry-package"),
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    term_live = check_contract.native_result(
+        terminal_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="term-live",
+        native_exit_code=0,
+        evidence={"findings": 0, "run_id": "run-1"},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/terminal-live-check"),
+        input_refs=[{"kind": "check_result", "result_id": term_pkg["result_id"]}],
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    term_decision = check_contract.evaluate_expected_satisfaction(
+        [term_pkg, term_live], expected_terminal
+    )
+    assert term_decision["status"] == "satisfied"
+    assert term_decision["selected_result_ids"] == [
+        term_pkg["result_id"],
+        term_live["result_id"],
+    ]
