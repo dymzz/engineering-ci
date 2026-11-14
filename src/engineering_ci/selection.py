@@ -381,6 +381,8 @@ def index_source_refusal(root, expected_tree, *, index_file=None):
     """
     if not expected_tree:
         return "index_tree_missing"
+    if _resolve_git_dir(root) is None:
+        return "index_git_check_failed"
     env = (
         {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
         if index_file is not None
@@ -415,6 +417,8 @@ def worktree_tree_refusal(root, expected_tree):
     """Refuse immutable commit/push/pr_merge execution when the worktree diverges."""
     if not expected_tree:
         return "checkout_tree_missing"
+    if _resolve_git_dir(root) is None:
+        return "source_git_root_mismatch"
     if _tree_of(root, "HEAD") != expected_tree:
         return "checkout_tree_mismatch"
     diff = _git(root, "diff-index", "--quiet", expected_tree, "--")
@@ -524,6 +528,13 @@ def _is_zero_oid(value):
 
 def _resolve_git_dir(root):
     root = Path(root).resolve()
+    if not (root / ".git").exists():
+        return None
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or not top.stdout.strip():
+        return None
+    if Path(top.stdout.strip()).resolve() != root:
+        return None
     result = _git(root, "rev-parse", "--absolute-git-dir")
     if result.returncode == 0 and result.stdout.strip():
         candidate = Path(result.stdout.strip())
@@ -1810,6 +1821,7 @@ def plan(
             "framework": config.framework,
             "tests_dir": config.tests_dir,
             "src_root": config.src_root,
+            "code_prefixes": list(config.check_scope.code_prefixes),
             "coverage_required": config.coverage_required,
             "tach_graph_validation": graph,
             "requires_tach_check": True,

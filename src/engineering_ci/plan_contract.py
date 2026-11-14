@@ -188,9 +188,19 @@ def _validate_expected(expected, git, plan):
         if expected.get("status") == "complete" and (
             expected.get("consumer_completeness") != "expected_domain_complete"
             or expected.get("definitions_status") != "domain_complete"
+            or expected.get("applicability_status") != "domain_complete"
             or missing
             or conflicts
+            or not isinstance(
+                (expected.get("effective_profile") or {}).get("declared_checks"), list
+            )
             or not (expected.get("effective_profile") or {}).get("domain_complete")
+            or any(
+                item.get("rule_status") != "resolved"
+                or item.get("definition_status") != "resolved"
+                or item.get("applicability", {}).get("status") == "unknown"
+                for item in checks
+            )
         ):
             raise PlanError("expected_complete_unproven")
         if missing and expected.get("definitions_status") in {
@@ -226,6 +236,8 @@ def _validate_consumer_fields(value, chosen, git):
                 raise PlanError("check_scope_status_unsupported")
     if "checks" in chosen and not _string_list(chosen["checks"]):
         raise PlanError("checks_invalid")
+    if "code_prefixes" in chosen and not _string_list(chosen["code_prefixes"]):
+        raise PlanError("code_prefixes_invalid")
     if not _string_list(chosen.get("prerequisites", [])):
         raise PlanError("dependency_prerequisites_invalid")
     if chosen.get("tach_graph_validation") is not None and not isinstance(

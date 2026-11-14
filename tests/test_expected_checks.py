@@ -480,28 +480,41 @@ def test_expected_requires_plan_v2_and_valid_schema(repo):
 
 def _sample_effective_profile(
     *,
+    context="worktree",
+    action="worktree",
+    target="HEAD",
+    targets=None,
+    effective_at="2026-11-15T00:00:00Z",
+    evaluated_at="2026-11-15T01:00:00Z",
+    valid_from=None,
+    valid_until=None,
+    approval_source="governance-signed",
+    authority_verified=True,
     required_obligations=None,
     advisory_checks=None,
     allowed_inapplicability=None,
     declared_checks=None,
     domain_complete=True,
 ):
-    payload = {
-        "profile_ref": {"name": "consumer.pr", "version": "1.0.0"},
-        "profile_revision": "rev-2026-11-15",
-        "approval_source": "governance-signed",
-        "effective_at": "2026-11-15T00:00:00Z",
-        "context": "pr",
-        "action": "synchronize",
-        "target": "refs/heads/main",
-        "required_obligations": required_obligations or [],
-        "advisory_checks": advisory_checks or [],
-        "allowed_inapplicability": allowed_inapplicability or [],
-        "domain_complete": domain_complete,
-    }
-    if declared_checks is not None:
-        payload["declared_checks"] = declared_checks
-    return payload
+    return expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.pr", "version": "1.0.0"},
+        profile_revision="rev-2026-11-15",
+        approval_source=approval_source,
+        authority_verified=authority_verified,
+        effective_at=effective_at,
+        evaluated_at=evaluated_at,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        context=context,
+        action=action,
+        target=target,
+        targets=targets,
+        required_obligations=required_obligations or [],
+        advisory_checks=advisory_checks or [],
+        allowed_inapplicability=allowed_inapplicability or [],
+        declared_checks=declared_checks,
+        domain_complete=domain_complete,
+    )
 
 
 def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
@@ -575,7 +588,6 @@ def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
             "docs",
             "vulture",
             "tach",
-            "source",
         ],
         required_obligations=[
             {
@@ -631,13 +643,14 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
     cfg = selection.load_config(path / "ci-selection.toml")
     sel = selection.select(changes, cfg, root=path)
     profile = _sample_effective_profile(
+        declared_checks=[],
         required_obligations=[
             {
                 "obligation_ref": "ob/ext-deps",
                 "kind": "check",
                 "check_names": ["tach_external"],
             }
-        ]
+        ],
     )
     # Local ci-hygiene.toml has tach.external = false; must record conflict without silent drop
     p = selection.plan(
@@ -664,7 +677,12 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
         remote_ref="refs/heads/topic",
     )
     del_sel = selection.select(del_changes, cfg, root=path)
-    del_profile = _sample_effective_profile()
+    del_profile = _sample_effective_profile(
+        context="push",
+        action="delete",
+        target="refs/heads/topic",
+        declared_checks=[],
+    )
     del_plan = selection.plan(
         del_sel,
         config=cfg,
@@ -678,3 +696,248 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
     assert del_exp["status"] == "complete"
     assert del_exp["reason"] == "domain_complete_empty"
     assert any(ob["kind"] == "ref_deletion" for ob in del_exp["non_check_obligations"])
+
+
+def test_schema_v2_rejects_untrusted_wrong_time_wrong_event_and_unresolved_rules(
+    repo,
+):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+
+    # 1. Untrusted approval_source / missing verification / forged digest rejected
+    untrusted = _sample_effective_profile(
+        approval_source="local-override", declared_checks=["docs"]
+    )
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=untrusted,
+        )
+    assert raised.value.code == "effective_profile_authority_untrusted"
+
+    forged = _sample_effective_profile(declared_checks=["docs"])
+    forged["required_obligations"] = [
+        {"obligation_ref": "ob/tamper", "kind": "non_check"}
+    ]
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=forged,
+        )
+    assert raised.value.code == "effective_profile_digest_mismatch"
+
+    # 2. Expired or not-yet-effective profile rejected
+    expired = _sample_effective_profile(
+        declared_checks=["docs"],
+        effective_at="2026-11-10T00:00:00Z",
+        valid_until="2026-11-12T00:00:00Z",
+        evaluated_at="2026-11-15T00:00:00Z",
+    )
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=expired,
+        )
+    assert raised.value.code == "effective_profile_not_active"
+
+    # 3. Context x Action x Target mismatch rejected
+    wrong_event = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/main",
+        declared_checks=["docs"],
+    )
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=wrong_event,
+        )
+    assert raised.value.code == "effective_profile_event_mismatch"
+
+    # 4. Unresolved rule_status prevents complete even when domain_complete=True
+    (path / "src/pkg/sub.py").write_text("VALUE = 9\n", encoding="utf-8")
+    code_changes = selection.changeset(path, base=base, mode="worktree")
+    code_sel = selection.select(code_changes, cfg, root=path)
+    unresolved_rule_profile = _sample_effective_profile(
+        declared_checks=["unittest", "tach"]
+    )
+    partial_plan = selection.plan(
+        code_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=unresolved_rule_profile,
+    )
+    plan_contract.validate(partial_plan)
+    assert partial_plan["expected_checks"]["status"] == "partial"
+    assert partial_plan["expected_checks"]["reason"] == "check_rule_unresolved"
+
+    # Claiming complete with unresolved rule_status fails validation
+    forged_complete = json.loads(json.dumps(partial_plan))
+    forged_complete["expected_checks"]["status"] = "complete"
+    forged_complete["expected_checks"]["consumer_completeness"] = (
+        "expected_domain_complete"
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(forged_complete)
+    assert raised.value.code == "expected_complete_unproven"
+
+
+def test_schema_v2_protects_non_check_obligations_and_detects_rule_conflicts(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+
+    profile = _sample_effective_profile(
+        declared_checks=["docs", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/release-terminal",
+                "kind": "non_check",
+                "reason": "terminal telemetry required",
+            },
+            {
+                "obligation_ref": "ob/docs-check",
+                "kind": "check",
+                "check_names": ["docs"],
+            },
+        ],
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    plan_contract.validate(p)
+
+    # Deleting non_check_obligations is caught even if caller did NOT update set_ref, AND if they did
+    dropped_ob = json.loads(json.dumps(p))
+    dropped_ob["expected_checks"]["non_check_obligations"] = []
+    dropped_ob["expected_checks"]["expected_set_ref"] = expected_checks.set_identity(
+        dropped_ob["expected_checks"]["checks"], [], schema_version=2
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(dropped_ob)
+    assert raised.value.code == "expected_non_check_obligations_mismatch"
+
+    # Tampering M:N obligation_refs on a check entry is rejected even after recomputing digests
+    tampered_m2n = json.loads(json.dumps(p))
+    tampered_m2n["expected_checks"]["checks"][0]["required_by_obligations"] = []
+    tampered_m2n["expected_checks"]["checks"][0]["expected_check_ref"] = (
+        expected_checks.entry_identity(tampered_m2n["expected_checks"]["checks"][0])
+    )
+    tampered_m2n["expected_checks"]["expected_set_ref"] = expected_checks.set_identity(
+        tampered_m2n["expected_checks"]["checks"],
+        tampered_m2n["expected_checks"]["non_check_obligations"],
+        schema_version=2,
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered_m2n)
+    assert raised.value.code == "expected_obligation_mapping_mismatch"
+
+    # Two required obligations binding same check to conflicting rules record conflict, not overwrite
+    conflict_profile = _sample_effective_profile(
+        declared_checks=["tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/rule-a",
+                "kind": "check",
+                "check_names": ["tach"],
+                "rule_ref": {"name": "tach", "sha256": "sha256:" + "1" * 64},
+            },
+            {
+                "obligation_ref": "ob/rule-b",
+                "kind": "check",
+                "check_names": ["tach"],
+                "rule_ref": {"name": "tach", "sha256": "sha256:" + "2" * 64},
+            },
+        ],
+    )
+    conflict_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=conflict_profile,
+    )
+    plan_contract.validate(conflict_plan)
+    cexp = conflict_plan["expected_checks"]
+    assert cexp["status"] == "partial"
+    assert cexp["consumer_completeness"] == "incomplete_conflict"
+    assert any(
+        c["kind"] == "conflicting_rule_requirements" and c["check"] == "tach"
+        for c in cexp["conflicts"]
+    )
+    tach_entry = next(item for item in cexp["checks"] if item["name"] == "tach")
+    assert tach_entry["rule_ref"] is None
+    assert tach_entry["rule_status"] == "conflict"
+    assert tach_entry["policy_status"] == "conflict"
+
+
+def test_multi_ref_per_ref_cross_ref_tampering_and_delete_protection(repo):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "update-docs")
+    head = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/main", head, "refs/heads/main", base),
+            ("refs/heads/old", selection.ZERO_OID, "refs/heads/old", head),
+        ],
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(multi, cfg, root=path)
+    p = selection.plan(
+        sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    plan_contract.validate(p)
+
+    # 1. Tampering per_ref[0]["scope_id"] is caught
+    bad_scope = json.loads(json.dumps(p))
+    bad_scope["expected_checks"]["per_ref"][0]["scope_id"] = "sha256:" + "9" * 64
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(bad_scope)
+    assert raised.value.code == "expected_per_ref_scope_id_mismatch"
+
+    # 2. Tampering per_ref[0]["event_ref"] is caught
+    bad_event = json.loads(json.dumps(p))
+    bad_event["expected_checks"]["per_ref"][0]["event_ref"]["head_ref"] = (
+        "refs/heads/other"
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(bad_event)
+    assert raised.value.code == "expected_per_ref_event_mismatch"
+
+    # 3. Deleting ref_deletion non_check_obligation on deleted ref is caught even if set_ref recomputed
+    bad_del = json.loads(json.dumps(p))
+    bad_del["expected_checks"]["per_ref"][1]["non_check_obligations"] = []
+    bad_del["expected_checks"]["per_ref"][1]["expected_set_ref"] = (
+        expected_checks.set_identity(
+            bad_del["expected_checks"]["per_ref"][1]["checks"], [], schema_version=1
+        )
+    )
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(bad_del)
+    assert raised.value.code == "expected_per_ref_obligations_mismatch"

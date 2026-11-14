@@ -674,7 +674,7 @@ def _tach_external(root, runner, config, applicable):
     )
 
 
-def run(changes, config, *, root, runner=_run, full=False):
+def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     """Run the configured checks once and return native evidence."""
     root = Path(root)
     paths = [path.replace("\\", "/") for path in changes.paths]
@@ -715,7 +715,13 @@ def run(changes, config, *, root, runner=_run, full=False):
         else set()
     )
     inventory_ok = tracked_result.returncode == 0
-    applicability = check_applicability(changes, config, root=root, full=full)
+    applicability = check_applicability(
+        changes,
+        config,
+        root=root,
+        full=full,
+        code_prefixes=code_prefixes,
+    )
     results = []
     for name in effective_checks(config):
         applicable = applicability.get(name, {}).get("status") == "selected"

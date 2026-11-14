@@ -1377,6 +1377,7 @@ def test_tach_external_unauthorized_failure_is_preserved_with_attribution(
     )
     assert report["status"] == "failed"
     assert report["reason"] == "checks_failed"
+    assert report["routing_conflicts"][0]["check"] == "tach_external"
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["tach"]["plan_authorized"] is True
     assert by_name["tach"]["status"] == "passed"
@@ -1436,3 +1437,133 @@ def test_target_test_gate_blocks_before_container_startup():
     gate_pos = main_source.index("execution.target_test_gate(value)")
     container_pos = main_source.index("self._uv_container(")
     assert gate_pos < container_pos
+
+
+def test_execute_refuses_ignored_export_subdir_inside_parent_repo(repo):
+    path, _base = repo
+    (path / ".gitignore").write_text("exports/\n", encoding="utf-8")
+    run(path, "add", ".gitignore")
+    run(path, "commit", "-q", "-m", "ignore exports")
+    head = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+
+    exported = path / "exports/sub"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git", "exports"))
+    # Diverge the exported subdirectory bytes while parent repo stays completely clean
+    (exported / "src/pkg/sub.py").write_text("VALUE = 999\n", encoding="utf-8")
+
+    assert selection._resolve_git_dir(exported) is None
+    assert selection.worktree_tree_refusal(exported, tree) == "source_git_root_mismatch"
+
+    commit_plan = plan(
+        [],
+        tree=tree,
+        git={
+            "base_ref": head,
+            "head_ref": "HEAD",
+            "base_commit": head,
+            "head_commit": head,
+            "snapshot": "commit",
+            "execution_tree": tree,
+            "changed_paths": [],
+        },
+        check_scope=[{"name": "docs", "status": "selected"}],
+    )
+    report = execution.execute(commit_plan, root=exported)
+    assert report["status"] == "not_executed"
+    assert report["exit_code"] == 4
+    assert report["reason"] == "source_git_root_mismatch"
+
+    # Even with source_tree_id handoff, modified export directory must be rejected
+    tampered_plan = json.loads(json.dumps(commit_plan))
+    tampered_plan["git"]["source_tree_id"] = selection.tree_content_id(path, tree)
+    tampered_plan["check_scope"] = [{"name": "docs", "status": "selected"}]
+    tampered_report = execution.execute(tampered_plan, root=exported)
+    assert tampered_report["status"] == "not_executed"
+    assert tampered_report["reason"] == "source_tree_mismatch"
+
+
+def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(repo):
+    path, _base = repo
+    (path / "custom_pkg").mkdir()
+    (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "add custom pkg")
+    base = run(path, "rev-parse", "HEAD~1").strip()
+
+    sel_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        sel_text.split("[prerequisites]")[0]
+        + '\n[check_scope]\ncode_prefixes = ["custom_pkg/"]\n',
+        encoding="utf-8",
+    )
+    hygiene_text = (path / "ci-hygiene.toml").read_text(encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        hygiene_text.replace("external = false", "external = true"),
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml", "ci-hygiene.toml")
+    run(path, "commit", "-q", "-m", "custom code prefix and tach external")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # Modify custom_pkg/mod.py only; default code_prefixes would miss it
+    (path / "custom_pkg/mod.py").write_text("X = 2\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    assert p["selection"]["code_prefixes"] == ["custom_pkg/"]
+
+    runner = FakeRunner()
+    report = execution.execute(p, root=path, runner=runner)
+    by_name = {item["name"]: item for item in report["checks"]}
+    assert by_name["tach"]["status"] == "passed"
+    assert by_name["tach_external"]["status"] == "passed"
+    assert any("check-external" in call[0] for call in runner.calls)
+    assert any("vulture" in call[0] for call in runner.calls)
+
+    # Now drop tach_external from Plan selection; execution MUST NOT start tach check-external
+    without_ext = json.loads(json.dumps(p))
+    without_ext["check_scope"] = [
+        item for item in without_ext["check_scope"] if item["name"] != "tach_external"
+    ]
+    without_ext["selection"]["check_scope"] = [
+        item
+        for item in without_ext["selection"].get("check_scope", [])
+        if item["name"] != "tach_external"
+    ]
+    if "expected_checks" in without_ext:
+        without_ext["expected_checks"]["checks"] = [
+            item
+            for item in without_ext["expected_checks"].get("checks", [])
+            if item.get("name") != "tach_external"
+        ]
+        without_ext["expected_checks"]["expected_set_ref"] = (
+            selection.expected_checks.set_identity(
+                without_ext["expected_checks"]["checks"],
+                without_ext["expected_checks"].get("non_check_obligations"),
+                schema_version=without_ext["expected_checks"].get("schema_version", 1),
+            )
+        )
+    runner_no_ext = FakeRunner()
+    report_no_ext = execution.execute(without_ext, root=path, runner=runner_no_ext)
+    assert report_no_ext["status"] == "passed", (
+        f"unexpected status={report_no_ext.get('status')} "
+        f"reason={report_no_ext.get('reason')} "
+        f"checks={[(c.get('name'), c.get('status'), c.get('reason'), c.get('native_satisfaction')) for c in report_no_ext.get('checks', [])]}"
+    )
+    external_calls = [
+        call[0] for call in runner_no_ext.calls if "check-external" in call[0]
+    ]
+    assert external_calls == []
+    assert all(item["name"] != "tach_external" for item in report_no_ext["checks"])
