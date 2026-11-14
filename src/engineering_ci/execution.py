@@ -1248,6 +1248,17 @@ def _execute_with_dependencies(
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
+            if block_reasons and any(
+                edge.get("dependency_kind") == "data" for edge in edges
+            ):
+                report.setdefault(
+                    "artifact_delivery",
+                    {
+                        "status": "blocked",
+                        "reason": block_reasons[0],
+                        "blocked_by": blocked_by,
+                    },
+                )
             return block_reasons[0] if block_reasons else None, blocked_by, files
 
         def ensure_check(name):
