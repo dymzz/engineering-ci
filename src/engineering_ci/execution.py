@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -425,7 +426,7 @@ def verify_artifact_output(artifact_root, output_ref):
                 return {**base_result, "ok": False, "reason": "data_artifact_symlink"}
             if entry.is_file():
                 files.append(entry.relative_to(root_path).as_posix())
-        digest = selection.directory_content_id(target)
+        digest = artifact_directory_id(target)
         objects = [{"kind": "directory", "path": rel}]
     if expected is not None and digest != expected:
         return {
@@ -461,6 +462,43 @@ def pre_execution_edges(plan):
         if edge.get("execution_phase") == "pre_execution":
             grouped.setdefault(edge_node_key(edge["consumer_ref"]), []).append(edge)
     return grouped
+
+
+def artifact_target_paths(files):
+    """Expand delivered Files/Directories into Native Docs target paths."""
+    paths = []
+    for producer_root, rel, kind in files:
+        if kind == "directory":
+            directory = Path(producer_root) / rel
+            paths.extend(
+                entry.relative_to(producer_root).as_posix()
+                for entry in directory.rglob("*")
+                if entry.is_file()
+            )
+        else:
+            paths.append(rel)
+    return sorted(dict.fromkeys(paths))
+
+
+def _artifact_paths_overlap(first, second):
+    a, b = first.rstrip("/"), second.rstrip("/")
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def artifact_directory_id(root):
+    """Artifact-local Directory identity including empty directory nodes."""
+    root = Path(root)
+    digest = hashlib.sha256()
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
+        rel = path.relative_to(root).as_posix()
+        if path.is_dir():
+            digest.update(b"D\0" + rel.encode("utf-8") + b"\0")
+        elif path.is_file():
+            digest.update(b"F\0" + rel.encode("utf-8") + b"\0")
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def producer_artifact_root(artifact_root, producer_ref):
@@ -1183,6 +1221,19 @@ def _execute_with_dependencies(
                                     }
                                 )
                                 continue
+                            if any(
+                                _artifact_paths_overlap(rel, existing)
+                                and owner != str(producer_root)
+                                for existing, owner in seen_paths.items()
+                            ):
+                                block_reasons.append("data_artifact_conflict")
+                                blocked_by.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
+                                continue
                             seen_paths[rel] = str(producer_root)
                             files.append((producer_root, rel, kind))
                 if not ok:
@@ -1221,7 +1272,7 @@ def _execute_with_dependencies(
                         runner=runner,
                         execution_context=execution_context,
                         run_instance=run_instance,
-                        artifact_paths=[rel for _, rel, _ in files],
+                        artifact_paths=artifact_target_paths(files),
                         generated_input_refs=generated_refs,
                     )
                 finally:

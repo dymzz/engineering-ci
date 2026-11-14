@@ -419,6 +419,19 @@ async def _execute_dag(
                                     }
                                 )
                                 continue
+                            if any(
+                                execution._artifact_paths_overlap(rel, existing)
+                                and owner != str(producer_root)
+                                for existing, owner in seen_paths.items()
+                            ):
+                                block_reasons.append("data_artifact_conflict")
+                                blocked_by.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
+                                continue
                             seen_paths[rel] = str(producer_root)
                             files.append((producer_root, rel, kind))
                             produced_files.append((p_ref, producer_root, rel, kind))
@@ -489,7 +502,7 @@ async def _execute_dag(
                             root=consumer_root,
                             execution_context="dagger_export",
                             run_instance=run_instance,
-                            artifact_paths=[rel for _, rel, _ in files],
+                            artifact_paths=execution.artifact_target_paths(files),
                             generated_input_refs=generated_refs,
                         )
                     finally:
