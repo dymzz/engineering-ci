@@ -528,11 +528,16 @@ def test_duplicate_result_id_is_refused():
     with pytest.raises(check_contract.CheckContractError):
         check_contract.validate_result_set([one, one])
 
+
 def test_composed_docs_result_matches_one_expected_not_the_whole_expected_set():
     definition = check_contract.definition_for("docs")
     checked = closed_source()
     rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
-    required_input = {"kind": "data", "path": "docs/guide.md", "sha256": "b" * 64}
+    required_input = {
+        "kind": "data",
+        "path": "docs/guide.md",
+        "sha256": "b" * 64,
+    }
     expected = {
         "check_id": definition.check_id,
         "definition_version": definition.definition_version,
@@ -541,15 +546,29 @@ def test_composed_docs_result_matches_one_expected_not_the_whole_expected_set():
         "input_refs": [required_input],
     }
     inventory = check_contract.native_result(
-        definition, source=checked, status="passed", result_origin="host",
-        result_instance="inventory", native_exit_code=0, rule_ref=rule,
-        tool=check_contract.tool_ref("git/ls-files"), evidence={"stdout": "docs/guide.md"},
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
     )
     links = check_contract.native_result(
-        definition, source=checked, status="passed", result_origin="host",
-        result_instance="links", native_exit_code=0, rule_ref=rule,
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
         tool=check_contract.tool_ref("lychee/docs"),
-        input_refs=[{"kind": "check_result", "result_id": inventory["result_id"]}, required_input],
+        input_refs=[
+            {"kind": "check_result", "result_id": inventory["result_id"]},
+            required_input,
+        ],
         evidence={"stdout": "ok"},
     )
     assert check_contract.results_cover_expected([inventory, links], expected)
@@ -558,25 +577,34 @@ def test_composed_docs_result_matches_one_expected_not_the_whole_expected_set():
     assert not check_contract.result_covers_expected(inventory, expected)
     assert not check_contract.result_covers_expected(links, expected)
     assert not check_contract.results_cover_expected(
-        [inventory, links], {**expected, "source_ref": closed_source("c" * 40)}
+        [inventory, links],
+        {**expected, "source_ref": closed_source("c" * 40)},
     )
     assert not check_contract.results_cover_expected(
-        [inventory, links], {**expected, "input_refs": [{"kind": "other"}]}
+        [inventory, links],
+        {**expected, "input_refs": [{"kind": "other"}]},
     )
     with pytest.raises(check_contract.CheckContractError, match="result_id_duplicate"):
         check_contract.results_cover_expected([inventory, inventory], expected)
-    with pytest.raises(check_contract.CheckContractError, match="expected_rule_unproven"):
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_rule_unproven"
+    ):
         check_contract.results_cover_expected(
             [inventory, links], {**expected, "rule_ref": None}
         )
     unlinked = check_contract.native_result(
-        definition, source=checked, status="passed", result_origin="host",
-        result_instance="unlinked", native_exit_code=0, rule_ref=rule,
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="unlinked",
+        native_exit_code=0,
+        rule_ref=rule,
         tool=check_contract.tool_ref("lychee/docs"),
-        input_refs=[required_input], evidence={"stdout": "ok"},
+        input_refs=[required_input],
+        evidence={"stdout": "ok"},
     )
     assert not check_contract.results_cover_expected([inventory, unlinked], expected)
-
 
 
 def test_failed_native_result_cannot_supply_missing_expected_coverage():
@@ -608,9 +636,7 @@ def test_failed_native_result_cannot_supply_missing_expected_coverage():
         native_exit_code=0,
         rule_ref=rule,
         tool=check_contract.tool_ref("lychee/docs"),
-        input_refs=[
-            {"kind": "check_result", "result_id": inventory["result_id"]}
-        ],
+        input_refs=[{"kind": "check_result", "result_id": inventory["result_id"]}],
         evidence={"stdout": "ok"},
     )
     failed = check_contract.native_result(
