@@ -1463,6 +1463,10 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         status, reason = "satisfied", "all_requirements_satisfied"
     elif tool_witness is not None and expected is not None:
         status, reason = "unsatisfied", expected_failures[0]["reason"]
+    elif not observed:
+        status, reason = "unsatisfied", "native_result_missing"
+        if expected is not None and reason not in failure_reasons:
+            failure_reasons.append(reason)
     else:
         status, reason = (
             "unsatisfied",

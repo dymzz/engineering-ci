@@ -151,10 +151,13 @@ the Native Results of one Check:
   declared alternative and every `after` edge is evidenced (and when `expected`
   is supplied, resolved `input_refs`, terminal/per-requirement `coverage`, and
   identity constraints hold on that **same** chosen witness tuple);
-- otherwise `unsatisfied` with per-requirement `result_missing`,
+- otherwise `unsatisfied` with top-level `native_result_missing` when the
+  candidate `results` set itself is empty, or per-requirement `result_missing`,
   `result_not_passed`, `prerequisite_unmet`, `prerequisite_unevidenced`, or
   Expected witness failures (`expected_inputs_uncovered`,
-  `expected_coverage_unproven`);
+  `expected_coverage_unproven`) while keeping each requirement's
+  `requirements[].reason` (`result_missing` when that requirement has no
+  matching result);
 - all supplied results must describe one composable Check instance: equal
   check ID, definition version, rule/profile/Source/baseline; a mixed bag is
   refused with `CheckContractError` (`satisfaction_check_mismatch`,

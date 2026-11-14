@@ -1171,3 +1171,61 @@ def test_multipath_expected_failure_records_all_reasons_without_selecting_witnes
         links_missing_cov["result_id"],
         links_missing_input["result_id"],
     }
+
+
+def test_empty_results_use_layered_native_result_missing_reason():
+    checked = closed_source("a" * 40)
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+
+    for name in ("forwarding", "tach", "docs"):
+        definition = check_contract.definition_for(name)
+        expected = {
+            "check_id": definition.check_id,
+            "definition_version": definition.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+            "input_refs": [],
+            "coverage": {"scope": "all"},
+        }
+        if definition.requires_baseline:
+            expected["baseline_ref"] = {"base_commit": "a" * 40}
+        decision = check_contract.evaluate_expected_satisfaction([], expected)
+        assert decision["status"] == "unsatisfied"
+        assert decision["reason"] == "native_result_missing"
+        assert decision["selected_result_ids"] == []
+        assert decision["expected_failures"] == []
+        assert decision["expected_failures_complete"] is True
+        assert decision["failure_reasons"] == ["native_result_missing"]
+        assert [item["reason"] for item in decision["requirements"]] == [
+            "result_missing" for _ in definition.tool_requirements
+        ]
+
+        if definition.tool_requirements:
+            native_empty = check_contract.evaluate_check_satisfaction(definition, [])
+            assert native_empty["status"] == "unsatisfied"
+            assert native_empty["reason"] == "native_result_missing"
+            assert native_empty["selected_result_ids"] == []
+            assert [item["reason"] for item in native_empty["requirements"]] == [
+                "result_missing" for _ in definition.tool_requirements
+            ]
+
+    # Partial tool-bound results still surface per-requirement result_missing.
+    docs_def = check_contract.definition_for("docs")
+    only_links = check_contract.native_result(
+        docs_def,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links-only",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        evidence={"stdout": "ok"},
+    )
+    partial = check_contract.evaluate_check_satisfaction(docs_def, [only_links])
+    assert partial["status"] == "unsatisfied"
+    assert partial["reason"] == "result_missing"
+    assert [item["reason"] for item in partial["requirements"]] == [
+        "result_missing",
+        "prerequisite_unmet",
+    ]
