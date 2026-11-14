@@ -13,6 +13,19 @@ from .plan_result import result as make_result
 
 def _aggregate(report):
     """Summarize collected facts; source-wide refusals return before this."""
+    delivery = report.get("artifact_delivery")
+    if isinstance(delivery, dict):
+        for consumer in delivery.get("consumers", []):
+            consumer["failures"] = sorted(
+                consumer.get("failures", []),
+                key=lambda item: json.dumps(item, sort_keys=True),
+            )
+        delivery["consumers"] = sorted(
+            delivery.get("consumers", []),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+        if delivery.get("consumers") and delivery["consumers"][0].get("failures"):
+            delivery["reason"] = delivery["consumers"][0]["failures"][0].get("reason")
     tests = report.get("tests") or {}
     checks = report.get("checks") or []
     prerequisites = report.get("prerequisites") or []
@@ -367,6 +380,7 @@ async def _execute_dag(
             )
             block_reasons = []
             blocked_by = []
+            data_failures = []
             files = []
             seen_paths = {}
             for edge, producer_out in zip(edges, upstream, strict=True):
@@ -390,6 +404,13 @@ async def _execute_dag(
                     reason = "data_check_producer_unsupported"
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
+                    data_failures.append(
+                        {
+                            "producer_ref": p_ref,
+                            "output_ref": edge.get("output_ref"),
+                            "reason": reason,
+                        }
+                    )
                     closure_records.append(
                         {
                             "producer_ref": p_ref,
@@ -426,6 +447,13 @@ async def _execute_dag(
                                         "reason": "data_artifact_conflict",
                                     }
                                 )
+                                data_failures.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "output_ref": edge.get("output_ref"),
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
                                 continue
                             if any(
                                 execution._artifact_paths_overlap(rel, existing)
@@ -439,6 +467,13 @@ async def _execute_dag(
                                         "reason": "data_artifact_conflict",
                                     }
                                 )
+                                data_failures.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "output_ref": edge.get("output_ref"),
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
                                 continue
                             seen_paths[rel] = str(producer_root)
                             files.append((producer_root, rel, kind))
@@ -448,11 +483,14 @@ async def _execute_dag(
                     blocked_by.append(
                         {"producer_ref": edge["producer_ref"], "reason": reason}
                     )
-            data_failures = [
-                item
-                for item in blocked_by
-                if str(item.get("reason", "")).startswith("data_")
-            ]
+                    if edge.get("dependency_kind") == "data":
+                        data_failures.append(
+                            {
+                                "producer_ref": edge["producer_ref"],
+                                "output_ref": edge.get("output_ref"),
+                                "reason": reason,
+                            }
+                        )
             if data_failures:
                 if isinstance(consumer_key, tuple):
                     consumer_ref = {
@@ -584,11 +622,31 @@ async def _execute_dag(
                     ("execution_report", "artifacts")
                 )
                 if report_block is not None:
-                    report["artifact_delivery"] = {
-                        "status": "blocked",
-                        "reason": report_block,
-                        "blocked_by": report_blocked_by,
-                    }
+                    delivery = report.setdefault(
+                        "artifact_delivery", {"status": "blocked", "consumers": []}
+                    )
+                    delivery["status"] = "blocked"
+                    delivery.setdefault("reason", report_block)
+                    if not any(
+                        consumer.get("consumer_ref")
+                        == {"kind": "execution_report", "name": "artifacts"}
+                        for consumer in delivery["consumers"]
+                    ):
+                        delivery["consumers"].append(
+                            {
+                                "consumer_ref": {
+                                    "kind": "execution_report",
+                                    "name": "artifacts",
+                                },
+                                "failures": [
+                                    {
+                                        "producer_ref": item.get("producer_ref"),
+                                        "reason": item.get("reason"),
+                                    }
+                                    for item in report_blocked_by
+                                ],
+                            }
+                        )
                 return None
 
         def ensure(node_key):
@@ -688,12 +746,26 @@ async def _execute_dag(
             ):
                 if not isinstance(output, Exception):
                     raise output
-                report["artifact_delivery"] = {
-                    "status": "blocked",
-                    "reason": "artifact_delivery_error",
-                    "error_type": type(output).__name__,
-                    "diagnostic": str(output),
-                }
+                delivery = report.setdefault(
+                    "artifact_delivery", {"status": "blocked", "consumers": []}
+                )
+                delivery["status"] = "blocked"
+                delivery.setdefault("reason", "artifact_delivery_error")
+                delivery["consumers"].append(
+                    {
+                        "consumer_ref": {
+                            "kind": "execution_report",
+                            "name": "artifacts",
+                        },
+                        "failures": [
+                            {
+                                "reason": "artifact_delivery_error",
+                                "error_type": type(output).__name__,
+                                "diagnostic": str(output),
+                            }
+                        ],
+                    }
+                )
 
         for name in post_prerequisites:
             try:

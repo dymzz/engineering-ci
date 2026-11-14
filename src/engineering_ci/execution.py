@@ -1359,11 +1359,31 @@ def _execute_with_dependencies(
                 ("execution_report", "artifacts")
             )
             if report_block is not None:
-                report["artifact_delivery"] = {
-                    "status": "blocked",
-                    "reason": report_block,
-                    "blocked_by": report_blocked_by,
-                }
+                delivery = report.setdefault(
+                    "artifact_delivery", {"status": "blocked", "consumers": []}
+                )
+                delivery["status"] = "blocked"
+                delivery.setdefault("reason", report_block)
+                if not any(
+                    consumer.get("consumer_ref")
+                    == {"kind": "execution_report", "name": "artifacts"}
+                    for consumer in delivery["consumers"]
+                ):
+                    delivery["consumers"].append(
+                        {
+                            "consumer_ref": {
+                                "kind": "execution_report",
+                                "name": "artifacts",
+                            },
+                            "failures": [
+                                {
+                                    "producer_ref": item.get("producer_ref"),
+                                    "reason": item.get("reason"),
+                                }
+                                for item in report_blocked_by
+                            ],
+                        }
+                    )
 
         requirement = test_requirement_failure(plan)
         test_block_reason, test_blocked_by, test_files = resolve_incoming("tests")
@@ -1460,6 +1480,19 @@ def _decorated_blocked_check(
 
 
 def _finalize_report(report):
+    delivery = report.get("artifact_delivery")
+    if isinstance(delivery, dict):
+        for consumer in delivery.get("consumers", []):
+            consumer["failures"] = sorted(
+                consumer.get("failures", []),
+                key=lambda item: json.dumps(item, sort_keys=True),
+            )
+        delivery["consumers"] = sorted(
+            delivery.get("consumers", []),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+        if delivery.get("consumers") and delivery["consumers"][0].get("failures"):
+            delivery["reason"] = delivery["consumers"][0]["failures"][0].get("reason")
     tests_res = report.get("tests") or {}
     tests_failed = bool(report.get("targets") and tests_res.get("status") == "failed")
     hygiene_or_source_failed = any(
