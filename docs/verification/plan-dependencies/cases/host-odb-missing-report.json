@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "kind": "engineering-ci-execution-report",
+  "dependency_contract": {
+    "schema_version": 1,
+    "required_semantics": [
+      "prerequisite_policy_aggregation"
+    ],
+    "edges": [
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "probe"
+        },
+        "consumer_ref": {
+          "kind": "execution_report",
+          "name": "prerequisites"
+        },
+        "dependency_kind": "policy_only",
+        "requires_pass": false,
+        "output_ref": null,
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": ".artifacts/issue86/source/ci-selection.toml",
+          "sha256": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
+          "section": "prerequisite_actions.probe"
+        },
+        "selection": {
+          "selected_by": "targeted",
+          "escalation_reason": null
+        },
+        "execution_phase": "post_check",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      }
+    ]
+  },
+  "execution_context": "host",
+  "plan": {
+    "generator": {
+      "config_sha256": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c"
+    },
+    "git": {
+      "snapshot": "worktree"
+    }
+  },
+  "targets": [],
+  "framework": "unittest",
+  "junit": null,
+  "status": "failed",
+  "exit_code": 1,
+  "reason": "prerequisites_failed",
+  "coverage": {
+    "required": false,
+    "satisfied": false,
+    "scope": "unverified"
+  },
+  "tests": {
+    "status": "not_executed",
+    "exit_code": 3
+  },
+  "checks": [],
+  "prerequisites": [
+    {
+      "name": "probe",
+      "type": "git_commit_present",
+      "status": "failed",
+      "reason": "identity_commit_missing",
+      "commit": "0000000000000000000000000000000000000000",
+      "git_odb_root": "C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci",
+      "execution_context": "host",
+      "result_origin": "git_cat_file",
+      "exit_code": 128,
+      "stdout": "",
+      "stderr": "fatal: Not a valid object name 0000000000000000000000000000000000000000^{commit}\n"
+    }
+  ]
+}

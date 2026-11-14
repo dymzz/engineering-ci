@@ -343,3 +343,58 @@ multi-target pytest execution and CLI modes.
 | P2 pytest report/coverage | Local multi-target JUnit and explicit `blocked` coverage gate delivered; actual coverage execution / #63 evidence wiring open |
 | Production Dagger/Actions plan execution | Partial: host `execute --plan` is tree-bound; Dagger `execute-plan` runs exact targets/JUnit but reports `trusted:false`; Actions job added but not yet run |
 | Clean-environment install and non-Knowledge consumer | Delivered: wheel install outside checkout; independent fixture `select → execute` passed 3 tests |
+
+
+## Plan dependency contract (schema 2)
+
+New Plan producers emit schema 2 with `dependency_contract.schema_version=1`.
+Configuration and Execution Report schemas remain 1. Version-1 Plans without
+this contract retain legacy behavior. CLI, direct Python and Dagger use the
+same public `execution.validate_plan` rules before starting consumers.
+
+The currently delivered dependency semantic is
+`prerequisite_policy_aggregation`: each selected action contributes its
+post-check result to `report.prerequisites`. References bind the action name,
+Report consumer, configuration path/hash/section and original Git Plan binding.
+Missing action parameters stay unresolved and cannot make the final Report
+pass. These declarations do not turn test selection relations into startup
+preconditions. True `data` or `pre_execution_pass` edges are unsupported until
+B supplies their consumers; all entry points reject them instead of ignoring
+mandatory semantics. Unknown versions, missing references/conditions and
+changed action overrides are likewise refused.
+
+Check scope status accepts the current producer's seven values: `selected`,
+`unknown`, `not_applicable`, `targeted`, `escalated`, `no_tests`, `no_changes`.
+The last four describe the test-selection scope; explicit full selection is
+represented as `escalated`. Unknown values refuse with
+`check_scope_status_unsupported`, before a Check can be silently omitted.
+
+Executable snapshot identities are `worktree`, `index`, `commit`, `push`,
+`pr_merge`, `multi`; CLI mode `pr` produces `pr_merge`. Unknown explicit values
+refuse with `git_snapshot_unsupported`. Missing/null legacy snapshot retains
+the existing default: commit when `execution_tree` exists, worktree otherwise.
+The binding helper also refuses unknown modes before querying Git. Accepting
+the `multi` declaration does not enable single-source multi-ref execution.
+
+`plan_declaration_consistent=true` records schema-2 declaration validation
+only. Rejected Plans report false; legacy Plans without the dependency
+contract report null. `source_binding_verified="unknown"` is a separate,
+explicit state: comparing two hashes inside a Plan does not verify the
+configuration bytes, original ODB or Source consumed by a Check. Existing
+tree/input-closure checks retain their narrower meaning. B must consume #66's
+verified Source/Prerequisite handoff and check actual configuration hashes,
+snapshot identity and downstream inputs before claiming that binding.
+
+For exported Source, `source_handoff` preserves original Git identity and the
+actual exported content ID. Git-dependent actions require their real ODB:
+missing/unbound context is not a missing Commit verdict. A Host write to
+exported Source invalidates its old binding before downstream consumers; this
+slice delivers no generated output or trust receipt. Detailed instance scope,
+raw results and remaining handoffs are in the
+[dependency inventory](../verification/plan-dependencies/README.md).
+
+The read-only Dagger API may exit 0 while returning a non-passed Report. Before
+B exposes strict consumers, their native Check/Enforce/CI failure propagation
+must consume both Report status and exit code; an API exit-0/refused-Report
+counterexample must fail that strict entry. A returned Result, especially a
+cached Result, is not proof of a new tool execution in this invocation.

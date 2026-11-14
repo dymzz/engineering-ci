@@ -1,0 +1,60 @@
+{
+  "kind": "engineering-ci-selection-plan",
+  "schema_version": 99,
+  "generator": {
+    "config_sha256": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c"
+  },
+  "git": {
+    "snapshot": "worktree"
+  },
+  "selection": {
+    "tests": [],
+    "prerequisites": [
+      "probe"
+    ]
+  },
+  "prerequisite_actions": {
+    "probe": {
+      "type": "command",
+      "argv": [
+        "python",
+        "-c",
+        "raise RuntimeError('CONSUMER MUST NOT START')"
+      ]
+    }
+  },
+  "dependency_contract": {
+    "schema_version": 1,
+    "required_semantics": [
+      "prerequisite_policy_aggregation"
+    ],
+    "edges": [
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "probe"
+        },
+        "consumer_ref": {
+          "kind": "execution_report",
+          "name": "prerequisites"
+        },
+        "dependency_kind": "policy_only",
+        "requires_pass": false,
+        "output_ref": null,
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "ci-selection.toml",
+          "sha256": "032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c",
+          "section": "prerequisite_actions.probe"
+        },
+        "selection": {
+          "selected_by": "targeted",
+          "escalation_reason": null
+        },
+        "execution_phase": "post_check",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "scope": "Review regression: actual API invocations and returned Results; fresh Origin Execution not attributed",
+  "records": [
+    {
+      "name": "framework-array",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/framework-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-array-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "c1624b",
+          "wall_time_seconds": 10.0042039,
+          "session_id": 56207,
+          "original_token_count": 54,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:12:37 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "63f0ce",
+          "wall_time_seconds": 5.0074578,
+          "session_id": 56207,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "dd631f",
+          "wall_time_seconds": 5.001944,
+          "session_id": 56207,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "32030a",
+          "wall_time_seconds": 1.4544055,
+          "exit_code": 0,
+          "original_token_count": 323,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/framework-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-array-result.json  20.6s\u001b[8;1H✔ connect 2.5s\r\n✔ load workspace: . 14.0s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.6s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H✔ engineeringCi: EngineeringCi! 2.0s\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.0s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\framework-array-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"framework_invalid\", \"exit_code\": 2, \"tests\": {\"status\": \"n\r\n\u001b[23;80Hnot_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_consistent\":\r\n\u001b[23;80H: false, \"source_binding_verified\": \"unknown\", \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n"
+        }
+      ]
+    },
+    {
+      "name": "framework-object",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/framework-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-object-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "4ff29c",
+          "wall_time_seconds": 4.5176772,
+          "exit_code": 0,
+          "original_token_count": 383,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:13:05 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/framework-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/framework-object-result.json  4.1s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.1s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\framework-object-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"framework_invalid\", \"exit_code\": 2, \"tests\": {\"status\": \"n\r\n\u001b[23;80Hnot_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_consistent\":\r\n\u001b[23;80H: false, \"source_binding_verified\": \"unknown\", \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "action-type-array",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/action-type-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-array-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "fc81d3",
+          "wall_time_seconds": 4.3925627,
+          "exit_code": 0,
+          "original_token_count": 393,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:13:15 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/action-type-array.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-array-result.json  4.0s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.1s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\action-type-array-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"dependency_action_unsupported\", \"exit_code\": 2, \"tests\": {\r\n\u001b[23;80H{\"status\": \"not_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_\u001b[?25l\r\n\u001b[23;80H_consistent\": false, \"source_binding_verified\": \"unknown\", \"trusted\": false}     \u001b[24;76H\u001b[?25h\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "action-type-object",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/action-type-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-object-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "81371a",
+          "wall_time_seconds": 4.2096175,
+          "exit_code": 0,
+          "original_token_count": 393,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:13:29 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/action-type-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/action-type-object-result.json  3.8s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.0s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\action-type-object-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"dependency_action_unsupported\", \"exit_code\": 2, \"tests\": {\r\n\u001b[23;80H{\"status\": \"not_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_\u001b[?25l\r\n\u001b[23;80H_consistent\": false, \"source_binding_verified\": \"unknown\", \"trusted\": false}     \u001b[24;76H\u001b[?25h\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "check-scope-object",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-object-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "7328d6",
+          "wall_time_seconds": 5.2350558,
+          "exit_code": 0,
+          "original_token_count": 385,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:13:47 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/check-scope-object.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-object-result.json  3.9s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 1.9s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\check-scope-object-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"check_scope_invalid\", \"exit_code\": 2, \"tests\": {\"status\": \r\n\u001b[23;80H \"not_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_consistent\r\n\u001b[23;80Ht\": false, \"source_binding_verified\": \"unknown\", \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "check-scope-entry",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-entry.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-entry-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "b69f58",
+          "wall_time_seconds": 4.1683166,
+          "exit_code": 0,
+          "original_token_count": 384,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:13:58 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/check-scope-entry.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-entry-result.json  3.8s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.0s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\check-scope-entry-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"check_scope_invalid\", \"exit_code\": 2, \"tests\": {\"status\": \r\n\u001b[23;80H \"not_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_consistent\r\n\u001b[23;80Ht\": false, \"source_binding_verified\": \"unknown\", \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "check-scope-status",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/check-scope-status.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-status-result.json",
+      "source": "source",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "ed6ddf",
+          "wall_time_seconds": 5.1537911,
+          "exit_code": 0,
+          "original_token_count": 385,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:14:09 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lexecute-plan --plan .artifacts/issue86-review/check-scope-status.json --source .artifacts/issue86-review/source --output .artifacts/issue86-review/check-scope-status-result.json  3.8s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.0s\u001b[23;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\check-scope-status-result.json\".\u001b[?25h\r\n{\"kind\": \"engineering-ci-execution-report\", \"schema_version\": 1, \"status\": \"not_\r\n\u001b[23;80H_executed\", \"reason\": \"check_scope_invalid\", \"exit_code\": 2, \"tests\": {\"status\": \r\n\u001b[23;80H \"not_executed\"}, \"checks\": [], \"prerequisites\": [], \"plan_declaration_consistent\r\n\u001b[23;80Ht\": false, \"source_binding_verified\": \"unknown\", \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "config-drift",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call execute-plan --plan .artifacts/issue86-review/config-drift.json --source .artifacts/issue86-review/source-drift --output .artifacts/issue86-review/config-drift-result.json",
+      "source": "source-drift",
+      "implementation_commit": "df3abda279f6f245a04a0425eac0bc4969dd1ace",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "29b59e",
+          "wall_time_seconds": 4.1764831000000004,
+          "exit_code": 0,
+          "original_token_count": 852,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 20:14:23 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25l\u001b[?25lexecute-plan --plan .artifacts/issue86-review/config-drift.json --source .artifacts/issue86-review/source-drift --output .artifacts/issue86-review/config-drift-result.json  3.8s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-plan-dependencies/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .executePlan(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): String! 2.0s\r\n  ✔ downloading /tmp/tmp5dti4ju3 0.0s ████████████ 86 B\u001b[24;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-plan-dependencies\u001b[?25h\r\n\u001b[23;80Hs\\\\engineering-ci\\\\.artifacts\\\\issue86-review\\\\config-drift-result.json\".        \u001b[24;73H\u001b[?25h\r\n{\"checks\": [], \"dependency_contract\": {\"edges\": [{\"consumer_ref\": {\"kind\": \"exec\r\n\u001b[23;80Hcution_report\", \"name\": \"prerequisites\"}, \"declaration_ref\": {\"path\": \"ci-selecti\r\n\u001b[23;80Hion.toml\", \"section\": \"prerequisite_actions.probe\", \"sha256\": \"032854fa7296649121\r\n\u001b[23;80H142cac6bd6ed7503b6a735df14e5cf5d5ddc193d295b11c\"}, \"dependency_kind\": \"policy_onl\r\n\u001b[23;80Hly\", \"execution_phase\": \"post_check\", \"output_ref\": null, \"producer_ref\": {\"kind\"\r\n\u001b[23;80H\": \"prerequisite_action\", \"name\": \"probe\"}, \"requires_pass\": false, \"resolution\":\r\n\u001b[23;80H: \"resolved\", \"selection\": {\"escalation_reason\": null, \"selected_by\": \"targeted\"}\r\n\u001b[23;80H}, \"source_binding_ref\": \"git\", \"unresolved_reason\": null}], \"required_semantics\"\r\n\u001b[23;80H\": [\"prerequisite_policy_aggregation\"], \"schema_version\": 1}, \"execution_context\"\r\n\u001b[23;80H\": \"dagger_export\", \"exit_code\": 0, \"framework\": \"unittest\", \"input_closure_verif\r\n\u001b[23;80Hfied\": \"not_requested\", \"kind\": \"engineering-ci-execution-report\", \"plan\": {\"gene\r\n\u001b[23;80Herator\": {\"config_sha256\": \"032854fa729664912142cac6bd6ed7503b6a735df14e5cf5d5ddc\r\n\u001b[23;80Hc193d295b11c\"}, \"git\": {\"snapshot\": \"worktree\"}}, \"plan_declaration_consistent\": \r\n\u001b[23;80H true, \"plan_execution_tree\": null, \"prerequisites\": [{\"argv\": [\"python\", \"-c\", \"\r\n\u001b[23;80H\"print('controlled post-check policy')\"], \"exit_code\": 0, \"name\": \"probe\", \"statu\r\n\u001b[23;80Hus\": \"passed\", \"type\": \"command\"}], \"reason\": null, \"schema_version\": 1, \"source_\r\n\u001b[23;80H_binding_verified\": \"unknown\", \"source_digest\": null, \"source_handoff\": {\"after_h\r\n\u001b[23;80Hhost_content_id\": \"469b8567617765220ffcb75b4e4bef2dd3d75ef57206f3544fde624af5d9fc\r\n\u001b[23;80Hcb4\", \"exported_content_id\": \"469b8567617765220ffcb75b4e4bef2dd3d75ef57206f3544fd\r\n\u001b[23;80Hde624af5d9fcb4\", \"host_context\": \"dagger_export\", \"original_git\": {\"snapshot\": \"w\r\n\u001b[23;80Hworktree\"}, \"original_git_snapshot_preserved\": true}, \"source_tree_id\": null, \"so\r\n\u001b[23;80Hource_tree_verified\": \"not_requested\", \"status\": \"passed\", \"targets\": [], \"tests\"\r\n\u001b[23;80H\": {\"exit_code\": 3, \"status\": \"not_executed\"}, \"tree_verified\": false, \"trusted\":\r\n\u001b[23;80H: false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    }
+  ]
+}

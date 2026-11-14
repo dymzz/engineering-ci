@@ -1,0 +1,175 @@
+# Post-run CI/CD telemetry producer entry (ECI #75 / PR #81).
+# Consumes completed Engineering CI Runs via workflow_run; never blocks the
+# original Required Jobs. This Workflow's GITHUB_SHA is the default-branch tip
+# of the producer code — not the original checked Tree. Identity of the source
+# Run comes from the event + Attempt API only.
+name: CI/CD Telemetry Post-run
+
+on:
+  workflow_run:
+    workflows: ["Engineering CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Source GitHub Actions Run ID
+        required: true
+        type: string
+      attempt:
+        description: Source Run attempt number
+        required: true
+        type: string
+      repository:
+        description: owner/repo of the source Run
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: cicd-telemetry-post-run-${{ github.event.workflow_run.id || inputs.run_id }}-${{ github.event.workflow_run.run_attempt || inputs.attempt }}
+  cancel-in-progress: false
+
+jobs:
+  produce-candidate:
+    name: produce candidate telemetry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Do not recurse: never treat this Workflow as a source Run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.name == 'Engineering CI' &&
+        github.event.workflow_run.event != 'workflow_run'
+      )
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # Producer code from this Workflow's ref (default branch for
+          # workflow_run). Never checkout the source Run head_sha for execution.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6.1.0
+        with:
+          enable-cache: true
+
+      - name: Resolve source Run identity
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          WR_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WR_REPO: ${{ github.event.workflow_run.repository.full_name }}
+          WR_STATUS: ${{ github.event.workflow_run.status }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_ATTEMPT: ${{ inputs.attempt }}
+          INPUT_REPO: ${{ inputs.repository }}
+          FALLBACK_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RUN_ID="${INPUT_RUN_ID}"
+            ATTEMPT="${INPUT_ATTEMPT}"
+            REPO="${INPUT_REPO:-$FALLBACK_REPO}"
+            # Do not invent completed; Attempt API is authoritative.
+            EVENT_STATUS=""
+            EVENT_CONCLUSION=""
+            HEAD_SHA=""
+          else
+            RUN_ID="${WR_ID}"
+            ATTEMPT="${WR_ATTEMPT}"
+            REPO="${WR_REPO:-$FALLBACK_REPO}"
+            EVENT_STATUS="${WR_STATUS}"
+            EVENT_CONCLUSION="${WR_CONCLUSION}"
+            HEAD_SHA="${WR_SHA}"
+          fi
+          if [[ ! "${RUN_ID}" =~ ^[0-9]+$ ]] || [[ ! "${ATTEMPT}" =~ ^[0-9]+$ ]]; then
+            echo "RUN_ID/ATTEMPT must be positive integers" >&2
+            exit 1
+          fi
+          if [[ "${ATTEMPT}" -lt 1 ]]; then
+            echo "attempt must be >= 1" >&2
+            exit 1
+          fi
+          {
+            echo "run_id=${RUN_ID}"
+            echo "attempt=${ATTEMPT}"
+            echo "repository=${REPO}"
+            echo "event_status=${EVENT_STATUS}"
+            echo "event_conclusion=${EVENT_CONCLUSION}"
+            echo "head_sha=${HEAD_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Produce all_completed candidate + OTLP/JSON
+        id: produce
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ steps.source.outputs.repository }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.attempt }}
+          EVENT_STATUS: ${{ steps.source.outputs.event_status }}
+          EVENT_CONCLUSION: ${{ steps.source.outputs.event_conclusion }}
+          EVENT_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+          OTLP_ENDPOINT: ${{ vars.ECI_OTLP_ENDPOINT }}
+          OTLP_INSECURE: ${{ vars.ECI_OTLP_INSECURE }}
+        run: |
+          set -euo pipefail
+          uv sync --locked
+          mkdir -p artifacts/cicd-telemetry
+          EXTRA=()
+          if [[ -n "${EVENT_STATUS}" ]]; then
+            EXTRA+=(--event-status "${EVENT_STATUS}")
+          fi
+          if [[ -n "${EVENT_CONCLUSION}" ]]; then
+            EXTRA+=(--event-conclusion "${EVENT_CONCLUSION}")
+          fi
+          if [[ -n "${EVENT_HEAD_SHA}" ]]; then
+            EXTRA+=(--event-head-sha "${EVENT_HEAD_SHA}")
+          fi
+          if [[ -n "${OTLP_ENDPOINT}" ]]; then
+            EXTRA+=(--otlp-endpoint "${OTLP_ENDPOINT}")
+            if [[ "${OTLP_INSECURE}" == "true" ]]; then
+              EXTRA+=(--otlp-insecure)
+            fi
+          fi
+          set +e
+          # Precision policy is explicit: no uncertainty budget, so a late
+          # observation is recorded and is not used as the Root span end.
+          printf '%s\n' 'mode=observed_upper_bound' 'max_end_uncertainty_ns=' \
+            > artifacts/cicd-telemetry/end-time-policy.txt
+          uv run --locked python -m engineering_ci.cicd_telemetry \
+            --repository "${SOURCE_REPO}" \
+            --run-id "${SOURCE_RUN_ID}" \
+            --attempt "${SOURCE_ATTEMPT}" \
+            --end-time-mode observed_upper_bound \
+            --output artifacts/cicd-telemetry/candidate.json \
+            --otlp-json artifacts/cicd-telemetry/otel.json \
+            --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
+            --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
+            --json \
+            "${EXTRA[@]}" \
+            > artifacts/cicd-telemetry/cli.stdout.json \
+            2> artifacts/cicd-telemetry/stderr.log
+          code=$?
+          set -e
+          printf '%s\n' "${code}" > artifacts/cicd-telemetry/producer.exit
+          if [[ ! -s artifacts/cicd-telemetry/cli.stdout.json ]]; then
+            printf '{}\n' > artifacts/cicd-telemetry/cli.stdout.json
+          fi
+          exit "${code}"
+
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ always() }}
+        with:
+          name: cicd-telemetry-${{ steps.source.outputs.run_id }}-${{ steps.source.outputs.attempt }}
+          path: artifacts/cicd-telemetry/
+          if-no-files-found: warn
+          retention-days: 14
