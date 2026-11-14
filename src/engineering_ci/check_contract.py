@@ -1118,12 +1118,11 @@ def _expected_witness_failure(requirements, chosen, expected):
             for key, coverage in mapping.items()
         ):
             return "expected_coverage_unproven"
-    elif "coverage" in expected:
-        if any(
-            chosen[key].get("coverage") != expected["coverage"]
-            for key in terminal_ids
-        ):
-            return "expected_coverage_unproven"
+    elif "coverage" in expected and any(
+        chosen[key].get("coverage") != expected["coverage"]
+        for key in terminal_ids
+    ):
+        return "expected_coverage_unproven"
     return None
 
 
