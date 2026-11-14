@@ -453,6 +453,10 @@ def run(changes, config, *, root, runner=_run, full=False):
     """Run the configured checks once and return native evidence."""
     root = Path(root)
     paths = [path.replace("\\", "/") for path in changes.paths]
+    generated = [
+        path.replace("\\", "/") for path in getattr(changes, "generated_paths", ())
+    ]
+    docs_paths = list(dict.fromkeys((*paths, *generated)))
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -466,6 +470,7 @@ def run(changes, config, *, root, runner=_run, full=False):
             "tree": changes.tree,
             "worktree_dirty": changes.worktree_dirty,
             "changed_paths": paths,
+            "generated_input_paths": generated,
         },
     }
     if not changes.complete:
@@ -504,7 +509,7 @@ def run(changes, config, *, root, runner=_run, full=False):
         elif name == "docs":
             results.append(
                 _docs(
-                    paths,
+                    docs_paths,
                     tracked,
                     changes,
                     root,

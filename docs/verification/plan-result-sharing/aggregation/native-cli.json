@@ -1,0 +1,80 @@
+{
+  "scope": "Focused review 5876378443 aggregation cases; API invocations and returned Results, no fresh Origin attribution",
+  "records": [
+    {
+      "name": "blocked-tests-native-failure",
+      "source": ".artifacts/plan-aggregation/registry-failure-source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-aggregation/registry-failure-source export --path .artifacts/plan-aggregation/blocked-tests-native-failure-bundle",
+      "implementation_commit": "88790cdd316a6e755069463f56beac14594d1c8f",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "ff71be",
+          "wall_time_seconds": 10.0047885,
+          "session_id": 59141,
+          "original_token_count": 54,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 22:57:54 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "1f7985",
+          "wall_time_seconds": 5.0145474,
+          "session_id": 59141,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "bbe260",
+          "wall_time_seconds": 5.013993,
+          "session_id": 59141,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "66f5d2",
+          "wall_time_seconds": 2.7263811000000002,
+          "exit_code": 0,
+          "original_token_count": 317,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-aggregation/registry-failure-source export --path .artifacts/plan-aggregation/blocked-tests-native-failure-bundle  22.2s\u001b[8;1H✔ connect 2.5s\r\n✔ load workspace: . 12.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.4s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.3s\r\n  ✔ 2 uploads 0.2s\u001b[15;1H✔ engineeringCi: EngineeringCi! 2.0s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 4.5s\r\n  ✔ downloading /tmp/tmpzy1ascx2 0.2s ████████████ 1.5 MB\r\n✔ .export(path: \".artifacts/plan-aggregation/blocked-tests-native-failure-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-aggregation/blocked-tests-native-failure-bundle \u001b[?25h\r\n\u001b[23;80H 0.0s ████████████ 60 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-aggregation/blocked-tests-native-failure-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n"
+        }
+      ]
+    },
+    {
+      "name": "blocked-tests-native-pass",
+      "source": ".artifacts/plan-sharing/precondition-source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-sharing/precondition-source export --path .artifacts/plan-aggregation/blocked-tests-native-pass-bundle",
+      "implementation_commit": "88790cdd316a6e755069463f56beac14594d1c8f",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "0f71c1",
+          "wall_time_seconds": 4.7076189,
+          "exit_code": 0,
+          "original_token_count": 372,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 22:58:23 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-sharing/precondition-source export --path .artifacts/plan-aggregation/blocked-tests-native-pass-bundle  4.3s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 2.3s\r\n  ✔ downloading /tmp/tmpbz0kxt76 0.1s ████████████ 1.5 MB\r\n✔ .export(path: \".artifacts/plan-aggregation/blocked-tests-native-pass-bundle\"): String! 0.1s\r\n  ✔ downloading .artifacts/plan-aggregation/blocked-tests-native-pass-bundle 0.1\u001b[?25h\r\n\u001b[23;80H1s ████████████ 2.1 MB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-aggregation/blocked-tests-native-pass-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "enforce-native-failure",
+      "source": ".artifacts/plan-aggregation/registry-failure-source",
+      "mode": "enforce",
+      "expected": 1,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-aggregation/registry-failure-source enforce",
+      "implementation_commit": "88790cdd316a6e755069463f56beac14594d1c8f",
+      "cli_exit_code": 1,
+      "chunks": [
+        {
+          "chunk_id": "55be39",
+          "wall_time_seconds": 5.8036837,
+          "exit_code": 1,
+          "original_token_count": 473,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 22:58:33 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-aggregation/precondition.json --source .artifacts/plan-aggregation/registry-failure-source enforce  5.4s\r\n! exit code 1\r\n! FunctionError: Plan failed: checks_failed (exit 1)\u001b[9;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 2.0s\r\n  ✔ downloading /tmp/tmpcjdpfs3u 0.1s ████████████ 1.5 MB\r\n✘ .enforce: Void 1.6s ERROR\u001b[?25h\r\n! FunctionError: Plan failed: checks_failed (exit 1)\r\n\n✘ EngineeringCiPlanExecution.enforce: Void 1.6s ERROR\r\nERROR [dagger.mod]: Unhandled exception while executing function\r\nTraceback (most recent call last):\r\n  File \"/src/xxh3:a546f7c45b4eb4b7/.dagger/sdk/src/dagger/mod/_module.py\", line \r\n\u001b[23;80H 462, in call\r\n    result = await cast(typing.Awaitable[R], result)\r\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/src/xxh3:a546f7c45b4eb4b7/.dagger/src/engineering_ci_module/plan_result\r\n\u001b[23;80Ht.py\", line 44, in enforce\r\n    raise RuntimeError(\r\n    ...<3 lines>...\r\n    )\r\nRuntimeError: Plan failed: checks_failed (exit 1)\r\n! FunctionError: Plan failed: checks_failed (exit 1)\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    }
+  ]
+}

@@ -1,17 +1,28 @@
-"""Versioned Selection/Plan dependency declarations, not an execution graph.
+"""Versioned Selection/Plan dependency declarations.
 
-The current producer proves post-check policy aggregation only. Data and PASS
-preconditions require the B consumer and are refused rather than ignored here.
+`dependency_contract.schema_version == 1` covers post-check policy aggregation only
+(`policy_only`). `schema_version == 2` adds machine-consumable `pre_execution_pass`
+and `data` dependency edges enforced consistently before affected consumers run.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 PLAN_KIND = "engineering-ci-selection-plan"
 PLAN_VERSION = 2
 DEPENDENCY_VERSION = 1
+SUPPORTED_DEPENDENCY_VERSIONS = frozenset({1, 2})
 SEMANTIC = "prerequisite_policy_aggregation"
+SUPPORTED_SEMANTICS = frozenset({SEMANTIC, "pre_execution_pass", "data_dependency"})
+DEPENDENCY_KINDS = frozenset({"policy_only", "pre_execution_pass", "data"})
+OUTPUT_REF_KINDS = frozenset({"file", "directory"})
+_KIND_SEMANTIC = {
+    "policy_only": SEMANTIC,
+    "pre_execution_pass": "pre_execution_pass",
+    "data": "data_dependency",
+}
 # selection._check_scope emits applicability states and the test Selection's
 # status. Explicit full selection is currently represented as escalated.
 CHECK_SCOPE_STATUSES = frozenset(
@@ -288,6 +299,264 @@ def prerequisite_contract(names, actions, *, declaration, selected_by, reason=No
     }
 
 
+def graph_contract(edges, *, required_semantics=None):
+    """Build a version 2 dependency_contract for policy, PASS, and data edges."""
+    edge_list = list(edges)
+    if required_semantics is None:
+        present = {_KIND_SEMANTIC[e["dependency_kind"]] for e in edge_list}
+        semantics = sorted(present) if present else [SEMANTIC]
+    else:
+        semantics = list(required_semantics)
+    return {
+        "schema_version": 2,
+        "required_semantics": semantics,
+        "edges": edge_list,
+    }
+
+
+def _selected_check_names(value, chosen):
+    scope = value.get("check_scope", chosen.get("check_scope"))
+    if isinstance(scope, list):
+        return {
+            item["name"]
+            for item in scope
+            if isinstance(item, dict)
+            and item.get("status") in {"selected", "unknown"}
+            and isinstance(item.get("name"), str)
+        }
+    checks = chosen.get("checks")
+    return set(checks) if isinstance(checks, list) else set()
+
+
+def _validate_declaration_ref(edge, generator, *, expected_section=None):
+    declaration = edge.get("declaration_ref")
+    if (
+        edge.get("source_binding_ref") != "git"
+        or not isinstance(declaration, dict)
+        or not isinstance(declaration.get("path"), str)
+        or not declaration["path"]
+        or declaration.get("sha256") != generator.get("config_sha256")
+        or not isinstance(declaration.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", declaration["sha256"])
+        or not isinstance(declaration.get("section"), str)
+        or not declaration["section"]
+        or (expected_section is not None and declaration["section"] != expected_section)
+    ):
+        raise PlanError("dependency_binding_invalid")
+
+
+def _validate_action(actions, name, edge):
+    spec = actions.get(name)
+    resolved = _supported_action(spec)
+    if spec is not None and not resolved:
+        raise PlanError("dependency_action_unsupported")
+    if resolved:
+        if spec["type"] == "command":
+            argv = spec.get("argv")
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or any(not isinstance(a, str) or not a for a in argv)
+            ):
+                raise PlanError("dependency_action_parameters_invalid")
+        elif not isinstance(spec.get("commit"), str) or not spec["commit"]:
+            raise PlanError("dependency_action_parameters_invalid")
+    if edge.get("resolution") != ("resolved" if resolved else "unresolved") or edge.get(
+        "unresolved_reason"
+    ) != (None if resolved else "action_parameters_missing"):
+        raise PlanError("dependency_resolution_invalid")
+
+
+def _validate_output_ref(output_ref):
+    if not isinstance(output_ref, dict):
+        raise PlanError("dependency_output_ref_invalid")
+    if output_ref.get("kind") not in OUTPUT_REF_KINDS:
+        raise PlanError("dependency_output_ref_invalid")
+    rel = output_ref.get("path")
+    if (
+        not isinstance(rel, str)
+        or not rel
+        or rel.startswith("/")
+        or "\\" in rel
+        or ".." in Path(rel).parts
+        or rel.endswith("/")
+        or any(part in {"", "."} for part in rel.split("/"))
+    ):
+        raise PlanError("dependency_output_ref_invalid")
+    digest = output_ref.get("sha256")
+    if digest is not None and (
+        not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        raise PlanError("dependency_output_ref_invalid")
+
+
+def _node_key(ref):
+    kind = ref.get("kind")
+    if kind == "tests":
+        return ("tests",)
+    return (kind, ref.get("name"))
+
+
+def _check_cycles(pre_edges):
+    graph = {}
+    for producer, consumer in pre_edges:
+        graph.setdefault(producer, []).append(consumer)
+    state = {}
+
+    def visit(node):
+        mark = state.get(node)
+        if mark == 1:
+            raise PlanError("dependency_cycle_detected")
+        if mark == 2:
+            return
+        state[node] = 1
+        for nxt in graph.get(node, ()):
+            visit(nxt)
+        state[node] = 2
+
+    for node in list(graph):
+        if node not in state:
+            visit(node)
+
+
+def _validate_dependency_v1(contract, names, actions, generator):
+    semantics = contract.get("required_semantics")
+    if not isinstance(semantics, list) or semantics != [SEMANTIC]:
+        raise PlanError("dependency_semantics_unsupported")
+    edges = contract.get("edges")
+    if not isinstance(edges, list):
+        raise PlanError("dependency_edges_invalid")
+    found = []
+    for edge in edges:
+        if not isinstance(edge, dict) or edge.get("dependency_kind") != "policy_only":
+            raise PlanError("dependency_kind_unsupported")
+        producer, consumer = edge.get("producer_ref"), edge.get("consumer_ref")
+        if (
+            not isinstance(producer, dict)
+            or producer.get("kind") != "prerequisite_action"
+            or producer.get("name") not in names
+        ):
+            raise PlanError("dependency_producer_invalid")
+        if consumer != {"kind": "execution_report", "name": "prerequisites"}:
+            raise PlanError("dependency_consumer_unsupported")
+        if (
+            edge.get("requires_pass") is not False
+            or "output_ref" not in edge
+            or edge["output_ref"] is not None
+        ):
+            raise PlanError("dependency_condition_unsupported")
+        _validate_declaration_ref(
+            edge, generator, expected_section=f"prerequisite_actions.{producer['name']}"
+        )
+        if edge.get("execution_phase") != "post_check":
+            raise PlanError("dependency_phase_unsupported")
+        _validate_action(actions, producer["name"], edge)
+        found.append(producer["name"])
+    if sorted(found) != sorted(names):
+        raise PlanError("dependency_inventory_mismatch")
+
+
+def _validate_dependency_v2(value, chosen, contract, names, actions, generator):
+    semantics = contract.get("required_semantics")
+    if (
+        not isinstance(semantics, list)
+        or not semantics
+        or any(
+            not isinstance(item, str) or item not in SUPPORTED_SEMANTICS
+            for item in semantics
+        )
+        or len(set(semantics)) != len(semantics)
+    ):
+        raise PlanError("dependency_semantics_unsupported")
+    edges = contract.get("edges")
+    if not isinstance(edges, list):
+        raise PlanError("dependency_edges_invalid")
+    selected_checks = _selected_check_names(value, chosen)
+    found_prereqs = set()
+    pre_pairs = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise PlanError("dependency_edges_invalid")
+        kind = edge.get("dependency_kind")
+        if not isinstance(kind, str) or kind not in DEPENDENCY_KINDS:
+            raise PlanError("dependency_kind_unsupported")
+        if _KIND_SEMANTIC[kind] not in semantics:
+            raise PlanError("dependency_semantics_unsupported")
+        producer, consumer = edge.get("producer_ref"), edge.get("consumer_ref")
+        if not isinstance(producer, dict):
+            raise PlanError("dependency_producer_invalid")
+        p_kind, p_name = producer.get("kind"), producer.get("name")
+        if p_kind == "prerequisite_action":
+            if p_name not in names:
+                raise PlanError("dependency_producer_invalid")
+            _validate_action(actions, p_name, edge)
+            _validate_declaration_ref(
+                edge, generator, expected_section=f"prerequisite_actions.{p_name}"
+            )
+            found_prereqs.add(p_name)
+        elif p_kind == "check" and kind != "policy_only":
+            if kind == "data":
+                raise PlanError("dependency_producer_unsupported")
+            if not isinstance(p_name, str) or p_name not in selected_checks:
+                raise PlanError("dependency_producer_invalid")
+            if (
+                edge.get("resolution") != "resolved"
+                or edge.get("unresolved_reason") is not None
+            ):
+                raise PlanError("dependency_resolution_invalid")
+            _validate_declaration_ref(edge, generator)
+        else:
+            raise PlanError("dependency_producer_invalid")
+        if not isinstance(consumer, dict):
+            raise PlanError("dependency_consumer_unsupported")
+        if kind == "policy_only":
+            if consumer != {"kind": "execution_report", "name": "prerequisites"}:
+                raise PlanError("dependency_consumer_unsupported")
+            if (
+                edge.get("requires_pass") is not False
+                or "output_ref" not in edge
+                or edge["output_ref"] is not None
+            ):
+                raise PlanError("dependency_condition_unsupported")
+            if edge.get("execution_phase") != "post_check":
+                raise PlanError("dependency_phase_unsupported")
+            continue
+        c_kind = consumer.get("kind")
+        valid_check_consumer = (
+            c_kind == "check"
+            and isinstance(consumer.get("name"), str)
+            and consumer["name"] in selected_checks
+            and set(consumer) == {"kind", "name"}
+        )
+        valid_artifact_consumer = kind == "data" and consumer == {
+            "kind": "execution_report",
+            "name": "artifacts",
+        }
+        if not (
+            (c_kind == "tests" and set(consumer) == {"kind"})
+            or valid_check_consumer
+            or valid_artifact_consumer
+        ):
+            raise PlanError("dependency_consumer_unsupported")
+        if kind == "pre_execution_pass":
+            if (
+                edge.get("requires_pass") is not True
+                or "output_ref" not in edge
+                or edge["output_ref"] is not None
+            ):
+                raise PlanError("dependency_condition_unsupported")
+        else:
+            if type(edge.get("requires_pass")) is not bool:
+                raise PlanError("dependency_condition_unsupported")
+            _validate_output_ref(edge.get("output_ref"))
+        if edge.get("execution_phase") != "pre_execution":
+            raise PlanError("dependency_phase_unsupported")
+        pre_pairs.append((_node_key(producer), _node_key(consumer)))
+    if found_prereqs != set(names):
+        raise PlanError("dependency_inventory_mismatch")
+    _check_cycles(pre_pairs)
+
+
 def validate(value):
     """Common fail-closed rules for CLI, direct Python and Dagger entry points."""
     if not isinstance(value, dict) or value.get("kind") != PLAN_KIND:
@@ -316,17 +585,9 @@ def validate(value):
         return value
     if not isinstance(contract, dict):
         raise PlanError("dependency_contract_missing")
-    if (
-        type(contract.get("schema_version")) is not int
-        or contract["schema_version"] != DEPENDENCY_VERSION
-    ):
+    dep_version = contract.get("schema_version")
+    if type(dep_version) is not int or dep_version not in SUPPORTED_DEPENDENCY_VERSIONS:
         raise PlanError("dependency_schema_unsupported")
-    semantics = contract.get("required_semantics")
-    if not isinstance(semantics, list) or semantics != [SEMANTIC]:
-        raise PlanError("dependency_semantics_unsupported")
-    edges = contract.get("edges")
-    if not isinstance(edges, list):
-        raise PlanError("dependency_edges_invalid")
     names = chosen.get("prerequisites", [])
     if (
         not isinstance(names, list)
@@ -340,61 +601,8 @@ def validate(value):
     generator = value.get("generator")
     if not isinstance(generator, dict):
         raise PlanError("dependency_binding_invalid")
-    found = []
-    for edge in edges:
-        if not isinstance(edge, dict) or edge.get("dependency_kind") != "policy_only":
-            raise PlanError("dependency_kind_unsupported")
-        producer, consumer = edge.get("producer_ref"), edge.get("consumer_ref")
-        if (
-            not isinstance(producer, dict)
-            or producer.get("kind") != "prerequisite_action"
-            or producer.get("name") not in names
-        ):
-            raise PlanError("dependency_producer_invalid")
-        if consumer != {"kind": "execution_report", "name": "prerequisites"}:
-            raise PlanError("dependency_consumer_unsupported")
-        if (
-            edge.get("requires_pass") is not False
-            or "output_ref" not in edge
-            or edge["output_ref"] is not None
-        ):
-            raise PlanError("dependency_condition_unsupported")
-        declaration = edge.get("declaration_ref")
-        if (
-            edge.get("source_binding_ref") != "git"
-            or not isinstance(declaration, dict)
-            or not isinstance(declaration.get("path"), str)
-            or not declaration["path"]
-            or declaration.get("sha256") != generator.get("config_sha256")
-            or not isinstance(declaration.get("sha256"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", declaration["sha256"])
-            or declaration.get("section") != f"prerequisite_actions.{producer['name']}"
-        ):
-            raise PlanError("dependency_binding_invalid")
-        if edge.get("execution_phase") != "post_check":
-            raise PlanError("dependency_phase_unsupported")
-        spec = actions.get(producer["name"])
-        resolved = _supported_action(spec)
-        if spec is not None and not resolved:
-            raise PlanError("dependency_action_unsupported")
-        if resolved:
-            if spec["type"] == "command":
-                argv = spec.get("argv")
-                if (
-                    not isinstance(argv, list)
-                    or not argv
-                    or any(not isinstance(a, str) or not a for a in argv)
-                ):
-                    raise PlanError("dependency_action_parameters_invalid")
-            elif not isinstance(spec.get("commit"), str) or not spec["commit"]:
-                raise PlanError("dependency_action_parameters_invalid")
-        if edge.get("resolution") != (
-            "resolved" if resolved else "unresolved"
-        ) or edge.get("unresolved_reason") != (
-            None if resolved else "action_parameters_missing"
-        ):
-            raise PlanError("dependency_resolution_invalid")
-        found.append(producer["name"])
-    if sorted(found) != sorted(names):
-        raise PlanError("dependency_inventory_mismatch")
+    if dep_version == 1:
+        _validate_dependency_v1(contract, names, actions, generator)
+    else:
+        _validate_dependency_v2(value, chosen, contract, names, actions, generator)
     return value

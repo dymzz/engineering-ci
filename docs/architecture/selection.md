@@ -393,8 +393,40 @@ slice delivers no generated output or trust receipt. Detailed instance scope,
 raw results and remaining handoffs are in the
 [dependency inventory](../verification/plan-dependencies/README.md).
 
-The read-only Dagger API may exit 0 while returning a non-passed Report. Before
-B exposes strict consumers, their native Check/Enforce/CI failure propagation
-must consume both Report status and exit code; an API exit-0/refused-Report
-counterexample must fail that strict entry. A returned Result, especially a
+The read-only Dagger API may exit 0 while returning a non-passed Report.
+`PlanExecution.enforce` now consumes Report status and its original aggregate
+exit code; an API exit-0/refused-Report fails that entry. This is a verdict gate
+on the provided Source computation, not #66 target-Source verification, #63
+evidence admission or #61 Required coverage. A returned Result, especially a
 cached Result, is not proof of a new tool execution in this invocation.
+
+### Native Plan result object (#86 B delivery & v2 dependency closure)
+
+`plan-execution(plan, source)` returns a `PlanExecution` with one real
+`artifacts` Directory. `report` reads its `report.json`; `enforce` checks the
+Report kind/version, status, integer exit and matching `exit-code.txt`, raising
+on failed/blocked/not-executed results. `execute-plan` remains the convenience
+Report API and does not become a strict process gate.
+
+In `selection.py`, optional `[[dependency_edges]]` tables activate active edges
+for selected checks (`check_scope` non-test entries + `tests` when test targets
+exist) and emit `dependency_contract.schema_version = 2`; configurations without
+`[[dependency_edges]]` retain `schema_version = 1` (`policy_only`). Unresolved
+declared actions stay `unresolved`.
+
+In Dagger `plan-execution`, v2 `pre_execution_pass` and `data` edges run
+concurrently before dependent consumers, while independent consumers proceed
+without waiting on unrelated producers. `command` prerequisite actions execute
+under a module-local `/scratch` directory (`execution_location =
+"dagger_module_scratch"`, `result_origin = "module_local_subprocess"`,
+`engine_cached = false`), materialize outputs into immutable Dagger Engine
+`File`/`Directory` objects via `dag.current_module().workdir`/`workdir_file`
+and `sync()`, verify consumer path conflicts/overlaps/digests, overlay them
+onto immutable consumer `Directory` inputs (`tests`, `docs` with container
+`git`/`lychee` fallback via `_exec_capture`, `weaver_*`), and publish them
+under `produced/<kind>/<name>/<rel>`. Host source writes remain refused,
+`#66` receipts, `#87` Trace/Origin attribution, and `#63`/`#61`
+Admission/Required decisions remain separate; remaining applicable producers
+and Native DAG edges belong to follow-up `#86 B`, while `#86 D` refines input
+closure, cache hit/invalidation, and external URL/side-effect policy. See also
+[native result-sharing verification](../verification/plan-result-sharing/README.md).

@@ -44,6 +44,7 @@ _CONFIG_KEYS = {
     "non_code_rules",
     "prerequisites",
     "prerequisite_actions",
+    "dependency_edges",
     "strict_modules",
     "coverage_required",
     "check_scope",
@@ -93,6 +94,7 @@ class Config:
     strict_modules: bool
     coverage_required: bool
     check_scope: CheckScopeConfig
+    dependency_edges: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ class ChangeSet:
     references: tuple[dict, ...] = ()
     base_tip: str | None = None
     source_refusal: str | None = None
+    generated_paths: tuple[str, ...] = ()
 
     @property
     def execution_tree(self):
@@ -157,6 +160,99 @@ def _string_list(value, name):
     if len(set(result)) != len(result):
         raise SelectionError(f"{name}_invalid")
     return tuple(result)
+
+
+def _parse_dependency_edges(raw_edges):
+    if not isinstance(raw_edges, list) or len(raw_edges) > 256:
+        raise SelectionError("dependency_edges_invalid")
+    allowed_keys = {
+        "producer_ref",
+        "consumer_ref",
+        "dependency_kind",
+        "requires_pass",
+        "output_ref",
+    }
+    parsed = []
+    pre_pairs = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict) or set(edge) - allowed_keys:
+            raise SelectionError("dependency_edges_invalid")
+        kind = edge.get("dependency_kind")
+        if kind not in {"pre_execution_pass", "data"}:
+            raise SelectionError("dependency_edges_invalid")
+        producer = edge.get("producer_ref")
+        if (
+            not isinstance(producer, dict)
+            or set(producer) != {"kind", "name"}
+            or producer.get("kind") not in {"prerequisite_action", "check"}
+        ):
+            raise SelectionError("dependency_edges_invalid")
+        p_kind = producer["kind"]
+        p_name = _text(producer["name"], "dependency_producer")
+        if kind == "data" and p_kind != "prerequisite_action":
+            raise SelectionError("dependency_edges_invalid")
+        consumer = edge.get("consumer_ref")
+        if not isinstance(consumer, dict):
+            raise SelectionError("dependency_edges_invalid")
+        c_kind = consumer.get("kind")
+        if c_kind == "tests" and set(consumer) == {"kind"}:
+            normalized_consumer = {"kind": "tests"}
+        elif c_kind == "check" and set(consumer) == {"kind", "name"}:
+            normalized_consumer = {
+                "kind": "check",
+                "name": _text(consumer["name"], "dependency_consumer"),
+            }
+        elif kind == "data" and consumer == {
+            "kind": "execution_report",
+            "name": "artifacts",
+        }:
+            normalized_consumer = {
+                "kind": "execution_report",
+                "name": "artifacts",
+            }
+        else:
+            raise SelectionError("dependency_edges_invalid")
+        if kind == "pre_execution_pass":
+            requires_pass = edge.get("requires_pass", True)
+            if requires_pass is not True or edge.get("output_ref") is not None:
+                raise SelectionError("dependency_edges_invalid")
+            normalized_output = None
+        else:
+            requires_pass = edge.get("requires_pass", True)
+            if type(requires_pass) is not bool:
+                raise SelectionError("dependency_edges_invalid")
+            output_ref = edge.get("output_ref")
+            try:
+                plan_contract._validate_output_ref(output_ref)
+            except plan_contract.PlanError:
+                raise SelectionError("dependency_edges_invalid") from None
+            normalized_output = {
+                "kind": output_ref["kind"],
+                "path": output_ref["path"],
+            }
+            if output_ref.get("sha256") is not None:
+                normalized_output["sha256"] = output_ref["sha256"]
+        normalized_producer = {"kind": p_kind, "name": p_name}
+        parsed.append(
+            {
+                "producer_ref": normalized_producer,
+                "consumer_ref": normalized_consumer,
+                "dependency_kind": kind,
+                "requires_pass": requires_pass,
+                "output_ref": normalized_output,
+            }
+        )
+        pre_pairs.append(
+            (
+                plan_contract._node_key(normalized_producer),
+                plan_contract._node_key(normalized_consumer),
+            )
+        )
+    try:
+        plan_contract._check_cycles(pre_pairs)
+    except plan_contract.PlanError:
+        raise SelectionError("dependency_edges_invalid") from None
+    return tuple(parsed)
 
 
 def load_config(path):
@@ -241,6 +337,7 @@ def load_config(path):
             prerequisite_actions[key] = {"type": kind, "argv": list(argv)}
         else:
             raise SelectionError("prerequisite_type_invalid")
+    dependency_edges = _parse_dependency_edges(value.get("dependency_edges", []))
     checks = _string_list(value.get("checks", ["hygiene", "tach", "vulture"]), "checks")
     strict_modules = value.get("strict_modules", True)
     if type(strict_modules) is not bool:
@@ -304,6 +401,7 @@ def load_config(path):
         strict_modules=strict_modules,
         coverage_required=coverage_required,
         check_scope=check_scope,
+        dependency_edges=dependency_edges,
     )
 
 
@@ -878,7 +976,64 @@ def _rules_for(path, config):
     ]
 
 
-def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=False):
+def _active_check_names(changes, config, root):
+    return {
+        item["name"]
+        for item in _non_test_check_scopes(changes, config, root)
+        if item.get("status") in {"selected", "unknown"}
+    }
+
+
+def _selected_dependency_edges(tests, active_checks, base_prerequisites, config):
+    if not config.dependency_edges:
+        return (), set(base_prerequisites)
+    activated = set(base_prerequisites)
+    primary = []
+    report_edges = []
+    non_report_producers = set()
+    for edge in config.dependency_edges:
+        p_ref = edge["producer_ref"]
+        c_ref = edge["consumer_ref"]
+        p_key = (p_ref["kind"], p_ref["name"])
+        if c_ref["kind"] == "execution_report":
+            report_edges.append(edge)
+            continue
+        non_report_producers.add(p_key)
+        if p_ref["kind"] == "check" and p_ref["name"] not in active_checks:
+            continue
+        consumer_active = (c_ref["kind"] == "tests" and bool(tests)) or (
+            c_ref["kind"] == "check" and c_ref["name"] in active_checks
+        )
+        if not consumer_active:
+            continue
+        primary.append(edge)
+        if p_ref["kind"] == "prerequisite_action":
+            activated.add(p_ref["name"])
+    active = list(primary)
+    has_active_work = bool(tests) or bool(active_checks)
+    for edge in report_edges:
+        p_ref = edge["producer_ref"]
+        p_name = p_ref["name"]
+        p_key = (p_ref["kind"], p_name)
+        if p_name in activated or (
+            p_name not in config.prerequisites
+            and p_key not in non_report_producers
+            and has_active_work
+        ):
+            active.append(edge)
+            activated.add(p_name)
+    return tuple(active), activated
+
+
+def _escalated(
+    changeset, config, tests, reason, reasons=None, *, full_tests=False, root=None
+):
+    base_prereqs = set(config.prerequisites)
+    if config.dependency_edges and root is not None:
+        active_checks = _active_check_names(changeset, config, root)
+        _, base_prereqs = _selected_dependency_edges(
+            tests, active_checks, base_prereqs, config
+        )
     return Selection(
         changeset=changeset,
         tests=tests,
@@ -887,7 +1042,7 @@ def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=Fal
         escalated=True,
         escalation_reason=reason,
         reasons=reasons or {"all": [reason]},
-        prerequisites=frozenset(config.prerequisites),
+        prerequisites=frozenset(base_prereqs),
         full_tests=full_tests,
     )
 
@@ -907,6 +1062,7 @@ def select(changes, config, *, root, full=False):
             all_tests,
             "Explicitly requested full suite",
             full_tests=True,
+            root=root,
         )
     if not changes.complete:
         return _escalated(
@@ -914,6 +1070,7 @@ def select(changes, config, *, root, full=False):
             config,
             all_tests,
             f"Git input could not be resolved: {changes.error}",
+            root=root,
         )
     paths = [_normalized(path) for path in changes.paths]
     if not paths:
@@ -930,13 +1087,21 @@ def select(changes, config, *, root, full=False):
             path.startswith(prefix) for prefix in config.escalation_prefixes
         ):
             return _escalated(
-                changes, config, all_tests, f"Global configuration modified: {path}"
+                changes,
+                config,
+                all_tests,
+                f"Global configuration modified: {path}",
+                root=root,
             )
     try:
         modules, reverse = _tach_graph(root / config.tach)
     except SelectionError as error:
         return _escalated(
-            changes, config, all_tests, f"Tach input unavailable: {error.code}"
+            changes,
+            config,
+            all_tests,
+            f"Tach input unavailable: {error.code}",
+            root=root,
         )
     selected, reasons, changed_modules, unmapped = set(), {}, set(), []
     for path in paths:
@@ -960,6 +1125,7 @@ def select(changes, config, *, root, full=False):
                     config,
                     all_tests,
                     f"Test file deleted or renamed: {path}",
+                    root=root,
                 )
             module = ".".join(Path(path).with_suffix("").parts)
             selected.add(module)
@@ -979,6 +1145,7 @@ def select(changes, config, *, root, full=False):
             all_tests,
             f"Unknown or unmapped path changed: {', '.join(unmapped)}",
             {"all": [f"Unmapped: {path}" for path in unmapped]},
+            root=root,
         )
     if changed_modules:
         impacted = _reverse_closure(changed_modules, reverse)
@@ -992,6 +1159,7 @@ def select(changes, config, *, root, full=False):
                     config,
                     all_tests,
                     f"Python module(s) lack registered test mappings: {', '.join(missing)}",
+                    root=root,
                 )
         for module in sorted(impacted):
             for test in config.module_tests.get(module, ()):
@@ -999,10 +1167,15 @@ def select(changes, config, *, root, full=False):
                 reasons.setdefault(test, []).append(
                     f"Impacted by Python module: {module}"
                 )
-    prerequisites = frozenset(
-        name for name, tests in config.prerequisites.items() if selected & set(tests)
-    )
     ordered = tuple(sorted(selected))
+    prerequisites = {
+        name for name, tests in config.prerequisites.items() if selected & set(tests)
+    }
+    if config.dependency_edges:
+        active_checks = _active_check_names(changes, config, root)
+        _, prerequisites = _selected_dependency_edges(
+            ordered, active_checks, prerequisites, config
+        )
     return Selection(
         changeset=changes,
         tests=ordered,
@@ -1010,7 +1183,7 @@ def select(changes, config, *, root, full=False):
         status="targeted" if ordered else "no_tests",
         escalated=False,
         reasons=reasons,
-        prerequisites=prerequisites,
+        prerequisites=frozenset(prerequisites),
     )
 
 
@@ -1028,37 +1201,27 @@ def _digest(path):
         return None
 
 
-def _check_scope(selection, config, root):
-    """Per-check impact; a documentation-only change still selects Lychee."""
-    paths = [_normalized(path) for path in selection.changeset.paths]
-    if not selection.changeset.complete:
+def _non_test_check_scopes(changes, config, root):
+    paths = [_normalized(path) for path in changes.paths]
+    if not changes.complete:
         return [
             {
-                "name": config.framework,
-                "status": selection.status,
-                "inputs": list(selection.tests),
-                "reason": selection.escalation_reason,
-            },
-            *[
-                {
-                    "name": name,
-                    "status": "unknown",
-                    "inputs": [],
-                    "reason": "git input is incomplete; full applicability unknown",
-                }
-                for name in (
-                    "docs",
-                    "tach",
-                    "vulture",
-                    "source",
-                    *[
-                        check
-                        for check in config.checks
-                        if check
-                        in {"weaver_registry", "weaver_live", "weaver_terminal"}
-                    ],
-                )
-            ],
+                "name": name,
+                "status": "unknown",
+                "inputs": [],
+                "reason": "git input is incomplete; full applicability unknown",
+            }
+            for name in (
+                "docs",
+                "tach",
+                "vulture",
+                "source",
+                *[
+                    check
+                    for check in config.checks
+                    if check in {"weaver_registry", "weaver_live", "weaver_terminal"}
+                ],
+            )
         ]
     docs_changed = sorted(
         path
@@ -1073,12 +1236,6 @@ def _check_scope(selection, config, root):
         path.startswith(config.check_scope.source_prefixes) for path in paths
     )
     scopes = [
-        {
-            "name": config.framework,
-            "status": selection.status,
-            "inputs": list(selection.tests),
-            "reason": selection.escalation_reason,
-        },
         {
             "name": "docs",
             "status": "selected" if docs_changed or removed else "not_applicable",
@@ -1150,6 +1307,19 @@ def _check_scope(selection, config, root):
     return scopes
 
 
+def _check_scope(selection, config, root):
+    """Per-check impact; a documentation-only change still selects Lychee."""
+    return [
+        {
+            "name": config.framework,
+            "status": selection.status,
+            "inputs": list(selection.tests),
+            "reason": selection.escalation_reason,
+        },
+        *_non_test_check_scopes(selection.changeset, config, root),
+    ]
+
+
 def _tach_check(root, config, changes):
     try:
         result = subprocess.run(
@@ -1199,12 +1369,99 @@ def _graph_validation(selection, config, root, value):
     }
 
 
+def _build_dependency_contract(
+    active_edges, effective_prereqs, config, *, declaration, selected_by, reason
+):
+    if not active_edges:
+        return plan_contract.prerequisite_contract(
+            effective_prereqs,
+            config.prerequisite_actions,
+            declaration=declaration,
+            selected_by=selected_by,
+            reason=reason,
+        )
+    edges = []
+    prereqs_with_edges = set()
+    for edge in active_edges:
+        p_ref = dict(edge["producer_ref"])
+        p_kind, p_name = p_ref["kind"], p_ref["name"]
+        if p_kind == "prerequisite_action":
+            prereqs_with_edges.add(p_name)
+            resolved = plan_contract._supported_action(
+                config.prerequisite_actions.get(p_name)
+            )
+            section = f"prerequisite_actions.{p_name}"
+        else:
+            resolved = True
+            section = "dependency_edges"
+        edges.append(
+            {
+                "producer_ref": p_ref,
+                "consumer_ref": dict(edge["consumer_ref"]),
+                "dependency_kind": edge["dependency_kind"],
+                "requires_pass": edge["requires_pass"],
+                "output_ref": (
+                    dict(edge["output_ref"])
+                    if edge.get("output_ref") is not None
+                    else None
+                ),
+                "source_binding_ref": "git",
+                "declaration_ref": {**declaration, "section": section},
+                "selection": {
+                    "selected_by": selected_by,
+                    "escalation_reason": reason,
+                },
+                "execution_phase": "pre_execution",
+                "resolution": "resolved" if resolved else "unresolved",
+                "unresolved_reason": (
+                    None if resolved else "action_parameters_missing"
+                ),
+            }
+        )
+    remaining_prereqs = sorted(effective_prereqs - prereqs_with_edges)
+    if remaining_prereqs:
+        edges.extend(
+            plan_contract.prerequisite_contract(
+                remaining_prereqs,
+                config.prerequisite_actions,
+                declaration=declaration,
+                selected_by=selected_by,
+                reason=reason,
+            )["edges"]
+        )
+    return plan_contract.graph_contract(edges)
+
+
 def plan(selection, *, config, config_path, root, tach_validation=None):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
     tach_path = root / config.tach
     graph = _graph_validation(selection, config, root, tach_validation)
     scope = _check_scope(selection, config, root)
+    active_checks = {
+        item["name"]
+        for item in scope[1:]
+        if item.get("status") in {"selected", "unknown"}
+    }
+    active_edges, effective_prereqs = _selected_dependency_edges(
+        selection.tests, active_checks, selection.prerequisites, config
+    )
+    declaration = {"path": str(config_path), "sha256": _digest(config_path)}
+    selected_by = (
+        "full"
+        if selection.full_tests
+        else "escalated"
+        if selection.escalated
+        else "targeted"
+    )
+    dependency_contract = _build_dependency_contract(
+        active_edges,
+        effective_prereqs,
+        config,
+        declaration=declaration,
+        selected_by=selected_by,
+        reason=selection.escalation_reason,
+    )
     content_binding = (
         worktree_content_binding(root, selection.changeset.paths)
         if selection.changeset.snapshot == "worktree" and selection.changeset.paths
@@ -1219,17 +1476,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
-        "dependency_contract": plan_contract.prerequisite_contract(
-            selection.prerequisites,
-            config.prerequisite_actions,
-            declaration={"path": str(config_path), "sha256": _digest(config_path)},
-            selected_by="full"
-            if selection.full_tests
-            else "escalated"
-            if selection.escalated
-            else "targeted",
-            reason=selection.escalation_reason,
-        ),
+        "dependency_contract": dependency_contract,
         "generator": {
             "name": "engineering-ci",
             "version": _version(),
@@ -1262,7 +1509,7 @@ def plan(selection, *, config, config_path, root, tach_validation=None):
             "status": selection.status,
             "tests": list(selection.tests),
             "checks": list(selection.checks),
-            "prerequisites": sorted(selection.prerequisites),
+            "prerequisites": sorted(effective_prereqs),
             "escalated": selection.escalated,
             "escalation_reason": selection.escalation_reason,
             "full_tests": selection.full_tests,

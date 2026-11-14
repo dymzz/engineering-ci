@@ -28,6 +28,12 @@ Both convenience interfaces own a run: do not invoke them sequentially to
 collect the same suite. Use `python_test_artifacts()` for CI delivery instead.
 The existing real Dagger fixtures also consume one materialized execution.
 
+Plan-selected pytest now uses the same `_run_pytest/_pytest_bundle` path.
+Its `PlanExecution` stores the resulting Directory; Report, Artifact and Enforce
+read that reference without another scan. Exact Plan targets are recorded,
+including mixed module/file targets, and remain distinct from whole-project
+coverage. See [Plan execution](../selection.md#native-plan-result-object-first-86-b-delivery).
+
 ## Opt-in reusable workflow
 
 Expose a function in the caller Dagger module which returns the result bundle.

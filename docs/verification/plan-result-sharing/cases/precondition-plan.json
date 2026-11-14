@@ -1,0 +1,36 @@
+{
+  "kind": "engineering-ci-selection-plan",
+  "schema_version": 2,
+  "generator": {
+    "config_sha256": "48ae453929775caeff14a046b13f55e2d67f2286088d809bc2db0f08ac58bb32"
+  },
+  "git": {
+    "snapshot": "worktree"
+  },
+  "selection": {
+    "tests": [
+      "tests.test_controlled"
+    ],
+    "framework": "unittest",
+    "prerequisites": [],
+    "requires_tach_check": true,
+    "full_tests": false,
+    "tach_graph_validation": {
+      "status": "not_executed"
+    }
+  },
+  "check_scope": [
+    {
+      "name": "weaver_registry",
+      "status": "selected"
+    }
+  ],
+  "prerequisite_actions": {},
+  "dependency_contract": {
+    "schema_version": 1,
+    "required_semantics": [
+      "prerequisite_policy_aggregation"
+    ],
+    "edges": []
+  }
+}

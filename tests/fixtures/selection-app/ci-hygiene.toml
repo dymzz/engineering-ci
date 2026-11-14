@@ -7,7 +7,7 @@ excluded_prefixes = ["docs/archive/"]
 
 [lychee]
 executable = "lychee"
-arguments = ["--offline", "--no-progress", "--files-from", "-"]
+arguments = ["--offline", "--no-progress"]
 
 [forwarding]
 source_prefix = "src/"
