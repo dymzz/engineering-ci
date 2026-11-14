@@ -12,8 +12,8 @@ Pipeline Run identity (ECI #75 / PR #77 review P2-2):
 - Each GitHub Actions *Attempt* is one distinct pipeline execution (own Trace).
 - SemConv `cicd.pipeline.run.id` is the stable canonical form
   `{github_run_id}/{run_attempt}` — same value on Resource, Pipeline Span, and
-  Task Span correlation. Raw GitHub Run ID and Attempt remain in facts and as
-  the `github.actions.run_attempt` extension (not a Required SemConv attribute).
+  Task/Log correlation. Raw GitHub Run ID and Attempt remain in facts and the
+  independent Source Witness; no unregistered Attempt attribute is exported.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 # Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
 ID_SCHEME = "github-actions-attempt-sha256-v1"
 # Groups this producer maps. Not an official Required judgment and not a
@@ -83,15 +83,7 @@ ATTR_TASK_RUN_URL = "cicd.pipeline.task.run.url.full"
 ATTR_TASK_RUN_RESULT = "cicd.pipeline.task.run.result"
 ATTR_ERROR_TYPE = "error.type"
 ATTR_VCS_HEAD_REVISION = "vcs.ref.head.revision"
-
-# GitHub-native fact until the fixed SemConv registry confirms an official key.
-ATTR_GITHUB_RUN_ATTEMPT = "github.actions.run_attempt"
-ATTR_GITHUB_REPOSITORY = "github.repository"
-# ECI extension attributes (not official SemConv Required keys).
-ATTR_ECI_END_TIME_QUALITY = "eci.cicd.end_time_quality"
-ATTR_ECI_EXACT_RUN_DURATION = "eci.cicd.exact_run_duration"
-ATTR_ECI_DURATION_VALID_FOR_METRICS = "eci.cicd.duration_valid_for_metrics"
-ATTR_ECI_ROOT_EMISSION = "eci.cicd.root_emission"
+ATTR_VCS_REPOSITORY_URL = "vcs.repository.url.full"
 
 # Justified GitHub conclusion → SemConv cicd.*.result only.
 # Native GitHub values remain in facts.*; neutral/action_required/stale stay
@@ -143,6 +135,8 @@ class GitHubRunFacts:
     # Native Attempt `status` from GitHub API (e.g. completed / in_progress).
     # Required for observed_upper_bound Root; never invent from conclusion alone.
     run_status: str | None = None
+    # Canonical browser URL from repository.html_url or explicit mapping.
+    repository_url: str | None = None
 
     @property
     def has_run_identity(self):
@@ -283,7 +277,7 @@ def facts_from_actions_env(env=None):
         or _text(env, "JOB_CONCLUSION"),
         head_sha=_text(env, "GITHUB_SHA"),
         repository=_text(env, "GITHUB_REPOSITORY"),
-        server_url=_text(env, "GITHUB_SERVER_URL") or "https://github.com",
+        server_url=_text(env, "GITHUB_SERVER_URL"),
         run_started_at_ns=parse_time_ns(_text(env, "ENGINEERING_CI_RUN_STARTED_AT")),
         run_completed_at_ns=parse_time_ns(
             _text(env, "ENGINEERING_CI_RUN_COMPLETED_AT")
@@ -322,7 +316,8 @@ def facts_from_mapping(value):
         job_conclusion=_text(value, "job_conclusion"),
         head_sha=_text(value, "head_sha"),
         repository=_text(value, "repository"),
-        server_url=_text(value, "server_url") or "https://github.com",
+        server_url=_text(value, "server_url"),
+        repository_url=_text(value, "repository_url"),
         run_started_at_ns=parse_time_ns(
             value.get("run_started_at_ns", value.get("run_started_at"))
         ),
@@ -341,6 +336,85 @@ def facts_from_mapping(value):
         run_url=_text(value, "run_url"),
         run_status=_text(value, "run_status"),
     )
+
+
+def _repository_web_url(value):
+    """Validate a GitHub browser URL, without guessing a public GitHub host."""
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or parts.query
+            or parts.fragment
+            or re.search(r"[\s\\]", value)
+        ):
+            raise ValueError
+        # Access validates malformed/out-of-range ports too.
+        _ = parts.port
+    except (TypeError, ValueError):
+        raise TelemetryError("repository_url_invalid") from None
+    return parts
+
+
+def _repository_identity(facts):
+    """Bind owner/repo to supplied server/repository/Run browser URL sources.
+
+    This verifies internal source agreement, not authenticated GitHub provenance.
+    A bare owner/repo never invents an origin. Conflicting sources refuse export.
+    """
+    identity = {
+        "repository": facts.repository,
+        "url": None,
+        "sources": [],
+        "authenticated": False,
+    }
+    if not facts.repository:
+        return {**identity, "status": "not_observable", "reason": "repository_missing"}
+    if (
+        not isinstance(facts.repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", facts.repository)
+        or any(part in {".", ".."} for part in facts.repository.split("/"))
+    ):
+        raise TelemetryError("repository_invalid")
+    origins = []
+    canonical = None
+    for field in ("server_url", "repository_url", "run_url"):
+        value = getattr(facts, field)
+        if value is None:
+            continue
+        parts = _repository_web_url(value)
+        path = parts.path.rstrip("/")
+        if field == "server_url":
+            valid_path = not path
+        elif field == "repository_url":
+            valid_path = path.lower() == f"/{facts.repository}".lower()
+            canonical = value.rstrip("/")
+        else:
+            run_path = f"/{facts.repository}/actions/runs/{facts.run_id}"
+            valid_path = path.lower() in {
+                run_path.lower(),
+                f"{run_path}/attempts/{facts.run_attempt}".lower(),
+            }
+        if not valid_path:
+            raise TelemetryError("repository_url_mismatch")
+        origins.append(f"{parts.scheme}://{parts.netloc.lower()}")
+        identity["sources"].append({"field": field, "value": value})
+    if len(set(origins)) > 1:
+        raise TelemetryError("repository_host_mismatch")
+    if not origins:
+        return {
+            **identity,
+            "status": "not_observable",
+            "reason": "repository_origin_missing",
+        }
+    return {
+        **identity,
+        "status": "mapped",
+        "url": canonical or f"{origins[0]}/{facts.repository}",
+    }
 
 
 def _status_code(result):
@@ -872,6 +946,7 @@ def produce(
             },
             "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
             "id_scheme": ID_SCHEME,
+            "attribute_contract": "registered-attributes-with-candidate-provenance-v1",
         },
         "status": "incomplete",
         "reason": None,
@@ -945,15 +1020,16 @@ def produce(
         return report
 
     pipeline_run_id = facts.pipeline_run_id
+    repository_identity = _repository_identity(facts)
+    report["repository_identity"] = repository_identity
     resource = {
         ATTR_PIPELINE_NAME: facts.workflow_name,
         ATTR_PIPELINE_RUN_ID: pipeline_run_id,
-        ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
     }
     if facts.run_url:
         resource[ATTR_PIPELINE_RUN_URL] = facts.run_url
-    if facts.repository:
-        resource[ATTR_GITHUB_REPOSITORY] = facts.repository
+    if repository_identity["url"]:
+        resource[ATTR_VCS_REPOSITORY_URL] = repository_identity["url"]
     if facts.head_sha:
         resource[ATTR_VCS_HEAD_REVISION] = facts.head_sha
     report["resource"] = resource
@@ -1058,14 +1134,8 @@ def produce(
             ATTR_PIPELINE_RUN_ID: pipeline_run_id,
             ATTR_PIPELINE_RUN_URL: facts.run_url,
             ATTR_PIPELINE_RESULT: run_result,
-            ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
             ATTR_VCS_HEAD_REVISION: facts.head_sha,
             ATTR_ERROR_TYPE: run_error_type,
-            # ECI extensions for Terminal consumers; not official SemConv.
-            ATTR_ECI_END_TIME_QUALITY: time_precision,
-            ATTR_ECI_EXACT_RUN_DURATION: time_precision == TIME_PRECISION_EXACT_INPUT,
-            ATTR_ECI_DURATION_VALID_FOR_METRICS: duration_valid_for_metrics,
-            ATTR_ECI_ROOT_EMISSION: root_emission,
         }
         spans.append(
             _span(
@@ -1156,7 +1226,6 @@ def produce(
             ATTR_TASK_RUN_RESULT: job_result,
             ATTR_TASK_RUN_URL: job_facts.job_url,
             ATTR_PIPELINE_RUN_ID: pipeline_run_id,
-            ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
             ATTR_ERROR_TYPE: job_error_type,
         }
         spans.append(
@@ -1309,13 +1378,8 @@ def produce(
                         ATTR_PIPELINE_RUN_ID: pipeline_run_id,
                         ATTR_PIPELINE_RUN_URL: facts.run_url,
                         ATTR_PIPELINE_RESULT: run_result,
-                        ATTR_GITHUB_RUN_ATTEMPT: facts.run_attempt,
                         ATTR_VCS_HEAD_REVISION: facts.head_sha,
                         ATTR_ERROR_TYPE: run_error_type,
-                        ATTR_ECI_END_TIME_QUALITY: time_precision,
-                        ATTR_ECI_EXACT_RUN_DURATION: False,
-                        ATTR_ECI_DURATION_VALID_FOR_METRICS: False,
-                        ATTR_ECI_ROOT_EMISSION: "approximate_root",
                     },
                 ),
             )
@@ -1935,14 +1999,13 @@ def build_job_terminal_log_records(report):
                 "severity_number": severity_number,
                 "severity_text": severity_text,
                 "body": body,
+                "source": "github_job_terminal",
                 "attributes": {
                     ATTR_TASK_NAME: attrs.get(ATTR_TASK_NAME),
                     ATTR_TASK_RUN_ID: attrs.get(ATTR_TASK_RUN_ID),
                     ATTR_TASK_RUN_RESULT: result,
                     ATTR_TASK_RUN_URL: attrs.get(ATTR_TASK_RUN_URL),
                     ATTR_PIPELINE_RUN_ID: attrs.get(ATTR_PIPELINE_RUN_ID),
-                    ATTR_GITHUB_RUN_ATTEMPT: attrs.get(ATTR_GITHUB_RUN_ATTEMPT),
-                    "eci.log.source": "github_job_terminal",
                 },
                 "trace_id": span.get("trace_id"),
                 "span_id": span.get("span_id"),
@@ -1974,16 +2037,17 @@ def _attempt_terminal_log(report):
                 "GitHub Attempt terminal confirmed; "
                 "pipeline end time is an unbound observation, not a span end"
             ),
+            "source": "github_attempt_terminal",
             "attributes": {
                 ATTR_PIPELINE_RUN_ID: resource.get(ATTR_PIPELINE_RUN_ID),
-                ATTR_GITHUB_RUN_ATTEMPT: facts.get("run_attempt"),
-                "eci.log.source": "github_attempt_terminal",
-                "eci.cicd.time_role": "terminal_observed_at",
-                "eci.cicd.root_emission": "not_emitted",
-                "eci.cicd.end_lower_bound_ns": terminal.get("end_lower_bound_ns"),
-                "eci.cicd.end_upper_bound_ns": terminal.get("end_upper_bound_ns"),
-                "eci.cicd.uncertainty_ns": terminal.get("uncertainty_ns"),
-                "eci.cicd.parent_span_exported": False,
+            },
+            "terminal_provenance": {
+                "time_role": "terminal_observed_at",
+                "root_emission": "not_emitted",
+                "end_lower_bound_ns": terminal.get("end_lower_bound_ns"),
+                "end_upper_bound_ns": terminal.get("end_upper_bound_ns"),
+                "uncertainty_ns": terminal.get("uncertainty_ns"),
+                "parent_span_exported": False,
             },
             "trace_id": trace_id,
             "span_id": span_id,
@@ -2163,7 +2227,6 @@ def to_otlp_logs_json(report):
 _RUN_LEVEL_METRIC_ATTRS = (
     ATTR_PIPELINE_RUN_ID,
     ATTR_PIPELINE_RUN_URL,
-    ATTR_GITHUB_RUN_ATTEMPT,
     ATTR_VCS_HEAD_REVISION,
 )
 
@@ -2356,12 +2419,10 @@ def decode_otlp_metrics_request(payload):
 
 
 def _server_url_from_html(html):
-    if not isinstance(html, str) or not html.startswith("http"):
-        return "https://github.com"
-    parts = urlsplit(html)
-    if parts.scheme and parts.netloc:
-        return f"{parts.scheme}://{parts.netloc}"
-    return "https://github.com"
+    if html is None:
+        return None
+    parts = _repository_web_url(html)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def facts_from_github_api_objects(run, job=None):
@@ -2382,7 +2443,8 @@ def facts_from_github_api_objects(run, job=None):
         repository = remote.get("full_name")
     repository = repository or run.get("repository_full_name")
     html = run.get("html_url")
-    server = _server_url_from_html(html)
+    repository_url = remote.get("html_url") if isinstance(remote, dict) else None
+    server = _server_url_from_html(html or repository_url)
     attempt = run.get("run_attempt")
     if attempt is not None and type(attempt) is not int:
         try:
@@ -2412,6 +2474,7 @@ def facts_from_github_api_objects(run, job=None):
         job_conclusion=job_conclusion,
         head_sha=run.get("head_sha"),
         repository=repository,
+        repository_url=repository_url,
         server_url=server,
         run_started_at_ns=parse_time_ns(run.get("run_started_at")),
         # Never fabricate exact completed-at from updated_at.
@@ -2893,24 +2956,27 @@ def main(argv=None):
         terminal_observed_at_ns = None
     if args.max_end_uncertainty_ns is not None and args.max_end_uncertainty_ns < 0:
         parser.exit(2, "cicd-telemetry rejected: max_end_uncertainty_invalid\n")
-    report = produce(
-        facts,
-        source=source,
-        github_api_fetched=github_api_fetched,
-        completed_jobs_total=completed_jobs_total,
-        job_selection=job_selection,
-        task_facts=task_facts,
-        jobs_observed_total=jobs_observed_total,
-        noncompleted_jobs_total=noncompleted_jobs_total,
-        terminal_status=args.terminal_status,
-        terminal_observed_at_ns=terminal_observed_at_ns,
-        end_time_mode=args.end_time_mode,
-        event_status=args.event_status,
-        event_conclusion=args.event_conclusion,
-        expected_job_stubs=expected_job_stubs,
-        max_end_uncertainty_ns=args.max_end_uncertainty_ns,
-        api_jobs_snapshot=api_jobs_snapshot if github_api_fetched else None,
-    )
+    try:
+        report = produce(
+            facts,
+            source=source,
+            github_api_fetched=github_api_fetched,
+            completed_jobs_total=completed_jobs_total,
+            job_selection=job_selection,
+            task_facts=task_facts,
+            jobs_observed_total=jobs_observed_total,
+            noncompleted_jobs_total=noncompleted_jobs_total,
+            terminal_status=args.terminal_status,
+            terminal_observed_at_ns=terminal_observed_at_ns,
+            end_time_mode=args.end_time_mode,
+            event_status=args.event_status,
+            event_conclusion=args.event_conclusion,
+            expected_job_stubs=expected_job_stubs,
+            max_end_uncertainty_ns=args.max_end_uncertainty_ns,
+            api_jobs_snapshot=api_jobs_snapshot if github_api_fetched else None,
+        )
+    except TelemetryError as error:
+        parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
     attach_signal_candidates(report)
     attach_otlp_json(report)
     try:
