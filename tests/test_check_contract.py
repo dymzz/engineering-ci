@@ -786,6 +786,22 @@ def test_expected_coverage_requires_terminal_native_result():
     assert decision["status"] == "unsatisfied"
     assert decision["reason"] == "expected_coverage_unproven"
     assert not check_contract.results_cover_expected([inventory, links], expected)
+    # A per-requirement proof may describe producer inventory, but cannot
+    # suppress an independently declared terminal scan coverage obligation.
+    assert check_contract.results_cover_expected(
+        [inventory, links],
+        {
+            **{key: value for key, value in expected.items() if key != "coverage"},
+            "coverage_by_requirement": {"inventory": coverage},
+        },
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, links],
+        {
+            **expected,
+            "coverage_by_requirement": {"inventory": coverage},
+        },
+    )
     with pytest.raises(
         check_contract.CheckContractError,
         match="expected_coverage_requirement_unknown",
