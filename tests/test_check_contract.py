@@ -578,6 +578,75 @@ def test_composed_docs_result_matches_one_expected_not_the_whole_expected_set():
     assert not check_contract.results_cover_expected([inventory, unlinked], expected)
 
 
+
+def test_failed_native_result_cannot_supply_missing_expected_coverage():
+    definition = check_contract.definition_for("docs")
+    checked = closed_source()
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {
+        "kind": "data",
+        "path": "docs/guide.md",
+        "sha256": "b" * 64,
+    }
+    inventory = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+    )
+    links = check_contract.native_result(
+        definition,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[
+            {"kind": "check_result", "result_id": inventory["result_id"]}
+        ],
+        evidence={"stdout": "ok"},
+    )
+    failed = check_contract.native_result(
+        definition,
+        source=checked,
+        status="failed",
+        result_origin="host",
+        result_instance="failed-links",
+        native_exit_code=1,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[required_input],
+        coverage={"paths": ["docs/guide.md"]},
+        evidence={"stderr": "bad link"},
+    )
+    expected = {
+        "check_id": definition.check_id,
+        "definition_version": definition.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "input_refs": [required_input],
+    }
+    assert not check_contract.results_cover_expected(
+        [inventory, links, failed], expected
+    )
+    assert not check_contract.results_cover_expected(
+        [inventory, links, failed],
+        {
+            **expected,
+            "input_refs": [],
+            "coverage": {"paths": ["docs/guide.md"]},
+        },
+    )
+
+
+
 def test_composed_result_contract_preserves_single_native_check_semantics():
     definition = check_contract.definition_for("tach")
     checked = closed_source()
