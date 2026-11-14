@@ -621,3 +621,360 @@ def test_final_aggregate_includes_host_failures_after_native_collection(
     assert report[group][-1]["exit_code"] == 23
     with pytest.raises(RuntimeError):
         asyncio.run(saved.enforce())
+
+
+def _v2_dagger_plan(
+    *,
+    edges,
+    prerequisites,
+    actions,
+    tests=("tests.controlled",),
+    checks=("weaver_registry",),
+):
+    scope = [{"name": name, "status": "selected"} for name in checks]
+    return {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"config_sha256": "a" * 64},
+        "git": {"snapshot": "worktree"},
+        "selection": {
+            "tests": list(tests),
+            "checks": list(checks),
+            "check_scope": scope,
+            "prerequisites": list(prerequisites),
+        },
+        "check_scope": scope,
+        "prerequisite_actions": actions,
+        "dependency_contract": plan_contract.graph_contract(edges),
+    }
+
+
+def _v2_decl(name):
+    return {
+        "path": "ci-selection.toml",
+        "sha256": "a" * 64,
+        "section": f"prerequisite_actions.{name}",
+    }
+
+
+def test_v2_invalid_dependency_contract_refuses_before_source_export(modules):
+    _, collector = modules
+    plan = _v2_dagger_plan(
+        edges=[
+            {
+                "producer_ref": {"kind": "check", "name": "weaver_registry"},
+                "consumer_ref": {"kind": "check", "name": "weaver_registry"},
+                "dependency_kind": "pre_execution_pass",
+                "requires_pass": True,
+                "output_ref": None,
+                "source_binding_ref": "git",
+                "declaration_ref": {
+                    "path": "ci-selection.toml",
+                    "sha256": "a" * 64,
+                    "section": "checks.weaver_registry",
+                },
+                "execution_phase": "pre_execution",
+                "resolution": "resolved",
+                "unresolved_reason": None,
+            }
+        ],
+        prerequisites=[],
+        actions={},
+        tests=[],
+        checks=["weaver_registry"],
+    )
+
+    class Source:
+        async def export(self, path):
+            pytest.fail("cyclic v2 plan exported Source")
+
+    saved = asyncio.run(
+        collector.execute(
+            object(), MemoryFile(json.dumps(plan)), Source(), "3.14", "ci-weaver.toml"
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["reason"] == "dependency_cycle_detected"
+    assert report["plan_declaration_consistent"] is False
+    with pytest.raises(RuntimeError):
+        asyncio.run(saved.enforce())
+
+
+@pytest.mark.parametrize("prep_exit,weaver_status", [(2, "passed"), (0, "passed")])
+def test_v2_pre_execution_pass_gates_only_dependent_dagger_consumer(
+    modules, prep_exit, weaver_status
+):
+    _, collector = modules
+    actions = {
+        "prep": {
+            "type": "command",
+            "argv": [sys.executable, "-c", f"raise SystemExit({prep_exit})"],
+        }
+    }
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "prep"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "pre_execution_pass",
+            "requires_pass": True,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("prep"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    plan = _v2_dagger_plan(edges=edges, prerequisites=["prep"], actions=actions)
+
+    class Native(NativeDouble):
+        def _uv_container(self, source, version):
+            if prep_exit != 0:
+                pytest.fail(
+                    "dependent _uv_container started after failed pre_execution_pass"
+                )
+            self.calls.append("tests")
+            return self
+
+        async def exit_code(self):
+            return 0
+
+        async def weaver_artifacts(self, source, kind, config):
+            self.calls.append("weaver")
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": weaver_status,
+                            "exit_code": 0,
+                        }
+                    ),
+                    "native.log": "independent witness",
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert "weaver" in native.calls
+    assert report["checks"][0]["status"] == "passed"
+    assert (
+        asyncio.run(
+            saved.artifacts.file("checks/weaver_registry/native.log").contents()
+        )
+        == "independent witness"
+    )
+    if prep_exit != 0:
+        assert "tests" not in native.calls
+        assert report["tests"]["status"] == "not_executed"
+        assert report["tests"]["reason"] == "pre_execution_prerequisite_failed"
+        assert (
+            report["status"] == "failed" and report["reason"] == "prerequisites_failed"
+        )
+        with pytest.raises(RuntimeError):
+            asyncio.run(saved.enforce())
+    else:
+        assert "tests" in native.calls
+        assert report["tests"]["status"] == "passed"
+        assert report["status"] == "passed" and report["exit_code"] == 0
+        asyncio.run(saved.enforce())
+
+
+@pytest.mark.parametrize("output_kind", ["file", "directory"])
+def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
+    modules, output_kind
+):
+    _, collector = modules
+    import hashlib
+
+    manifest = '{"derived": true}\n'
+    writer = (
+        "import os; from pathlib import Path; "
+        "d = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'generated'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        f"(d / 'manifest.json').write_bytes({manifest!r}.encode('utf-8'))"
+    )
+    output_ref = (
+        {
+            "kind": "file",
+            "path": "generated/manifest.json",
+            "sha256": hashlib.sha256(manifest.encode("utf-8")).hexdigest(),
+        }
+        if output_kind == "file"
+        else {"kind": "directory", "path": "generated"}
+    )
+    actions = {"gen": {"type": "command", "argv": [sys.executable, "-c", writer]}}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": output_ref,
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    plan = _v2_dagger_plan(edges=edges, prerequisites=["gen"], actions=actions)
+
+    class Native(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.test_source = None
+            self.weaver_source = None
+
+        def _uv_container(self, source, version):
+            self.test_source = source
+            return self
+
+        async def exit_code(self):
+            return 0
+
+        async def weaver_artifacts(self, source, kind, config):
+            self.weaver_source = source
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed" and report["exit_code"] == 0
+    assert report["source_handoff"]["generated_outputs_delivered"] is True
+    assert report["artifact_closure"][0]["verified"] is True
+    assert "generated/manifest.json" in native.test_source.files
+    assert "generated/manifest.json" not in native.weaver_source.files
+    assert (
+        asyncio.run(saved.artifacts.file("produced/generated/manifest.json").contents())
+        == manifest
+    )
+    asyncio.run(saved.enforce())
+
+
+def test_v2_data_dependency_passed_verdict_without_materialized_file_blocks(modules):
+    _, collector = modules
+    actions = {"gen": {"type": "command", "argv": [sys.executable, "-c", "pass"]}}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": "generated/manifest.json"},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    plan = _v2_dagger_plan(edges=edges, prerequisites=["gen"], actions=actions)
+
+    class Native(NativeDouble):
+        def _uv_container(self, *args):
+            pytest.fail("Verdict passed without File/Directory started consumer")
+
+        async def weaver_artifacts(self, *args):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    saved = asyncio.run(
+        collector.execute(
+            Native(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "blocked" and report["exit_code"] == 5
+    assert report["reason"] == "data_artifact_missing"
+    assert report["tests"]["status"] == "not_executed"
+    assert report["artifact_closure"][0]["verified"] is False
+    assert report["source_handoff"]["generated_outputs_delivered"] is False
+    assert report["checks"][0]["status"] == "passed"
+    with pytest.raises(RuntimeError):
+        asyncio.run(saved.enforce())
+
+
+def test_v2_host_direct_mutation_of_exported_source_still_fails(modules):
+    _, collector = modules
+    actions = {
+        "mutate": {
+            "type": "command",
+            "argv": [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('mutated.txt').write_text('bad')",
+            ],
+        }
+    }
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "mutate"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "pre_execution_pass",
+            "requires_pass": True,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("mutate"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    plan = _v2_dagger_plan(
+        edges=edges, prerequisites=["mutate"], actions=actions, checks=[]
+    )
+
+    class Native(NativeDouble):
+        def _uv_container(self, *args):
+            return self
+
+        async def exit_code(self):
+            return 0
+
+    saved = asyncio.run(
+        collector.execute(
+            Native(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["reason"] == "exported_source_changed" and report["exit_code"] == 4
+    assert report["source_handoff"]["generated_outputs_delivered"] is False
+    with pytest.raises(RuntimeError):
+        asyncio.run(saved.enforce())

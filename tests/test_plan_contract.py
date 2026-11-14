@@ -376,3 +376,407 @@ def test_versioned_actions_cannot_be_replaced_after_validation(tmp_path):
     alternate["probe"]["argv"] = ["other"]
     report = execution.execute(value, root=tmp_path, prerequisite_actions=alternate)
     assert report["reason"] == "dependency_action_override_mismatch"
+
+
+def _decl(name):
+    return {
+        "path": "ci-selection.toml",
+        "sha256": "a" * 64,
+        "section": f"prerequisite_actions.{name}",
+    }
+
+
+def _v2_plan(*, edges, prerequisites, actions, tests=(), checks=(), semantics=None):
+    scope = [{"name": name, "status": "selected"} for name in checks]
+    return {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"config_sha256": "a" * 64},
+        "git": {"snapshot": "worktree"},
+        "selection": {
+            "tests": list(tests),
+            "checks": list(checks),
+            "check_scope": scope,
+            "prerequisites": list(prerequisites),
+        },
+        "check_scope": scope,
+        "prerequisite_actions": actions,
+        "dependency_contract": plan_contract.graph_contract(
+            edges, required_semantics=semantics
+        ),
+    }
+
+
+def _v2_invalid_cases():
+    base_actions = {
+        "prep": {"type": "command", "argv": [sys.executable, "-c", "pass"]},
+    }
+    good_edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "prep"},
+        "consumer_ref": {"kind": "tests"},
+        "dependency_kind": "pre_execution_pass",
+        "requires_pass": True,
+        "output_ref": None,
+        "source_binding_ref": "git",
+        "declaration_ref": _decl("prep"),
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    cases = []
+
+    def make_plan():
+        return _v2_plan(
+            edges=[copy.deepcopy(good_edge)],
+            prerequisites=["prep"],
+            actions=copy.deepcopy(base_actions),
+            tests=["tests.controlled"],
+            checks=["docs", "source"],
+        )
+
+    def mut(fn):
+        def apply():
+            p = make_plan()
+            fn(p)
+            return p
+
+        return apply
+
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"].update(required_semantics=["future"])
+            ),
+            "dependency_semantics_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"].update(
+                    required_semantics=["prerequisite_policy_aggregation"]
+                )
+            ),
+            "dependency_semantics_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"]["edges"][0].update(
+                    execution_phase="post_check"
+                )
+            ),
+            "dependency_phase_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"]["edges"][0].update(
+                    requires_pass=False
+                )
+            ),
+            "dependency_condition_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"]["edges"][0].update(
+                    consumer_ref={"kind": "check", "name": "missing_check"}
+                )
+            ),
+            "dependency_consumer_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(
+                lambda p: p["dependency_contract"]["edges"][0].update(
+                    consumer_ref={"kind": "execution_report", "name": "artifacts"}
+                )
+            ),
+            "dependency_consumer_unsupported",
+        )
+    )
+    cases.append(
+        (
+            mut(lambda p: p["selection"].update(prerequisites=["prep", "extra"])),
+            "dependency_inventory_mismatch",
+        )
+    )
+    for bad_path in ("../escape.txt", "/abs.txt", r"win\path.txt", ""):
+        cases.append(
+            (
+                mut(
+                    lambda p, bp=bad_path: (
+                        p["dependency_contract"].update(
+                            required_semantics=["data_dependency"]
+                        ),
+                        p["dependency_contract"]["edges"][0].update(
+                            dependency_kind="data",
+                            output_ref={"kind": "file", "path": bp},
+                        ),
+                    )
+                ),
+                "dependency_output_ref_invalid",
+            )
+        )
+    cases.append(
+        (
+            mut(
+                lambda p: (
+                    p["dependency_contract"].update(
+                        required_semantics=["data_dependency"]
+                    ),
+                    p["dependency_contract"]["edges"][0].update(
+                        dependency_kind="data",
+                        output_ref={"kind": "file", "path": "ok.txt", "sha256": "xyz"},
+                    ),
+                )
+            ),
+            "dependency_output_ref_invalid",
+        )
+    )
+
+    # Cycle: check docs <-> source
+    def cyclic_plan():
+        e1 = {
+            "producer_ref": {"kind": "check", "name": "docs"},
+            "consumer_ref": {"kind": "check", "name": "source"},
+            "dependency_kind": "pre_execution_pass",
+            "requires_pass": True,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": {
+                "path": "ci-selection.toml",
+                "sha256": "a" * 64,
+                "section": "checks.docs",
+            },
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        e2 = copy.deepcopy(e1)
+        e2["producer_ref"] = {"kind": "check", "name": "source"}
+        e2["consumer_ref"] = {"kind": "check", "name": "docs"}
+        return _v2_plan(
+            edges=[e1, e2], prerequisites=[], actions={}, checks=["docs", "source"]
+        )
+
+    cases.append((cyclic_plan, "dependency_cycle_detected"))
+    return cases
+
+
+@pytest.mark.parametrize("build_plan,reason", _v2_invalid_cases())
+def test_v2_dependency_contract_refuses_before_consumers_start(
+    tmp_path, monkeypatch, capsys, build_plan, reason
+):
+    _assert_refused_before_consumers(
+        build_plan(), reason, tmp_path, monkeypatch, capsys
+    )
+
+
+def test_v2_pre_execution_pass_and_policy_ordering(tmp_path, monkeypatch):
+    actions = {
+        "prep": {"type": "command", "argv": ["prep"]},
+        "policy": {"type": "command", "argv": ["policy"]},
+    }
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "prep"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "pre_execution_pass",
+            "requires_pass": True,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": _decl("prep"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "policy"},
+            "consumer_ref": {"kind": "execution_report", "name": "prerequisites"},
+            "dependency_kind": "policy_only",
+            "requires_pass": False,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": _decl("policy"),
+            "execution_phase": "post_check",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        },
+    ]
+    value = _v2_plan(
+        edges=edges,
+        prerequisites=["prep", "policy"],
+        actions=actions,
+        tests=["tests.controlled"],
+    )
+    order = []
+    from subprocess import CompletedProcess
+
+    monkeypatch.setattr(
+        execution.selection, "run_tests", lambda *a, **k: order.append("tests") or 0
+    )
+    report = execution.execute(
+        value,
+        root=tmp_path,
+        runner=lambda argv, *a: order.append(argv[0]) or CompletedProcess(argv, 0),
+    )
+    assert report["status"] == "passed" and report["exit_code"] == 0
+    assert order == ["prep", "tests", "policy"]
+
+
+def test_v2_failed_pre_execution_pass_blocks_dependent_only_while_peer_runs(
+    tmp_path, monkeypatch
+):
+    actions = {
+        "prep": {"type": "command", "argv": ["prep"]},
+    }
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "prep"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "pre_execution_pass",
+            "requires_pass": True,
+            "output_ref": None,
+            "source_binding_ref": "git",
+            "declaration_ref": _decl("prep"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+    ]
+    value = _v2_plan(
+        edges=edges,
+        prerequisites=["prep"],
+        actions=actions,
+        tests=["tests.controlled"],
+        checks=["source"],
+    )
+    (tmp_path / "ci-sources.toml").write_text("schema_version = 1\n", encoding="utf-8")
+    from subprocess import CompletedProcess
+
+    monkeypatch.setattr(
+        execution.selection,
+        "run_tests",
+        lambda *a, **k: pytest.fail("blocked tests started after failed prerequisite"),
+    )
+    monkeypatch.setattr(
+        execution.sources,
+        "load_config",
+        lambda p: object(),
+    )
+    monkeypatch.setattr(
+        execution.sources,
+        "reconcile",
+        lambda *a, **k: (
+            execution.sources.ReconcileReport(
+                status="passed", counts={"checked": 1}, failures=[]
+            )
+            if hasattr(execution.sources, "ReconcileReport")
+            else type(
+                "R", (), {"status": "passed", "counts": {"checked": 1}, "failures": []}
+            )()
+        ),
+    )
+    report = execution.execute(
+        value,
+        root=tmp_path,
+        runner=lambda argv, *a: CompletedProcess(argv, 1, "", "prep failed"),
+    )
+    assert report["status"] == "failed"
+    assert report["reason"] == "prerequisites_failed"
+    assert report["tests"]["status"] == "not_executed"
+    assert report["tests"]["reason"] == "pre_execution_prerequisite_failed"
+    assert report["checks"][0]["name"] == "source"
+    assert report["checks"][0]["status"] == "passed"
+
+
+def test_v2_data_dependency_closure_passes_with_digest_and_refuses_missing_artifact(
+    tmp_path, monkeypatch
+):
+    import os
+    from pathlib import Path
+
+    payload_text = '{"schema": 1}\n'
+    expected_sha = hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+    writer_code = (
+        "import os; from pathlib import Path; "
+        "out = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'generated' / 'manifest.json'; "
+        "out.parent.mkdir(parents=True, exist_ok=True); "
+        f"out.write_bytes({payload_text!r}.encode('utf-8'))"
+    )
+    actions_ok = {
+        "gen": {"type": "command", "argv": [sys.executable, "-c", writer_code]}
+    }
+    edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+        "consumer_ref": {"kind": "tests"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": {
+            "kind": "file",
+            "path": "generated/manifest.json",
+            "sha256": expected_sha,
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": _decl("gen"),
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    seen_env = []
+    monkeypatch.setattr(
+        execution.selection,
+        "run_tests",
+        lambda *a, **k: (
+            seen_env.append(
+                (
+                    Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"])
+                    / "generated"
+                    / "manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            or 0
+        ),
+    )
+
+    plan_ok = _v2_plan(
+        edges=[edge],
+        prerequisites=["gen"],
+        actions=actions_ok,
+        tests=["tests.controlled"],
+    )
+    report_ok = execution.execute(plan_ok, root=tmp_path)
+    assert report_ok["status"] == "passed" and report_ok["exit_code"] == 0
+    assert report_ok["artifact_closure"][0]["verified"] is True
+    assert report_ok["artifact_closure"][0]["sha256"] == expected_sha
+    assert seen_env == [payload_text]
+    assert not (tmp_path / "generated").exists()
+
+    # Verdict == passed WITHOUT writing derived file still blocks consumer!
+    actions_missing = {
+        "gen": {"type": "command", "argv": [sys.executable, "-c", "pass"]}
+    }
+    plan_missing = _v2_plan(
+        edges=[edge],
+        prerequisites=["gen"],
+        actions=actions_missing,
+        tests=["tests.controlled"],
+    )
+    monkeypatch.setattr(
+        execution.selection,
+        "run_tests",
+        lambda *a, **k: pytest.fail(
+            "consumer started when derived artifact was missing"
+        ),
+    )
+    report_missing = execution.execute(plan_missing, root=tmp_path)
+    assert report_missing["status"] == "blocked" and report_missing["exit_code"] == 5
+    assert report_missing["reason"] == "data_artifact_missing"
+    assert report_missing["tests"]["status"] == "not_executed"
+    assert report_missing["artifact_closure"][0]["verified"] is False

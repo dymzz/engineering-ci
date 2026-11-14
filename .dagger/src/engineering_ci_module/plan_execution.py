@@ -37,6 +37,18 @@ def _aggregate(report):
                 report.update(status="failed", exit_code=code or 1, reason=reason)
                 return report
 
+    for item in checks:
+        contract = item.get("check_contract")
+        if isinstance(contract, dict) and contract.get("status") not in {
+            "valid",
+            "not_started",
+        }:
+            report.update(
+                status="blocked",
+                exit_code=5,
+                reason="check_contract_invalid",
+            )
+            return report
     pending = []
     if report.get("targets") or tests.get("reason"):
         pending.append(tests)
@@ -50,6 +62,14 @@ def _aggregate(report):
                 # unexecuted prerequisite itself failed. Keep it in the child.
                 exit_code=nonzero(item, ("gate_exit_code",)) or 5,
                 reason=item.get("reason") or "required_checks_not_executed",
+            )
+            return report
+    for entry in report.get("artifact_closure") or ():
+        if not entry.get("verified"):
+            report.update(
+                status="blocked",
+                exit_code=5,
+                reason=entry.get("reason") or "data_artifact_missing",
             )
             return report
     report.update(status="passed", exit_code=0, reason=None)
@@ -220,10 +240,332 @@ async def _native_results(
     return artifacts
 
 
+def _overlay_files(target_dir, artifact_root, rel_paths):
+    """Materialize isolated derived files onto an immutable Directory copy."""
+    updated = target_dir
+    for rel in sorted(set(rel_paths)):
+        content = (artifact_root / rel).read_text(encoding="utf-8")
+        updated = updated.with_new_file(rel, content)
+    return updated
+
+
+def _bundle_produced(artifacts, artifact_root, rel_paths):
+    updated = artifacts
+    for rel in sorted(set(rel_paths)):
+        content = (artifact_root / rel).read_text(encoding="utf-8")
+        updated = updated.with_new_file("produced/" + rel, content)
+    return updated
+
+
+def _host_adapter_plan(value, selected_host_checks):
+    import copy
+
+    host_plan = copy.deepcopy(value)
+    host_plan.setdefault("selection", {})
+    host_plan["selection"] = dict(host_plan["selection"])
+    host_plan["selection"]["tests"] = []
+    host_plan["git"] = dict(host_plan.get("git") or {})
+    # This is only the Host adapter's filesystem view. Preserve the
+    # original Git identity in source_handoff, and do not claim an
+    # exported Directory has the original ODB or verified full Tree.
+    host_plan["git"]["execution_tree"] = None
+    host_plan["git"]["index_tree"] = None
+    host_plan["git"]["content_binding"] = None
+    host_plan["git"]["snapshot"] = "worktree"
+    host_plan["check_scope"] = list(selected_host_checks)
+    host_plan["selection"]["checks"] = [
+        item["name"] for item in selected_host_checks if item.get("name")
+    ]
+    return host_plan
+
+
+async def _execute_dag(
+    module,
+    source,
+    value,
+    directory,
+    selected_checks,
+    prerequisites,
+    report,
+    artifacts,
+    python_version,
+    weaver_config,
+    exported_content_id,
+):
+    """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
+    import tempfile
+    import uuid
+    from pathlib import Path
+
+    from engineering_ci import execution, selection
+
+    chosen = value.get("selection") or {}
+    targets = chosen.get("tests") or []
+    framework = chosen.get("framework", "unittest")
+    actions = execution._prerequisite_actions(value, None)
+    incoming = execution.pre_execution_edges(value)
+    weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
+    host_checks = [
+        item for item in selected_checks if item.get("name") not in weaver_checks
+    ]
+    host_plan = _host_adapter_plan(value, host_checks)
+    selected_by_name = {item.get("name"): item for item in selected_checks}
+    run_instance = uuid.uuid4().hex
+    closure_records = []
+    produced_files = []
+
+    with tempfile.TemporaryDirectory() as artifact_dir:
+        artifact_root = Path(artifact_dir)
+        tasks = {}
+
+        async def resolve_incoming(consumer_key):
+            edges = incoming.get(consumer_key, ())
+            if not edges:
+                return None, [], []
+            upstream = await asyncio.gather(
+                *(
+                    ensure(("prerequisite_action", e["producer_ref"]["name"]))
+                    if e["producer_ref"]["kind"] == "prerequisite_action"
+                    else ensure(("check_result", e["producer_ref"]["name"]))
+                    for e in edges
+                ),
+                return_exceptions=True,
+            )
+            block_reasons = []
+            blocked_by = []
+            files = []
+            for edge, producer_out in zip(edges, upstream, strict=True):
+                if isinstance(producer_out, BaseException):
+                    if not isinstance(producer_out, Exception):
+                        raise producer_out
+                    reason = "pre_execution_prerequisite_not_executed"
+                    block_reasons.append(reason)
+                    blocked_by.append(
+                        {"producer_ref": edge["producer_ref"], "reason": reason}
+                    )
+                    continue
+                producer_entry = (
+                    producer_out[0] if isinstance(producer_out, tuple) else producer_out
+                )
+                ok, reason, closure = execution.evaluate_edge(
+                    edge, producer_entry, artifact_root=artifact_root
+                )
+                if closure is not None:
+                    closure_records.append(closure)
+                    if closure.get("verified"):
+                        files.extend(closure.get("materialized_files") or ())
+                        produced_files.extend(closure.get("materialized_files") or ())
+                if not ok:
+                    block_reasons.append(reason)
+                    blocked_by.append(
+                        {"producer_ref": edge["producer_ref"], "reason": reason}
+                    )
+            return (block_reasons[0] if block_reasons else None), blocked_by, files
+
+        async def compute_node(node_key):
+            kind = node_key[0]
+            if kind == "prerequisite_action":
+                name = node_key[1]
+                return await asyncio.to_thread(
+                    execution.run_prerequisite_action,
+                    name,
+                    actions.get(name),
+                    root=Path(directory),
+                    execution_context="dagger_export",
+                    artifact_root=artifact_root,
+                )
+            if kind == "check_result":
+                name = node_key[1]
+                item = selected_by_name[name]
+                block_reason, blocked_by, files = await resolve_incoming(
+                    ("check", name)
+                )
+                if block_reason is not None:
+                    entry = execution._blocked_consumer_entry(
+                        name, item.get("status"), block_reason, blocked_by
+                    )
+                    if name not in weaver_checks:
+                        entry = execution._decorate_checks(
+                            host_plan,
+                            [entry],
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                        )[0]
+                    return entry, None, {}
+                if name in weaver_checks:
+                    consumer_source = _overlay_files(source, artifact_root, files)
+                    native, check_files, metadata = await _weaver(
+                        module,
+                        consumer_source,
+                        value,
+                        directory,
+                        item,
+                        weaver_config,
+                        report["source_tree_verified"],
+                    )
+                    return native, check_files, metadata
+                entry = await asyncio.to_thread(
+                    execution.run_host_check,
+                    host_plan,
+                    item,
+                    root=Path(directory),
+                    execution_context="dagger_export",
+                    run_instance=run_instance,
+                )
+                return entry, None, {}
+            if kind == "tests":
+                block_reason, blocked_by, files = await resolve_incoming("tests")
+                requirement = execution.test_requirement_failure(value)
+                if requirement:
+                    return (
+                        {
+                            "tests": {
+                                "status": "not_executed",
+                                "exit_code": None,
+                                "reason": requirement,
+                            }
+                        },
+                        None,
+                    )
+                if block_reason is not None:
+                    return (
+                        {
+                            "tests": {
+                                "status": "not_executed",
+                                "exit_code": None,
+                                "reason": block_reason,
+                                "blocked_by": blocked_by,
+                            }
+                        },
+                        None,
+                    )
+                consumer_source = _overlay_files(source, artifact_root, files)
+                return await _tests(
+                    module, consumer_source, targets, framework, python_version
+                )
+            if kind == "report_artifacts":
+                await resolve_incoming(("report", "artifacts"))
+                return None
+
+        def ensure(node_key):
+            if node_key not in tasks:
+                tasks[node_key] = asyncio.create_task(compute_node(node_key))
+            return tasks[node_key]
+
+        scheduled = []
+        native_branches = []
+        if targets:
+            scheduled.append(("tests", ensure(("tests",))))
+            native_branches.append("tests")
+        for item in selected_checks:
+            name = item.get("name")
+            scheduled.append((("check", name), ensure(("check_result", name))))
+            if name in weaver_checks:
+                native_branches.append(name)
+        for name in prerequisites:
+            scheduled.append((("prereq", name), ensure(("prerequisite_action", name))))
+        if ("report", "artifacts") in incoming:
+            scheduled.append((("report", "artifacts"), ensure(("report_artifacts",))))
+
+        outputs = await asyncio.gather(
+            *(task for _, task in scheduled), return_exceptions=True
+        )
+        for (slot, _), output in zip(scheduled, outputs, strict=True):
+            if slot == "tests":
+                if isinstance(output, BaseException):
+                    if not isinstance(output, Exception):
+                        raise output
+                    report["tests"] = {
+                        "status": "not_executed",
+                        "exit_code": None,
+                        "reason": "native_execution_error",
+                        "error_type": type(output).__name__,
+                        "diagnostic": str(output),
+                    }
+                else:
+                    payload, test_files = output
+                    report.update(payload)
+                    if test_files is not None:
+                        artifacts = artifacts.with_directory("tests", test_files)
+            elif isinstance(slot, tuple) and slot[0] == "check":
+                name = slot[1]
+                if isinstance(output, BaseException):
+                    if not isinstance(output, Exception):
+                        raise output
+                    report["checks"].append(
+                        {
+                            "name": name,
+                            "status": "not_executed",
+                            "exit_code": None,
+                            "reason": "native_execution_error",
+                            "error_type": type(output).__name__,
+                            "diagnostic": str(output),
+                        }
+                    )
+                else:
+                    native, check_files, metadata = output
+                    report.update(metadata)
+                    report["checks"].append(native)
+                    if check_files is not None:
+                        artifacts = artifacts.with_directory(
+                            "checks/" + name, check_files
+                        )
+            elif isinstance(slot, tuple) and slot[0] == "prereq":
+                if isinstance(output, BaseException):
+                    if not isinstance(output, Exception):
+                        raise output
+                    report["prerequisites"].append(
+                        {
+                            "name": slot[1],
+                            "status": "not_executed",
+                            "reason": "native_execution_error",
+                            "diagnostic": str(output),
+                        }
+                    )
+                else:
+                    report["prerequisites"].append(output)
+
+        if produced_files:
+            artifacts = _bundle_produced(artifacts, artifact_root, produced_files)
+        if closure_records:
+            closure_records.sort(
+                key=lambda entry: (
+                    entry["producer_ref"].get("kind", ""),
+                    entry["producer_ref"].get("name", ""),
+                    entry["output_ref"].get("path", ""),
+                )
+            )
+            report["artifact_closure"] = closure_records
+            report["source_handoff"]["generated_outputs_delivered"] = all(
+                entry["verified"] for entry in closure_records
+            )
+
+        report["result_sharing"] = {
+            "scope": "this_result_bundle",
+            "native_branches": native_branches,
+            "origin_execution_attributed": False,
+        }
+        after_host = selection.directory_content_id(directory)
+        report["source_handoff"]["after_host_content_id"] = after_host
+        if after_host != exported_content_id:
+            report.update(
+                status="not_executed",
+                reason="exported_source_changed",
+                exit_code=4,
+                tree_verified=False,
+                source_tree_verified="failed_after_host_action",
+            )
+            report["source_handoff"]["generated_outputs_delivered"] = False
+            report["source_handoff"]["native_results_source"] = (
+                "immutable_input_before_host_action"
+            )
+            return report, artifacts, True
+    return report, artifacts, False
+
+
 async def execute(module, plan, source, python_version, weaver_config) -> PlanExecution:
     """Execute plan targets and preserve one complete native result bundle."""
     artifacts = dag.directory()
-    import copy
     import tempfile
 
     from engineering_ci import execution, plan_contract, selection
@@ -345,6 +687,25 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 "original_git_snapshot_preserved": True,
             },
         }
+        if execution.pre_execution_edges(value):
+            report, artifacts, mutated = await _execute_dag(
+                module,
+                source,
+                value,
+                directory,
+                selected_checks,
+                prerequisites,
+                report,
+                artifacts,
+                python_version,
+                weaver_config,
+                exported_content_id,
+            )
+            if mutated:
+                return make_result(report, artifacts)
+            _aggregate(report)
+            return make_result(report, artifacts)
+
         artifacts = await _native_results(
             module,
             source,
@@ -357,29 +718,13 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             weaver_config,
         )
         if selected_checks or prerequisites:
-            check_plan = copy.deepcopy(value)
-            check_plan.setdefault("selection", {})
-            check_plan["selection"] = dict(check_plan["selection"])
-            check_plan["selection"]["tests"] = []
-            check_plan["git"] = dict(check_plan.get("git") or {})
-            # This is only the Host adapter's filesystem view. Preserve the
-            # original Git identity in source_handoff, and do not claim an
-            # exported Directory has the original ODB or verified full Tree.
-            check_plan["git"]["execution_tree"] = None
-            check_plan["git"]["index_tree"] = None
-            check_plan["git"]["content_binding"] = None
-            check_plan["git"]["snapshot"] = "worktree"
             weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
-            check_plan["check_scope"] = [
+            host_checks = [
                 item
                 for item in selected_checks
                 if item.get("name") not in weaver_checks
             ]
-            check_plan["selection"]["checks"] = [
-                name
-                for name in check_plan["selection"].get("checks", [])
-                if name not in weaver_checks
-            ]
+            check_plan = _host_adapter_plan(value, host_checks)
             host = (
                 execution.execute(
                     check_plan, root=directory, execution_context="dagger_export"

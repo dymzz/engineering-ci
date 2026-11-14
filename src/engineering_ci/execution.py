@@ -11,7 +11,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -328,151 +331,284 @@ def test_requirement_failure(plan):
     return None
 
 
-def _run_prerequisites(names, actions, *, root, runner, execution_context="host"):
-    results = []
-    failed = False
-    for name in names:
-        spec = actions.get(name)
-        if not isinstance(spec, dict) or not spec.get("type"):
-            results.append(
-                {
-                    "name": name,
-                    "status": "not_executed",
-                    "reason": "prerequisite_parameters_missing",
-                }
-            )
-            continue
-        kind = spec.get("type")
-        if kind == "git_commit_present":
-            commit = spec.get("commit")
-            if not isinstance(commit, str) or not commit:
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "not_executed",
-                        "reason": "prerequisite_parameters_missing",
-                    }
-                )
-                continue
-            # An exported Directory is not the original Git object database.
-            # Do not query an enclosing repository or label missing context as
-            # a genuinely absent Commit. #66 owns an authenticated handoff.
-            odb = (
-                selection._git(root, "rev-parse", "--show-toplevel")
-                if execution_context == "host"
-                else None
-            )
-            if (
-                odb is None
-                or odb.returncode != 0
-                or Path(odb.stdout.strip()).resolve() != root.resolve()
-            ):
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "not_executed",
-                        "reason": "git_odb_unavailable_or_unbound",
-                        "commit": commit,
-                        "execution_context": execution_context,
-                        "result_origin": "git_context_probe"
-                        if odb is not None
-                        else "dagger_export_boundary",
-                        "exit_code": odb.returncode if odb is not None else None,
-                        "stdout": odb.stdout if odb is not None else "",
-                        "stderr": odb.stderr if odb is not None else "",
-                    }
-                )
-                continue
-            probe = selection._git(root, "cat-file", "-e", f"{commit}^{{commit}}")
-            if probe.returncode == 0:
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "passed",
-                        "commit": commit,
-                        "git_odb_root": odb.stdout.strip(),
-                        "execution_context": execution_context,
-                        "result_origin": "git_cat_file",
-                        "exit_code": probe.returncode,
-                        "stdout": probe.stdout,
-                        "stderr": probe.stderr,
-                    }
-                )
-            else:
-                failed = True
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "failed",
-                        "reason": "identity_commit_missing",
-                        "commit": commit,
-                        "git_odb_root": odb.stdout.strip(),
-                        "execution_context": execution_context,
-                        "result_origin": "git_cat_file",
-                        "exit_code": probe.returncode,
-                        "stdout": probe.stdout,
-                        "stderr": probe.stderr,
-                    }
-                )
-            continue
-        if kind == "command":
-            argv = spec.get("argv")
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or any(not isinstance(item, str) for item in argv)
-            ):
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "not_executed",
-                        "reason": "prerequisite_parameters_missing",
-                    }
-                )
-                continue
-            command_runner = runner or hygiene._run
-            try:
-                completed = command_runner(list(argv), root)
-            except TypeError:
-                completed = command_runner(list(argv), root, None)
-            if completed.returncode == 0:
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "passed",
-                        "exit_code": 0,
-                        "argv": list(argv),
-                    }
-                )
-            else:
-                failed = True
-                results.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "status": "failed",
-                        "reason": "prerequisite_command_failed",
-                        "exit_code": completed.returncode,
-                        "argv": list(argv),
-                        "stdout": getattr(completed, "stdout", "") or "",
-                        "stderr": getattr(completed, "stderr", "") or "",
-                    }
-                )
-            continue
-        results.append(
-            {
+def _run_command(argv, root, *, runner=None, artifact_root=None):
+    rendered = [
+        arg.replace("{artifact_dir}", str(artifact_root))
+        if artifact_root is not None
+        else arg
+        for arg in argv
+    ]
+    if runner is not None:
+        try:
+            return runner(list(rendered), root), rendered
+        except TypeError:
+            return runner(list(rendered), root, None), rendered
+    if artifact_root is None:
+        return hygiene._run(rendered, root), rendered
+    env = os.environ.copy()
+    env["ENGINEERING_CI_ARTIFACT_DIR"] = str(artifact_root)
+    try:
+        completed = subprocess.run(
+            [str(item) for item in rendered],
+            cwd=root,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        completed = subprocess.CompletedProcess(
+            rendered, 127, "", f"missing executable: {rendered[0]}"
+        )
+    return completed, rendered
+
+
+def verify_artifact_output(artifact_root, output_ref):
+    """Verify isolated derived File/Directory artifact existence and digest."""
+    kind = output_ref["kind"]
+    rel = output_ref["path"]
+    expected = output_ref.get("sha256")
+    base_result = {
+        "kind": kind,
+        "path": rel,
+        "expected_sha256": expected,
+        "sha256": None,
+        "files": [],
+    }
+    if artifact_root is None:
+        return {**base_result, "ok": False, "reason": "data_artifact_missing"}
+    root_path = Path(artifact_root).resolve()
+    target = (root_path / rel).resolve()
+    if not target.is_relative_to(root_path):
+        return {**base_result, "ok": False, "reason": "data_artifact_path_invalid"}
+    cursor = root_path
+    for part in Path(rel).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            return {**base_result, "ok": False, "reason": "data_artifact_symlink"}
+    if not target.exists():
+        return {**base_result, "ok": False, "reason": "data_artifact_missing"}
+    if kind == "file":
+        if not target.is_file():
+            return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
+        digest = check_contract.file_digest(target)
+        files = [Path(rel).as_posix()]
+    else:
+        if not target.is_dir():
+            return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
+        files = []
+        for entry in sorted(
+            target.rglob("*"), key=lambda item: item.relative_to(target).as_posix()
+        ):
+            if entry.is_symlink():
+                return {**base_result, "ok": False, "reason": "data_artifact_symlink"}
+            if entry.is_file():
+                files.append(entry.relative_to(root_path).as_posix())
+        digest = selection.directory_content_id(target)
+    if expected is not None and digest != expected:
+        return {
+            **base_result,
+            "ok": False,
+            "reason": "data_artifact_digest_mismatch",
+            "sha256": digest,
+            "files": files,
+        }
+    return {
+        **base_result,
+        "ok": True,
+        "reason": None,
+        "sha256": digest,
+        "files": files,
+    }
+
+
+def edge_node_key(ref):
+    kind = ref.get("kind")
+    if kind == "tests":
+        return "tests"
+    return (kind, ref.get("name"))
+
+
+def pre_execution_edges(plan):
+    contract = plan.get("dependency_contract")
+    if not isinstance(contract, dict) or contract.get("schema_version") != 2:
+        return {}
+    grouped = {}
+    for edge in contract.get("edges") or ():
+        if edge.get("execution_phase") == "pre_execution":
+            grouped.setdefault(edge_node_key(edge["consumer_ref"]), []).append(edge)
+    return grouped
+
+
+def evaluate_edge(edge, producer_result, *, artifact_root=None):
+    """Evaluate PASS and derived-artifact closure for one pre-execution edge."""
+    if edge.get("resolution") == "unresolved":
+        return False, "prerequisite_unresolved", None
+    status = (producer_result or {}).get("status")
+    if edge.get("requires_pass") and status != "passed":
+        reason = (
+            "pre_execution_prerequisite_not_executed"
+            if status == "not_executed"
+            else "pre_execution_prerequisite_failed"
+        )
+        return False, reason, None
+    if edge["dependency_kind"] == "data":
+        closure = verify_artifact_output(artifact_root, edge["output_ref"])
+        entry = {
+            "producer_ref": edge["producer_ref"],
+            "consumer_ref": edge["consumer_ref"],
+            "output_ref": edge["output_ref"],
+            "verified": closure["ok"],
+            "reason": closure["reason"],
+            "sha256": closure["sha256"],
+            "materialized_files": closure["files"],
+        }
+        if not closure["ok"]:
+            return False, closure["reason"], entry
+        return True, None, entry
+    return True, None, None
+
+
+def run_prerequisite_action(
+    name,
+    spec,
+    *,
+    root,
+    runner=None,
+    execution_context="host",
+    artifact_root=None,
+):
+    if not isinstance(spec, dict) or not spec.get("type"):
+        return {
+            "name": name,
+            "status": "not_executed",
+            "reason": "prerequisite_parameters_missing",
+        }
+    kind = spec.get("type")
+    if kind == "git_commit_present":
+        commit = spec.get("commit")
+        if not isinstance(commit, str) or not commit:
+            return {
                 "name": name,
                 "type": kind,
                 "status": "not_executed",
-                "reason": "prerequisite_type_unsupported",
+                "reason": "prerequisite_parameters_missing",
             }
+        # An exported Directory is not the original Git object database.
+        # Do not query an enclosing repository or label missing context as
+        # a genuinely absent Commit. #66 owns an authenticated handoff.
+        odb = (
+            selection._git(root, "rev-parse", "--show-toplevel")
+            if execution_context == "host"
+            else None
         )
+        if (
+            odb is None
+            or odb.returncode != 0
+            or Path(odb.stdout.strip()).resolve() != root.resolve()
+        ):
+            return {
+                "name": name,
+                "type": kind,
+                "status": "not_executed",
+                "reason": "git_odb_unavailable_or_unbound",
+                "commit": commit,
+                "execution_context": execution_context,
+                "result_origin": "git_context_probe"
+                if odb is not None
+                else "dagger_export_boundary",
+                "exit_code": odb.returncode if odb is not None else None,
+                "stdout": odb.stdout if odb is not None else "",
+                "stderr": odb.stderr if odb is not None else "",
+            }
+        probe = selection._git(root, "cat-file", "-e", f"{commit}^{{commit}}")
+        if probe.returncode == 0:
+            return {
+                "name": name,
+                "type": kind,
+                "status": "passed",
+                "commit": commit,
+                "git_odb_root": odb.stdout.strip(),
+                "execution_context": execution_context,
+                "result_origin": "git_cat_file",
+                "exit_code": probe.returncode,
+                "stdout": probe.stdout,
+                "stderr": probe.stderr,
+            }
+        return {
+            "name": name,
+            "type": kind,
+            "status": "failed",
+            "reason": "identity_commit_missing",
+            "commit": commit,
+            "git_odb_root": odb.stdout.strip(),
+            "execution_context": execution_context,
+            "result_origin": "git_cat_file",
+            "exit_code": probe.returncode,
+            "stdout": probe.stdout,
+            "stderr": probe.stderr,
+        }
+    if kind == "command":
+        argv = spec.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or any(not isinstance(item, str) for item in argv)
+        ):
+            return {
+                "name": name,
+                "type": kind,
+                "status": "not_executed",
+                "reason": "prerequisite_parameters_missing",
+            }
+        completed, rendered = _run_command(
+            argv, root, runner=runner, artifact_root=artifact_root
+        )
+        if completed.returncode == 0:
+            return {
+                "name": name,
+                "type": kind,
+                "status": "passed",
+                "exit_code": 0,
+                "argv": list(rendered),
+            }
+        return {
+            "name": name,
+            "type": kind,
+            "status": "failed",
+            "reason": "prerequisite_command_failed",
+            "exit_code": completed.returncode,
+            "argv": list(rendered),
+            "stdout": getattr(completed, "stdout", "") or "",
+            "stderr": getattr(completed, "stderr", "") or "",
+        }
+    return {
+        "name": name,
+        "type": kind,
+        "status": "not_executed",
+        "reason": "prerequisite_type_unsupported",
+    }
+
+
+def _run_prerequisites(
+    names, actions, *, root, runner, execution_context="host", artifact_root=None
+):
+    results = []
+    failed = False
+    for name in names:
+        item = run_prerequisite_action(
+            name,
+            actions.get(name),
+            root=root,
+            runner=runner,
+            execution_context=execution_context,
+            artifact_root=artifact_root,
+        )
+        if item.get("status") == "failed":
+            failed = True
+        results.append(item)
     return results, failed
 
 
@@ -608,6 +744,318 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
     return checks
 
 
+def run_host_check(
+    plan,
+    item,
+    *,
+    root,
+    hygiene_config=None,
+    sources_config=None,
+    runner=None,
+    execution_context="host",
+    run_instance=None,
+):
+    """Run one selected Host check (hygiene or source) with contract decoration."""
+    name = item.get("name")
+    run_instance = run_instance or uuid.uuid4().hex
+    if name in _HYGIENE_CHECKS:
+        results, _ = _run_hygiene_checks(
+            plan, [item], root=root, hygiene_config=hygiene_config, runner=runner
+        )
+        raw = results or [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "hygiene_check_missing",
+            }
+        ]
+    elif name == "source":
+        result, _ = _run_source_check(
+            plan, [item], root=root, sources_config=sources_config, runner=runner
+        )
+        raw = [result] if result is not None else []
+    else:
+        raw = [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "no native check execution wired",
+            }
+        ]
+    decorated = _decorate_checks(
+        plan, raw, execution_context=execution_context, run_instance=run_instance
+    )
+    return decorated[0]
+
+
+def _blocked_consumer_entry(name, selected_status, reason, blocked_by):
+    return {
+        "name": name,
+        "selected": selected_status,
+        "status": "not_executed",
+        "exit_code": None,
+        "reason": reason,
+        "execution_started": False,
+        "execution_kind": "not_started",
+        "blocked_by": blocked_by,
+    }
+
+
+def _execute_with_dependencies(
+    plan,
+    *,
+    root,
+    junit_path,
+    hygiene_config,
+    sources_config,
+    actions,
+    execution_context,
+    runner,
+    run_instance,
+    expected_tree,
+    report,
+):
+    chosen = plan["selection"]
+    tests = tuple(chosen["tests"])
+    framework = chosen.get("framework", "unittest")
+    selected = _selected_checks(plan)
+    prerequisites = list(chosen.get("prerequisites", []))
+    selected_by_name = {item.get("name"): item for item in selected}
+    incoming = pre_execution_edges(plan)
+    prereq_cache = {}
+    check_cache = {}
+    closure_records = []
+
+    with tempfile.TemporaryDirectory() as artifact_dir:
+        artifact_root = Path(artifact_dir)
+
+        def ensure_prereq(name):
+            if name not in prereq_cache:
+                prereq_cache[name] = run_prerequisite_action(
+                    name,
+                    actions.get(name),
+                    root=root,
+                    runner=runner,
+                    execution_context=execution_context,
+                    artifact_root=artifact_root,
+                )
+            return prereq_cache[name]
+
+        def resolve_incoming(consumer_key):
+            edges = incoming.get(consumer_key, ())
+            block_reasons = []
+            blocked_by = []
+            for edge in edges:
+                p_ref = edge["producer_ref"]
+                p_kind, p_name = p_ref["kind"], p_ref["name"]
+                if p_kind == "prerequisite_action":
+                    producer_res = ensure_prereq(p_name)
+                else:
+                    producer_res = ensure_check(p_name)
+                ok, reason, closure = evaluate_edge(
+                    edge, producer_res, artifact_root=artifact_root
+                )
+                if closure is not None:
+                    closure_records.append(closure)
+                if not ok:
+                    block_reasons.append(reason)
+                    blocked_by.append({"producer_ref": p_ref, "reason": reason})
+            return block_reasons[0] if block_reasons else None, blocked_by
+
+        def ensure_check(name):
+            if name in check_cache:
+                return check_cache[name]
+            item = selected_by_name[name]
+            block_reason, blocked_by = resolve_incoming(("check", name))
+            if block_reason is not None:
+                entry = _decorated_blocked_check(
+                    plan,
+                    name,
+                    item.get("status"),
+                    block_reason,
+                    blocked_by,
+                    execution_context=execution_context,
+                    run_instance=run_instance,
+                )
+            else:
+                entry = run_host_check(
+                    plan,
+                    item,
+                    root=root,
+                    hygiene_config=hygiene_config,
+                    sources_config=sources_config,
+                    runner=runner,
+                    execution_context=execution_context,
+                    run_instance=run_instance,
+                )
+            check_cache[name] = entry
+            return entry
+
+        for item in selected:
+            ensure_check(item.get("name"))
+
+        if ("report", "artifacts") in incoming:
+            resolve_incoming(("report", "artifacts"))
+
+        requirement = test_requirement_failure(plan)
+        test_block_reason, test_blocked_by = resolve_incoming("tests")
+        if not tests:
+            report["tests"] = {"status": "not_executed", "exit_code": 3}
+        elif requirement:
+            if requirement == "coverage_evidence_required":
+                report["coverage"]["scope"] = "not_measured"
+            report["tests"] = {
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": requirement,
+            }
+        elif test_block_reason is not None:
+            report["tests"] = {
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": test_block_reason,
+                "blocked_by": test_blocked_by,
+            }
+        else:
+            native = {}
+            previous_env = os.environ.get("ENGINEERING_CI_ARTIFACT_DIR")
+            os.environ["ENGINEERING_CI_ARTIFACT_DIR"] = str(artifact_root)
+            try:
+                exit_code = selection.run_tests(
+                    tests,
+                    root=root,
+                    framework=framework,
+                    src_root=chosen.get("src_root", "src"),
+                    expected_tree=expected_tree,
+                    index_tree=expected_tree
+                    if plan["git"].get("snapshot") == "index"
+                    else None,
+                    index_file=plan["git"].get("index_file"),
+                    junit_path=junit_path,
+                    capture=native,
+                )
+            finally:
+                if previous_env is None:
+                    os.environ.pop("ENGINEERING_CI_ARTIFACT_DIR", None)
+                else:
+                    os.environ["ENGINEERING_CI_ARTIFACT_DIR"] = previous_env
+            if native.get("source_refusal"):
+                report["status"] = "not_executed"
+                report["exit_code"] = 4
+                report["reason"] = native["source_refusal"]
+                report["tests"] = {
+                    "status": "not_executed",
+                    "exit_code": 4,
+                    "source_refusal": native["source_refusal"],
+                }
+                return report
+            report["native_stdout"] = native.get("stdout", "")
+            report["native_stderr"] = native.get("stderr", "")
+            tests_status = "passed" if exit_code == 0 else "failed"
+            report["tests"] = {"status": tests_status, "exit_code": exit_code}
+
+    report["checks"] = [check_cache[item.get("name")] for item in selected]
+    report["prerequisites"] = [
+        prereq_cache[name]
+        if name in prereq_cache
+        else run_prerequisite_action(
+            name,
+            actions.get(name),
+            root=root,
+            runner=runner,
+            execution_context=execution_context,
+        )
+        for name in prerequisites
+    ]
+    if closure_records:
+        report["artifact_closure"] = closure_records
+    return None
+
+
+def _decorated_blocked_check(
+    plan, name, selected_status, reason, blocked_by, *, execution_context, run_instance
+):
+    return _decorate_checks(
+        plan,
+        [_blocked_consumer_entry(name, selected_status, reason, blocked_by)],
+        execution_context=execution_context,
+        run_instance=run_instance,
+    )[0]
+
+
+def _finalize_report(report):
+    tests_res = report.get("tests") or {}
+    tests_failed = bool(report.get("targets") and tests_res.get("status") == "failed")
+    hygiene_or_source_failed = any(
+        item.get("status") == "failed" for item in report["checks"]
+    )
+    prereq_failed = any(
+        item.get("status") == "failed" for item in report["prerequisites"]
+    )
+    unfinished = [
+        item for item in report["checks"] if item.get("status") == "not_executed"
+    ] + [
+        item for item in report["prerequisites"] if item.get("status") == "not_executed"
+    ]
+    if report.get("targets") and tests_res.get("status") == "not_executed":
+        unfinished.append(tests_res)
+    invalid_contract = [
+        item
+        for item in report["checks"]
+        if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
+    ]
+    artifact_blocked = [
+        entry
+        for entry in (report.get("artifact_closure") or [])
+        if not entry.get("verified")
+    ]
+    if tests_failed:
+        report["status"], report["reason"] = "failed", "tests_failed"
+        report["exit_code"] = tests_res.get("exit_code") or 1
+    elif hygiene_or_source_failed:
+        report["status"] = "failed"
+        report["exit_code"] = 1
+        report["reason"] = "checks_failed"
+    elif prereq_failed:
+        report["status"] = "failed"
+        report["exit_code"] = 1
+        report["reason"] = "prerequisites_failed"
+    elif invalid_contract:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        report["reason"] = "check_contract_invalid"
+    elif unfinished or artifact_blocked:
+        report["status"] = "blocked"
+        report["exit_code"] = 5
+        specific = (
+            tests_res.get("reason")
+            if tests_res.get("status") == "not_executed" and tests_res.get("reason")
+            else next(
+                (
+                    entry.get("reason")
+                    for entry in artifact_blocked
+                    if entry.get("reason")
+                ),
+                None,
+            )
+            or next(
+                (
+                    item.get("reason")
+                    for item in unfinished
+                    if item.get("blocked_by") and item.get("reason")
+                ),
+                None,
+            )
+        )
+        report["reason"] = specific or "required_checks_not_executed"
+    else:
+        report["status"], report["reason"] = "passed", None
+        report["exit_code"] = 0
+    return report
+
+
 def execute(
     plan,
     *,
@@ -678,6 +1126,26 @@ def execute(
         )
         report["reason"] = bind_reason
         return report
+
+    actions = _prerequisite_actions(plan, prerequisite_actions)
+    if pre_execution_edges(plan):
+        early = _execute_with_dependencies(
+            plan,
+            root=root,
+            junit_path=junit_path,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            actions=actions,
+            execution_context=execution_context,
+            runner=runner,
+            run_instance=run_instance,
+            expected_tree=expected_tree,
+            report=report,
+        )
+        if early is not None:
+            return early
+        return _finalize_report(report)
+
     requirement = test_requirement_failure(plan)
     if requirement:
         report["status"] = "blocked"
@@ -721,14 +1189,14 @@ def execute(
     else:
         report["tests"] = {"status": "not_executed", "exit_code": 3}
 
-    hygiene_results, hygiene_failed = _run_hygiene_checks(
+    hygiene_results, _ = _run_hygiene_checks(
         plan,
         selected,
         root=root,
         hygiene_config=hygiene_config,
         runner=runner,
     )
-    source_result, source_failed = _run_source_check(
+    source_result, _ = _run_source_check(
         plan,
         selected,
         root=root,
@@ -756,47 +1224,15 @@ def execute(
         execution_context=execution_context,
         run_instance=run_instance,
     )
-    prereq_results, prereq_failed = _run_prerequisites(
+    prereq_results, _ = _run_prerequisites(
         prerequisites,
-        _prerequisite_actions(plan, prerequisite_actions),
+        actions,
         root=root,
         runner=runner,
         execution_context=execution_context,
     )
     report["prerequisites"] = prereq_results
-
-    unfinished = [
-        item for item in report["checks"] if item.get("status") == "not_executed"
-    ] + [
-        item for item in report["prerequisites"] if item.get("status") == "not_executed"
-    ]
-    invalid_contract = [
-        item
-        for item in report["checks"]
-        if item.get("check_contract", {}).get("status") not in {"valid", "not_started"}
-    ]
-    if tests and exit_code != 0:
-        report["status"], report["reason"] = "failed", "tests_failed"
-    elif hygiene_failed or source_failed:
-        report["status"] = "failed"
-        report["exit_code"] = 1
-        report["reason"] = "checks_failed"
-    elif prereq_failed:
-        report["status"] = "failed"
-        report["exit_code"] = 1
-        report["reason"] = "prerequisites_failed"
-    elif invalid_contract:
-        report["status"] = "blocked"
-        report["exit_code"] = 5
-        report["reason"] = "check_contract_invalid"
-    elif unfinished:
-        report["status"] = "blocked"
-        report["exit_code"] = 5
-        report["reason"] = "required_checks_not_executed"
-    else:
-        report["status"], report["reason"] = "passed", None
-        report["exit_code"] = 0
-    return report
+    return _finalize_report(report)
 
 
 def _print(value):
