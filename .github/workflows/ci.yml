@@ -157,7 +157,7 @@ jobs:
             docker rm -f "$cname" >/dev/null 2>&1 || true
 
             uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry receive \
-              --host 127.0.0.1 \
+              --host 0.0.0.0 \
               --port 0 \
               --output "$capture_out" \
               --ready-file "$ready_file" \
@@ -177,11 +177,11 @@ jobs:
             docker run --pull=missing -d \
               --name "$cname" \
               --privileged \
-              --network host \
+              --add-host=host.docker.internal:host-gateway \
               -v dagger-engine-a1-data:/var/lib/dagger \
               -v "$RUNNER_TEMP/engine.json:/etc/dagger/engine.json:ro" \
-              -e OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:${port}/v1/traces" \
-              -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://127.0.0.1:${port}/v1/metrics" \
+              -e OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://host.docker.internal:${port}/v1/traces" \
+              -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://host.docker.internal:${port}/v1/metrics" \
               -e OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf" \
               -e OTEL_EXPORTER_OTLP_METRICS_PROTOCOL="http/protobuf" \
               "registry.dagger.io/engine:v$DAGGER_VERSION" >/dev/null
