@@ -1112,13 +1112,12 @@ def _expected_witness_failure(requirements, chosen, expected):
         if item.requirement_id not in predecessors
     }
     mapping = expected.get("coverage_by_requirement")
-    if mapping is not None:
-        if any(
-            chosen[key].get("coverage") != coverage
-            for key, coverage in mapping.items()
-        ):
-            return "expected_coverage_unproven"
-    elif "coverage" in expected and any(
+    if mapping is not None and any(
+        chosen[key].get("coverage") != coverage
+        for key, coverage in mapping.items()
+    ):
+        return "expected_coverage_unproven"
+    if "coverage" in expected and any(
         chosen[key].get("coverage") != expected["coverage"]
         for key in terminal_ids
     ):
