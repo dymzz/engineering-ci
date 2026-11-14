@@ -1017,9 +1017,8 @@ def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
         )
     )
     report = json.loads(asyncio.run(saved.report()))
-    assert report["status"] == "passed", (
-        json.dumps(report, indent=2) and report["exit_code"] == 0
-    )
+    assert report["status"] == "passed", json.dumps(report, indent=2)
+    assert report["exit_code"] == 0, json.dumps(report, indent=2)
     assert report["source_handoff"]["generated_outputs_delivered"] is True
     assert report["artifact_closure"][0]["verified"] is True
     assert "generated/manifest.json" in native.test_source.files
@@ -1236,9 +1235,8 @@ def test_v2_data_dependency_preserves_binary_bytes_and_empty_nested_dirs(
         )
     )
     report = json.loads(asyncio.run(saved.report()))
-    assert report["status"] == "passed", (
-        json.dumps(report, indent=2) and report["exit_code"] == 0
-    )
+    assert report["status"] == "passed", json.dumps(report, indent=2)
+    assert report["exit_code"] == 0, json.dumps(report, indent=2)
     assert report["source_handoff"]["generated_outputs_delivered"] is True
     assert report["prerequisites"][0]["execution_location"] == "dagger_module_scratch"
     assert report["prerequisites"][0]["result_origin"] == "module_local_subprocess"
