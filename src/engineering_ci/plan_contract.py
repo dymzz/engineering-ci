@@ -493,6 +493,8 @@ def _validate_dependency_v2(value, chosen, contract, names, actions, generator):
             )
             found_prereqs.add(p_name)
         elif p_kind == "check" and kind != "policy_only":
+            if kind == "data":
+                raise PlanError("dependency_producer_unsupported")
             if not isinstance(p_name, str) or p_name not in selected_checks:
                 raise PlanError("dependency_producer_invalid")
             if (

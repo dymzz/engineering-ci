@@ -1087,11 +1087,18 @@ def _execute_with_dependencies(
                     edge["dependency_kind"] == "data"
                     and p_kind != "prerequisite_action"
                 ):
-                    block_reasons.append("data_check_producer_unsupported")
-                    blocked_by.append(
+                    reason = "data_check_producer_unsupported"
+                    block_reasons.append(reason)
+                    blocked_by.append({"producer_ref": p_ref, "reason": reason})
+                    closure_records.append(
                         {
                             "producer_ref": p_ref,
-                            "reason": "data_check_producer_unsupported",
+                            "consumer_ref": edge["consumer_ref"],
+                            "output_ref": edge.get("output_ref"),
+                            "verified": False,
+                            "reason": reason,
+                            "sha256": None,
+                            "materialized_files": [],
                         }
                     )
                     continue
@@ -1175,7 +1182,15 @@ def _execute_with_dependencies(
             ensure_check(item.get("name"))
 
         if ("report", "artifacts") in incoming:
-            resolve_incoming(("report", "artifacts"))
+            report_block, report_blocked_by, _ = resolve_incoming(
+                ("report", "artifacts")
+            )
+            if report_block is not None:
+                report["artifact_delivery"] = {
+                    "status": "blocked",
+                    "reason": report_block,
+                    "blocked_by": report_blocked_by,
+                }
 
         requirement = test_requirement_failure(plan)
         test_block_reason, test_blocked_by, test_files = resolve_incoming("tests")
