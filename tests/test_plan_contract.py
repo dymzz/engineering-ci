@@ -696,6 +696,32 @@ def test_v2_failed_pre_execution_pass_blocks_dependent_only_while_peer_runs(
     assert report["checks"][0]["status"] == "passed"
 
 
+def test_v2_output_paths_must_be_canonical():
+    actions = {"gen": {"type": "command", "argv": [sys.executable, "-c", "pass"]}}
+    for path in ("docs/./page.md", "docs//page.md", "docs/page.md/"):
+        edge = {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": path},
+            "source_binding_ref": "git",
+            "declaration_ref": _decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        plan = _v2_plan(
+            edges=[edge],
+            prerequisites=["gen"],
+            actions=copy.deepcopy(actions),
+            tests=["tests.controlled"],
+        )
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(plan)
+        assert raised.value.code == "dependency_output_ref_invalid"
+
+
 def test_v2_data_dependency_closure_passes_with_digest_and_refuses_missing_artifact(
     tmp_path, monkeypatch
 ):

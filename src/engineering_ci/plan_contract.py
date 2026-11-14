@@ -379,6 +379,8 @@ def _validate_output_ref(output_ref):
         or rel.startswith("/")
         or "\\" in rel
         or ".." in Path(rel).parts
+        or rel.endswith("/")
+        or any(part in {"", "."} for part in rel.split("/"))
     ):
         raise PlanError("dependency_output_ref_invalid")
     digest = output_ref.get("sha256")

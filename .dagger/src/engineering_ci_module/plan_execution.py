@@ -660,6 +660,17 @@ async def _execute_dag(
                     )
                 else:
                     report["prerequisites"].append(output)
+            elif slot == ("execution_report", "artifacts") and isinstance(
+                output, BaseException
+            ):
+                if not isinstance(output, Exception):
+                    raise output
+                report["artifact_delivery"] = {
+                    "status": "blocked",
+                    "reason": "artifact_delivery_error",
+                    "error_type": type(output).__name__,
+                    "diagnostic": str(output),
+                }
 
         for name in post_prerequisites:
             try:
