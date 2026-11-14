@@ -101,9 +101,13 @@ Following Reviews 22–24 on PR #90 and merging `main`:
 
 - **#66**: authenticated Source/Prerequisite receipts and config/baseline proof
   (`source_binding_verified` remains `"unknown"` in `source_handoff`).
-- **#86 D**: container-native producer actions (replacing
-  `module_local_subprocess` command prerequisites) and dynamic cache/input
-  expansion.
+- **#86 B (remaining)**: remaining applicable production dependencies mapped to
+  Native Dagger Function/Container compute nodes (this PR is only the Result
+  Sharing, v2 Data Edge, and Module-local File/Directory Closure slice).
+- **#86 D**: input closure refinement, cache hit/invalidation, and external
+  URL/API/side-effect policy for those real Native computations/Sources.
+- **#87**: read-only Trace/Origin attribution over generated Native Results and
+  Artifacts.
 - **#63 / #61**: historical Verdict/cross-Run evidence admission and Expected /
   Required / Release policy gates.
 

@@ -425,6 +425,8 @@ and `sync()`, verify consumer path conflicts/overlaps/digests, overlay them
 onto immutable consumer `Directory` inputs (`tests`, `docs` with container
 `git`/`lychee` fallback via `_exec_capture`, `weaver_*`), and publish them
 under `produced/<kind>/<name>/<rel>`. Host source writes remain refused,
-#66 receipts and #63/#61 Admission/Required decisions remain separate, and
-Container-native producer actions remain follow-up `#86 D` work. See also
+`#66` receipts, `#87` Trace/Origin attribution, and `#63`/`#61`
+Admission/Required decisions remain separate; remaining applicable producers
+and Native DAG edges belong to follow-up `#86 B`, while `#86 D` refines input
+closure, cache hit/invalidation, and external URL/side-effect policy. See also
 [native result-sharing verification](../verification/plan-result-sharing/README.md).

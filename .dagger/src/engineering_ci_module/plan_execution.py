@@ -423,6 +423,10 @@ def _host_adapter_plan(value, selected_host_checks):
     host_plan.setdefault("selection", {})
     host_plan["selection"] = dict(host_plan["selection"])
     host_plan["selection"]["tests"] = []
+    # Narrowed internal host-check adapter drops non-host checks/tests so
+    # inherited expected_checks/selection.check_scope no longer describe its set.
+    host_plan["selection"].pop("check_scope", None)
+    host_plan.pop("expected_checks", None)
     host_plan["git"] = dict(host_plan.get("git") or {})
     # This is only the Host adapter's filesystem view. Preserve the
     # original Git identity in source_handoff, and do not claim an
@@ -1170,8 +1174,37 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             )
             host_prerequisites = host.get("prerequisites") or []
             _tag_command_prerequisites(host_prerequisites)
-            report["checks"].extend(host.get("checks") or [])
+            host_checks_out = host.get("checks") or []
+            if host_checks_out:
+                report["checks"].extend(host_checks_out)
+            elif host_checks and host.get("status") in {"blocked", "not_executed"}:
+                reason = host.get("reason") or "required_checks_not_executed"
+                report["checks"].extend(
+                    execution._blocked_consumer_entry(
+                        item.get("name"),
+                        item.get("status"),
+                        reason,
+                        [],
+                    )
+                    for item in host_checks
+                    if item.get("name")
+                )
             report["prerequisites"] = host_prerequisites
+            if (
+                prerequisites
+                and not host_prerequisites
+                and host.get("status") in {"blocked", "not_executed"}
+            ):
+                reason = host.get("reason") or "required_checks_not_executed"
+                report["prerequisites"] = [
+                    {
+                        "name": name,
+                        "status": "not_executed",
+                        "exit_code": None,
+                        "reason": reason,
+                    }
+                    for name in prerequisites
+                ]
             after_host = selection.directory_content_id(directory)
             report["source_handoff"]["after_host_content_id"] = after_host
             if after_host != exported_content_id:

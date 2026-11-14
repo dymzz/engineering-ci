@@ -1017,7 +1017,9 @@ def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
         )
     )
     report = json.loads(asyncio.run(saved.report()))
-    assert report["status"] == "passed" and report["exit_code"] == 0
+    assert report["status"] == "passed", (
+        json.dumps(report, indent=2) and report["exit_code"] == 0
+    )
     assert report["source_handoff"]["generated_outputs_delivered"] is True
     assert report["artifact_closure"][0]["verified"] is True
     assert "generated/manifest.json" in native.test_source.files
@@ -1234,7 +1236,9 @@ def test_v2_data_dependency_preserves_binary_bytes_and_empty_nested_dirs(
         )
     )
     report = json.loads(asyncio.run(saved.report()))
-    assert report["status"] == "passed" and report["exit_code"] == 0
+    assert report["status"] == "passed", (
+        json.dumps(report, indent=2) and report["exit_code"] == 0
+    )
     assert report["source_handoff"]["generated_outputs_delivered"] is True
     assert report["prerequisites"][0]["execution_location"] == "dagger_module_scratch"
     assert report["prerequisites"][0]["result_origin"] == "module_local_subprocess"
@@ -1512,3 +1516,127 @@ def test_docs_check_bridges_lychee_and_git_containers_honestly(
         assert empty_report["checks"][0]["reason"] == "git_inventory_failed"
         with pytest.raises(RuntimeError):
             asyncio.run(saved_empty.enforce())
+
+
+def test_policy_only_selection_plan_runs_host_check_and_propagates_refusal(
+    tmp_path, modules, monkeypatch
+):
+    import shutil
+
+    from engineering_ci import execution as real_execution
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/selection-app"
+    hygiene_toml = (fixture / "ci-hygiene.toml").read_text(encoding="utf-8")
+    assert "--files-from" not in hygiene_toml
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ci-selection.toml").write_text(
+        (fixture / "ci-selection.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (repo / "ci-hygiene.toml").write_text(hygiene_toml, encoding="utf-8")
+    tach_toml = (fixture / "tach.toml").read_text(encoding="utf-8")
+    (repo / "tach.toml").write_text(tach_toml, encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+
+    changes = real_selection.ChangeSet(
+        root=repo,
+        base_ref="base",
+        head_ref="head",
+        base_commit="1" * 40,
+        head_commit="2" * 40,
+        tree="a" * 40,
+        paths=("docs/guide.md",),
+        worktree_dirty=False,
+        complete=True,
+    )
+    cfg = real_selection.load_config(repo / "ci-selection.toml")
+    sel = real_selection.select(changes, cfg, root=repo)
+    plan = real_selection.plan(
+        sel,
+        config=cfg,
+        config_path=repo / "ci-selection.toml",
+        root=repo,
+    )
+    assert "expected_checks" in plan
+    assert plan["dependency_contract"]["schema_version"] == 1
+
+    class DocsOnlyNative(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.lychee_argvs = []
+
+        async def _run_git(self, source, argv_tail):
+            return {"exit_code": 0, "stdout": "docs/guide.md\0", "stderr": ""}
+
+        async def _run_lychee(self, source, argv_tail):
+            self.lychee_argvs.append(list(argv_tail))
+            return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **kw: (
+            None if cmd in {"lychee", "git"} else real_which(cmd, *a, **kw)
+        ),
+    )
+    native = DocsOnlyNative()
+    source_dir = MemoryDirectory(
+        {
+            "ci-selection.toml": (repo / "ci-selection.toml").read_text(
+                encoding="utf-8"
+            ),
+            "ci-hygiene.toml": hygiene_toml,
+            "tach.toml": tach_toml,
+            "docs/guide.md": "# Guide\n",
+        }
+    )
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            source_dir,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", json.dumps(report, indent=2)
+    assert [c["name"] for c in report["checks"]] == ["docs"]
+    assert report["checks"][0]["status"] == "passed"
+    assert native.lychee_argvs == [["--offline", "--no-progress", "docs/guide.md"]]
+    asyncio.run(saved.enforce())
+
+    # If the Host adapter ever rejects or blocks with no child checks, never pass silently.
+    monkeypatch.setattr(
+        real_execution,
+        "execute",
+        lambda *_args, **_kwargs: {
+            "status": "not_executed",
+            "reason": "expected_scope_mismatch",
+            "exit_code": 2,
+            "checks": [],
+            "prerequisites": [],
+        },
+    )
+    blocked = asyncio.run(
+        collector.execute(
+            DocsOnlyNative(),
+            MemoryFile(json.dumps(plan)),
+            source_dir,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    blocked_report = json.loads(asyncio.run(blocked.report()))
+    assert blocked_report["status"] == "blocked"
+    assert blocked_report["reason"] == "expected_scope_mismatch"
+    assert blocked_report["checks"][0]["status"] == "not_executed"
+    assert blocked_report["checks"][0]["reason"] == "expected_scope_mismatch"
+    with pytest.raises(RuntimeError):
+        asyncio.run(blocked.enforce())
