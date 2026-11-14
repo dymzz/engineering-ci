@@ -1,0 +1,520 @@
+{
+  "claims": {
+    "all_prepared_signals_delivered": false,
+    "bundle_delivery_complete": false,
+    "candidate_record_only": true,
+    "github_api_fetched": false,
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "otlp_json_exported": false,
+    "otlp_json_prepared": true,
+    "otlp_logs_delivered": false,
+    "otlp_logs_exported": false,
+    "otlp_logs_prepared": true,
+    "otlp_logs_receiver_observed": false,
+    "otlp_logs_rpc_accepted": false,
+    "otlp_metrics_delivered": false,
+    "otlp_metrics_exported": false,
+    "otlp_metrics_prepared": false,
+    "otlp_metrics_receiver_observed": false,
+    "otlp_metrics_rpc_accepted": false,
+    "receiver_observed": false,
+    "rpc_accepted": false,
+    "snapshot_phase": "before_receiver_confirmation",
+    "transport": {},
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "coverage": {
+    "attempt_coverage": "not_claimed",
+    "completed_jobs_total": null,
+    "expected_completed_jobs": [
+      {
+        "emitted": true,
+        "expected_task_span_id": "6a61493dba87fc84",
+        "job_id": "75002",
+        "job_url": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002",
+        "omit_reason": null,
+        "omitted": false,
+        "source_index": null
+      }
+    ],
+    "expected_trace": {
+      "expected_pipeline_span_id": "1e047a17bc506b54",
+      "expected_trace_id": "cdc759d4e9cf020f54963d0b0fc52633",
+      "id_scheme": "github-actions-attempt-sha256-v1",
+      "parent_exported": true,
+      "run_attempt": 1,
+      "run_id": "75001",
+      "trusted": false
+    },
+    "job_execution_envelope": {
+      "attempt": 1,
+      "complete": true,
+      "end_ns": 1700000100000000000,
+      "quality": "job_execution_envelope",
+      "run_id": "75001",
+      "semconv_phase": null,
+      "source": "mapping",
+      "start_ns": 1700000010000000000
+    },
+    "job_mapping": {
+      "identity_mismatch": [],
+      "identity_ok": true,
+      "job_url_verified": true,
+      "missing": [],
+      "observed_capture_verified": false,
+      "omitted_emitted": [],
+      "source_independence_verified": false,
+      "url_checked": 1,
+      "url_matched": 1,
+      "url_mismatch": [],
+      "verification_scope": "producer_objects"
+    },
+    "job_selection": null,
+    "jobs_observed_total": null,
+    "noncompleted_jobs_total": null,
+    "pipeline_terminal_covered": true,
+    "task_coverage": "partial",
+    "task_spans_emitted": 1,
+    "tasks_omitted": [],
+    "terminal_check": "not_checked",
+    "withheld_parent_span": null,
+    "witness_anomalies": []
+  },
+  "evidence_class": "candidate_record",
+  "facts": {
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "job_completed_at_ns": 1700000100000000000,
+    "job_conclusion": "success",
+    "job_id": "75002",
+    "job_name": "checks",
+    "job_started_at_ns": 1700000010000000000,
+    "job_url": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002",
+    "repository": "example/fixture",
+    "repository_url": null,
+    "run_attempt": 1,
+    "run_completed_at_ns": 1700000120000000000,
+    "run_conclusion": "success",
+    "run_id": "75001",
+    "run_started_at_ns": 1700000000000000000,
+    "run_status": "completed",
+    "run_updated_at_ns": null,
+    "run_url": "https://ghe.example.test/example/fixture/actions/runs/75001",
+    "server_url": "https://ghe.example.test",
+    "workflow_name": "Controlled Producer Mapping"
+  },
+  "include_run_entity_metrics": false,
+  "kind": "engineering-ci-cicd-telemetry",
+  "otlp_json": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "cicd.pipeline.name",
+              "value": {
+                "stringValue": "Controlled Producer Mapping"
+              }
+            },
+            {
+              "key": "cicd.pipeline.run.id",
+              "value": {
+                "stringValue": "75001/1"
+              }
+            },
+            {
+              "key": "cicd.pipeline.run.url.full",
+              "value": {
+                "stringValue": "https://ghe.example.test/example/fixture/actions/runs/75001"
+              }
+            },
+            {
+              "key": "vcs.repository.url.full",
+              "value": {
+                "stringValue": "https://ghe.example.test/example/fixture"
+              }
+            },
+            {
+              "key": "vcs.ref.head.revision",
+              "value": {
+                "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "eci_core.cicd_telemetry"
+            },
+            "spans": [
+              {
+                "attributes": [
+                  {
+                    "key": "cicd.pipeline.name",
+                    "value": {
+                      "stringValue": "Controlled Producer Mapping"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.run.id",
+                    "value": {
+                      "stringValue": "75001/1"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.run.url.full",
+                    "value": {
+                      "stringValue": "https://ghe.example.test/example/fixture/actions/runs/75001"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.result",
+                    "value": {
+                      "stringValue": "success"
+                    }
+                  },
+                  {
+                    "key": "vcs.ref.head.revision",
+                    "value": {
+                      "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                ],
+                "endTimeUnixNano": "1700000120000000000",
+                "kind": 2,
+                "name": "RUN Controlled Producer Mapping",
+                "spanId": "1e047a17bc506b54",
+                "startTimeUnixNano": "1700000000000000000",
+                "status": {
+                  "code": 0
+                },
+                "traceId": "cdc759d4e9cf020f54963d0b0fc52633"
+              },
+              {
+                "attributes": [
+                  {
+                    "key": "cicd.pipeline.task.name",
+                    "value": {
+                      "stringValue": "checks"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.id",
+                    "value": {
+                      "stringValue": "75002"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.result",
+                    "value": {
+                      "stringValue": "success"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.url.full",
+                    "value": {
+                      "stringValue": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.run.id",
+                    "value": {
+                      "stringValue": "75001/1"
+                    }
+                  }
+                ],
+                "endTimeUnixNano": "1700000100000000000",
+                "kind": 1,
+                "name": "task:checks",
+                "parentSpanId": "1e047a17bc506b54",
+                "spanId": "6a61493dba87fc84",
+                "startTimeUnixNano": "1700000010000000000",
+                "status": {
+                  "code": 0
+                },
+                "traceId": "cdc759d4e9cf020f54963d0b0fc52633"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "otlp_logs_json": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "cicd.pipeline.name",
+              "value": {
+                "stringValue": "Controlled Producer Mapping"
+              }
+            },
+            {
+              "key": "cicd.pipeline.run.id",
+              "value": {
+                "stringValue": "75001/1"
+              }
+            },
+            {
+              "key": "cicd.pipeline.run.url.full",
+              "value": {
+                "stringValue": "https://ghe.example.test/example/fixture/actions/runs/75001"
+              }
+            },
+            {
+              "key": "vcs.repository.url.full",
+              "value": {
+                "stringValue": "https://ghe.example.test/example/fixture"
+              }
+            },
+            {
+              "key": "vcs.ref.head.revision",
+              "value": {
+                "stringValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "logRecords": [
+              {
+                "attributes": [
+                  {
+                    "key": "cicd.pipeline.task.name",
+                    "value": {
+                      "stringValue": "checks"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.id",
+                    "value": {
+                      "stringValue": "75002"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.result",
+                    "value": {
+                      "stringValue": "success"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.task.run.url.full",
+                    "value": {
+                      "stringValue": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002"
+                    }
+                  },
+                  {
+                    "key": "cicd.pipeline.run.id",
+                    "value": {
+                      "stringValue": "75001/1"
+                    }
+                  }
+                ],
+                "body": {
+                  "stringValue": "GitHub Job terminal checks conclusion=success"
+                },
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "spanId": "6a61493dba87fc84",
+                "timeUnixNano": "1700000100000000000",
+                "traceId": "cdc759d4e9cf020f54963d0b0fc52633"
+              }
+            ],
+            "scope": {
+              "name": "eci_core.cicd_telemetry"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "otlp_metrics_json": null,
+  "phase_intervals": [],
+  "producer": {
+    "attribute_contract": "registered-attributes-with-candidate-provenance-v1",
+    "decision": "github_actions_env_or_api_adapter",
+    "id_scheme": "github-actions-attempt-sha256-v1",
+    "name": "eci_core.cicd_telemetry",
+    "pipeline_run_id_form": "{github_run_id}/{run_attempt}",
+    "semconv_note": "Attribute names follow public CI/CD SemConv Pipeline/Task Run. This candidate does not copy or verify the official registry pin.",
+    "semconv_source": {
+      "group_ids": [
+        "span.cicd.pipeline.run.server",
+        "span.cicd.pipeline.task.internal",
+        "metric.cicd.pipeline.run.duration"
+      ],
+      "group_ids_role": "producer_mapping",
+      "official_registry_verified": false,
+      "official_source_pinned": false,
+      "registry_check": "not_checked"
+    }
+  },
+  "reason": null,
+  "repository_identity": {
+    "authenticated": false,
+    "repository": "example/fixture",
+    "sources": [
+      {
+        "field": "server_url",
+        "value": "https://ghe.example.test"
+      },
+      {
+        "field": "run_url",
+        "value": "https://ghe.example.test/example/fixture/actions/runs/75001"
+      }
+    ],
+    "status": "mapped",
+    "url": "https://ghe.example.test/example/fixture"
+  },
+  "resource": {
+    "cicd.pipeline.name": "Controlled Producer Mapping",
+    "cicd.pipeline.run.id": "75001/1",
+    "cicd.pipeline.run.url.full": "https://ghe.example.test/example/fixture/actions/runs/75001",
+    "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "vcs.repository.url.full": "https://ghe.example.test/example/fixture"
+  },
+  "schema_version": 9,
+  "signals": {
+    "logs": [
+      {
+        "attributes": {
+          "cicd.pipeline.run.id": "75001/1",
+          "cicd.pipeline.task.name": "checks",
+          "cicd.pipeline.task.run.id": "75002",
+          "cicd.pipeline.task.run.result": "success",
+          "cicd.pipeline.task.run.url.full": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002"
+        },
+        "body": "GitHub Job terminal checks conclusion=success",
+        "severity_number": 9,
+        "severity_text": "INFO",
+        "source": "github_job_terminal",
+        "span_id": "6a61493dba87fc84",
+        "time_unix_nano": 1700000100000000000,
+        "trace_id": "cdc759d4e9cf020f54963d0b0fc52633"
+      }
+    ],
+    "logs_source": "github_job_terminal",
+    "metrics": [],
+    "metrics_not_observable": [
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "pending",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "executing",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.duration",
+        "reason": "phase_interval_unproven",
+        "state": "finalizing",
+        "status": "not_observable"
+      },
+      {
+        "name": "cicd.pipeline.run.active",
+        "reason": "active_count_unproven",
+        "status": "not_observable"
+      }
+    ]
+  },
+  "source": "mapping",
+  "spans": [
+    {
+      "attributes": {
+        "cicd.pipeline.name": "Controlled Producer Mapping",
+        "cicd.pipeline.result": "success",
+        "cicd.pipeline.run.id": "75001/1",
+        "cicd.pipeline.run.url.full": "https://ghe.example.test/example/fixture/actions/runs/75001",
+        "vcs.ref.head.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "end_time_unix_nano": 1700000120000000000,
+      "kind": 2,
+      "name": "RUN Controlled Producer Mapping",
+      "parent_span_id": null,
+      "span_id": "1e047a17bc506b54",
+      "start_time_unix_nano": 1700000000000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "cdc759d4e9cf020f54963d0b0fc52633"
+    },
+    {
+      "attributes": {
+        "cicd.pipeline.run.id": "75001/1",
+        "cicd.pipeline.task.name": "checks",
+        "cicd.pipeline.task.run.id": "75002",
+        "cicd.pipeline.task.run.result": "success",
+        "cicd.pipeline.task.run.url.full": "https://ghe.example.test/example/fixture/actions/runs/75001/job/75002"
+      },
+      "end_time_unix_nano": 1700000100000000000,
+      "kind": 1,
+      "name": "task:checks",
+      "parent_span_id": "1e047a17bc506b54",
+      "span_id": "6a61493dba87fc84",
+      "start_time_unix_nano": 1700000010000000000,
+      "status": {
+        "code": 0
+      },
+      "trace_id": "cdc759d4e9cf020f54963d0b0fc52633"
+    }
+  ],
+  "status": "produced",
+  "terminal": {
+    "bounds_invalid_reason": null,
+    "bounds_valid": false,
+    "conclusion": "success",
+    "duration_valid_for_metrics": true,
+    "end_lower_bound_ns": null,
+    "end_lower_bound_source": null,
+    "end_time_quality": "exact_input",
+    "end_time_source": "explicit_mapping",
+    "end_upper_bound_ns": null,
+    "end_upper_bound_source": null,
+    "exact_run_duration": true,
+    "max_end_uncertainty_ns": null,
+    "observed_at_ns": null,
+    "reviewed_at_ns": null,
+    "root_emission": "explicit_end",
+    "root_emission_reason": null,
+    "run_completed_at_ns": 1700000120000000000,
+    "status": "completed",
+    "terminal_confirmed": false,
+    "time_precision": "exact_input",
+    "time_source_verified": false,
+    "uncertainty_ns": null
+  },
+  "terminal_provenance": {
+    "attempt": 1,
+    "bounds_valid": false,
+    "duration_valid_for_metrics": true,
+    "end_lower_bound_ns": null,
+    "end_time_quality": "exact_input",
+    "end_time_source": "explicit_mapping",
+    "end_upper_bound_ns": null,
+    "exact_run_duration": true,
+    "otlp_sha256": null,
+    "repository": "example/fixture",
+    "root_emission": "explicit_end",
+    "root_emission_reason": null,
+    "root_emitted": true,
+    "root_span_id": "1e047a17bc506b54",
+    "root_trace_id": "cdc759d4e9cf020f54963d0b0fc52633",
+    "run_id": "75001",
+    "terminal_conclusion": "success",
+    "terminal_observed_at_ns": null,
+    "terminal_source": "mapping",
+    "terminal_status": "completed",
+    "time_precision": "exact_input",
+    "time_source_verified": false,
+    "uncertainty_ns": null
+  }
+}

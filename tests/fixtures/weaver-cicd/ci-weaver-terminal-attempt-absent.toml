@@ -5,7 +5,7 @@ matcher_config = ".weaver.toml"
 sample = "sample.json"
 expected_matchers = ["eci.pipeline", "eci.task"]
 otlp = "capture-attempt-absent.json"
-expectations = "expected.json"
+expectations = "expected-attempt-absent.json"
 # Replaces Weaver defaults: must include vendored otel.rego + cicd-error-type.rego.
 advice_policies = "advice-policies"
 

@@ -1,0 +1,172 @@
+{
+  "claims": {
+    "github_api_fetched": true,
+    "github_authenticated": false,
+    "otlp_delivered": false,
+    "receiver_observed": false,
+    "rpc_accepted": false,
+    "trusted": false,
+    "weaver_pass": false
+  },
+  "command": [
+    "python",
+    "-m",
+    "engineering_ci.cicd_telemetry",
+    "--repository",
+    "dymzz/engineering-ci",
+    "--run-id",
+    "42821429094",
+    "--attempt",
+    "1",
+    "--event-head-sha",
+    "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "--end-time-mode",
+    "observed_upper_bound",
+    "--output",
+    "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\candidate.json",
+    "--otlp-json",
+    "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-traces.json",
+    "--otlp-logs-json",
+    "C:\\Users\\Aurola\\.codex\\worktrees\\eci-075-producer-attributes\\engineering-ci\\docs\\verification\\cicd-telemetry-attribute-mapping\\otel-logs.json",
+    "--json"
+  ],
+  "evidence_role": "derived_producer_files_and_fresh_api_witness",
+  "expected_jobs": [
+    {
+      "expected_parent_span_id": "093c00d57bcc226c",
+      "expected_task_span_id": "7d2f4e7f18a603cd",
+      "expected_trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "job_id": "129847643854",
+      "job_name": "sync-tool-tests",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847643854"
+    },
+    {
+      "expected_parent_span_id": "093c00d57bcc226c",
+      "expected_task_span_id": "a7263c2e65a30498",
+      "expected_trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "job_id": "129847644372",
+      "job_name": "version-metadata",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644372"
+    },
+    {
+      "expected_parent_span_id": "093c00d57bcc226c",
+      "expected_task_span_id": "7d98cbfec3f44c1a",
+      "expected_trace_id": "21ee8206fe06a4879580f60591a3014f",
+      "job_id": "129847644459",
+      "job_name": "python-ci / checks",
+      "job_url": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094/job/129847644459"
+    }
+  ],
+  "files_sha256": {
+    "candidate.json": "88d4af44974b1619eb4a7c75909256fad308ed1ad404f17c2d30f60bfa3e2b14",
+    "candidate.json.api-pages.json": "e62d425dbf2b6ec6919ea77e78e10a97793eaf3762da081f9ac45e3a96710f32",
+    "otel-logs.json": "ec5c12a1e784d174b2ebdd8363a7068a0d3e7410b8f8d1802677aea44b6c802a",
+    "otel-traces.json": "50bcf5cfae3050c1a303ae1881a5c0aedb38151e897fcac3da72388d08665d8f",
+    "producer.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "producer.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "producer.stdout.json.gz": "34e8757ea755a2fc3fd2da861bbac7e917517582294b5b9039a84bd6a8b3885a"
+  },
+  "historical_failure": {
+    "archive_commit": "ebb2704d815a5e8cdf971b67ca5a5d46f70b1e17",
+    "finding": "missing_attribute: github.repository",
+    "gate_exit_code": 1,
+    "native_exit_code": 1,
+    "original_capture_sha256": "07aa61d36ea8e0a179302ad75d17b1a5ec836e6c8870dd551482b59a759245e5",
+    "preserved": true,
+    "report_path": "docs/verification/weaver-evidence/real-attempt-task-only/report.json"
+  },
+  "logs": 4,
+  "metric_observation": [
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "pending",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "executing",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.duration",
+      "reason": "phase_interval_unproven",
+      "state": "finalizing",
+      "status": "not_observable"
+    },
+    {
+      "name": "cicd.pipeline.run.active",
+      "reason": "active_count_unproven",
+      "status": "not_observable"
+    }
+  ],
+  "network_evidence": false,
+  "original_archive_commit": "f8c31251ac6b4b3277579b40b78827e3bced6c85",
+  "original_files_sha256": {
+    "docs/verification/cicd-telemetry-evidence-all-completed/candidate-42821429094-all-completed.json": "12f0c4a85c96ea88e7153f7a55840bec9933bc85d443608aae638ccc2754221b",
+    "docs/verification/cicd-telemetry-evidence-all-completed/cli-42821429094-all-completed.stdout.json": "f9287c72827e975fcd925753df459a3ad925ce00de02d80d1042a30e4e3136f4",
+    "docs/verification/cicd-telemetry-evidence-all-completed/otel-42821429094-all-completed.json": "07aa61d36ea8e0a179302ad75d17b1a5ec836e6c8870dd551482b59a759245e5"
+  },
+  "producer_commit": "0e72f14e3bdd13ae6b6a96c41cf2659a85dfeede",
+  "producer_package_version": "0.7.0",
+  "producer_schema": 9,
+  "producer_source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+  "producer_stdout": {
+    "archive": "producer.stdout.json.gz",
+    "decoded_filename": "producer.stdout.json",
+    "decoded_sha256": "4b6a6e2dcf7b157347ffe9747f6498e52b913a68b43ee7f960f6ec21ed44da45",
+    "encoding": "gzip of original Windows CRLF stdout bytes"
+  },
+  "repository_mapping": {
+    "authenticated": false,
+    "repository": "dymzz/engineering-ci",
+    "sources": [
+      {
+        "field": "server_url",
+        "value": "https://github.com"
+      },
+      {
+        "field": "repository_url",
+        "value": "https://github.com/dymzz/engineering-ci"
+      },
+      {
+        "field": "run_url",
+        "value": "https://github.com/dymzz/engineering-ci/actions/runs/42821429094"
+      }
+    ],
+    "status": "mapped",
+    "url": "https://github.com/dymzz/engineering-ci"
+  },
+  "root_emission": "not_emitted",
+  "runtime_versions": {
+    "grpcio": "1.85.1",
+    "opentelemetry-proto": "1.45.2",
+    "protobuf": "7.36.2"
+  },
+  "source_identity": {
+    "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+    "repository": "dymzz/engineering-ci",
+    "run_attempt": 1,
+    "run_id": "42821429094"
+  },
+  "source_witness": "candidate.json.api-pages.json",
+  "task_fields_unchanged_from_original_archive": true,
+  "task_identity_reconciliation": {
+    "duplicate": [],
+    "duplicate_expected_job_ids": [],
+    "expected_pipeline_span_id": "093c00d57bcc226c",
+    "expected_trace_id": "21ee8206fe06a4879580f60591a3014f",
+    "id_scheme": "github-actions-attempt-sha256-v1",
+    "invalid_expected_job_ids": [],
+    "job_attributes_verified": false,
+    "missing": [],
+    "ok": true,
+    "parent_mismatch": [],
+    "source_completeness_verified": false,
+    "trace_mismatch": [],
+    "trusted": false,
+    "unexpected": [],
+    "verification_scope": "task_trace_identity"
+  }
+}

@@ -49,6 +49,7 @@
 - 2026-10-15 建仓引导：同一终端的 `dagger check --help` 无输出挂起，已核对命令行后仅停止本次探测进程；真实消费者检查未因此认定通过。分类仍为 `unclear`。建仓子进程复用既有 FORCE_DARK_MODE 设置，版本探测限时 30 秒；不改宿主环境或第三方实现。
 - 现有代码已记录 Windows 显示探测风险；本轮没有证明具体根因，也没有改变第三方实现、安装或工作区位置。
 - 未搜索或提交上游 Issue/PR，未扩大为故障调查。
+- 2026-11-12 #75：非交互 `dagger version` 再次无输出，已中断；使用 `FORCE_DARK_MODE=1` 的 PTY 原生 API 调用正常完成。该版本探测不计入任何 Weaver 验收。
 
 ## Dagger@1.0.0-beta.16: Python runtime SDK lacks workspace generation interface
 - Status: unclear
@@ -96,6 +97,7 @@
 - Status: observed integration limitation; no upstream patch.
 - Seen: 2026-10-21, ECI-003 installed Provider acceptance on Windows.
 - Evidence: moduleSource.configExists=true, but contextDirectory.entries was empty for an asset bundle beneath the parent Git repository's ignored .test-tools directory. The Python runtime reported "no source to trust" and recommended generation. The same original bundle loaded outside that Git boundary using --load-module, without regenerating SDK files.
+- 2026-11-12 #75: reproduced for a temporary copy of #74 `94996d6` under ignored `.test-tools/`. Creating a local Git snapshot made the unchanged module load; all 703 blob contents were verified against that commit, and the two executable-script index modes restored its exact tree `d9d9576e6dc4845b5c9038e1455f151ca97c0d78`. No SDK generation or product workaround was introduced. Windows `git archive` had applied CRLF conversion to 349 text blobs, so their original Git bytes were restored before the archived native validation; the official Registry was already protected by its `-text` attributes.
 - Source: sdk/python/runtime/discovery.go and core/schema/modulesource.go at upstream tag v1.0.0-beta.16; local raw traces under .test-tools/eci003/final/.
 - Assessment: upstream could distinguish filtered/missing source files from uninitialized generated bindings. Cache/bytecode filtering does not resolve the parent Git ignore boundary.
 - Integration: use an explicitly approved, readable asset installation directory, retain native trust and committed SDK files, and explicitly select the module when there is no Git workspace discovery.

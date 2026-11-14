@@ -1,0 +1,2 @@
+# Preserve original producer and native diagnostic bytes.
+* -text

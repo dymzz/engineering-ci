@@ -4,4 +4,4 @@ Checking registry `/out/registry-package`
 ℹ Found registry manifest: /out/registry-package/manifest.yaml
 ✔ No `after_resolution` policy violation
 
-Total execution time: 0.157023572s
+Total execution time: 0.199882955s

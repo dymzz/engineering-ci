@@ -50,14 +50,17 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | Mapping Root source | `--facts` with explicit completed-at | `terminal_source=mapping`, `end_time_source=explicit_mapping`, `time_precision=exact_input`, `time_source_verified=false` |
 | Receiver receipt | In-process gRPC capture of the same Run/Attempt/Trace | `snapshot_phase=receiver_confirmed` only when every prepared signal matches; `candidate_record_only` stays true |
 | Real Attempt → local receiver | Run `42821429094` Attempt 1, `--end-time-mode observed_upper_bound` | See [cicd-telemetry-real-run-receiver](./cicd-telemetry-real-run-receiver/README.md). Not a default-branch `workflow_run` |
+| Schema 9 repository / extension mapping | Same fixed Run/Attempt, fresh independent API Witness, new Producer files and strict native positive/negatives | See [attribute mapping evidence](cicd-telemetry-attribute-mapping/README.md); original failure and network archives stay unchanged |
 
 Run:
 
 ```text
-uv run pytest tests/test_cicd_telemetry.py -q
+uv run --locked pytest tests/test_cicd_telemetry.py tests/test_cicd_telemetry_attributes.py tests/test_otlp_grpc_live.py -q
 ```
 
-Live OTLP/gRPC receiver delivery and Weaver sample handoff remain later slices.
+The existing live receiver tests cover the unchanged three-signal transport.
+The new attribute-mapping bundle records a separate native Weaver replay; it
+does not promote the Producer's file export into a new receiver receipt.
 Manual API check (optional, requires `gh` auth):
 
 ```text
