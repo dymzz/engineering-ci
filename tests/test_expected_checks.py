@@ -108,6 +108,7 @@ def refresh_expected(expected):
         expected.get("profile_source"),
         expected.get("event_ref"),
         expected.get("source_ref"),
+        expected.get("selection_rule_ref"),
     )
 
 
@@ -191,6 +192,74 @@ def test_expected_worktree_content_binding_changes_identity(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(tampered)
     assert raised.value.code == "expected_content_binding_mismatch"
+
+
+def test_expected_multi_ref_must_match_plan_references(repo):
+    path, base = repo
+    changes = selection.changeset(path, base=base, mode="worktree")
+    refs = [
+        {"before": "a", "after": "b", "paths": ["a.py"], "complete": True},
+        {"before": "c", "after": "d", "paths": ["b.py"], "complete": True},
+    ]
+    changes = dataclasses.replace(changes, references=tuple(refs))
+    expected = expected_checks.derive_expected_checks(
+        changes,
+        [{"name": "docs", "status": "selected", "inputs": []}],
+        config_path=path / "ci-selection.toml",
+    )
+    git = {
+        "snapshot": changes.snapshot,
+        "tree": changes.tree,
+        "references": refs,
+        "base_ref": changes.base_ref,
+        "head_ref": changes.head_ref,
+        "base_commit": changes.base_commit,
+        "head_commit": changes.head_commit,
+    }
+    expected_checks.validate_projection(expected, git)
+    tampered = json.loads(json.dumps(expected))
+    tampered["event_ref"]["references"][1]["after"] = "e"
+    for entry in tampered["checks"]:
+        entry["event_ref"]["references"][1]["after"] = "e"
+    refresh_expected(tampered)
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        expected_checks.validate_projection(tampered, git)
+    assert raised.value.code == "expected_event_mismatch"
+
+
+def test_expected_definition_must_resolve(repo):
+    plan = make_plan(repo)
+    entry = plan["expected_checks"]["checks"][0]
+    entry["check_id"] = "eci/hygiene/nonexistent"
+    entry["definition_version"] = 999
+    entry["definition_status"] = "resolved"
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_definition_mismatch"
+
+
+def test_expected_unknown_missing_must_agree(repo):
+    plan = make_plan(repo)
+    plan["expected_checks"]["missing"] = ["not-a-check"]
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_status_inconsistent"
+
+
+def test_expected_scope_binds_selection_rule(repo, tmp_path):
+    path, base = repo
+    changes = selection.changeset(path, base=base, mode="worktree")
+    scope = [{"name": "docs", "status": "selected", "inputs": []}]
+    first = expected_checks.derive_expected_checks(
+        changes, scope, config_path=path / "ci-selection.toml"
+    )
+    other = tmp_path / "other.toml"
+    other.write_bytes((path / "ci-selection.toml").read_bytes() + b"\n")
+    second = expected_checks.derive_expected_checks(changes, scope, config_path=other)
+    assert first["selection_rule_ref"] != second["selection_rule_ref"]
+    assert first["scope_id"] != second["scope_id"]
+    assert first["source_ref"]["actual_execution_source"] == "unknown"
 
 
 def test_expected_source_and_rule_match_check_contract(repo):

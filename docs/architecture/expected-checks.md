@@ -53,9 +53,15 @@ no `job_refs`/scheduler activation.
 }
 ```
 
-- `expected_check_ref` is the content identity of one Expected instance,
-  including its Event/Ref, Check definition, Source identity, selection rule,
-  applicability and input constraints. Local Index/config paths are excluded.
+- `expected_check_ref` binds Event/Ref (including normalized multi-ref), Check
+  definition, Source identity, selection rule, applicability and input
+  constraints. Local Index/config paths are excluded.
+- `scope_id` binds consumer/Profile/Event/Source **and the selection rule
+  identity**, so a rule change cannot keep the same scope.
+- Resolved entries are checked against the published `check_contract`
+  name↔ID↔definition-version mapping; unknown entries must match `missing[]`.
+- `source_ref.actual_execution_source` is `unknown` before a Native execution;
+  Expected only declares the selection target, not observed native reads.
 - `expected_set_ref` binds the declared Check-domain set; it is not the full
   Required Obligations identity.
 - `scope_id` binds consumer/Profile/event/source scope.

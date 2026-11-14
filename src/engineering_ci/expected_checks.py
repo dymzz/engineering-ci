@@ -58,7 +58,7 @@ def _source_ref(changeset, content_binding=None):
     source = {
         "snapshot": changeset.snapshot,
         "declared_target_tree": declared,
-        "actual_execution_source": "worktree",
+        "actual_execution_source": "unknown",
         "verified_input_scope": sorted(changeset.paths),
         "scope_kind": "changed_paths",
         "binding_status": "unknown",
@@ -94,7 +94,14 @@ def entry_identity(entry):
     return _digest(payload)
 
 
-def scope_identity(consumer, profile_ref, profile_source, event_ref, source_ref):
+def scope_identity(
+    consumer,
+    profile_ref,
+    profile_source,
+    event_ref,
+    source_ref,
+    selection_rule_ref=None,
+):
     return _digest(
         {
             "consumer": consumer,
@@ -102,6 +109,7 @@ def scope_identity(consumer, profile_ref, profile_source, event_ref, source_ref)
             "profile_source": profile_source,
             "event_ref": event_ref,
             "source_ref": source_ref,
+            "selection_rule_ref": selection_rule_ref,
         }
     )
 
@@ -171,8 +179,14 @@ def derive_expected_checks(
         "status": status,
         "reason": reason,
         "scope_id": scope_identity(
-            consumer, profile_ref, profile_source, event_ref, source_ref
+            consumer,
+            profile_ref,
+            profile_source,
+            event_ref,
+            source_ref,
+            selection_rule,
         ),
+        "selection_rule_ref": selection_rule,
         "expected_set_ref": _digest(checks),
         "definitions_status": definitions_status,
         "applicability_status": "partial" if missing else "requested_scope",
@@ -243,6 +257,16 @@ def validate_projection(expected, git):
     for key in ("base_ref", "head_ref", "base_commit", "head_commit"):
         if event.get(key) != git.get(key):
             raise ExpectedError("expected_event_mismatch")
+    expected_refs = sorted(
+        (dict(item) for item in event.get("references", [])),
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+    plan_refs = sorted(
+        (dict(item) for item in (git.get("references") or [])),
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+    if expected_refs != plan_refs:
+        raise ExpectedError("expected_event_mismatch")
     for item in checks:
         if item.get("event_ref") != event:
             raise ExpectedError("expected_entry_event_mismatch")
@@ -250,12 +274,15 @@ def validate_projection(expected, git):
             raise ExpectedError("expected_entry_source_mismatch")
         if item.get("profile_ref") != expected.get("profile_ref"):
             raise ExpectedError("expected_entry_profile_mismatch")
+        if item.get("selection_rule_ref") != expected.get("selection_rule_ref"):
+            raise ExpectedError("expected_entry_rule_mismatch")
     expected_scope = scope_identity(
         expected.get("consumer"),
         expected.get("profile_ref"),
         expected.get("profile_source"),
         expected.get("event_ref"),
         expected.get("source_ref"),
+        expected.get("selection_rule_ref"),
     )
     if expected.get("scope_id") != expected_scope:
         raise ExpectedError("expected_scope_id_mismatch")

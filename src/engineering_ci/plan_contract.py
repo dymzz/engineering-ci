@@ -79,12 +79,24 @@ def _validate_expected(expected, git):
     except expected_checks.ExpectedError as error:
         raise PlanError(error.code) from None
     seen = set()
+    from . import check_contract
+
     for item in checks:
         if not isinstance(item, dict):
             raise PlanError("expected_check_invalid")
         if item.get("definition_status") not in {"resolved", "unknown"}:
             raise PlanError("expected_definition_status_invalid")
+        definition = check_contract.definition_for(item.get("name"))
         check_id = item.get("check_id")
+        if item.get("definition_status") == "resolved":
+            if (
+                definition is None
+                or check_id != definition.check_id
+                or item.get("definition_version") != definition.definition_version
+            ):
+                raise PlanError("expected_definition_mismatch")
+        elif definition is not None or check_id is not None:
+            raise PlanError("expected_definition_mismatch")
         if check_id is not None and (
             not isinstance(check_id, str)
             or not re.fullmatch(
@@ -92,10 +104,6 @@ def _validate_expected(expected, git):
             )
         ):
             raise PlanError("expected_check_id_invalid")
-        if item.get("definition_status") == "resolved" and (
-            check_id is None or type(item.get("definition_version")) is not int
-        ):
-            raise PlanError("expected_definition_invalid")
         ref = item.get("expected_check_ref")
         if not isinstance(ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", ref):
             raise PlanError("expected_check_ref_invalid")
@@ -122,6 +130,13 @@ def _validate_expected(expected, git):
     ):
         raise PlanError("expected_status_inconsistent")
     if missing and expected.get("definitions_status") == "requested_names_complete":
+        raise PlanError("expected_status_inconsistent")
+    unknown_names = sorted(
+        str(item.get("name"))
+        for item in checks
+        if item.get("definition_status") == "unknown"
+    )
+    if sorted(missing) != unknown_names:
         raise PlanError("expected_status_inconsistent")
     return expected
 
