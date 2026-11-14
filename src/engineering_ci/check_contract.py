@@ -1029,8 +1029,8 @@ def result_covers_expected(result, expected):
 def results_cover_expected(results, expected):
     """Match multiple Native Results to one resolved Check expectation.
 
-    This is not pre-execution Expected projection, ExpectedSet completeness,
-    trust admission, or a Required policy decision.
+    Only the results selected by ToolRequirement satisfaction may prove
+    Expected input and coverage. This is not ExpectedSet completeness.
     """
     validate_expected_instance(expected)
     if not isinstance(results, (list, tuple)):
@@ -1048,14 +1048,15 @@ def results_cover_expected(results, expected):
     decision = evaluate_check_satisfaction(definition, results)
     if decision["status"] != "satisfied":
         return False
-    observed_inputs = [
-        ref for item in results for ref in item["input_refs"]
-    ]
+    selected_ids = {entry["satisfied_by"] for entry in decision["requirements"]}
+    selected = [item for item in results if item["result_id"] in selected_ids]
+    observed_inputs = [ref for item in selected for ref in item["input_refs"]]
     if any(ref not in observed_inputs for ref in expected.get("input_refs", [])):
         return False
     return "coverage" not in expected or any(
-        item.get("coverage") == expected["coverage"] for item in results
+        item.get("coverage") == expected["coverage"] for item in selected
     )
+
 
 def _requirement_order(requirements):
     graph = {item.requirement_id: tuple(item.after) for item in requirements}
