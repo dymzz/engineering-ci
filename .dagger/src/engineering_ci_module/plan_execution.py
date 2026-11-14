@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import dagger
 from dagger import dag
@@ -240,19 +241,25 @@ async def _native_results(
     return artifacts
 
 
-def _overlay_files(target_dir, artifact_root, rel_paths):
-    """Materialize isolated derived files onto an immutable Directory copy."""
+def _overlay_files(target_dir, artifacts):
+    """Materialize producer-isolated files onto an immutable Directory copy."""
     updated = target_dir
-    for rel in sorted(set(rel_paths)):
-        updated = updated.with_file(rel, dag.host().file(str(artifact_root / rel)))
+    for producer_root, rel in sorted(set(artifacts)):
+        updated = updated.with_file(
+            rel, dag.host().file(str(Path(producer_root) / rel))
+        )
     return updated
 
 
-def _bundle_produced(artifacts, artifact_root, rel_paths):
+def _bundle_produced(artifacts, artifacts_files):
     updated = artifacts
-    for rel in sorted(set(rel_paths)):
+    for producer_ref, producer_root, rel in sorted(
+        artifacts_files,
+        key=lambda item: (item[0]["kind"], item[0]["name"], item[2]),
+    ):
         updated = updated.with_file(
-            "produced/" + rel, dag.host().file(str(artifact_root / rel))
+            f"produced/{producer_ref['kind']}/{producer_ref['name']}/{rel}",
+            dag.host().file(str(Path(producer_root) / rel)),
         )
     return updated
 
@@ -334,6 +341,7 @@ async def _execute_dag(
             block_reasons = []
             blocked_by = []
             files = []
+            seen_paths = {}
             for edge, producer_out in zip(edges, upstream, strict=True):
                 if isinstance(producer_out, BaseException):
                     if not isinstance(producer_out, Exception):
@@ -347,14 +355,45 @@ async def _execute_dag(
                 producer_entry = (
                     producer_out[0] if isinstance(producer_out, tuple) else producer_out
                 )
+                p_ref = edge["producer_ref"]
+                if (
+                    edge["dependency_kind"] == "data"
+                    and p_ref["kind"] != "prerequisite_action"
+                ):
+                    block_reasons.append("data_check_producer_unsupported")
+                    blocked_by.append(
+                        {
+                            "producer_ref": p_ref,
+                            "reason": "data_check_producer_unsupported",
+                        }
+                    )
+                    continue
+                producer_root = (
+                    execution.producer_artifact_root(artifact_root, p_ref)
+                    if p_ref["kind"] == "prerequisite_action"
+                    else None
+                )
                 ok, reason, closure = execution.evaluate_edge(
-                    edge, producer_entry, artifact_root=artifact_root
+                    edge, producer_entry, artifact_root=producer_root
                 )
                 if closure is not None:
                     closure_records.append(closure)
                     if closure.get("verified"):
-                        files.extend(closure.get("materialized_files") or ())
-                        produced_files.extend(closure.get("materialized_files") or ())
+                        for rel in closure.get("materialized_files") or ():
+                            if rel in seen_paths and seen_paths[rel] != str(
+                                producer_root
+                            ):
+                                block_reasons.append("data_artifact_conflict")
+                                blocked_by.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
+                                continue
+                            seen_paths[rel] = str(producer_root)
+                            files.append((producer_root, rel))
+                            produced_files.append((p_ref, producer_root, rel))
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append(
@@ -366,13 +405,16 @@ async def _execute_dag(
             kind = node_key[0]
             if kind == "prerequisite_action":
                 name = node_key[1]
+                producer_ref = {"kind": "prerequisite_action", "name": name}
                 return await asyncio.to_thread(
                     execution.run_prerequisite_action,
                     name,
                     actions.get(name),
                     root=Path(directory),
                     execution_context="dagger_export",
-                    artifact_root=artifact_root,
+                    artifact_root=execution.producer_artifact_root(
+                        artifact_root, producer_ref
+                    ),
                 )
             if kind == "check_result":
                 name = node_key[1]
@@ -393,7 +435,7 @@ async def _execute_dag(
                         )[0]
                     return entry, None, {}
                 if name in weaver_checks:
-                    consumer_source = _overlay_files(source, artifact_root, files)
+                    consumer_source = _overlay_files(source, files)
                     native, check_files, metadata = await _weaver(
                         module,
                         consumer_source,
@@ -404,6 +446,22 @@ async def _execute_dag(
                         report["source_tree_verified"],
                     )
                     return native, check_files, metadata
+                if files:
+                    temporary, consumer_root = execution.build_consumer_view(
+                        Path(directory), files
+                    )
+                    try:
+                        entry = await asyncio.to_thread(
+                            execution.run_host_check,
+                            host_plan,
+                            item,
+                            root=consumer_root,
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                        )
+                    finally:
+                        temporary.cleanup()
+                    return entry, None, {}
                 entry = await asyncio.to_thread(
                     execution.run_host_check,
                     host_plan,
@@ -439,7 +497,7 @@ async def _execute_dag(
                         },
                         None,
                     )
-                consumer_source = _overlay_files(source, artifact_root, files)
+                consumer_source = _overlay_files(source, files)
                 return await _tests(
                     module, consumer_source, targets, framework, python_version
                 )
@@ -554,7 +612,7 @@ async def _execute_dag(
                 report["prerequisites"].append(output)
 
         if produced_files:
-            artifacts = _bundle_produced(artifacts, artifact_root, produced_files)
+            artifacts = _bundle_produced(artifacts, produced_files)
         if closure_records:
             closure_records.sort(
                 key=lambda entry: (

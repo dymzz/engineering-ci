@@ -877,7 +877,11 @@ def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
     assert "generated/manifest.json" in native.test_source.files
     assert "generated/manifest.json" not in native.weaver_source.files
     assert (
-        asyncio.run(saved.artifacts.file("produced/generated/manifest.json").contents())
+        asyncio.run(
+            saved.artifacts.file(
+                "produced/prerequisite_action/gen/generated/manifest.json"
+            ).contents()
+        )
         == manifest
     )
     asyncio.run(saved.enforce())

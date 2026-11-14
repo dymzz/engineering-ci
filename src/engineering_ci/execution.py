@@ -12,6 +12,8 @@ import argparse
 import dataclasses
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -443,6 +445,29 @@ def pre_execution_edges(plan):
         if edge.get("execution_phase") == "pre_execution":
             grouped.setdefault(edge_node_key(edge["consumer_ref"]), []).append(edge)
     return grouped
+
+
+def producer_artifact_root(artifact_root, producer_ref):
+    """Isolated artifact namespace for one declared Producer."""
+    kind = producer_ref.get("kind")
+    name = producer_ref.get("name")
+    if kind not in {"prerequisite_action", "check"}:
+        raise ValueError("data_producer_kind_unsupported")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise ValueError("data_producer_name_invalid")
+    return Path(artifact_root) / kind / name
+
+
+def build_consumer_view(source_root, artifacts):
+    """Copy source into an isolated view and overlay verified producer files."""
+    temporary = tempfile.TemporaryDirectory(prefix="eci-consumer-")
+    view = Path(temporary.name) / "source"
+    shutil.copytree(source_root, view)
+    for producer_root, rel in artifacts:
+        target = view / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(producer_root) / rel, target)
+    return temporary, view
 
 
 def evaluate_edge(edge, producer_result, *, artifact_root=None):
@@ -1023,13 +1048,14 @@ def _execute_with_dependencies(
 
         def ensure_prereq(name):
             if name not in prereq_cache:
+                producer_ref = {"kind": "prerequisite_action", "name": name}
                 prereq_cache[name] = run_prerequisite_action(
                     name,
                     actions.get(name),
                     root=root,
                     runner=runner,
                     execution_context=execution_context,
-                    artifact_root=artifact_root,
+                    artifact_root=producer_artifact_root(artifact_root, producer_ref),
                 )
             return prereq_cache[name]
 
@@ -1037,28 +1063,59 @@ def _execute_with_dependencies(
             edges = incoming.get(consumer_key, ())
             block_reasons = []
             blocked_by = []
+            files = []
+            seen_paths = {}
             for edge in edges:
                 p_ref = edge["producer_ref"]
                 p_kind, p_name = p_ref["kind"], p_ref["name"]
+                if (
+                    edge["dependency_kind"] == "data"
+                    and p_kind != "prerequisite_action"
+                ):
+                    block_reasons.append("data_check_producer_unsupported")
+                    blocked_by.append(
+                        {
+                            "producer_ref": p_ref,
+                            "reason": "data_check_producer_unsupported",
+                        }
+                    )
+                    continue
                 if p_kind == "prerequisite_action":
                     producer_res = ensure_prereq(p_name)
+                    producer_root = producer_artifact_root(artifact_root, p_ref)
                 else:
                     producer_res = ensure_check(p_name)
+                    producer_root = None
                 ok, reason, closure = evaluate_edge(
-                    edge, producer_res, artifact_root=artifact_root
+                    edge, producer_res, artifact_root=producer_root
                 )
                 if closure is not None:
                     closure_records.append(closure)
+                    if closure.get("verified"):
+                        for rel in closure.get("materialized_files") or ():
+                            if rel in seen_paths and seen_paths[rel] != str(
+                                producer_root
+                            ):
+                                block_reasons.append("data_artifact_conflict")
+                                blocked_by.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
+                                continue
+                            seen_paths[rel] = str(producer_root)
+                            files.append((producer_root, rel))
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
-            return block_reasons[0] if block_reasons else None, blocked_by
+            return block_reasons[0] if block_reasons else None, blocked_by, files
 
         def ensure_check(name):
             if name in check_cache:
                 return check_cache[name]
             item = selected_by_name[name]
-            block_reason, blocked_by = resolve_incoming(("check", name))
+            block_reason, blocked_by, files = resolve_incoming(("check", name))
             if block_reason is not None:
                 entry = _decorated_blocked_check(
                     plan,
@@ -1069,6 +1126,21 @@ def _execute_with_dependencies(
                     execution_context=execution_context,
                     run_instance=run_instance,
                 )
+            elif files:
+                temporary, consumer_root = build_consumer_view(root, files)
+                try:
+                    entry = run_host_check(
+                        plan,
+                        item,
+                        root=consumer_root,
+                        hygiene_config=hygiene_config,
+                        sources_config=sources_config,
+                        runner=runner,
+                        execution_context=execution_context,
+                        run_instance=run_instance,
+                    )
+                finally:
+                    temporary.cleanup()
             else:
                 entry = run_host_check(
                     plan,
@@ -1090,7 +1162,7 @@ def _execute_with_dependencies(
             resolve_incoming(("report", "artifacts"))
 
         requirement = test_requirement_failure(plan)
-        test_block_reason, test_blocked_by = resolve_incoming("tests")
+        test_block_reason, test_blocked_by, test_files = resolve_incoming("tests")
         if not tests:
             report["tests"] = {"status": "not_executed", "exit_code": 3}
         elif requirement:
@@ -1110,12 +1182,18 @@ def _execute_with_dependencies(
             }
         else:
             native = {}
+            temporary = None
+            test_root = root
+            artifact_env = artifact_root
+            if test_files:
+                temporary, test_root = build_consumer_view(root, test_files)
+                artifact_env = test_root
             previous_env = os.environ.get("ENGINEERING_CI_ARTIFACT_DIR")
-            os.environ["ENGINEERING_CI_ARTIFACT_DIR"] = str(artifact_root)
+            os.environ["ENGINEERING_CI_ARTIFACT_DIR"] = str(artifact_env)
             try:
                 exit_code = selection.run_tests(
                     tests,
-                    root=root,
+                    root=test_root,
                     framework=framework,
                     src_root=chosen.get("src_root", "src"),
                     expected_tree=expected_tree,
@@ -1131,6 +1209,8 @@ def _execute_with_dependencies(
                     os.environ.pop("ENGINEERING_CI_ARTIFACT_DIR", None)
                 else:
                     os.environ["ENGINEERING_CI_ARTIFACT_DIR"] = previous_env
+                if temporary is not None:
+                    temporary.cleanup()
             if native.get("source_refusal"):
                 report["status"] = "not_executed"
                 report["exit_code"] = 4
