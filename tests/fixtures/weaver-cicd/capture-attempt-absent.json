@@ -12,7 +12,7 @@
           {
             "key": "cicd.pipeline.run.id",
             "value": {
-              "stringValue": "controlled-42/1"
+              "stringValue": "controlled-42"
             }
           },
           {

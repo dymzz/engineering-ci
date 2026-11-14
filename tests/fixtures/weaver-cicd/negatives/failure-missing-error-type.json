@@ -37,12 +37,6 @@
                   "value": {
                     "stringValue": "failure"
                   }
-                },
-                {
-                  "key": "github.actions.run_attempt",
-                  "value": {
-                    "intValue": "1"
-                  }
                 }
               ]
             },

@@ -33,6 +33,80 @@ def _invalid_extensible_result_type(samples):
     return None
 
 
+def _time_fraction_digits(value):
+    """Fractional-second digits in a native RFC 3339 timestamp.
+
+    ``None`` means the timestamp was absent. That is not the same as an
+    observed whole-second timestamp, which is ``0``.
+    """
+    if not isinstance(value, str):
+        return None
+    if "." not in value:
+        return 0
+    digits = 0
+    for char in value.split(".", 1)[1]:
+        if not char.isdigit():
+            break
+        digits += 1
+    return digits
+
+
+def _time_provenance(items, *, capture_source):
+    """Record where the observed span times came from and what they do not prove.
+
+    A Terminal PASS proves the declared Run/Attempt/result binding and a
+    completed Root span. It does not prove an exact pipeline end time or a
+    duration, so no such claim is made here.
+    """
+    digits = set()
+    missing = 0
+    for item in items:
+        for key in ("start_time", "end_time"):
+            observed = _time_fraction_digits((item or {}).get(key))
+            if observed is None:
+                missing += 1
+            else:
+                digits.add(observed)
+    return {
+        "status": "recorded",
+        "capture_time_source": capture_source,
+        "native_sample_time_source": ("weaver_live_check_start_time_end_time_rfc3339"),
+        "sample_time_fraction_digits": sorted(digits),
+        "sample_time_missing": missing,
+        "exact_end_time_claimed": False,
+        "duration_claimed": False,
+    }
+
+
+# Every reason the Terminal correlation gate can fail with. The Run-ID
+# correlation subset is reported separately in the coverage matrix.
+TERMINAL_GATE_FAILURE_REASONS = (
+    "terminal_capture_required",
+    "missing_capture_span",
+    "duplicate_capture_span",
+    "terminal_observed_identity_missing",
+    "terminal_run_id_conflict",
+    "terminal_observed_result_missing",
+    "terminal_run_id_mismatch",
+    "terminal_evidence_missing_or_mismatched",
+    "terminal_result_mismatch",
+    "terminal_result_conflict",
+    "terminal_capture_sample_conflict",
+    "terminal_span_not_root",
+    "terminal_attempt_correlation_unverified",
+    "terminal_attempt_extension_invalid",
+    "terminal_attempt_mismatch",
+    "terminal_pipeline_signal_missing",
+)
+
+# The subset of Terminal failures that is the Run-ID correlation itself.
+RUN_ID_CORRELATION_FAILURE_REASONS = (
+    "terminal_observed_identity_missing",
+    "terminal_run_id_mismatch",
+    "terminal_run_id_conflict",
+)
+
+
 def live_result(exit_code: int, raw_report: str, expected_matchers: list[str]) -> dict:
     """Keep the native exit and require explicit sample and matcher coverage."""
     result = {"status": "failed", "exit_code": exit_code, "reason": "report_invalid"}
@@ -176,11 +250,40 @@ def lookup_capture_span(capture, trace_id, span_id):
     return matches[0], None
 
 
+_ATTEMPT_SUFFIX = re.compile(r"/([1-9][0-9]*)$")
+
+
+def _attempt_suffix(run_id):
+    """Trailing positive-decimal Attempt on a pipeline run id, if present.
+
+    The whole string remains the Run identity. The suffix is only an Attempt
+    claim that must agree with the declared Attempt.
+    """
+    if not isinstance(run_id, str):
+        return None
+    match = _ATTEMPT_SUFFIX.search(run_id)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extension_attempt(value):
+    """Integer Attempt from a leftover extension attribute, or None if illegal."""
+    if type(value) is bool:
+        return None
+    if type(value) is int and value >= 1:
+        return value
+    if type(value) is str and value.isdigit() and not value.startswith("0"):
+        return int(value)
+    return None
+
+
 def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     """Bind observed Pipeline Root to declared provenance using SemConv fields.
 
     Canonical Run ID comes from the enclosing OTLP Resource. Pipeline result
-    comes from the Span. Attempt is ECI/GitHub correlation, not SemConv Required.
+    comes from the Span. Attempt is the trailing positive decimal of that
+    Run ID, checked against the declared Attempt. It is not SemConv Required.
     """
     if capture is None:
         return "terminal_capture_required", None
@@ -234,34 +337,41 @@ def _bind_terminal_pipeline(span, wanted, source, evidence, *, capture=None):
     if not _absent_parent(sample_parent) or not _absent_parent(capture_parent):
         return "terminal_span_not_root", None
 
-    # github.actions.run_attempt is ECI/GitHub correlation, not SemConv Required.
-    # weaver-terminal still cannot PASS a Run/Attempt gate without verified
-    # Attempt evidence bound to the matched capture (PR #78 P1-1).
-    attempt_attr = span_attrs.get("github.actions.run_attempt")
-    if attempt_attr is None:
-        attempt_attr = sample_attrs.get("github.actions.run_attempt")
-    if attempt_attr is None:
+    # Attempt comes from the suffix of cicd.pipeline.run.id. The full string
+    # was already compared to source/evidence run_id. The suffix must also
+    # agree with the declared Attempt integer; the two claims are not rewritten
+    # into each other. A missing suffix stays unverified and cannot PASS.
+    # github.actions.run_attempt is not required. A leftover value that is
+    # illegal or disagrees still fails. This is in-capture consistency, not a
+    # GitHub witness and not trusted admission.
+    observed_attempt = _attempt_suffix(str(run_id))
+    if observed_attempt is None:
         return "terminal_attempt_correlation_unverified", {
             "status": "unverified",
-            "reason": "attempt_extension_absent",
-            "scope": "capture_extension_vs_declared",
-            "source": "otlp_capture_or_sample",
+            "reason": "attempt_not_in_pipeline_run_id",
+            "scope": "pipeline_run_id_suffix_vs_declared",
+            "source": "cicd.pipeline.run.id",
             "declared_attempt": source["attempt"],
-            # Not #75/#63 GitHub authentication or admission.
             "authenticated": False,
         }
-    try:
-        attempt_value = int(attempt_attr)
-    except (TypeError, ValueError):
-        return "terminal_attempt_extension_invalid", None
-    if attempt_value != source["attempt"] or attempt_value != evidence.get("attempt"):
+    extension = span_attrs.get("github.actions.run_attempt")
+    if extension is None:
+        extension = sample_attrs.get("github.actions.run_attempt")
+    if extension is not None:
+        extension_attempt = _extension_attempt(extension)
+        if extension_attempt is None:
+            return "terminal_attempt_extension_invalid", None
+        if extension_attempt != observed_attempt:
+            return "terminal_attempt_mismatch", None
+    if observed_attempt != source["attempt"] or observed_attempt != evidence.get(
+        "attempt"
+    ):
         return "terminal_attempt_mismatch", None
     return None, {
-        # Capture/sample attribute matched declared Attempt — not provenance auth.
         "status": "capture_attempt_matched",
-        "attempt": attempt_value,
-        "scope": "capture_extension_vs_declared",
-        "source": "otlp_capture_or_sample",
+        "attempt": observed_attempt,
+        "scope": "pipeline_run_id_suffix_vs_declared",
+        "source": "cicd.pipeline.run.id",
         "authenticated": False,
     }
 
@@ -346,6 +456,10 @@ def otlp_result(exit_code, raw_report, expected, *, terminal=False, capture=None
                 result.update(status="failed", reason="span_not_completed")
                 return result
             matched_items.append((wanted, item))
+        result["time_provenance"] = _time_provenance(
+            [item for _, item in matched_items],
+            capture_source="otlp_span_startTimeUnixNano_endTimeUnixNano",
+        )
         if terminal:
             evidence = expected.get("terminal_evidence", {})
             if (

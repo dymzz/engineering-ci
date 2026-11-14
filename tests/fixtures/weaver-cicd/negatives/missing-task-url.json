@@ -5,17 +5,24 @@
         "attributes": [
           {
             "key": "cicd.pipeline.name",
-            "value": { "stringValue": "Engineering CI" }
+            "value": {
+              "stringValue": "Engineering CI"
+            }
           },
           {
             "key": "cicd.pipeline.run.id",
-            "value": { "stringValue": "controlled-42/1" }
+            "value": {
+              "stringValue": "controlled-42/1"
+            }
           }
         ]
       },
       "scopeSpans": [
         {
-          "scope": { "name": "eci.controlled.cicd", "version": "1" },
+          "scope": {
+            "name": "eci.controlled.cicd",
+            "version": "1"
+          },
           "spans": [
             {
               "traceId": "11111111111111111111111111111111",
@@ -27,11 +34,9 @@
               "attributes": [
                 {
                   "key": "cicd.pipeline.result",
-                  "value": { "stringValue": "success" }
-                },
-                {
-                  "key": "github.actions.run_attempt",
-                  "value": { "intValue": "1" }
+                  "value": {
+                    "stringValue": "success"
+                  }
                 }
               ]
             },
@@ -46,15 +51,21 @@
               "attributes": [
                 {
                   "key": "cicd.pipeline.task.name",
-                  "value": { "stringValue": "checks" }
+                  "value": {
+                    "stringValue": "checks"
+                  }
                 },
                 {
                   "key": "cicd.pipeline.task.run.id",
-                  "value": { "stringValue": "job-9" }
+                  "value": {
+                    "stringValue": "job-9"
+                  }
                 },
                 {
                   "key": "cicd.pipeline.task.run.result",
-                  "value": { "stringValue": "success" }
+                  "value": {
+                    "stringValue": "success"
+                  }
                 }
               ]
             }

@@ -15,11 +15,6 @@ groups:
 
       The `{pipeline}` SHOULD be the [`cicd.pipeline.name`](/docs/registry/attributes/cicd.md#cicd-pipeline-name).
     stability: release_candidate
-    # ECI #74 Resource Required acceptance: associate Pipeline Span with the
-    # Pipeline Run entity so Weaver checks Resource cicd.pipeline.run.id.
-    # Upstream SemConv span does not declare this association today.
-    entity_associations:
-      - cicd.pipeline.run
     attributes:
       - ref: cicd.pipeline.result
         requirement_level: required
