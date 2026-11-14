@@ -63,6 +63,12 @@ no `job_refs`/scheduler activation.
 - Resolved entries are checked against the published `check_contract`
   name↔ID↔historical definition-version mapping; unknown entries must match
   `missing[]`. Historical v1 remains readable; it does not satisfy a newer v2.
+- `projection_source` is restricted to `check_scope` in this slice. A
+  free-form `profile` source is rejected until an authoritative Profile
+  producer/validator exists.
+- CheckScope projection is bidirectional: every source entry appears exactly
+  once in Expected, and no Expected entry may come from outside the declared
+  scope. Removed selected entries are rejected.
 - For `projection_source=check_scope`, applicability/reason/input refs are
   cross-checked with Plan `check_scope`; changed-path scope is cross-checked
   with `git.changed_paths` and `content_binding.paths`. Single-Ref baseline must

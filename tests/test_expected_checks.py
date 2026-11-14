@@ -165,14 +165,16 @@ def test_expected_index_target_is_not_head_tree(repo):
     plan = selection.plan(
         chosen, config=config, config_path=path / "ci-selection.toml", root=path
     )
-    expected_checks.validate_projection(plan["expected_checks"], plan["git"])
+    expected_checks.validate_projection(
+        plan["expected_checks"], plan["git"], plan["check_scope"]
+    )
     tampered = json.loads(json.dumps(plan["expected_checks"]))
     tampered["source_ref"]["declared_target_tree"] = plan["git"]["tree"]
     for entry in tampered["checks"]:
         entry["source_ref"]["declared_target_tree"] = plan["git"]["tree"]
     refresh_expected(tampered)
     with pytest.raises(expected_checks.ExpectedError) as raised:
-        expected_checks.validate_projection(tampered, plan["git"])
+        expected_checks.validate_projection(tampered, plan["git"], plan["check_scope"])
     assert raised.value.code == "expected_source_mismatch"
 
 
@@ -216,14 +218,18 @@ def test_expected_multi_ref_must_match_plan_references(repo):
         "base_commit": changes.base_commit,
         "head_commit": changes.head_commit,
     }
-    expected_checks.validate_projection(expected, git)
+    expected_checks.validate_projection(
+        expected, git, [{"name": "docs", "status": "selected", "inputs": []}]
+    )
     tampered = json.loads(json.dumps(expected))
     tampered["event_ref"]["references"][1]["after"] = "e"
     for entry in tampered["checks"]:
         entry["event_ref"]["references"][1]["after"] = "e"
     refresh_expected(tampered)
     with pytest.raises(expected_checks.ExpectedError) as raised:
-        expected_checks.validate_projection(tampered, git)
+        expected_checks.validate_projection(
+            tampered, git, [{"name": "docs", "status": "selected", "inputs": []}]
+        )
     assert raised.value.code == "expected_event_mismatch"
 
 
@@ -260,6 +266,28 @@ def test_expected_scope_binds_selection_rule(repo, tmp_path):
     assert first["selection_rule_ref"] != second["selection_rule_ref"]
     assert first["scope_id"] != second["scope_id"]
     assert first["source_ref"]["actual_execution_source"] == "unknown"
+
+
+def test_expected_projection_source_is_check_scope(repo):
+    plan = make_plan(repo)
+    plan["expected_checks"]["projection_source"] = "profile"
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_projection_source_unsupported"
+
+    plan = make_plan(repo)
+    plan.pop("check_scope")
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_check_scope_missing"
+
+    plan = make_plan(repo)
+    plan["expected_checks"]["checks"].pop()
+    refresh_expected(plan["expected_checks"])
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(plan)
+    assert raised.value.code == "expected_scope_mismatch"
 
 
 def test_expected_selection_rule_matches_generator(repo):

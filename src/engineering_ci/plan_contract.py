@@ -62,8 +62,13 @@ def _validate_expected(expected, git, plan):
         raise PlanError("expected_complete_unproven")
     if expected.get("consumer_completeness") != "not_claimed":
         raise PlanError("expected_consumer_completeness_unproven")
-    if expected.get("projection_source") not in {"check_scope", "profile"}:
-        raise PlanError("expected_projection_source_invalid")
+    if expected.get("projection_source") != "check_scope":
+        raise PlanError("expected_projection_source_unsupported")
+    check_scope = plan.get("check_scope") or (plan.get("selection") or {}).get(
+        "check_scope"
+    )
+    if check_scope is None:
+        raise PlanError("expected_check_scope_missing")
     rule = expected.get("selection_rule_ref")
     generator = plan.get("generator")
     if (
@@ -91,7 +96,7 @@ def _validate_expected(expected, git, plan):
         expected_checks.validate_projection(
             expected,
             git,
-            plan.get("check_scope") or (plan.get("selection") or {}).get("check_scope"),
+            check_scope,
         )
     except expected_checks.ExpectedError as error:
         raise PlanError(error.code) from None

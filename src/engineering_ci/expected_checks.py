@@ -210,6 +210,16 @@ def validate_projection(expected, git, check_scope=None):
     checks = expected.get("checks")
     if not isinstance(checks, list):
         raise ExpectedError("expected_checks_invalid")
+    if expected.get("projection_source") != "check_scope":
+        raise ExpectedError("expected_projection_source_unsupported")
+    if check_scope is None:
+        raise ExpectedError("expected_check_scope_missing")
+    scope_names = [str(item.get("name")) for item in check_scope]
+    expected_names = [str(item.get("name")) for item in checks]
+    if len(scope_names) != len(set(scope_names)) or sorted(scope_names) != sorted(
+        expected_names
+    ):
+        raise ExpectedError("expected_scope_mismatch")
     for item in checks:
         if not isinstance(item, dict):
             raise ExpectedError("expected_check_invalid")
