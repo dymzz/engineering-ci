@@ -1180,6 +1180,7 @@ def _execute_with_dependencies(
             edges = incoming.get(consumer_key, ())
             block_reasons = []
             blocked_by = []
+            data_failures = []
             files = []
             seen_paths = {}
             for edge in edges:
@@ -1192,6 +1193,13 @@ def _execute_with_dependencies(
                     reason = "data_check_producer_unsupported"
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
+                    data_failures.append(
+                        {
+                            "producer_ref": p_ref,
+                            "output_ref": edge.get("output_ref"),
+                            "reason": reason,
+                        }
+                    )
                     closure_records.append(
                         {
                             "producer_ref": p_ref,
@@ -1229,6 +1237,13 @@ def _execute_with_dependencies(
                                         "reason": "data_artifact_conflict",
                                     }
                                 )
+                                data_failures.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "output_ref": edge.get("output_ref"),
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
                                 continue
                             if any(
                                 _artifact_paths_overlap(rel, existing)
@@ -1242,22 +1257,47 @@ def _execute_with_dependencies(
                                         "reason": "data_artifact_conflict",
                                     }
                                 )
+                                data_failures.append(
+                                    {
+                                        "producer_ref": p_ref,
+                                        "output_ref": edge.get("output_ref"),
+                                        "reason": "data_artifact_conflict",
+                                    }
+                                )
                                 continue
                             seen_paths[rel] = str(producer_root)
                             files.append((producer_root, rel, kind))
                 if not ok:
                     block_reasons.append(reason)
                     blocked_by.append({"producer_ref": p_ref, "reason": reason})
-            if block_reasons and any(
-                edge.get("dependency_kind") == "data" for edge in edges
-            ):
-                report.setdefault(
-                    "artifact_delivery",
+                    if edge.get("dependency_kind") == "data":
+                        data_failures.append(
+                            {
+                                "producer_ref": p_ref,
+                                "output_ref": edge.get("output_ref"),
+                                "reason": reason,
+                            }
+                        )
+            if data_failures:
+                if isinstance(consumer_key, tuple):
+                    consumer_ref = {
+                        "kind": consumer_key[0],
+                        "name": consumer_key[1],
+                    }
+                elif isinstance(consumer_key, dict):
+                    consumer_ref = dict(consumer_key)
+                else:
+                    consumer_ref = {"kind": str(consumer_key)}
+                delivery = report.setdefault(
+                    "artifact_delivery", {"status": "blocked", "consumers": []}
+                )
+                delivery["status"] = "blocked"
+                delivery.setdefault("reason", data_failures[0]["reason"])
+                delivery["consumers"].append(
                     {
-                        "status": "blocked",
-                        "reason": block_reasons[0],
-                        "blocked_by": blocked_by,
-                    },
+                        "consumer_ref": consumer_ref,
+                        "failures": data_failures,
+                    }
                 )
             return block_reasons[0] if block_reasons else None, blocked_by, files
 

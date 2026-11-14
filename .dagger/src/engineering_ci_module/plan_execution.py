@@ -448,16 +448,28 @@ async def _execute_dag(
                     blocked_by.append(
                         {"producer_ref": edge["producer_ref"], "reason": reason}
                     )
-            if block_reasons and any(
-                edge.get("dependency_kind") == "data" for edge in edges
-            ):
-                report.setdefault(
-                    "artifact_delivery",
-                    {
-                        "status": "blocked",
-                        "reason": block_reasons[0],
-                        "blocked_by": blocked_by,
-                    },
+            data_failures = [
+                item
+                for item in blocked_by
+                if str(item.get("reason", "")).startswith("data_")
+            ]
+            if data_failures:
+                if isinstance(consumer_key, tuple):
+                    consumer_ref = {
+                        "kind": consumer_key[0],
+                        "name": consumer_key[1],
+                    }
+                elif isinstance(consumer_key, dict):
+                    consumer_ref = dict(consumer_key)
+                else:
+                    consumer_ref = {"kind": str(consumer_key)}
+                delivery = report.setdefault(
+                    "artifact_delivery", {"status": "blocked", "consumers": []}
+                )
+                delivery["status"] = "blocked"
+                delivery.setdefault("reason", data_failures[0]["reason"])
+                delivery["consumers"].append(
+                    {"consumer_ref": consumer_ref, "failures": data_failures}
                 )
             return (block_reasons[0] if block_reasons else None), blocked_by, files
 
