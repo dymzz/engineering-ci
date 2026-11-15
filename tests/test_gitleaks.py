@@ -76,14 +76,77 @@ def test_gitleaks_clean_range_passes(tmp_path):
     (root / "a.txt").write_text("clean\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "base")
+    (root / "a.txt").write_text("cleaner\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "next")
     result = gitleaks.scan_git_history(
         root,
-        revision_range="HEAD",
+        revision_range="HEAD~1..HEAD",
         environ={**os.environ, "GITLEAKS_BIN": BINARY},
     )
     assert result["status"] == "passed"
     assert result["native_exit_code"] == 0
     assert result["findings"] == []
+    assert result["coverage"]["complete"] is True
+    assert result["coverage"]["old_commit"] == git(root, "rev-parse", "HEAD~1")
+    assert result["coverage"]["new_commit"] == git(root, "rev-parse", "HEAD")
+
+
+def test_gitleaks_rejects_non_range_scope(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    with pytest.raises(gitleaks.GitleaksError) as raised:
+        gitleaks.scan_git_history(root, revision_range="HEAD")
+    assert raised.value.code == "gitleaks_revision_invalid"
+
+
+def test_sanitizer_removes_secret_from_allowed_fields_and_diagnostics():
+    findings, secrets = gitleaks._sanitize(
+        [
+            {
+                "RuleID": "test-rule",
+                "File": "glpat-abcdefghijklmnopqrst/path.txt",
+                "Description": "secret glpat-abcdefghijklmnopqrst",
+                "Secret": "glpat-abcdefghijklmnopqrst",
+                "Match": "glpat-abcdefghijklmnopqrst",
+                "StartLine": 1,
+            }
+        ]
+    )
+    assert findings == [
+        {
+            "RuleID": "test-rule",
+            "File": "[REDACTED]/path.txt",
+            "StartLine": 1,
+            "redacted": True,
+        }
+    ]
+    assert secrets == {"glpat-abcdefghijklmnopqrst"}
+    assert "glpat-" not in json.dumps(findings)
+
+
+def test_sanitizer_refuses_non_list_report():
+    with pytest.raises(gitleaks.GitleaksError) as raised:
+        gitleaks._sanitize({"Secret": "x"})
+    assert raised.value.code == "gitleaks_report_invalid"
+
+
+def test_gitleaks_rejects_wrong_binary_version(tmp_path):
+    if os.name != "nt":
+        pytest.skip("cmd shim fixture is Windows-specific")
+    fake = tmp_path / "fake-gitleaks.cmd"
+    fake.write_text("@echo 9.9.9\n", encoding="utf-8")
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    with pytest.raises(gitleaks.GitleaksError) as raised:
+        gitleaks.scan_git_history(
+            root,
+            all_history=True,
+            environ={"GITLEAKS_BIN": str(fake)},
+        )
+    assert raised.value.code == "gitleaks_binary_version_mismatch"
 
 
 def test_gitleaks_requires_explicit_scope(tmp_path):
@@ -105,7 +168,7 @@ def test_gitleaks_missing_binary_is_not_clean(tmp_path):
     with pytest.raises(gitleaks.GitleaksError) as raised:
         gitleaks.scan_git_history(
             root,
-            revision_range="HEAD",
+            all_history=True,
             environ={"GITLEAKS_BIN": str(tmp_path / "missing")},
         )
     assert raised.value.code == "gitleaks_binary_missing"

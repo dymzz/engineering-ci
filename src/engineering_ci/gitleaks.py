@@ -1,8 +1,8 @@
-"""Gitleaks Git-history execution with a sanitized native result.
+"""Gitleaks Git-history execution with sanitized public output.
 
-The raw report is never returned. Only the fields needed for diagnosis and
-identity are retained; ``Secret``/``Match`` and similar content fields are
-dropped before the result can reach a report or artifact.
+The raw report is never returned. Only diagnostic fields can survive, and every
+known Secret/Match value is removed from those fields and from stdout/stderr
+before they enter a public result.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -23,17 +25,14 @@ GITLEAKS_WINDOWS_X64_SHA256 = (
 )
 _FINDING_FIELDS = (
     "RuleID",
-    "Description",
     "File",
     "StartLine",
     "EndLine",
     "Commit",
-    "Author",
-    "Email",
     "Date",
     "Fingerprint",
-    "Link",
 )
+_REVISION_RANGE = re.compile(r"^[^.\s]+\.\.[^.\s]+$")
 
 
 class GitleaksError(ValueError):
@@ -42,6 +41,36 @@ class GitleaksError(ValueError):
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+def _git(root, *args):
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _git_dir(root):
+    result = _git(root, "rev-parse", "--git-dir")
+    if result.returncode != 0:
+        raise GitleaksError("gitleaks_git_directory_unavailable")
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = Path(root) / path
+    return path.resolve()
 
 
 def find_binary(environ=None):
@@ -58,33 +87,118 @@ def find_binary(environ=None):
     return Path(found)
 
 
-def _sanitize(report):
-    findings = []
-    for item in report if isinstance(report, list) else ():
-        if not isinstance(item, dict):
-            continue
-        finding = {key: item[key] for key in _FINDING_FIELDS if key in item}
-        finding["redacted"] = True
-        findings.append(finding)
-    return findings
-
-
-def _git_dir(root):
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=root,
+def _verify_binary(binary, environ):
+    version = subprocess.run(
+        [str(binary), "version"],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
     )
-    if result.returncode != 0:
-        raise GitleaksError("gitleaks_git_directory_unavailable")
-    path = Path(result.stdout.strip())
-    if not path.is_absolute():
-        path = Path(root) / path
-    return path.resolve()
+    if version.returncode != 0 or version.stdout.strip().splitlines()[:1] != [
+        GITLEAKS_VERSION
+    ]:
+        raise GitleaksError("gitleaks_binary_version_mismatch")
+    digest = _sha256(binary)
+    expected = environ.get("GITLEAKS_ASSET_SHA256")
+    machine = platform.machine().lower()
+    windows_x64 = os.name == "nt" and machine in {"amd64", "x86_64"}
+    if windows_x64:
+        expected = expected or GITLEAKS_WINDOWS_X64_SHA256
+    if not expected or digest != "sha256:" + expected.lower().removeprefix("sha256:"):
+        raise GitleaksError("gitleaks_asset_mismatch")
+    return {
+        "access_id": "gitleaks.git",
+        "version": GITLEAKS_VERSION,
+        "artifact_sha256": digest,
+        "platform": f"{platform.system().lower()}-{machine}",
+        "path": str(binary),
+    }
+
+
+def _scrub(value, secrets):
+    if not isinstance(value, str):
+        return value
+    for secret in secrets:
+        if secret:
+            value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def _sanitize(report):
+    if not isinstance(report, list):
+        raise GitleaksError("gitleaks_report_invalid")
+    secrets = set()
+    for item in report:
+        if not isinstance(item, dict):
+            raise GitleaksError("gitleaks_report_invalid")
+        for key in ("Secret", "Match"):
+            if isinstance(item.get(key), str) and item[key]:
+                secrets.add(item[key])
+    findings = []
+    for item in report:
+        finding = {
+            key: _scrub(item[key], secrets)
+            for key in _FINDING_FIELDS
+            if key in item and isinstance(item[key], (str, int))
+        }
+        finding["redacted"] = True
+        findings.append(finding)
+    return findings, secrets
+
+
+def _resolve_scope(root, revision_range, all_history):
+    shallow = (
+        _git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    )
+    if all_history:
+        count = _git(root, "rev-list", "--count", "--all")
+        if count.returncode != 0:
+            raise GitleaksError("gitleaks_history_unavailable")
+        return {
+            "mode": "all-history",
+            "revision_range": None,
+            "old_commit": None,
+            "new_commit": None,
+            "commit_count": int(count.stdout.strip()),
+            "shallow": shallow,
+            "complete": not shallow,
+            "reason": "shallow_repository" if shallow else None,
+        }
+
+    if not isinstance(revision_range, str) or not _REVISION_RANGE.fullmatch(
+        revision_range
+    ):
+        raise GitleaksError("gitleaks_revision_invalid")
+    old, new = revision_range.split("..", 1)
+    old_commit = _git(root, "rev-parse", "--verify", f"{old}^{{commit}}")
+    new_commit = _git(root, "rev-parse", "--verify", f"{new}^{{commit}}")
+    if old_commit.returncode != 0 or new_commit.returncode != 0:
+        raise GitleaksError("gitleaks_revision_unavailable")
+    old_sha = old_commit.stdout.strip()
+    new_sha = new_commit.stdout.strip()
+    ancestor = _git(root, "merge-base", "--is-ancestor", old_sha, new_sha)
+    count = _git(root, "rev-list", "--count", f"{old_sha}..{new_sha}")
+    if count.returncode != 0:
+        raise GitleaksError("gitleaks_history_unavailable")
+    reachable = ancestor.returncode == 0
+    complete = reachable and not shallow
+    reason = None
+    if not reachable:
+        reason = "non_ancestor_range"
+    elif shallow:
+        reason = "shallow_repository"
+    return {
+        "mode": "revision-range",
+        "revision_range": revision_range,
+        "old_commit": old_sha,
+        "new_commit": new_sha,
+        "commit_count": int(count.stdout.strip()),
+        "shallow": shallow,
+        "complete": complete,
+        "reason": reason,
+    }
 
 
 def scan_git_history(
@@ -96,18 +210,14 @@ def scan_git_history(
     environ=None,
     timeout=120,
 ):
-    """Run Gitleaks over one explicit Git revision scope.
-
-    ``revision_range`` is an ``old..new`` (or equivalent) Git log range.
-    ``all_history=True`` is a separate coverage mode and must be requested
-    explicitly; it is never inferred from an empty range.
-    """
+    """Run Gitleaks over one explicit Git revision scope."""
     root = Path(root)
+    environ = os.environ if environ is None else environ
     if bool(revision_range) == bool(all_history):
         raise GitleaksError("gitleaks_scope_required")
-    if revision_range and not isinstance(revision_range, str):
-        raise GitleaksError("gitleaks_scope_invalid")
+    coverage = _resolve_scope(root, revision_range, all_history)
     binary = find_binary(environ)
+    tool = _verify_binary(binary, environ)
     config_path = Path(config_path) if config_path else None
     if config_path is not None and not config_path.is_file():
         raise GitleaksError("gitleaks_config_missing")
@@ -126,8 +236,8 @@ def scan_git_history(
             "json",
             "--report-path",
             str(report_path),
+            f"--log-opts={'--all' if all_history else revision_range}",
         ]
-        command.append(f"--log-opts={'--all' if all_history else revision_range}")
         if config_path is not None:
             command.extend(["--config", str(config_path)])
         try:
@@ -145,40 +255,39 @@ def scan_git_history(
             raise GitleaksError("gitleaks_binary_missing") from None
         except subprocess.TimeoutExpired:
             raise GitleaksError("gitleaks_timeout") from None
-        if report_path.is_file():
-            raw = report_path.read_bytes()
-            try:
-                report = json.loads(raw.decode("utf-8"))
-            except (UnicodeError, ValueError):
-                raise GitleaksError("gitleaks_report_invalid") from None
-            findings = _sanitize(report)
-            report_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
-        else:
-            findings = []
-            report_sha256 = None
-    if completed.returncode == 0:
+        if not report_path.is_file():
+            raise GitleaksError("gitleaks_report_missing")
+        raw = report_path.read_bytes()
+        try:
+            report = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise GitleaksError("gitleaks_report_invalid") from None
+        findings, _ = _sanitize(report)
+
+    if completed.returncode == 0 and not findings:
         status = "passed"
-    elif completed.returncode == 1:
+        reason = None
+    elif completed.returncode == 1 and findings:
         status = "failed"
+        reason = "secret_findings"
+    elif completed.returncode == 0:
+        status = "error"
+        reason = "gitleaks_exit_inconsistent"
+    elif completed.returncode == 1:
+        status = "error"
+        reason = "gitleaks_findings_missing"
     else:
         status = "error"
+        reason = "gitleaks_scan_failed"
+
     return {
         "status": status,
+        "reason": reason,
         "native_exit_code": completed.returncode,
         "findings": findings,
-        "report_sha256": report_sha256,
-        "tool": {
-            "access_id": "gitleaks.git",
-            "version": GITLEAKS_VERSION,
-            "path": str(binary),
-        },
-        "coverage": {
-            "mode": "all-history" if all_history else "revision-range",
-            "revision_range": None if all_history else revision_range,
-            "complete": status in {"passed", "failed"},
-        },
-        "stdout": completed.stdout[-4000:],
-        "stderr": completed.stderr[-4000:],
+        "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "tool": tool,
+        "coverage": coverage,
     }
 
 
