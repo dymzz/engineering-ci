@@ -72,7 +72,8 @@ class RoutingTests(unittest.TestCase):
             "ci.yaml": "actionlint",
             "scripts/build.ps1": "psscriptanalyzer",
             "scripts/helper.psm1": "psscriptanalyzer",
-            "scripts/build.sh": "unsupported",
+            "scripts/build.sh": "shellcheck",
+            "scripts/deploy.bash": "shellcheck",
             "README.md": "unsupported",
             "Makefile": "unsupported",
         }
@@ -131,12 +132,30 @@ class PolicyTests(unittest.TestCase):
         for value in (
             script.ACTIONLINT_VERSION,
             script.ACTIONLINT_WRAPPER,
+            script.SHELLCHECK_VERSION,
+            script.SHELLCHECK_WRAPPER,
+            script.ZIZMOR_VERSION,
             script.PSSCRIPTANALYZER_VERSION,
             powershell.PSSCRIPTANALYZER_VERSION,
         ):
             with self.subTest(value=value):
                 self.assertRegex(value, r"^\d+(\.\d+)+$")
         self.assertIn("powershell:", script.POWERSHELL_IMAGE)
+
+    def test_shellcheck_and_zizmor_policies_reject_unsafe_inputs(self):
+        for builder, kwargs in (
+            (script.shellcheck_policy, {"scan_paths": ["../escape.sh"]}),
+            (script.shellcheck_policy, {"scan_paths": []}),
+            (script.shellcheck_policy, {"scan_paths": ["-x.sh"]}),
+            (script.zizmor_policy, {"scan_paths": ["/etc/bad.yml"]}),
+            (script.zizmor_policy, {"config": "../zizmor.yml"}),
+            (script.zizmor_policy, {"persona": "bad;persona"}),
+        ):
+            with (
+                self.subTest(builder=builder.__name__, kwargs=kwargs),
+                self.assertRaises(ValueError),
+            ):
+                builder(**kwargs)
 
 
 class ArgumentTests(unittest.TestCase):
@@ -146,10 +165,35 @@ class ArgumentTests(unittest.TestCase):
         self.assertIn("-pyflakes=", arguments)
         self.assertEqual(arguments[-1], ".github")
 
+    def test_actionlint_enables_shellcheck_and_json_when_requested(self):
+        arguments = script.actionlint_arguments(
+            script.actionlint_policy(
+                [".github/workflows/ci.yml"],
+                shellcheck=True,
+                shellcheck_executable="shellcheck",
+                json_format=True,
+            )
+        )
+        self.assertIn("-shellcheck=shellcheck", arguments)
+        self.assertNotIn("-shellcheck=", arguments)
+        self.assertIn("-pyflakes=", arguments)
+        self.assertIn("-format", arguments)
+
     def test_actionlint_runs_through_its_own_isolated_environment(self):
         prefix = script.runner_prefix("actionlint")
         self.assertEqual(
             prefix[:3], ["uvx", "--from", f"actionlint-py=={script.ACTIONLINT_WRAPPER}"]
+        )
+        sc_prefix = script.runner_prefix("shellcheck")
+        self.assertEqual(
+            sc_prefix[:3],
+            ["uvx", "--from", f"shellcheck-py=={script.SHELLCHECK_WRAPPER}"],
+        )
+        paired = script.runner_prefix("actionlint+shellcheck")
+        self.assertIn(f"shellcheck-py=={script.SHELLCHECK_WRAPPER}", paired)
+        zz_prefix = script.runner_prefix("zizmor")
+        self.assertEqual(
+            zz_prefix, ["uvx", "--from", f"zizmor=={script.ZIZMOR_VERSION}", "zizmor"]
         )
         with self.assertRaises(ValueError):
             script.runner_prefix("psscriptanalyzer")
@@ -187,6 +231,125 @@ class ActionlintSemanticsTests(unittest.TestCase):
         for code in (2, 3, 127):
             with self.subTest(code=code):
                 self.assertEqual(self.report(code)["outcome"], "failure")
+
+    def test_json_diagnostics_attribute_shellcheck_separately(self):
+        raw = json.dumps(
+            [
+                {
+                    "message": "Double quote to prevent globbing (SC2086).",
+                    "filepath": ".github/workflows/ci.yml",
+                    "line": 12,
+                    "column": 5,
+                    "kind": "shellcheck",
+                },
+                {
+                    "message": 'label "ubuntu-latest" is ok? unknown input',
+                    "filepath": ".github/workflows/ci.yml",
+                    "line": 8,
+                    "column": 3,
+                    "kind": "runner-label",
+                },
+            ]
+        )
+        policy = script.actionlint_policy(
+            [".github/workflows/ci.yml"], shellcheck=True, json_format=True
+        )
+        report = script.script_report(policy, 1, raw, native_raw=raw)
+        self.assertEqual(report["outcome"], "findings")
+        al_only, sc_only = script.split_actionlint_diagnostics(report["findings"])
+        self.assertEqual(len(al_only), 1)
+        self.assertEqual(al_only[0]["rule"], "runner-label")
+        self.assertEqual(len(sc_only), 1)
+        self.assertEqual(sc_only[0]["source_tool"], "shellcheck")
+        self.assertIn("SC2086", sc_only[0]["message"])
+
+
+class ShellCheckSemanticsTests(unittest.TestCase):
+    def report(self, exit_code, stdout=""):
+        return script.script_report(
+            script.shellcheck_policy(["scripts/build.sh"]),
+            exit_code,
+            stdout=stdout,
+            native_raw=stdout,
+        )
+
+    def test_zero_with_empty_comments_is_clean(self):
+        rep = self.report(0, json.dumps({"comments": []}))
+        self.assertEqual(rep["outcome"], "clean")
+
+    def test_one_with_comments_is_findings(self):
+        raw = json.dumps(
+            {
+                "comments": [
+                    {
+                        "file": "scripts/build.sh",
+                        "line": 3,
+                        "column": 6,
+                        "level": "info",
+                        "code": 2086,
+                        "message": "Double quote to prevent globbing and word splitting.",
+                    }
+                ]
+            }
+        )
+        rep = self.report(1, raw)
+        self.assertEqual(rep["outcome"], "findings")
+        self.assertEqual(rep["findings"][0]["rule"], "SC2086")
+
+    def test_missing_or_invalid_json_fails_closed(self):
+        for code, raw in (
+            (0, ""),
+            (0, "not-json"),
+            (1, json.dumps({"comments": []})),
+            (2, "{}"),
+        ):
+            with self.subTest(code=code, raw=raw):
+                self.assertEqual(self.report(code, raw)["outcome"], "failure")
+
+
+class ZizmorSemanticsTests(unittest.TestCase):
+    def report(self, exit_code, stdout=""):
+        return script.script_report(
+            script.zizmor_policy([".github/workflows/ci.yml"]),
+            exit_code,
+            stdout=stdout,
+            native_raw=stdout,
+        )
+
+    def test_zero_empty_array_is_clean_and_finding_exit_codes_preserve_facts(self):
+        self.assertEqual(self.report(0, "[]")["outcome"], "clean")
+        raw = json.dumps(
+            [
+                {
+                    "ident": "unpinned-uses",
+                    "desc": "unpinned action reference",
+                    "determinations": {"confidence": "High", "severity": "High"},
+                    "locations": [
+                        {
+                            "symbolic": {
+                                "key": {
+                                    "Local": {"given_path": ".github/workflows/ci.yml"}
+                                },
+                                "annotation": "uses: actions/checkout@v4",
+                            },
+                            "concrete": {
+                                "location": {"start_point": {"row": 9, "column": 8}}
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        rep = self.report(14, raw)
+        self.assertEqual(rep["outcome"], "findings")
+        self.assertEqual(rep["exit_code"], 14)
+        self.assertEqual(rep["findings"][0]["rule"], "unpinned-uses")
+        self.assertEqual(rep["findings"][0]["line"], 10)
+
+    def test_invalid_output_or_unexpected_exit_never_passes(self):
+        for code, raw in ((0, ""), (1, "boom"), (14, "[]")):
+            with self.subTest(code=code, raw=raw):
+                self.assertEqual(self.report(code, raw)["outcome"], "failure")
 
 
 class PowershellSemanticsTests(unittest.TestCase):
@@ -234,7 +397,7 @@ class DeferralTests(unittest.TestCase):
         self.assertEqual(report["limitations"], ["runs on a Windows runner"])
 
     def test_unsupported_scope_is_stated(self):
-        report = script.unsupported_report("scripts/a.sh", "out of scope")
+        report = script.unsupported_report("scripts/a.txt", "out of scope")
         self.assertEqual(report["outcome"], "not_executed")
         self.assertEqual(report["finding_count"], 0)
 

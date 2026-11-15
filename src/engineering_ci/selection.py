@@ -20,11 +20,13 @@ from importlib import metadata
 from pathlib import Path
 
 from engineering_ci import (
+    check_contract,
     expected_checks,
     hygiene,
     plan_contract,
     semconv_registry,
     sources,
+    workflow_analysis,
 )
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
@@ -56,6 +58,7 @@ _CONFIG_KEYS = {
     "check_scope",
     "push",
     "effective_profile",
+    "workflow_checks",
 }
 
 
@@ -81,6 +84,17 @@ class CheckScopeConfig:
     code_prefixes: tuple[str, ...]
     source_prefixes: tuple[str, ...]
     weaver_prefixes: tuple[str, ...] = ()
+    workflow_prefixes: tuple[str, ...] = (".github/workflows/",)
+    shell_prefixes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkflowChecksConfig:
+    actionlint_config: str = ""
+    zizmor_config: str = ""
+    zizmor_persona: str = ""
+    zizmor_offline: bool = True
+    shellcheck_inline: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,7 @@ class Config:
     dependency_edges: tuple[dict, ...] = ()
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
     effective_profile_policy: dict | None = None
+    workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
 
 
 @dataclass(frozen=True)
@@ -376,6 +391,8 @@ def load_config(path):
         "code_prefixes",
         "source_prefixes",
         "weaver_prefixes",
+        "workflow_prefixes",
+        "shell_prefixes",
     }:
         raise SelectionError("check_scope_invalid")
     docs_suffixes = _string_list(
@@ -399,6 +416,49 @@ def load_config(path):
             ),
             "weaver_prefixes",
         ),
+        workflow_prefixes=_string_list(
+            scope.get("workflow_prefixes", [".github/workflows/"]),
+            "workflow_prefixes",
+        ),
+        shell_prefixes=_string_list(
+            scope.get("shell_prefixes", []),
+            "shell_prefixes",
+        ),
+    )
+    wf_raw = value.get("workflow_checks", {})
+    if not isinstance(wf_raw, dict) or set(wf_raw) - {
+        "actionlint_config",
+        "zizmor_config",
+        "zizmor_persona",
+        "zizmor_offline",
+        "shellcheck_inline",
+    }:
+        raise SelectionError("workflow_checks_invalid")
+    z_offline = wf_raw.get("zizmor_offline", True)
+    sc_inline = wf_raw.get("shellcheck_inline", True)
+    if type(z_offline) is not bool or type(sc_inline) is not bool:
+        raise SelectionError("workflow_checks_invalid")
+    z_persona = (
+        _text(wf_raw["zizmor_persona"], "zizmor_persona")
+        if wf_raw.get("zizmor_persona") is not None
+        else ""
+    )
+    if z_persona not in {"", "regular", "pedantic", "auditor"}:
+        raise SelectionError("workflow_checks_invalid")
+    workflow_checks = WorkflowChecksConfig(
+        actionlint_config=(
+            _text(wf_raw["actionlint_config"], "actionlint_config")
+            if wf_raw.get("actionlint_config")
+            else ""
+        ),
+        zizmor_config=(
+            _text(wf_raw["zizmor_config"], "zizmor_config")
+            if wf_raw.get("zizmor_config")
+            else ""
+        ),
+        zizmor_persona=z_persona,
+        zizmor_offline=z_offline,
+        shellcheck_inline=sc_inline,
     )
     push_raw = value.get("push", {})
     if not isinstance(push_raw, dict) or set(push_raw) - {
@@ -454,6 +514,7 @@ def load_config(path):
         dependency_edges=dependency_edges,
         push=push_policy,
         effective_profile_policy=effective_profile_policy,
+        workflow_checks=workflow_checks,
     )
 
 
@@ -577,6 +638,15 @@ def _normalize_config(config):
             "code_prefixes": list(config.check_scope.code_prefixes),
             "source_prefixes": list(config.check_scope.source_prefixes),
             "weaver_prefixes": list(config.check_scope.weaver_prefixes),
+            "workflow_prefixes": list(config.check_scope.workflow_prefixes),
+            "shell_prefixes": list(config.check_scope.shell_prefixes),
+        },
+        "workflow_checks": {
+            "actionlint_config": config.workflow_checks.actionlint_config,
+            "zizmor_config": config.workflow_checks.zizmor_config,
+            "zizmor_persona": config.workflow_checks.zizmor_persona,
+            "zizmor_offline": config.workflow_checks.zizmor_offline,
+            "shellcheck_inline": config.workflow_checks.shellcheck_inline,
         },
         "push": {
             "new_ref_baseline": config.push.new_ref_baseline,
@@ -614,7 +684,16 @@ def config_identity(path, config, *, root=None):
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return {
+    stored_path = str(path)
+    if root is not None:
+        base = Path(root).resolve()
+        try:
+            abs_resolved = resolved.resolve()
+            if abs_resolved.is_relative_to(base):
+                stored_path = abs_resolved.relative_to(base).as_posix()
+        except OSError:
+            pass
+    result = {
         **payload,
         "effective_config_ref": {
             "name": "engineering-ci.selection",
@@ -622,6 +701,14 @@ def config_identity(path, config, *, root=None):
             "sha256": f"sha256:{ref_digest}",
         },
     }
+    if isinstance(sha, str) and len(sha) == 64:
+        result["effective_check_config_ref"] = check_contract.rule_ref(
+            "engineering-ci.selection",
+            config.schema_version,
+            path=stored_path,
+            digest=sha,
+        )
+    return result
 
 
 def verify_config_identity_matches_file(identity, *, root=None):
@@ -706,12 +793,33 @@ def config_from_identity(identity):
                 scope.get("source_prefixes") or ("data/", "sources/")
             ),
             weaver_prefixes=tuple(scope.get("weaver_prefixes") or ()),
+            workflow_prefixes=tuple(
+                scope.get("workflow_prefixes") or (".github/workflows/",)
+            ),
+            shell_prefixes=tuple(scope.get("shell_prefixes") or ()),
         ),
         push=PushPolicyConfig(
             new_ref_baseline=push_raw.get("new_ref_baseline"),
             target_baselines=dict(push_raw.get("target_baselines") or {}),
         ),
         effective_profile_policy=norm.get("effective_profile"),
+        workflow_checks=WorkflowChecksConfig(
+            actionlint_config=str(
+                (norm.get("workflow_checks") or {}).get("actionlint_config") or ""
+            ),
+            zizmor_config=str(
+                (norm.get("workflow_checks") or {}).get("zizmor_config") or ""
+            ),
+            zizmor_persona=str(
+                (norm.get("workflow_checks") or {}).get("zizmor_persona") or ""
+            ),
+            zizmor_offline=bool(
+                (norm.get("workflow_checks") or {}).get("zizmor_offline", True)
+            ),
+            shellcheck_inline=bool(
+                (norm.get("workflow_checks") or {}).get("shellcheck_inline", True)
+            ),
+        ),
         dependency_edges=tuple(
             dict(e) for e in (norm.get("dependency_edges") or ()) if isinstance(e, dict)
         ),
@@ -2372,6 +2480,145 @@ def _non_test_check_scopes(
                 ),
             }
         )
+    scopes.extend(workflow_script_check_scopes(changes, config, root))
+    return scopes
+
+
+def workflow_script_check_scopes(changes, config, root):
+    """Per-check applicability for actionlint, shellcheck and zizmor."""
+    scopes = []
+    is_delete = getattr(changes, "ref_action", None) == "delete"
+    paths = [_normalized(path) for path in changes.paths]
+    wf_prefixes = config.check_scope.workflow_prefixes
+    sh_prefixes = config.check_scope.shell_prefixes
+    wf_cfg = config.workflow_checks
+    repo_root = Path(root)
+    repo_workflows = None
+    for name in config.checks:
+        if name not in {"actionlint", "shellcheck", "zizmor"}:
+            continue
+        if is_delete:
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "not_applicable",
+                    "inputs": [],
+                    "reason": "remote_ref_deleted",
+                }
+            )
+            continue
+        if not changes.complete:
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": "git input is incomplete; full applicability unknown",
+                }
+            )
+            continue
+        if repo_workflows is None:
+            repo_workflows = workflow_analysis.discover_workflow_files(
+                repo_root, wf_prefixes
+            )
+        changed_wf = [
+            p
+            for p in paths
+            if workflow_analysis.is_workflow_file(p, wf_prefixes)
+            and (repo_root / p).is_file()
+        ]
+        al_cfg_changed = any(
+            workflow_analysis.is_workflow_config(p, wf_cfg.actionlint_config)
+            for p in paths
+        )
+        zz_cfg_changed = any(
+            workflow_analysis.is_zizmor_config(p, wf_cfg.zizmor_config) for p in paths
+        )
+        if name == "actionlint":
+            wf_inputs = sorted(
+                set(changed_wf) | (set(repo_workflows) if al_cfg_changed else set())
+            )
+            if wf_inputs:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "selected",
+                        "inputs": wf_inputs,
+                        "reason": "workflow files changed",
+                    }
+                )
+            else:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "not_applicable",
+                        "inputs": [],
+                        "reason": (
+                            "no_workflow_changes"
+                            if repo_workflows
+                            else "no_workflow_files"
+                        ),
+                    }
+                )
+        elif name == "zizmor":
+            zz_inputs = sorted(
+                set(changed_wf) | (set(repo_workflows) if zz_cfg_changed else set())
+            )
+            if zz_inputs:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "selected",
+                        "inputs": zz_inputs,
+                        "reason": "workflow security inputs changed",
+                    }
+                )
+            else:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "not_applicable",
+                        "inputs": [],
+                        "reason": (
+                            "no_workflow_changes"
+                            if repo_workflows
+                            else "no_workflow_files"
+                        ),
+                    }
+                )
+        else:
+            changed_sh = [
+                p
+                for p in paths
+                if workflow_analysis.is_shell_file(p, sh_prefixes)
+                and (repo_root / p).is_file()
+            ]
+            inline_inputs = (
+                sorted(
+                    set(changed_wf) | (set(repo_workflows) if al_cfg_changed else set())
+                )
+                if wf_cfg.shellcheck_inline
+                else []
+            )
+            sc_inputs = sorted(set(changed_sh) | set(inline_inputs))
+            if sc_inputs:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "selected",
+                        "inputs": sc_inputs,
+                        "reason": "shell or workflow files changed",
+                    }
+                )
+            else:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "not_applicable",
+                        "inputs": [],
+                        "reason": "no_shell_or_workflow_changes",
+                    }
+                )
     return scopes
 
 
