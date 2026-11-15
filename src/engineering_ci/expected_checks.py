@@ -714,7 +714,9 @@ def _verify_profile_authority(
             and gov.get("sources_rule_ref") == sources_rule
         )
     return bool(
-        profile.get("authority_verified") is True and (gov_matched or policy_matched)
+        profile.get("authority_verified") is True
+        and policy_matched
+        and (gov is None or gov_matched)
     )
 
 

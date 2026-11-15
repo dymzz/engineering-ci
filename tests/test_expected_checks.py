@@ -478,6 +478,36 @@ def test_expected_requires_plan_v2_and_valid_schema(repo):
     assert raised.value.code == "expected_checks_schema_unsupported"
 
 
+def _attach_effective_profile_policy(path, profile):
+    """Add an independent [effective_profile] approval binding for a profile."""
+    profile.pop("governed_rules", None)
+    declared_domain = (profile.get("approval_binding") or {}).get("declared_domain")
+    if isinstance(declared_domain, dict):
+        declared_domain.pop("governed_rules", None)
+    binding = profile["approval_binding"]
+    binding["approval_digest"] = expected_checks._approval_digest(profile)
+    profile["profile_sha256"] = expected_checks.profile_digest(profile)
+    declared = profile.get("declared_checks") or []
+    config_path = path / "ci-selection.toml"
+    existing = config_path.read_text(encoding="utf-8")
+    existing = existing.split("\n[effective_profile]", 1)[0].rstrip()
+    config_path.write_text(
+        existing
+        + f"""
+
+[effective_profile]
+profile_ref = {{ name = "{profile["profile_ref"]["name"]}", version = "{profile["profile_ref"]["version"]}" }}
+profile_revision = "{profile["profile_revision"]}"
+approval_source = "{binding["approval_source"]}"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "{profile["effective_at"]}"
+declared_checks = {json.dumps(declared)}
+""",
+        encoding="utf-8",
+    )
+    return selection.load_config(config_path)
+
+
 def _sample_effective_profile(
     *,
     context="worktree",
@@ -615,6 +645,7 @@ def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
         ],
         advisory_checks=[{"name": "tach", "obligation_ref": "ob/advisory-arch"}],
     )
+    cfg = _attach_effective_profile_policy(path, profile)
     p = selection.plan(
         sel,
         config=cfg,
@@ -657,6 +688,7 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
             }
         ],
     )
+    cfg = _attach_effective_profile_policy(path, profile)
     # Local ci-hygiene.toml has tach.external = false; must record conflict without silent drop
     p = selection.plan(
         sel,
@@ -691,9 +723,10 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
             path, config_path=path / "ci-selection.toml"
         ),
     )
+    del_cfg = _attach_effective_profile_policy(path, del_profile)
     del_plan = selection.plan(
         del_sel,
-        config=cfg,
+        config=del_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=del_profile,
@@ -787,9 +820,10 @@ def test_schema_v2_rejects_untrusted_wrong_time_wrong_event_and_unresolved_rules
             path, config_path=path / "ci-selection.toml"
         ),
     )
+    rule_cfg = _attach_effective_profile_policy(path, unresolved_rule_profile)
     partial_plan = selection.plan(
         code_sel,
-        config=cfg,
+        config=rule_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=unresolved_rule_profile,
@@ -1058,9 +1092,10 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
         advisory_checks=[],
         domain_complete=True,
     )
+    partial_cfg = _attach_effective_profile_policy(path, partial_domain_profile)
     partial_domain_plan = selection.plan(
         sel,
-        config=cfg,
+        config=partial_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=partial_domain_profile,
@@ -1176,6 +1211,7 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
     assert raised.value.code == "expected_inapplicable_obligation_unrecorded"
 
     # CLI --effective-profile loads profile from JSON file and binds inputs.effective_profile
+    _attach_effective_profile_policy(path, full_profile)
     profile_file = path.parent / "effective-profile.json"
     profile_file.write_text(json.dumps(full_profile), encoding="utf-8")
     exit_code = selection.main(
@@ -1195,7 +1231,9 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
     cli_plan = json.loads(capsys.readouterr().out)
     plan_contract.validate(cli_plan)
     assert cli_plan["expected_checks"]["schema_version"] == 2
-    assert cli_plan["expected_checks"]["status"] == "complete"
+    assert cli_plan["expected_checks"]["authority_status"] == "verified"
+    assert cli_plan["expected_checks"]["status"] == "partial"
+    assert cli_plan["expected_checks"]["reason"] == "check_rule_unresolved"
     assert (
         cli_plan["inputs"]["effective_profile"]["effective_profile_ref"]["sha256"]
         == full_profile["profile_sha256"]
@@ -1351,7 +1389,12 @@ def test_p2_1_cli_relative_effective_profile_outside_cwd(
     assert exit_code == 0
     cli_plan = json.loads(capsys.readouterr().out)
     plan_contract.validate(cli_plan)
-    assert cli_plan["expected_checks"]["status"] == "complete"
+    assert cli_plan["expected_checks"]["status"] == "partial"
+    assert cli_plan["expected_checks"]["authority_status"] == "unverified"
+    assert (
+        cli_plan["expected_checks"]["reason"]
+        == "effective_profile_authority_unverified"
+    )
     assert cli_plan["inputs"]["effective_profile"]["path"] == str(
         profile_file.resolve()
     )
@@ -1413,9 +1456,10 @@ def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
             },
         ],
     )
+    policy_cfg = _attach_effective_profile_policy(path, profile)
     p = selection.plan(
         sel,
-        config=cfg,
+        config=policy_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
