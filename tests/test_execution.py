@@ -1431,12 +1431,21 @@ def test_target_test_gate_blocks_before_container_startup():
         "not_measured",
     )
 
-    main_source = (ROOT / ".dagger/src/engineering_ci_module/main.py").read_text(
-        encoding="utf-8"
+    plan_exec_source = (
+        ROOT / ".dagger/src/engineering_ci_module/plan_execution.py"
+    ).read_text(encoding="utf-8")
+    native_section = plan_exec_source.split("async def _native_results(", 1)[1].split(
+        "async def ", 1
+    )[0]
+    dag_section = plan_exec_source.split("async def _execute_dag(", 1)[1].split(
+        "async def execute(", 1
+    )[0]
+    assert native_section.index(
+        "execution.target_test_gate(value)"
+    ) < native_section.index("_tests(")
+    assert dag_section.index("execution.target_test_gate(value)") < dag_section.index(
+        "_tests("
     )
-    gate_pos = main_source.index("execution.target_test_gate(value)")
-    container_pos = main_source.index("self._uv_container(")
-    assert gate_pos < container_pos
 
 
 def test_execute_refuses_ignored_export_subdir_inside_parent_repo(repo):

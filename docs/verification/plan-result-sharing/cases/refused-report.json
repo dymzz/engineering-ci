@@ -1,0 +1,1 @@
+{"checks": [], "exit_code": 2, "kind": "engineering-ci-execution-report", "plan_declaration_consistent": false, "prerequisites": [], "reason": "plan_schema_unsupported", "schema_version": 1, "source_binding_verified": "unknown", "status": "not_executed", "tests": {"status": "not_executed"}, "trusted": false}

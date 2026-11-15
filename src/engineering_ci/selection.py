@@ -50,6 +50,7 @@ _CONFIG_KEYS = {
     "non_code_rules",
     "prerequisites",
     "prerequisite_actions",
+    "dependency_edges",
     "strict_modules",
     "coverage_required",
     "check_scope",
@@ -107,6 +108,7 @@ class Config:
     strict_modules: bool
     coverage_required: bool
     check_scope: CheckScopeConfig
+    dependency_edges: tuple[dict, ...] = ()
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
     effective_profile_policy: dict | None = None
 
@@ -162,6 +164,7 @@ class Selection:
     prerequisites: frozenset[str] = frozenset()
     full_tests: bool = False
     per_ref: tuple[dict, ...] = ()
+    base_prerequisites: frozenset[str] | None = None
 
 
 def _text(value, name):
@@ -182,6 +185,99 @@ def _string_list(value, name):
     if len(set(result)) != len(result):
         raise SelectionError(f"{name}_invalid")
     return tuple(result)
+
+
+def _parse_dependency_edges(raw_edges):
+    if not isinstance(raw_edges, list) or len(raw_edges) > 256:
+        raise SelectionError("dependency_edges_invalid")
+    allowed_keys = {
+        "producer_ref",
+        "consumer_ref",
+        "dependency_kind",
+        "requires_pass",
+        "output_ref",
+    }
+    parsed = []
+    pre_pairs = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict) or set(edge) - allowed_keys:
+            raise SelectionError("dependency_edges_invalid")
+        kind = edge.get("dependency_kind")
+        if kind not in {"pre_execution_pass", "data"}:
+            raise SelectionError("dependency_edges_invalid")
+        producer = edge.get("producer_ref")
+        if (
+            not isinstance(producer, dict)
+            or set(producer) != {"kind", "name"}
+            or producer.get("kind") not in {"prerequisite_action", "check"}
+        ):
+            raise SelectionError("dependency_edges_invalid")
+        p_kind = producer["kind"]
+        p_name = _text(producer["name"], "dependency_producer")
+        if kind == "data" and p_kind != "prerequisite_action":
+            raise SelectionError("dependency_edges_invalid")
+        consumer = edge.get("consumer_ref")
+        if not isinstance(consumer, dict):
+            raise SelectionError("dependency_edges_invalid")
+        c_kind = consumer.get("kind")
+        if c_kind == "tests" and set(consumer) == {"kind"}:
+            normalized_consumer = {"kind": "tests"}
+        elif c_kind == "check" and set(consumer) == {"kind", "name"}:
+            normalized_consumer = {
+                "kind": "check",
+                "name": _text(consumer["name"], "dependency_consumer"),
+            }
+        elif kind == "data" and consumer == {
+            "kind": "execution_report",
+            "name": "artifacts",
+        }:
+            normalized_consumer = {
+                "kind": "execution_report",
+                "name": "artifacts",
+            }
+        else:
+            raise SelectionError("dependency_edges_invalid")
+        if kind == "pre_execution_pass":
+            requires_pass = edge.get("requires_pass", True)
+            if requires_pass is not True or edge.get("output_ref") is not None:
+                raise SelectionError("dependency_edges_invalid")
+            normalized_output = None
+        else:
+            requires_pass = edge.get("requires_pass", True)
+            if type(requires_pass) is not bool:
+                raise SelectionError("dependency_edges_invalid")
+            output_ref = edge.get("output_ref")
+            try:
+                plan_contract._validate_output_ref(output_ref)
+            except plan_contract.PlanError:
+                raise SelectionError("dependency_edges_invalid") from None
+            normalized_output = {
+                "kind": output_ref["kind"],
+                "path": output_ref["path"],
+            }
+            if output_ref.get("sha256") is not None:
+                normalized_output["sha256"] = output_ref["sha256"]
+        normalized_producer = {"kind": p_kind, "name": p_name}
+        parsed.append(
+            {
+                "producer_ref": normalized_producer,
+                "consumer_ref": normalized_consumer,
+                "dependency_kind": kind,
+                "requires_pass": requires_pass,
+                "output_ref": normalized_output,
+            }
+        )
+        pre_pairs.append(
+            (
+                plan_contract._node_key(normalized_producer),
+                plan_contract._node_key(normalized_consumer),
+            )
+        )
+    try:
+        plan_contract._check_cycles(pre_pairs)
+    except plan_contract.PlanError:
+        raise SelectionError("dependency_edges_invalid") from None
+    return tuple(parsed)
 
 
 def load_config(path):
@@ -266,6 +362,7 @@ def load_config(path):
             prerequisite_actions[key] = {"type": kind, "argv": list(argv)}
         else:
             raise SelectionError("prerequisite_type_invalid")
+    dependency_edges = _parse_dependency_edges(value.get("dependency_edges", []))
     checks = _string_list(value.get("checks", ["hygiene", "tach", "vulture"]), "checks")
     strict_modules = value.get("strict_modules", True)
     if type(strict_modules) is not bool:
@@ -354,6 +451,7 @@ def load_config(path):
         strict_modules=strict_modules,
         coverage_required=coverage_required,
         check_scope=check_scope,
+        dependency_edges=dependency_edges,
         push=push_policy,
         effective_profile_policy=effective_profile_policy,
     )
@@ -485,6 +583,9 @@ def _normalize_config(config):
             "target_baselines": dict(sorted(config.push.target_baselines.items())),
         },
         "effective_profile": config.effective_profile_policy,
+        "dependency_edges": json.loads(
+            json.dumps(list(config.dependency_edges), sort_keys=True)
+        ),
     }
 
 
@@ -611,6 +712,9 @@ def config_from_identity(identity):
             target_baselines=dict(push_raw.get("target_baselines") or {}),
         ),
         effective_profile_policy=norm.get("effective_profile"),
+        dependency_edges=tuple(
+            dict(e) for e in (norm.get("dependency_edges") or ()) if isinstance(e, dict)
+        ),
     )
 
 
@@ -1648,7 +1752,80 @@ def _rules_for(path, config):
     ]
 
 
-def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=False):
+def _active_check_names(
+    changes,
+    config,
+    root,
+    *,
+    hygiene_config=None,
+    sources_config=None,
+    sources_identity=None,
+):
+    return {
+        item["name"]
+        for item in _non_test_check_scopes(
+            changes,
+            config,
+            root,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            sources_identity=sources_identity,
+        )
+        if item.get("status") in {"selected", "unknown"}
+    }
+
+
+def _selected_dependency_edges(tests, active_checks, base_prerequisites, config):
+    if not config.dependency_edges:
+        return (), set(base_prerequisites)
+    activated = set(base_prerequisites)
+    primary = []
+    report_edges = []
+    non_report_producers = set()
+    for edge in config.dependency_edges:
+        p_ref = edge["producer_ref"]
+        c_ref = edge["consumer_ref"]
+        p_key = (p_ref["kind"], p_ref["name"])
+        if c_ref["kind"] == "execution_report":
+            report_edges.append(edge)
+            continue
+        non_report_producers.add(p_key)
+        if p_ref["kind"] == "check" and p_ref["name"] not in active_checks:
+            continue
+        consumer_active = (c_ref["kind"] == "tests" and bool(tests)) or (
+            c_ref["kind"] == "check" and c_ref["name"] in active_checks
+        )
+        if not consumer_active:
+            continue
+        primary.append(edge)
+        if p_ref["kind"] == "prerequisite_action":
+            activated.add(p_ref["name"])
+    active = list(primary)
+    has_active_work = bool(tests) or bool(active_checks)
+    for edge in report_edges:
+        p_ref = edge["producer_ref"]
+        p_name = p_ref["name"]
+        p_key = (p_ref["kind"], p_name)
+        if p_name in activated or (
+            p_name not in config.prerequisites
+            and p_key not in non_report_producers
+            and has_active_work
+        ):
+            active.append(edge)
+            activated.add(p_name)
+    return tuple(active), activated
+
+
+def _escalated(
+    changeset, config, tests, reason, reasons=None, *, full_tests=False, root=None
+):
+    base_prereqs = frozenset(config.prerequisites)
+    activated = set(base_prereqs)
+    if config.dependency_edges and root is not None:
+        active_checks = _active_check_names(changeset, config, root)
+        _, activated = _selected_dependency_edges(
+            tests, active_checks, base_prereqs, config
+        )
     return Selection(
         changeset=changeset,
         tests=tests,
@@ -1657,8 +1834,9 @@ def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=Fal
         escalated=True,
         escalation_reason=reason,
         reasons=reasons or {"all": [reason]},
-        prerequisites=frozenset(config.prerequisites),
+        prerequisites=frozenset(activated),
         full_tests=full_tests,
+        base_prerequisites=base_prereqs,
     )
 
 
@@ -1714,6 +1892,15 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             )
         merged_tests = tuple(sorted({t for r in ref_sels for t in r.tests}))
         merged_prereqs = frozenset(p for r in ref_sels for p in r.prerequisites)
+        merged_base_prereqs = frozenset(
+            p
+            for r in ref_sels
+            for p in (
+                r.prerequisites
+                if r.base_prerequisites is None
+                else r.base_prerequisites
+            )
+        )
         any_escalated = any(r.escalated for r in ref_sels)
         any_full = any(r.full_tests for r in ref_sels)
         esc_reasons = list(
@@ -1748,6 +1935,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             prerequisites=merged_prereqs,
             full_tests=any_full,
             per_ref=tuple(per_ref_entries),
+            base_prerequisites=merged_base_prereqs,
         )
     if getattr(changes, "ref_action", None) == "delete":
         return Selection(
@@ -1757,6 +1945,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             status="not_applicable",
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
+            base_prerequisites=frozenset(),
         )
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
@@ -1787,6 +1976,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             resolved_all_tests,
             "Explicitly requested full suite",
             full_tests=True,
+            root=root,
         )
     if not changes.complete:
         return _escalated(
@@ -1794,6 +1984,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             config,
             resolved_all_tests,
             f"Git input could not be resolved: {changes.error}",
+            root=root,
         )
     paths = [_normalized(path) for path in changes.paths]
     if not paths:
@@ -1814,6 +2005,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                 config,
                 resolved_all_tests,
                 f"Global configuration modified: {path}",
+                root=root,
             )
     try:
         if tree_in_odb:
@@ -1828,6 +2020,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             config,
             resolved_all_tests,
             f"Tach input unavailable: {error.code}",
+            root=root,
         )
     deleted_set = {_normalized(item) for item in getattr(changes, "deleted_paths", ())}
     deleted_resolved = bool(getattr(changes, "deleted_paths_resolved", False))
@@ -1863,6 +2056,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     config,
                     resolved_all_tests,
                     f"Test file deleted or renamed: {path}",
+                    root=root,
                 )
             module = ".".join(Path(path).with_suffix("").parts)
             selected.add(module)
@@ -1882,6 +2076,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             resolved_all_tests,
             f"Unknown or unmapped path changed: {', '.join(unmapped)}",
             {"all": [f"Unmapped: {path}" for path in unmapped]},
+            root=root,
         )
     if changed_modules:
         impacted = _reverse_closure(changed_modules, reverse)
@@ -1895,6 +2090,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     config,
                     resolved_all_tests,
                     f"Python module(s) lack registered test mappings: {', '.join(missing)}",
+                    root=root,
                 )
         for module in sorted(impacted):
             for test in config.module_tests.get(module, ()):
@@ -1902,10 +2098,16 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                 reasons.setdefault(test, []).append(
                     f"Impacted by Python module: {module}"
                 )
-    prerequisites = frozenset(
+    ordered = tuple(sorted(selected))
+    base_prereqs = frozenset(
         name for name, tests in config.prerequisites.items() if selected & set(tests)
     )
-    ordered = tuple(sorted(selected))
+    prerequisites = set(base_prereqs)
+    if config.dependency_edges:
+        active_checks = _active_check_names(changes, config, root)
+        _, prerequisites = _selected_dependency_edges(
+            ordered, active_checks, base_prereqs, config
+        )
     return Selection(
         changeset=changes,
         tests=ordered,
@@ -1913,7 +2115,8 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         status="targeted" if ordered else "no_tests",
         escalated=False,
         reasons=reasons,
-        prerequisites=prerequisites,
+        prerequisites=frozenset(prerequisites),
+        base_prerequisites=base_prereqs,
     )
 
 
@@ -2087,8 +2290,8 @@ def source_check_applicability(
     }
 
 
-def _check_scope(
-    selection,
+def _non_test_check_scopes(
+    changes,
     config,
     root,
     *,
@@ -2096,10 +2299,11 @@ def _check_scope(
     sources_config=None,
     sources_identity=None,
 ):
-    """Per-check impact aligned with authoritative Hygiene and Sources configs."""
-    changes = selection.changeset
+    """Per-check non-test impact aligned with authoritative Hygiene and Sources configs."""
     if hygiene_config is None:
         hygiene_config, _ = _resolve_hygiene_input(root, config)
+    if sources_config is None and sources_identity is None:
+        sources_config, sources_identity = _resolve_sources_input(root)
     hygiene_scopes = hygiene.check_applicability(
         changes,
         hygiene_config,
@@ -2109,23 +2313,7 @@ def _check_scope(
     )
     is_delete = getattr(changes, "ref_action", None) == "delete"
     paths = [_normalized(path) for path in changes.paths]
-    if is_delete:
-        test_entry = {
-            "name": config.framework,
-            "status": "not_applicable",
-            "inputs": [],
-            "reason": "remote_ref_deleted",
-        }
-    else:
-        test_entry = {
-            "name": config.framework,
-            "status": selection.status,
-            "inputs": list(selection.tests),
-            "reason": selection.escalation_reason,
-        }
-    scopes = [test_entry]
-    for name in hygiene.effective_checks(hygiene_config):
-        scopes.append(hygiene_scopes[name])
+    scopes = [hygiene_scopes[name] for name in hygiene.effective_checks(hygiene_config)]
     scopes.append(
         source_check_applicability(
             changes,
@@ -2185,6 +2373,45 @@ def _check_scope(
             }
         )
     return scopes
+
+
+def _check_scope(
+    selection,
+    config,
+    root,
+    *,
+    hygiene_config=None,
+    sources_config=None,
+    sources_identity=None,
+):
+    """Per-check impact aligned with authoritative Hygiene and Sources configs."""
+    changes = selection.changeset
+    is_delete = getattr(changes, "ref_action", None) == "delete"
+    if is_delete:
+        test_entry = {
+            "name": config.framework,
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "remote_ref_deleted",
+        }
+    else:
+        test_entry = {
+            "name": config.framework,
+            "status": selection.status,
+            "inputs": list(selection.tests),
+            "reason": selection.escalation_reason,
+        }
+    return [
+        test_entry,
+        *_non_test_check_scopes(
+            changes,
+            config,
+            root,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            sources_identity=sources_identity,
+        ),
+    ]
 
 
 def _ref_config_binding(
@@ -2745,6 +2972,19 @@ def per_ref_selections_and_scopes(
             or ref.get("local_ref")
             or ref.get("after")
         )
+        ref_base_prereqs = (
+            ref_sel.prerequisites
+            if ref_sel.base_prerequisites is None
+            else ref_sel.base_prerequisites
+        )
+        ref_active_checks = {
+            item["name"]
+            for item in ref_scope[1:]
+            if item.get("status") in {"selected", "unknown"}
+        }
+        _, ref_effective_prereqs = _selected_dependency_edges(
+            ref_sel.tests, ref_active_checks, ref_base_prereqs, config
+        )
         entry = {
             "index": index,
             "source_ref": source_label,
@@ -2758,7 +2998,7 @@ def per_ref_selections_and_scopes(
             "status": ref_sel.status,
             "tests": list(ref_sel.tests),
             "checks": list(ref_sel.checks),
-            "prerequisites": sorted(ref_sel.prerequisites),
+            "prerequisites": sorted(ref_effective_prereqs),
             "escalated": ref_sel.escalated,
             "escalation_reason": ref_sel.escalation_reason,
             "full_tests": ref_sel.full_tests,
@@ -2849,6 +3089,69 @@ def _graph_validation(selection, config, root, value):
     return report
 
 
+def _build_dependency_contract(
+    active_edges, effective_prereqs, config, *, declaration, selected_by, reason
+):
+    if not active_edges:
+        return plan_contract.prerequisite_contract(
+            effective_prereqs,
+            config.prerequisite_actions,
+            declaration=declaration,
+            selected_by=selected_by,
+            reason=reason,
+        )
+    edges = []
+    prereqs_with_edges = set()
+    for edge in active_edges:
+        p_ref = dict(edge["producer_ref"])
+        p_kind, p_name = p_ref["kind"], p_ref["name"]
+        if p_kind == "prerequisite_action":
+            prereqs_with_edges.add(p_name)
+            resolved = plan_contract._supported_action(
+                config.prerequisite_actions.get(p_name)
+            )
+            section = f"prerequisite_actions.{p_name}"
+        else:
+            resolved = True
+            section = "dependency_edges"
+        edges.append(
+            {
+                "producer_ref": p_ref,
+                "consumer_ref": dict(edge["consumer_ref"]),
+                "dependency_kind": edge["dependency_kind"],
+                "requires_pass": edge["requires_pass"],
+                "output_ref": (
+                    dict(edge["output_ref"])
+                    if edge.get("output_ref") is not None
+                    else None
+                ),
+                "source_binding_ref": "git",
+                "declaration_ref": {**declaration, "section": section},
+                "selection": {
+                    "selected_by": selected_by,
+                    "escalation_reason": reason,
+                },
+                "execution_phase": "pre_execution",
+                "resolution": "resolved" if resolved else "unresolved",
+                "unresolved_reason": (
+                    None if resolved else "action_parameters_missing"
+                ),
+            }
+        )
+    remaining_prereqs = sorted(effective_prereqs - prereqs_with_edges)
+    if remaining_prereqs:
+        edges.extend(
+            plan_contract.prerequisite_contract(
+                remaining_prereqs,
+                config.prerequisite_actions,
+                declaration=declaration,
+                selected_by=selected_by,
+                reason=reason,
+            )["edges"]
+        )
+    return plan_contract.graph_contract(edges)
+
+
 def plan(
     selection,
     *,
@@ -2909,6 +3212,35 @@ def plan(
         hygiene_config=loaded_hygiene,
         sources_config=loaded_sources,
         sources_identity=sources_identity,
+    )
+    active_checks = {
+        item["name"]
+        for item in scope[1:]
+        if item.get("status") in {"selected", "unknown"}
+    }
+    base_prereqs = (
+        selection.prerequisites
+        if selection.base_prerequisites is None
+        else selection.base_prerequisites
+    )
+    active_edges, effective_prereqs = _selected_dependency_edges(
+        selection.tests, active_checks, base_prereqs, config
+    )
+    declaration = {"path": str(config_path), "sha256": _digest(config_path)}
+    selected_by = (
+        "full"
+        if selection.full_tests
+        else "escalated"
+        if selection.escalated
+        else "targeted"
+    )
+    dependency_contract = _build_dependency_contract(
+        active_edges,
+        effective_prereqs,
+        config,
+        declaration=declaration,
+        selected_by=selected_by,
+        reason=selection.escalation_reason,
     )
     per_ref_entries = ()
     per_ref_scopes = None
@@ -2981,7 +3313,7 @@ def plan(
         "status": selection.status,
         "tests": list(selection.tests),
         "checks": list(selection.checks),
-        "prerequisites": sorted(selection.prerequisites),
+        "prerequisites": sorted(effective_prereqs),
         "escalated": selection.escalated,
         "escalation_reason": selection.escalation_reason,
         "full_tests": selection.full_tests,
@@ -3003,17 +3335,7 @@ def plan(
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
-        "dependency_contract": plan_contract.prerequisite_contract(
-            selection.prerequisites,
-            config.prerequisite_actions,
-            declaration={"path": str(config_path), "sha256": _digest(config_path)},
-            selected_by="full"
-            if selection.full_tests
-            else "escalated"
-            if selection.escalated
-            else "targeted",
-            reason=selection.escalation_reason,
-        ),
+        "dependency_contract": dependency_contract,
         "generator": generator_payload,
         "git": {
             "repo_root": str(root.resolve()),

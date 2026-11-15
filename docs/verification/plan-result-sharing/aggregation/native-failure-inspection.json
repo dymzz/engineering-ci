@@ -1,0 +1,1 @@
+{"origin_execution_attributed": false, "original_exit": "1", "report_equals_artifact": true, "same_bundle_id_after_enforce": true, "scope": "one_explicit_PlanExecution_object", "strict": {"diagnostic": "Plan failed: checks_failed (exit 1)", "status": "failed"}}

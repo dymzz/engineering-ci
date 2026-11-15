@@ -762,14 +762,14 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     """Run the configured checks once and return native evidence."""
     root = Path(root)
     paths = [path.replace("\\", "/") for path in changes.paths]
-    generated_paths = sorted(
+    generated = sorted(
         {
             path.replace("\\", "/")
             for path in getattr(changes, "generated_paths", ())
             if isinstance(path, str) and path.strip()
         }
     )
-    docs_paths = sorted(set(paths) | set(generated_paths))
+    docs_paths = sorted(set(paths) | set(generated))
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -783,6 +783,7 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
             "tree": changes.tree,
             "worktree_dirty": changes.worktree_dirty,
             "changed_paths": paths,
+            "generated_input_paths": generated,
         },
     }
     if not changes.complete:

@@ -1,0 +1,221 @@
+{
+  "scope": "Actual native API requests; explicit compound result identity, no fresh Origin attribution",
+  "records": [
+    {
+      "name": "passed",
+      "plan": "passed",
+      "source": "source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/passed.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/passed-bundle",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "e6e911",
+          "wall_time_seconds": 5.0001628,
+          "exit_code": 0,
+          "original_token_count": 340,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:52:58 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/passed.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/passed-bundle  3.6s\u001b[8;1H✔ connect 1.1s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 1.8s\r\n  ✔ downloading /tmp/tmp39aqf_ik 0.0s ████████████ 849 B\r\n✔ .export(path: \".artifacts/plan-sharing/passed-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-sharing/passed-bundle 0.0s ████████████ 2.6 kB\r\n\u001b[?25h\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-sharing/passed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "independent-check-failure",
+      "plan": "independent-check-failure",
+      "source": "source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/independent-check-failure.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/independent-check-failure-bundle",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "5b20f0",
+          "wall_time_seconds": 4.0631077,
+          "exit_code": 0,
+          "original_token_count": 368,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:53:09 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/independent-check-failure.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/independent-check-failure-bundle  3.7s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.6s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 1.9s\r\n  ✔ downloading /tmp/tmpifxo2wud 0.0s ████████████ 849 B\r\n✔ .export(path: \".artifacts/plan-sharing/independent-check-failure-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-sharing/independent-check-failure-bundle 0.0s ██\u001b[?25h\r\n\u001b[23;80H███████████ 4.5 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-sharing/independent-check-failure-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "pytest",
+      "plan": "pytest",
+      "source": "pytest-source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/pytest.json --source .artifacts/plan-sharing/pytest-source export --path .artifacts/plan-sharing/pytest-bundle",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "3f24c3",
+          "wall_time_seconds": 3.0647264,
+          "exit_code": 0,
+          "original_token_count": 323,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:53:19 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/pytest.json --source .artifacts/plan-sharing/pytest-source export --path .artifacts/plan-sharing/pytest-bundle  1.7s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.6s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n$ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 0.0s CACHED\r\n✔ .export(path: \".artifacts/plan-sharing/pytest-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-sharing/pytest-bundle 0.0s ████████████ 14 kB\u001b[24;1HC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\u001b[?25h\r\n\u001b[23;80Hlan-sharing/pytest-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "pytest-failure",
+      "plan": "pytest-failure",
+      "source": "pytest-failure-source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/pytest-failure.json --source .artifacts/plan-sharing/pytest-failure-source export --path .artifacts/plan-sharing/pytest-failure-bundle",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "a1b762",
+          "wall_time_seconds": 6.5751299,
+          "exit_code": 0,
+          "original_token_count": 354,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:53:28 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/pytest-failure.json --source .artifacts/plan-sharing/pytest-failure-source export --path .artifacts/plan-sharing/pytest-failure-bundle  6.2s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 4.4s\r\n  ✔ downloading /tmp/tmpyi2rdhud 0.0s ████████████ 9.8 kB\r\n✔ .export(path: \".artifacts/plan-sharing/pytest-failure-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-sharing/pytest-failure-bundle 0.0s ████████████ 17 kB\u001b[?25h\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-sharing/pytest-failure-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "refused",
+      "plan": "refused",
+      "source": "source",
+      "mode": "fixture",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/refused-bundle",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "0fab0c",
+          "wall_time_seconds": 4.0050126,
+          "exit_code": 0,
+          "original_token_count": 322,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:53:41 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source export --path .artifacts/plan-sharing/refused-bundle  3.7s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 1.9s\r\n✔ .export(path: \".artifacts/plan-sharing/refused-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/plan-sharing/refused-bundle 0.0s ████████████ 1.3 kB\u001b[24;1HC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\u001b[?25h\r\n\u001b[23;80Hlan-sharing/refused-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "read-only-refused",
+      "plan": "refused",
+      "source": "source",
+      "mode": "report",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source report --output .artifacts/plan-sharing/read-only-refused-report.json",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "43f489",
+          "wall_time_seconds": 5.4872083,
+          "exit_code": 0,
+          "original_token_count": 394,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:53:52 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source report --output .artifacts/plan-sharing/read-only-refused-report.json  5.1s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.1s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 1.7s\r\n✔ .report: String! 1.7s\u001b[24;1HSaved output to \"C:\\\\Users\\\\Aurola\\\\.codex\\\\worktrees\\\\eci-086-native-dag\\\\engin\u001b[?25h\r\n\u001b[23;80Hneering-ci\\\\.artifacts\\\\plan-sharing\\\\read-only-refused-report.json\".\r\n{\"checks\": [], \"exit_code\": 2, \"kind\": \"engineering-ci-execution-report\", \"plan_\r\n\u001b[23;80H_declaration_consistent\": false, \"prerequisites\": [], \"reason\": \"plan_schema_unsu\r\n\u001b[23;80Hupported\", \"schema_version\": 1, \"source_binding_verified\": \"unknown\", \"status\": \"\r\n\u001b[23;80H\"not_executed\", \"tests\": {\"status\": \"not_executed\"}, \"trusted\": false}\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "enforce-passed",
+      "plan": "passed",
+      "source": "source",
+      "mode": "enforce",
+      "expected": 0,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-sharing/passed.json --source .artifacts/plan-sharing/source enforce",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 0,
+      "chunks": [
+        {
+          "chunk_id": "700452",
+          "wall_time_seconds": 6.5994099,
+          "exit_code": 0,
+          "original_token_count": 270,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:54:03 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-sharing/passed.json --source .artifacts/plan-sharing/source enforce  5.2s\u001b[7;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[14;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 1.7s\r\n  ✔ downloading /tmp/tmpyd4x8a6v 0.0s ████████████ 849 B\r\n✔ .enforce: Void 1.8s\u001b[24;1HSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1\u001b[?25h\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "enforce-refused",
+      "plan": "refused",
+      "source": "source",
+      "mode": "enforce",
+      "expected": 1,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source enforce",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 1,
+      "chunks": [
+        {
+          "chunk_id": "b723ef",
+          "wall_time_seconds": 4.8031646,
+          "exit_code": 1,
+          "original_token_count": 462,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:54:16 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-sharing/refused.json --source .artifacts/plan-sharing/source enforce  3.5s\r\n! exit code 1\r\n! FunctionError: Plan not_executed: plan_schema_unsupported (exit 2)\u001b[9;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n$ .planExecution(\r\n  ┆ plan: Address.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 0.0s CACHED\r\n✘ .enforce: Void 1.7s ERROR\r\n! FunctionError: Plan not_executed: plan_schema_unsupported (exit 2)\u001b[?25h\r\n\n✘ EngineeringCiPlanExecution.enforce: Void 1.7s ERROR\r\nERROR [dagger.mod]: Unhandled exception while executing function\r\nTraceback (most recent call last):\r\n  File \"/src/xxh3:e6ce28b6caea16cf/.dagger/sdk/src/dagger/mod/_module.py\", line \r\n\u001b[23;80H 462, in call\r\n    result = await cast(typing.Awaitable[R], result)\r\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/src/xxh3:e6ce28b6caea16cf/.dagger/src/engineering_ci_module/plan_result\r\n\u001b[23;80Ht.py\", line 44, in enforce\r\n    raise RuntimeError(\r\n    ...<3 lines>...\r\n    )\r\nRuntimeError: Plan not_executed: plan_schema_unsupported (exit 2)\r\n! FunctionError: Plan not_executed: plan_schema_unsupported (exit 2)\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "enforce-failed",
+      "plan": "pytest-failure",
+      "source": "pytest-failure-source",
+      "mode": "enforce",
+      "expected": 1,
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-sharing/pytest-failure.json --source .artifacts/plan-sharing/pytest-failure-source enforce",
+      "implementation_commit": "e71f63eff9368b76016971caa8586c8148c7f350",
+      "cli_exit_code": 1,
+      "chunks": [
+        {
+          "chunk_id": "da71e7",
+          "wall_time_seconds": 5.7595641,
+          "exit_code": 1,
+          "original_token_count": 471,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 21:54:27 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-sharing/pytest-failure.json --source .artifacts/plan-sharing/pytest-failure-source enforce  5.4s\r\n! exit code 1\r\n! FunctionError: Plan failed: tests_failed (exit 1)\u001b[9;1H✔ connect 1.0s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 1.8s\r\n  ✔ downloading /tmp/tmp9cduc8j5 0.0s ████████████ 9.8 kB\r\n✘ .enforce: Void 1.9s ERROR\u001b[?25h\r\n! FunctionError: Plan failed: tests_failed (exit 1)\r\n\n✘ EngineeringCiPlanExecution.enforce: Void 1.9s ERROR\r\nERROR [dagger.mod]: Unhandled exception while executing function\r\nTraceback (most recent call last):\r\n  File \"/src/xxh3:e6ce28b6caea16cf/.dagger/sdk/src/dagger/mod/_module.py\", line \r\n\u001b[23;80H 462, in call\r\n    result = await cast(typing.Awaitable[R], result)\r\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/src/xxh3:e6ce28b6caea16cf/.dagger/src/engineering_ci_module/plan_result\r\n\u001b[23;80Ht.py\", line 44, in enforce\r\n    raise RuntimeError(\r\n    ...<3 lines>...\r\n    )\r\nRuntimeError: Plan failed: tests_failed (exit 1)\r\n! FunctionError: Plan failed: tests_failed (exit 1)\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "precondition",
+      "plan": "precondition",
+      "source": "precondition-source",
+      "mode": "fixture",
+      "expected": 0,
+      "cli_exit_code": 0,
+      "implementation_commit": "3b222aac73db11d820b11814bbc88163f68218ba",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call fixture-plan-execution --plan .artifacts/plan-sharing/precondition.json --source .artifacts/plan-sharing/precondition-source export --path .artifacts/plan-sharing/precondition-bundle",
+      "chunks": [
+        {
+          "chunk_id": "297772",
+          "wall_time_seconds": 10.0053959,
+          "session_id": 93573,
+          "original_token_count": 54,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 22:08:08 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "631807",
+          "wall_time_seconds": 0.0000117,
+          "exit_code": 0,
+          "original_token_count": 296,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/plan-sharing/precondition.json --source .artifacts/plan-sharing/precondition-source export --path .artifacts/plan-sharing/precondition-bundle  21.8s\u001b[8;1H✔ connect 1.7s\r\n✔ load workspace: . 13.3s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.2s\r\n  ✔ 2 uploads 0.2s\u001b[15;1H✔ engineeringCi: EngineeringCi! 1.8s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 4.8s\r\n  ✔ downloading /tmp/tmpovvt2hv5 0.1s ████████████ 1.5 MB\r\n✔ .export(path: \".artifacts/plan-sharing/precondition-bundle\"): String! 0.1s\r\n  ✔ downloading .artifacts/plan-sharing/precondition-bundle 0.0s ████████████ 2.1 MB\u001b[?25h\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/pl\r\n\u001b[23;80Hlan-sharing/precondition-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    },
+    {
+      "name": "enforce-precondition",
+      "plan": "precondition",
+      "source": "precondition-source",
+      "mode": "enforce",
+      "expected": 1,
+      "cli_exit_code": 1,
+      "implementation_commit": "3b222aac73db11d820b11814bbc88163f68218ba",
+      "command": "$env:FORCE_DARK_MODE='1'; dagger api call plan-execution --plan .artifacts/plan-sharing/precondition.json --source .artifacts/plan-sharing/precondition-source enforce",
+      "chunks": [
+        {
+          "chunk_id": "c8cf71",
+          "wall_time_seconds": 8.1357453,
+          "exit_code": 1,
+          "original_token_count": 481,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/12 22:10:42 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lplan-execution --plan .artifacts/plan-sharing/precondition.json --source .artifacts/plan-sharing/precondition-source enforce  6.8s\r\n! exit code 1\r\n! FunctionError: Plan blocked: tach_graph_unvalidated (exit 5)\u001b[9;1H✔ connect 1.2s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 2.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ): EngineeringCiPlanExecution! 2.9s\r\n  ✔ downloading /tmp/tmp1pdcnti4 0.1s ████████████ 1.5 MB\r\n✘ .enforce: Void 1.7s ERROR\u001b[?25h\r\n! FunctionError: Plan blocked: tach_graph_unvalidated (exit 5)\r\n\n✘ EngineeringCiPlanExecution.enforce: Void 1.7s ERROR\r\nERROR [dagger.mod]: Unhandled exception while executing function\r\nTraceback (most recent call last):\r\n  File \"/src/xxh3:212552fd8d671edd/.dagger/sdk/src/dagger/mod/_module.py\", line \r\n\u001b[23;80H 462, in call\r\n    result = await cast(typing.Awaitable[R], result)\r\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/src/xxh3:212552fd8d671edd/.dagger/src/engineering_ci_module/plan_result\r\n\u001b[23;80Ht.py\", line 44, in enforce\r\n    raise RuntimeError(\r\n    ...<3 lines>...\r\n    )\r\nRuntimeError: Plan blocked: tach_graph_unvalidated (exit 5)\r\n! FunctionError: Plan blocked: tach_graph_unvalidated (exit 5)\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ]
+    }
+  ]
+}
