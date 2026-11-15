@@ -115,6 +115,17 @@ SOURCES_RULE = {
     "version": "1",
     "sha256": "8" * 64,
 }
+RUN_REF = "run/123"
+ATTEMPT_REF = "attempt/1"
+RUNNER_REF = "execution:host"
+REPORT_REF = {
+    "kind": "engineering-ci-execution-report",
+    "schema_version": 1,
+    "sha256": "a" * 64,
+}
+FILE_A = {"kind": "changed_path", "path": "docs/a.md"}
+FILE_B = {"kind": "changed_path", "path": "docs/b.md"}
+CONFIG_REF = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "d" * 64}
 
 
 def make_entry(
@@ -159,6 +170,7 @@ def make_projection(
     *,
     status="partial",
     schema_version=1,
+    consumer=None,
     event=None,
     source=None,
     selection_rule=None,
@@ -176,7 +188,7 @@ def make_projection(
     selection_rule = selection_rule or SELECTION_RULE
     if schema_version == 1:
         scope_id = expected_checks.scope_identity(
-            None, profile_ref, profile_source, event, source, selection_rule
+            consumer, profile_ref, profile_source, event, source, selection_rule
         )
         projection = {
             "kind": expected_checks.EXPECTED_KIND,
@@ -186,7 +198,7 @@ def make_projection(
     else:
         profile = effective_profile or PROFILE
         scope_id = expected_checks.scope_identity(
-            None,
+            consumer,
             profile_ref,
             profile_source,
             event,
@@ -218,7 +230,7 @@ def make_projection(
             ),
             "definitions_status": "requested_names_complete",
             "applicability_status": "requested_scope",
-            "consumer": None,
+            "consumer": consumer,
             "profile_ref": copy.deepcopy(profile_ref),
             "profile_source": profile_source,
             "consumer_completeness": consumer_completeness,
@@ -313,10 +325,34 @@ def make_resolution(
     return resolution
 
 
-def make_routing(entry, *, jobs=("job-1",), status="routed", reason=None):
+def make_routing(
+    entry,
+    *,
+    jobs=("job-1",),
+    status="routed",
+    reason=None,
+    instances=None,
+    run_ref=RUN_REF,
+    attempt_ref=ATTEMPT_REF,
+    runner_ref=RUNNER_REF,
+    report_ref=REPORT_REF,
+):
+    if instances is None:
+        routed_jobs = list(jobs) if status == "routed" else []
+        instances = [
+            {
+                "job_ref": job,
+                "run_ref": run_ref,
+                "attempt_ref": attempt_ref,
+                "runner_ref": runner_ref,
+                "report_ref": copy.deepcopy(report_ref),
+            }
+            for job in routed_jobs
+        ]
     return {
         "expected_check_ref": entry["expected_check_ref"],
         "job_refs": list(jobs),
+        "job_instances": instances,
         "mapping_status": status,
         "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
         "effective_config_ref": {"name": "hook-job", "version": "1"},
@@ -324,8 +360,23 @@ def make_routing(entry, *, jobs=("job-1",), status="routed", reason=None):
     }
 
 
-def make_observation(job_ref, results):
-    return {"job_ref": job_ref, "native_results": list(results)}
+def make_observation(
+    job_ref,
+    results,
+    *,
+    run_ref=RUN_REF,
+    attempt_ref=ATTEMPT_REF,
+    runner_ref=RUNNER_REF,
+    report_ref=REPORT_REF,
+):
+    return {
+        "job_ref": job_ref,
+        "run_ref": run_ref,
+        "attempt_ref": attempt_ref,
+        "runner_ref": runner_ref,
+        "report_ref": copy.deepcopy(report_ref),
+        "native_results": list(results),
+    }
 
 
 def native(
@@ -343,6 +394,8 @@ def native(
     coverage=None,
     phase=None,
     origin="host",
+    runner_ref=RUNNER_REF,
+    profile_ref=None,
 ):
     definition = definition or check_contract.definition_for(name)
     exit_code = 0 if status == "passed" else 1 if status == "failed" else None
@@ -362,6 +415,8 @@ def native(
         input_refs=[dict(item) for item in input_refs],
         coverage=copy.deepcopy(coverage),
         phase=phase,
+        runner_ref=runner_ref,
+        profile_ref=copy.deepcopy(profile_ref),
         **kwargs,
     )
 
@@ -395,7 +450,10 @@ def matched_setup(*, projection_status="partial", schema_version=1):
             else "not_claimed"
         ),
     )
-    result = native(tool_access="tach/check")
+    result = native(
+        tool_access="tach/check",
+        profile_ref=PROFILE_REF if schema_version == 2 else None,
+    )
     return (
         entry,
         projection,
@@ -420,6 +478,19 @@ def test_reconciles_matched_witness_without_claiming_authority():
     assert store["selected_result_ids"] == [result["result_id"]]
     assert store["selected_results"][0]["result_origin"] == "host"
     assert store["selected_results"][0]["tool"]["access_id"] == "tach/check"
+    assert store["selected_results"][0]["run_ref"] == RUN_REF
+    assert store["selected_results"][0]["attempt_ref"] == ATTEMPT_REF
+    assert store["selected_results"][0]["report_ref"] == REPORT_REF
+    assert store["job_instances"] == [
+        {
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": RUNNER_REF,
+            "report_ref": REPORT_REF,
+            "observed": True,
+        }
+    ]
     assert store["native_satisfaction"]["status"] == "satisfied"
     assert receipt["status"] == "partial"
     assert receipt["trusted"] is False
@@ -689,6 +760,119 @@ def test_failed_or_unselected_result_cannot_complete_input_or_coverage():
     assert store["native_status"] == "passed"
 
 
+def test_expected_input_refs_cannot_be_dropped_by_resolution():
+    entry = make_entry("tach", input_refs=[FILE_A, FILE_B])
+    projection = make_projection([entry])
+    partial = native(tool_access="tach/check", input_refs=[FILE_A])
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [partial])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "insufficient"
+    assert store["reason"] == "expected_inputs_uncovered"
+    assert store["selected_result_ids"] == []
+
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, input_refs=[FILE_A])],
+        observations=[make_observation("job-1", [partial])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "insufficient"
+    assert store["reason"] == "expected_inputs_reduced"
+
+    complete = native(
+        tool_access="tach/check",
+        input_refs=[FILE_A, FILE_B, CONFIG_REF],
+    )
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, input_refs=[FILE_A, FILE_B, CONFIG_REF])],
+        observations=[make_observation("job-1", [complete])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "matched"
+    assert store["selected_result_ids"] == [complete["result_id"]]
+
+    # Omitting resolution inputs keeps the immutable Expected inputs as a floor.
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [complete])],
+    )
+    assert receipt["entries"][0]["binding_status"] == "matched"
+
+
+def test_missing_or_different_profile_binding_is_not_matched():
+    entry = make_entry("tach", profile_ref=PROFILE_REF)
+    projection = make_projection(
+        [entry],
+        schema_version=2,
+        profile_ref=PROFILE_REF,
+        profile_source=PROFILE_SOURCE,
+        hygiene_rule_ref=HYGIENE_RULE,
+        sources_rule_ref=SOURCES_RULE,
+    )
+    routing = make_routing(entry)
+    resolution = make_resolution(entry)
+
+    missing = native(tool_access="tach/check")
+    receipt = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[make_observation("job-1", [missing])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "expected_profile_binding_missing"
+    assert store["rejected_results"][0]["reason"] == "profile_binding_missing"
+
+    other_profile = {"name": "org/other", "version": "1"}
+    different = native(tool_access="tach/check", profile_ref=other_profile)
+    receipt = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[make_observation("job-1", [different])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "expected_profile_mismatch"
+    assert store["rejected_results"][0]["reason"] == "profile_mismatch"
+
+    bound = native(tool_access="tach/check", profile_ref=PROFILE_REF)
+    receipt = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[make_observation("job-1", [bound])],
+    )
+    assert receipt["entries"][0]["binding_status"] == "matched"
+
+
+def test_unprofiled_expected_does_not_invent_profile_constraint():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    result = native(
+        tool_access="tach/check",
+        profile_ref={"name": "org/other", "version": "1"},
+    )
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [result])],
+    )
+    assert receipt["entries"][0]["binding_status"] == "matched"
+
+
 def test_expected_rule_and_baseline_can_stand_without_duplicate_evidence():
     entry = make_entry(
         "whitespace",
@@ -822,6 +1006,31 @@ def test_equivalent_expected_instances_share_one_native_witness():
     assert receipt["summary"]["selected_results"] == 1
 
 
+def test_equivalent_consumer_scopes_can_reuse_same_native_evidence():
+    entry = make_entry("tach")
+    result = native(tool_access="tach/check")
+    observation = make_observation("job-1", [result])
+    routing = make_routing(entry)
+    resolution = make_resolution(entry)
+    receipts = [
+        reconcile(
+            make_projection([entry], consumer=consumer),
+            routing=[routing],
+            resolutions=[resolution],
+            observations=[observation],
+        )
+        for consumer in ("consumer-a", "consumer-b")
+    ]
+    assert receipts[0]["scope_id"] != receipts[1]["scope_id"]
+    assert all(
+        receipt["entries"][0]["binding_status"] == "matched" for receipt in receipts
+    )
+    assert all(
+        receipt["entries"][0]["selected_result_ids"] == [result["result_id"]]
+        for receipt in receipts
+    )
+
+
 def test_duplicate_observation_is_recorded_without_double_counting():
     entry = make_entry("tach")
     projection = make_projection([entry])
@@ -837,12 +1046,18 @@ def test_duplicate_observation_is_recorded_without_double_counting():
     )
     assert receipt["entries"][0]["binding_status"] == "matched"
     assert receipt["duplicate"] == [
-        {"result_id": result["result_id"], "job_refs": ["job-1", "job-2"]}
+        {
+            "result_id": result["result_id"],
+            "observations": [
+                {"job_ref": "job-1", "run_ref": RUN_REF, "attempt_ref": ATTEMPT_REF},
+                {"job_ref": "job-2", "run_ref": RUN_REF, "attempt_ref": ATTEMPT_REF},
+            ],
+        }
     ]
     assert receipt["summary"]["duplicate"] == 1
 
 
-def test_incoherent_candidate_groups_stay_unknown():
+def test_wrong_source_observation_is_rejected_as_execution_object():
     entry = make_entry("tach")
     projection = make_projection([entry])
     other_source = check_contract.source_ref(
@@ -853,23 +1068,38 @@ def test_incoherent_candidate_groups_stay_unknown():
         verified_scope=["docs/guide.md"],
         scope_kind="check_input_closure",
     )
-    first = native(tool_access="tach/check", instance="a")
-    second = native(tool_access="tach/check", instance="b", source=other_source)
+    wrong = native(tool_access="tach/check", source=other_source)
     receipt = reconcile(
         projection,
         routing=[make_routing(entry)],
         resolutions=[make_resolution(entry)],
-        observations=[make_observation("job-1", [first, second])],
+        observations=[make_observation("job-1", [wrong])],
     )
     store = receipt["entries"][0]
-    assert store["binding_status"] == "unknown"
-    assert store["reason"] == "ambiguous_native_candidate_groups"
+    assert store["binding_status"] == "insufficient"
+    assert store["reason"] == "execution_object_mismatch"
     assert store["selected_result_ids"] == []
-    assert store["observed_result_ids"] == [
-        first["result_id"],
-        second["result_id"],
+    assert store["rejected_results"] == [
+        {
+            "result_id": wrong["result_id"],
+            "reason": "source_mismatch",
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+        }
     ]
-    assert store["native_status"] == "passed"
+
+    correct = native(tool_access="tach/check", instance="correct")
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [wrong, correct])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "matched"
+    assert store["selected_result_ids"] == [correct["result_id"]]
+    assert store["rejected_results"][0]["reason"] == "source_mismatch"
 
 
 def test_unexpected_observations_are_reported():
@@ -904,6 +1134,136 @@ def test_unexpected_observations_are_reported():
     assert (extra["result_id"], "job-2", "job_not_routed") in reasons
     assert receipt["entries"][0]["binding_status"] == "matched"
     assert receipt["status"] == "partial"
+
+
+def test_missing_job_activation_identity_is_unknown():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    routing = make_routing(entry)
+    routing["job_instances"] = []
+    result = native(tool_access="tach/check")
+    receipt = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [result])],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "job_activation_identity_missing"
+    assert store["selected_result_ids"] == []
+
+
+def test_same_job_other_attempt_is_not_matched():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    result = native(tool_access="tach/check")
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry, attempt_ref="attempt/2")],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [result], attempt_ref="attempt/1")],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "missing"
+    assert store["reason"] == "native_result_missing"
+    assert store["selected_result_ids"] == []
+    assert store["job_instances"] == [
+        {
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": "attempt/2",
+            "runner_ref": RUNNER_REF,
+            "report_ref": REPORT_REF,
+            "observed": False,
+        }
+    ]
+    assert receipt["unexpected"] == [
+        {
+            "result_id": result["result_id"],
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": "attempt/1",
+            "check_id": "eci/hygiene/tach",
+            "reason": "job_instance_not_activated",
+        }
+    ]
+
+
+def test_old_run_result_reattached_to_new_job_is_not_matched():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    result = native(tool_access="tach/check")
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry, run_ref="run/new")],
+        resolutions=[make_resolution(entry)],
+        observations=[make_observation("job-1", [result], run_ref="run/old")],
+    )
+    assert receipt["entries"][0]["binding_status"] == "missing"
+    assert receipt["unexpected"][0]["reason"] == "job_instance_not_activated"
+    assert receipt["unexpected"][0]["run_ref"] == "run/old"
+
+
+def test_wrong_runner_or_report_identity_is_unknown():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    resolution = make_resolution(entry)
+
+    other_runner = "execution:other"
+    result = native(tool_access="tach/check", runner_ref=other_runner)
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[resolution],
+        observations=[make_observation("job-1", [result], runner_ref=other_runner)],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "job_execution_identity_mismatch"
+    assert store["rejected_observations"][0]["reason"] == "job_runner_mismatch"
+
+    other_report = {
+        "kind": "engineering-ci-execution-report",
+        "schema_version": 1,
+        "sha256": "b" * 64,
+    }
+    result = native(tool_access="tach/check")
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[resolution],
+        observations=[make_observation("job-1", [result], report_ref=other_report)],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "job_execution_identity_mismatch"
+    assert store["rejected_observations"][0]["reason"] == "job_report_mismatch"
+
+
+def test_observation_without_run_attempt_identity_is_unknown():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    result = native(tool_access="tach/check")
+    observation = make_observation(
+        "job-1",
+        [result],
+        run_ref=None,
+        attempt_ref=None,
+        runner_ref=None,
+        report_ref=None,
+    )
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry)],
+        observations=[observation],
+    )
+    store = receipt["entries"][0]
+    assert store["binding_status"] == "unknown"
+    assert store["reason"] == "job_execution_identity_unproven"
+    assert store["selected_result_ids"] == []
+    assert receipt["unexpected"][0]["reason"] == "job_execution_identity_unproven"
 
 
 def test_terminal_expected_requires_post_completion_phase_evidence():
@@ -962,7 +1322,7 @@ def test_unresolved_definition_is_unknown():
 def test_v2_per_ref_scope_is_reconciled_individually():
     entry = make_entry("tach", profile_ref=PROFILE_REF)
     projection, ref_scope_id = make_v2_per_ref_projection([entry])
-    result = native(tool_access="tach/check")
+    result = native(tool_access="tach/check", profile_ref=PROFILE_REF)
     receipt = reconcile(
         projection,
         ref_scope_id=ref_scope_id,
@@ -1045,7 +1405,7 @@ def test_routing_and_observation_input_contract_is_enforced():
     ):
         reconcile(projection, routing=[make_routing(entry, jobs=())])
     with pytest.raises(
-        reconciliation.ReconciliationError, match="observation_job_duplicate"
+        reconciliation.ReconciliationError, match="observation_identity_duplicate"
     ):
         reconcile(
             projection,
