@@ -53,6 +53,7 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/hygiene/tach-external",
         "eci/tests/unittest",
         "eci/tests/pytest",
+        "eci/security/gitleaks-history",
         "eci/weaver/registry",
         "eci/weaver/live",
         "eci/weaver/terminal",
@@ -79,6 +80,7 @@ CHECK_IDS = MappingProxyType(
         "tach": "eci/hygiene/tach",
         "tach_external": "eci/hygiene/tach-external",
         "source": "eci/sources/reconcile",
+        "gitleaks": "eci/security/gitleaks-history",
         "unittest": "eci/tests/unittest",
         "pytest": "eci/tests/pytest",
         "weaver_registry": "eci/weaver/registry",
@@ -408,6 +410,22 @@ _TOOL_REQUIREMENTS = {
     "tach_external": (
         ToolRequirement("external-modules", (ToolIdentity("tach/check-external"),)),
     ),
+    "gitleaks": (
+        ToolRequirement(
+            "history-scan",
+            (
+                ToolIdentity(
+                    "gitleaks.git",
+                    tool_id="gitleaks",
+                    tool_id_source="eci_pinned_asset",
+                    version="8.30.1",
+                    artifact_sha256=(
+                        "17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c"
+                    ),
+                ),
+            ),
+        ),
+    ),
     "vulture": (ToolRequirement("dead-code", (ToolIdentity("vulture/dead-code"),)),),
     "whitespace": (ToolRequirement("diff-hygiene", (ToolIdentity("git/diff-check"),)),),
     "unittest": (ToolRequirement("test-runner", (ToolIdentity("python/unittest"),)),),
@@ -471,6 +489,7 @@ _CURRENT_DEFINITION_VERSION = {
     "tach": 2,
     "tach_external": 2,
     "source": 1,
+    "gitleaks": 1,
     "unittest": 1,
     "pytest": 1,
     "weaver_registry": 1,
