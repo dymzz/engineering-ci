@@ -2121,6 +2121,8 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None):
         )
         candidate_root = Path(cfg_path_str).parent if cfg_path_str else Path(".")
         root = candidate_root if candidate_root.is_dir() else Path(".")
+        if not (root / ".git").exists():
+            raise ExpectedError("expected_per_ref_source_unverifiable")
         recomputed_sel_entries, recomputed_scopes = (
             _selection.per_ref_selections_and_scopes(
                 refs,
