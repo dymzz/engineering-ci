@@ -723,19 +723,53 @@ def _validate_reference(ref, name):
             raise CheckContractError("rule_ref_unproven")
 
 
-def _rule_enables_condition(rule, condition):
+def _resolve_rule_condition(rule, condition):
+    """Resolve a controlled Rule condition: True, False, or None if unresolved."""
     if condition is None:
         return True
     if condition == "registry_baseline_rule":
-        return isinstance(rule, dict) and rule.get("baseline_required") is True
+        if (
+            isinstance(rule, dict)
+            and rule.get("sha256")
+            and "baseline_required" in rule
+            and type(rule["baseline_required"]) is bool
+        ):
+            return rule["baseline_required"]
+        return None
     raise CheckContractError("tool_requirement_condition_invalid")
+
+
+def _unresolved_conditions(definition, *, rule=None):
+    return tuple(
+        dict.fromkeys(
+            item.when
+            for item in definition.tool_requirements
+            if _resolve_rule_condition(rule, item.when) is None
+        )
+    )
 
 
 def _active_requirements(definition, *, rule=None):
     return tuple(
         item
         for item in definition.tool_requirements
-        if _rule_enables_condition(rule, item.when)
+        if _resolve_rule_condition(rule, item.when) is True
+    )
+
+
+def _inactive_requirements(definition, *, rule=None):
+    return tuple(
+        item
+        for item in definition.tool_requirements
+        if _resolve_rule_condition(rule, item.when) is False
+    )
+
+
+def _unresolved_requirements(definition, *, rule=None):
+    return tuple(
+        item
+        for item in definition.tool_requirements
+        if _resolve_rule_condition(rule, item.when) is None
     )
 
 
@@ -1104,6 +1138,8 @@ def validate_expected_instance(expected):
     _validate_reference(rule, "rule_ref")
     if "baseline_required" in expected:
         raise CheckContractError("expected_baseline_rule_unproven")
+    if _unresolved_conditions(definition, rule=rule):
+        raise CheckContractError("expected_baseline_rule_unresolved")
     source = expected.get("source_ref")
     validate_source_ref(source)
     if source["binding_status"] not in {"byte_tree", "content_digest"}:
@@ -1169,6 +1205,8 @@ def result_matches_expected(result, expected):
         builtin.requires_post_completion
         and expected.get("phase") != POST_COMPLETION_PHASE
     ):
+        return False
+    if _unresolved_conditions(builtin, rule=expected.get("rule_ref")):
         return False
     comparisons = {
         "check_id": check["check_id"],
@@ -1544,10 +1582,10 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         if expected is not None
         else (observed[0]["check"].get("rule_ref") if observed else definition.rule_ref)
     )
+    unresolved_conditions = _unresolved_conditions(definition, rule=active_rule)
     active_requirements = _active_requirements(definition, rule=active_rule)
-    inactive_requirements = tuple(
-        item for item in definition.tool_requirements if item not in active_requirements
-    )
+    inactive_requirements = _inactive_requirements(definition, rule=active_rule)
+    unresolved_requirements = _unresolved_requirements(definition, rule=active_rule)
     unexpected_observed = [
         item["result_id"]
         for item in observed
@@ -1664,6 +1702,26 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         partial[key] = entry
         entries.append(entry)
 
+    for requirement in unresolved_requirements:
+        observed_ids = [
+            item["result_id"]
+            for item in observed
+            if _result_matches_requirement(requirement, item)
+        ]
+        entries.append(
+            {
+                "requirement_id": requirement.requirement_id,
+                "after": list(requirement.after),
+                "alternatives": [
+                    alternative.access_id for alternative in requirement.alternatives
+                ],
+                "observed": observed_ids,
+                "satisfied_by": None,
+                "status": "unsatisfied",
+                "reason": "rule_condition_unresolved",
+            }
+        )
+
     unmet = [item for item in entries if item["status"] != "satisfied"]
     if tool_witness is None and not unmet:
         # Per-requirement local choices do not certify one coherent chain.
@@ -1675,6 +1733,11 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         unmet = [entries[-1]]
     if unexpected_observed:
         status, reason = "unsatisfied", "unexpected_conditional_requirement"
+        selected = None
+        if expected is not None and reason not in failure_reasons:
+            failure_reasons.append(reason)
+    elif unresolved_conditions and observed:
+        status, reason = "unsatisfied", "baseline_rule_unresolved"
         selected = None
         if expected is not None and reason not in failure_reasons:
             failure_reasons.append(reason)

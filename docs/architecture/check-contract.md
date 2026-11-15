@@ -146,9 +146,12 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 
 - Every active requirement must be satisfied: `all-required` across active
   groups, `allowed-alternative` within one group's `alternatives`. Conditional
-  requirements declaring `when="registry_baseline_rule"` apply only when a
-  digest-pinned controlled `rule_ref` asserts `baseline_required=True`; when
-  inactive, unexpected baseline/diff results are rejected rather than ignored.
+  requirements declaring `when="registry_baseline_rule"` require a digest-pinned
+  controlled `rule_ref` to state `baseline_required=True` or
+  `baseline_required=False` explicitly: `True` activates the conditional stages,
+  `False` limits evaluation to the three main Registry stages (rejecting
+  unexpected baseline/diff results), and omitting `baseline_required` leaves the
+  condition unresolved rather than silently defaulting to `False`.
 - `after` is a real prerequisite. The satisfying result must reference the
   prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
   is not evidence that the tool consumed it.

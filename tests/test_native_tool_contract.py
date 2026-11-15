@@ -1324,16 +1324,23 @@ def test_weaver_registry_live_terminal_require_registry_local_check():
     live_def = check_contract.definition_for("weaver_live")
     terminal_def = check_contract.definition_for("weaver_terminal")
     checked = closed_source()
+    reg_rule = check_contract.rule_ref(
+        "weaver", 1, digest="c" * 64, baseline_required=False
+    )
     rule = check_contract.rule_ref("weaver", 1, digest="c" * 64)
 
     # 1) weaver_registry: omitting or failing registry-local-check is unsatisfied.
     reg_no_local = _weaver_packaging_chain(
-        registry_def, source=checked, rule=rule, prefix="reg-miss", include_local=False
+        registry_def,
+        source=checked,
+        rule=reg_rule,
+        prefix="reg-miss",
+        include_local=False,
     )
     expected_reg = {
         "check_id": registry_def.check_id,
         "definition_version": registry_def.definition_version,
-        "rule_ref": rule,
+        "rule_ref": reg_rule,
         "source_ref": checked,
     }
     missing_reg_decision = check_contract.evaluate_expected_satisfaction(
@@ -1345,7 +1352,7 @@ def test_weaver_registry_live_terminal_require_registry_local_check():
     reg_failed_local = _weaver_packaging_chain(
         registry_def,
         source=checked,
-        rule=rule,
+        rule=reg_rule,
         prefix="reg-fail",
         local_status="failed",
         local_exit_code=1,
@@ -1357,7 +1364,7 @@ def test_weaver_registry_live_terminal_require_registry_local_check():
     assert failed_reg_decision["reason"] == "result_not_passed"
 
     reg_full = _weaver_packaging_chain(
-        registry_def, source=checked, rule=rule, prefix="reg-pass"
+        registry_def, source=checked, rule=reg_rule, prefix="reg-pass"
     )
     pass_reg_decision = check_contract.evaluate_expected_satisfaction(
         reg_full, expected_reg
@@ -1670,6 +1677,50 @@ def test_weaver_registry_conditional_baseline_diff_driven_by_controlled_rule():
                 "coverage_by_requirement": {"registry-diff": {"diff_checked": True}},
             }
         )
+
+    # Valid SHA without explicit baseline_required is unresolved, never silently False.
+    unresolved_rule = check_contract.rule_ref(
+        "ci-weaver", 1, path="ci-weaver.toml", digest="f" * 64
+    )
+    unresolved_reg_full = _weaver_packaging_chain(
+        registry_def, source=checked, rule=unresolved_rule, prefix="unresolved"
+    )
+    expected_unresolved_reg = {
+        "check_id": registry_def.check_id,
+        "definition_version": registry_def.definition_version,
+        "rule_ref": unresolved_rule,
+        "source_ref": checked,
+    }
+    assert not check_contract.result_matches_expected(
+        unresolved_reg_full[0], expected_unresolved_reg
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_rule_unresolved"
+    ):
+        check_contract.validate_expected_instance(expected_unresolved_reg)
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_rule_unresolved"
+    ):
+        check_contract.evaluate_expected_satisfaction(
+            unresolved_reg_full, expected_unresolved_reg
+        )
+    direct_unresolved = check_contract.evaluate_check_satisfaction(
+        registry_def, unresolved_reg_full
+    )
+    assert direct_unresolved["status"] == "unsatisfied"
+    assert direct_unresolved["reason"] == "baseline_rule_unresolved"
+    assert direct_unresolved["selected_result_ids"] == []
+    unresolved_entries = {
+        entry["requirement_id"]: entry for entry in direct_unresolved["requirements"]
+    }
+    for req_id in (
+        "baseline-check",
+        "baseline-package",
+        "baseline-local-check",
+        "registry-diff",
+    ):
+        assert unresolved_entries[req_id]["status"] == "unsatisfied"
+        assert unresolved_entries[req_id]["reason"] == "rule_condition_unresolved"
 
 
 def test_tool_requirement_conditional_prerequisite_validation():
