@@ -441,4 +441,22 @@ uv run lefthook install   # 仅当所选生命周期需要显式安装
 
 **仍需验证：** ECI 安装器对实际 executable identity/路径的绑定；L2 Prepare→Job→Final Reconciliation；升级/卸载/恢复；Unix/linked worktree。npm 仅作为历史非默认渠道记录，不进入默认生命周期验收。
 
+#### 8.5.6 L2 原生入口 → Lefthook Job → Hook Exit 的原始原型（非产品实现）
+
+在临时 Git 仓库中用固定 `lefthook 2.2.2` 做了一次 L2 形状验证，**不是 ECI 运行时实现**：
+
+- `.git/hooks/pre-push` 是原生 `sh` 入口，读取两个 argv 和完整 stdin，写入 `.git/eci-event/{argv.txt,stdin.txt}`，再执行 `lefthook run pre-push`，等待返回后写 `rc.txt` 并以该返回值退出；
+- Lefthook Job 从 `ECI_EVENT_FILE` 读取已准备事件并写 `job-receipt.txt`；
+- 成功 Push 时 Job receipt 与事件 argv/stdin 一致，Hook exit 0；
+- 将 Job 改为 `exit 7` 后，真实 `git push` 被中止，`lefthook` 返回非零，wrapper 记录 `rc.txt=1` 并以 1 退出；
+- 原生入口先消费 stdin，Job 未再次读取 Hook stdin；该形状避免了“多个 Job 争抢原始 stdin”。
+
+**同时观察到的限制：**
+
+- 自定义 `.git/hooks/pre-push` 与 Lefthook 的 Hook 同步冲突时，`lefthook run` 会警告 `can't rename pre-push to pre-push.old` 并跳过同步；原型仍能运行 Job，但这证明安装所有权必须先收敛到唯一所有者，不能把 ECI 外层 hook 与 Lefthook 安装器混用。
+- 该原型没有 Expected/Final Reconciliation、没有 Tach/Lychee/Sources、没有多 Ref、没有 Unix/linked worktree，也没有将 Job 原生结果映射为 #52 Result；因此只证明 L2 的入口/Exit 形状可行，不是 S1-E 通过。
+- `lefthook run` 在自定义 Hook 存在时尝试同步 Hook 的行为必须在产品安装器中显式处理：要么 ECI 独占安装，要么 Lefthook 独占安装，不能两者都写 `core.hooksPath`。
+
+**更新状态：** L2 入口/委托/非零 Exit 形状已获得原始观察；ECI Event Coordinator、Final Reconciliation 和真实 Check 仍未实现。
+
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
