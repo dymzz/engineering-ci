@@ -164,6 +164,7 @@ class Selection:
     prerequisites: frozenset[str] = frozenset()
     full_tests: bool = False
     per_ref: tuple[dict, ...] = ()
+    base_prerequisites: frozenset[str] | None = None
 
 
 def _text(value, name):
@@ -1818,10 +1819,11 @@ def _selected_dependency_edges(tests, active_checks, base_prerequisites, config)
 def _escalated(
     changeset, config, tests, reason, reasons=None, *, full_tests=False, root=None
 ):
-    base_prereqs = set(config.prerequisites)
+    base_prereqs = frozenset(config.prerequisites)
+    activated = set(base_prereqs)
     if config.dependency_edges and root is not None:
         active_checks = _active_check_names(changeset, config, root)
-        _, base_prereqs = _selected_dependency_edges(
+        _, activated = _selected_dependency_edges(
             tests, active_checks, base_prereqs, config
         )
     return Selection(
@@ -1832,8 +1834,9 @@ def _escalated(
         escalated=True,
         escalation_reason=reason,
         reasons=reasons or {"all": [reason]},
-        prerequisites=frozenset(base_prereqs),
+        prerequisites=frozenset(activated),
         full_tests=full_tests,
+        base_prerequisites=base_prereqs,
     )
 
 
@@ -1889,6 +1892,15 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             )
         merged_tests = tuple(sorted({t for r in ref_sels for t in r.tests}))
         merged_prereqs = frozenset(p for r in ref_sels for p in r.prerequisites)
+        merged_base_prereqs = frozenset(
+            p
+            for r in ref_sels
+            for p in (
+                r.prerequisites
+                if r.base_prerequisites is None
+                else r.base_prerequisites
+            )
+        )
         any_escalated = any(r.escalated for r in ref_sels)
         any_full = any(r.full_tests for r in ref_sels)
         esc_reasons = list(
@@ -1923,6 +1935,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             prerequisites=merged_prereqs,
             full_tests=any_full,
             per_ref=tuple(per_ref_entries),
+            base_prerequisites=merged_base_prereqs,
         )
     if getattr(changes, "ref_action", None) == "delete":
         return Selection(
@@ -1932,6 +1945,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             status="not_applicable",
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
+            base_prerequisites=frozenset(),
         )
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
@@ -2085,13 +2099,14 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
-    prerequisites = {
+    base_prereqs = frozenset(
         name for name, tests in config.prerequisites.items() if selected & set(tests)
-    }
+    )
+    prerequisites = set(base_prereqs)
     if config.dependency_edges:
         active_checks = _active_check_names(changes, config, root)
         _, prerequisites = _selected_dependency_edges(
-            ordered, active_checks, prerequisites, config
+            ordered, active_checks, base_prereqs, config
         )
     return Selection(
         changeset=changes,
@@ -2101,6 +2116,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         escalated=False,
         reasons=reasons,
         prerequisites=frozenset(prerequisites),
+        base_prerequisites=base_prereqs,
     )
 
 
@@ -2956,6 +2972,19 @@ def per_ref_selections_and_scopes(
             or ref.get("local_ref")
             or ref.get("after")
         )
+        ref_base_prereqs = (
+            ref_sel.prerequisites
+            if ref_sel.base_prerequisites is None
+            else ref_sel.base_prerequisites
+        )
+        ref_active_checks = {
+            item["name"]
+            for item in ref_scope[1:]
+            if item.get("status") in {"selected", "unknown"}
+        }
+        _, ref_effective_prereqs = _selected_dependency_edges(
+            ref_sel.tests, ref_active_checks, ref_base_prereqs, config
+        )
         entry = {
             "index": index,
             "source_ref": source_label,
@@ -2969,7 +2998,7 @@ def per_ref_selections_and_scopes(
             "status": ref_sel.status,
             "tests": list(ref_sel.tests),
             "checks": list(ref_sel.checks),
-            "prerequisites": sorted(ref_sel.prerequisites),
+            "prerequisites": sorted(ref_effective_prereqs),
             "escalated": ref_sel.escalated,
             "escalation_reason": ref_sel.escalation_reason,
             "full_tests": ref_sel.full_tests,
@@ -3189,8 +3218,13 @@ def plan(
         for item in scope[1:]
         if item.get("status") in {"selected", "unknown"}
     }
+    base_prereqs = (
+        selection.prerequisites
+        if selection.base_prerequisites is None
+        else selection.base_prerequisites
+    )
     active_edges, effective_prereqs = _selected_dependency_edges(
-        selection.tests, active_checks, selection.prerequisites, config
+        selection.tests, active_checks, base_prereqs, config
     )
     declaration = {"path": str(config_path), "sha256": _digest(config_path)}
     selected_by = (

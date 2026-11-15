@@ -1247,6 +1247,103 @@ def test_dependency_edges_preserve_unresolved_action_and_reject_invalid(repo):
             selection.load_config(selection_toml)
 
 
+def test_plan_recomputes_dependency_prerequisites_from_final_scope(repo, tmp_path):
+    path, base = repo
+    hygiene_toml = path / "ci-hygiene.toml"
+    hygiene_toml.write_text(
+        ('schema_version = 1\nchecks = ["whitespace", "docs", "tach", "vulture"]\n'),
+        encoding="utf-8",
+    )
+    selection_toml = path / "ci-selection.toml"
+    selection_toml.write_text(
+        selection_toml.read_text(encoding="utf-8")
+        + "\n[prerequisite_actions.gen_docs]\n"
+        + 'type = "command"\n'
+        + 'argv = ["python", "-c", "pass"]\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "check", name = "docs" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "execution_report", name = "artifacts" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "configure dependency prerequisite scope test")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # Repo default enables docs -> select() activates dependency-only gen_docs alongside test-mapped identity_commit.
+    (path / "docs/guide.md").write_text("# Updated\n", encoding="utf-8")
+    (path / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    cfg = config(path)
+    sel = select(path, base)
+    assert {"gen_docs", "identity_commit", "wheel_smoke"} <= sel.prerequisites
+    assert sel.base_prerequisites == frozenset({"identity_commit", "wheel_smoke"})
+
+    # External policy disables docs -> gen_docs must be retracted while test-mapped prerequisites stay.
+    ext_off = tmp_path / "ext-hygiene-off.toml"
+    ext_off.write_text(
+        'schema_version = 1\nchecks = ["whitespace", "tach", "vulture"]\n',
+        encoding="utf-8",
+    )
+    plan_off = selection.plan(
+        sel,
+        config=cfg,
+        config_path=selection_toml,
+        root=path,
+        hygiene_config_path=ext_off,
+    )
+    execution.validate_plan(plan_off)
+    assert plan_off["selection"]["prerequisites"] == ["identity_commit", "wheel_smoke"]
+    assert "gen_docs" not in {
+        edge["producer_ref"]["name"]
+        for edge in plan_off["dependency_contract"]["edges"]
+    }
+
+    # Reverse: repo default disables docs -> select() excludes gen_docs; external policy enables docs -> plan() activates it.
+    hygiene_toml.write_text(
+        'schema_version = 1\nchecks = ["whitespace", "tach", "vulture"]\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-q", "-m", "disable docs in repo default")
+    base2 = run(path, "rev-parse", "HEAD").strip()
+    sel_off = select(path, base2)
+    assert "gen_docs" not in sel_off.prerequisites
+    assert sel_off.base_prerequisites == frozenset({"identity_commit", "wheel_smoke"})
+
+    ext_on = tmp_path / "ext-hygiene-on.toml"
+    ext_on.write_text(
+        'schema_version = 1\nchecks = ["whitespace", "docs", "tach", "vulture"]\n',
+        encoding="utf-8",
+    )
+    plan_on = selection.plan(
+        sel_off,
+        config=cfg,
+        config_path=selection_toml,
+        root=path,
+        hygiene_config_path=ext_on,
+    )
+    execution.validate_plan(plan_on)
+    assert plan_on["selection"]["prerequisites"] == [
+        "gen_docs",
+        "identity_commit",
+        "wheel_smoke",
+    ]
+    assert plan_on["dependency_contract"]["schema_version"] == 2
+    assert {
+        (edge["producer_ref"]["name"], edge["consumer_ref"]["kind"])
+        for edge in plan_on["dependency_contract"]["edges"]
+        if edge["dependency_kind"] == "data"
+    } == {("gen_docs", "check"), ("gen_docs", "execution_report")}
+
+
 def test_linked_worktree_tree_content_id_and_worktree_tree_refusal(repo, tmp_path):
     path, base = repo
     linked = tmp_path / "linked-wt"

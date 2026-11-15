@@ -1639,3 +1639,201 @@ def test_policy_only_selection_plan_runs_host_check_and_propagates_refusal(
     assert blocked_report["checks"][0]["reason"] == "expected_scope_mismatch"
     with pytest.raises(RuntimeError):
         asyncio.run(blocked.enforce())
+
+
+def test_external_hygiene_scope_drives_dag_producer_and_dagger_consumption(
+    tmp_path, modules, monkeypatch
+):
+    import shutil
+
+    from engineering_ci import hygiene as real_hygiene
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/selection-app"
+    tach_toml = (fixture / "tach.toml").read_text(encoding="utf-8")
+    base_selection = (fixture / "ci-selection.toml").read_text(encoding="utf-8")
+
+    marker_file = tmp_path / "gen_docs_launches.log"
+    generated_payload = "# Generated Guide\n"
+    gen_script = (
+        "import os; from pathlib import Path; "
+        f"m = Path({str(marker_file)!r}); "
+        "m.write_text((m.read_text(encoding='utf-8') if m.exists() else '') + '1\\n', encoding='utf-8'); "
+        "out = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'docs/generated.md'; "
+        "out.parent.mkdir(parents=True, exist_ok=True); "
+        f"out.write_text({generated_payload!r}, encoding='utf-8')"
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    selection_text = (
+        base_selection
+        + "\n[prerequisite_actions.gen_docs]\n"
+        + 'type = "command"\n'
+        + f"argv = {json.dumps([sys.executable, '-c', gen_script])}\n\n"
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "check", name = "docs" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n\n'
+        + "[[dependency_edges]]\n"
+        + 'producer_ref = { kind = "prerequisite_action", name = "gen_docs" }\n'
+        + 'consumer_ref = { kind = "execution_report", name = "artifacts" }\n'
+        + 'dependency_kind = "data"\n'
+        + "requires_pass = true\n"
+        + 'output_ref = { kind = "file", path = "docs/generated.md" }\n'
+    )
+    (repo / "ci-selection.toml").write_text(selection_text, encoding="utf-8")
+    (repo / "tach.toml").write_text(tach_toml, encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+
+    # Scenario 1: repo default enables docs -> select() includes dependency-only gen_docs;
+    # external policy disables docs -> Plan retracts gen_docs and Dagger never launches it.
+    hygiene_on_text = (
+        'schema_version = 1\nchecks = ["whitespace", "docs"]\n'
+        '[lychee]\nexecutable = "lychee"\narguments = ["--offline", "--no-progress"]\n'
+    )
+    hygiene_off_text = (
+        'schema_version = 1\nchecks = ["whitespace"]\n'
+        '[lychee]\nexecutable = "lychee"\narguments = ["--offline", "--no-progress"]\n'
+    )
+    (repo / "ci-hygiene.toml").write_text(hygiene_on_text, encoding="utf-8")
+    ext_off = tmp_path / "external-off.toml"
+    ext_off.write_text(hygiene_off_text, encoding="utf-8")
+
+    changes = real_selection.ChangeSet(
+        root=repo,
+        base_ref="base",
+        head_ref="head",
+        base_commit="1" * 40,
+        head_commit="2" * 40,
+        tree="a" * 40,
+        paths=("docs/guide.md",),
+        worktree_dirty=False,
+        complete=True,
+    )
+    cfg = real_selection.load_config(repo / "ci-selection.toml")
+    sel_default_on = real_selection.select(changes, cfg, root=repo)
+    assert sel_default_on.prerequisites == frozenset({"gen_docs"})
+    assert sel_default_on.base_prerequisites == frozenset()
+
+    plan_off = real_selection.plan(
+        sel_default_on,
+        config=cfg,
+        config_path=repo / "ci-selection.toml",
+        root=repo,
+        hygiene_config=real_hygiene.load_config(ext_off),
+        hygiene_config_path=ext_off,
+    )
+    assert plan_off["selection"]["prerequisites"] == []
+    assert plan_off["dependency_contract"]["edges"] == []
+
+    class DocsNative(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.lychee_argvs = []
+
+        async def _run_git(self, source, argv_tail):
+            return {"exit_code": 0, "stdout": "docs/guide.md\0", "stderr": ""}
+
+        async def _run_lychee(self, source, argv_tail):
+            self.lychee_argvs.append(list(argv_tail))
+            return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **kw: (
+            None if cmd in {"lychee", "git"} else real_which(cmd, *a, **kw)
+        ),
+    )
+
+    source_off = MemoryDirectory(
+        {
+            "ci-selection.toml": selection_text,
+            "ci-hygiene.toml": hygiene_on_text,
+            "tach.toml": tach_toml,
+            "docs/guide.md": "# Guide\n",
+        }
+    )
+    native_off = DocsNative()
+    saved_off = asyncio.run(
+        collector.execute(
+            native_off,
+            MemoryFile(json.dumps(plan_off)),
+            source_off,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report_off = json.loads(asyncio.run(saved_off.report()))
+    assert report_off["status"] == "passed", json.dumps(report_off, indent=2)
+    assert report_off["prerequisites"] == []
+    assert [c["name"] for c in report_off["checks"]] == ["whitespace"]
+    assert not marker_file.exists()
+    assert native_off.lychee_argvs == []
+    asyncio.run(saved_off.enforce())
+
+    # Scenario 2: repo default disables docs -> select() omits gen_docs;
+    # external policy enables docs -> Plan activates gen_docs + data edges, and Dagger
+    # launches gen_docs once before docs and delivers docs/generated.md.
+    (repo / "ci-hygiene.toml").write_text(hygiene_off_text, encoding="utf-8")
+    ext_on = tmp_path / "external-on.toml"
+    ext_on.write_text(hygiene_on_text, encoding="utf-8")
+
+    sel_default_off = real_selection.select(changes, cfg, root=repo)
+    assert sel_default_off.prerequisites == frozenset()
+    assert sel_default_off.base_prerequisites == frozenset()
+
+    plan_on = real_selection.plan(
+        sel_default_off,
+        config=cfg,
+        config_path=repo / "ci-selection.toml",
+        root=repo,
+        hygiene_config=real_hygiene.load_config(ext_on),
+        hygiene_config_path=ext_on,
+    )
+    assert plan_on["selection"]["prerequisites"] == ["gen_docs"]
+    assert plan_on["dependency_contract"]["schema_version"] == 2
+    assert {
+        (e["producer_ref"]["name"], e["consumer_ref"]["kind"])
+        for e in plan_on["dependency_contract"]["edges"]
+    } == {("gen_docs", "check"), ("gen_docs", "execution_report")}
+
+    source_on = MemoryDirectory(
+        {
+            "ci-selection.toml": selection_text,
+            "ci-hygiene.toml": hygiene_off_text,
+            "tach.toml": tach_toml,
+            "docs/guide.md": "# Guide\n",
+        }
+    )
+    native_on = DocsNative()
+    saved_on = asyncio.run(
+        collector.execute(
+            native_on,
+            MemoryFile(json.dumps(plan_on)),
+            source_on,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report_on = json.loads(asyncio.run(saved_on.report()))
+    assert report_on["status"] == "passed", json.dumps(report_on, indent=2)
+    assert marker_file.read_text(encoding="utf-8").splitlines() == ["1"]
+    assert [p["name"] for p in report_on["prerequisites"]] == ["gen_docs"]
+    assert report_on["prerequisites"][0]["status"] == "passed"
+    assert report_on["source_handoff"]["generated_outputs_delivered"] is True
+    docs_check = next(c for c in report_on["checks"] if c["name"] == "docs")
+    assert docs_check["status"] == "passed"
+    assert [ref["path"] for ref in docs_check["generated_input_refs"]] == [
+        "docs/generated.md"
+    ]
+    assert native_on.lychee_argvs == [
+        ["--offline", "--no-progress", "docs/generated.md", "docs/guide.md"]
+    ]
+    asyncio.run(saved_on.enforce())
