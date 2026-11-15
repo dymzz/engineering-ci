@@ -234,10 +234,10 @@ Git Hook Exit（不等于服务端 Required / Release）
 
 | 现有对象 | 已交付的事实 | 本 Hook/Source 提案尚须消费或补齐 |
 | --- | --- | --- |
-| `engineering_ci.selection.ChangeSet` / `changeset_multi` | Index/Worktree/PR/Push 的对象、引用与变化路径，#73 已加快照校验 | Hook 真实事件进入同一 Selector；对所有 Push ref 保留各自 old→new；读取字节需走 #66 P0 物化 |
-| `engineering_ci.selection.Config` / `load_config` / `select()` | 现有模块测试、非代码消费者、Check Scope、工具及必要前置的选测规则 | 按 Trigger/Analysis/Invalidation 准确表达共享锁、规则、版本、反向引用，不增加 Hook-only TOML |
-| `engineering_ci.selection.plan()` + `plan_contract` | PR #88 已交付 schema 2、依赖声明/拒绝与 `source_binding_verified=unknown` | 记录/消费真实 Source/Config/Check/Prerequisite 同源事实，不能把 unknown 升格为已验证 |
-| `engineering_ci.execution._verify_execution_binding()` / `execute()` + Hygiene/Sources | #70/#71 已修无业务测试而适用 Check 的执行、Tach external 与类型化前置；#73 有 Index Tree 核对 | 工具真实读取 Index/Commit/Push 目标字节；共同 Tach 子集许可，实际 Native Result/失败归因；Host/Dagger 一致 |
+| `engineering_ci.selection.ChangeSet` / `changeset_multi` | PR #100 已合并（merge `6c3123cd`）：逐 Ref new/delete/force Baseline、部分 Linked Worktree Source 拒绝及实际 Worktree/Tree 绑定已有实现 | Hook 真实事件进入同一 Selector；剩余实际 Index/Commit/Push 受检字节闭包与跨入口验证 |
+| `engineering_ci.selection.Config` / `load_config` / `select()` | PR #100 已交付有效 Hygiene/Sources 配置与哈希、`tach_external` 及逐 Ref 配置来源绑定 | 按 Trigger/Analysis/Invalidation 准确表达共享锁、规则、版本、反向引用，不增加 Hook-only TOML |
+| `engineering_ci.selection.plan()` + `plan_contract` / Expected | PR #100 已结算 EffectiveProfile→Expected Schema v2 枚举、逐 Ref Expected 与来源/基线校验 | 仍缺 #66-C Expected↔Job↔Native Result 对账与 Hook Runtime 接线；不能把 unknown 升格为已验证 |
+| `engineering_ci.execution._verify_execution_binding()` / `execute()` + Hygiene/Sources | PR #100 已合并：有效 Hygiene/Sources 配置、`tach_external`、Worktree/Tree 绑定与部分 Linked Worktree 拒绝；#70/#71 无业务测试执行与类型化前置保留 | 工具真实读取 Index/Commit/Push 目标字节；共同 Tach 子集许可，实际 Native Result/失败归因；Host/Dagger 一致 |
 | Dagger `execute_plan()`、Source handoff | #88 给出待消费的 Plan 依赖与原 Source 身份引用 | #66 保证真实生产输入；#86 建原生 DAG/Artifact Closure/Result Sharing；不由 Hook 调度器重复实现 |
 | ECI #52/#63/#61 | 原生 Report/Enforce、历史可信接纳、最终 Required 分有权威职责 | Hook 只提供真实 Producer/Source/Check 事实，不制造平行 Gate/历史受信结果 |
 
@@ -368,7 +368,8 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 | --- | --- |
 | 原生 Hook argv+stdin | 已实测（Git 2.56.0/Windows） |
 | Lefthook 普通 Job 的 argv/stdin | 本次夹具的普通 Job **没有显式传递 Git argv，且没有启用 `use_stdin`**，因此未获得 argv/stdin；这不证明 Lefthook 不支持 `{0}`/`{1}` 等参数模板或其他输入传递方式，亦不能据此排除 L1 |
-| L2 原生入口委托 | 设计成立；ECI 实现未交付 |
+| L2 原生入口委托 | 已观察原型；ECI 实现未交付 |
+| Lefthook `no_auto_install` | 已定向观察：配置项与 CLI 参数均不改写自定义 Hook，真实 Push 成功 |
 | 合并配置单一 Prepare | 未独立核验 |
 | 逐 Ref Hook 非零退出 | 未实现/未实测 |
 | Glob 边界负例 | 未实测 |
@@ -394,7 +395,7 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 
 | 候选 | 同次 Event / Job / 最终对账的责任 | 首道可行性证据 |
 | --- | --- | --- |
-| **L2：优先验证** | ECI 唯一管理 Hook 入口、Receive/Prepare；委托 Lefthook 固定版 Job 调度；**ECI 在调度返回（含失败）后 Final Reconciliation** | Git argv+stdin 原样捕获；真实支持的 `lefthook run`/配置来源/版本与进程退出；无二次调用 Hook 或重复 Prepare；Job 过滤及失败后仍完成对账 |
+| **L2：优先验证** | ECI 唯一管理 Hook 入口、Receive/Prepare；委托 Lefthook 固定版 Job 调度；**ECI 在调度返回（含失败）后 Final Reconciliation** | Git argv+stdin 原样捕获；真实支持的 `lefthook run`/配置来源/版本与进程退出；`no_auto_install: true` 或 `--no-auto-install` 保持 ECI Hook 文件不变（固定版已定向观察）；无二次调用 Hook 或重复 Prepare；Job 过滤及失败后仍完成对账 |
 | **L1：保留条件候选** | Lefthook 安装 Hook，使用真实支持的 Git 参数模板/Setup/wrapper 交接完整事件，并有**明确的外层机制**保证末端独立对账 | 合成有效配置与多 Setup 的唯一权威 Prepare；原生参数和 stdin 完整转交；失败/过滤后 Final Reconciliation 仍然执行 |
 | **prek + ECI** | 同样需要可靠的 Event Prepare、可并行的适用 Job 和外层 Reconciliation | 固定版真实 CLI/安装/过滤/退出语义，功能覆盖与 L2/L1 同等 |
 | **原生薄 Hook + ECI** | Git 原生入口传递 Event；利用现有 ECI/Host/Dagger 功能完成必要调度和最后对账 | 并发、条件唤醒、诊断、失败汇总与生命周期的维护成本有真实证据，不退化为单串行执行 |
@@ -447,18 +448,30 @@ uv run lefthook install   # 仅当所选生命周期需要显式安装
 
 在临时 Git 仓库中用固定 `lefthook 2.2.2` 做了一次 L2 形状验证，**不是 ECI 运行时实现**：
 
-- `.git/hooks/pre-push` 是原生 `sh` 入口，读取两个 argv 和完整 stdin，写入 `.git/eci-event/{argv.txt,stdin.txt}`，再执行 `lefthook run pre-push`，等待返回后写 `rc.txt` 并以该返回值退出；
+- `.git/hooks/pre-push` 是原生 `sh` 入口，读取两个 argv 和完整 stdin，写入临时事件目录，再执行 `lefthook run pre-push`，等待返回后写 `rc.txt` 并以该返回值退出；
 - Lefthook Job 从 `ECI_EVENT_FILE` 读取已准备事件并写 `job-receipt.txt`；
 - 成功 Push 时 Job receipt 与事件 argv/stdin 一致，Hook exit 0；
 - 将 Job 改为 `exit 7` 后，真实 `git push` 被中止，`lefthook` 返回非零，wrapper 记录 `rc.txt=1` 并以 1 退出；
 - 原生入口先消费 stdin，Job 未再次读取 Hook stdin；该形状避免了“多个 Job 争抢原始 stdin”。
 
+**`no_auto_install` 定向核验（2026-11-15）：**
+
+- 配置项 `no_auto_install: true` 在固定 `lefthook 2.2.2` 中生效：自定义 `.git/hooks/pre-push` 文件哈希在 `lefthook run pre-push` 前后不变，没有 `can't rename pre-push to pre-push.old` 警告；
+- CLI `lefthook run --no-auto-install pre-push` 同样不改写 Hook 文件；
+- 在 `no_auto_install: true` 下完成一次真实 L2 Push：Job receipt 与 argv/stdin 一致，Push 成功，Hook 文件哈希不变，`rc.txt=0`；
+- 因此 L2 首选使用配置项（固定版支持，作用域覆盖所有 Job 调用）；CLI 参数作为等价备选，**不同时部署两套控制**。
+
+**敏感信息边界：**
+
+- 上述原型使用无凭据的本地 bare remote，所以临时 `argv.txt/stdin.txt` 未含 credentials；
+- 生产 Event Prepare 必须限制原始事件暂存位置、访问、存续与清理；普通日志/持久 Artifact 只输出 §8.4.1 的去敏 remote 身份；
+- 不得把原型 `.git/eci-event/*.txt` 的持久化方式直接作为正式接口，也不为此新建通用 Secret 管理服务。
+
 **同时观察到的限制：**
 
-- 自定义 `.git/hooks/pre-push` 与 Lefthook 的 Hook 同步冲突时，`lefthook run` 会警告 `can't rename pre-push to pre-push.old` 并跳过同步；原型仍能运行 Job，但这证明安装所有权必须先收敛到唯一所有者，不能把 ECI 外层 hook 与 Lefthook 安装器混用。
 - 该原型没有 Expected/Final Reconciliation、没有 Tach/Lychee/Sources、没有多 Ref、没有 Unix/linked worktree，也没有将 Job 原生结果映射为 #52 Result；因此只证明 L2 的入口/Exit 形状可行，不是 S1-E 通过。
-- `lefthook run` 在自定义 Hook 存在时尝试同步 Hook 的行为必须在产品安装器中显式处理：要么 ECI 独占安装，要么 Lefthook 独占安装，不能两者都写 `core.hooksPath`。**L2 上线前的明确退出条件**：确认固定版的真实调用接口能够只调度 Job 而不改写 ECI 管理的 Hook 文件/`core.hooksPath`，或选择经证据证明不存在冲突的单一所有者方案；必须有真实文件状态及安装/委托退出证据，**不接受把当前 `can't rename pre-push to pre-push.old` 警告后继续执行视为可靠运行路径**。不因此开发第二个 Hook 安装器或兼容两套生命周期。
+- **L2 上线前的明确退出条件：** ECI 管理的 Hook 文件/`core.hooksPath` 在委托前后保持不变；固定版 `no_auto_install` 或 `--no-auto-install` 必须有真实文件状态及安装/委托退出证据；若固定版仍存在特定配置副作用，再记录实际阻碍，不开发第二个 Hook 安装器或兼容框架。
 
-**更新状态：** L2 的原生 argv/stdin 接收、委托 Job、非零 Exit 传播已有**候选夹具报告的局部观察**，但本 PR 未提供可独立执行的原始脚本、有效配置及完整 stdout/stderr/exit 记录，**尚未完成独立证据复核**。同时 Hook 同步冲突尚未解决；ECI Event Coordinator、Final Reconciliation、Tach/Lychee/Sources 原生结果绑定及生命周期仍未实现。不可因此宣布 L2 可部署或 S1-E PASS。
+**更新状态：** L2 的原生 argv/stdin 接收、委托 Job、非零 Exit 传播及 `no_auto_install` 防同步冲突已有**候选夹具报告的局部观察**；本 PR 未附可独立执行的完整原始脚本、配置快照和 stdout/stderr/exit 记录，**尚未完成独立证据复核**。ECI Event Coordinator、Final Reconciliation、Tach/Lychee/Sources 原生结果绑定及生命周期仍未实现。不可因此宣布 L2 可部署或 S1-E PASS。
 
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
