@@ -178,6 +178,48 @@ def config_identity(path, config=None, *, root=None):
     }
 
 
+def config_from_identity(identity):
+    """Reconstruct a Config from a persisted config_identity mapping."""
+    if not isinstance(identity, dict):
+        raise SourcesError("config_invalid")
+    norm = identity.get("normalized")
+    if not isinstance(norm, dict):
+        raise SourcesError("config_invalid")
+    if norm.get("schema_version") != SCHEMA_VERSION:
+        raise SourcesError("config_schema_unsupported")
+    roots = _texts(norm.get("acquired_roots"), "acquired_roots")
+    if not roots:
+        raise SourcesError("acquired_roots_invalid")
+    require = norm.get("require_text_unset", True)
+    require_roots = norm.get("require_acquired_roots", True)
+    environment_no_digest = norm.get("environment_requires_no_digest", True)
+    under_roots = norm.get("require_under_acquired_roots", True)
+    for flag in (require, require_roots, environment_no_digest, under_roots):
+        if type(flag) is not bool:
+            raise SourcesError("boolean_invalid")
+    return Config(
+        schema_version=SCHEMA_VERSION,
+        manifest=_text(norm.get("manifest"), "manifest"),
+        entries_key=_text(norm.get("entries_key", ""), "entries_key")
+        if norm.get("entries_key")
+        else "",
+        path_field=_text(norm.get("path_field", "path"), "path_field"),
+        sha256_field=_text(norm.get("sha256_field", "sha256"), "sha256_field"),
+        size_field=_text(norm.get("size_field", "size_bytes"), "size_field")
+        if norm.get("size_field", "size_bytes")
+        else "",
+        acquired_roots=roots,
+        exempt_paths=_texts(norm.get("exempt_paths", []), "exempt_paths"),
+        environment_prefixes=_texts(
+            norm.get("environment_prefixes", []), "environment_prefixes"
+        ),
+        require_text_unset=require,
+        require_acquired_roots=require_roots,
+        environment_requires_no_digest=environment_no_digest,
+        require_under_acquired_roots=under_roots,
+    )
+
+
 def _safe_path(value):
     path = _text(value, "manifest_path")
     if "\\" in path or path.startswith("/") or ":" in path:

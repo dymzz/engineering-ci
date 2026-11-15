@@ -54,6 +54,7 @@ _CONFIG_KEYS = {
     "coverage_required",
     "check_scope",
     "push",
+    "effective_profile",
 }
 
 
@@ -107,6 +108,7 @@ class Config:
     coverage_required: bool
     check_scope: CheckScopeConfig
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
+    effective_profile_policy: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,8 @@ class ChangeSet:
     base_tip: str | None = None
     source_refusal: str | None = None
     deleted_paths: tuple[str, ...] = ()
+    deleted_paths_resolved: bool = False
+    generated_paths: tuple[str, ...] = ()
     ref_action: str | None = None
     object_type: str | None = None
     force_push: bool = False
@@ -157,6 +161,7 @@ class Selection:
     reasons: dict[str, list[str]] = field(default_factory=dict)
     prerequisites: frozenset[str] = frozenset()
     full_tests: bool = False
+    per_ref: tuple[dict, ...] = ()
 
 
 def _text(value, name):
@@ -320,6 +325,9 @@ def load_config(path):
         new_ref_baseline=new_ref_base,
         target_baselines=target_bases,
     )
+    effective_profile_policy = _parse_effective_profile_policy(
+        value.get("effective_profile")
+    )
     return Config(
         schema_version=SCHEMA_VERSION,
         tach=tach,
@@ -347,6 +355,218 @@ def load_config(path):
         coverage_required=coverage_required,
         check_scope=check_scope,
         push=push_policy,
+        effective_profile_policy=effective_profile_policy,
+    )
+
+
+def _parse_effective_profile_policy(raw):
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - {
+        "profile_ref",
+        "profile_revision",
+        "approval_source",
+        "approval_digest",
+        "effective_at",
+        "valid_from",
+        "valid_until",
+        "domain_complete",
+        "declared_checks",
+        "governed_rules",
+    }:
+        raise SelectionError("effective_profile_policy_invalid")
+    prof_ref = raw.get("profile_ref")
+    if (
+        not isinstance(prof_ref, dict)
+        or not isinstance(prof_ref.get("name"), str)
+        or not prof_ref["name"].strip()
+        or not isinstance(prof_ref.get("version"), str)
+        or not prof_ref["version"].strip()
+    ):
+        raise SelectionError("effective_profile_policy_invalid")
+    rev = _text(raw.get("profile_revision", ""), "profile_revision")
+    source = _text(raw.get("approval_source", ""), "approval_source")
+    digest = _text(raw.get("approval_digest", ""), "approval_digest")
+    domain_complete = raw.get("domain_complete", True)
+    if type(domain_complete) is not bool:
+        raise SelectionError("effective_profile_policy_invalid")
+    declared = (
+        list(_string_list(raw["declared_checks"], "declared_checks"))
+        if "declared_checks" in raw and raw["declared_checks"] is not None
+        else None
+    )
+    gov = raw.get("governed_rules")
+    if gov is not None and not isinstance(gov, dict):
+        raise SelectionError("effective_profile_policy_invalid")
+    return {
+        "profile_ref": {
+            "name": prof_ref["name"].strip(),
+            "version": prof_ref["version"].strip(),
+        },
+        "profile_revision": rev,
+        "approval_source": source,
+        "approval_digest": digest,
+        "effective_at": (
+            _text(raw["effective_at"], "effective_at")
+            if raw.get("effective_at") is not None
+            else None
+        ),
+        "valid_from": (
+            _text(raw["valid_from"], "valid_from")
+            if raw.get("valid_from") is not None
+            else None
+        ),
+        "valid_until": (
+            _text(raw["valid_until"], "valid_until")
+            if raw.get("valid_until") is not None
+            else None
+        ),
+        "domain_complete": domain_complete,
+        "declared_checks": declared,
+        "governed_rules": dict(gov) if isinstance(gov, dict) else None,
+    }
+
+
+def config_identity(path, config, *, root=None):
+    """Build a canonical, content-addressed identity for ci-selection.toml."""
+    resolved = Path(path)
+    if not resolved.is_absolute() and root is not None:
+        resolved = (Path(root) / resolved).resolve()
+    sha = _digest(resolved) if resolved.is_file() else _digest(path)
+    normalized = {
+        "schema_version": config.schema_version,
+        "tach": config.tach,
+        "tests_dir": config.tests_dir,
+        "src_root": config.src_root,
+        "framework": config.framework,
+        "escalation_files": sorted(config.escalation_files),
+        "escalation_prefixes": list(config.escalation_prefixes),
+        "ignored_files": sorted(config.ignored_files),
+        "ignored_prefixes": list(config.ignored_prefixes),
+        "checks": list(config.checks),
+        "module_tests": {k: list(v) for k, v in sorted(config.module_tests.items())},
+        "non_code_rules": [
+            {
+                "prefix": r.prefix,
+                "exact": r.exact,
+                "tests": list(r.tests),
+                "reason": r.reason,
+            }
+            for r in config.non_code_rules
+        ],
+        "prerequisites": {k: list(v) for k, v in sorted(config.prerequisites.items())},
+        "prerequisite_actions": {
+            k: dict(v) for k, v in sorted(config.prerequisite_actions.items())
+        },
+        "strict_modules": config.strict_modules,
+        "coverage_required": config.coverage_required,
+        "check_scope": {
+            "docs_suffixes": list(config.check_scope.docs_suffixes),
+            "code_prefixes": list(config.check_scope.code_prefixes),
+            "source_prefixes": list(config.check_scope.source_prefixes),
+            "weaver_prefixes": list(config.check_scope.weaver_prefixes),
+        },
+        "push": {
+            "new_ref_baseline": config.push.new_ref_baseline,
+            "target_baselines": dict(sorted(config.push.target_baselines.items())),
+        },
+        "effective_profile": config.effective_profile_policy,
+    }
+    payload = {
+        "path": str(path),
+        "sha256": sha,
+        "schema_version": config.schema_version,
+        "normalized": normalized,
+    }
+    ref_digest = hashlib.sha256(
+        json.dumps(
+            {"sha256": sha, "normalized": normalized},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        **payload,
+        "effective_config_ref": {
+            "name": "engineering-ci.selection",
+            "version": str(config.schema_version),
+            "sha256": f"sha256:{ref_digest}",
+        },
+    }
+
+
+def config_from_identity(identity):
+    """Reconstruct a validated Config from inputs.config identity."""
+    if not isinstance(identity, dict):
+        raise SelectionError("config_identity_invalid")
+    norm = identity.get("normalized")
+    if not isinstance(norm, dict):
+        raise SelectionError("config_identity_invalid")
+    sha = identity.get("sha256")
+    eff_ref = identity.get("effective_config_ref")
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            {"sha256": sha, "normalized": norm},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        not isinstance(eff_ref, dict)
+        or eff_ref.get("sha256") != f"sha256:{expected_digest}"
+    ):
+        raise SelectionError("config_identity_mismatch")
+    scope = norm.get("check_scope") or {}
+    push_raw = norm.get("push") or {}
+    return Config(
+        schema_version=int(norm.get("schema_version", SCHEMA_VERSION)),
+        tach=str(norm.get("tach", "tach.toml")),
+        tests_dir=str(norm.get("tests_dir", "tests")),
+        src_root=str(norm.get("src_root", "src")),
+        framework=str(norm.get("framework", "unittest")),
+        escalation_files=frozenset(norm.get("escalation_files") or ()),
+        escalation_prefixes=tuple(norm.get("escalation_prefixes") or ()),
+        ignored_files=frozenset(norm.get("ignored_files") or ()),
+        ignored_prefixes=tuple(norm.get("ignored_prefixes") or ()),
+        checks=tuple(norm.get("checks") or ()),
+        module_tests={
+            str(k): tuple(v) for k, v in (norm.get("module_tests") or {}).items()
+        },
+        non_code_rules=tuple(
+            NonCodeRule(
+                prefix=r.get("prefix"),
+                exact=r.get("exact"),
+                tests=tuple(r.get("tests") or ()),
+                reason=str(r.get("reason", "non-code input")),
+            )
+            for r in (norm.get("non_code_rules") or ())
+            if isinstance(r, dict)
+        ),
+        prerequisites={
+            str(k): tuple(v) for k, v in (norm.get("prerequisites") or {}).items()
+        },
+        prerequisite_actions={
+            str(k): dict(v)
+            for k, v in (norm.get("prerequisite_actions") or {}).items()
+            if isinstance(v, dict)
+        },
+        strict_modules=bool(norm.get("strict_modules", True)),
+        coverage_required=bool(norm.get("coverage_required", False)),
+        check_scope=CheckScopeConfig(
+            docs_suffixes=tuple(scope.get("docs_suffixes") or (".md", ".html")),
+            code_prefixes=tuple(
+                scope.get("code_prefixes") or ("src/", "scripts/", "tests/")
+            ),
+            source_prefixes=tuple(
+                scope.get("source_prefixes") or ("data/", "sources/")
+            ),
+            weaver_prefixes=tuple(scope.get("weaver_prefixes") or ()),
+        ),
+        push=PushPolicyConfig(
+            new_ref_baseline=push_raw.get("new_ref_baseline"),
+            target_baselines=dict(push_raw.get("target_baselines") or {}),
+        ),
+        effective_profile_policy=norm.get("effective_profile"),
     )
 
 
@@ -782,7 +1002,57 @@ def changeset_multi(root, refs, *, new_ref_baseline=None, config=None):
         snapshot="multi",
         references=tuple(references),
         deleted_paths=tuple(deleted_paths),
+        deleted_paths_resolved=True,
         non_check_obligations=non_check,
+    )
+
+
+def ref_changeset(root, ref):
+    """Build an authoritative per-ref ChangeSet from a multi-ref reference entry."""
+    root = Path(root) if root is not None else Path(".")
+    ref_action = ref.get("ref_action")
+    is_delete = ref_action == "delete"
+    ref_complete = bool(ref.get("complete", True))
+    if not is_delete and (
+        ref.get("baseline_status") in {"unknown", "old_object_unavailable"}
+        or ref.get("object_type") in {"blob", "tree", "unknown"}
+        or not ref.get("before")
+        or not ref.get("after")
+        or not ref.get("tree")
+    ):
+        ref_complete = False
+    raw_paths = ref.get("paths")
+    raw_deleted = ref.get("deleted_paths")
+    return ChangeSet(
+        root=root,
+        base_ref=str(ref.get("raw_before") or ref.get("before") or ""),
+        head_ref=str(
+            ref.get("remote_ref")
+            or ref.get("local_ref")
+            or ref.get("source_ref")
+            or ref.get("after")
+            or ""
+        ),
+        base_commit=ref.get("before"),
+        head_commit=None if is_delete else ref.get("after"),
+        tree=None if is_delete else ref.get("tree"),
+        paths=()
+        if not isinstance(raw_paths, (list, tuple))
+        else tuple(str(p).replace("\\", "/") for p in raw_paths),
+        worktree_dirty=False,
+        complete=True if is_delete else ref_complete,
+        error=ref.get("error")
+        or (None if (is_delete or ref_complete) else "ref_incomplete"),
+        snapshot="push",
+        deleted_paths=()
+        if not isinstance(raw_deleted, (list, tuple))
+        else tuple(str(p).replace("\\", "/") for p in raw_deleted),
+        deleted_paths_resolved="deleted_paths" in ref,
+        ref_action=ref_action,
+        object_type=ref.get("object_type"),
+        force_push=bool(ref.get("force_push", False)),
+        baseline_status=ref.get("baseline_status"),
+        non_check_obligations=tuple(ref.get("non_check_obligations") or ()),
     )
 
 
@@ -942,6 +1212,7 @@ def _push_changeset(
         error=None if diff.returncode == 0 else "push_diff_failed",
         snapshot="push",
         deleted_paths=deleted,
+        deleted_paths_resolved=True,
         ref_action=ref_action,
         object_type=obj_type,
         force_push=force_push,
@@ -1228,10 +1499,32 @@ def _test_modules(tests_dir, prefix):
     )
 
 
-def _tach_graph(path):
+def _tree_test_modules(root, tree, tests_dir_rel, prefix):
+    rel_dir = _normalized(tests_dir_rel).strip("/")
+    ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, "--", rel_dir)
+    if ls.returncode != 0:
+        return None
+    modules = []
+    base_parts = Path(rel_dir).parts
+    for item in ls.stdout.split("\0"):
+        norm = _normalized(item).strip("/")
+        if not norm.endswith(".py"):
+            continue
+        p = Path(norm)
+        if not p.name.startswith("test_"):
+            continue
+        try:
+            rel_parts = p.relative_to(Path(*base_parts)).with_suffix("").parts
+        except ValueError:
+            continue
+        modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+    return tuple(sorted(modules))
+
+
+def _tach_graph_text(text):
     try:
-        data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeError):
+        data = tomllib.loads(text)
+    except ValueError:
         raise SelectionError("tach_config_invalid") from None
     modules = data.get("modules", [])
     if not isinstance(modules, list):
@@ -1250,6 +1543,21 @@ def _tach_graph(path):
     if not reverse:
         raise SelectionError("tach_config_empty")
     return tuple(sorted(reverse)), {name: list(rev) for name, rev in reverse.items()}
+
+
+def _tach_graph(path):
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise SelectionError("tach_config_invalid") from None
+    return _tach_graph_text(text)
+
+
+def _tree_tach_graph(root, tree, tach_rel_path):
+    cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(tach_rel_path)}")
+    if cat.returncode != 0:
+        raise SelectionError("tach_config_invalid")
+    return _tach_graph_text(cat.stdout)
 
 
 def _reverse_closure(changed, reverse):
@@ -1310,10 +1618,93 @@ def _escalated(changeset, config, tests, reason, reasons=None, *, full_tests=Fal
     )
 
 
-def select(changes, config, *, root, full=False):
+def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None):
     """Select tests for one change set; unknown coverage escalates, never passes."""
     if getattr(changes, "source_refusal", None):
         raise SelectionError(changes.source_refusal)
+    root = Path(root)
+    if getattr(changes, "snapshot", None) == "multi" and getattr(
+        changes, "references", ()
+    ):
+        ref_sels = []
+        per_ref_entries = []
+        for index, ref in enumerate(changes.references):
+            if not isinstance(ref, dict):
+                continue
+            ref_cs = ref_changeset(root, ref)
+            ref_sel = select(
+                ref_cs,
+                config,
+                root=root,
+                full=full,
+                tach_graph=tach_graph,
+                all_tests=all_tests,
+            )
+            ref_sels.append(ref_sel)
+            source_label = (
+                ref.get("source_ref")
+                or ref.get("remote_ref")
+                or ref.get("local_ref")
+                or ref.get("after")
+            )
+            per_ref_entries.append(
+                {
+                    "index": index,
+                    "source_ref": source_label,
+                    "remote_ref": ref.get("remote_ref"),
+                    "local_ref": ref.get("local_ref"),
+                    "baseline_ref": ref.get("baseline_ref"),
+                    "before": ref.get("before"),
+                    "after": ref.get("after"),
+                    "tree": ref.get("tree"),
+                    "ref_action": ref.get("ref_action"),
+                    "status": ref_sel.status,
+                    "tests": list(ref_sel.tests),
+                    "checks": list(ref_sel.checks),
+                    "prerequisites": sorted(ref_sel.prerequisites),
+                    "escalated": ref_sel.escalated,
+                    "escalation_reason": ref_sel.escalation_reason,
+                    "full_tests": ref_sel.full_tests,
+                    "reasons": {k: list(v) for k, v in sorted(ref_sel.reasons.items())},
+                }
+            )
+        merged_tests = tuple(sorted({t for r in ref_sels for t in r.tests}))
+        merged_prereqs = frozenset(p for r in ref_sels for p in r.prerequisites)
+        any_escalated = any(r.escalated for r in ref_sels)
+        any_full = any(r.full_tests for r in ref_sels)
+        esc_reasons = list(
+            dict.fromkeys(r.escalation_reason for r in ref_sels if r.escalation_reason)
+        )
+        esc_reason = "; ".join(esc_reasons) if esc_reasons else None
+        merged_reasons = {}
+        for r in ref_sels:
+            for k, items in r.reasons.items():
+                bucket = merged_reasons.setdefault(k, [])
+                for item in items:
+                    if item not in bucket:
+                        bucket.append(item)
+        if any_escalated:
+            agg_status = "escalated"
+        elif merged_tests:
+            agg_status = "targeted"
+        elif ref_sels and all(r.status == "not_applicable" for r in ref_sels):
+            agg_status = "not_applicable"
+        elif any(r.status == "no_tests" for r in ref_sels):
+            agg_status = "no_tests"
+        else:
+            agg_status = "no_changes"
+        return Selection(
+            changeset=changes,
+            tests=merged_tests,
+            checks=config.checks,
+            status=agg_status,
+            escalated=any_escalated,
+            escalation_reason=esc_reason,
+            reasons=merged_reasons,
+            prerequisites=merged_prereqs,
+            full_tests=any_full,
+            per_ref=tuple(per_ref_entries),
+        )
     if getattr(changes, "ref_action", None) == "delete":
         return Selection(
             changeset=changes,
@@ -1323,15 +1714,33 @@ def select(changes, config, *, root, full=False):
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
         )
-    root = Path(root)
     tests_dir = root / config.tests_dir
     test_prefix = ".".join(Path(config.tests_dir).parts)
-    all_tests = _test_modules(tests_dir, test_prefix)
+    exec_tree = getattr(changes, "execution_tree", None)
+    tree_in_odb = (
+        bool(exec_tree)
+        and _git(root, "cat-file", "-e", f"{exec_tree}^{{tree}}").returncode == 0
+    )
+    if tree_in_odb:
+        tree_tests = _tree_test_modules(root, exec_tree, config.tests_dir, test_prefix)
+        resolved_all_tests = (
+            tree_tests
+            if tree_tests is not None
+            else (
+                tuple(all_tests)
+                if all_tests is not None
+                else _test_modules(tests_dir, test_prefix)
+            )
+        )
+    elif all_tests is not None:
+        resolved_all_tests = tuple(all_tests)
+    else:
+        resolved_all_tests = _test_modules(tests_dir, test_prefix)
     if full:
         return _escalated(
             changes,
             config,
-            all_tests,
+            resolved_all_tests,
             "Explicitly requested full suite",
             full_tests=True,
         )
@@ -1339,7 +1748,7 @@ def select(changes, config, *, root, full=False):
         return _escalated(
             changes,
             config,
-            all_tests,
+            resolved_all_tests,
             f"Git input could not be resolved: {changes.error}",
         )
     paths = [_normalized(path) for path in changes.paths]
@@ -1357,14 +1766,27 @@ def select(changes, config, *, root, full=False):
             path.startswith(prefix) for prefix in config.escalation_prefixes
         ):
             return _escalated(
-                changes, config, all_tests, f"Global configuration modified: {path}"
+                changes,
+                config,
+                resolved_all_tests,
+                f"Global configuration modified: {path}",
             )
     try:
-        modules, reverse = _tach_graph(root / config.tach)
+        if tree_in_odb:
+            modules, reverse = _tree_tach_graph(root, exec_tree, config.tach)
+        elif tach_graph is not None:
+            modules, reverse = tach_graph
+        else:
+            modules, reverse = _tach_graph(root / config.tach)
     except SelectionError as error:
         return _escalated(
-            changes, config, all_tests, f"Tach input unavailable: {error.code}"
+            changes,
+            config,
+            resolved_all_tests,
+            f"Tach input unavailable: {error.code}",
         )
+    deleted_set = {_normalized(item) for item in getattr(changes, "deleted_paths", ())}
+    deleted_resolved = bool(getattr(changes, "deleted_paths_resolved", False))
     selected, reasons, changed_modules, unmapped = set(), {}, set(), []
     for path in paths:
         if _is_ignored(path, config):
@@ -1381,11 +1803,21 @@ def select(changes, config, *, root, full=False):
             and path.endswith(".py")
             and path.split("/")[-1].startswith("test_")
         ):
-            if not (root / path).is_file():
+            if deleted_resolved:
+                is_deleted_test = path in deleted_set
+            elif path in deleted_set:
+                is_deleted_test = True
+            elif tree_in_odb:
+                is_deleted_test = (
+                    _git(root, "cat-file", "-e", f"{exec_tree}:{path}").returncode != 0
+                )
+            else:
+                is_deleted_test = not (root / path).is_file()
+            if is_deleted_test:
                 return _escalated(
                     changes,
                     config,
-                    all_tests,
+                    resolved_all_tests,
                     f"Test file deleted or renamed: {path}",
                 )
             module = ".".join(Path(path).with_suffix("").parts)
@@ -1403,7 +1835,7 @@ def select(changes, config, *, root, full=False):
         return _escalated(
             changes,
             config,
-            all_tests,
+            resolved_all_tests,
             f"Unknown or unmapped path changed: {', '.join(unmapped)}",
             {"all": [f"Unmapped: {path}" for path in unmapped]},
         )
@@ -1417,7 +1849,7 @@ def select(changes, config, *, root, full=False):
                 return _escalated(
                     changes,
                     config,
-                    all_tests,
+                    resolved_all_tests,
                     f"Python module(s) lack registered test mappings: {', '.join(missing)}",
                 )
         for module in sorted(impacted):
@@ -1553,6 +1985,64 @@ def _resolve_sources_input(
     return None, None
 
 
+def source_check_applicability(
+    changes,
+    config,
+    *,
+    sources_config=None,
+    sources_identity=None,
+):
+    """Single authoritative applicability rule for the `source` check."""
+    is_delete = getattr(changes, "ref_action", None) == "delete"
+    if is_delete:
+        return {
+            "name": "source",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "remote_ref_deleted",
+        }
+    if not changes.complete:
+        return {
+            "name": "source",
+            "status": "unknown",
+            "inputs": [],
+            "reason": "git input is incomplete; full applicability unknown",
+        }
+    paths = [_normalized(path) for path in changes.paths]
+    source_prefixes = list(config.check_scope.source_prefixes)
+    exact_source_files = {"ci-sources.toml"}
+    if sources_config is not None:
+        for item in sources_config.acquired_roots:
+            prefix = _normalized(item).rstrip("/") + "/"
+            if prefix not in source_prefixes:
+                source_prefixes.append(prefix)
+        exact_source_files.add(_normalized(sources_config.manifest))
+    if isinstance(sources_identity, dict):
+        if sources_identity.get("path"):
+            exact_source_files.add(_normalized(str(sources_identity["path"])))
+        normalized = sources_identity.get("normalized")
+        if isinstance(normalized, dict):
+            for item in normalized.get("acquired_roots") or ():
+                if isinstance(item, str) and item.strip():
+                    prefix = _normalized(item.strip()).rstrip("/") + "/"
+                    if prefix not in source_prefixes:
+                        source_prefixes.append(prefix)
+            manifest = normalized.get("manifest")
+            if isinstance(manifest, str) and manifest.strip():
+                exact_source_files.add(_normalized(manifest.strip()))
+    source_inputs = [
+        path
+        for path in paths
+        if path in exact_source_files or path.startswith(tuple(source_prefixes))
+    ]
+    return {
+        "name": "source",
+        "status": "selected" if source_inputs else "not_applicable",
+        "inputs": source_inputs,
+        "reason": "source inputs changed" if source_inputs else "no source changes",
+    }
+
+
 def _check_scope(
     selection,
     config,
@@ -1592,50 +2082,14 @@ def _check_scope(
     scopes = [test_entry]
     for name in hygiene.effective_checks(hygiene_config):
         scopes.append(hygiene_scopes[name])
-    if is_delete:
-        scopes.append(
-            {
-                "name": "source",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "remote_ref_deleted",
-            }
+    scopes.append(
+        source_check_applicability(
+            changes,
+            config,
+            sources_config=sources_config,
+            sources_identity=sources_identity,
         )
-    elif not changes.complete:
-        scopes.append(
-            {
-                "name": "source",
-                "status": "unknown",
-                "inputs": [],
-                "reason": "git input is incomplete; full applicability unknown",
-            }
-        )
-    else:
-        source_prefixes = list(config.check_scope.source_prefixes)
-        exact_source_files = set()
-        if sources_config is not None:
-            for item in sources_config.acquired_roots:
-                prefix = item.rstrip("/") + "/"
-                if prefix not in source_prefixes:
-                    source_prefixes.append(prefix)
-            exact_source_files.add(_normalized(sources_config.manifest))
-        if sources_identity and sources_identity.get("path"):
-            exact_source_files.add(_normalized(sources_identity["path"]))
-        source_inputs = [
-            path
-            for path in paths
-            if path in exact_source_files or path.startswith(tuple(source_prefixes))
-        ]
-        scopes.append(
-            {
-                "name": "source",
-                "status": "selected" if source_inputs else "not_applicable",
-                "inputs": source_inputs,
-                "reason": (
-                    "source inputs changed" if source_inputs else "no source changes"
-                ),
-            }
-        )
+    )
     weaver_inputs = [
         path for path in paths if path.startswith(config.check_scope.weaver_prefixes)
     ]
@@ -1687,6 +2141,78 @@ def _check_scope(
             }
         )
     return scopes
+
+
+def per_ref_selections_and_scopes(
+    references,
+    config,
+    root,
+    *,
+    full=False,
+    hygiene_config=None,
+    sources_config=None,
+    sources_identity=None,
+    tach_graph=None,
+    all_tests=None,
+):
+    """Run independent per-ref Selection and CheckScope for each ref in a multi-ref push."""
+    root = Path(root) if root is not None else Path(".")
+    if hygiene_config is None:
+        hygiene_config, _ = _resolve_hygiene_input(root, config)
+    if sources_config is None and not isinstance(sources_identity, dict):
+        sources_config, sources_identity = _resolve_sources_input(root)
+    per_ref_entries = []
+    per_ref_scopes = []
+    for index, ref in enumerate(references):
+        if not isinstance(ref, dict):
+            continue
+        ref_cs = ref_changeset(root, ref)
+        ref_sel = select(
+            ref_cs,
+            config,
+            root=root,
+            full=full,
+            tach_graph=tach_graph,
+            all_tests=all_tests,
+        )
+        ref_scope = _check_scope(
+            ref_sel,
+            config,
+            root,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            sources_identity=sources_identity,
+        )
+        source_label = (
+            ref.get("source_ref")
+            or ref.get("remote_ref")
+            or ref.get("local_ref")
+            or ref.get("after")
+        )
+        per_ref_entries.append(
+            {
+                "index": index,
+                "source_ref": source_label,
+                "remote_ref": ref.get("remote_ref"),
+                "local_ref": ref.get("local_ref"),
+                "baseline_ref": ref.get("baseline_ref"),
+                "before": ref.get("before"),
+                "after": ref.get("after"),
+                "tree": ref.get("tree"),
+                "ref_action": ref.get("ref_action"),
+                "status": ref_sel.status,
+                "tests": list(ref_sel.tests),
+                "checks": list(ref_sel.checks),
+                "prerequisites": sorted(ref_sel.prerequisites),
+                "escalated": ref_sel.escalated,
+                "escalation_reason": ref_sel.escalation_reason,
+                "full_tests": ref_sel.full_tests,
+                "reasons": {k: list(v) for k, v in sorted(ref_sel.reasons.items())},
+                "check_scope": ref_scope,
+            }
+        )
+        per_ref_scopes.append(ref_scope)
+    return per_ref_entries, per_ref_scopes
 
 
 def _tach_check(root, config, changes):
@@ -1788,21 +2314,30 @@ def plan(
         sources_config=sources_config,
         sources_config_path=sources_config_path,
     )
+    resolved_profile_path = None
+    if effective_profile_path is not None:
+        raw_prof_path = Path(effective_profile_path)
+        resolved_profile_path = (
+            raw_prof_path if raw_prof_path.is_absolute() else root / raw_prof_path
+        ).resolve()
     loaded_profile = effective_profile
-    if loaded_profile is None and effective_profile_path is not None:
-        prof_path = Path(effective_profile_path)
-        if not prof_path.is_absolute():
-            prof_path = root / prof_path
-        loaded_profile = expected_checks.load_effective_profile(prof_path)
+    if loaded_profile is None and resolved_profile_path is not None:
+        loaded_profile = expected_checks.load_effective_profile(resolved_profile_path)
     profile_identity = (
         expected_checks.effective_profile_identity(
-            path=effective_profile_path,
+            path=resolved_profile_path,
             profile=loaded_profile,
             root=root,
         )
         if loaded_profile is not None
         else None
     )
+    try:
+        tach_graph = _tach_graph(tach_path)
+    except SelectionError:
+        tach_graph = None
+    test_prefix = ".".join(Path(config.tests_dir).parts)
+    all_tests = _test_modules(root / config.tests_dir, test_prefix)
     graph = _graph_validation(selection, config, root, tach_validation)
     scope = _check_scope(
         selection,
@@ -1812,6 +2347,20 @@ def plan(
         sources_config=loaded_sources,
         sources_identity=sources_identity,
     )
+    per_ref_entries = ()
+    per_ref_scopes = None
+    if selection.changeset.snapshot == "multi" and selection.changeset.references:
+        per_ref_entries, per_ref_scopes = per_ref_selections_and_scopes(
+            selection.changeset.references,
+            config,
+            root,
+            full=selection.full_tests,
+            hygiene_config=loaded_hygiene,
+            sources_config=loaded_sources,
+            sources_identity=sources_identity,
+            tach_graph=tach_graph,
+            all_tests=all_tests,
+        )
     content_binding = (
         worktree_content_binding(root, selection.changeset.paths)
         if selection.changeset.snapshot == "worktree" and selection.changeset.paths
@@ -1827,15 +2376,23 @@ def plan(
         content_binding=content_binding,
         hygiene_config=loaded_hygiene,
         hygiene_identity=hygiene_identity,
+        sources_config=loaded_sources,
         sources_identity=sources_identity,
         effective_profile=loaded_profile,
         code_prefixes=config.check_scope.code_prefixes,
         source_prefixes=config.check_scope.source_prefixes,
         weaver_prefixes=weaver_prefixes_map,
+        selection_config=config,
+        per_ref_scopes=per_ref_scopes,
     )
+    tach_input = {"path": config.tach, "sha256": _digest(tach_path)}
+    if tach_graph is not None:
+        tach_input["modules"] = list(tach_graph[0])
+        tach_input["reverse"] = {k: list(v) for k, v in sorted(tach_graph[1].items())}
+    tach_input["all_tests"] = list(all_tests)
     inputs_payload = {
-        "config": {"path": str(config_path), "sha256": _digest(config_path)},
-        "tach": {"path": config.tach, "sha256": _digest(tach_path)},
+        "config": config_identity(config_path, config, root=root),
+        "tach": tach_input,
     }
     if hygiene_identity is not None:
         inputs_payload["hygiene"] = hygiene_identity
@@ -1853,6 +2410,29 @@ def plan(
         generator_payload["effective_profile_sha256"] = loaded_profile.get(
             "profile_sha256"
         )
+    selection_payload = {
+        "status": selection.status,
+        "tests": list(selection.tests),
+        "checks": list(selection.checks),
+        "prerequisites": sorted(selection.prerequisites),
+        "escalated": selection.escalated,
+        "escalation_reason": selection.escalation_reason,
+        "full_tests": selection.full_tests,
+        "framework": config.framework,
+        "tests_dir": config.tests_dir,
+        "src_root": config.src_root,
+        "code_prefixes": list(config.check_scope.code_prefixes),
+        "source_prefixes": list(config.check_scope.source_prefixes),
+        "weaver_prefixes": weaver_prefixes_map,
+        "coverage_required": config.coverage_required,
+        "tach_graph_validation": graph,
+        "requires_tach_check": True,
+        "reasons": {
+            name: list(items) for name, items in sorted(selection.reasons.items())
+        },
+    }
+    if per_ref_entries:
+        selection_payload["per_ref"] = list(per_ref_entries)
     return {
         "schema_version": plan_contract.PLAN_VERSION,
         "kind": PLAN_KIND,
@@ -1896,27 +2476,7 @@ def plan(
                 else None
             ),
         },
-        "selection": {
-            "status": selection.status,
-            "tests": list(selection.tests),
-            "checks": list(selection.checks),
-            "prerequisites": sorted(selection.prerequisites),
-            "escalated": selection.escalated,
-            "escalation_reason": selection.escalation_reason,
-            "full_tests": selection.full_tests,
-            "framework": config.framework,
-            "tests_dir": config.tests_dir,
-            "src_root": config.src_root,
-            "code_prefixes": list(config.check_scope.code_prefixes),
-            "source_prefixes": list(config.check_scope.source_prefixes),
-            "weaver_prefixes": weaver_prefixes_map,
-            "coverage_required": config.coverage_required,
-            "tach_graph_validation": graph,
-            "requires_tach_check": True,
-            "reasons": {
-                name: list(items) for name, items in sorted(selection.reasons.items())
-            },
-        },
+        "selection": selection_payload,
         "check_scope": scope,
         "expected_checks": expected,
         "prerequisite_actions": {

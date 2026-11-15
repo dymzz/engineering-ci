@@ -495,6 +495,7 @@ def _sample_effective_profile(
     allowed_inapplicability=None,
     declared_checks=None,
     domain_complete=True,
+    governed_rules=None,
 ):
     return expected_checks.build_effective_profile(
         profile_ref={"name": "consumer.pr", "version": "1.0.0"},
@@ -514,6 +515,7 @@ def _sample_effective_profile(
         allowed_inapplicability=allowed_inapplicability or [],
         declared_checks=declared_checks,
         domain_complete=domain_complete,
+        governed_rules=governed_rules,
     )
 
 
@@ -582,6 +584,9 @@ def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
     cfg = selection.load_config(path / "ci-selection.toml")
     sel = selection.select(changes, cfg, root=path)
     profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
         declared_checks=[
             "whitespace",
             "forwarding",
@@ -682,6 +687,9 @@ def test_schema_v2_hygiene_conflict_and_legitimate_empty_delete(repo):
         action="delete",
         target="refs/heads/topic",
         declared_checks=[],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
     )
     del_plan = selection.plan(
         del_sel,
@@ -774,7 +782,10 @@ def test_schema_v2_rejects_untrusted_wrong_time_wrong_event_and_unresolved_rules
     code_changes = selection.changeset(path, base=base, mode="worktree")
     code_sel = selection.select(code_changes, cfg, root=path)
     unresolved_rule_profile = _sample_effective_profile(
-        declared_checks=["unittest", "tach"]
+        declared_checks=["unittest", "tach"],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
     )
     partial_plan = selection.plan(
         code_sel,
@@ -981,6 +992,9 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
     sel = selection.select(changes, cfg, root=path)
 
     full_profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
         declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
         required_obligations=[
             {
@@ -1030,6 +1044,9 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
 
     # P1-1c: domain_complete=True with partial declared_checks=["docs"] cannot produce complete
     partial_domain_profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
         declared_checks=["docs"],
         required_obligations=[
             {
@@ -1183,3 +1200,264 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
         cli_plan["inputs"]["effective_profile"]["effective_profile_ref"]["sha256"]
         == full_profile["profile_sha256"]
     )
+
+
+def test_p1_1_authority_provenance_default_unverified_and_config_policy(repo):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, head="HEAD", mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+
+    # 1. build_effective_profile defaults authority_verified=False and even self-claimed
+    # authority_verified=True without governed_rules / config policy stays partial/unverified.
+    default_profile = expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.pr", "version": "1.0.0"},
+        profile_revision="rev-default",
+        approval_source="governance-signed",
+        effective_at="2026-11-15T00:00:00Z",
+        evaluated_at="2026-11-15T01:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        domain_complete=True,
+    )
+    assert default_profile["authority_verified"] is False
+    assert "target_scope" in default_profile["approval_binding"]
+    assert "effective_window" in default_profile["approval_binding"]
+    assert "declared_domain" in default_profile["approval_binding"]
+
+    self_claimed = _sample_effective_profile(
+        authority_verified=True,
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        domain_complete=True,
+        governed_rules=None,
+    )
+    unproven_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=self_claimed,
+    )
+    plan_contract.validate(unproven_plan)
+    uexp = unproven_plan["expected_checks"]
+    assert uexp["status"] == "partial"
+    assert uexp["reason"] == "effective_profile_authority_unverified"
+    assert uexp["authority_status"] == "unverified"
+    assert uexp["trusted_admission_status"] == "not_evaluated"
+    assert uexp["consumer_completeness"] == "incomplete_profile"
+
+    # Forging complete, verified authority, or admitted status fails contract validation.
+    for mutate in (
+        lambda p: p["expected_checks"].update(
+            {"status": "complete", "consumer_completeness": "expected_domain_complete"}
+        ),
+        lambda p: p["expected_checks"].update({"authority_status": "verified"}),
+        lambda p: p["expected_checks"].update({"trusted_admission_status": "admitted"}),
+    ):
+        forged = json.loads(json.dumps(unproven_plan))
+        mutate(forged)
+        with pytest.raises(plan_contract.PlanError):
+            plan_contract.validate(forged)
+
+    # 2. Mismatched governed_rules digest fails validation.
+    bad_gov = expected_checks.governed_domain_rules(
+        path, config_path=path / "ci-selection.toml"
+    )
+    bad_gov["hygiene_rule_ref"]["sha256"] = "0" * 64
+    mismatch_profile = _sample_effective_profile(
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        governed_rules=bad_gov,
+    )
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=mismatch_profile,
+        )
+    assert raised.value.code == "effective_profile_domain_binding_mismatch"
+
+    # 3. Repository [effective_profile] policy in ci-selection.toml proves authority.
+    declared_list = ["whitespace", "forwarding", "docs", "vulture", "tach"]
+    policy_profile = _sample_effective_profile(
+        declared_checks=declared_list,
+        effective_at="2026-11-15T00:00:00Z",
+        governed_rules=None,
+    )
+    policy_digest = policy_profile["approval_binding"]["approval_digest"]
+    cfg_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        cfg_text
+        + f"""
+[effective_profile]
+profile_ref = {{ name = "consumer.pr", version = "1.0.0" }}
+profile_revision = "rev-2026-11-15"
+approval_source = "governance-signed"
+approval_digest = "{policy_digest}"
+effective_at = "2026-11-15T00:00:00Z"
+declared_checks = {json.dumps(declared_list)}
+""",
+        encoding="utf-8",
+    )
+    cfg_with_policy = selection.load_config(path / "ci-selection.toml")
+    proven_plan = selection.plan(
+        sel,
+        config=cfg_with_policy,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=policy_profile,
+    )
+    plan_contract.validate(proven_plan)
+    pexp = proven_plan["expected_checks"]
+    assert pexp["status"] == "complete"
+    assert pexp["authority_status"] == "verified"
+    assert pexp["trusted_admission_status"] == "not_evaluated"
+
+
+def test_p2_1_cli_relative_effective_profile_outside_cwd(
+    repo, tmp_path, monkeypatch, capsys
+):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+    )
+    profile_file = path.parent / "effective-profile.json"
+    profile_file.write_text(json.dumps(profile), encoding="utf-8")
+    outside_cwd = tmp_path / "nested" / "outside-cwd"
+    outside_cwd.mkdir(parents=True)
+    monkeypatch.chdir(outside_cwd)
+
+    exit_code = selection.main(
+        [
+            "--root",
+            str(path),
+            "--base",
+            base,
+            "--head",
+            "HEAD",
+            "--effective-profile",
+            "../effective-profile.json",
+            "--json",
+        ]
+    )
+    assert exit_code == 0
+    cli_plan = json.loads(capsys.readouterr().out)
+    plan_contract.validate(cli_plan)
+    assert cli_plan["expected_checks"]["status"] == "complete"
+    assert cli_plan["inputs"]["effective_profile"]["path"] == str(
+        profile_file.resolve()
+    )
+    assert (
+        cli_plan["inputs"]["effective_profile"]["effective_profile_ref"]["sha256"]
+        == profile["profile_sha256"]
+    )
+
+
+def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# guide\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "docs-only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "code-change")
+    code_commit = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base),
+            ("refs/heads/code-branch", code_commit, "refs/heads/code-branch", base),
+        ],
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(multi, cfg, root=path)
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/docs-only",
+        targets=["refs/heads/docs-only", "refs/heads/code-branch"],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs-branch",
+                "kind": "check",
+                "check_names": ["docs"],
+                "target_refs": ["refs/heads/docs-only"],
+            },
+            {
+                "obligation_ref": "ob/code-unit",
+                "kind": "check",
+                "check_names": ["unittest"],
+                "target_refs": ["refs/heads/code-branch"],
+            },
+            {
+                "obligation_ref": "ob/release-main-only",
+                "kind": "non_check",
+                "reason": "only applies to refs/heads/main",
+                "target_refs": ["refs/heads/main"],
+            },
+        ],
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    plan_contract.validate(p)
+    exp = p["expected_checks"]
+    assert exp["status"] == "partial"
+    assert exp["consumer_completeness"] == "per_ref_container_only"
+    assert exp["reason"] == "multi_ref_requires_per_ref_evaluation"
+    assert exp["non_check_obligations"] == []
+    by_name = {c["name"]: c for c in exp["checks"]}
+    assert by_name["docs"]["required_by_obligations"] == ["ob/docs-branch"]
+    assert by_name["unittest"]["required_by_obligations"] == ["ob/code-unit"]
+    per_ref_docs = {
+        c["name"]: c
+        for c in next(
+            e for e in exp["per_ref"] if e["remote_ref"] == "refs/heads/docs-only"
+        )["checks"]
+    }
+    assert per_ref_docs["docs"]["required_by_obligations"] == ["ob/docs-branch"]
+    assert "unittest" not in per_ref_docs
+    per_ref_code = {
+        c["name"]: c
+        for c in next(
+            e for e in exp["per_ref"] if e["remote_ref"] == "refs/heads/code-branch"
+        )["checks"]
+    }
+    assert per_ref_code["docs"]["required_by_obligations"] == []
+    assert per_ref_code["unittest"]["required_by_obligations"] == ["ob/code-unit"]
+
+    # Forging top-level status=complete on multi-ref container is rejected.
+    forged = json.loads(json.dumps(p))
+    forged["expected_checks"]["status"] = "complete"
+    forged["expected_checks"]["consumer_completeness"] = "expected_domain_complete"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(forged)
+    assert raised.value.code == "expected_complete_unproven"
+
+    # Individual per_ref entries retain independent completeness:
+    # refs/heads/docs-only has only docs/whitespace/forwarding (complete);
+    # refs/heads/code-branch requires undeclared unittest (partial).
+    per_ref = {entry["remote_ref"]: entry for entry in exp["per_ref"]}
+    assert per_ref["refs/heads/docs-only"]["status"] == "complete"
+    assert per_ref["refs/heads/code-branch"]["status"] == "partial"
+    assert per_ref_code["unittest"]["rule_status"] == "unknown"

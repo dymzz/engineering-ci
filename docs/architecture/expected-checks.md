@@ -70,18 +70,33 @@ no `job_refs`/scheduler activation.
   declared scope. Removed selected entries are rejected.
 - EffectiveProfile projection (Schema v2) binds an authoritative
   `effective_profile` (`profile_ref`, `profile_revision`, `approval_source`,
-  `approval_binding`, `effective_at`, `evaluated_at`, `domain_complete`,
-  `authority_verified`, `declared_checks`, `required_obligations`,
-  `advisory_checks`, `profile_sha256`) and cross-binds it to Plan
-  `inputs.effective_profile` and `generator.effective_profile_sha256`.
+  `approval_binding` with `target_scope`, `effective_window`, `declared_domain`,
+  and `approval_digest`, plus `governed_rules`, `effective_at`, `evaluated_at`,
+  `domain_complete`, `authority_verified`, `declared_checks`,
+  `required_obligations`, `advisory_checks`, `profile_sha256`) and cross-binds
+  it to Plan `inputs.effective_profile` and `generator.effective_profile_sha256`.
+- `build_effective_profile()` defaults `authority_verified=False`. A
+  self-reported `authority_verified=True` without matching `governed_rules`
+  (via `governed_domain_rules()`) or a matching `[effective_profile]` policy in
+  `ci-selection.toml` yields `authority_status="unverified"`, keeps `status=partial`
+  (`effective_profile_authority_unverified`), and rejects `status=complete` claims
+  (`expected_complete_unproven`). `trusted_admission_status` remains
+  `not_evaluated` to preserve the `#63` Trusted Admission boundary.
 - Schema v2 models M:N check obligations (`obligation_refs`,
   `required_by_obligations`, `advisory_for_obligations`), per-obligation
   inapplicability waivers (`allow_inapplicable` evaluated per
   `(obligation_ref, check_name)`), non-check obligations
   (`non_check_obligations`, including `ref_deletion`), and per-ref projections
-  (`per_ref[]`) whose check applicability, inputs, conflicts, and status are
-  independently recomputed and verified against `git.references` and the bound
-  Hygiene/Selection rules.
+  (`per_ref[]`) whose selection, check applicability (including `unittest`/`pytest`,
+  Hygiene checks, and `source` via `ci-sources.toml` manifest/`acquired_roots`),
+  inputs, conflicts, and status are independently recomputed and verified against
+  `git.references`, `selection.per_ref`, and the bound Selection/Hygiene/Sources rules.
+- For `snapshot=multi`, top-level `expected_checks` filters profile obligations
+  across actual child `(target_ref, ref_action)` scopes (recording `matched_refs`),
+  aggregates child conflicts, and remains a non-`complete` container
+  (`consumer_completeness="per_ref_container_only"`, `status="partial"` unless
+  conflicts or `unknown` apply); individual `per_ref[]` entries carry independent
+  per-ref `status` values.
 - For `projection_source=check_scope`, applicability/reason/input refs are
   cross-checked with Plan `check_scope`; changed-path scope is cross-checked
   with `git.changed_paths` and `content_binding.paths`. Single-Ref baseline must

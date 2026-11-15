@@ -1665,3 +1665,54 @@ def test_execution_refuses_missing_target_tree_and_deleted_push_ref(repo):
     assert report_forged["status"] == "not_executed"
     assert report_forged["exit_code"] == 4
     assert report_forged["reason"] == "deleted_ref_forged_target_tree"
+
+
+def test_pr90_generated_paths_and_test_requirement_failure_interface(repo):
+    path, base = repo
+    (path / "docs/generated.md").write_text("# generated doc\n", encoding="utf-8")
+    p = plan(["tests.test_main"], git={"base": base})
+    assert execution.test_requirement_failure(p) is None
+
+    no_tests_plan = plan([], git={"base": base})
+    assert execution.test_requirement_failure(no_tests_plan) is None
+
+    tach_blocked_plan = plan(["tests.test_main"], git={"base": base})
+    tach_blocked_plan["selection"]["requires_tach_check"] = True
+    assert (
+        execution.test_requirement_failure(tach_blocked_plan)
+        == "tach_graph_unvalidated"
+    )
+
+    cov_blocked_plan = plan(["tests.test_main"], git={"base": base})
+    cov_blocked_plan["selection"]["coverage_required"] = True
+    assert (
+        execution.test_requirement_failure(cov_blocked_plan)
+        == "coverage_evidence_required"
+    )
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    real_sel = selection.select(selection.changeset(path, base=base), cfg, root=path)
+    real_plan = selection.plan(
+        real_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    gen_refs = [{"path": "docs/generated.md", "sha256": "a" * 64}]
+    runner = FakeRunner()
+    hyg_results, hyg_failed = execution._run_hygiene_checks(
+        real_plan,
+        [{"name": "docs", "status": "selected", "inputs": []}],
+        root=path,
+        hygiene_config=None,
+        runner=runner,
+        extra_paths=("docs/generated.md",),
+        generated_input_refs=gen_refs,
+    )
+    assert hyg_failed is False
+    docs_res = next(r for r in hyg_results if r["name"] == "docs")
+    assert docs_res["status"] == "passed"
+    assert docs_res["generated_input_refs"] == gen_refs
+    lychee_calls = [call for call in runner.calls if call[0][0] == "lychee"]
+    assert len(lychee_calls) == 1
+    assert "docs/generated.md" in (lychee_calls[0][1] or " ".join(lychee_calls[0][0]))

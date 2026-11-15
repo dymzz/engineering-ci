@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import execution, selection, weaver_tool
+from engineering_ci import execution, plan_contract, selection, weaver_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -1306,3 +1306,162 @@ def test_pre_push_stdin_and_plan_records_hygiene_and_sources_inputs(repo):
     assert "whitespace" in scope
     assert "forwarding" in scope
     assert "tach_external" in scope
+
+
+def test_p1_2_multi_ref_independent_per_ref_selection_and_scope(repo):
+    path, base = repo
+    (path / "src/pkg/other.py").write_text("# leaf change\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "targeted-src")
+    src_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "docs/readme.md").write_text("# doc only\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "docs-only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "pyproject.toml").write_text(
+        (path / "pyproject.toml").read_text(encoding="utf-8") + "\n# escalate\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "escalated")
+    esc_commit = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/src", src_commit, "refs/heads/src", base),
+            ("refs/heads/docs", docs_commit, "refs/heads/docs", base),
+            ("refs/heads/esc", esc_commit, "refs/heads/esc", base),
+        ],
+    )
+    cfg = config(path)
+    sel = selection.select(multi, cfg, root=path)
+    assert sel.escalated is True
+    assert sel.status == "escalated"
+    per_ref_sel = {entry["remote_ref"]: entry for entry in sel.per_ref}
+    assert per_ref_sel["refs/heads/src"]["status"] == "targeted"
+    assert per_ref_sel["refs/heads/src"]["tests"] == ["tests.test_other"]
+    assert per_ref_sel["refs/heads/docs"]["status"] == "no_tests"
+    assert per_ref_sel["refs/heads/docs"]["tests"] == []
+    assert per_ref_sel["refs/heads/esc"]["status"] == "escalated"
+    assert set(per_ref_sel["refs/heads/esc"]["tests"]) == {
+        "tests.test_other",
+        "tests.test_pkg",
+        "tests.test_sub",
+    }
+
+    p = selection.plan(
+        sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    plan_contract.validate(p)
+    exp_per_ref = {
+        entry["remote_ref"]: entry for entry in p["expected_checks"]["per_ref"]
+    }
+    assert (
+        next(
+            c
+            for c in exp_per_ref["refs/heads/src"]["checks"]
+            if c["name"] == "unittest"
+        )["applicability"]["status"]
+        == "targeted"
+    )
+    assert (
+        next(
+            c
+            for c in exp_per_ref["refs/heads/docs"]["checks"]
+            if c["name"] == "unittest"
+        )["applicability"]["status"]
+        == "no_tests"
+    )
+    assert (
+        next(
+            c
+            for c in exp_per_ref["refs/heads/esc"]["checks"]
+            if c["name"] == "unittest"
+        )["applicability"]["status"]
+        == "escalated"
+    )
+
+    tampered = json.loads(json.dumps(p))
+    tampered["selection"]["per_ref"][1]["status"] = "targeted"
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_per_ref_selection_mismatch"
+
+
+def test_p1_3_source_check_applicability_with_custom_sources_toml(repo):
+    path, _ = repo
+    (path / "custom").mkdir(parents=True, exist_ok=True)
+    (path / "vendor/src").mkdir(parents=True, exist_ok=True)
+    (path / "ci-sources.toml").write_text(
+        """schema_version = 1
+manifest = "custom/lock.toml"
+acquired_roots = ["vendor/src"]
+""",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-sources.toml")
+    run(path, "commit", "-q", "-m", "add custom ci-sources.toml")
+    base2 = run(path, "rev-parse", "HEAD").strip()
+
+    # Modifying custom acquired_root outside default source_prefixes triggers `source` check
+    (path / "vendor/src/lib.py").write_text("X = 1\n", encoding="utf-8")
+    run(path, "add", "vendor/src/lib.py")
+    run(path, "commit", "-q", "-m", "touch acquired root")
+    src_commit = run(path, "rev-parse", "HEAD").strip()
+
+    # Modifying custom manifest also triggers `source` check, while docs does not
+    run(path, "checkout", "-q", base2)
+    (path / "custom/lock.toml").write_text("pin = 1\n", encoding="utf-8")
+    run(path, "add", "custom/lock.toml")
+    run(path, "commit", "-q", "-m", "touch manifest")
+    lock_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base2)
+    (path / "docs/plain.md").write_text("plain\n", encoding="utf-8")
+    run(path, "add", "docs/plain.md")
+    run(path, "commit", "-q", "-m", "docs only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    cfg = config(path)
+    single_sel = selection.select(
+        selection.changeset(path, base=base2, head=src_commit), cfg, root=path
+    )
+    single_plan = selection.plan(
+        single_sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    plan_contract.validate(single_plan)
+    single_scope = {c["name"]: c for c in single_plan["check_scope"]}
+    single_exp = {c["name"]: c for c in single_plan["expected_checks"]["checks"]}
+    assert single_scope["source"]["status"] == "selected"
+    assert single_exp["source"]["applicability"]["status"] == "selected"
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/lock", lock_commit, "refs/heads/lock", base2),
+            ("refs/heads/docs", docs_commit, "refs/heads/docs", base2),
+        ],
+    )
+    multi_sel = selection.select(multi, cfg, root=path)
+    multi_plan = selection.plan(
+        multi_sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    plan_contract.validate(multi_plan)
+    per_ref = {e["remote_ref"]: e for e in multi_plan["expected_checks"]["per_ref"]}
+    assert (
+        next(c for c in per_ref["refs/heads/lock"]["checks"] if c["name"] == "source")[
+            "applicability"
+        ]["status"]
+        == "selected"
+    )
+    assert (
+        next(c for c in per_ref["refs/heads/docs"]["checks"] if c["name"] == "source")[
+            "applicability"
+        ]["status"]
+        == "not_applicable"
+    )

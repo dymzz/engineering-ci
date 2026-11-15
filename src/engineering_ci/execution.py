@@ -201,10 +201,19 @@ def _verify_execution_binding(plan, root, *, execution_context="host"):
     return True, None, expected_tree
 
 
-def _changeset_from_plan(plan, root):
+def _changeset_from_plan(plan, root, *, extra_paths=()):
     git = plan["git"]
     paths = tuple(git.get("changed_paths") or ())
     deleted = tuple(git.get("deleted_paths") or ())
+    generated = tuple(
+        sorted(
+            {
+                str(p).replace("\\", "/")
+                for p in extra_paths
+                if isinstance(p, str) and p.strip()
+            }
+        )
+    )
     complete = (
         bool(git.get("base_commit")) or git.get("ref_action") == "delete"
     ) and "changed_paths" in git
@@ -225,6 +234,7 @@ def _changeset_from_plan(plan, root):
         merge_tree=git.get("merge_tree"),
         base_tip=git.get("base_tip"),
         deleted_paths=deleted,
+        generated_paths=generated,
         ref_action=git.get("ref_action"),
         object_type=git.get("object_type"),
         force_push=bool(git.get("force_push", False)),
@@ -325,7 +335,16 @@ def _resolved_code_prefixes(plan, root):
     return (tuple(code_prefixes) if code_prefixes is not None else None), None
 
 
-def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
+def _run_hygiene_checks(
+    plan,
+    selected,
+    *,
+    root,
+    hygiene_config,
+    runner,
+    extra_paths=(),
+    generated_input_refs=(),
+):
     selected_by_name = {
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
@@ -355,7 +374,7 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         digest=digest_after,
     )
     configured = hygiene.effective_checks(config)
-    changes = _changeset_from_plan(plan, root)
+    changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
     omitted_entries = []
     if has_bound_hygiene:
         expected_app = hygiene.check_applicability(
@@ -427,6 +446,8 @@ def _run_hygiene_checks(plan, selected, *, root, hygiene_config, runner):
         payload["plan_authorized"] = authorized
         if not authorized:
             payload["routing_conflict"] = "unauthorized_check_executed"
+        if name == "docs" and generated_input_refs:
+            payload["generated_input_refs"] = [dict(r) for r in generated_input_refs]
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
@@ -1048,6 +1069,12 @@ def target_test_gate(plan):
     if chosen.get("coverage_required"):
         return "coverage_evidence_required", "not_measured"
     return None
+
+
+def test_requirement_failure(plan):
+    """Return gate failure reason string or None (PR #90 Data/PASS integration helper)."""
+    gate = target_test_gate(plan)
+    return gate[0] if gate is not None else None
 
 
 def _unsatisfied_native(check):

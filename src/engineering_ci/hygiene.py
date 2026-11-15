@@ -514,6 +514,14 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
             for name in names
         }
     paths = sorted({path.replace("\\", "/") for path in changes.paths})
+    generated_paths = sorted(
+        {
+            path.replace("\\", "/")
+            for path in getattr(changes, "generated_paths", ())
+            if isinstance(path, str) and path.strip()
+        }
+    )
+    docs_paths = sorted(set(paths) | set(generated_paths))
     deleted = _deleted_paths(changes, paths, root)
     prefixes = tuple(code_prefixes or ("src/", "scripts/", "tests/"))
     vulture_prefixes = tuple(item.rstrip("/") + "/" for item in config.vulture.paths)
@@ -530,7 +538,7 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
     code_inputs = [path for path in paths if is_code_path(path)]
     dep_inputs = [path for path in paths if _is_dependency_input(path)]
     ext_inputs = sorted(set(code_inputs) | set(dep_inputs))
-    changed_docs = sorted(_changed_documents(set(paths), config))
+    changed_docs = sorted(_changed_documents(set(docs_paths), config))
     removed = bool(deleted)
     forwarding_inputs = [
         path
@@ -743,6 +751,14 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     """Run the configured checks once and return native evidence."""
     root = Path(root)
     paths = [path.replace("\\", "/") for path in changes.paths]
+    generated_paths = sorted(
+        {
+            path.replace("\\", "/")
+            for path in getattr(changes, "generated_paths", ())
+            if isinstance(path, str) and path.strip()
+        }
+    )
+    docs_paths = sorted(set(paths) | set(generated_paths))
     report = {
         "schema_version": SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -797,7 +813,7 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
         elif name == "docs":
             results.append(
                 _docs(
-                    paths,
+                    docs_paths,
                     tracked,
                     changes,
                     root,

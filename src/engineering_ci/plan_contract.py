@@ -74,9 +74,14 @@ def _validate_expected(expected, git, plan):
             "expected_domain_complete",
             "incomplete_conflict",
             "incomplete_profile",
+            "per_ref_container_only",
             "unknown",
         }:
             raise PlanError("expected_consumer_completeness_invalid")
+        if expected.get("authority_status") not in {None, "verified", "unverified"}:
+            raise PlanError("effective_profile_authority_untrusted")
+        if expected.get("trusted_admission_status", "not_evaluated") != "not_evaluated":
+            raise PlanError("expected_trusted_admission_unproven")
         if expected.get("observed_input_closure_status") not in {
             "not_observed",
             "observed",
@@ -296,7 +301,7 @@ def _validate_consumer_fields(value, chosen, git):
     inputs = value.get("inputs")
     if inputs is not None and not isinstance(inputs, dict):
         raise PlanError("inputs_invalid")
-    for key in ("hygiene", "sources"):
+    for key in ("config", "hygiene", "sources"):
         declared = (inputs or {}).get(key)
         if declared is not None:
             if not isinstance(declared, dict) or (
@@ -311,7 +316,11 @@ def _validate_consumer_fields(value, chosen, git):
                 type(declared["schema_version"]) is not int
             ):
                 raise PlanError("inputs_invalid")
-            eff = declared.get("effective_check_config_ref")
+            eff = declared.get(
+                "effective_config_ref"
+                if key == "config"
+                else "effective_check_config_ref"
+            )
             if eff is not None and (
                 not isinstance(eff, dict)
                 or not isinstance(eff.get("name"), str)
