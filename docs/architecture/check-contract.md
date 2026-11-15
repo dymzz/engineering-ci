@@ -129,14 +129,26 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 | `eci/tests/pytest` | `test-runner` | `python/pytest` | `pytest` runner (supports JUnit XML) |
 | `eci/weaver/registry` | `registry-check` | `weaver/registry-check` | SemConv Registry validation (`weaver_tool`) |
 | | `registry-package` (`registry-check`) | `weaver/registry-package` | resolved Registry package build (`weaver_tool`) |
-| `eci/weaver/live` | `registry-package` | `weaver/registry-package` | resolved Registry package input (`weaver_tool`) |
-| | `live-check` (`registry-package`) | `weaver/live-check` | OTLP live/replay schema check (`weaver_tool`) |
-| `eci/weaver/terminal` | `registry-package` | `weaver/registry-package` | resolved Registry package input (`weaver_tool`) |
-| | `terminal-live-check` (`registry-package`) | `weaver/terminal-live-check` | `post_completion` Run/Root terminal check (`weaver_tool`) |
+| | `registry-local-check` (`registry-package`) | `weaver/registry-local-check` | packaged Registry verification (`weaver_tool`) |
+| | `baseline-check` (`when=registry_baseline_rule`) | `weaver/baseline-check` | baseline SemConv Registry validation (`weaver_tool`) |
+| | `baseline-package` (`baseline-check`, `when=registry_baseline_rule`) | `weaver/baseline-package` | baseline Registry package build (`weaver_tool`) |
+| | `baseline-local-check` (`baseline-package`, `when=registry_baseline_rule`) | `weaver/baseline-local-check` | baseline packaged Registry verification (`weaver_tool`) |
+| | `registry-diff` (`registry-local-check`, `baseline-local-check`, `when=registry_baseline_rule`) | `weaver/registry-diff` | Registry diff against configured baseline (`weaver_tool`) |
+| `eci/weaver/live` | `registry-check` | `weaver/registry-check` | SemConv Registry validation (`weaver_tool`) |
+| | `registry-package` (`registry-check`) | `weaver/registry-package` | resolved Registry package build (`weaver_tool`) |
+| | `registry-local-check` (`registry-package`) | `weaver/registry-local-check` | packaged Registry verification (`weaver_tool`) |
+| | `live-check` (`registry-local-check`) | `weaver/live-check` | OTLP live/replay schema check (`weaver_tool`) |
+| `eci/weaver/terminal` | `registry-check` | `weaver/registry-check` | SemConv Registry validation (`weaver_tool`) |
+| | `registry-package` (`registry-check`) | `weaver/registry-package` | resolved Registry package build (`weaver_tool`) |
+| | `registry-local-check` (`registry-package`) | `weaver/registry-local-check` | packaged Registry verification (`weaver_tool`) |
+| | `terminal-live-check` (`registry-local-check`) | `weaver/terminal-live-check` | `post_completion` Run/Root terminal check (`weaver_tool`) |
 | `eci/hygiene/forwarding`, `eci/sources/reconcile` | none | — | internal analysis |
 
-- Every requirement must be satisfied: `all-required` across groups,
-  `allowed-alternative` within one group's `alternatives`.
+- Every active requirement must be satisfied: `all-required` across active
+  groups, `allowed-alternative` within one group's `alternatives`. Conditional
+  requirements declaring `when="registry_baseline_rule"` apply only when a
+  digest-pinned controlled `rule_ref` asserts `baseline_required=True`; when
+  inactive, unexpected baseline/diff results are rejected rather than ignored.
 - `after` is a real prerequisite. The satisfying result must reference the
   prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
   is not evidence that the tool consumed it.

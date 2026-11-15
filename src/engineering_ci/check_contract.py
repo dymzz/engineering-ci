@@ -125,12 +125,17 @@ class ToolRequirement:
     Every requirement of a Check must be satisfied. ``after`` records a real
     prerequisite between requirements: the satisfying result must reference the
     prerequisite result it consumed, so the order is evidenced rather than
-    presumed.
+    presumed. ``when`` optionally names a controlled rule condition governing
+    whether the requirement applies.
     """
 
     requirement_id: str
     alternatives: tuple[ToolIdentity, ...]
     after: tuple[str, ...] = ()
+    when: str | None = None
+
+
+_TOOL_REQUIREMENT_CONDITIONS = frozenset({"registry_baseline_rule"})
 
 
 @dataclass(frozen=True)
@@ -262,6 +267,7 @@ def _coerce_requirement(value):
                 requirement_id=value["requirement_id"],
                 alternatives=tuple(value["alternatives"]),
                 after=tuple(value.get("after") or ()),
+                when=value.get("when"),
             )
         except (KeyError, TypeError):
             raise CheckContractError("tool_requirement_invalid") from None
@@ -306,13 +312,24 @@ def validate_tool_requirements(requirements):
             not isinstance(entry, str) for entry in item.after
         ):
             raise CheckContractError("tool_requirement_prerequisite_invalid")
+        if item.when is not None and (
+            not isinstance(item.when, str)
+            or item.when not in _TOOL_REQUIREMENT_CONDITIONS
+        ):
+            raise CheckContractError("tool_requirement_condition_invalid")
     known = set(seen_ids)
+    when_by_id = {item.requirement_id: item.when for item in items}
     for item in items:
         for prerequisite in item.after:
             if prerequisite == item.requirement_id:
                 raise CheckContractError("tool_requirement_self_prerequisite")
             if prerequisite not in known:
                 raise CheckContractError("tool_requirement_unknown_prerequisite")
+            prereq_when = when_by_id[prerequisite]
+            if item.when is None and prereq_when is not None:
+                raise CheckContractError("tool_requirement_conditional_prerequisite")
+            if item.when is not None and prereq_when not in (None, item.when):
+                raise CheckContractError("tool_requirement_conditional_prerequisite")
     _ensure_acyclic(items)
     seen_access = set()
     normalized = []
@@ -329,6 +346,7 @@ def validate_tool_requirements(requirements):
                 item.requirement_id,
                 tuple(alternatives),
                 tuple(item.after),
+                item.when,
             )
         )
     return tuple(normalized)
@@ -366,6 +384,20 @@ def _weaver_identity(access_id):
 # ``access_id`` is an ECI-local entry. ``tool_id`` stays empty for host tools
 # without an ECI-pinned asset or verified Runtime ToolAsset registration, while
 # ``weaver`` binds to ECI's pinned release asset in ``weaver_tool.py``.
+_WEAVER_PACKAGING_REQUIREMENTS = (
+    ToolRequirement("registry-check", (_weaver_identity("weaver/registry-check"),)),
+    ToolRequirement(
+        "registry-package",
+        (_weaver_identity("weaver/registry-package"),),
+        after=("registry-check",),
+    ),
+    ToolRequirement(
+        "registry-local-check",
+        (_weaver_identity("weaver/registry-local-check"),),
+        after=("registry-package",),
+    ),
+)
+
 _TOOL_REQUIREMENTS = {
     # ``git ls-files`` determines the checked document set and feeds Lychee.
     "docs": (
@@ -381,31 +413,45 @@ _TOOL_REQUIREMENTS = {
     "unittest": (ToolRequirement("test-runner", (ToolIdentity("python/unittest"),)),),
     "pytest": (ToolRequirement("test-runner", (ToolIdentity("python/pytest"),)),),
     "weaver_registry": (
-        ToolRequirement("registry-check", (_weaver_identity("weaver/registry-check"),)),
+        *_WEAVER_PACKAGING_REQUIREMENTS,
         ToolRequirement(
-            "registry-package",
-            (_weaver_identity("weaver/registry-package"),),
-            after=("registry-check",),
+            "baseline-check",
+            (_weaver_identity("weaver/baseline-check"),),
+            when="registry_baseline_rule",
+        ),
+        ToolRequirement(
+            "baseline-package",
+            (_weaver_identity("weaver/baseline-package"),),
+            after=("baseline-check",),
+            when="registry_baseline_rule",
+        ),
+        ToolRequirement(
+            "baseline-local-check",
+            (_weaver_identity("weaver/baseline-local-check"),),
+            after=("baseline-package",),
+            when="registry_baseline_rule",
+        ),
+        ToolRequirement(
+            "registry-diff",
+            (_weaver_identity("weaver/registry-diff"),),
+            after=("registry-local-check", "baseline-local-check"),
+            when="registry_baseline_rule",
         ),
     ),
     "weaver_live": (
-        ToolRequirement(
-            "registry-package", (_weaver_identity("weaver/registry-package"),)
-        ),
+        *_WEAVER_PACKAGING_REQUIREMENTS,
         ToolRequirement(
             "live-check",
             (_weaver_identity("weaver/live-check"),),
-            after=("registry-package",),
+            after=("registry-local-check",),
         ),
     ),
     "weaver_terminal": (
-        ToolRequirement(
-            "registry-package", (_weaver_identity("weaver/registry-package"),)
-        ),
+        *_WEAVER_PACKAGING_REQUIREMENTS,
         ToolRequirement(
             "terminal-live-check",
             (_weaver_identity("weaver/terminal-live-check"),),
-            after=("registry-package",),
+            after=("registry-local-check",),
         ),
     ),
 }
@@ -475,7 +521,7 @@ def _version(value, name):
     return _text(value, name)
 
 
-def rule_ref(name, version, *, path=None, digest=None):
+def rule_ref(name, version, *, path=None, digest=None, baseline_required=None):
     """A versioned consumer rule reference; not a Required/trust decision."""
     ref = {
         "name": _text(name, "rule_name"),
@@ -485,6 +531,12 @@ def rule_ref(name, version, *, path=None, digest=None):
         ref["path"] = _text(path, "rule_path")
     if digest is not None:
         ref["sha256"] = _sha256(digest, "rule_sha256")
+    if baseline_required is not None:
+        if type(baseline_required) is not bool:
+            raise CheckContractError("rule_baseline_required_invalid")
+        if digest is None:
+            raise CheckContractError("rule_ref_unproven")
+        ref["baseline_required"] = baseline_required
     return ref
 
 
@@ -662,6 +714,29 @@ def _validate_reference(ref, name):
     _version(ref.get("version"), f"{name}_version")
     if ref.get("sha256") is not None:
         _sha256(ref["sha256"], f"{name}_sha256")
+    if "baseline_required" in ref:
+        if name != "rule_ref":
+            raise CheckContractError(f"{name}_invalid")
+        if type(ref["baseline_required"]) is not bool:
+            raise CheckContractError("rule_baseline_required_invalid")
+        if not ref.get("sha256"):
+            raise CheckContractError("rule_ref_unproven")
+
+
+def _rule_enables_condition(rule, condition):
+    if condition is None:
+        return True
+    if condition == "registry_baseline_rule":
+        return isinstance(rule, dict) and rule.get("baseline_required") is True
+    raise CheckContractError("tool_requirement_condition_invalid")
+
+
+def _active_requirements(definition, *, rule=None):
+    return tuple(
+        item
+        for item in definition.tool_requirements
+        if _rule_enables_condition(rule, item.when)
+    )
 
 
 def _execution_kind(check_id):
@@ -1027,6 +1102,8 @@ def validate_expected_instance(expected):
     if not isinstance(rule, dict) or not rule.get("sha256"):
         raise CheckContractError("expected_rule_unproven")
     _validate_reference(rule, "rule_ref")
+    if "baseline_required" in expected:
+        raise CheckContractError("expected_baseline_rule_unproven")
     source = expected.get("source_ref")
     validate_source_ref(source)
     if source["binding_status"] not in {"byte_tree", "content_digest"}:
@@ -1053,7 +1130,9 @@ def validate_expected_instance(expected):
             for key, value in mapping.items()
         ):
             raise CheckContractError("expected_coverage_mapping_invalid")
-        requirement_ids = {item.requirement_id for item in definition.tool_requirements}
+        requirement_ids = {
+            item.requirement_id for item in _active_requirements(definition, rule=rule)
+        }
         if not mapping or set(mapping) - requirement_ids:
             raise CheckContractError("expected_coverage_requirement_unknown")
     if expected.get("profile_ref") is not None:
@@ -1460,7 +1539,25 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
             "selected_result_ids": [],
         }
 
-    requirements = _requirement_order(definition.tool_requirements)
+    active_rule = (
+        expected["rule_ref"]
+        if expected is not None
+        else (observed[0]["check"].get("rule_ref") if observed else definition.rule_ref)
+    )
+    active_requirements = _active_requirements(definition, rule=active_rule)
+    inactive_requirements = tuple(
+        item for item in definition.tool_requirements if item not in active_requirements
+    )
+    unexpected_observed = [
+        item["result_id"]
+        for item in observed
+        if any(
+            _result_matches_requirement(requirement, item)
+            for requirement in inactive_requirements
+        )
+    ]
+
+    requirements = _requirement_order(active_requirements)
     candidates = {
         requirement.requirement_id: [
             item for item in observed if _result_matches_requirement(requirement, item)
@@ -1576,7 +1673,12 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
             satisfied_by=None,
         )
         unmet = [entries[-1]]
-    if selected is not None:
+    if unexpected_observed:
+        status, reason = "unsatisfied", "unexpected_conditional_requirement"
+        selected = None
+        if expected is not None and reason not in failure_reasons:
+            failure_reasons.append(reason)
+    elif selected is not None:
         status, reason = "satisfied", "all_requirements_satisfied"
     elif tool_witness is not None and expected is not None:
         status, reason = "unsatisfied", expected_failures[0]["reason"]
@@ -1636,6 +1738,7 @@ def _definition_payload(definition):
                     for alternative in item.alternatives
                 ],
                 "after": list(item.after),
+                **({"when": item.when} if item.when is not None else {}),
             }
             for item in definition.tool_requirements
         ],
