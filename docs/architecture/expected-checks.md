@@ -151,7 +151,10 @@ rejects:
 
 ## Limits
 
-- No Routing Binding / Job activation; that is #66-C.
+- No Routing Binding / Job activation here. #66-C consumes this immutable
+  projection and produces a separate receipt; see
+  [Expected → Result reconciliation](reconciliation.md). #72 owns the scheduler
+  lifecycle.
 - No Native Result coverage/reuse; #52/#63/#61 remain responsible.
 - Unknown Check definitions stay `definition_status=unknown` and `missing[]`;
   they are not silently dropped or converted to complete.
