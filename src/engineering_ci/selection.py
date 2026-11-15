@@ -2242,6 +2242,15 @@ def per_ref_selections_and_scopes(
             sources_config=sources_config,
             sources_identity=sources_identity,
         )
+        if config_binding["status"] != "verified":
+            ref_scope = [
+                {
+                    **item,
+                    "status": "blocked",
+                    "reason": "config_source_mismatch",
+                }
+                for item in ref_scope
+            ]
         source_label = (
             ref.get("source_ref")
             or ref.get("remote_ref")
