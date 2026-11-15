@@ -427,6 +427,25 @@ def _parse_effective_profile_policy(raw):
     }
 
 
+def _json_sha256(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _policy_file_scope(path, *, root=None):
+    if root is None or not path:
+        return "repo_target_tree"
+    root_resolved = Path(root).resolve()
+    raw = Path(path)
+    resolved = raw.resolve() if raw.is_absolute() else (root_resolved / raw).resolve()
+    try:
+        resolved.relative_to(root_resolved)
+        return "repo_target_tree"
+    except ValueError:
+        return "event_external"
+
+
 def config_identity(path, config, *, root=None):
     """Build a canonical, content-addressed identity for ci-selection.toml."""
     resolved = Path(path)
@@ -476,6 +495,7 @@ def config_identity(path, config, *, root=None):
         "path": str(path),
         "sha256": sha,
         "schema_version": config.schema_version,
+        "policy_scope": _policy_file_scope(path, root=root),
         "normalized": normalized,
     }
     ref_digest = hashlib.sha256(
@@ -2143,41 +2163,322 @@ def _check_scope(
     return scopes
 
 
-def _ref_config_binding(root, tree, config_path, hygiene_path=None, sources_path=None):
-    """Compare the loaded project policy files with the target Ref tree."""
+def _ref_config_binding(
+    root,
+    tree,
+    config_path,
+    hygiene_path=None,
+    sources_path=None,
+    *,
+    ref_action=None,
+):
+    """Compare loaded policy files with the target Ref tree respecting policy scope."""
+    if ref_action == "delete":
+        return {
+            "status": "not_applicable",
+            "policy_scope": "not_applicable",
+            "target_tree": tree,
+            "mismatched": [],
+            "policies": {},
+        }
+    if not tree:
+        return {
+            "status": "unverifiable",
+            "policy_scope": "unknown",
+            "target_tree": tree,
+            "mismatched": ["target_tree_missing"],
+            "policies": {},
+        }
     root = Path(root).resolve()
     candidates = [
-        ("ci-selection.toml", Path(config_path)),
+        ("ci-selection.toml", Path(config_path), True),
         (
             "ci-hygiene.toml",
             Path(hygiene_path) if hygiene_path else root / "ci-hygiene.toml",
+            False,
         ),
         (
             "ci-sources.toml",
             Path(sources_path) if sources_path else root / "ci-sources.toml",
+            False,
         ),
     ]
     mismatched = []
-    for label, candidate in candidates:
+    policies = {}
+    external_policies = []
+    repo_policies = []
+    for label, candidate, required in candidates:
         candidate = candidate if candidate.is_absolute() else root / candidate
-        if not candidate.is_file():
+        scope = _policy_file_scope(candidate, root=root)
+        if scope == "event_external":
+            external_policies.append(label)
+            policies[label] = {
+                "slot": label,
+                "scope": "event_external",
+                "sha256": _digest(candidate) if candidate.is_file() else None,
+            }
             continue
-        try:
-            rel = candidate.resolve().relative_to(root).as_posix()
-        except ValueError:
-            mismatched.append(label)
-            continue
-        shown = _git(root, "show", f"{tree}:{rel}")
-        if shown.returncode != 0:
-            mismatched.append(rel)
-            continue
-        if shown.stdout != candidate.read_text(encoding="utf-8"):
-            mismatched.append(rel)
+        rel = candidate.resolve().relative_to(root).as_posix()
+        if candidate.is_file():
+            repo_policies.append(rel)
+            policies[rel] = {
+                "slot": label,
+                "scope": "repo_target_tree",
+                "sha256": _digest(candidate),
+            }
+            shown = _git(root, "show", f"{tree}:{rel}")
+            if shown.returncode != 0 or shown.stdout != candidate.read_text(
+                encoding="utf-8"
+            ):
+                mismatched.append(rel)
+        else:
+            shown = _git(root, "show", f"{tree}:{rel}")
+            if required or shown.returncode == 0:
+                repo_policies.append(rel)
+                policies[rel] = {
+                    "slot": label,
+                    "scope": "repo_target_tree",
+                    "sha256": None,
+                }
+                mismatched.append(rel)
+    if external_policies and repo_policies:
+        overall_scope = "mixed"
+    elif external_policies:
+        overall_scope = "event_external"
+    else:
+        overall_scope = "repo_target_tree"
+    if mismatched:
+        status = "mismatch"
+    elif overall_scope == "event_external":
+        status = "event_shared"
+    else:
+        status = "verified"
     return {
-        "status": "mismatch" if mismatched else "verified",
+        "status": status,
+        "policy_scope": overall_scope,
         "target_tree": tree,
         "mismatched": mismatched,
+        "policies": policies,
     }
+
+
+def _selection_entry_digest(entry, *, ref=None, sources_identity=None):
+    ref_obj = ref if isinstance(ref, dict) else {}
+    sources_ref = (
+        sources_identity.get("effective_check_config_ref")
+        if isinstance(sources_identity, dict)
+        else None
+    )
+    material = {
+        "index": entry.get("index"),
+        "source_ref": entry.get("source_ref"),
+        "remote_ref": entry.get("remote_ref"),
+        "local_ref": entry.get("local_ref"),
+        "baseline_ref": entry.get("baseline_ref"),
+        "before": entry.get("before"),
+        "after": entry.get("after"),
+        "tree": entry.get("tree"),
+        "ref_action": entry.get("ref_action"),
+        "paths": sorted(ref_obj.get("paths") or ()),
+        "deleted_paths": sorted(ref_obj.get("deleted_paths") or ()),
+        "complete": bool(ref_obj.get("complete", False)),
+        "status": entry.get("status"),
+        "tests": list(entry.get("tests") or ()),
+        "checks": list(entry.get("checks") or ()),
+        "prerequisites": sorted(entry.get("prerequisites") or ()),
+        "escalated": bool(entry.get("escalated", False)),
+        "escalation_reason": entry.get("escalation_reason"),
+        "full_tests": bool(entry.get("full_tests", False)),
+        "reasons": {
+            k: list(v) for k, v in sorted((entry.get("reasons") or {}).items())
+        },
+        "check_scope": list(entry.get("check_scope") or ()),
+        "config_source_binding": entry.get("config_source_binding"),
+        "sources_effective_ref": sources_ref,
+    }
+    return f"sha256:{_json_sha256(material)}"
+
+
+def _ref_source_snapshot(
+    root,
+    ref,
+    *,
+    config,
+    entry,
+    sources_identity=None,
+):
+    """Build a tamper-evident per-Ref source snapshot bound to the target tree."""
+    tree = ref.get("tree")
+    ref_action = ref.get("ref_action")
+    tach_sha256 = None
+    tach_graph_digest = None
+    tests_modules = []
+    tests_digest = None
+    if ref_action == "delete":
+        source_origin = "ref_deleted"
+    elif tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
+        source_origin = "git_target_tree"
+        cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(config.tach)}")
+        if cat.returncode == 0:
+            tach_sha256 = hashlib.sha256(cat.stdout.encode("utf-8")).hexdigest()
+            try:
+                tg = _tach_graph_text(cat.stdout)
+                tach_graph_digest = f"sha256:{_json_sha256({'modules': list(tg[0]), 'reverse': {k: list(v) for k, v in sorted(tg[1].items())}})}"
+            except SelectionError:
+                tach_graph_digest = None
+        test_prefix = ".".join(Path(config.tests_dir).parts)
+        tree_tests = _tree_test_modules(root, tree, config.tests_dir, test_prefix)
+        tests_modules = list(tree_tests) if tree_tests is not None else []
+        tests_digest = f"sha256:{_json_sha256(tests_modules)}"
+    else:
+        source_origin = "unverifiable"
+    selection_digest = _selection_entry_digest(
+        entry, ref=ref, sources_identity=sources_identity
+    )
+    body = {
+        "kind": "engineering-ci-per-ref-source-snapshot",
+        "schema_version": 1,
+        "source_origin": source_origin,
+        "target_tree": tree,
+        "ref_action": ref_action,
+        "tach_path": config.tach,
+        "tach_sha256": tach_sha256,
+        "tach_graph_digest": tach_graph_digest,
+        "tests_dir": config.tests_dir,
+        "tests_modules": tests_modules,
+        "tests_digest": tests_digest,
+        "config_binding": entry.get("config_source_binding"),
+        "selection_digest": selection_digest,
+    }
+    return {**body, "snapshot_digest": f"sha256:{_json_sha256(body)}"}
+
+
+def verify_per_ref_source_snapshot(
+    sel_entry,
+    *,
+    plan_ref=None,
+    proj_ref=None,
+    inputs=None,
+):
+    """Fail-closed verification of a bound per-Ref source snapshot when ODB is absent."""
+    if not isinstance(sel_entry, dict):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    snap = sel_entry.get("source_snapshot_ref")
+    if not isinstance(snap, dict):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    if snap.get("kind") != "engineering-ci-per-ref-source-snapshot" or (
+        snap.get("schema_version") != 1
+    ):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    origin = snap.get("source_origin")
+    if origin not in {"git_target_tree", "ref_deleted"}:
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    expected_snap_digest = f"sha256:{_json_sha256({k: v for k, v in snap.items() if k != 'snapshot_digest'})}"
+    if snap.get("snapshot_digest") != expected_snap_digest:
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    config_binding = sel_entry.get("config_source_binding")
+    if (
+        not isinstance(config_binding, dict)
+        or snap.get("config_binding") != config_binding
+    ):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    if origin == "ref_deleted":
+        if (
+            sel_entry.get("ref_action") != "delete"
+            or snap.get("ref_action") != "delete"
+            or config_binding.get("status") != "not_applicable"
+        ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    else:
+        if not snap.get("target_tree") or snap.get("target_tree") != sel_entry.get(
+            "tree"
+        ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        tests_modules = snap.get("tests_modules")
+        if (
+            not isinstance(tests_modules, list)
+            or snap.get("tests_digest") != f"sha256:{_json_sha256(tests_modules)}"
+        ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        if sel_entry.get("status") not in {"blocked", "not_applicable"}:
+            if config_binding.get("status") not in {"verified", "event_shared"}:
+                raise SelectionError("expected_per_ref_source_unverifiable")
+            if not set(sel_entry.get("tests") or ()).issubset(set(tests_modules)):
+                raise SelectionError("expected_per_ref_source_unverifiable")
+    if plan_ref is not None:
+        for key in (
+            "remote_ref",
+            "local_ref",
+            "baseline_ref",
+            "before",
+            "after",
+            "tree",
+            "ref_action",
+        ):
+            if sel_entry.get(key) != plan_ref.get(key):
+                raise SelectionError("expected_per_ref_source_unverifiable")
+        if snap.get("target_tree") != plan_ref.get("tree") or snap.get(
+            "ref_action"
+        ) != plan_ref.get("ref_action"):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    sources_identity = inputs.get("sources") if isinstance(inputs, dict) else None
+    expected_sel_digest = _selection_entry_digest(
+        sel_entry, ref=plan_ref, sources_identity=sources_identity
+    )
+    if snap.get("selection_digest") != expected_sel_digest:
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    if isinstance(inputs, dict) and origin == "git_target_tree":
+        policies = config_binding.get("policies") or {}
+        by_slot = {
+            pol.get("slot"): pol
+            for pol in policies.values()
+            if isinstance(pol, dict) and pol.get("slot")
+        }
+        cfg_in = inputs.get("config")
+        if isinstance(cfg_in, dict):
+            cfg_scope = cfg_in.get("policy_scope")
+            if cfg_scope is not None:
+                if cfg_scope not in {"event_external", "repo_target_tree"}:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
+                b_scope = config_binding.get("policy_scope")
+                if cfg_scope == "event_external" and b_scope not in {
+                    "event_external",
+                    "mixed",
+                }:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
+                if cfg_scope == "repo_target_tree" and b_scope not in {
+                    "repo_target_tree",
+                    "mixed",
+                }:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
+            pol_entry = by_slot.get("ci-selection.toml") or policies.get(
+                "ci-selection.toml"
+            )
+            if (
+                isinstance(pol_entry, dict)
+                and pol_entry.get("sha256") is not None
+                and pol_entry.get("sha256") != cfg_in.get("sha256")
+            ):
+                raise SelectionError("expected_per_ref_source_unverifiable")
+        for in_key, slot_name in (
+            ("hygiene", "ci-hygiene.toml"),
+            ("sources", "ci-sources.toml"),
+        ):
+            sub_in = inputs.get(in_key)
+            if not isinstance(sub_in, dict):
+                continue
+            pol_entry = by_slot.get(slot_name) or policies.get(slot_name)
+            if (
+                isinstance(pol_entry, dict)
+                and pol_entry.get("sha256") is not None
+                and pol_entry.get("sha256") != sub_in.get("sha256")
+            ):
+                raise SelectionError("expected_per_ref_source_unverifiable")
+    if proj_ref is not None and (
+        proj_ref.get("source_snapshot_ref") != snap
+        or proj_ref.get("config_source_binding") != config_binding
+    ):
+        raise SelectionError("expected_per_ref_source_unverifiable")
 
 
 def per_ref_selections_and_scopes(
@@ -2221,8 +2522,32 @@ def per_ref_selections_and_scopes(
             config_path or root / "ci-selection.toml",
             hygiene_config_path,
             sources_config_path,
+            ref_action=ref.get("ref_action"),
         )
-        if config_binding["status"] != "verified":
+        if ref.get("ref_action") != "delete":
+            tree = ref.get("tree")
+            tree_ok = (
+                bool(tree)
+                and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0
+            )
+            if not tree_ok and config_binding["status"] != "unverifiable":
+                config_binding = {
+                    **config_binding,
+                    "status": "unverifiable",
+                    "mismatched": list(config_binding["mismatched"])
+                    + ["target_tree_missing"],
+                }
+        binding_ok = config_binding["status"] in {
+            "verified",
+            "event_shared",
+            "not_applicable",
+        }
+        block_reason = (
+            "per_ref_source_unverifiable"
+            if config_binding["status"] == "unverifiable"
+            else "config_source_mismatch"
+        )
+        if not binding_ok:
             ref_sel = replace(
                 ref_sel,
                 status="blocked",
@@ -2231,7 +2556,7 @@ def per_ref_selections_and_scopes(
                 escalated=True,
                 reasons={
                     **ref_sel.reasons,
-                    "config_source_mismatch": config_binding["mismatched"],
+                    block_reason: config_binding["mismatched"],
                 },
             )
         ref_scope = _check_scope(
@@ -2242,12 +2567,12 @@ def per_ref_selections_and_scopes(
             sources_config=sources_config,
             sources_identity=sources_identity,
         )
-        if config_binding["status"] != "verified":
+        if not binding_ok:
             ref_scope = [
                 {
                     **item,
                     "status": "blocked",
-                    "reason": "config_source_mismatch",
+                    "reason": block_reason,
                 }
                 for item in ref_scope
             ]
@@ -2257,29 +2582,35 @@ def per_ref_selections_and_scopes(
             or ref.get("local_ref")
             or ref.get("after")
         )
-        per_ref_entries.append(
-            {
-                "index": index,
-                "source_ref": source_label,
-                "remote_ref": ref.get("remote_ref"),
-                "local_ref": ref.get("local_ref"),
-                "baseline_ref": ref.get("baseline_ref"),
-                "before": ref.get("before"),
-                "after": ref.get("after"),
-                "tree": ref.get("tree"),
-                "ref_action": ref.get("ref_action"),
-                "status": ref_sel.status,
-                "tests": list(ref_sel.tests),
-                "checks": list(ref_sel.checks),
-                "prerequisites": sorted(ref_sel.prerequisites),
-                "escalated": ref_sel.escalated,
-                "escalation_reason": ref_sel.escalation_reason,
-                "full_tests": ref_sel.full_tests,
-                "reasons": {k: list(v) for k, v in sorted(ref_sel.reasons.items())},
-                "check_scope": ref_scope,
-                "config_source_binding": config_binding,
-            }
+        entry = {
+            "index": index,
+            "source_ref": source_label,
+            "remote_ref": ref.get("remote_ref"),
+            "local_ref": ref.get("local_ref"),
+            "baseline_ref": ref.get("baseline_ref"),
+            "before": ref.get("before"),
+            "after": ref.get("after"),
+            "tree": ref.get("tree"),
+            "ref_action": ref.get("ref_action"),
+            "status": ref_sel.status,
+            "tests": list(ref_sel.tests),
+            "checks": list(ref_sel.checks),
+            "prerequisites": sorted(ref_sel.prerequisites),
+            "escalated": ref_sel.escalated,
+            "escalation_reason": ref_sel.escalation_reason,
+            "full_tests": ref_sel.full_tests,
+            "reasons": {k: list(v) for k, v in sorted(ref_sel.reasons.items())},
+            "check_scope": ref_scope,
+            "config_source_binding": config_binding,
+        }
+        entry["source_snapshot_ref"] = _ref_source_snapshot(
+            root,
+            ref,
+            config=config,
+            entry=entry,
+            sources_identity=sources_identity,
         )
+        per_ref_entries.append(entry)
         per_ref_scopes.append(ref_scope)
     return per_ref_entries, per_ref_scopes
 
@@ -2456,6 +2787,7 @@ def plan(
         weaver_prefixes=weaver_prefixes_map,
         selection_config=config,
         per_ref_scopes=per_ref_scopes,
+        per_ref_selections=per_ref_entries,
     )
     tach_input = {"path": config.tach, "sha256": _digest(tach_path)}
     if tach_graph is not None:
@@ -2521,6 +2853,7 @@ def plan(
         ),
         "generator": generator_payload,
         "git": {
+            "repo_root": str(root.resolve()),
             "base_ref": selection.changeset.base_ref,
             "head_ref": selection.changeset.head_ref,
             "base_commit": selection.changeset.base_commit,

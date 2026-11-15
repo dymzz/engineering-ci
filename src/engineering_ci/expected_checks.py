@@ -1033,6 +1033,7 @@ def _recompute_ref_projection(
     effective_profile=None,
     root=None,
     ref_scope=None,
+    ref_selection=None,
     sources_config=None,
     sources_identity=None,
     authority_proven=True,
@@ -1315,9 +1316,16 @@ def _recompute_ref_projection(
     declared_complete = isinstance(declared_checks, list) and (
         configured_domain <= set(declared_checks)
     )
-    if (not ref_complete and ref_action != "delete") or any(
-        item["applicability"]["status"] in {"unknown", "incomplete"}
-        for item in ref_checks
+    ref_blocked = isinstance(ref_selection, dict) and (
+        ref_selection.get("status") == "blocked"
+    )
+    if (
+        (not ref_complete and ref_action != "delete")
+        or ref_blocked
+        or any(
+            item["applicability"]["status"] in {"unknown", "incomplete", "blocked"}
+            for item in ref_checks
+        )
     ):
         ref_status = "unknown"
     elif ref_conflicts or (effective_profile is not None and not authority_proven):
@@ -1329,7 +1337,8 @@ def _recompute_ref_projection(
         and all(
             item["definition_status"] == "resolved"
             and item["rule_status"] == "resolved"
-            and item["applicability"]["status"] not in {"unknown", "incomplete"}
+            and item["applicability"]["status"]
+            not in {"unknown", "incomplete", "blocked"}
             for item in ref_checks
         )
     ):
@@ -1339,7 +1348,7 @@ def _recompute_ref_projection(
             "partial" if (ref_checks or effective_profile is not None) else "unknown"
         )
 
-    return {
+    projection = {
         "source_ref": source_label,
         "local_ref": ref.get("local_ref"),
         "remote_ref": ref.get("remote_ref"),
@@ -1378,6 +1387,12 @@ def _recompute_ref_projection(
         "conflicts": ref_conflicts,
         "status": ref_status,
     }
+    if isinstance(ref_selection, dict):
+        if "config_source_binding" in ref_selection:
+            projection["config_source_binding"] = ref_selection["config_source_binding"]
+        if "source_snapshot_ref" in ref_selection:
+            projection["source_snapshot_ref"] = ref_selection["source_snapshot_ref"]
+    return projection
 
 
 def _derive_per_ref_projections(
@@ -1396,6 +1411,7 @@ def _derive_per_ref_projections(
     weaver_prefixes=None,
     effective_profile=None,
     per_ref_scopes=None,
+    per_ref_selections=None,
     sources_config=None,
     sources_identity=None,
     authority_proven=True,
@@ -1422,6 +1438,12 @@ def _derive_per_ref_projections(
                 per_ref_scopes[idx]
                 if isinstance(per_ref_scopes, (list, tuple))
                 and idx < len(per_ref_scopes)
+                else None
+            ),
+            ref_selection=(
+                per_ref_selections[idx]
+                if isinstance(per_ref_selections, (list, tuple))
+                and idx < len(per_ref_selections)
                 else None
             ),
             sources_config=sources_config,
@@ -1566,7 +1588,7 @@ def _derive_v2_from_profile(
             app_inputs = []
             unresolved_applicability = True
 
-        if app_status in {"unknown", "incomplete"}:
+        if app_status in {"unknown", "incomplete", "blocked"}:
             unresolved_applicability = True
         unwaived_req_obs = [
             ob_ref
@@ -1775,6 +1797,7 @@ def derive_expected_checks(
     weaver_prefixes=None,
     selection_config=None,
     per_ref_scopes=None,
+    per_ref_selections=None,
 ):
     """Derive Expected Checks projection (Schema v1 partial, or Schema v2 with EffectiveProfile)."""
     from engineering_ci import selection as _selection
@@ -1808,13 +1831,26 @@ def derive_expected_checks(
             except _selection.SelectionError:
                 sel_cfg = None
         if sel_cfg is not None:
-            _entries, per_ref_scopes = _selection.per_ref_selections_and_scopes(
-                changeset.references,
-                sel_cfg,
-                changeset.root,
-                hygiene_config=hygiene_config,
-                sources_config=sources_config,
-                sources_identity=sources_identity,
+            per_ref_selections, per_ref_scopes = (
+                _selection.per_ref_selections_and_scopes(
+                    changeset.references,
+                    sel_cfg,
+                    changeset.root,
+                    hygiene_config=hygiene_config,
+                    sources_config=sources_config,
+                    sources_identity=sources_identity,
+                    config_path=config_path,
+                    hygiene_config_path=(
+                        hygiene_identity.get("path")
+                        if isinstance(hygiene_identity, dict)
+                        else None
+                    ),
+                    sources_config_path=(
+                        sources_identity.get("path")
+                        if isinstance(sources_identity, dict)
+                        else None
+                    ),
+                )
             )
     per_ref = _derive_per_ref_projections(
         changeset,
@@ -1832,6 +1868,7 @@ def derive_expected_checks(
         weaver_prefixes=weaver_prefixes,
         effective_profile=effective_profile,
         per_ref_scopes=per_ref_scopes,
+        per_ref_selections=per_ref_selections,
         sources_config=sources_config,
         sources_identity=sources_identity,
         authority_proven=authority_proven,
@@ -2066,7 +2103,37 @@ def _selection_for_validation(plan):
     return sel_cfg, tach_graph, all_tests
 
 
-def _validate_per_ref(expected, git, check_scope=None, plan=None):
+def _resolve_per_ref_odb_root(plan, explicit_root=None):
+    """Return a usable .git ODB root for per-ref recomputation, or None in non-ODB mode."""
+    if explicit_root is not None:
+        cand = Path(explicit_root)
+        return cand if (cand / ".git").exists() else None
+    if not isinstance(plan, dict):
+        return None
+    inputs = plan.get("inputs") or {}
+    cfg_in = inputs.get("config") or {}
+    cfg_path_str = cfg_in.get("path", "") if isinstance(cfg_in, dict) else ""
+    cfg_scope = cfg_in.get("policy_scope") if isinstance(cfg_in, dict) else None
+    repo_root_str = (
+        (plan.get("git") or {}).get("repo_root", "")
+        if isinstance(plan.get("git"), dict)
+        else ""
+    )
+    if cfg_scope == "event_external":
+        if repo_root_str and (Path(repo_root_str) / ".git").exists():
+            return Path(repo_root_str)
+        return None
+    if cfg_path_str:
+        cfg_path = Path(cfg_path_str)
+        if cfg_path.is_absolute():
+            cand = cfg_path.parent
+            return cand if (cand / ".git").exists() else None
+    if repo_root_str and (Path(repo_root_str) / ".git").exists():
+        return Path(repo_root_str)
+    return None
+
+
+def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
     from engineering_ci import selection as _selection
 
     refs = git.get("references") or []
@@ -2112,40 +2179,100 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None):
         if isinstance(selection_block, dict)
         else None
     )
+    odb_root = _resolve_per_ref_odb_root(plan, root)
+    inputs_block = (plan.get("inputs") or {}) if isinstance(plan, dict) else {}
+    cfg_path_str = (
+        (inputs_block.get("config") or {}).get("path") or None
+        if isinstance(inputs_block.get("config"), dict)
+        else None
+    )
+    hyg_path_str = (
+        (inputs_block.get("hygiene") or {}).get("path") or None
+        if isinstance(inputs_block.get("hygiene"), dict)
+        else None
+    )
+    src_path_str = (
+        (inputs_block.get("sources") or {}).get("path") or None
+        if isinstance(inputs_block.get("sources"), dict)
+        else None
+    )
     recomputed_scopes = None
+    ref_selections_by_idx = {}
+    recomputed_sel_entries = None
     if sel_cfg is not None and refs:
-        cfg_path_str = (
-            ((plan.get("inputs") or {}).get("config") or {}).get("path", "")
-            if isinstance(plan, dict)
-            else ""
-        )
-        candidate_root = Path(cfg_path_str).parent if cfg_path_str else Path(".")
-        root = candidate_root if candidate_root.is_dir() else Path(".")
-        if not (root / ".git").exists():
-            raise ExpectedError("expected_per_ref_source_unverifiable")
-        recomputed_sel_entries, recomputed_scopes = (
-            _selection.per_ref_selections_and_scopes(
-                refs,
-                sel_cfg,
-                root,
-                full=bool(
-                    selection_block.get("full_tests", False)
-                    if isinstance(selection_block, dict)
-                    else False
-                ),
-                hygiene_config=hygiene_config,
-                sources_config=sources_config,
-                sources_identity=sources_identity,
-                tach_graph=tach_graph,
-                all_tests=all_tests,
+        if odb_root is not None:
+            recomputed_sel_entries, recomputed_scopes = (
+                _selection.per_ref_selections_and_scopes(
+                    refs,
+                    sel_cfg,
+                    odb_root,
+                    full=bool(
+                        selection_block.get("full_tests", False)
+                        if isinstance(selection_block, dict)
+                        else False
+                    ),
+                    hygiene_config=hygiene_config,
+                    sources_config=sources_config,
+                    sources_identity=sources_identity,
+                    tach_graph=tach_graph,
+                    all_tests=all_tests,
+                    config_path=cfg_path_str,
+                    hygiene_config_path=hyg_path_str,
+                    sources_config_path=src_path_str,
+                )
             )
-        )
-        if (
-            isinstance(selection_block, dict)
-            and "per_ref" in selection_block
-            and selection_block["per_ref"] != recomputed_sel_entries
-        ):
-            raise ExpectedError("expected_per_ref_selection_mismatch")
+            if (
+                isinstance(selection_block, dict)
+                and "per_ref" in selection_block
+                and selection_block["per_ref"] != recomputed_sel_entries
+            ):
+                raise ExpectedError("expected_per_ref_selection_mismatch")
+            if isinstance(selection_block, dict) and "per_ref" in selection_block:
+                for plan_ref, sel_entry, proj_ref in zip(
+                    refs, recomputed_sel_entries, per_ref, strict=True
+                ):
+                    try:
+                        _selection.verify_per_ref_source_snapshot(
+                            sel_entry,
+                            plan_ref=plan_ref,
+                            proj_ref=proj_ref,
+                            inputs=inputs_block,
+                        )
+                    except _selection.SelectionError:
+                        raise ExpectedError(
+                            "expected_per_ref_source_unverifiable"
+                        ) from None
+            ref_selections_by_idx = {
+                idx: entry for idx, entry in enumerate(recomputed_sel_entries)
+            }
+        else:
+            sel_per_ref = (
+                selection_block.get("per_ref")
+                if isinstance(selection_block, dict)
+                else None
+            )
+            if not isinstance(sel_per_ref, list) or len(sel_per_ref) != len(refs):
+                raise ExpectedError("expected_per_ref_source_unverifiable")
+            recomputed_scopes = []
+            for idx, (plan_ref, sel_entry, proj_ref) in enumerate(
+                zip(refs, sel_per_ref, per_ref, strict=True)
+            ):
+                try:
+                    _selection.verify_per_ref_source_snapshot(
+                        sel_entry,
+                        plan_ref=plan_ref,
+                        proj_ref=proj_ref,
+                        inputs=inputs_block,
+                    )
+                except _selection.SelectionError:
+                    raise ExpectedError(
+                        "expected_per_ref_source_unverifiable"
+                    ) from None
+                scope_list = sel_entry.get("check_scope")
+                if not isinstance(scope_list, list):
+                    raise ExpectedError("expected_per_ref_source_unverifiable")
+                recomputed_scopes.append(scope_list)
+                ref_selections_by_idx[idx] = sel_entry
 
     for idx, (plan_ref, proj_ref) in enumerate(zip(refs, per_ref, strict=True)):
         if not isinstance(proj_ref, dict):
@@ -2281,6 +2408,18 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None):
             )
 
         if check_scope is not None:
+            if (
+                recomputed_sel_entries is not None
+                and isinstance(selection_block, dict)
+                and "per_ref" in selection_block
+                and (
+                    proj_ref.get("source_snapshot_ref")
+                    != recomputed_sel_entries[idx].get("source_snapshot_ref")
+                    or proj_ref.get("config_source_binding")
+                    != recomputed_sel_entries[idx].get("config_source_binding")
+                )
+            ):
+                raise ExpectedError("expected_per_ref_source_unverifiable")
             recomputed = _recompute_ref_projection(
                 plan_ref,
                 scope_by_name=scope_by_name,
@@ -2295,11 +2434,13 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None):
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,
                 effective_profile=profile,
+                root=odb_root,
                 ref_scope=(
                     recomputed_scopes[idx]
                     if recomputed_scopes is not None and idx < len(recomputed_scopes)
                     else None
                 ),
+                ref_selection=ref_selections_by_idx.get(idx),
                 sources_config=sources_config,
                 sources_identity=sources_identity,
                 authority_proven=authority_proven,
@@ -2332,7 +2473,7 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None):
             raise ExpectedError("expected_set_ref_mismatch")
 
 
-def validate_projection(expected, git, check_scope=None, *, plan=None):
+def validate_projection(expected, git, check_scope=None, *, plan=None, root=None):
     """Recompute identities and cross-check the projection against Plan git."""
     if not isinstance(expected, dict):
         raise ExpectedError("expected_checks_invalid")
@@ -2514,7 +2655,7 @@ def validate_projection(expected, git, check_scope=None, *, plan=None):
                 item.get("definition_status") != "resolved"
                 or item.get("rule_status") != "resolved"
                 or item.get("applicability", {}).get("status")
-                in {"unknown", "incomplete"}
+                in {"unknown", "incomplete", "blocked"}
                 for item in checks
             )
         ):
@@ -2579,7 +2720,13 @@ def validate_projection(expected, git, check_scope=None, *, plan=None):
         if binding_paths != scope_paths:
             raise ExpectedError("expected_source_scope_mismatch")
 
-    _validate_per_ref(expected, git, check_scope=check_scope, plan=plan)
+    _validate_per_ref(
+        expected,
+        git,
+        check_scope=check_scope,
+        plan=plan,
+        root=root,
+    )
     if snapshot != "multi":
         ref_action = git.get("ref_action")
         baseline_status = git.get("baseline_status")
