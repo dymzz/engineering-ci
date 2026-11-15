@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import metadata
 from pathlib import Path
 
@@ -2143,6 +2143,43 @@ def _check_scope(
     return scopes
 
 
+def _ref_config_binding(root, tree, config_path, hygiene_path=None, sources_path=None):
+    """Compare the loaded project policy files with the target Ref tree."""
+    root = Path(root).resolve()
+    candidates = [
+        ("ci-selection.toml", Path(config_path)),
+        (
+            "ci-hygiene.toml",
+            Path(hygiene_path) if hygiene_path else root / "ci-hygiene.toml",
+        ),
+        (
+            "ci-sources.toml",
+            Path(sources_path) if sources_path else root / "ci-sources.toml",
+        ),
+    ]
+    mismatched = []
+    for label, candidate in candidates:
+        candidate = candidate if candidate.is_absolute() else root / candidate
+        if not candidate.is_file():
+            continue
+        try:
+            rel = candidate.resolve().relative_to(root).as_posix()
+        except ValueError:
+            mismatched.append(label)
+            continue
+        shown = _git(root, "show", f"{tree}:{rel}")
+        if shown.returncode != 0:
+            mismatched.append(rel)
+            continue
+        if shown.stdout != candidate.read_text(encoding="utf-8"):
+            mismatched.append(rel)
+    return {
+        "status": "mismatch" if mismatched else "verified",
+        "target_tree": tree,
+        "mismatched": mismatched,
+    }
+
+
 def per_ref_selections_and_scopes(
     references,
     config,
@@ -2154,6 +2191,9 @@ def per_ref_selections_and_scopes(
     sources_identity=None,
     tach_graph=None,
     all_tests=None,
+    config_path=None,
+    hygiene_config_path=None,
+    sources_config_path=None,
 ):
     """Run independent per-ref Selection and CheckScope for each ref in a multi-ref push."""
     root = Path(root) if root is not None else Path(".")
@@ -2175,6 +2215,25 @@ def per_ref_selections_and_scopes(
             tach_graph=tach_graph,
             all_tests=all_tests,
         )
+        config_binding = _ref_config_binding(
+            root,
+            ref.get("tree"),
+            config_path or root / "ci-selection.toml",
+            hygiene_config_path,
+            sources_config_path,
+        )
+        if config_binding["status"] != "verified":
+            ref_sel = replace(
+                ref_sel,
+                status="blocked",
+                tests=(),
+                checks=(),
+                escalated=True,
+                reasons={
+                    **ref_sel.reasons,
+                    "config_source_mismatch": config_binding["mismatched"],
+                },
+            )
         ref_scope = _check_scope(
             ref_sel,
             config,
@@ -2209,6 +2268,7 @@ def per_ref_selections_and_scopes(
                 "full_tests": ref_sel.full_tests,
                 "reasons": {k: list(v) for k, v in sorted(ref_sel.reasons.items())},
                 "check_scope": ref_scope,
+                "config_source_binding": config_binding,
             }
         )
         per_ref_scopes.append(ref_scope)
@@ -2360,6 +2420,9 @@ def plan(
             sources_identity=sources_identity,
             tach_graph=tach_graph,
             all_tests=all_tests,
+            config_path=config_path,
+            hygiene_config_path=hygiene_config_path,
+            sources_config_path=sources_config_path,
         )
     content_binding = (
         worktree_content_binding(root, selection.changeset.paths)

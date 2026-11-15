@@ -464,6 +464,46 @@ def test_expected_source_must_match_plan_git(repo):
     assert raised.value.code == "expected_source_mismatch"
 
 
+def test_profile_approval_and_selection_rule_cannot_cycle(repo):
+    path, base = repo
+    (path / "docs/cycle.md").write_text("# cycle\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(changes, cfg, root=path)
+    profile = _sample_effective_profile(
+        declared_checks=["docs"],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+    )
+    binding = profile["approval_binding"]
+    declared = profile.get("declared_checks") or []
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f"""
+
+[effective_profile]
+profile_ref = {{ name = "consumer.pr", version = "1.0.0" }}
+profile_revision = "rev-2026-11-15"
+approval_source = "governance-signed"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "2026-11-15T00:00:00Z"
+declared_checks = {json.dumps(declared)}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(expected_checks.ExpectedError) as raised:
+        selection.plan(
+            sel,
+            config=selection.load_config(config_path),
+            config_path=config_path,
+            root=path,
+            effective_profile=profile,
+        )
+    assert raised.value.code == "effective_profile_approval_rule_cycle"
+
+
 def test_expected_requires_plan_v2_and_valid_schema(repo):
     plan = make_plan(repo)
     plan["schema_version"] = 1
@@ -476,6 +516,18 @@ def test_expected_requires_plan_v2_and_valid_schema(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(plan)
     assert raised.value.code == "expected_checks_schema_unsupported"
+
+
+def _profile_policy(profile):
+    binding = profile["approval_binding"]
+    return {
+        "profile_ref": dict(profile["profile_ref"]),
+        "profile_revision": profile["profile_revision"],
+        "approval_source": binding["approval_source"],
+        "approval_digest": binding["approval_digest"],
+        "effective_at": profile["effective_at"],
+        "declared_checks": list(profile.get("declared_checks") or []),
+    }
 
 
 def _attach_effective_profile_policy(path, profile):
@@ -1431,9 +1483,6 @@ def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
         action="update",
         target="refs/heads/docs-only",
         targets=["refs/heads/docs-only", "refs/heads/code-branch"],
-        governed_rules=expected_checks.governed_domain_rules(
-            path, config_path=path / "ci-selection.toml"
-        ),
         declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
         required_obligations=[
             {
@@ -1456,7 +1505,9 @@ def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
             },
         ],
     )
-    policy_cfg = _attach_effective_profile_policy(path, profile)
+    policy_cfg = dataclasses.replace(
+        cfg, effective_profile_policy=_profile_policy(profile)
+    )
     p = selection.plan(
         sel,
         config=policy_cfg,

@@ -691,6 +691,9 @@ def _verify_profile_authority(
         if gov is None and isinstance(config_policy.get("governed_rules"), dict):
             gov = config_policy["governed_rules"]
 
+    if policy_matched and isinstance(gov, dict) and gov.get("selection_rule_ref"):
+        raise ExpectedError("effective_profile_approval_rule_cycle")
+
     gov_matched = False
     if isinstance(gov, dict):
         if (
