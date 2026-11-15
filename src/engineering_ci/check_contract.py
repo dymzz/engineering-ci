@@ -574,6 +574,9 @@ def validate_definition(definition):
     _validate_reference(definition.rule_ref, "rule_ref")
     _validate_reference(definition.profile_ref, "profile_ref")
     _registered_definition(definition.check_id, definition.definition_version)
+    # A definition is accepted only when its Check declares one execution
+    # category; otherwise its results could skip native exit/evidence checks.
+    _execution_kind(definition.check_id)
     return replace(
         definition,
         tool_requirements=validate_tool_requirements(definition.tool_requirements),
@@ -774,11 +777,33 @@ def _unresolved_requirements(definition, *, rule=None):
 
 
 def _execution_kind(check_id):
-    if check_id in PROCESS_CHECK_IDS:
+    """Return the single declared execution category of a controlled Check.
+
+    A registered Check must be declared in exactly one of
+    ``PROCESS_CHECK_IDS`` and ``INTERNAL_CHECK_IDS``. Missing or duplicate
+    classification is refused instead of returning ``unknown``: the latter
+    silently skipped the native exit/evidence requirements in
+    ``native_result()`` and ``validate_result()``, so a newly registered Check
+    could pass without its native process facts.
+    """
+    in_process = check_id in PROCESS_CHECK_IDS
+    in_internal = check_id in INTERNAL_CHECK_IDS
+    if in_process and in_internal:
+        raise CheckContractError("check_execution_kind_ambiguous")
+    if in_process:
         return "process"
-    if check_id in INTERNAL_CHECK_IDS:
+    if in_internal:
         return "internal"
-    return "unknown"
+    raise CheckContractError("check_execution_kind_unknown")
+
+
+def _validate_registered_execution_kinds():
+    """Refuse to load a controlled Check that declares no unique category."""
+    for check_id in sorted(CHECK_IDS.values()):
+        _execution_kind(check_id)
+
+
+_validate_registered_execution_kinds()
 
 
 def _validate_baseline(ref):
