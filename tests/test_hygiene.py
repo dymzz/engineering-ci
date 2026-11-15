@@ -261,3 +261,44 @@ def test_cli_outputs_json_and_preserves_failure(repo, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "engineering-ci-hygiene-report"
     assert payload["status"] == "failed"
+
+
+def test_omitted_checks_respects_tach_external_flag_without_silent_expansion(tmp_path):
+    default_cfg = tmp_path / "default.toml"
+    default_cfg.write_text("schema_version = 1\n", encoding="utf-8")
+    loaded_default = hygiene.load_config(default_cfg)
+    assert hygiene.effective_checks(loaded_default) == hygiene._DEFAULT_CHECKS
+    assert "tach_external" not in hygiene.effective_checks(loaded_default)
+
+    ext_cfg = tmp_path / "external.toml"
+    ext_cfg.write_text(
+        "schema_version = 1\n[tach]\nexternal = true\n", encoding="utf-8"
+    )
+    loaded_ext = hygiene.load_config(ext_cfg)
+    assert loaded_ext.checks.count("tach_external") == 1
+    assert hygiene.effective_checks(loaded_ext).count("tach_external") == 1
+
+
+def test_shared_applicability_and_config_identity(repo):
+    path, base = repo
+    cfg_path = path / "ci-hygiene.toml"
+    cfg = hygiene.load_config(cfg_path)
+    identity = hygiene.config_identity(cfg_path, cfg, root=path)
+    assert identity["path"] == "ci-hygiene.toml"
+    assert identity["schema_version"] == 1
+    assert identity["effective_check_config_ref"]["name"] == "engineering-ci.hygiene"
+
+    (path / "docs/archive").mkdir(parents=True, exist_ok=True)
+    (path / "docs/archive/old.md").write_text("# ignored\n", encoding="utf-8")
+    (path / "requirements-dev.txt").write_text("pytest\n", encoding="utf-8")
+    app_cfg = dataclasses.replace(cfg, checks=(*cfg.checks, "tach_external"))
+    app = hygiene.check_applicability(
+        changes(path, base),
+        app_cfg,
+        root=path,
+        code_prefixes=("src/", "scripts/", "tests/"),
+    )
+    assert app["docs"]["status"] == "not_applicable"
+    assert app["tach"]["status"] == "not_applicable"
+    assert app["tach_external"]["status"] == "selected"
+    assert app["tach_external"]["inputs"] == ["requirements-dev.txt"]

@@ -65,6 +65,30 @@ def _aggregate(report):
                 reason="check_contract_invalid",
             )
             return report
+    unauthorized = [item for item in checks if item.get("plan_authorized") is False]
+    if unauthorized:
+        report["routing_conflicts"] = [
+            {
+                "check": item.get("name"),
+                "reason": item.get("routing_conflict") or "unauthorized_check_executed",
+                "selected": item.get("selected"),
+                "status": item.get("status"),
+            }
+            for item in unauthorized
+        ]
+        report.update(
+            status="blocked",
+            exit_code=5,
+            reason=(
+                "configured_check_omitted_from_plan"
+                if all(
+                    item.get("routing_conflict") == "configured_check_omitted_from_plan"
+                    for item in unauthorized
+                )
+                else "unauthorized_check_executed"
+            ),
+        )
+        return report
     from engineering_ci import execution as _host_execution
 
     if any(_host_execution._unsatisfied_native(item) for item in checks):
@@ -203,8 +227,11 @@ async def _native_results(
 
     targets = value["selection"]["tests"]
     branches = []
-    requirement = execution.test_requirement_failure(value)
-    if requirement:
+    gate = execution.target_test_gate(value)
+    if gate is not None:
+        requirement, coverage_scope = gate
+        if coverage_scope is not None:
+            report.setdefault("coverage", {})["scope"] = coverage_scope
         report["tests"] = {
             "status": "not_executed",
             "exit_code": None,
@@ -439,6 +466,28 @@ def _host_adapter_plan(value, selected_host_checks):
     host_plan["selection"]["checks"] = [
         item["name"] for item in selected_host_checks if item.get("name")
     ]
+    repo_root = (host_plan.get("git") or {}).get("repo_root")
+    inputs = host_plan.get("inputs")
+    if isinstance(repo_root, str) and repo_root and isinstance(inputs, dict):
+        base_root = Path(repo_root).resolve()
+        host_plan["inputs"] = dict(inputs)
+        for key in ("config", "hygiene", "sources"):
+            decl = inputs.get(key)
+            if (
+                isinstance(decl, dict)
+                and decl.get("policy_scope") == "repo_target_tree"
+                and isinstance(decl.get("path"), str)
+                and decl["path"]
+            ):
+                cand = Path(decl["path"])
+                if cand.is_absolute():
+                    resolved_cand = cand.resolve()
+                    if resolved_cand.is_relative_to(base_root):
+                        updated_decl = dict(decl)
+                        updated_decl["path"] = resolved_cand.relative_to(
+                            base_root
+                        ).as_posix()
+                        host_plan["inputs"][key] = updated_decl
     return host_plan
 
 
@@ -758,18 +807,22 @@ async def _execute_dag(
                 return entry, None, {}
             if kind == "tests":
                 block_reason, blocked_by, delivered = await resolve_incoming("tests")
-                requirement = execution.test_requirement_failure(value)
-                if requirement:
-                    return (
-                        {
-                            "tests": {
-                                "status": "not_executed",
-                                "exit_code": None,
-                                "reason": requirement,
-                            }
-                        },
-                        None,
-                    )
+                gate = execution.target_test_gate(value)
+                if gate is not None:
+                    requirement, coverage_scope = gate
+                    payload = {
+                        "tests": {
+                            "status": "not_executed",
+                            "exit_code": None,
+                            "reason": requirement,
+                        }
+                    }
+                    if coverage_scope is not None:
+                        payload["coverage"] = {
+                            **report.get("coverage", {}),
+                            "scope": coverage_scope,
+                        }
+                    return payload, None
                 if block_reason is not None:
                     return (
                         {
@@ -927,6 +980,19 @@ async def _execute_dag(
                 )
             else:
                 report["prerequisites"].append(output)
+
+        omitted = execution.omitted_hygiene_checks(
+            host_plan, host_checks, root=directory
+        )
+        if omitted:
+            report["checks"].extend(
+                execution._decorate_checks(
+                    host_plan,
+                    omitted,
+                    execution_context="dagger_export",
+                    run_instance=run_instance,
+                )
+            )
 
         if produced_files:
 

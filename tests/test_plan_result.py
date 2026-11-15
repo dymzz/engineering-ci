@@ -1605,8 +1605,9 @@ def test_policy_only_selection_plan_runs_host_check_and_propagates_refusal(
     )
     report = json.loads(asyncio.run(saved.report()))
     assert report["status"] == "passed", json.dumps(report, indent=2)
-    assert [c["name"] for c in report["checks"]] == ["docs"]
-    assert report["checks"][0]["status"] == "passed"
+    assert [c["name"] for c in report["checks"]] == ["whitespace", "docs"]
+    docs_check = next(c for c in report["checks"] if c["name"] == "docs")
+    assert docs_check["status"] == "passed"
     assert native.lychee_argvs == [["--offline", "--no-progress", "docs/guide.md"]]
     asyncio.run(saved.enforce())
 
