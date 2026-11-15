@@ -2,7 +2,7 @@
 
 import pytest
 
-from engineering_ci import check_contract
+from engineering_ci import check_contract, weaver_tool
 
 
 def closed_source(tree="a" * 40):
@@ -714,3 +714,1033 @@ def test_tool_entry_authority_and_asset_identity_are_separate_facts():
     )
     assert observed_runtime["authority"] == "runtime_tool_access"
     assert observed_runtime["tool_id_source"] == "runtime_tool_asset"
+
+
+def _weaver_observed(
+    access_id,
+    *,
+    tool_id="weaver",
+    tool_id_source="eci_pinned_asset",
+    version=weaver_tool.VERSION,
+    artifact_sha256=weaver_tool.LINUX_SHA256,
+    authority="eci_local_entry",
+):
+    return check_contract.tool_ref(
+        access_id,
+        tool_id=tool_id,
+        tool_id_source=tool_id_source,
+        version=version,
+        artifact_sha256=artifact_sha256,
+        authority=authority,
+        executable="/usr/local/bin/weaver",
+    )
+
+
+def test_test_process_definitions_keep_distinct_engine_identities():
+    unittest_def = check_contract.definition_for("unittest")
+    pytest_def = check_contract.definition_for("pytest")
+    assert unittest_def is not None and pytest_def is not None
+    assert unittest_def.check_id == "eci/tests/unittest"
+    assert pytest_def.check_id == "eci/tests/pytest"
+    assert unittest_def.check_id in check_contract.PROCESS_CHECK_IDS
+    assert pytest_def.check_id in check_contract.PROCESS_CHECK_IDS
+    assert unittest_def.definition_version == 1
+    assert pytest_def.definition_version == 1
+    assert not unittest_def.requires_baseline
+    assert not pytest_def.requires_baseline
+    assert not unittest_def.requires_post_completion
+    assert not pytest_def.requires_post_completion
+    assert [
+        item.alternatives[0].access_id for item in unittest_def.tool_requirements
+    ] == ["python/unittest"]
+    assert [
+        item.alternatives[0].access_id for item in pytest_def.tool_requirements
+    ] == ["python/pytest"]
+
+    checked = closed_source()
+    rule = check_contract.rule_ref("tests", 1, digest="a" * 64)
+    pytest_pass = check_contract.native_result(
+        pytest_def,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="pytest-run",
+        native_exit_code=0,
+        evidence={"stdout": "2 passed"},
+        rule_ref=rule,
+        tool=observed("python/pytest", executable="pytest"),
+    )
+    expected_pytest = {
+        "check_id": pytest_def.check_id,
+        "definition_version": pytest_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    expected_unittest = {
+        "check_id": unittest_def.check_id,
+        "definition_version": unittest_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    assert (
+        check_contract.evaluate_expected_satisfaction([pytest_pass], expected_pytest)[
+            "status"
+        ]
+        == "satisfied"
+    )
+    assert not check_contract.result_matches_expected(pytest_pass, expected_unittest)
+    mismatch = check_contract.evaluate_expected_satisfaction(
+        [pytest_pass], expected_unittest
+    )
+    assert mismatch["status"] == "unsatisfied"
+    assert mismatch["reason"] == "native_result_mismatched"
+    with pytest.raises(
+        check_contract.CheckContractError, match="satisfaction_check_mismatch"
+    ):
+        check_contract.evaluate_check_satisfaction(unittest_def, [pytest_pass])
+
+    forged = check_contract.CheckDefinition(
+        check_id=unittest_def.check_id,
+        definition_version=unittest_def.definition_version,
+        tool_requirements=pytest_def.tool_requirements,
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_tool_requirements_mismatch"
+    ):
+        check_contract.native_result(
+            forged,
+            source=checked,
+            status="passed",
+            result_origin="host",
+            result_instance="forged",
+            native_exit_code=0,
+            evidence={"stdout": "ok"},
+            tool=observed("python/pytest"),
+        )
+
+
+def _weaver_step(
+    definition,
+    access_id,
+    *,
+    source,
+    rule,
+    instance,
+    status="passed",
+    native_exit_code=0,
+    evidence=None,
+    input_refs=(),
+    phase=None,
+    coverage=None,
+):
+    return check_contract.native_result(
+        definition,
+        source=source,
+        status=status,
+        result_origin="dagger",
+        result_instance=instance,
+        native_exit_code=native_exit_code,
+        evidence=evidence or {"stdout": "ok"},
+        rule_ref=rule,
+        tool=_weaver_observed(access_id),
+        input_refs=input_refs,
+        phase=phase,
+        coverage=coverage,
+    )
+
+
+def _weaver_packaging_chain(
+    definition,
+    *,
+    source,
+    rule,
+    prefix="reg",
+    include_local=True,
+    local_status="passed",
+    local_exit_code=0,
+    phase=None,
+):
+    check = _weaver_step(
+        definition,
+        "weaver/registry-check",
+        source=source,
+        rule=rule,
+        instance=f"{prefix}-check",
+        evidence={"findings": 0},
+        phase=phase,
+    )
+    pkg = _weaver_step(
+        definition,
+        "weaver/registry-package",
+        source=source,
+        rule=rule,
+        instance=f"{prefix}-pkg",
+        evidence={"resolved_sha256": "d" * 64},
+        input_refs=[{"kind": "check_result", "result_id": check["result_id"]}],
+        phase=phase,
+    )
+    results = [check, pkg]
+    if include_local:
+        local = _weaver_step(
+            definition,
+            "weaver/registry-local-check",
+            source=source,
+            rule=rule,
+            instance=f"{prefix}-local",
+            status=local_status,
+            native_exit_code=local_exit_code,
+            evidence={"findings": 0 if local_status == "passed" else 1},
+            input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+            phase=phase,
+        )
+        results.append(local)
+    return results
+
+
+def _weaver_baseline_chain(
+    definition,
+    *,
+    source,
+    rule,
+    registry_local,
+    prefix="base",
+    local_status="passed",
+    local_exit_code=0,
+    diff_status="passed",
+    diff_exit_code=0,
+    include_diff=True,
+    link_baseline=True,
+    diff_coverage=None,
+):
+    check = _weaver_step(
+        definition,
+        "weaver/baseline-check",
+        source=source,
+        rule=rule,
+        instance=f"{prefix}-check",
+        evidence={"findings": 0},
+    )
+    pkg = _weaver_step(
+        definition,
+        "weaver/baseline-package",
+        source=source,
+        rule=rule,
+        instance=f"{prefix}-pkg",
+        evidence={"resolved_sha256": "e" * 64},
+        input_refs=[{"kind": "check_result", "result_id": check["result_id"]}],
+    )
+    local = _weaver_step(
+        definition,
+        "weaver/baseline-local-check",
+        source=source,
+        rule=rule,
+        instance=f"{prefix}-local",
+        status=local_status,
+        native_exit_code=local_exit_code,
+        evidence={"findings": 0 if local_status == "passed" else 1},
+        input_refs=[{"kind": "check_result", "result_id": pkg["result_id"]}],
+    )
+    results = [check, pkg, local]
+    if include_diff:
+        diff_inputs = [
+            {"kind": "check_result", "result_id": registry_local["result_id"]}
+        ]
+        if link_baseline:
+            diff_inputs.append(
+                {"kind": "check_result", "result_id": local["result_id"]}
+            )
+        diff = _weaver_step(
+            definition,
+            "weaver/registry-diff",
+            source=source,
+            rule=rule,
+            instance=f"{prefix}-diff",
+            status=diff_status,
+            native_exit_code=diff_exit_code,
+            evidence={"diff_findings": 0 if diff_status == "passed" else 1},
+            input_refs=diff_inputs,
+            coverage=diff_coverage,
+        )
+        results.append(diff)
+    return results
+
+
+def test_weaver_definitions_pin_tool_asset_and_prerequisite_stages():
+    registry_def = check_contract.definition_for("weaver_registry")
+    live_def = check_contract.definition_for("weaver_live")
+    terminal_def = check_contract.definition_for("weaver_terminal")
+    for definition in (registry_def, live_def, terminal_def):
+        assert definition is not None
+        assert definition.check_id in check_contract.PROCESS_CHECK_IDS
+        assert definition.definition_version == 1
+        assert not definition.requires_baseline
+    assert not registry_def.requires_post_completion
+    assert not live_def.requires_post_completion
+    assert terminal_def.requires_post_completion
+
+    reg_reqs = requirements(registry_def)
+    assert list(reg_reqs) == [
+        "registry-check",
+        "registry-package",
+        "registry-local-check",
+        "baseline-check",
+        "baseline-package",
+        "baseline-local-check",
+        "registry-diff",
+    ]
+    assert reg_reqs["registry-package"].after == ("registry-check",)
+    assert reg_reqs["registry-local-check"].after == ("registry-package",)
+    assert reg_reqs["baseline-check"].when == "registry_baseline_rule"
+    assert reg_reqs["baseline-package"].after == ("baseline-check",)
+    assert reg_reqs["baseline-package"].when == "registry_baseline_rule"
+    assert reg_reqs["baseline-local-check"].after == ("baseline-package",)
+    assert reg_reqs["baseline-local-check"].when == "registry_baseline_rule"
+    assert reg_reqs["registry-diff"].after == (
+        "registry-local-check",
+        "baseline-local-check",
+    )
+    assert reg_reqs["registry-diff"].when == "registry_baseline_rule"
+
+    live_reqs = requirements(live_def)
+    assert list(live_reqs) == [
+        "registry-check",
+        "registry-package",
+        "registry-local-check",
+        "live-check",
+    ]
+    assert live_reqs["registry-package"].after == ("registry-check",)
+    assert live_reqs["registry-local-check"].after == ("registry-package",)
+    assert live_reqs["live-check"].after == ("registry-local-check",)
+
+    term_reqs = requirements(terminal_def)
+    assert list(term_reqs) == [
+        "registry-check",
+        "registry-package",
+        "registry-local-check",
+        "terminal-live-check",
+    ]
+    assert term_reqs["registry-package"].after == ("registry-check",)
+    assert term_reqs["registry-local-check"].after == ("registry-package",)
+    assert term_reqs["terminal-live-check"].after == ("registry-local-check",)
+
+    for alt in (
+        *(item.alternatives[0] for item in reg_reqs.values()),
+        *(item.alternatives[0] for item in live_reqs.values()),
+        *(item.alternatives[0] for item in term_reqs.values()),
+    ):
+        assert alt.tool_id == "weaver"
+        assert alt.tool_id_source == "eci_pinned_asset"
+        assert alt.version == weaver_tool.VERSION
+        assert alt.artifact_sha256 == weaver_tool.LINUX_SHA256
+        assert alt.authority == "eci_local_entry"
+
+    # Container is NOT a Check Origin; native Dagger container execution uses dagger.
+    assert "container" not in check_contract.ORIGINS
+    checked = closed_source()
+    rule = check_contract.rule_ref("weaver", 1, digest="b" * 64)
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_origin_invalid"
+    ):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="container",
+            result_instance="bad-origin",
+            native_exit_code=0,
+            evidence={"stdout": ""},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/registry-package"),
+        )
+
+    reg_check, pkg, local = _weaver_packaging_chain(
+        live_def, source=checked, rule=rule, prefix="live"
+    )
+    unlinked_live = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-unlinked",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+    )
+    missing_link = check_contract.evaluate_check_satisfaction(
+        live_def, [reg_check, pkg, local, unlinked_live]
+    )
+    assert missing_link["status"] == "unsatisfied"
+    assert missing_link["reason"] == "prerequisite_unevidenced"
+
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-wrong-version",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/live-check", version="0.0.1"),
+            input_refs=[{"kind": "check_result", "result_id": local["result_id"]}],
+        )
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-wrong-sha",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=_weaver_observed("weaver/live-check", artifact_sha256="0" * 64),
+            input_refs=[{"kind": "check_result", "result_id": local["result_id"]}],
+        )
+    with pytest.raises(check_contract.CheckContractError, match="result_tool_mismatch"):
+        check_contract.native_result(
+            live_def,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="live-unpinned",
+            native_exit_code=0,
+            evidence={"findings": 0},
+            rule_ref=rule,
+            tool=check_contract.tool_ref("weaver/live-check"),
+            input_refs=[{"kind": "check_result", "result_id": local["result_id"]}],
+        )
+
+    valid_live = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-valid",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+        input_refs=[{"kind": "check_result", "result_id": local["result_id"]}],
+    )
+    expected_live = {
+        "check_id": live_def.check_id,
+        "definition_version": live_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    decision = check_contract.evaluate_expected_satisfaction(
+        [reg_check, pkg, local, valid_live], expected_live
+    )
+    assert decision["status"] == "satisfied"
+    assert decision["selected_result_ids"] == [
+        reg_check["result_id"],
+        pkg["result_id"],
+        local["result_id"],
+        valid_live["result_id"],
+    ]
+
+
+def test_weaver_terminal_enforces_post_completion_phase_semantics():
+    terminal_def = check_contract.definition_for("weaver_terminal")
+    live_def = check_contract.definition_for("weaver_live")
+    checked = closed_source()
+    rule = check_contract.rule_ref("weaver", 1, digest="e" * 64)
+
+    with pytest.raises(check_contract.CheckContractError, match="result_phase_invalid"):
+        check_contract.native_result(
+            terminal_def,
+            source=checked,
+            status="not_applicable",
+            result_origin="host",
+            result_instance="bad-phase",
+            rule_ref=rule,
+            phase="pre_merge",
+        )
+
+    for bad_phase in (None, check_contract.EXECUTION_PHASE):
+        with pytest.raises(
+            check_contract.CheckContractError,
+            match="result_post_completion_phase_required",
+        ):
+            check_contract.native_result(
+                terminal_def,
+                source=checked,
+                status="passed",
+                result_origin="dagger",
+                result_instance=f"term-bad-{bad_phase}",
+                native_exit_code=0,
+                evidence={"findings": 0},
+                rule_ref=rule,
+                tool=_weaver_observed("weaver/terminal-live-check"),
+                phase=bad_phase,
+            )
+
+    normal_pr_na = check_contract.native_result(
+        terminal_def,
+        source=checked,
+        status="not_applicable",
+        result_origin="host",
+        result_instance="pr-na",
+        rule_ref=rule,
+        reason="requires post-completion plan",
+    )
+    assert check_contract.validate_result(normal_pr_na) is normal_pr_na
+
+    # Tampered raw payload claiming passed without post_completion is rejected too.
+    mutated = dict(normal_pr_na)
+    mutated["status"] = "passed"
+    mutated["native_exit_code"] = 0
+    mutated["evidence"] = {"findings": 0}
+    mutated["phase"] = check_contract.EXECUTION_PHASE
+    content = {
+        key: value
+        for key, value in mutated.items()
+        if key not in {"result_instance", "content_id", "result_id"}
+    }
+    mutated["content_id"] = check_contract._digest(content)
+    mutated["result_id"] = check_contract._digest(
+        {key: value for key, value in mutated.items() if key != "result_id"}
+    )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="result_post_completion_phase_required",
+    ):
+        check_contract.validate_result(mutated)
+
+    for missing_phase_expected in (
+        {
+            "check_id": terminal_def.check_id,
+            "definition_version": terminal_def.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+        },
+        {
+            "check_id": terminal_def.check_id,
+            "definition_version": terminal_def.definition_version,
+            "rule_ref": rule,
+            "source_ref": checked,
+            "phase": check_contract.EXECUTION_PHASE,
+        },
+    ):
+        with pytest.raises(
+            check_contract.CheckContractError,
+            match="expected_post_completion_phase_required",
+        ):
+            check_contract.validate_expected_instance(missing_phase_expected)
+
+    expected_terminal = {
+        "check_id": terminal_def.check_id,
+        "definition_version": terminal_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "phase": check_contract.POST_COMPLETION_PHASE,
+    }
+    assert (
+        check_contract.validate_expected_instance(expected_terminal)
+        is expected_terminal
+    )
+    assert not check_contract.result_matches_expected(normal_pr_na, expected_terminal)
+    assert (
+        check_contract.evaluate_expected_satisfaction(
+            [normal_pr_na], expected_terminal
+        )["status"]
+        == "unsatisfied"
+    )
+
+    live_in_post = check_contract.native_result(
+        live_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="live-post",
+        native_exit_code=0,
+        evidence={"findings": 0},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/live-check"),
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    assert not check_contract.result_matches_expected(live_in_post, expected_terminal)
+
+    forged = check_contract.CheckDefinition(
+        check_id=terminal_def.check_id,
+        definition_version=terminal_def.definition_version,
+        requires_post_completion=False,
+        tool_requirements=terminal_def.tool_requirements,
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.native_result(
+            forged,
+            source=checked,
+            status="passed",
+            result_origin="dagger",
+            result_instance="forged-term",
+            native_exit_code=0,
+            evidence={"findings": 0},
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.evaluate_check_satisfaction(forged, [])
+
+    term_check, term_pkg, term_local = _weaver_packaging_chain(
+        terminal_def,
+        source=checked,
+        rule=rule,
+        prefix="term",
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    term_live = check_contract.native_result(
+        terminal_def,
+        source=checked,
+        status="passed",
+        result_origin="dagger",
+        result_instance="term-live",
+        native_exit_code=0,
+        evidence={"findings": 0, "run_id": "run-1"},
+        rule_ref=rule,
+        tool=_weaver_observed("weaver/terminal-live-check"),
+        input_refs=[{"kind": "check_result", "result_id": term_local["result_id"]}],
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    term_decision = check_contract.evaluate_expected_satisfaction(
+        [term_check, term_pkg, term_local, term_live], expected_terminal
+    )
+    assert term_decision["status"] == "satisfied"
+    assert term_decision["selected_result_ids"] == [
+        term_check["result_id"],
+        term_pkg["result_id"],
+        term_local["result_id"],
+        term_live["result_id"],
+    ]
+
+
+def test_weaver_registry_live_terminal_require_registry_local_check():
+    registry_def = check_contract.definition_for("weaver_registry")
+    live_def = check_contract.definition_for("weaver_live")
+    terminal_def = check_contract.definition_for("weaver_terminal")
+    checked = closed_source()
+    reg_rule = check_contract.rule_ref(
+        "weaver", 1, digest="c" * 64, baseline_required=False
+    )
+    rule = check_contract.rule_ref("weaver", 1, digest="c" * 64)
+
+    # 1) weaver_registry: omitting or failing registry-local-check is unsatisfied.
+    reg_no_local = _weaver_packaging_chain(
+        registry_def,
+        source=checked,
+        rule=reg_rule,
+        prefix="reg-miss",
+        include_local=False,
+    )
+    expected_reg = {
+        "check_id": registry_def.check_id,
+        "definition_version": registry_def.definition_version,
+        "rule_ref": reg_rule,
+        "source_ref": checked,
+    }
+    missing_reg_decision = check_contract.evaluate_expected_satisfaction(
+        reg_no_local, expected_reg
+    )
+    assert missing_reg_decision["status"] == "unsatisfied"
+    assert missing_reg_decision["reason"] == "result_missing"
+
+    reg_failed_local = _weaver_packaging_chain(
+        registry_def,
+        source=checked,
+        rule=reg_rule,
+        prefix="reg-fail",
+        local_status="failed",
+        local_exit_code=1,
+    )
+    failed_reg_decision = check_contract.evaluate_expected_satisfaction(
+        reg_failed_local, expected_reg
+    )
+    assert failed_reg_decision["status"] == "unsatisfied"
+    assert failed_reg_decision["reason"] == "result_not_passed"
+
+    reg_full = _weaver_packaging_chain(
+        registry_def, source=checked, rule=reg_rule, prefix="reg-pass"
+    )
+    pass_reg_decision = check_contract.evaluate_expected_satisfaction(
+        reg_full, expected_reg
+    )
+    assert pass_reg_decision["status"] == "satisfied"
+    assert pass_reg_decision["selected_result_ids"] == [
+        item["result_id"] for item in reg_full
+    ]
+
+    # 2) weaver_live: omitting or failing registry-local-check is unsatisfied even if live-check passes.
+    expected_live = {
+        "check_id": live_def.check_id,
+        "definition_version": live_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+    }
+    live_no_local = _weaver_packaging_chain(
+        live_def, source=checked, rule=rule, prefix="live-miss", include_local=False
+    )
+    live_from_pkg = _weaver_step(
+        live_def,
+        "weaver/live-check",
+        source=checked,
+        rule=rule,
+        instance="live-from-pkg",
+        input_refs=[
+            {"kind": "check_result", "result_id": live_no_local[1]["result_id"]}
+        ],
+    )
+    assert (
+        check_contract.evaluate_expected_satisfaction(
+            [*live_no_local, live_from_pkg], expected_live
+        )["status"]
+        == "unsatisfied"
+    )
+
+    live_failed_local = _weaver_packaging_chain(
+        live_def,
+        source=checked,
+        rule=rule,
+        prefix="live-fail",
+        local_status="failed",
+        local_exit_code=1,
+    )
+    assert (
+        check_contract.evaluate_expected_satisfaction(live_failed_local, expected_live)[
+            "status"
+        ]
+        == "unsatisfied"
+    )
+
+    # 3) weaver_terminal: omitting or failing registry-local-check is unsatisfied.
+    expected_term = {
+        "check_id": terminal_def.check_id,
+        "definition_version": terminal_def.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "phase": check_contract.POST_COMPLETION_PHASE,
+    }
+    term_no_local = _weaver_packaging_chain(
+        terminal_def,
+        source=checked,
+        rule=rule,
+        prefix="term-miss",
+        include_local=False,
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    term_from_pkg = _weaver_step(
+        terminal_def,
+        "weaver/terminal-live-check",
+        source=checked,
+        rule=rule,
+        instance="term-from-pkg",
+        input_refs=[
+            {"kind": "check_result", "result_id": term_no_local[1]["result_id"]}
+        ],
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    assert (
+        check_contract.evaluate_expected_satisfaction(
+            [*term_no_local, term_from_pkg], expected_term
+        )["status"]
+        == "unsatisfied"
+    )
+
+    term_failed_local = _weaver_packaging_chain(
+        terminal_def,
+        source=checked,
+        rule=rule,
+        prefix="term-fail",
+        local_status="failed",
+        local_exit_code=1,
+        phase=check_contract.POST_COMPLETION_PHASE,
+    )
+    assert (
+        check_contract.evaluate_expected_satisfaction(term_failed_local, expected_term)[
+            "status"
+        ]
+        == "unsatisfied"
+    )
+
+
+def test_weaver_registry_conditional_baseline_diff_driven_by_controlled_rule():
+    registry_def = check_contract.definition_for("weaver_registry")
+    live_def = check_contract.definition_for("weaver_live")
+    checked = closed_source()
+
+    baseline_rule = check_contract.rule_ref(
+        "ci-weaver",
+        1,
+        path="ci-weaver.toml",
+        digest="a" * 64,
+        baseline_required=True,
+    )
+    non_baseline_rule = check_contract.rule_ref(
+        "ci-weaver",
+        1,
+        path="ci-weaver.toml",
+        digest="b" * 64,
+        baseline_required=False,
+    )
+    expected_with_baseline = {
+        "check_id": registry_def.check_id,
+        "definition_version": registry_def.definition_version,
+        "rule_ref": baseline_rule,
+        "source_ref": checked,
+    }
+    expected_no_baseline = {
+        "check_id": registry_def.check_id,
+        "definition_version": registry_def.definition_version,
+        "rule_ref": non_baseline_rule,
+        "source_ref": checked,
+    }
+
+    # Baseline enabled: missing baseline stages / registry-diff fails satisfaction.
+    reg_only = _weaver_packaging_chain(
+        registry_def, source=checked, rule=baseline_rule, prefix="base-reg"
+    )
+    missing_base = check_contract.evaluate_expected_satisfaction(
+        reg_only, expected_with_baseline
+    )
+    assert missing_base["status"] == "unsatisfied"
+    assert missing_base["reason"] == "result_missing"
+
+    # Baseline packaging passes, registry-diff omitted -> unsatisfied.
+    base_no_diff = _weaver_baseline_chain(
+        registry_def,
+        source=checked,
+        rule=baseline_rule,
+        registry_local=reg_only[-1],
+        include_diff=False,
+    )
+    missing_diff = check_contract.evaluate_expected_satisfaction(
+        [*reg_only, *base_no_diff], expected_with_baseline
+    )
+    assert missing_diff["status"] == "unsatisfied"
+    assert missing_diff["reason"] == "result_missing"
+
+    # Baseline local-check fails -> unsatisfied even without diff.
+    base_failed_local = _weaver_baseline_chain(
+        registry_def,
+        source=checked,
+        rule=baseline_rule,
+        registry_local=reg_only[-1],
+        prefix="base-fail-local",
+        local_status="failed",
+        local_exit_code=1,
+        include_diff=False,
+    )
+    failed_base = check_contract.evaluate_expected_satisfaction(
+        [*reg_only, *base_failed_local], expected_with_baseline
+    )
+    assert failed_base["status"] == "unsatisfied"
+    assert failed_base["reason"] == "result_not_passed"
+
+    # registry-diff fails -> unsatisfied.
+    base_failed_diff = _weaver_baseline_chain(
+        registry_def,
+        source=checked,
+        rule=baseline_rule,
+        registry_local=reg_only[-1],
+        prefix="base-fail-diff",
+        diff_status="failed",
+        diff_exit_code=1,
+    )
+    failed_diff = check_contract.evaluate_expected_satisfaction(
+        [*reg_only, *base_failed_diff], expected_with_baseline
+    )
+    assert failed_diff["status"] == "unsatisfied"
+    assert failed_diff["reason"] == "result_not_passed"
+
+    # registry-diff passes without linking baseline-local-check -> unsatisfied.
+    base_unlinked_diff = _weaver_baseline_chain(
+        registry_def,
+        source=checked,
+        rule=baseline_rule,
+        registry_local=reg_only[-1],
+        prefix="base-unlinked",
+        link_baseline=False,
+    )
+    unlinked_diff = check_contract.evaluate_expected_satisfaction(
+        [*reg_only, *base_unlinked_diff], expected_with_baseline
+    )
+    assert unlinked_diff["status"] == "unsatisfied"
+    assert unlinked_diff["reason"] == "prerequisite_unevidenced"
+
+    # Baseline enabled and full DAG linked & passing -> satisfied.
+    cov = {"kind": "weaver_registry", "diff_checked": True}
+    base_pass = _weaver_baseline_chain(
+        registry_def,
+        source=checked,
+        rule=baseline_rule,
+        registry_local=reg_only[-1],
+        prefix="base-pass",
+        diff_coverage=cov,
+    )
+    satisfied_base = check_contract.evaluate_expected_satisfaction(
+        [*reg_only, *base_pass],
+        {**expected_with_baseline, "coverage_by_requirement": {"registry-diff": cov}},
+    )
+    assert satisfied_base["status"] == "satisfied"
+    assert satisfied_base["selected_result_ids"] == [
+        *[item["result_id"] for item in reg_only],
+        *[item["result_id"] for item in base_pass],
+    ]
+
+    # Shared ci-weaver.toml rule with baseline_required=True does not invent
+    # baseline requirements on weaver_live.
+    live_chain = _weaver_packaging_chain(
+        live_def, source=checked, rule=baseline_rule, prefix="live-shared-rule"
+    )
+    live_pass = _weaver_step(
+        live_def,
+        "weaver/live-check",
+        source=checked,
+        rule=baseline_rule,
+        instance="live-shared-end",
+        input_refs=[{"kind": "check_result", "result_id": live_chain[-1]["result_id"]}],
+    )
+    assert (
+        check_contract.evaluate_expected_satisfaction(
+            [*live_chain, live_pass],
+            {
+                "check_id": live_def.check_id,
+                "definition_version": live_def.definition_version,
+                "rule_ref": baseline_rule,
+                "source_ref": checked,
+            },
+        )["status"]
+        == "satisfied"
+    )
+
+    # No baseline configured -> satisfies cleanly with packaging chain only.
+    no_base_reg = _weaver_packaging_chain(
+        registry_def, source=checked, rule=non_baseline_rule, prefix="nobase"
+    )
+    no_base_decision = check_contract.evaluate_expected_satisfaction(
+        no_base_reg, expected_no_baseline
+    )
+    assert no_base_decision["status"] == "satisfied"
+    assert no_base_decision["selected_result_ids"] == [
+        item["result_id"] for item in no_base_reg
+    ]
+
+    # Unexpected/forged registry-diff when baseline is not configured is rejected.
+    spurious_diff = _weaver_step(
+        registry_def,
+        "weaver/registry-diff",
+        source=checked,
+        rule=non_baseline_rule,
+        instance="spurious-diff",
+        input_refs=[
+            {"kind": "check_result", "result_id": no_base_reg[-1]["result_id"]}
+        ],
+    )
+    spurious_decision = check_contract.evaluate_expected_satisfaction(
+        [*no_base_reg, spurious_diff], expected_no_baseline
+    )
+    assert spurious_decision["status"] == "unsatisfied"
+    assert spurious_decision["reason"] == "unexpected_conditional_requirement"
+
+    # Rule-binding mismatches and unproven baseline toggles are rejected.
+    mismatched_rule = check_contract.evaluate_expected_satisfaction(
+        no_base_reg, expected_with_baseline
+    )
+    assert mismatched_rule["status"] == "unsatisfied"
+    assert mismatched_rule["reason"] == "native_result_mismatched"
+
+    with pytest.raises(check_contract.CheckContractError, match="rule_ref_unproven"):
+        check_contract.rule_ref("ci-weaver", 1, baseline_required=True)
+    with pytest.raises(
+        check_contract.CheckContractError, match="rule_baseline_required_invalid"
+    ):
+        check_contract.rule_ref(
+            "ci-weaver", 1, digest="a" * 64, baseline_required="yes"
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_rule_unproven"
+    ):
+        check_contract.validate_expected_instance(
+            {**expected_no_baseline, "baseline_required": True}
+        )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="expected_coverage_requirement_unknown",
+    ):
+        check_contract.validate_expected_instance(
+            {
+                **expected_no_baseline,
+                "coverage_by_requirement": {"registry-diff": {"diff_checked": True}},
+            }
+        )
+
+    # Valid SHA without explicit baseline_required is unresolved, never silently False.
+    unresolved_rule = check_contract.rule_ref(
+        "ci-weaver", 1, path="ci-weaver.toml", digest="f" * 64
+    )
+    unresolved_reg_full = _weaver_packaging_chain(
+        registry_def, source=checked, rule=unresolved_rule, prefix="unresolved"
+    )
+    expected_unresolved_reg = {
+        "check_id": registry_def.check_id,
+        "definition_version": registry_def.definition_version,
+        "rule_ref": unresolved_rule,
+        "source_ref": checked,
+    }
+    assert not check_contract.result_matches_expected(
+        unresolved_reg_full[0], expected_unresolved_reg
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_rule_unresolved"
+    ):
+        check_contract.validate_expected_instance(expected_unresolved_reg)
+    with pytest.raises(
+        check_contract.CheckContractError, match="expected_baseline_rule_unresolved"
+    ):
+        check_contract.evaluate_expected_satisfaction(
+            unresolved_reg_full, expected_unresolved_reg
+        )
+    direct_unresolved = check_contract.evaluate_check_satisfaction(
+        registry_def, unresolved_reg_full
+    )
+    assert direct_unresolved["status"] == "unsatisfied"
+    assert direct_unresolved["reason"] == "baseline_rule_unresolved"
+    assert direct_unresolved["selected_result_ids"] == []
+    unresolved_entries = {
+        entry["requirement_id"]: entry for entry in direct_unresolved["requirements"]
+    }
+    for req_id in (
+        "baseline-check",
+        "baseline-package",
+        "baseline-local-check",
+        "registry-diff",
+    ):
+        assert unresolved_entries[req_id]["status"] == "unsatisfied"
+        assert unresolved_entries[req_id]["reason"] == "rule_condition_unresolved"
+
+
+def test_tool_requirement_conditional_prerequisite_validation():
+    alt_a = check_contract.ToolIdentity("tool/a")
+    alt_b = check_contract.ToolIdentity("tool/b")
+    with pytest.raises(
+        check_contract.CheckContractError, match="tool_requirement_condition_invalid"
+    ):
+        check_contract.validate_tool_requirements(
+            (check_contract.ToolRequirement("a", (alt_a,), when="uncontrolled"),)
+        )
+    with pytest.raises(
+        check_contract.CheckContractError,
+        match="tool_requirement_conditional_prerequisite",
+    ):
+        check_contract.validate_tool_requirements(
+            (
+                check_contract.ToolRequirement(
+                    "a", (alt_a,), when="registry_baseline_rule"
+                ),
+                check_contract.ToolRequirement("b", (alt_b,), after=("a",)),
+            )
+        )
