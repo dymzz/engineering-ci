@@ -2084,3 +2084,215 @@ def test_p1_1_config_identity_rejects_unbacked_in_memory_policy(repo, tmp_path):
     with pytest.raises(plan_contract.PlanError) as raised_replay:
         plan_contract.validate(forged_norm)
     assert raised_replay.value.code == "config_identity_file_mismatch"
+
+
+def test_p1_nested_config_real_odb_two_ref_target_trees(repo):
+    path, base = repo
+    nested_dir = path / ".ci"
+    nested_dir.mkdir()
+    nested_cfg = nested_dir / "ci-selection.toml"
+    nested_cfg.write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").unlink()
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/nested-one",
+        targets=["refs/heads/nested-one", "refs/heads/nested-two"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/nested-unit",
+                "kind": "check",
+                "check_names": ["unittest"],
+                "target_refs": ["refs/heads/nested-one", "refs/heads/nested-two"],
+                "allow_inapplicable": True,
+                "rule_ref": {
+                    "name": "engineering-ci.unittest",
+                    "version": "1",
+                    "sha256": f"sha256:{'1' * 64}",
+                },
+            }
+        ],
+        allowed_inapplicability=["no_tests"],
+        declared_checks=[
+            "whitespace",
+            "forwarding",
+            "docs",
+            "vulture",
+            "tach",
+            "unittest",
+        ],
+    )
+    cfg = _attach_effective_profile_policy(nested_cfg, profile)
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "move selection config to .ci")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "src/pkg/sub.py").write_text("VALUE = 501\n", encoding="utf-8")
+    (path / "tests/test_nested_one.py").write_text(
+        "def test_nested_one():\n    assert True\n", encoding="utf-8"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "nested-ref-one")
+    commit_one = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "docs/nested_two.md").write_text("# nested two\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "nested-ref-two")
+    commit_two = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/nested-one", commit_one, "refs/heads/nested-one", base),
+            ("refs/heads/nested-two", commit_two, "refs/heads/nested-two", base),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=nested_cfg,
+        root=path,
+        effective_profile=profile,
+    )
+    assert p["inputs"]["config"]["policy_scope"] == "repo_target_tree"
+    assert Path(p["inputs"]["config"]["path"]) == nested_cfg.resolve()
+    assert Path(p["git"]["repo_root"]) == path.resolve()
+    assert not (nested_dir / ".git").exists()
+
+    # Validating via plan_contract / expected_checks without materialized_sources succeeds via git.repo_root ODB:
+    assert plan_contract.validate(p) is p
+    expected_checks.validate_projection(
+        p["expected_checks"], p["git"], p["check_scope"], plan=p
+    )
+    handoff = expected_checks.verify_per_ref_source_handoff(p)
+    assert handoff["status"] == "verified"
+    assert handoff["origin"] == "git_odb"
+    per_sel = p["selection"]["per_ref"]
+    assert per_sel[0]["config_source_binding"]["status"] == "verified"
+    assert per_sel[1]["config_source_binding"]["status"] == "verified"
+    assert ".ci/ci-selection.toml" in per_sel[0]["config_source_binding"]["policies"]
+    assert p["expected_checks"]["per_ref"][0]["status"] == "complete"
+    assert p["expected_checks"]["per_ref"][1]["status"] == "complete"
+
+    # Explicit nested config parent directory is NOT accepted as Git root:
+    nested_handoff = expected_checks.verify_per_ref_source_handoff(p, root=nested_dir)
+    assert nested_handoff["status"] == "unknown"
+    assert nested_handoff["reason"] == "source_handoff_insufficient"
+    with pytest.raises(plan_contract.PlanError) as raised_nested:
+        plan_contract.validate(p, root=nested_dir)
+    assert raised_nested.value.code == "expected_per_ref_source_unverifiable"
+
+
+def test_p1_inaccessible_odb_or_missing_target_object_requires_materialized_handoff_or_refuses(
+    repo, tmp_path
+):
+    path, base = repo
+    nested_dir = path / ".ci"
+    nested_dir.mkdir()
+    nested_cfg = nested_dir / "ci-selection.toml"
+    nested_cfg.write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").unlink()
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/obj-one",
+        targets=["refs/heads/obj-one", "refs/heads/obj-two"],
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+    )
+    cfg = _attach_effective_profile_policy(nested_cfg, profile)
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "nested cfg for inaccessible ODB test")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "src/pkg/sub.py").write_text("VALUE = 601\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "obj-one")
+    commit_one = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "docs/obj_two.md").write_text("# obj two\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "obj-two")
+    commit_two = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/obj-one", commit_one, "refs/heads/obj-one", base),
+            ("refs/heads/obj-two", commit_two, "refs/heads/obj-two", base),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=nested_cfg,
+        root=path,
+        effective_profile=profile,
+    )
+    tree_one = p["git"]["references"][0]["tree"]
+    tree_two = p["git"]["references"][1]["tree"]
+    mats = {
+        tree_one: _export_tree(path, tree_one, tmp_path / "obj_export_1", tmp_path),
+        tree_two: _export_tree(path, tree_two, tmp_path / "obj_export_2", tmp_path),
+    }
+
+    # Case 1: Git root exists, but its ODB lacks target tree objects -> falls back to materialized handoff or refuses:
+    empty_git = tmp_path / "empty_git"
+    empty_git.mkdir()
+    run(empty_git, "init", "-q")
+    foreign_odb_plan = json.loads(json.dumps(p))
+    foreign_odb_plan["git"]["repo_root"] = str(empty_git.resolve())
+
+    missing_obj_handoff = expected_checks.verify_per_ref_source_handoff(
+        foreign_odb_plan
+    )
+    assert missing_obj_handoff["status"] == "unknown"
+    assert missing_obj_handoff["reason"] == "source_handoff_insufficient"
+    assert missing_obj_handoff["internal_snapshot_status"] == "consistent"
+    with pytest.raises(plan_contract.PlanError) as raised_foreign:
+        plan_contract.validate(foreign_odb_plan)
+    assert raised_foreign.value.code == "expected_per_ref_source_unverifiable"
+
+    verified_foreign = expected_checks.verify_per_ref_source_handoff(
+        foreign_odb_plan, materialized_sources=mats
+    )
+    assert verified_foreign["status"] == "verified"
+    assert verified_foreign["origin"] == "materialized_source_tree"
+    assert (
+        plan_contract.validate(foreign_odb_plan, materialized_sources=mats)
+        is foreign_odb_plan
+    )
+
+    # Case 2: Original .git is absent -> refuses without materialized_sources, passes only with valid exports:
+    _rmtree(path / ".git")
+    absent_handoff = expected_checks.verify_per_ref_source_handoff(p)
+    assert absent_handoff["status"] == "unknown"
+    assert absent_handoff["reason"] == "source_handoff_insufficient"
+    with pytest.raises(plan_contract.PlanError) as raised_no_odb:
+        plan_contract.validate(p)
+    assert raised_no_odb.value.code == "expected_per_ref_source_unverifiable"
+
+    verified_mat = expected_checks.verify_per_ref_source_handoff(
+        p, materialized_sources=mats
+    )
+    assert verified_mat["status"] == "verified"
+    assert verified_mat["origin"] == "materialized_source_tree"
+    assert plan_contract.validate(p, materialized_sources=mats) is p
+
+    (mats[tree_one] / "src/pkg/sub.py").write_text(
+        "VALUE = tampered\n", encoding="utf-8"
+    )
+    with pytest.raises(plan_contract.PlanError) as raised_tampered:
+        plan_contract.validate(p, materialized_sources=mats)
+    assert raised_tampered.value.code == "expected_per_ref_source_unverifiable"

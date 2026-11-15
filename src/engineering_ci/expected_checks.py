@@ -2111,33 +2111,40 @@ def _selection_for_validation(plan, *, root=None):
 
 
 def _resolve_per_ref_odb_root(plan, explicit_root=None):
-    """Return a usable .git ODB root for per-ref recomputation, or None in non-ODB mode."""
+    """Return a verified Git ODB root with target tree objects, or None in non-ODB mode."""
+    from engineering_ci import selection as _selection
+
     if explicit_root is not None:
-        cand = Path(explicit_root)
-        return cand if (cand / ".git").exists() else None
-    if not isinstance(plan, dict):
+        candidate = Path(explicit_root)
+    elif isinstance(plan, dict) and isinstance(plan.get("git"), dict):
+        repo_root_str = plan["git"].get("repo_root", "")
+        if not isinstance(repo_root_str, str) or not repo_root_str:
+            return None
+        candidate = Path(repo_root_str)
+    else:
         return None
-    inputs = plan.get("inputs") or {}
-    cfg_in = inputs.get("config") or {}
-    cfg_path_str = cfg_in.get("path", "") if isinstance(cfg_in, dict) else ""
-    cfg_scope = cfg_in.get("policy_scope") if isinstance(cfg_in, dict) else None
-    repo_root_str = (
-        (plan.get("git") or {}).get("repo_root", "")
-        if isinstance(plan.get("git"), dict)
-        else ""
+    if _selection._resolve_git_dir(candidate) is None:
+        return None
+    resolved_root = candidate.resolve()
+    refs = (
+        (plan.get("git") or {}).get("references") or ()
+        if isinstance(plan, dict) and isinstance(plan.get("git"), dict)
+        else ()
     )
-    if cfg_scope == "event_external":
-        if repo_root_str and (Path(repo_root_str) / ".git").exists():
-            return Path(repo_root_str)
-        return None
-    if cfg_path_str:
-        cfg_path = Path(cfg_path_str)
-        if cfg_path.is_absolute():
-            cand = cfg_path.parent
-            return cand if (cand / ".git").exists() else None
-    if repo_root_str and (Path(repo_root_str) / ".git").exists():
-        return Path(repo_root_str)
-    return None
+    for ref in refs:
+        if not isinstance(ref, dict) or ref.get("ref_action") == "delete":
+            continue
+        tree = ref.get("tree")
+        if (
+            not isinstance(tree, str)
+            or not tree
+            or _selection._git(
+                resolved_root, "cat-file", "-e", f"{tree}^{{tree}}"
+            ).returncode
+            != 0
+        ):
+            return None
+    return resolved_root
 
 
 def _lookup_materialized_source(materialized_sources, plan_ref, idx):
