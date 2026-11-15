@@ -245,4 +245,45 @@ Knowledge [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) **已
 
 PR #72 保持 Draft 的原因是 **成熟多工具调度器的适配验证、Git 事件/Source 的接口交接和消费迁移仍有待确认**，并非 OTel 尚未完成阻断 Hook。#66 的 Source/Check 生产方实施、#86 DAG 和 OTel 工作均可按真实接口独立推进；不因暂停此 Draft 而等待。
 
+## 8. S1-E v1 冻结记录与候选调度器核验（2026-11-15）
+
+**冻结对象：** Issue #66 的 S1-E 基础矩阵键 `matrix_version=eci-66-s1-hooks-v1`，以及“ECI 事件/Source/Check 权威 + 成熟调度器静态 Job 分派”的机制边界。矩阵的规范性内容仍只登记在 Issue #66；本节记录本 PR 的核验证据和差分，不建立第二份可独立变更的矩阵。
+
+### 8.1 冻结的机制边界
+
+1. **唯一 Hook 所有者。** 同一仓库只允许一个实际安装/恢复 Git Hook 的组件；Lefthook、prek、原生薄入口不得各自覆写同一 `core.hooksPath`。迁移必须显式处理已有 Hook，不能静默覆盖。
+2. **ECI 事件与 Source 权威。** pre-commit 的 `GIT_INDEX_FILE` 与 pre-push 的完整 stdin 由唯一 ECI 入口读取并持久化为本次 Event Context；每个 Ref 的 Source/ChangeSet/Selection/Plan 由 ECI 生成。调度器只消费已准备事实，不能从 `HEAD`、`origin/main` 或文件 glob 反推。
+3. **静态 Job，不假设动态注入。** 固定版调度器可按声明式 Job 条件、分组和并行执行；不假设其支持运行时按 ECI Plan 动态增删 Job。表达不了动态关系时，使用保守唤醒 + ECI 精确适用性判断，保留独立 Job 并发。
+4. **Check 执行与结果归 ECI/#52。** 调度器进程退出、Job 成功或原生 stdout 不等于 Source-bound Check PASS；必须经现有 Check/Result 适配保留 Check ID、Source/输入、原生 exit/status、覆盖和未执行原因。
+5. **单事件不等于单 Plan。** 一个 pre-push 事件可按 Ref 产生多个 Source/Plan，只对实际输入、规则、基线和环境等价的 Check 复用原生结果。
+
+### 8.2 固定版本候选实测（Windows，Git 2.56.0）
+
+| 候选 | 固定版本/来源 | 已观察事实 | 结论 |
+| --- | --- | --- | --- |
+| Lefthook | `2.2.2`，npm 包固定安装 | `install` 同步 `pre-commit`/`pre-push`；`dump` 可输出实际配置；`uninstall` 移除 Hook；两个各 sleep 0.3s 的 `parallel` Job 总耗时约 0.63s；`GIT_INDEX_FILE=<临时 index>` 原样传入 Job；两个 `use_stdin: true` Job 均收到完整 pre-push 元组；Windows 需 Git 自带 `sh` 在 PATH，否则 Job 以 `exec: sh not found` 失败 | 作为**参考调度器**继续同条件核验；其 stdin 行为只作观察，不写成多 Job 保证 |
+| prek | `0.5.10`，npm 包固定安装 | `install` 将已有 Hook 迁移为 `.legacy` 并继续运行 legacy；两个 local Hook 均 Passed；安装/执行可工作 | 保留为替代比较项；不因一次 pre-commit 正例选定，也不与 Lefthook 双安装 |
+| 原生薄 Hook | 无新增运行时实现 | 仅作为机制对照；并行、诊断、生命周期和失败汇总须由现有能力或有依据的新增公共机制证明 | 不宣称已交付，不默认胜出 |
+
+**实测限制必须保留：**
+
+- 以上仅验证调度器候选的 Job 分发/生命周期行为；Tach、Lychee、Sources 的真实原生 Job 尚未在该夹具中执行。
+- Lefthook 2.2.2 在本夹具中两个 `use_stdin` Job 都收到 stdin，但设计仍要求“唯一 ECI 入口先消费/持久化原始事件”，不得依赖该行为作为多 Job 输入协议。
+- `lefthook run pre-commit` 在无 staged files 时会跳过无 glob 的 Job；手工夹具需 `--all-files`。这不是 Git Hook 正常事件语义的替代。
+- Windows 下 Lefthook 依赖 `sh`；安装器/诊断必须显式检查并给出可定位错误。
+
+### 8.3 S1-E v1 覆盖状态（冻结内容，不是通过声明）
+
+| 矩阵块 | 冻结要求 | 当前证据状态 |
+| --- | --- | --- |
+| F/P/R 三基础 Job | Tach `tach check`/`check-external`、Lychee、Sources `reconcile` 的条件唤醒、并行/必要顺序、失败/缺工具/未执行/不适用、Source 绑定 | **未完成**：候选夹具只证明调度器可并行和传递 Index/stdin；三工具真实 Job 未运行 |
+| D 类 | 首次/强推/多 Ref/非 HEAD/远端删除/缺旧基线的 old→new 差异与不可复用反例 | **未完成**：等待真实 Push Source 夹具 |
+| E 类 | 原生测试/前置条件/环境版本、未执行与失败传播；非 Git 事件不塞入 Hook | **未完成**：复用现有 execution 证据后再补 Hook 绑定 |
+| 生命周期 | install/status/update/uninstall 幂等、第三方 Hook/`core.hooksPath` 共存/恢复 | **部分**：Lefthook install/uninstall、prek legacy 迁移已观察；共存/恢复和 ECI 安装器未实现 |
+| 平台 | Windows/Git for Windows/Unix、普通/链接 worktree | **部分**：仅 Windows 普通仓库；Unix 与 linked worktree 未测 |
+
+**冻结裁决：** 机制边界按 8.1 冻结；Lefthook `2.2.2` 作为参考调度器进入 S1-E 同条件验收，最终采用仍取决于 F/P/R 真实工具、D/E 反例和生命周期/平台矩阵。矩阵未通过的部分保持 `unknown/not_executed`，不得用调度器安装成功或两个合成 Job 的并行结果宣布 S1-E 通过。
+
+**本 PR 的收口条件：** 本文档只登记冻结边界与已观察证据；真实 Tach/Lychee/Sources、Push 多 Ref、Host/Dagger Source 和消费者验收进入相应实施 PR。#66 S1-E 矩阵版本变更必须先更新 Issue #66，再更新本节证据引用。
+
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
