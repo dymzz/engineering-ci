@@ -1716,3 +1716,133 @@ def test_pr90_generated_paths_and_test_requirement_failure_interface(repo):
     lychee_calls = [call for call in runner.calls if call[0][0] == "lychee"]
     assert len(lychee_calls) == 1
     assert "docs/generated.md" in (lychee_calls[0][1] or " ".join(lychee_calls[0][0]))
+
+
+def test_p1_2_selection_to_execution_event_external_handoff(repo, tmp_path):
+    path, _base = repo
+    (path / "custom_pkg").mkdir()
+    (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    (path / "data/catalog").mkdir(parents=True)
+    content = b"source-bytes"
+    (path / "data/acquired").mkdir(parents=True)
+    (path / "data/acquired/a.bin").write_bytes(content)
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "add custom pkg and sources catalog")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # In-repo configs deliberately have different/stale settings than external policy.
+    in_repo_hygiene = (path / "ci-hygiene.toml").read_text(encoding="utf-8")
+    assert "external = false" in in_repo_hygiene
+    ext_dir = tmp_path / "external_policies"
+    ext_dir.mkdir()
+    ext_sel = ext_dir / "ci-selection.toml"
+    ext_sel.write_text(
+        (path / "ci-selection.toml")
+        .read_text(encoding="utf-8")
+        .split("[prerequisites]")[0]
+        + '\n[check_scope]\ncode_prefixes = ["custom_pkg/"]\n',
+        encoding="utf-8",
+    )
+    ext_hyg = ext_dir / "ci-hygiene.toml"
+    ext_hyg.write_text(
+        in_repo_hygiene.replace("external = false", "external = true"),
+        encoding="utf-8",
+    )
+    ext_src = ext_dir / "ci-sources.toml"
+    ext_src.write_text(
+        """schema_version = 1
+manifest = "data/catalog/manifest.json"
+acquired_roots = ["data/acquired"]
+exempt_paths = ["data/exempt.txt"]
+environment_prefixes = []
+require_text_unset = false
+""",
+        encoding="utf-8",
+    )
+
+    (path / "custom_pkg/mod.py").write_text("X = 2\n", encoding="utf-8")
+    (path / "data/exempt.txt").write_text("allowed\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(ext_sel)
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=ext_sel,
+        hygiene_config_path=ext_hyg,
+        sources_config_path=ext_src,
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    assert p["inputs"]["config"]["policy_scope"] == "event_external"
+    assert p["inputs"]["hygiene"]["policy_scope"] == "event_external"
+    assert p["inputs"]["sources"]["policy_scope"] == "event_external"
+    assert p["selection"]["code_prefixes"] == ["custom_pkg/"]
+
+    runner = FakeRunner()
+    report = execution.execute(p, root=path, runner=runner)
+    assert report["status"] == "passed"
+    by_name = {item["name"]: item for item in report["checks"]}
+    assert by_name["tach_external"]["status"] == "passed"
+    assert by_name["source"]["status"] == "passed"
+    assert any("check-external" in call[0] for call in runner.calls)
+
+    # Matching explicit overrides to the same external paths are also admitted.
+    runner_override = FakeRunner()
+    report_override = execution.execute(
+        p,
+        root=path,
+        hygiene_config=ext_hyg,
+        sources_config=ext_src,
+        runner=runner_override,
+    )
+    assert report_override["status"] == "passed"
+
+    # Spoofed/stripped external bindings fail closed with outside_root or digest mismatch.
+    no_scope = json.loads(json.dumps(p))
+    no_scope["inputs"]["hygiene"]["policy_scope"] = "repo_target_tree"
+    no_scope_report = execution.execute(no_scope, root=path, runner=FakeRunner())
+    assert no_scope_report["status"] == "failed"
+    assert no_scope_report["checks"][0]["reason"] == "hygiene_config_outside_root"
+
+    no_ref_src = json.loads(json.dumps(p))
+    no_ref_src["inputs"]["sources"].pop("effective_check_config_ref")
+    no_ref_src_report = execution.execute(no_ref_src, root=path, runner=FakeRunner())
+    assert no_ref_src_report["status"] == "failed"
+    src_check = next(
+        item for item in no_ref_src_report["checks"] if item["name"] == "source"
+    )
+    assert src_check["reason"] == "sources_config_outside_root"
+
+    other_hyg = ext_dir / "other-hygiene.toml"
+    other_hyg.write_text(ext_hyg.read_text(encoding="utf-8"), encoding="utf-8")
+    bad_override_report = execution.execute(
+        p, root=path, hygiene_config=other_hyg, runner=FakeRunner()
+    )
+    assert bad_override_report["status"] == "failed"
+    assert bad_override_report["checks"][0]["reason"] == "hygiene_config_outside_root"
+
+    ext_hyg.write_text(
+        ext_hyg.read_text(encoding="utf-8") + "\n# modified external bytes\n",
+        encoding="utf-8",
+    )
+    tampered_report = execution.execute(p, root=path, runner=FakeRunner())
+    assert tampered_report["status"] == "failed"
+    assert tampered_report["checks"][0]["reason"] == "hygiene_config_digest_mismatch"

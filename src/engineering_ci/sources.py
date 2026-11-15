@@ -134,17 +134,8 @@ def load_config(path):
     )
 
 
-def config_identity(path, config=None, *, root=None):
-    """Canonical config path, file digest, and normalized check-config digest."""
-    resolved = Path(path).resolve()
-    raw_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
-    loaded = load_config(resolved) if config is None else config
-    stored_path = str(resolved)
-    if root is not None:
-        base = Path(root).resolve()
-        if resolved.is_relative_to(base):
-            stored_path = resolved.relative_to(base).as_posix()
-    normalized = {
+def _normalize_config(loaded):
+    return {
         "schema_version": loaded.schema_version,
         "manifest": loaded.manifest,
         "entries_key": loaded.entries_key,
@@ -159,6 +150,25 @@ def config_identity(path, config=None, *, root=None):
         "environment_requires_no_digest": loaded.environment_requires_no_digest,
         "require_under_acquired_roots": loaded.require_under_acquired_roots,
     }
+
+
+def config_identity(path, config=None, *, root=None):
+    """Canonical config path, file digest, and normalized check-config digest."""
+    resolved = Path(path).resolve()
+    raw_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    file_loaded = load_config(resolved)
+    loaded = file_loaded if config is None else config
+    policy_scope = "repo_target_tree"
+    stored_path = str(resolved)
+    if root is not None:
+        base = Path(root).resolve()
+        if resolved.is_relative_to(base):
+            stored_path = resolved.relative_to(base).as_posix()
+        else:
+            policy_scope = "event_external"
+    normalized = _normalize_config(loaded)
+    if config is not None and _normalize_config(file_loaded) != normalized:
+        raise SourcesError("config_identity_file_mismatch")
     canonical = (
         "sha256:"
         + hashlib.sha256(
@@ -169,6 +179,7 @@ def config_identity(path, config=None, *, root=None):
         "path": stored_path,
         "sha256": raw_sha,
         "schema_version": loaded.schema_version,
+        "policy_scope": policy_scope,
         "normalized": normalized,
         "effective_check_config_ref": {
             "name": "engineering-ci.sources",

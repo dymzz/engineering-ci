@@ -242,6 +242,39 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
     )
 
 
+def _is_hex64(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def _admitted_external_config(
+    declared, resolved_path, *, ref_key="effective_check_config_ref"
+):
+    if (
+        not isinstance(declared, dict)
+        or declared.get("policy_scope") != "event_external"
+    ):
+        return False
+    raw_path = declared.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return False
+    declared_path = Path(raw_path)
+    if not declared_path.is_absolute():
+        return False
+    try:
+        if declared_path.resolve() != resolved_path:
+            return False
+    except OSError:
+        return False
+    if not _is_hex64(declared.get("sha256")):
+        return False
+    eff_ref = declared.get(ref_key)
+    return isinstance(eff_ref, dict) and isinstance(eff_ref.get("sha256"), str)
+
+
 def _load_verified_config(
     plan,
     root,
@@ -263,7 +296,9 @@ def _load_verified_config(
         resolved_path = config_path.resolve()
     except OSError:
         return None, None, None, f"{key}_config_read_failed"
-    if not resolved_path.is_relative_to(resolved_root):
+    if not resolved_path.is_relative_to(
+        resolved_root
+    ) and not _admitted_external_config(declared, resolved_path):
         return None, None, None, f"{key}_config_outside_root"
     if override is not None and isinstance(declared, dict) and declared.get("path"):
         declared_raw = Path(declared["path"])
@@ -284,10 +319,17 @@ def _load_verified_config(
     if isinstance(declared, dict):
         if declared.get("sha256") is not None and digest_after != declared["sha256"]:
             return None, None, None, f"{key}_config_digest_mismatch"
-        if declared.get("effective_check_config_ref") is not None:
+        if (
+            declared.get("normalized") is not None
+            or declared.get("effective_check_config_ref") is not None
+        ):
             actual_identity = identity_fn(resolved_path, loaded, root=resolved_root)
             if (
-                actual_identity.get("effective_check_config_ref")
+                declared.get("normalized") is not None
+                and actual_identity.get("normalized") != declared["normalized"]
+            ) or (
+                declared.get("effective_check_config_ref") is not None
+                and actual_identity.get("effective_check_config_ref")
                 != declared["effective_check_config_ref"]
             ):
                 return None, None, None, f"{key}_config_identity_mismatch"
@@ -316,8 +358,34 @@ def _resolved_code_prefixes(plan, root):
         and all(isinstance(item, str) and item for item in code_prefixes)
     ):
         return None, "selection_code_prefixes_invalid"
-    sel_path = Path(root).resolve() / "ci-selection.toml"
+    resolved_root = Path(root).resolve()
+    inputs = plan.get("inputs") or {}
+    sel_decl = inputs.get("config") if isinstance(inputs, dict) else None
+    sel_path = resolved_root / "ci-selection.toml"
+    external_selection = False
+    if isinstance(sel_decl, dict) and sel_decl.get("path"):
+        raw_sel = Path(sel_decl["path"])
+        cand_path = raw_sel if raw_sel.is_absolute() else resolved_root / raw_sel
+        try:
+            resolved_sel = cand_path.resolve()
+        except OSError:
+            return None, "selection_config_read_failed"
+        if not resolved_sel.is_relative_to(resolved_root):
+            if not _admitted_external_config(
+                sel_decl, resolved_sel, ref_key="effective_config_ref"
+            ):
+                return None, "selection_config_outside_root"
+            sel_path = resolved_sel
+            external_selection = True
     gen_sha = (plan.get("generator") or {}).get("config_sha256")
+    if external_selection:
+        if isinstance(gen_sha, str) and sel_decl.get("sha256") != gen_sha:
+            return None, "selection_config_digest_mismatch"
+        if (
+            sel_path.is_file()
+            and check_contract.file_digest(sel_path) != sel_decl["sha256"]
+        ):
+            return None, "selection_config_digest_mismatch"
     if (
         isinstance(gen_sha, str)
         and sel_path.is_file()
@@ -327,6 +395,22 @@ def _resolved_code_prefixes(plan, root):
             loaded_sel = selection.load_config(sel_path)
         except (OSError, selection.SelectionError):
             return None, "selection_config_invalid"
+        if isinstance(sel_decl, dict) and (
+            sel_decl.get("normalized") is not None
+            or sel_decl.get("effective_config_ref") is not None
+        ):
+            actual_identity = selection.config_identity(
+                sel_path, loaded_sel, root=resolved_root
+            )
+            if (
+                sel_decl.get("normalized") is not None
+                and actual_identity.get("normalized") != sel_decl["normalized"]
+            ) or (
+                sel_decl.get("effective_config_ref") is not None
+                and actual_identity.get("effective_config_ref")
+                != sel_decl["effective_config_ref"]
+            ):
+                return None, "selection_config_identity_mismatch"
         expected_prefixes = list(loaded_sel.check_scope.code_prefixes)
         if code_prefixes is None:
             code_prefixes = expected_prefixes

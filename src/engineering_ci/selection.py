@@ -446,13 +446,8 @@ def _policy_file_scope(path, *, root=None):
         return "event_external"
 
 
-def config_identity(path, config, *, root=None):
-    """Build a canonical, content-addressed identity for ci-selection.toml."""
-    resolved = Path(path)
-    if not resolved.is_absolute() and root is not None:
-        resolved = (Path(root) / resolved).resolve()
-    sha = _digest(resolved) if resolved.is_file() else _digest(path)
-    normalized = {
+def _normalize_config(config):
+    return {
         "schema_version": config.schema_version,
         "tach": config.tach,
         "tests_dir": config.tests_dir,
@@ -491,6 +486,19 @@ def config_identity(path, config, *, root=None):
         },
         "effective_profile": config.effective_profile_policy,
     }
+
+
+def config_identity(path, config, *, root=None):
+    """Build a canonical, content-addressed identity for ci-selection.toml."""
+    resolved = Path(path)
+    if not resolved.is_absolute() and root is not None:
+        resolved = (Path(root) / resolved).resolve()
+    normalized = _normalize_config(config)
+    if resolved.is_file() and config is not None:
+        file_config = load_config(resolved)
+        if _normalize_config(file_config) != normalized:
+            raise SelectionError("config_identity_file_mismatch")
+    sha = _digest(resolved) if resolved.is_file() else _digest(path)
     payload = {
         "path": str(path),
         "sha256": sha,
@@ -513,6 +521,22 @@ def config_identity(path, config, *, root=None):
             "sha256": f"sha256:{ref_digest}",
         },
     }
+
+
+def verify_config_identity_matches_file(identity, *, root=None):
+    """Verify inputs.config normalized fields match disk TOML when matching file exists."""
+    config = config_from_identity(identity)
+    raw_path = identity.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return config
+    candidate = Path(raw_path)
+    if not candidate.is_absolute() and root is not None:
+        candidate = (Path(root) / candidate).resolve()
+    if candidate.is_file() and _digest(candidate) == identity.get("sha256"):
+        file_config = load_config(candidate)
+        if _normalize_config(file_config) != identity["normalized"]:
+            raise SelectionError("config_identity_file_mismatch")
+    return config
 
 
 def config_from_identity(identity):
@@ -2314,10 +2338,12 @@ def _ref_source_snapshot(
     tach_graph_digest = None
     tests_modules = []
     tests_digest = None
+    source_tree_id = None
     if ref_action == "delete":
         source_origin = "ref_deleted"
     elif tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
-        source_origin = "git_target_tree"
+        source_tree_id = tree_content_id(root, tree)
+        source_origin = "git_target_tree" if source_tree_id else "unverifiable"
         cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(config.tach)}")
         if cat.returncode == 0:
             tach_sha256 = hashlib.sha256(cat.stdout.encode("utf-8")).hexdigest()
@@ -2340,6 +2366,7 @@ def _ref_source_snapshot(
         "schema_version": 1,
         "source_origin": source_origin,
         "target_tree": tree,
+        "source_tree_id": source_tree_id,
         "ref_action": ref_action,
         "tach_path": config.tach,
         "tach_sha256": tach_sha256,
@@ -2393,6 +2420,9 @@ def verify_per_ref_source_snapshot(
         if not snap.get("target_tree") or snap.get("target_tree") != sel_entry.get(
             "tree"
         ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        tree_id = snap.get("source_tree_id")
+        if not isinstance(tree_id, str) or len(tree_id) != 64:
             raise SelectionError("expected_per_ref_source_unverifiable")
         tests_modules = snap.get("tests_modules")
         if (
@@ -2479,6 +2509,139 @@ def verify_per_ref_source_snapshot(
         or proj_ref.get("config_source_binding") != config_binding
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
+
+
+def verify_materialized_source_snapshot(
+    sel_entry,
+    materialized_root,
+    *,
+    sel_cfg,
+    full=False,
+    hygiene_config=None,
+    sources_config=None,
+    sources_identity=None,
+    plan_ref=None,
+    proj_ref=None,
+    inputs=None,
+):
+    """Verify a non-ODB materialized Source directory against bound per-Ref snapshot."""
+    verify_per_ref_source_snapshot(
+        sel_entry,
+        plan_ref=plan_ref,
+        proj_ref=proj_ref,
+        inputs=inputs,
+    )
+    snap = sel_entry["source_snapshot_ref"]
+    if snap.get("source_origin") == "ref_deleted":
+        return {"origin": "ref_deleted", "source_tree_id": None}
+    if not materialized_root:
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    mat_path = Path(materialized_root)
+    if not mat_path.is_dir():
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    if directory_content_id(mat_path) != snap.get("source_tree_id"):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    config_binding = sel_entry.get("config_source_binding") or {}
+    if config_binding.get("status") == "verified":
+        for rel_key, pol_info in (config_binding.get("policies") or {}).items():
+            if (
+                not isinstance(pol_info, dict)
+                or pol_info.get("scope") != "repo_target_tree"
+            ):
+                continue
+            pol_file = mat_path / rel_key
+            expected_sha = pol_info.get("sha256")
+            if not pol_file.is_file() or not expected_sha:
+                raise SelectionError("expected_per_ref_source_unverifiable")
+            lf_sha = hashlib.sha256(
+                pol_file.read_text(encoding="utf-8").encode("utf-8")
+            ).hexdigest()
+            if _digest(pol_file) != expected_sha and lf_sha != expected_sha:
+                raise SelectionError("expected_per_ref_source_unverifiable")
+    mat_tach = mat_path / sel_cfg.tach
+    tg = None
+    if mat_tach.is_file():
+        actual_tach_sha = hashlib.sha256(
+            mat_tach.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+        if snap.get("tach_sha256") != actual_tach_sha:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        try:
+            tg = _tach_graph(mat_tach)
+            actual_tg_digest = f"sha256:{_json_sha256({'modules': list(tg[0]), 'reverse': {k: list(v) for k, v in sorted(tg[1].items())}})}"
+        except SelectionError:
+            tg = None
+            actual_tg_digest = None
+        if snap.get("tach_graph_digest") != actual_tg_digest:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    elif (
+        snap.get("tach_sha256") is not None or snap.get("tach_graph_digest") is not None
+    ):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    test_prefix = ".".join(Path(sel_cfg.tests_dir).parts)
+    mat_tests = list(_test_modules(mat_path / sel_cfg.tests_dir, test_prefix))
+    if mat_tests != list(snap.get("tests_modules") or ()):
+        raise SelectionError("expected_per_ref_source_unverifiable")
+    if plan_ref is not None:
+        ref_cs = ref_changeset(mat_path, plan_ref)
+        ref_sel = select(
+            ref_cs,
+            sel_cfg,
+            root=mat_path,
+            full=full,
+            tach_graph=tg,
+            all_tests=tuple(mat_tests),
+        )
+        binding_ok = config_binding.get("status") in {
+            "verified",
+            "event_shared",
+            "not_applicable",
+        }
+        block_reason = (
+            "per_ref_source_unverifiable"
+            if config_binding.get("status") == "unverifiable"
+            else "config_source_mismatch"
+        )
+        if not binding_ok:
+            ref_sel = replace(
+                ref_sel,
+                status="blocked",
+                tests=(),
+                checks=(),
+                escalated=True,
+                reasons={
+                    **ref_sel.reasons,
+                    block_reason: config_binding.get("mismatched") or [],
+                },
+            )
+        ref_scope = _check_scope(
+            ref_sel,
+            sel_cfg,
+            mat_path,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            sources_identity=sources_identity,
+        )
+        if not binding_ok:
+            ref_scope = [
+                {
+                    **item,
+                    "status": "blocked",
+                    "reason": block_reason,
+                }
+                for item in ref_scope
+            ]
+        if (
+            sel_entry.get("status") != ref_sel.status
+            or sel_entry.get("tests") != list(ref_sel.tests)
+            or sel_entry.get("checks") != list(ref_sel.checks)
+            or sel_entry.get("check_scope") != ref_scope
+        ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    return {
+        "origin": "materialized_source_tree",
+        "source_tree_id": snap.get("source_tree_id"),
+    }
 
 
 def per_ref_selections_and_scopes(

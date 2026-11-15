@@ -2074,7 +2074,7 @@ def _sources_for_validation(plan):
     return None, src_input if isinstance(src_input, dict) else None
 
 
-def _selection_for_validation(plan):
+def _selection_for_validation(plan, *, root=None):
     from engineering_ci import selection as _selection
 
     if not isinstance(plan, dict):
@@ -2083,8 +2083,15 @@ def _selection_for_validation(plan):
     cfg_input = inputs.get("config")
     sel_cfg = None
     if isinstance(cfg_input, dict) and isinstance(cfg_input.get("normalized"), dict):
+        repo_root = (
+            (plan.get("git") or {}).get("repo_root")
+            if isinstance(plan.get("git"), dict)
+            else None
+        )
         try:
-            sel_cfg = _selection.config_from_identity(cfg_input)
+            sel_cfg = _selection.verify_config_identity_matches_file(
+                cfg_input, root=root or repo_root
+            )
         except _selection.SelectionError as error:
             raise ExpectedError(error.code) from None
     tach_input = inputs.get("tach")
@@ -2133,7 +2140,180 @@ def _resolve_per_ref_odb_root(plan, explicit_root=None):
     return None
 
 
-def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
+def _lookup_materialized_source(materialized_sources, plan_ref, idx):
+    if not isinstance(materialized_sources, dict):
+        return None
+    for key in (
+        plan_ref.get("tree"),
+        plan_ref.get("remote_ref"),
+        plan_ref.get("local_ref"),
+        plan_ref.get("source_ref"),
+        idx,
+    ):
+        if key is not None and key in materialized_sources:
+            return materialized_sources[key]
+    return None
+
+
+def verify_per_ref_source_handoff(
+    plan,
+    *,
+    root=None,
+    materialized_sources=None,
+):
+    """Assess non-ODB vs ODB per-Ref Source-bound verification without conflating self-consistency."""
+    from engineering_ci import selection as _selection
+
+    if not isinstance(plan, dict):
+        raise ExpectedError("expected_checks_invalid")
+    git = plan.get("git") or {}
+    if not isinstance(git, dict) or git.get("snapshot") != "multi":
+        return {"status": "not_applicable", "reason": "not_multi_ref"}
+    refs = git.get("references") or []
+    expected = plan.get("expected_checks") or {}
+    proj_per_ref = expected.get("per_ref") if isinstance(expected, dict) else None
+    selection_block = plan.get("selection") or {}
+    sel_per_ref = (
+        selection_block.get("per_ref") if isinstance(selection_block, dict) else None
+    )
+    if (
+        not isinstance(proj_per_ref, list)
+        or not isinstance(sel_per_ref, list)
+        or len(proj_per_ref) != len(refs)
+        or len(sel_per_ref) != len(refs)
+    ):
+        raise ExpectedError("expected_per_ref_source_unverifiable")
+    inputs_block = plan.get("inputs") or {}
+    hygiene_config = _hygiene_config_for_validation(plan)
+    sources_config, sources_identity = _sources_for_validation(plan)
+    sel_cfg, tach_graph, all_tests = _selection_for_validation(plan, root=root)
+    odb_root = _resolve_per_ref_odb_root(plan, root)
+    if odb_root is not None:
+        if sel_cfg is not None and refs:
+            recomputed_sel_entries, _recomputed_scopes = (
+                _selection.per_ref_selections_and_scopes(
+                    refs,
+                    sel_cfg,
+                    odb_root,
+                    full=bool(
+                        selection_block.get("full_tests", False)
+                        if isinstance(selection_block, dict)
+                        else False
+                    ),
+                    hygiene_config=hygiene_config,
+                    sources_config=sources_config,
+                    sources_identity=sources_identity,
+                    tach_graph=tach_graph,
+                    all_tests=all_tests,
+                    config_path=(inputs_block.get("config") or {}).get("path") or None,
+                    hygiene_config_path=(inputs_block.get("hygiene") or {}).get("path")
+                    or None,
+                    sources_config_path=(inputs_block.get("sources") or {}).get("path")
+                    or None,
+                )
+            )
+            if sel_per_ref != recomputed_sel_entries:
+                raise ExpectedError("expected_per_ref_selection_mismatch")
+        for plan_ref, sel_entry, proj_ref in zip(
+            refs, sel_per_ref, proj_per_ref, strict=True
+        ):
+            try:
+                _selection.verify_per_ref_source_snapshot(
+                    sel_entry,
+                    plan_ref=plan_ref,
+                    proj_ref=proj_ref,
+                    inputs=inputs_block,
+                )
+            except _selection.SelectionError:
+                raise ExpectedError("expected_per_ref_source_unverifiable") from None
+        return {
+            "status": "verified",
+            "origin": "git_odb",
+            "internal_snapshot_status": "consistent",
+            "verified_refs": list(range(len(refs))),
+            "missing_refs": [],
+        }
+
+    verified_refs = []
+    missing_refs = []
+    non_delete_count = 0
+    for idx, (plan_ref, sel_entry, proj_ref) in enumerate(
+        zip(refs, sel_per_ref, proj_per_ref, strict=True)
+    ):
+        try:
+            _selection.verify_per_ref_source_snapshot(
+                sel_entry,
+                plan_ref=plan_ref,
+                proj_ref=proj_ref,
+                inputs=inputs_block,
+            )
+        except _selection.SelectionError:
+            raise ExpectedError("expected_per_ref_source_unverifiable") from None
+        if plan_ref.get("ref_action") == "delete":
+            verified_refs.append(idx)
+            continue
+        non_delete_count += 1
+        mat_dir = _lookup_materialized_source(materialized_sources, plan_ref, idx)
+        if mat_dir is None:
+            missing_refs.append(
+                plan_ref.get("source_ref")
+                or plan_ref.get("remote_ref")
+                or plan_ref.get("local_ref")
+                or plan_ref.get("tree")
+                or idx
+            )
+            continue
+        if sel_cfg is None:
+            raise ExpectedError("expected_per_ref_source_unverifiable")
+        try:
+            _selection.verify_materialized_source_snapshot(
+                sel_entry,
+                mat_dir,
+                sel_cfg=sel_cfg,
+                full=bool(
+                    selection_block.get("full_tests", False)
+                    if isinstance(selection_block, dict)
+                    else False
+                ),
+                hygiene_config=hygiene_config,
+                sources_config=sources_config,
+                sources_identity=sources_identity,
+                plan_ref=plan_ref,
+                proj_ref=proj_ref,
+                inputs=inputs_block,
+            )
+        except _selection.SelectionError:
+            raise ExpectedError("expected_per_ref_source_unverifiable") from None
+        verified_refs.append(idx)
+
+    if missing_refs:
+        return {
+            "status": "unknown",
+            "reason": "source_handoff_insufficient",
+            "internal_snapshot_status": "consistent",
+            "origin": None,
+            "verified_refs": verified_refs,
+            "missing_refs": missing_refs,
+        }
+    return {
+        "status": "verified",
+        "origin": (
+            "ref_deleted_only" if non_delete_count == 0 else "materialized_source_tree"
+        ),
+        "internal_snapshot_status": "consistent",
+        "verified_refs": verified_refs,
+        "missing_refs": [],
+    }
+
+
+def _validate_per_ref(
+    expected,
+    git,
+    check_scope=None,
+    plan=None,
+    root=None,
+    materialized_sources=None,
+):
     from engineering_ci import selection as _selection
 
     refs = git.get("references") or []
@@ -2153,7 +2333,7 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
     }
     hygiene_config = _hygiene_config_for_validation(plan)
     sources_config, sources_identity = _sources_for_validation(plan)
-    sel_cfg, tach_graph, all_tests = _selection_for_validation(plan)
+    sel_cfg, tach_graph, all_tests = _selection_for_validation(plan, root=root)
     authority_proven = True
     if schema_version == EXPECTED_V2 and profile is not None:
         authority_proven = _verify_profile_authority(
@@ -2199,6 +2379,7 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
     recomputed_scopes = None
     ref_selections_by_idx = {}
     recomputed_sel_entries = None
+    verified_mats = []
     if sel_cfg is not None and refs:
         if odb_root is not None:
             recomputed_sel_entries, recomputed_scopes = (
@@ -2257,13 +2438,45 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
             for idx, (plan_ref, sel_entry, proj_ref) in enumerate(
                 zip(refs, sel_per_ref, per_ref, strict=True)
             ):
+                is_delete = plan_ref.get("ref_action") == "delete"
+                mat_dir = _lookup_materialized_source(
+                    materialized_sources, plan_ref, idx
+                )
                 try:
-                    _selection.verify_per_ref_source_snapshot(
-                        sel_entry,
-                        plan_ref=plan_ref,
-                        proj_ref=proj_ref,
-                        inputs=inputs_block,
-                    )
+                    if is_delete:
+                        _selection.verify_per_ref_source_snapshot(
+                            sel_entry,
+                            plan_ref=plan_ref,
+                            proj_ref=proj_ref,
+                            inputs=inputs_block,
+                        )
+                        verified_mats.append(None)
+                    elif mat_dir is not None:
+                        _selection.verify_materialized_source_snapshot(
+                            sel_entry,
+                            mat_dir,
+                            sel_cfg=sel_cfg,
+                            full=bool(
+                                selection_block.get("full_tests", False)
+                                if isinstance(selection_block, dict)
+                                else False
+                            ),
+                            hygiene_config=hygiene_config,
+                            sources_config=sources_config,
+                            sources_identity=sources_identity,
+                            plan_ref=plan_ref,
+                            proj_ref=proj_ref,
+                            inputs=inputs_block,
+                        )
+                        verified_mats.append(Path(mat_dir))
+                    else:
+                        _selection.verify_per_ref_source_snapshot(
+                            sel_entry,
+                            plan_ref=plan_ref,
+                            proj_ref=proj_ref,
+                            inputs=inputs_block,
+                        )
+                        raise ExpectedError("expected_per_ref_source_unverifiable")
                 except _selection.SelectionError:
                     raise ExpectedError(
                         "expected_per_ref_source_unverifiable"
@@ -2434,7 +2647,11 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,
                 effective_profile=profile,
-                root=odb_root,
+                root=(
+                    odb_root
+                    if odb_root is not None
+                    else (verified_mats[idx] if idx < len(verified_mats) else None)
+                ),
                 ref_scope=(
                     recomputed_scopes[idx]
                     if recomputed_scopes is not None and idx < len(recomputed_scopes)
@@ -2473,10 +2690,20 @@ def _validate_per_ref(expected, git, check_scope=None, plan=None, root=None):
             raise ExpectedError("expected_set_ref_mismatch")
 
 
-def validate_projection(expected, git, check_scope=None, *, plan=None, root=None):
+def validate_projection(
+    expected,
+    git,
+    check_scope=None,
+    *,
+    plan=None,
+    root=None,
+    materialized_sources=None,
+):
     """Recompute identities and cross-check the projection against Plan git."""
     if not isinstance(expected, dict):
         raise ExpectedError("expected_checks_invalid")
+    if isinstance(plan, dict):
+        _selection_for_validation(plan, root=root)
     schema_version = expected.get("schema_version", EXPECTED_VERSION)
     if schema_version not in EXPECTED_VERSIONS:
         raise ExpectedError("expected_checks_schema_unsupported")
@@ -2726,6 +2953,7 @@ def validate_projection(expected, git, check_scope=None, *, plan=None, root=None
         check_scope=check_scope,
         plan=plan,
         root=root,
+        materialized_sources=materialized_sources,
     )
     if snapshot != "multi":
         ref_action = git.get("ref_action")

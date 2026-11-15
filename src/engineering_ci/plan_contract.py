@@ -47,7 +47,7 @@ def _string_list(value):
     return isinstance(value, list) and all(isinstance(s, str) and s for s in value)
 
 
-def _validate_expected(expected, git, plan):
+def _validate_expected(expected, git, plan, *, root=None, materialized_sources=None):
     from . import check_contract, expected_checks
 
     if not isinstance(expected, dict):
@@ -127,6 +127,8 @@ def _validate_expected(expected, git, plan):
             git,
             check_scope,
             plan=plan,
+            root=root,
+            materialized_sources=materialized_sources,
         )
     except expected_checks.ExpectedError as error:
         raise PlanError(error.code) from None
@@ -382,7 +384,7 @@ def prerequisite_contract(names, actions, *, declaration, selected_by, reason=No
     }
 
 
-def validate(value):
+def validate(value, *, root=None, materialized_sources=None):
     """Common fail-closed rules for CLI, direct Python and Dagger entry points."""
     if not isinstance(value, dict) or value.get("kind") != PLAN_KIND:
         raise PlanError("plan_invalid")
@@ -402,7 +404,13 @@ def validate(value):
     if "expected_checks" in value:
         if version != PLAN_VERSION:
             raise PlanError("expected_checks_requires_plan_v2")
-        _validate_expected(value["expected_checks"], git, value)
+        _validate_expected(
+            value["expected_checks"],
+            git,
+            value,
+            root=root,
+            materialized_sources=materialized_sources,
+        )
     contract = value.get("dependency_contract")
     if version == 1:
         if "dependency_contract" in value:

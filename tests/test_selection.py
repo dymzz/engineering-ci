@@ -531,12 +531,18 @@ def test_check_scope_separates_documents_from_business_tests(repo):
 
 
 def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
-    from dataclasses import replace
-
     path, base = repo
     (path / "telemetry").mkdir()
     (path / "telemetry/capture.json").write_text("{}")
-    cfg = replace(config(path), checks=("weaver_registry", "weaver_live"))
+    sel_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        sel_text.replace(
+            'checks = ["hygiene", "tach", "vulture"]',
+            'checks = ["weaver_registry", "weaver_live"]',
+        ),
+        encoding="utf-8",
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
     changes = selection.changeset(path, base=base)
     chosen = selection.select(changes, cfg, root=path)
     value = selection.plan(
@@ -549,15 +555,19 @@ def test_weaver_scope_is_explicit_and_changes_with_its_inputs(repo):
 
 
 def test_weaver_terminal_requires_post_completion_plan(repo):
-    from dataclasses import replace
-
     path, base = repo
     (path / "telemetry").mkdir()
     (path / "telemetry/capture.json").write_text("{}")
     (path / "telemetry/expected.json").write_text("{}")
-    cfg = replace(
-        config(path), checks=("weaver_registry", "weaver_live", "weaver_terminal")
+    sel_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        sel_text.replace(
+            'checks = ["hygiene", "tach", "vulture"]',
+            'checks = ["weaver_registry", "weaver_live", "weaver_terminal"]',
+        ),
+        encoding="utf-8",
     )
+    cfg = selection.load_config(path / "ci-selection.toml")
     capture_plan = selection.plan(
         selection.select(selection.changeset(path, base=base), cfg, root=path),
         config=cfg,
@@ -637,10 +647,16 @@ def test_directory_content_id_uses_platform_independent_path_order(tmp_path):
 
 
 def test_incomplete_weaver_scope_remains_unknown(repo):
-    from dataclasses import replace
-
     path, _ = repo
-    cfg = replace(config(path), checks=("weaver_terminal",))
+    sel_text = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        sel_text.replace(
+            'checks = ["hygiene", "tach", "vulture"]',
+            'checks = ["weaver_terminal"]',
+        ),
+        encoding="utf-8",
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
     chosen = selection.select(
         selection.changeset(path, base="missing-base"), cfg, root=path
     )

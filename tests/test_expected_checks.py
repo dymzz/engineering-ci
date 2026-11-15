@@ -14,8 +14,10 @@ from engineering_ci import (
     check_contract,
     execution,
     expected_checks,
+    hygiene,
     plan_contract,
     selection,
+    sources,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -548,7 +550,8 @@ def _attach_effective_profile_policy(path, profile):
     binding["approval_digest"] = expected_checks._approval_digest(profile)
     profile["profile_sha256"] = expected_checks.profile_digest(profile)
     declared = profile.get("declared_checks") or []
-    config_path = path / "ci-selection.toml"
+    candidate = Path(path)
+    config_path = candidate if candidate.is_file() else candidate / "ci-selection.toml"
     existing = config_path.read_text(encoding="utf-8")
     existing = existing.split("\n[effective_profile]", 1)[0].rstrip()
     config_path.write_text(
@@ -1192,9 +1195,10 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
         ],
         advisory_checks=[],
     )
+    unmapped_cfg = _attach_effective_profile_policy(path, unmapped_declared_profile)
     unmapped_plan = selection.plan(
         sel,
-        config=cfg,
+        config=unmapped_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=unmapped_declared_profile,
@@ -1232,9 +1236,10 @@ def test_effective_profile_digest_bindings_declared_domain_and_obligation_waiver
         ],
         allowed_inapplicability=[],
     )
+    shared_cfg = _attach_effective_profile_policy(path, shared_inapp_profile)
     shared_inapp_plan = selection.plan(
         sel,
-        config=cfg,
+        config=shared_cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=shared_inapp_profile,
@@ -1466,26 +1471,6 @@ def test_p2_1_cli_relative_effective_profile_outside_cwd(
 
 def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
     path, base = repo
-    (path / "docs/guide.md").write_text("# guide\n", encoding="utf-8")
-    run(path, "add", "-A")
-    run(path, "commit", "-q", "-m", "docs-only")
-    docs_commit = run(path, "rev-parse", "HEAD").strip()
-
-    run(path, "checkout", "-q", base)
-    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
-    run(path, "add", "-A")
-    run(path, "commit", "-q", "-m", "code-change")
-    code_commit = run(path, "rev-parse", "HEAD").strip()
-
-    multi = selection.changeset_multi(
-        path,
-        [
-            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base),
-            ("refs/heads/code-branch", code_commit, "refs/heads/code-branch", base),
-        ],
-    )
-    cfg = selection.load_config(path / "ci-selection.toml")
-    sel = selection.select(multi, cfg, root=path)
     profile = _sample_effective_profile(
         context="push",
         action="update",
@@ -1513,12 +1498,33 @@ def test_p2_2_multi_ref_obligation_scoping_and_container_completeness(repo):
             },
         ],
     )
-    policy_cfg = dataclasses.replace(
-        cfg, effective_profile_policy=_profile_policy(profile)
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach effective profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "docs/guide.md").write_text("# guide\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "docs-only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "code-change")
+    code_commit = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base),
+            ("refs/heads/code-branch", code_commit, "refs/heads/code-branch", base),
+        ],
     )
+    sel = selection.select(multi, cfg, root=path)
     p = selection.plan(
         sel,
-        config=policy_cfg,
+        config=cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
@@ -1669,11 +1675,6 @@ def test_p1_2_external_event_policy_shares_across_refs_with_distinct_configs_and
             ("refs/heads/branch-b", commit_b, "refs/heads/branch-b", base),
         ],
     )
-    cfg = selection.load_config(ext_selection)
-    sel = selection.select(multi, cfg, root=path)
-    sel_rule = expected_checks._selection_rule_ref(
-        expected_checks._file_digest(ext_selection)
-    )
     profile = _sample_effective_profile(
         context="push",
         action="update",
@@ -1685,7 +1686,11 @@ def test_p1_2_external_event_policy_shares_across_refs_with_distinct_configs_and
                 "kind": "check",
                 "check_names": ["unittest"],
                 "target_refs": ["refs/heads/branch-a", "refs/heads/branch-b"],
-                "rule_ref": sel_rule,
+                "rule_ref": {
+                    "name": "engineering-ci.unittest",
+                    "version": "1",
+                    "sha256": f"sha256:{'1' * 64}",
+                },
             }
         ],
         declared_checks=[
@@ -1697,12 +1702,11 @@ def test_p1_2_external_event_policy_shares_across_refs_with_distinct_configs_and
             "unittest",
         ],
     )
-    policy_cfg = dataclasses.replace(
-        cfg, effective_profile_policy=_profile_policy(profile)
-    )
+    cfg = _attach_effective_profile_policy(ext_selection, profile)
+    sel = selection.select(multi, cfg, root=path)
     p = selection.plan(
         sel,
-        config=policy_cfg,
+        config=cfg,
         config_path=ext_selection,
         hygiene_config_path=ext_hygiene,
         root=path,
@@ -1729,6 +1733,18 @@ def test_p1_2_external_event_policy_shares_across_refs_with_distinct_configs_and
 
 def test_p1_2_in_repo_policy_mismatch_blocks_ref_and_prevents_complete(repo):
     path, base = repo
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/match",
+        targets=["refs/heads/match", "refs/heads/mismatch"],
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+    )
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach effective profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
     (path / "docs/match.md").write_text("# match\n", encoding="utf-8")
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "matching-ref")
@@ -1753,21 +1769,10 @@ def test_p1_2_in_repo_policy_mismatch_blocks_ref_and_prevents_complete(repo):
             ("refs/heads/mismatch", mismatch_commit, "refs/heads/mismatch", base),
         ],
     )
-    cfg = selection.load_config(path / "ci-selection.toml")
     sel = selection.select(multi, cfg, root=path)
-    profile = _sample_effective_profile(
-        context="push",
-        action="update",
-        target="refs/heads/match",
-        targets=["refs/heads/match", "refs/heads/mismatch"],
-        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
-    )
-    policy_cfg = dataclasses.replace(
-        cfg, effective_profile_policy=_profile_policy(profile)
-    )
     p = selection.plan(
         sel,
-        config=policy_cfg,
+        config=cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
@@ -1798,8 +1803,34 @@ def test_p1_2_in_repo_policy_mismatch_blocks_ref_and_prevents_complete(repo):
     assert raised.value.code == "expected_per_ref_status_invalid"
 
 
-def test_p1_3_non_odb_consumer_verifies_bound_per_ref_source_snapshot(repo):
+def _export_tree(repo_root, tree, dest, tmp_root):
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_DIR": str(Path(repo_root) / ".git"),
+        "GIT_INDEX_FILE": str(tmp_root / f"index_{dest.name}"),
+        "GIT_WORK_TREE": str(dest),
+    }
+    subprocess.run(["git", "read-tree", tree], cwd=repo_root, env=env, check=True)
+    subprocess.run(["git", "checkout-index", "-a", "-f"], cwd=dest, env=env, check=True)
+    return dest
+
+
+def test_p1_3_non_odb_consumer_verifies_bound_per_ref_source_snapshot(repo, tmp_path):
     path, base = repo
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/alpha",
+        targets=["refs/heads/alpha", "refs/heads/beta"],
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+    )
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach effective profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
     (path / "src/pkg/sub.py").write_text("VALUE = 301\n", encoding="utf-8")
     (path / "tests/test_alpha.py").write_text(
         "def test_alpha():\n    assert True\n", encoding="utf-8"
@@ -1830,32 +1861,52 @@ def test_p1_3_non_odb_consumer_verifies_bound_per_ref_source_snapshot(repo):
             ("refs/heads/beta", beta_commit, "refs/heads/beta", base),
         ],
     )
-    cfg = selection.load_config(path / "ci-selection.toml")
     sel = selection.select(multi, cfg, root=path)
-    profile = _sample_effective_profile(
-        context="push",
-        action="update",
-        target="refs/heads/alpha",
-        targets=["refs/heads/alpha", "refs/heads/beta"],
-        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
-    )
-    policy_cfg = dataclasses.replace(
-        cfg, effective_profile_policy=_profile_policy(profile)
-    )
     p = selection.plan(
         sel,
-        config=policy_cfg,
+        config=cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
     )
     plan_contract.validate(p)
 
-    # Remove .git to simulate a legitimate non-ODB consumer (e.g. Dagger/export container).
+    tree_alpha = p["git"]["references"][0]["tree"]
+    tree_beta = p["git"]["references"][1]["tree"]
+    export_alpha = _export_tree(path, tree_alpha, tmp_path / "export_alpha", tmp_path)
+    export_beta = _export_tree(path, tree_beta, tmp_path / "export_beta", tmp_path)
+    mats = {tree_alpha: export_alpha, tree_beta: export_beta}
+
+    # Remove .git to simulate a non-ODB consumer (e.g. Dagger/export container).
     _rmtree(path / ".git")
-    assert plan_contract.validate(p) is p
+
+    # Without materialized_sources, self-consistency NEVER implies Source-bound PASS:
+    handoff_missing = expected_checks.verify_per_ref_source_handoff(p)
+    assert handoff_missing["status"] == "unknown"
+    assert handoff_missing["reason"] == "source_handoff_insufficient"
+    assert handoff_missing["internal_snapshot_status"] == "consistent"
+    with pytest.raises(plan_contract.PlanError) as raised_missing:
+        plan_contract.validate(p)
+    assert raised_missing.value.code == "expected_per_ref_source_unverifiable"
+    with pytest.raises(expected_checks.ExpectedError) as raised_proj_missing:
+        expected_checks.validate_projection(
+            p["expected_checks"], p["git"], p["check_scope"], plan=p
+        )
+    assert raised_proj_missing.value.code == "expected_per_ref_source_unverifiable"
+
+    # With authentic materialized Source trees, non-ODB consumer verifies & passes:
+    handoff_ok = expected_checks.verify_per_ref_source_handoff(
+        p, materialized_sources=mats
+    )
+    assert handoff_ok["status"] == "verified"
+    assert handoff_ok["origin"] == "materialized_source_tree"
+    assert plan_contract.validate(p, materialized_sources=mats) is p
     expected_checks.validate_projection(
-        p["expected_checks"], p["git"], p["check_scope"], plan=p
+        p["expected_checks"],
+        p["git"],
+        p["check_scope"],
+        plan=p,
+        materialized_sources=mats,
     )
     assert (
         p["selection"]["per_ref"][0]["source_snapshot_ref"]
@@ -1866,9 +1917,35 @@ def test_p1_3_non_odb_consumer_verifies_bound_per_ref_source_snapshot(repo):
         != p["selection"]["per_ref"][1]["source_snapshot_ref"]
     )
 
+    # Swapping or tampering with a materialized export directory fails closed:
+    with pytest.raises(plan_contract.PlanError) as raised_swapped:
+        plan_contract.validate(
+            p, materialized_sources={tree_alpha: export_beta, tree_beta: export_alpha}
+        )
+    assert raised_swapped.value.code == "expected_per_ref_source_unverifiable"
 
-def test_p1_3_non_odb_consumer_rejects_missing_or_tampered_source_snapshot(repo):
+    (export_alpha / "tach.toml").write_text("tampered = true\n", encoding="utf-8")
+    with pytest.raises(plan_contract.PlanError) as raised_tampered_export:
+        plan_contract.validate(p, materialized_sources=mats)
+    assert raised_tampered_export.value.code == "expected_per_ref_source_unverifiable"
+
+
+def test_p1_3_non_odb_consumer_rejects_missing_or_tampered_source_snapshot(
+    repo, tmp_path
+):
     path, base = repo
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/one",
+        targets=["refs/heads/one", "refs/heads/two"],
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+    )
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach effective profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
     (path / "src/pkg/sub.py").write_text("VALUE = 401\n", encoding="utf-8")
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "ref-one")
@@ -1888,30 +1965,25 @@ def test_p1_3_non_odb_consumer_rejects_missing_or_tampered_source_snapshot(repo)
             ("refs/heads/two", commit_2, "refs/heads/two", base),
         ],
     )
-    cfg = selection.load_config(path / "ci-selection.toml")
     sel = selection.select(multi, cfg, root=path)
-    profile = _sample_effective_profile(
-        context="push",
-        action="update",
-        target="refs/heads/one",
-        targets=["refs/heads/one", "refs/heads/two"],
-        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
-    )
-    policy_cfg = dataclasses.replace(
-        cfg, effective_profile_policy=_profile_policy(profile)
-    )
     p = selection.plan(
         sel,
-        config=policy_cfg,
+        config=cfg,
         config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
     )
+    tree_1 = p["git"]["references"][0]["tree"]
+    tree_2 = p["git"]["references"][1]["tree"]
+    mats = {
+        tree_1: _export_tree(path, tree_1, tmp_path / "export_1", tmp_path),
+        tree_2: _export_tree(path, tree_2, tmp_path / "export_2", tmp_path),
+    }
     _rmtree(path / ".git")
 
     def assert_unverifiable(mutated):
         with pytest.raises(plan_contract.PlanError) as raised:
-            plan_contract.validate(mutated)
+            plan_contract.validate(mutated, materialized_sources=mats)
         assert raised.value.code == "expected_per_ref_source_unverifiable"
 
     missing_snap = json.loads(json.dumps(p))
@@ -1948,7 +2020,7 @@ def test_p1_3_non_odb_consumer_rejects_missing_or_tampered_source_snapshot(repo)
     tampered_cfg_digest = json.loads(json.dumps(p))
     tampered_cfg_digest["inputs"]["config"]["sha256"] = "0" * 64
     with pytest.raises(plan_contract.PlanError) as raised:
-        plan_contract.validate(tampered_cfg_digest)
+        plan_contract.validate(tampered_cfg_digest, materialized_sources=mats)
     assert raised.value.code == "config_identity_mismatch"
 
     mismatched_policy_snapshot = json.loads(json.dumps(p))
@@ -1961,3 +2033,54 @@ def test_p1_3_non_odb_consumer_rejects_missing_or_tampered_source_snapshot(repo)
         "source_snapshot_ref"
     ] = snap2
     assert_unverifiable(mismatched_policy_snapshot)
+
+
+def test_p1_1_config_identity_rejects_unbacked_in_memory_policy(repo, tmp_path):
+    path, _base = repo
+    cfg = selection.load_config(path / "ci-selection.toml")
+    profile = _sample_effective_profile()
+    unbacked_cfg = dataclasses.replace(
+        cfg, effective_profile_policy=_profile_policy(profile)
+    )
+    with pytest.raises(selection.SelectionError) as raised_sel:
+        selection.config_identity(path / "ci-selection.toml", unbacked_cfg, root=path)
+    assert raised_sel.value.code == "config_identity_file_mismatch"
+
+    hyg_file = tmp_path / "ci-hygiene.toml"
+    hyg_file.write_text(
+        "schema_version = 1\n[tach]\nexternal = false\n", encoding="utf-8"
+    )
+    loaded_hyg = hygiene.load_config(hyg_file)
+    tampered_hyg = dataclasses.replace(loaded_hyg, checks=("whitespace",))
+    with pytest.raises(hygiene.HygieneError) as raised_hyg:
+        hygiene.config_identity(hyg_file, tampered_hyg, root=path)
+    assert raised_hyg.value.code == "config_identity_file_mismatch"
+
+    src_file = tmp_path / "ci-sources.toml"
+    src_file.write_text(
+        'schema_version = 1\nmanifest = "data/manifest.json"\nacquired_roots = ["data/acquired"]\n',
+        encoding="utf-8",
+    )
+    loaded_src = sources.load_config(src_file)
+    tampered_src = dataclasses.replace(loaded_src, schema_version=99)
+    with pytest.raises(sources.SourcesError) as raised_src:
+        sources.config_identity(src_file, tampered_src, root=path)
+    assert raised_src.value.code == "config_identity_file_mismatch"
+
+    # Tampered inputs.config.normalized against disk bytes must fail replay even if ref matches.
+    sel = selection.select(selection.changeset(path, base=_base), cfg, root=path)
+    p = selection.plan(
+        sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    forged_norm = json.loads(json.dumps(p))
+    forged_norm["inputs"]["config"]["normalized"]["effective_profile"] = (
+        _profile_policy(profile)
+    )
+    sha = forged_norm["inputs"]["config"]["sha256"]
+    norm = forged_norm["inputs"]["config"]["normalized"]
+    forged_norm["inputs"]["config"]["effective_config_ref"]["sha256"] = (
+        "sha256:" + selection._json_sha256({"sha256": sha, "normalized": norm})
+    )
+    with pytest.raises(plan_contract.PlanError) as raised_replay:
+        plan_contract.validate(forged_norm)
+    assert raised_replay.value.code == "config_identity_file_mismatch"
