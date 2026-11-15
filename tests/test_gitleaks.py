@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -56,7 +57,9 @@ def test_gitleaks_history_finds_and_redacts_secret(history_repo):
     assert result["coverage"]["revision_range"] == f"{base}..HEAD"
     assert len(result["findings"]) == 1
     finding = result["findings"][0]
-    assert finding["RuleID"] == "gitlab-pat"
+    assert finding["rule_sha256"] == (
+        "sha256:" + hashlib.sha256(b"gitlab-pat").hexdigest()
+    )
     assert finding["Commit"] == git(history_repo, "rev-parse", "HEAD")
     assert "File" not in finding
     assert finding["redacted"] is True
@@ -117,7 +120,7 @@ def test_sanitizer_removes_secret_from_allowed_fields_and_diagnostics():
     )
     assert findings == [
         {
-            "RuleID": "test-rule",
+            "rule_sha256": "sha256:" + hashlib.sha256(b"test-rule").hexdigest(),
             "Commit": "a" * 40,
             "StartLine": 1,
             "redacted": True,
@@ -125,6 +128,25 @@ def test_sanitizer_removes_secret_from_allowed_fields_and_diagnostics():
     ]
     assert "glpat-" not in json.dumps(findings)
     assert "File" not in findings[0]
+
+
+def test_rule_id_cannot_expose_secret():
+    findings = gitleaks._sanitize(
+        [
+            {
+                "RuleID": "glpat-abcdefghijklmnopqrst",
+                "Commit": "a" * 40,
+                "StartLine": 1,
+                "Secret": "[REDACTED]",
+                "Match": "[REDACTED]",
+            }
+        ]
+    )
+    serialized = json.dumps(findings)
+    assert "glpat-abcdefghijklmnopqrst" not in serialized
+    assert findings[0]["rule_sha256"] == (
+        "sha256:" + hashlib.sha256(b"glpat-abcdefghijklmnopqrst").hexdigest()
+    )
 
 
 def test_sanitizer_refuses_non_list_report():
@@ -178,6 +200,45 @@ def test_gitleaks_non_ancestor_range_is_insufficient(tmp_path):
     assert result["coverage"]["reason"] == "non_ancestor_range"
     assert result["status"] == "insufficient"
     assert result["native_status"] in {"passed", "failed"}
+
+
+@requires_gitleaks
+def test_gitleaks_custom_rule_id_secret_is_hashed_in_public_result(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("placeholder\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    (root / "a.txt").write_text("SECRET123\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "secret")
+    config = tmp_path / "gitleaks.toml"
+    config.write_text(
+        """
+title = "test"
+[[rules]]
+id = "glpat-abcdefghijklmnopqrst"
+description = "custom"
+regex = '''SECRET123'''
+""",
+        encoding="utf-8",
+    )
+    base = git(root, "rev-parse", "HEAD~1")
+    result = gitleaks.scan_git_history(
+        root,
+        revision_range=f"{base}..HEAD",
+        config_path=config,
+        environ={**os.environ, "GITLEAKS_BIN": BINARY},
+    )
+    serialized = json.dumps(result)
+    assert result["status"] == "failed"
+    assert "glpat-abcdefghijklmnopqrst" not in serialized
+    assert result["findings"][0]["rule_sha256"] == (
+        "sha256:" + hashlib.sha256(b"glpat-abcdefghijklmnopqrst").hexdigest()
+    )
 
 
 def test_gitleaks_requires_explicit_scope(tmp_path):

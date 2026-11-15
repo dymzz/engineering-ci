@@ -130,7 +130,7 @@ def _sanitize(report):
         ):
             raise GitleaksError("gitleaks_report_invalid")
         finding = {
-            "RuleID": rule,
+            "rule_sha256": "sha256:" + hashlib.sha256(rule.encode("utf-8")).hexdigest(),
             "Commit": commit,
             "StartLine": start,
         }
