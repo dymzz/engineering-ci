@@ -265,9 +265,11 @@ PR #72 保持 Draft 的原因是 **成熟多工具调度器的适配验证、Git
 
 | 候选 | 固定版本/来源 | 已观察事实 | 结论 |
 | --- | --- | --- | --- |
-| Lefthook | `2.2.2`，npm 包固定安装 | `install` 同步 `pre-commit`/`pre-push`；`dump` 可输出实际配置；`uninstall` 移除 Hook；两个各 sleep 0.3s 的 `parallel` Job 总耗时约 0.63s；`GIT_INDEX_FILE=<临时 index>` 原样传入 Job；两个 `use_stdin: true` Job 均收到完整 pre-push 元组；Windows 需 Git 自带 `sh` 在 PATH，否则 Job 以 `exec: sh not found` 失败 | 作为**参考调度器**继续同条件核验；其 stdin 行为只作观察，不写成多 Job 保证 |
-| prek | `0.5.10`，npm 包固定安装 | `install` 将已有 Hook 迁移为 `.legacy` 并继续运行 legacy；两个 local Hook 均 Passed；安装/执行可工作 | 保留为替代比较项；不因一次 pre-commit 正例选定，也不与 Lefthook 双安装 |
+| Lefthook | `2.2.2`；默认安装基线 `uv tool install "lefthook==2.2.2"`（PyPI 官方 Wheel）。此前 npm 夹具仅作历史渠道观察 | `uv tool install` 安装成功；`lefthook version` = 2.2.2，可执行路径为 uv tool bin；`install` 同步 `pre-commit`/`pre-push`；`dump` 可输出实际配置；`uninstall` 移除 Hook；两个各 sleep 0.3s 的 `parallel` Job 总耗时约 0.63s；`GIT_INDEX_FILE=<临时 index>` 原样传入 Job；两个 `use_stdin: true` Job 均收到完整 pre-push 元组；Windows 需 Git 自带 `sh` 在 PATH，否则 Job 以 `exec: sh not found` 失败 | 作为**参考调度器**继续同条件核验；其 stdin 行为只作观察，不写成多 Job 保证 |
+| prek | `0.5.10`；此前通过 npm 夹具安装，默认安装路径需按 PyPI/uv 另行核对 | `install` 将已有 Hook 迁移为 `.legacy` 并继续运行 legacy；两个 local Hook 均 Passed；安装/执行可工作 | 保留为替代比较项；不因一次 pre-commit 正例选定，也不与 Lefthook 双安装 |
 | 原生薄 Hook | 无新增运行时实现 | 仅作为机制对照；并行、诊断、生命周期和失败汇总须由现有能力或有依据的新增公共机制证明 | 不宣称已交付，不默认胜出 |
+
+**默认安装基线（2026-11-15 更正）：** ECI/Knowledge 已有 `uv` 工具链，Lefthook 官方提供 PyPI Wheel，因此默认使用 `uv tool install "lefthook==2.2.2"`；需要随项目锁定时使用 `uv add --dev "lefthook==2.2.2"` 并在需要时显式 `uv run lefthook install`。不把 npm 作为默认或必须路径，也不维护 npm/uv 两套等价安装链。`uv python install` 只安装 Python 解释器，不得写成 Lefthook 安装入口。
 
 **实测限制必须保留：**
 
@@ -353,8 +355,8 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 
 #### 8.4.5 安装副作用与唯一所有者
 
-- 若采用 npm 分发，必须核验具体版本的 `postinstall` 是否执行 `lefthook install`；依赖安装不得被假定为只读。
-- **已实测（npm 11 allowScripts 默认策略）：** `lefthook@2.2.2` 的 `postinstall` 被 npm 警告但未执行，新仓库 `.git/hooks` 未出现 `pre-commit`/`pre-push`。该结果只代表此包管理器策略，不推广为所有安装方式。
+- **默认路径：** 使用 `uv tool install "lefthook==2.2.2"` 的官方 PyPI Wheel；若随项目锁定，使用 `uv add --dev` 并由消费仓库显式安装 Hook。安装器必须核验实际解析到的可执行路径与 `lefthook version`，而不是只核对声明版本。
+- **历史非默认渠道观察：** 早前 npm 夹具中 `lefthook@2.2.2` 的 `postinstall` 被 npm 警告但未执行，新仓库未生成 Hook。该事实只属于当时非默认渠道，不构成本项目默认生命周期的验收要求，也不推广到 uv/PyPI。
 - 真实 Hook 安装/升级/卸载/恢复、第三方 Hook 与 `core.hooksPath` 共存只能由一个生命周期所有者协调；禁止默认 `--force` / `--reset-hooks-path`。
 - 现有 install/dump/uninstall 观察仅证明局部行为，不证明 ECI 安装器、Unix/linked worktree、共存恢复已完成。
 
@@ -368,7 +370,8 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 | 合并配置单一 Prepare | 未独立核验 |
 | 逐 Ref Hook 非零退出 | 未实现/未实测 |
 | Glob 边界负例 | 未实测 |
-| npm postinstall 副作用 | 本环境未执行；不得外推 |
+| npm postinstall 副作用 | 仅历史非默认渠道观察；不构成 uv 实施要求 |
+| uv/PyPI 安装基线 | 已实测：uv 0.13.6 安装 lefthook 2.2.2，`lefthook version` 与 install/run 正常；L2 闭环未实现 |
 | S1-E F/P/R、D/E、生命周期、Unix/linked worktree | 仍未完成 |
 
 **8.4 裁决（2026-11-15 更新）：** 先前原生 Hook argv/stdin 正例和普通 Lefthook Job 无显式传参的负例只证明各自实际观察范围，**不足以断言 L2 已经完成委托闭环，也不足以否定整个 L1**。固定版的 Git 参数模板、`setup`、stdin 交接以及 Job 结束后 Final Reconciliation 均须在真实配置下核验。L2 优先验证其 Event Coordinator 闭环，L1 只有证明同等闭环后才进入完整比较；prek 与薄 Hook 仍保留完整候选地位。矩阵状态仍以 Issue #66 `eci-66-s1-hooks-v1` 为准，本节不新增第二份规范性矩阵。
@@ -409,5 +412,33 @@ Source Execution View **不是新增 Schema/存储层**：从 #66 P0 现行 Sour
 **候选可行后**：再验完整 F/P/R/D/E 中真实新增的 old→new/多 Ref、动态输入、写入 A→B、配置/规则版本与 Glob 过滤，Windows/Unix/Linked Worktree、install/status/update/uninstall、既有 `core.hooksPath` 和安装包的 postinstall 副作用、Knowledge 与非 Knowledge 消费者的同条件成本。不同风险分层验收，不把完整生态候选清单误作一次 Event 的 Expected 域。
 
 证据应可关联事件/源/Ref/配置、Check/Job 的激活和原生结果、调度返回状态、最终对账与 Hook Exit；缺少原始运行记录时明确 `unverified`。**PR #72 仍是 Draft 机制提案，不宣称本节接口已实现或全部矩阵通过**。
+
+#### 8.5.5 安装基线：uv/PyPI 而非 npm
+
+**默认路径：**
+
+```sh
+uv tool install "lefthook==2.2.2"
+lefthook version
+lefthook install
+```
+
+需要随 Python 项目锁定时：
+
+```sh
+uv add --dev "lefthook==2.2.2"
+uv run lefthook version
+uv run lefthook install   # 仅当所选生命周期需要显式安装
+```
+
+**已实测（Windows x64）：**
+
+- `uv 0.13.6` 执行 `uv tool install "lefthook==2.2.2"` 成功，安装 1 个 executable；
+- `lefthook version` 输出 `2.2.2`；
+- 可执行路径为 uv tool bin（`%USERPROFILE%\.local\bin\lefthook.exe`），由 `Get-Command` 解析；
+- 该可执行体执行 `lefthook install` 同步 `pre-commit`/`pre-push`，`lefthook run pre-commit --all-files` 正常；
+- 此前 npm 夹具的调度行为（parallel、`GIT_INDEX_FILE`、argv/stdin、dump）与当前 uv 安装体同一上游版本，仅分发渠道不同；不重跑全部矩阵来证明换包管理器。
+
+**仍需验证：** ECI 安装器对实际 executable identity/路径的绑定；L2 Prepare→Job→Final Reconciliation；升级/卸载/恢复；Unix/linked worktree。npm 仅作为历史非默认渠道记录，不进入默认生命周期验收。
 
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
