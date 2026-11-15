@@ -58,6 +58,7 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/weaver/terminal",
         "eci/workflow/actionlint",
         "eci/shell/shellcheck",
+        "eci/workflow/shellcheck",
         "eci/workflow/zizmor",
     }
 )
@@ -89,6 +90,7 @@ CHECK_IDS = MappingProxyType(
         "weaver_terminal": "eci/weaver/terminal",
         "actionlint": "eci/workflow/actionlint",
         "shellcheck": "eci/shell/shellcheck",
+        "workflow_shellcheck": "eci/workflow/shellcheck",
         "zizmor": "eci/workflow/zizmor",
     }
 )
@@ -463,13 +465,10 @@ _TOOL_REQUIREMENTS = {
     "actionlint": (
         ToolRequirement("workflow-lint", (ToolIdentity("actionlint/check"),)),
     ),
-    "shellcheck": (
+    "shellcheck": (ToolRequirement("shell-lint", (ToolIdentity("shellcheck/check"),)),),
+    "workflow_shellcheck": (
         ToolRequirement(
-            "shell-lint",
-            (
-                ToolIdentity("shellcheck/check"),
-                ToolIdentity("actionlint/shellcheck-inline"),
-            ),
+            "workflow-inline-shell", (ToolIdentity("actionlint/shellcheck-inline"),)
         ),
     ),
     "zizmor": (ToolRequirement("actions-security", (ToolIdentity("zizmor/check"),)),),
@@ -497,6 +496,7 @@ _CURRENT_DEFINITION_VERSION = {
     "weaver_terminal": 1,
     "actionlint": 1,
     "shellcheck": 1,
+    "workflow_shellcheck": 1,
     "zizmor": 1,
 }
 

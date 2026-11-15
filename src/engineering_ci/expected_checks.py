@@ -38,7 +38,9 @@ _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _HYGIENE_MANAGED = frozenset(
     {"whitespace", "forwarding", "docs", "vulture", "tach", "tach_external"}
 )
-_WORKFLOW_SCRIPT_MANAGED = frozenset({"actionlint", "shellcheck", "zizmor"})
+_WORKFLOW_SCRIPT_MANAGED = frozenset(
+    {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
+)
 
 
 class ExpectedError(ValueError):

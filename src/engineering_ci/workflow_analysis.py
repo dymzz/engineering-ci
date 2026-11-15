@@ -913,28 +913,85 @@ def run_workflow_script_suite(
         }
     )
 
-    def admit(check_name: str, access_id: str, version: str):
+    def admit_tools(
+        check_name: str,
+        requirements: tuple[tuple[str, str, str], ...],
+        *,
+        selected_status: str | None = None,
+    ) -> tuple[dict | None, dict[str, dict]]:
         if admission_fn is None:
-            return None
-        decision = admission_fn(check_name, access_id, version)
-        if decision.get("allowed"):
-            return None
-        return {
-            "name": check_name,
-            "selected": selected_by_name[check_name].get("status"),
-            "status": "not_executed",
-            "exit_code": None,
-            "reason": decision.get("reason") or "policy_admission_denied",
-            "execution_started": False,
-            "execution_kind": "not_started",
-            "admission": decision,
-            **({"rule_ref": rule_ref} if rule_ref is not None else {}),
-            **(
-                {"generated_input_refs": [dict(r) for r in generated_input_refs]}
-                if generated_input_refs
-                else {}
+            return None, {}
+        decisions: dict[str, dict] = {}
+        first_denied = None
+        for tool_name, access_id, version in requirements:
+            decision = admission_fn(tool_name, access_id, version)
+            decisions[tool_name] = decision
+            if not decision.get("allowed") and first_denied is None:
+                first_denied = decision
+        if first_denied is None:
+            return None, decisions
+        sel_val = (
+            selected_status
+            if selected_status is not None
+            else selected_by_name.get(check_name, {}).get("status")
+        )
+        return (
+            {
+                "name": check_name,
+                "selected": sel_val,
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": first_denied.get("reason") or "policy_admission_denied",
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "admission": first_denied,
+                "tool_admissions": decisions,
+                **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                **(
+                    {"generated_input_refs": [dict(r) for r in generated_input_refs]}
+                    if generated_input_refs
+                    else {}
+                ),
+            },
+            decisions,
+        )
+
+    # Admit all active checks and composite tool dependencies BEFORE any cache
+    # lookup or subprocess invocation so denied tools never run preflight or reuse
+    # cached receipts from an earlier allowed run.
+    admissions: dict[str, tuple[dict | None, dict[str, dict]]] = {}
+    if "actionlint" in selected_by_name:
+        admissions["actionlint"] = admit_tools(
+            "actionlint",
+            (("actionlint", "actionlint/check", ACTIONLINT_VERSION),),
+        )
+    if "workflow_shellcheck" in selected_by_name:
+        admissions["workflow_shellcheck"] = admit_tools(
+            "workflow_shellcheck",
+            (
+                ("actionlint", "actionlint/check", ACTIONLINT_VERSION),
+                ("shellcheck", "shellcheck/check", SHELLCHECK_VERSION),
             ),
-        }
+        )
+    elif inline_shellcheck_requested and shellcheck_inline:
+        admissions["_inline_shellcheck"] = admit_tools(
+            "workflow_shellcheck",
+            (
+                ("actionlint", "actionlint/check", ACTIONLINT_VERSION),
+                ("shellcheck", "shellcheck/check", SHELLCHECK_VERSION),
+            ),
+            selected_status="selected",
+        )
+    if "shellcheck" in selected_by_name:
+        admissions["shellcheck"] = admit_tools(
+            "shellcheck",
+            (("shellcheck", "shellcheck/check", SHELLCHECK_VERSION),),
+        )
+    if "zizmor" in selected_by_name:
+        admissions["zizmor"] = admit_tools(
+            "zizmor",
+            (("zizmor", "zizmor/check", ZIZMOR_VERSION),),
+        )
 
     def check_shellcheck_ready() -> tuple[bool, str | None, str]:
         with cache.setdefault("_lock", threading.Lock()):
@@ -1021,13 +1078,23 @@ def run_workflow_script_suite(
             return res
 
     out: dict[str, dict] = {}
-    want_inline_for_al = shellcheck_inline and (
-        "shellcheck" in selected_by_name or inline_shellcheck_requested
+    inline_adm_key = (
+        "workflow_shellcheck"
+        if "workflow_shellcheck" in selected_by_name
+        else "_inline_shellcheck"
+    )
+    inline_blocked = (
+        admissions[inline_adm_key][0] if inline_adm_key in admissions else None
+    )
+    want_inline_for_al = (
+        bool(shellcheck_inline)
+        and ("workflow_shellcheck" in selected_by_name or inline_shellcheck_requested)
+        and inline_blocked is None
     )
 
     if "actionlint" in selected_by_name:
         sel = selected_by_name["actionlint"]
-        blocked = admit("actionlint", "actionlint/check", ACTIONLINT_VERSION)
+        blocked, _ = admissions["actionlint"]
         if blocked is not None:
             out["actionlint"] = blocked
         elif not workflows:
@@ -1056,60 +1123,214 @@ def run_workflow_script_suite(
                 }
             else:
                 rep = al_run["report"]
-                status = _report_to_status(rep, "workflow_problems_reported")
-                entry = {
-                    "name": "actionlint",
-                    "selected": sel.get("status"),
-                    "status": status,
-                    "exit_code": rep["exit_code"],
-                    "reason": None if status == "passed" else rep["reason"],
-                    "stdout": rep["stdout"],
-                    "stderr": rep["stderr"],
-                    "findings": rep["findings"],
-                    "actionlint_findings": rep["actionlint_findings"],
-                    "shellcheck_findings": rep["shellcheck_findings"],
-                    "shellcheck_enabled": rep["shellcheck_enabled"],
-                    "shellcheck_version": al_run["shellcheck_version"],
-                    "native_json": rep["native_json"],
-                    "executable": al_run["executable"],
-                    "tool_version": al_run["tool_version"],
-                    "access_id": "actionlint/check",
-                    "input_paths": list(workflows),
-                    "coverage": {
-                        "workflows_scanned": len(workflows),
-                        "workflow_files": list(workflows),
-                        "shellcheck_inline_enabled": bool(rep["shellcheck_enabled"]),
-                    },
-                    **({"rule_ref": rule_ref} if rule_ref is not None else {}),
-                    **(
-                        {
-                            "generated_input_refs": [
-                                dict(r) for r in generated_input_refs
-                            ]
+                # If the combined actionlint+shellcheck invocation only failed due to
+                # inline shellcheck findings (zero actionlint findings), invoke
+                # actionlint independently with -shellcheck= so actionlint gets its
+                # own genuine native exit code and verdict.
+                if (
+                    al_run["shellcheck_enabled"]
+                    and rep["exit_code"] != 0
+                    and not rep["actionlint_findings"]
+                    and rep["shellcheck_findings"]
+                ):
+                    indep_run = ensure_actionlint_run(False)
+                    if not indep_run["prepared"]:
+                        out["actionlint"] = {
+                            "name": "actionlint",
+                            "selected": sel.get("status"),
+                            "status": "not_executed",
+                            "exit_code": None,
+                            "reason": indep_run["reason"],
+                            "stderr": indep_run["detail"],
+                            "execution_started": False,
+                            "execution_kind": "not_started",
+                            "access_id": "actionlint/check",
+                            **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                         }
-                        if generated_input_refs
-                        else {}
-                    ),
+                        rep = None
+                    else:
+                        al_run = indep_run
+                        rep = indep_run["report"]
+                if rep is not None:
+                    status = _report_to_status(rep, "workflow_problems_reported")
+                    reported_findings = (
+                        rep["actionlint_findings"]
+                        if rep["actionlint_findings"]
+                        else ([] if rep["shellcheck_findings"] else rep["findings"])
+                    )
+                    out["actionlint"] = {
+                        "name": "actionlint",
+                        "selected": sel.get("status"),
+                        "status": status,
+                        "exit_code": rep["exit_code"],
+                        "reason": None if status == "passed" else rep["reason"],
+                        "stdout": rep["stdout"],
+                        "stderr": rep["stderr"],
+                        "findings": reported_findings,
+                        "actionlint_findings": rep["actionlint_findings"],
+                        "shellcheck_findings": rep["shellcheck_findings"],
+                        "shellcheck_enabled": rep["shellcheck_enabled"],
+                        "shellcheck_version": al_run["shellcheck_version"],
+                        "native_json": rep["native_json"],
+                        "executable": al_run["executable"],
+                        "tool_version": al_run["tool_version"],
+                        "access_id": "actionlint/check",
+                        "input_paths": list(workflows),
+                        "coverage": {
+                            "workflows_scanned": len(workflows),
+                            "workflow_files": list(workflows),
+                            "shellcheck_inline_enabled": bool(
+                                rep["shellcheck_enabled"]
+                            ),
+                        },
+                        **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                        **(
+                            {
+                                "generated_input_refs": [
+                                    dict(r) for r in generated_input_refs
+                                ]
+                            }
+                            if generated_input_refs
+                            else {}
+                        ),
+                    }
+
+    if "workflow_shellcheck" in selected_by_name:
+        sel = selected_by_name["workflow_shellcheck"]
+        blocked, _ = admissions["workflow_shellcheck"]
+        if blocked is not None:
+            out["workflow_shellcheck"] = blocked
+        elif not shellcheck_inline:
+            out["workflow_shellcheck"] = {
+                "name": "workflow_shellcheck",
+                "selected": sel.get("status"),
+                "status": "not_applicable",
+                "reason": "shellcheck_inline_disabled",
+                "access_id": "actionlint/shellcheck-inline",
+                **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+            }
+        elif not workflows:
+            out["workflow_shellcheck"] = {
+                "name": "workflow_shellcheck",
+                "selected": sel.get("status"),
+                "status": "not_applicable",
+                "reason": "no_workflow_files",
+                "access_id": "actionlint/shellcheck-inline",
+                **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+            }
+        else:
+            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
+            if not sc_ok:
+                out["workflow_shellcheck"] = {
+                    "name": "workflow_shellcheck",
+                    "selected": sel.get("status"),
+                    "status": "not_executed",
+                    "exit_code": None,
+                    "reason": "shellcheck_unprepared"
+                    if sc_ver is None
+                    else "shellcheck_version_mismatch",
+                    "stderr": sc_detail,
+                    "execution_started": False,
+                    "execution_kind": "not_started",
+                    "access_id": "actionlint/shellcheck-inline",
+                    **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
-                out["actionlint"] = entry
+            else:
+                al_run = ensure_actionlint_run(True)
+                if not al_run["prepared"]:
+                    out["workflow_shellcheck"] = {
+                        "name": "workflow_shellcheck",
+                        "selected": sel.get("status"),
+                        "status": "not_executed",
+                        "exit_code": None,
+                        "reason": al_run["reason"],
+                        "stderr": al_run["detail"],
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                        "access_id": "actionlint/shellcheck-inline",
+                        **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                    }
+                elif not al_run["shellcheck_enabled"]:
+                    out["workflow_shellcheck"] = {
+                        "name": "workflow_shellcheck",
+                        "selected": sel.get("status"),
+                        "status": "not_executed",
+                        "exit_code": None,
+                        "reason": "shellcheck_disabled_in_actionlint",
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                        "access_id": "actionlint/shellcheck-inline",
+                        **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                    }
+                else:
+                    al_rep = al_run["report"]
+                    _, inline_findings = split_actionlint_diagnostics(
+                        al_rep["findings"]
+                    )
+                    if inline_findings:
+                        inline_status = "failed"
+                        inline_reason = "shellcheck_findings"
+                        inline_exit_code = al_rep["exit_code"]
+                        inline_exe = al_run["executable"]
+                    elif al_rep["outcome"] == "clean":
+                        inline_status = "passed"
+                        inline_reason = None
+                        inline_exit_code = al_rep["exit_code"]
+                        inline_exe = al_run["executable"]
+                    else:
+                        # actionlint exited non-zero without inline shellcheck findings:
+                        # fail closed as not_executed rather than fabricating pass or
+                        # borrowing another tool's failure exit code.
+                        inline_status = "not_executed"
+                        inline_reason = "actionlint_failed_without_shellcheck_verdict"
+                        inline_exit_code = None
+                        inline_exe = None
+                    out["workflow_shellcheck"] = {
+                        "name": "workflow_shellcheck",
+                        "selected": sel.get("status"),
+                        "status": inline_status,
+                        "exit_code": inline_exit_code,
+                        "reason": inline_reason,
+                        "stdout": al_rep["stdout"],
+                        "stderr": al_rep["stderr"],
+                        "findings": inline_findings[:MAX_FINDINGS],
+                        "native_json": al_rep["native_json"],
+                        "executable": inline_exe,
+                        "tool_version": sc_ver if inline_exe else None,
+                        "access_id": "actionlint/shellcheck-inline",
+                        "input_paths": list(workflows),
+                        "actionlint_exit_code": al_rep["exit_code"],
+                        "shared_actionlint": bool("actionlint" in out),
+                        "coverage": {
+                            "workflow_inline_shell": inline_status == "passed",
+                            "workflow_inline_status": inline_status,
+                            "workflow_files": list(workflows),
+                            "per_script_clean_receipts_available": False,
+                        },
+                        **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                        **(
+                            {
+                                "generated_input_refs": [
+                                    dict(r) for r in generated_input_refs
+                                ]
+                            }
+                            if generated_input_refs
+                            else {}
+                        ),
+                    }
 
     if "shellcheck" in selected_by_name:
         sel = selected_by_name["shellcheck"]
-        has_inline_workflows = bool(workflows) and shellcheck_inline
-        has_standalone = bool(shells)
-        blocked = admit(
-            "shellcheck",
-            "shellcheck/check" if has_standalone else "actionlint/shellcheck-inline",
-            SHELLCHECK_VERSION,
-        )
+        blocked, _ = admissions["shellcheck"]
         if blocked is not None:
             out["shellcheck"] = blocked
-        elif not has_standalone and not has_inline_workflows:
+        elif not shells:
             out["shellcheck"] = {
                 "name": "shellcheck",
                 "selected": sel.get("status"),
                 "status": "not_applicable",
-                "reason": "no_applicable_shell_targets",
+                "reason": "no_shell_files",
+                "access_id": "shellcheck/check",
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
@@ -1126,161 +1347,53 @@ def run_workflow_script_suite(
                     "stderr": sc_detail,
                     "execution_started": False,
                     "execution_kind": "not_started",
-                    "access_id": (
-                        "shellcheck/check"
-                        if has_standalone
-                        else "actionlint/shellcheck-inline"
-                    ),
+                    "access_id": "shellcheck/check",
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
             else:
-                standalone_rep = None
-                standalone_exe = None
-                if has_standalone:
-                    sc_prefix, standalone_exe = _resolve_tool_prefix("shellcheck")
-                    sc_pol = shellcheck_policy(shells)
-                    sc_completed = _invoke(
-                        runner, [*sc_prefix, *shellcheck_arguments(sc_pol)], root
-                    )
-                    sc_stdout = getattr(sc_completed, "stdout", "") or ""
-                    sc_stderr = getattr(sc_completed, "stderr", "") or ""
-                    standalone_rep = script_report(
-                        sc_pol,
-                        sc_completed.returncode,
-                        stdout=sc_stdout,
-                        stderr=sc_stderr,
-                        native_raw=sc_stdout,
-                    )
-
-                al_run = ensure_actionlint_run(True) if has_inline_workflows else None
-                al_rep = al_run["report"] if (al_run and al_run["prepared"]) else None
-
-                # Determine composite verdict strictly without fabricating success.
-                inline_status = "not_applicable"
-                inline_reason = None
-                inline_findings: list[dict] = []
-                if has_inline_workflows:
-                    if not al_run or not al_run["prepared"]:
-                        inline_status = "not_executed"
-                        inline_reason = (al_run or {}).get(
-                            "reason"
-                        ) or "actionlint_unprepared"
-                    elif not al_run["shellcheck_enabled"]:
-                        inline_status = "not_executed"
-                        inline_reason = "shellcheck_disabled_in_actionlint"
-                    else:
-                        _, inline_findings = split_actionlint_diagnostics(
-                            al_rep["findings"]
-                        )
-                        if inline_findings:
-                            inline_status = "failed"
-                            inline_reason = "shellcheck_findings"
-                        elif al_rep["outcome"] == "clean":
-                            inline_status = "passed"
-                        else:
-                            # actionlint exited non-zero without shellcheck findings:
-                            # never pretend inline shell passed.
-                            inline_status = "not_executed"
-                            inline_reason = (
-                                "actionlint_failed_without_shellcheck_verdict"
-                            )
-
-                standalone_status = "not_applicable"
-                standalone_reason = None
-                standalone_findings: list[dict] = []
-                if has_standalone:
-                    standalone_findings = list(standalone_rep["findings"])
-                    if standalone_rep["outcome"] == "clean":
-                        standalone_status = "passed"
-                    elif standalone_rep["outcome"] == "findings":
-                        standalone_status = "failed"
-                        standalone_reason = "shellcheck_findings"
-                    else:
-                        standalone_status = "failed"
-                        standalone_reason = "shellcheck_execution_error"
-
-                combined_findings = [*standalone_findings, *inline_findings]
-                if "failed" in (standalone_status, inline_status):
-                    final_status = "failed"
-                    final_reason = (
-                        standalone_reason or inline_reason or "shellcheck_findings"
-                    )
-                elif "not_executed" in (standalone_status, inline_status):
-                    final_status = "not_executed"
-                    final_reason = (
-                        inline_reason
-                        if inline_status == "not_executed"
-                        else standalone_reason
-                    )
+                sc_prefix, standalone_exe = _resolve_tool_prefix("shellcheck")
+                sc_pol = shellcheck_policy(shells)
+                sc_completed = _invoke(
+                    runner, [*sc_prefix, *shellcheck_arguments(sc_pol)], root
+                )
+                sc_stdout = getattr(sc_completed, "stdout", "") or ""
+                sc_stderr = getattr(sc_completed, "stderr", "") or ""
+                standalone_rep = script_report(
+                    sc_pol,
+                    sc_completed.returncode,
+                    stdout=sc_stdout,
+                    stderr=sc_stderr,
+                    native_raw=sc_stdout,
+                )
+                if standalone_rep["outcome"] == "clean":
+                    standalone_status = "passed"
+                    standalone_reason = None
+                elif standalone_rep["outcome"] == "findings":
+                    standalone_status = "failed"
+                    standalone_reason = "shellcheck_findings"
                 else:
-                    final_status = "passed"
-                    final_reason = None
-
-                access_id = (
-                    "shellcheck/check"
-                    if has_standalone
-                    else "actionlint/shellcheck-inline"
-                )
-                exit_code = (
-                    standalone_rep["exit_code"]
-                    if standalone_rep is not None
-                    else (al_rep["exit_code"] if al_rep is not None else None)
-                )
-                executable = (
-                    standalone_exe
-                    if has_standalone
-                    else (al_run["executable"] if al_run else None)
-                )
-                coverage = {
-                    "standalone_shell": standalone_status == "passed",
-                    "standalone_status": standalone_status,
-                    "standalone_files": list(shells),
-                    "workflow_inline_shell": inline_status == "passed",
-                    "workflow_inline_status": inline_status,
-                    "workflow_files": list(workflows) if has_inline_workflows else [],
-                    "per_script_clean_receipts_available": False,
-                }
-                entry = {
+                    standalone_status = "failed"
+                    standalone_reason = "shellcheck_execution_error"
+                out["shellcheck"] = {
                     "name": "shellcheck",
                     "selected": sel.get("status"),
-                    "status": final_status,
-                    "exit_code": exit_code,
-                    "reason": final_reason,
-                    "stdout": (standalone_rep or {}).get("stdout")
-                    or (al_rep or {}).get("stdout", ""),
-                    "stderr": (standalone_rep or {}).get("stderr")
-                    or (al_rep or {}).get("stderr", ""),
-                    "findings": combined_findings[:MAX_FINDINGS],
-                    "native_json": (standalone_rep or {}).get("native_json"),
-                    "executable": executable,
+                    "status": standalone_status,
+                    "exit_code": standalone_rep["exit_code"],
+                    "reason": standalone_reason,
+                    "stdout": standalone_rep["stdout"],
+                    "stderr": standalone_rep["stderr"],
+                    "findings": standalone_rep["findings"],
+                    "native_json": standalone_rep["native_json"],
+                    "executable": standalone_exe,
                     "tool_version": sc_ver,
-                    "access_id": access_id,
-                    "input_paths": sorted(
-                        set(shells)
-                        | (set(workflows) if has_inline_workflows else set())
-                    ),
-                    "coverage": coverage,
-                    "composite_mode": (
-                        "standalone_and_actionlint_inline"
-                        if (has_standalone and has_inline_workflows)
-                        else (
-                            "standalone_shellcheck"
-                            if has_standalone
-                            else "actionlint_native_shellcheck"
-                        )
-                    ),
-                    "independent_shellcheck_exit_code": (
-                        standalone_rep["exit_code"]
-                        if standalone_rep is not None
-                        else None
-                    ),
-                    "actionlint_exit_code": (
-                        al_rep["exit_code"] if al_rep is not None else None
-                    ),
-                    "per_script_clean_receipts_available": False,
-                    "shared_actionlint": bool(
-                        has_inline_workflows and "actionlint" in out
-                    ),
+                    "access_id": "shellcheck/check",
+                    "input_paths": list(shells),
+                    "coverage": {
+                        "standalone_shell": standalone_status == "passed",
+                        "standalone_status": standalone_status,
+                        "standalone_files": list(shells),
+                        "per_script_clean_receipts_available": False,
+                    },
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                     **(
                         {
@@ -1292,11 +1405,10 @@ def run_workflow_script_suite(
                         else {}
                     ),
                 }
-                out["shellcheck"] = entry
 
     if "zizmor" in selected_by_name:
         sel = selected_by_name["zizmor"]
-        blocked = admit("zizmor", "zizmor/check", ZIZMOR_VERSION)
+        blocked, _ = admissions["zizmor"]
         if blocked is not None:
             out["zizmor"] = blocked
         elif not workflows:

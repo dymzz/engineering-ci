@@ -36,7 +36,9 @@ REPORT_KIND = "engineering-ci-execution-report"
 _HYGIENE_CHECKS = frozenset(
     {"docs", "tach", "tach_external", "vulture", "whitespace", "forwarding"}
 )
-_WORKFLOW_SCRIPT_CHECKS = frozenset({"actionlint", "shellcheck", "zizmor"})
+_WORKFLOW_SCRIPT_CHECKS = frozenset(
+    {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
+)
 
 
 class ExecutionError(ValueError):
@@ -812,7 +814,16 @@ def omitted_workflow_script_checks(
     if not configured:
         return []
     changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
-    scoped = selection.workflow_script_check_scopes(changes, config, root=root)
+    config_input = (plan.get("inputs") or {}).get("config")
+    config_path = config_input.get("path") if isinstance(config_input, dict) else None
+    full = bool((plan.get("selection") or {}).get("full_tests"))
+    scoped = selection.workflow_script_check_scopes(
+        changes,
+        config,
+        root=root,
+        config_path=config_path,
+        full=full,
+    )
     selected_names = {
         item.get("name")
         for item in selected
@@ -913,7 +924,7 @@ def _run_workflow_script_checks(
             plan, policy_admission=policy_admission
         ),
         shared_cache=shared_cache,
-        inline_shellcheck_requested=("shellcheck" in all_selected_names),
+        inline_shellcheck_requested=("workflow_shellcheck" in all_selected_names),
     )
     results = []
     any_failed = False
