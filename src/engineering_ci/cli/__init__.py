@@ -22,6 +22,7 @@ def main(argv=None):
             "hygiene",
             "sources",
             "execute",
+            "hooks",
             "cicd-telemetry",
             "dagger-telemetry",
         ),
@@ -45,6 +46,8 @@ def main(argv=None):
         from engineering_ci.sources import main as invoke
     elif namespace.command == "execute":
         from engineering_ci.execution import main as invoke
+    elif namespace.command == "hooks":
+        from engineering_ci.hooks import main as invoke
     elif namespace.command == "cicd-telemetry":
         from engineering_ci.cicd_telemetry import main as invoke
     elif namespace.command == "dagger-telemetry":
