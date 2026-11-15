@@ -32,6 +32,13 @@ from . import check_contract, expected_checks
 
 RECONCILIATION_KIND = "engineering-ci-expected-result-reconciliation"
 RECONCILIATION_VERSION = 1
+EXECUTION_REPORT_KIND = "engineering-ci-execution-report"
+JOB_RECEIPT_KIND = "engineering-ci-job-attempt-receipt"
+JOB_RECEIPT_SCHEMA_VERSION = 1
+JOB_RECEIPT_VERIFICATION_STATUSES = frozenset({"upstream_verified"})
+ATTEMPT_ELIGIBILITY_STATUSES = frozenset(
+    {"eligible", "superseded", "terminal", "unknown"}
+)
 ENTRY_STATUSES = frozenset(
     {"matched", "missing", "insufficient", "unknown", "unrouted", "not_applicable"}
 )
@@ -129,7 +136,8 @@ def _report_ref(value, code):
         "sha256",
     }:
         raise ReconciliationError(code)
-    _text(value.get("kind"), code)
+    if value.get("kind") != EXECUTION_REPORT_KIND:
+        raise ReconciliationError(code)
     schema_version = value.get("schema_version")
     if type(schema_version) is not int or schema_version < 1:
         raise ReconciliationError(code)
@@ -138,6 +146,83 @@ def _report_ref(value, code):
     ):
         raise ReconciliationError(code)
     return value
+
+
+def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref):
+    """Upstream Job/Attempt receipt binding one Report to one Job attempt.
+
+    The receipt status is consumed as an upstream proof state. This module does
+    not authenticate the issuer; that admission remains #63's responsibility.
+    """
+    if not isinstance(value, dict) or set(value) != {
+        "kind",
+        "schema_version",
+        "job_ref",
+        "run_ref",
+        "attempt_ref",
+        "runner_ref",
+        "report_ref",
+        "issuer_ref",
+        "verification_status",
+    }:
+        raise ReconciliationError("observation_job_receipt_invalid")
+    if (
+        value.get("kind") != JOB_RECEIPT_KIND
+        or value.get("schema_version") != JOB_RECEIPT_SCHEMA_VERSION
+    ):
+        raise ReconciliationError("observation_job_receipt_invalid")
+    for key, expected in (
+        ("job_ref", job_ref),
+        ("run_ref", run_ref),
+        ("attempt_ref", attempt_ref),
+        ("runner_ref", runner_ref),
+        ("report_ref", report_ref),
+    ):
+        if value.get(key) != expected:
+            raise ReconciliationError("observation_job_receipt_mismatch")
+    _evidence_ref(value.get("issuer_ref"), "observation_job_receipt_invalid")
+    if not isinstance(value.get("verification_status"), str):
+        raise ReconciliationError("observation_job_receipt_invalid")
+    return value
+
+
+def _execution_report(value, report_ref):
+    """Verify the digest of one Execution Report and extract its Native Results."""
+    if not isinstance(value, dict):
+        raise ReconciliationError("observation_report_invalid")
+    if value.get("kind") != EXECUTION_REPORT_KIND:
+        raise ReconciliationError("observation_report_invalid")
+    if value.get("schema_version") != report_ref["schema_version"]:
+        raise ReconciliationError("observation_report_invalid")
+    if _digest(value) != "sha256:" + report_ref["sha256"]:
+        raise ReconciliationError("observation_report_digest_mismatch")
+    checks = value.get("checks")
+    if not isinstance(checks, list):
+        raise ReconciliationError("observation_report_invalid")
+    results = []
+    seen = set()
+    for check in checks:
+        if not isinstance(check, dict):
+            raise ReconciliationError("observation_report_invalid")
+        native = check.get("native_results")
+        if native is None and isinstance(check.get("native_result"), dict):
+            native = [check["native_result"]]
+        if native is None:
+            continue
+        if not isinstance(native, list):
+            raise ReconciliationError("observation_report_invalid")
+        for result in native:
+            try:
+                check_contract.validate_result(result)
+            except check_contract.CheckContractError as error:
+                raise ReconciliationError(
+                    "native_result_invalid", native_code=error.code
+                ) from None
+            if result["result_id"] in seen:
+                raise ReconciliationError("observation_report_result_duplicate")
+            seen.add(result["result_id"])
+            results.append(result)
+    return results
 
 
 def _select_scope(expected, ref_scope_id):
@@ -319,8 +404,18 @@ def _job_instance(value):
         "attempt_ref",
         "runner_ref",
         "report_ref",
+        "attempt_eligibility",
+        "qualification_ref",
     }:
         raise ReconciliationError("routing_job_instance_invalid")
+    eligibility = value.get("attempt_eligibility", "unknown")
+    if eligibility not in ATTEMPT_ELIGIBILITY_STATUSES:
+        raise ReconciliationError("routing_job_instance_invalid")
+    qualification_ref = value.get("qualification_ref")
+    if eligibility != "unknown" and qualification_ref is None:
+        raise ReconciliationError("routing_attempt_qualification_missing")
+    if qualification_ref is not None:
+        _evidence_ref(qualification_ref, "routing_attempt_qualification_invalid")
     instance = {
         "job_ref": _text(value.get("job_ref"), "routing_job_instance_invalid"),
         "run_ref": _text(value.get("run_ref"), "routing_job_instance_invalid"),
@@ -329,6 +424,8 @@ def _job_instance(value):
             value.get("runner_ref"), "routing_job_instance_invalid"
         ),
         "report_ref": None,
+        "attempt_eligibility": eligibility,
+        "qualification_ref": qualification_ref,
     }
     if value.get("report_ref") is not None:
         instance["report_ref"] = _report_ref(
@@ -448,12 +545,20 @@ def _normalize_observations(observations):
         report_ref = None
         if item.get("report_ref") is not None:
             report_ref = _report_ref(item["report_ref"], "observation_report_invalid")
-        results = item.get("native_results")
-        if not isinstance(results, (list, tuple)):
+        report_results = None
+        if item.get("report") is not None:
+            if report_ref is None:
+                raise ReconciliationError("observation_report_ref_missing")
+            report_results = _execution_report(item["report"], report_ref)
+        provided = item.get("native_results")
+        if provided is not None and not isinstance(provided, (list, tuple)):
             raise ReconciliationError("observation_results_invalid")
-        job_results = []
-        job_seen = set()
-        for result in results:
+        if provided is None:
+            job_results = list(report_results) if report_results is not None else []
+        else:
+            job_results = list(provided)
+        received_results = {}
+        for result in job_results:
             try:
                 check_contract.validate_result(result)
             except check_contract.CheckContractError as error:
@@ -466,15 +571,38 @@ def _normalize_observations(observations):
                 and result["runner_ref"] != runner_ref
             ):
                 raise ReconciliationError("observation_runner_mismatch")
-            result_id = result["result_id"]
-            if result_id in job_seen:
-                raise ReconciliationError("observation_result_duplicate")
-            job_seen.add(result_id)
+            received_results[result["result_id"]] = _canonical(result)
+        if report_results is not None and provided is not None:
+            extracted_results = {
+                result["result_id"]: _canonical(result) for result in report_results
+            }
+            if received_results != extracted_results:
+                raise ReconciliationError("observation_report_results_mismatch")
+        result_ids = set(received_results)
+        for result_id in result_ids:
             occurrences.setdefault(result_id, []).append(identity)
-            job_results.append(result)
+        receipt = None
+        if item.get("job_receipt") is not None:
+            if report_ref is None:
+                raise ReconciliationError("observation_job_receipt_invalid")
+            receipt = _job_receipt(
+                item["job_receipt"],
+                job_ref=job_ref,
+                run_ref=run_ref,
+                attempt_ref=attempt_ref,
+                runner_ref=runner_ref,
+                report_ref=report_ref,
+            )
+        attribution_verified = bool(
+            report_results is not None
+            and receipt is not None
+            and receipt.get("verification_status") in JOB_RECEIPT_VERIFICATION_STATUSES
+        )
         identity_complete = bool(run_ref and attempt_ref)
         if job_results:
-            identity_complete = identity_complete and bool(runner_ref and report_ref)
+            identity_complete = (
+                identity_complete and bool(runner_ref) and bool(attribution_verified)
+            )
         normalized.append(
             {
                 "job_ref": job_ref,
@@ -482,6 +610,9 @@ def _normalize_observations(observations):
                 "attempt_ref": attempt_ref,
                 "runner_ref": runner_ref,
                 "report_ref": report_ref,
+                "job_receipt": receipt,
+                "report_verified": report_results is not None,
+                "attribution_verified": attribution_verified,
                 "native_results": job_results,
                 "identity_complete": identity_complete,
             }
@@ -531,6 +662,9 @@ def _unknown_fields(reason):
             "runner_ref",
             "report_ref",
         ],
+        "job_attribution_unproven": ["job_receipt"],
+        "effective_attempt_unqualified": ["attempt_eligibility"],
+        "multiple_eligible_attempts": ["attempt_eligibility"],
         "execution_object_mismatch": ["result_identity"],
     }
     return mapping.get(reason, ["expected_constraints"])
@@ -648,7 +782,13 @@ def _resolve_expected(entry, resolution):
     return strict, "matched", None, evidence
 
 
-def _candidate_results(entry, instances, observations_by_identity, job_refs):
+def _candidate_results(
+    entry,
+    instances,
+    observations_by_identity,
+    job_refs,
+    inactive_identities=(),
+):
     candidates = []
     version_mismatch = []
     problems = []
@@ -691,7 +831,11 @@ def _candidate_results(entry, instances, observations_by_identity, job_refs):
         if observation["native_results"] and not observation["identity_complete"]:
             problems.append(
                 {
-                    "reason": "job_execution_identity_unproven",
+                    "reason": (
+                        "job_attribution_unproven"
+                        if not observation["attribution_verified"]
+                        else "job_execution_identity_unproven"
+                    ),
                     "job_ref": instance["job_ref"],
                     "run_ref": instance["run_ref"],
                     "attempt_ref": instance["attempt_ref"],
@@ -713,12 +857,18 @@ def _candidate_results(entry, instances, observations_by_identity, job_refs):
     for observation in observations_by_identity.values():
         if _observation_key(observation) in observed_identities:
             continue
+        if _observation_key(observation) in inactive_identities:
+            continue
         if observation["job_ref"] not in job_refs:
             continue
         if observation["native_results"] and not observation["identity_complete"]:
             problems.append(
                 {
-                    "reason": "job_execution_identity_unproven",
+                    "reason": (
+                        "job_attribution_unproven"
+                        if not observation["attribution_verified"]
+                        else "job_execution_identity_unproven"
+                    ),
                     "job_ref": observation["job_ref"],
                     "run_ref": observation.get("run_ref"),
                     "attempt_ref": observation.get("attempt_ref"),
@@ -763,6 +913,7 @@ def _native_status(results):
 
 def _result_evidence(result, observation):
     """Compact observed/native evidence reference; never a second Result copy."""
+    receipt = observation.get("job_receipt")
     return {
         "result_id": result["result_id"],
         "result_instance": result.get("result_instance"),
@@ -775,6 +926,7 @@ def _result_evidence(result, observation):
         "attempt_ref": observation["attempt_ref"],
         "runner_ref": observation["runner_ref"],
         "report_ref": observation["report_ref"],
+        "job_receipt_ref": _digest(receipt) if receipt is not None else None,
     }
 
 
@@ -816,6 +968,7 @@ def _reconcile_entry(entry, binding, resolution, observations_by_identity):
         "applicability": entry["applicability"],
         "job_refs": [],
         "job_instances": [],
+        "inactive_attempts": [],
         "mapping_status": "unrouted",
         "scheduler_ref": None,
         "effective_config_ref": None,
@@ -887,9 +1040,66 @@ def _reconcile_entry(entry, binding, resolution, observations_by_identity):
             unknown_fields=_unknown_fields("job_activation_identity_missing"),
         )
         return output
+    eligibility = {instance["attempt_eligibility"] for instance in instances}
+    if "unknown" in eligibility:
+        output.update(
+            binding_status="unknown",
+            reason="effective_attempt_unqualified",
+            unknown_fields=_unknown_fields("effective_attempt_unqualified"),
+        )
+        return output
+    eligible_instances = [
+        instance
+        for instance in instances
+        if instance["attempt_eligibility"] == "eligible"
+    ]
+    inactive_instances = [
+        instance
+        for instance in instances
+        if instance["attempt_eligibility"] != "eligible"
+    ]
+    if not eligible_instances:
+        output.update(
+            binding_status="unknown",
+            reason="effective_attempt_unqualified",
+            unknown_fields=_unknown_fields("effective_attempt_unqualified"),
+        )
+        return output
+    if len({instance["job_ref"] for instance in eligible_instances}) != len(
+        eligible_instances
+    ):
+        output.update(
+            binding_status="unknown",
+            reason="multiple_eligible_attempts",
+            unknown_fields=_unknown_fields("multiple_eligible_attempts"),
+        )
+        return output
+    inactive_identities = set()
+    for instance in inactive_instances:
+        key = _instance_key(instance)
+        inactive_identities.add(key)
+        observation = observations_by_identity.get(key)
+        output["inactive_attempts"].append(
+            {
+                "job_ref": instance["job_ref"],
+                "run_ref": instance["run_ref"],
+                "attempt_ref": instance["attempt_ref"],
+                "attempt_eligibility": instance["attempt_eligibility"],
+                "observed": observation is not None,
+                "result_ids": (
+                    [result["result_id"] for result in observation["native_results"]]
+                    if observation is not None
+                    else []
+                ),
+            }
+        )
 
     candidates, version_mismatch, problems = _candidate_results(
-        entry, instances, observations_by_identity, set(job_refs)
+        entry,
+        eligible_instances,
+        observations_by_identity,
+        set(job_refs),
+        inactive_identities,
     )
     observed = [*candidates, *version_mismatch]
     output["observed_result_ids"] = [result["result_id"] for result, _ in observed]
@@ -1043,7 +1253,11 @@ def _unexpected_observations(observations, routing, reconciled_by_ref):
         refs = identity_refs.get(key)
         if not refs:
             if observation["native_results"] and not observation["identity_complete"]:
-                reason = "job_execution_identity_unproven"
+                reason = (
+                    "job_attribution_unproven"
+                    if not observation["attribution_verified"]
+                    else "job_execution_identity_unproven"
+                )
             elif observation["job_ref"] in job_name_refs:
                 reason = "job_instance_not_activated"
             else:
@@ -1087,18 +1301,25 @@ def _unexpected_observations(observations, routing, reconciled_by_ref):
     return unexpected
 
 
-def _receipt_status(expected_status, entries, unexpected):
+def _receipt_status(expected_status, entries, unexpected, unreconciled):
     eligible = [item for item in entries if item["binding_status"] != "not_applicable"]
     if not entries:
-        if expected_status == "complete" and not unexpected:
+        if expected_status == "complete" and not unexpected and not unreconciled:
             return "matched"
-        return "partial" if unexpected else "unknown"
+        return "partial" if unexpected or unreconciled else "unknown"
     if not eligible:
         return (
-            "matched" if expected_status == "complete" and not unexpected else "partial"
+            "matched"
+            if expected_status == "complete" and not unexpected and not unreconciled
+            else "partial"
         )
     statuses = {item["binding_status"] for item in eligible}
-    if expected_status == "complete" and statuses == {"matched"} and not unexpected:
+    if (
+        expected_status == "complete"
+        and statuses == {"matched"}
+        and not unexpected
+        and not unreconciled
+    ):
         return "matched"
     if statuses == {"unrouted"}:
         return "unrouted"
@@ -1149,6 +1370,10 @@ def reconcile_expected_results(
     unexpected = _unexpected_observations(
         normalized_observations, bindings, entries_by_ref
     )
+    rejected_results = sum(len(item["rejected_results"]) for item in entries)
+    rejected_observations = sum(len(item["rejected_observations"]) for item in entries)
+    inactive_attempts = sum(len(item["inactive_attempts"]) for item in entries)
+    unreconciled = len(unexpected) + rejected_results + rejected_observations
     summary = {
         "expected": len(entries),
         "matched": sum(item["binding_status"] == "matched" for item in entries),
@@ -1163,6 +1388,9 @@ def reconcile_expected_results(
         ),
         "unexpected": len(unexpected),
         "duplicate": len(duplicates),
+        "rejected_results": rejected_results,
+        "rejected_observations": rejected_observations,
+        "inactive_attempts": inactive_attempts,
         "selected_results": len(
             {result_id for item in entries for result_id in item["selected_result_ids"]}
         ),
@@ -1187,7 +1415,9 @@ def reconcile_expected_results(
         "expected_event_ref": scope["event_ref"],
         "expected_source_ref": scope["source_ref"],
         "ref": scope.get("ref") or None,
-        "status": _receipt_status(scope["status"], entries, unexpected),
+        "reconciled_scope": "declared_expected_instances",
+        "all_observations_reconciled": unreconciled == 0,
+        "status": _receipt_status(scope["status"], entries, unexpected, unreconciled),
         "entries": entries,
         "unexpected": unexpected,
         "duplicate": duplicates,
@@ -1220,6 +1450,10 @@ def validate_receipt(receipt):
         raise ReconciliationError("receipt_authority_claimed")
     if receipt.get("required_gate") != "not_evaluated":
         raise ReconciliationError("receipt_authority_claimed")
+    if receipt.get("reconciled_scope") != "declared_expected_instances":
+        raise ReconciliationError("receipt_scope_invalid")
+    if not isinstance(receipt.get("all_observations_reconciled"), bool):
+        raise ReconciliationError("receipt_scope_invalid")
     entries = receipt.get("entries")
     if not isinstance(entries, list):
         raise ReconciliationError("receipt_entries_invalid")
@@ -1259,10 +1493,15 @@ def validate_receipt(receipt):
             or not item.get("job_ref")
             or not item.get("run_ref")
             or not item.get("attempt_ref")
+            or item.get("attempt_eligibility") not in ATTEMPT_ELIGIBILITY_STATUSES
             for item in job_instances
         ):
             raise ReconciliationError("receipt_job_instances_invalid")
-        for key in ("rejected_results", "rejected_observations"):
+        for key in (
+            "rejected_results",
+            "rejected_observations",
+            "inactive_attempts",
+        ):
             if not isinstance(entry.get(key), list):
                 raise ReconciliationError("receipt_rejected_evidence_invalid")
     for key in ("unexpected", "duplicate"):
