@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import check_contract, expected_checks, plan_contract, selection
+from engineering_ci import (
+    check_contract,
+    execution,
+    expected_checks,
+    plan_contract,
+    selection,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -476,3 +482,42 @@ def test_expected_requires_plan_v2_and_valid_schema(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(plan)
     assert raised.value.code == "expected_checks_schema_unsupported"
+
+
+def test_expanded_definitions_resolve_without_forging_execution_or_required(repo):
+    resolved = check_contract.resolve_definitions(list(check_contract.CHECK_IDS))
+    assert resolved["status"] == "complete"
+    assert resolved["consumer_completeness"] == "not_claimed"
+    by_id = {entry["check_id"]: entry for entry in resolved["definitions"]}
+    assert set(by_id) == set(check_contract.CHECK_IDS.values())
+    assert by_id["eci/weaver/terminal"]["requires_post_completion"] is True
+    assert all(
+        not entry["requires_post_completion"]
+        for check_id, entry in by_id.items()
+        if check_id != "eci/weaver/terminal"
+    )
+
+    path, _ = repo
+    plan = make_plan(repo)
+    expected = plan["expected_checks"]
+    assert expected["definitions_status"] == "requested_names_complete"
+    assert expected["status"] == "partial"
+    assert expected["reason"] == "consumer_profile_not_resolved"
+    assert expected["consumer_completeness"] == "not_claimed"
+
+    report = execution.execute(plan, root=path)
+    assert report.get("trusted", False) is False
+    report_checks = {item.get("name"): item for item in report.get("checks", [])}
+    for non_hygiene_name in (
+        "unittest",
+        "pytest",
+        "weaver_registry",
+        "weaver_live",
+        "weaver_terminal",
+    ):
+        assert non_hygiene_name not in report_checks
+    for item in report.get("checks", []):
+        satisfaction = item.get("native_satisfaction")
+        if satisfaction is not None:
+            assert satisfaction["trusted"] is False
+            assert satisfaction["required"] is False
