@@ -271,6 +271,8 @@ PR #72 保持 Draft 的原因是 **成熟多工具调度器的适配验证、Git
 
 **默认安装基线（2026-11-15 更正）：** ECI/Knowledge 已有 `uv` 工具链，Lefthook 官方提供 PyPI Wheel，因此默认使用 `uv tool install "lefthook==2.2.2"`；需要随项目锁定时使用 `uv add --dev "lefthook==2.2.2"` 并在需要时显式 `uv run lefthook install`。不把 npm 作为默认或必须路径，也不维护 npm/uv 两套等价安装链。`uv python install` 只安装 Python 解释器，不得写成 Lefthook 安装入口。
 
+**证据级别：** 本文 §8.2、§8.4、§8.5.5–8.5.6 中的实验为候选夹具记录的局部观察；本 PR 当前仅提交设计文档，**未附可独立复现的完整实验脚本、配置快照、命令和原始 stdout/stderr/exit 日志**。因此保留已报告事实及其具体限制，但它们不是经本轮审阅独立复核的运行时证据，更不是 S1-E 验收通过。后续仅归档已有有效原始材料，确实缺失且影响具体选型/实施的场景再定向执行；不得为修订证据等级重新跑全部无关检查。
+
 **实测限制必须保留：**
 
 - 以上仅验证调度器候选的 Job 分发/生命周期行为；Tach、Lychee、Sources 的真实原生 Job 尚未在该夹具中执行。
@@ -330,7 +332,7 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 
 **已实测（Lefthook 2.2.2，`extends: [extra.yml]`）：** 主配置与 extended 配置各声明一个 `pre-push.setup`，一次 `lefthook run pre-push` 同时执行了两者（两个 setup 标记文件均生成）。因此“主 YAML 一个 setup”不能证明运行时只 Prepare 一次；必须以同次 Event 的单一权威 Prepare 结果收敛。
 
-当前对 `extends/remotes/local` 多 Setup 的合并行为**未独立核验**；任何未观察到的顺序、覆盖或重复执行保持 `unknown`，不写成已交付。
+**证据边界：** 已在本次夹具中观察到 `extends` 的两条 `setup` 均被执行；**具体合并顺序、冲突处理以及 `remotes`、`lefthook-local` 的对应行为仍未独立核验**。不能把已有 `extends` 正例写成未观察，也不能将局部观察推广成所有配置来源的保证。
 
 #### 8.4.3 逐 Ref/Check → Git Hook 单一 Exit
 
@@ -365,7 +367,7 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 | 项目 | 状态 |
 | --- | --- |
 | 原生 Hook argv+stdin | 已实测（Git 2.56.0/Windows） |
-| Lefthook 普通 Job 的 argv/stdin | 已实测：argv 丢失、stdin 空；不得用于 L1 声明 |
+| Lefthook 普通 Job 的 argv/stdin | 本次夹具的普通 Job **没有显式传递 Git argv，且没有启用 `use_stdin`**，因此未获得 argv/stdin；这不证明 Lefthook 不支持 `{0}`/`{1}` 等参数模板或其他输入传递方式，亦不能据此排除 L1 |
 | L2 原生入口委托 | 设计成立；ECI 实现未交付 |
 | 合并配置单一 Prepare | 未独立核验 |
 | 逐 Ref Hook 非零退出 | 未实现/未实测 |
@@ -409,7 +411,7 @@ Source Execution View **不是新增 Schema/存储层**：从 #66 P0 现行 Sour
 
 **首道可行性验收**：用真正的 pre-commit Index 或 pre-push 全参数 Event、实际受控 Source/Expected，运行 Tach、Lychee、Sources 三项适用原生 Job（必要时使用其中不适用分支反例），至少覆盖全成功、某 Job 失败、Job 未启动/被过滤、Prepare 失败、Scheduler 返回失败，以及**最终对账是否仍产生正确 Hook Exit**。检查同次 Source/Tach 是否重复生产。该验收可复用已完成的真实 Check 原始证据，补缺的只有 Hook 联动事实。
 
-**候选可行后**：再验完整 F/P/R/D/E 中真实新增的 old→new/多 Ref、动态输入、写入 A→B、配置/规则版本与 Glob 过滤，Windows/Unix/Linked Worktree、install/status/update/uninstall、既有 `core.hooksPath` 和安装包的 postinstall 副作用、Knowledge 与非 Knowledge 消费者的同条件成本。不同风险分层验收，不把完整生态候选清单误作一次 Event 的 Expected 域。
+**候选可行后**：再验完整 F/P/R/D/E 中真实新增的 old→new/多 Ref、动态输入、写入 A→B、配置/规则版本与 Glob 过滤，Windows/Unix/Linked Worktree、install/status/update/uninstall、既有 `core.hooksPath` 与**实际采用的 uv/PyPI 安装、升级、卸载、Hook 文件修改及恢复行为**、Knowledge 与非 Knowledge 消费者的同条件成本。**不要求默认方案验收未采用的 npm `postinstall` 或 npm 安装链**；仅有确实使用该渠道的消费者才需针对其特有副作用定向验证。不同风险分层验收，不把完整生态候选清单误作一次 Event 的 Expected 域。
 
 证据应可关联事件/源/Ref/配置、Check/Job 的激活和原生结果、调度返回状态、最终对账与 Hook Exit；缺少原始运行记录时明确 `unverified`。**PR #72 仍是 Draft 机制提案，不宣称本节接口已实现或全部矩阵通过**。
 
@@ -455,8 +457,8 @@ uv run lefthook install   # 仅当所选生命周期需要显式安装
 
 - 自定义 `.git/hooks/pre-push` 与 Lefthook 的 Hook 同步冲突时，`lefthook run` 会警告 `can't rename pre-push to pre-push.old` 并跳过同步；原型仍能运行 Job，但这证明安装所有权必须先收敛到唯一所有者，不能把 ECI 外层 hook 与 Lefthook 安装器混用。
 - 该原型没有 Expected/Final Reconciliation、没有 Tach/Lychee/Sources、没有多 Ref、没有 Unix/linked worktree，也没有将 Job 原生结果映射为 #52 Result；因此只证明 L2 的入口/Exit 形状可行，不是 S1-E 通过。
-- `lefthook run` 在自定义 Hook 存在时尝试同步 Hook 的行为必须在产品安装器中显式处理：要么 ECI 独占安装，要么 Lefthook 独占安装，不能两者都写 `core.hooksPath`。
+- `lefthook run` 在自定义 Hook 存在时尝试同步 Hook 的行为必须在产品安装器中显式处理：要么 ECI 独占安装，要么 Lefthook 独占安装，不能两者都写 `core.hooksPath`。**L2 上线前的明确退出条件**：确认固定版的真实调用接口能够只调度 Job 而不改写 ECI 管理的 Hook 文件/`core.hooksPath`，或选择经证据证明不存在冲突的单一所有者方案；必须有真实文件状态及安装/委托退出证据，**不接受把当前 `can't rename pre-push to pre-push.old` 警告后继续执行视为可靠运行路径**。不因此开发第二个 Hook 安装器或兼容两套生命周期。
 
-**更新状态：** L2 入口/委托/非零 Exit 形状已获得原始观察；ECI Event Coordinator、Final Reconciliation 和真实 Check 仍未实现。
+**更新状态：** L2 的原生 argv/stdin 接收、委托 Job、非零 Exit 传播已有**候选夹具报告的局部观察**，但本 PR 未提供可独立执行的原始脚本、有效配置及完整 stdout/stderr/exit 记录，**尚未完成独立证据复核**。同时 Hook 同步冲突尚未解决；ECI Event Coordinator、Final Reconciliation、Tach/Lychee/Sources 原生结果绑定及生命周期仍未实现。不可因此宣布 L2 可部署或 S1-E PASS。
 
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
