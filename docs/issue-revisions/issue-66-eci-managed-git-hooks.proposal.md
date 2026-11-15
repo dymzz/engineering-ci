@@ -286,4 +286,87 @@ PR #72 保持 Draft 的原因是 **成熟多工具调度器的适配验证、Git
 
 **本 PR 的收口条件：** 本文档只登记冻结边界与已观察证据；真实 Tach/Lychee/Sources、Push 多 Ref、Host/Dagger Source 和消费者验收进入相应实施 PR。#66 S1-E 矩阵版本变更必须先更新 Issue #66，再更新本节证据引用。
 
+### 8.4 S1-E 实施入口、共享身份与验收出口（2026-11-15 补充）
+
+本节把 Review 提出的 Git 原生 argv/stdin、合并配置单一 Prepare、逐 Ref Exit 聚合、Glob 误过滤和安装副作用收敛为实施合同；不新增调度器、Registry 或 Required Policy。
+
+#### 8.4.1 pre-push 原生参数与事件身份
+
+唯一 ECI Event Prepare 必须同时接收并保留：
+
+- Git 传入的两个 Hook 参数：`remote_name`、`remote_location`；
+- 完整、有序的 stdin 行：`local_ref local_oid remote_ref remote_oid`；
+- 对象格式长度（不得硬编码 40 字符零 OID；SHA-1/SHA-256 均按 Git 实际格式）。
+
+**已实测（Windows，Git 2.56.0，原生 Hook）：**
+
+```text
+argv = origin|<bare remote path>
+stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
+```
+
+**已实测（Lefthook 2.2.2 普通 Job）：** 未声明 `use_stdin` 的 Job 收不到 argv，stdin 为空。因此：
+
+- **L1（Lefthook 启动 ECI Prepare）不能仅凭主 YAML 的 Job 命令声称获得 Hook argv/stdin。**
+- **L2（ECI 独占安装的原生入口先读取 argv/stdin，再委托 Lefthook Job）是当前可证明的入口。**
+- 若选择 L1，必须提供固定版 Lefthook 实际支持的外层 wrapper/模板证据；不得虚构 Job 参数 API。
+
+`remote_location` 只允许在受控 Prepare 运行范围使用原值；持久 Report/Artifact/诊断写入去敏的可关联身份（remote name + 规范化/摘要，或受控引用），不得输出含 Token/凭据 URL。首次 Push、远端 Ref 删除、强推、多 Ref、非 HEAD、同 Tree 不同 old→new 均按各自 tuple 保留，不得用单一 `HEAD`/`origin/main` 替代。
+
+#### 8.4.2 合并配置的单一 Prepare
+
+一个原生 Hook Event 只能有一个可核验的权威 Prepare 结果。主 `lefthook.yml`、`extends`、`remotes`、`lefthook-local` 可能共同产生多个 `setup`；不得因为主 YAML 只写一个 `setup` 就宣称运行时只 Prepare 一次。
+
+- 同一 Event 的重复 Prepare 必须共享同一 Event Context/Source 身份，或明确拒绝冲突；
+- 各 Job 只能消费该结果，不得各自回退到 `HEAD`、`origin/main` 或独立 worktree；
+- `lefthook dump` 是配置快照，不证明运行中实际 Job 激活/条件过滤；路由记录必须绑定本次有效合成配置与 Event 版本；
+- L2 委托必须保证 Lefthook 子命令不会重新进入已安装 Git Hook，也不会二次读取原始 stdin。
+
+**已实测（Lefthook 2.2.2，`extends: [extra.yml]`）：** 主配置与 extended 配置各声明一个 `pre-push.setup`，一次 `lefthook run pre-push` 同时执行了两者（两个 setup 标记文件均生成）。因此“主 YAML 一个 setup”不能证明运行时只 Prepare 一次；必须以同次 Event 的单一权威 Prepare 结果收敛。
+
+当前对 `extends/remotes/local` 多 Setup 的合并行为**未独立核验**；任何未观察到的顺序、覆盖或重复执行保持 `unknown`，不写成已交付。
+
+#### 8.4.3 逐 Ref/Check → Git Hook 单一 Exit
+
+- 当前有效本地策略要求执行的 Check，只要失败、未执行、Source/输入/路由身份不可验证，或未取得执行许可，Hook 必须以非零退出；
+- 一个 Ref 成功不能覆盖另一个 Ref 失败；
+- 远端 Ref 删除按真实删除策略处理，不伪造新 Commit 的 Native PASS；
+- 合法不适用与 Advisory 失败按有权本地策略决定是否阻断；
+- 逐 Ref/Check 的原生 exit/status/原因全部保留；Git Hook Exit 只表示本地 Hook 聚合，不等于 #52 Native Exit、#63 Trusted 或 #61 Required；
+- pre-push 非零退出会中止整个 Push，必须明确提示该聚合语义。
+
+#### 8.4.4 Glob/root 误过滤负例（必须纳入 S1-E）
+
+固定 Lefthook 版本下必须验证：
+
+- 根目录、嵌套目录和零层文件；
+- 配置/锁/Manifest 变化；
+- 被引用资源删除/重命名；
+- 无匹配 Push 文件但仍有 Ref 比较/删除策略；
+- staged 文件列表为空但仍有独立适用义务。
+
+静态 `glob/root` 只能保守唤醒相关 Job，不能删除 Expected、不能单凭无匹配让 Hook PASS。无法静态表达的依赖由 ECI 精确适用性判断补齐，但不得默认唤醒所有生态工具。
+
+#### 8.4.5 安装副作用与唯一所有者
+
+- 若采用 npm 分发，必须核验具体版本的 `postinstall` 是否执行 `lefthook install`；依赖安装不得被假定为只读。
+- **已实测（npm 11 allowScripts 默认策略）：** `lefthook@2.2.2` 的 `postinstall` 被 npm 警告但未执行，新仓库 `.git/hooks` 未出现 `pre-commit`/`pre-push`。该结果只代表此包管理器策略，不推广为所有安装方式。
+- 真实 Hook 安装/升级/卸载/恢复、第三方 Hook 与 `core.hooksPath` 共存只能由一个生命周期所有者协调；禁止默认 `--force` / `--reset-hooks-path`。
+- 现有 install/dump/uninstall 观察仅证明局部行为，不证明 ECI 安装器、Unix/linked worktree、共存恢复已完成。
+
+#### 8.4.6 本轮证据状态
+
+| 项目 | 状态 |
+| --- | --- |
+| 原生 Hook argv+stdin | 已实测（Git 2.56.0/Windows） |
+| Lefthook 普通 Job 的 argv/stdin | 已实测：argv 丢失、stdin 空；不得用于 L1 声明 |
+| L2 原生入口委托 | 设计成立；ECI 实现未交付 |
+| 合并配置单一 Prepare | 未独立核验 |
+| 逐 Ref Hook 非零退出 | 未实现/未实测 |
+| Glob 边界负例 | 未实测 |
+| npm postinstall 副作用 | 本环境未执行；不得外推 |
+| S1-E F/P/R、D/E、生命周期、Unix/linked worktree | 仍未完成 |
+
+**8.4 裁决：** S1-E 机制合同按 8.1/8.4 冻结；L2 是当前唯一有原生 argv/stdin 证据的入口；L1 只有在固定版 Lefthook 提供可观察 wrapper 后才可进入同条件比较。矩阵通过状态仍以 Issue #66 `eci-66-s1-hooks-v1` 为准，本节不新增第二份规范性矩阵。
+
 **收口规则：** 若 #66 正文已吸收同一有效需求，本 PR 仅保留差分决策、证据和对应实施入口。Hook 实施确认后择一保留短期设计历史或关闭本草案，不作为长期并行权威；不得创建新缓存层、任务调度框架或 Required 判定器。
