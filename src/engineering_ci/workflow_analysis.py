@@ -92,8 +92,15 @@ def target_kind(scan_path: str) -> str:
     return "unsupported"
 
 
+def _norm_rel_path(path: str) -> str:
+    norm = path.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
+
+
 def _matches_prefix(path: str, prefix: str) -> bool:
-    norm = prefix.replace("\\", "/").lstrip("./")
+    norm = _norm_rel_path(prefix)
     if norm.endswith("/"):
         return path.startswith(norm)
     return path == norm or path.startswith(norm + "/")
@@ -103,31 +110,37 @@ def is_workflow_file(
     path: str,
     workflow_prefixes: tuple[str, ...] = (".github/workflows/",),
 ) -> bool:
-    norm = path.replace("\\", "/").lstrip("./")
+    norm = _norm_rel_path(path)
     if not norm.lower().endswith(WORKFLOW_SUFFIXES):
         return False
     return any(_matches_prefix(norm, prefix) for prefix in workflow_prefixes)
 
 
 def is_workflow_config(path: str, configured: str | None = None) -> bool:
-    norm = path.replace("\\", "/").lstrip("./")
-    if configured and norm == configured.replace("\\", "/").lstrip("./"):
+    norm = _norm_rel_path(path)
+    if configured and norm == _norm_rel_path(configured):
         return True
     return norm in WORKFLOW_CONFIG_FILES
 
 
 def is_zizmor_config(path: str, configured: str | None = None) -> bool:
-    norm = path.replace("\\", "/").lstrip("./")
-    if configured and norm == configured.replace("\\", "/").lstrip("./"):
+    norm = _norm_rel_path(path)
+    if configured and norm == _norm_rel_path(configured):
         return True
     return norm in ZIZMOR_CONFIG_FILES
+
+
+def is_shellcheck_config(path: str, configured: str | None = None) -> bool:
+    if not configured:
+        return False
+    return _norm_rel_path(path) == _norm_rel_path(configured)
 
 
 def is_shell_file(
     path: str,
     shell_prefixes: tuple[str, ...] = (),
 ) -> bool:
-    norm = path.replace("\\", "/").lstrip("./")
+    norm = _norm_rel_path(path)
     if not norm.lower().endswith(SHELL_SUFFIXES):
         return False
     if not shell_prefixes:
@@ -199,12 +212,15 @@ def actionlint_policy(
     shellcheck: bool = False,
     shellcheck_executable: str = "",
     json_format: bool = False,
+    debug: bool = False,
 ) -> dict:
     """Workflow files only; opt-in ShellCheck integration is explicit."""
     if type(shellcheck) is not bool:
         raise ValueError("shellcheck must be a bool")
     if type(json_format) is not bool:
         raise ValueError("json_format must be a bool")
+    if type(debug) is not bool:
+        raise ValueError("debug must be a bool")
     sc_exe = (
         _text("shellcheck_executable", shellcheck_executable)
         if shellcheck_executable
@@ -223,6 +239,7 @@ def actionlint_policy(
         if (shellcheck or sc_exe)
         else None,
         "json_format": json_format,
+        "debug": debug,
     }
 
 
@@ -230,6 +247,7 @@ def shellcheck_policy(
     scan_paths: list[str] | None = None,
     severity: str = "",
     shell: str = "",
+    config: str = "",
 ) -> dict:
     """Standalone shell scripts checked directly by pinned ShellCheck."""
     if severity not in ("", "error", "warning", "info", "style"):
@@ -244,6 +262,7 @@ def shellcheck_policy(
         "scan_paths": path_list("scan_paths", scan_paths, ["scripts"]),
         "severity": severity,
         "shell": shell,
+        "config": _relative_path("config", config) if config else "",
     }
 
 
@@ -335,6 +354,8 @@ def actionlint_arguments(policy: dict) -> list[str]:
     args.append("-pyflakes=")
     if policy.get("json_format"):
         args.extend(["-format", "{{json .}}"])
+    if policy.get("debug"):
+        args.append("-debug")
     if policy["config"]:
         args.append(f"-config-file={policy['config']}")
     return args + policy["scan_paths"]
@@ -342,6 +363,10 @@ def actionlint_arguments(policy: dict) -> list[str]:
 
 def shellcheck_arguments(policy: dict) -> list[str]:
     args = ["--format=json1"]
+    if policy.get("config"):
+        args.append(f"--rcfile={policy['config']}")
+    else:
+        args.append("--norc")
     if policy.get("severity"):
         args.extend(["--severity", policy["severity"]])
     if policy.get("shell"):
@@ -874,6 +899,21 @@ def _report_to_status(report: dict, failure_reason: str) -> str:
     return "failed"
 
 
+def _parse_actionlint_shellcheck_debug(raw_stderr: str) -> dict:
+    """Extract ShellCheck execution evidence from `actionlint -debug` stderr."""
+    lines = (raw_stderr or "").splitlines()
+    disabled = any('Rule "shellcheck" was disabled' in line for line in lines)
+    rule_ran = any("[Linter] shellcheck found " in line for line in lines)
+    invoked_steps = sum(
+        1 for line in lines if "[shellcheck]" in line and "Run shellcheck for " in line
+    )
+    return {
+        "rule_ran": rule_ran,
+        "disabled": disabled,
+        "invoked_steps": invoked_steps,
+    }
+
+
 def run_workflow_script_suite(
     selected_by_name: dict[str, dict],
     *,
@@ -882,6 +922,7 @@ def run_workflow_script_suite(
     workflow_prefixes: tuple[str, ...] = (".github/workflows/",),
     shell_prefixes: tuple[str, ...] = (),
     actionlint_config: str = "",
+    shellcheck_config: str = "",
     zizmor_config: str = "",
     zizmor_persona: str = "",
     zizmor_offline: bool = True,
@@ -892,26 +933,62 @@ def run_workflow_script_suite(
     admission_fn=None,
     shared_cache: dict | None = None,
     inline_shellcheck_requested: bool = False,
+    inline_shellcheck_inputs: tuple[str, ...] | None = None,
 ) -> dict[str, dict]:
     """Run selected actionlint, shellcheck and zizmor checks once with shared facts."""
     root = Path(root)
     cache = shared_cache if shared_cache is not None else {}
-    workflows = sorted(
-        set(discover_workflow_files(root, workflow_prefixes))
-        | {
-            p.replace("\\", "/").lstrip("./")
+    extra_workflows = sorted(
+        {
+            _norm_rel_path(p)
             for p in extra_paths
             if is_workflow_file(p, workflow_prefixes) and (root / p).is_file()
         }
     )
-    shells = sorted(
-        set(discover_shell_files(root, shell_prefixes))
-        | {
-            p.replace("\\", "/").lstrip("./")
+    extra_shells = sorted(
+        {
+            _norm_rel_path(p)
             for p in extra_paths
             if is_shell_file(p, shell_prefixes) and (root / p).is_file()
         }
     )
+    discovered_workflows: list[str] | None = None
+    discovered_shells: list[str] | None = None
+
+    def all_workflows() -> list[str]:
+        nonlocal discovered_workflows
+        if discovered_workflows is None:
+            discovered_workflows = sorted(
+                set(discover_workflow_files(root, workflow_prefixes))
+                | set(extra_workflows)
+            )
+        return discovered_workflows
+
+    def all_shells() -> list[str]:
+        nonlocal discovered_shells
+        if discovered_shells is None:
+            discovered_shells = sorted(
+                set(discover_shell_files(root, shell_prefixes)) | set(extra_shells)
+            )
+        return discovered_shells
+
+    def target_files(check_name: str, *, kind: str) -> list[str]:
+        sel = selected_by_name.get(check_name) or {}
+        declared = sel.get("inputs")
+        # Scan only the Check's declared scoped inputs when available; fall back to
+        # discovery only when inputs are omitted or selection status is unknown.
+        if isinstance(declared, list) and (
+            sel.get("status") != "unknown" or bool(declared)
+        ):
+            extra = extra_workflows if kind == "workflow" else extra_shells
+            resolved = [
+                norm
+                for p in declared
+                for norm in (_norm_rel_path(p),)
+                if (root / norm).is_file()
+            ]
+            return sorted(set(resolved) | set(extra))
+        return all_workflows() if kind == "workflow" else all_shells()
 
     def admit_tools(
         check_name: str,
@@ -1004,10 +1081,12 @@ def run_workflow_script_suite(
             cache["sc_ready"] = (ok, obs_ver, detail)
             return cache["sc_ready"]
 
-    def ensure_actionlint_run(want_inline_shellcheck: bool) -> dict:
+    def ensure_actionlint_run(
+        target_workflows: tuple[str, ...], want_inline_shellcheck: bool
+    ) -> dict:
         cache_key = (
             "actionlint",
-            tuple(workflows),
+            target_workflows,
             bool(want_inline_shellcheck),
             actionlint_config,
         )
@@ -1047,15 +1126,21 @@ def run_workflow_script_suite(
                 cache[cache_key] = res
                 return res
             policy = actionlint_policy(
-                workflows,
+                list(target_workflows),
                 config=actionlint_config,
                 shellcheck=use_shellcheck,
                 json_format=True,
+                debug=use_shellcheck,
             )
             argv = [*prefix, *actionlint_arguments(policy)]
             completed = _invoke(runner, argv, root)
             raw_stdout = getattr(completed, "stdout", "") or ""
             raw_stderr = getattr(completed, "stderr", "") or ""
+            sc_debug = (
+                _parse_actionlint_shellcheck_debug(raw_stderr)
+                if use_shellcheck
+                else None
+            )
             rep = script_report(
                 policy,
                 completed.returncode,
@@ -1073,11 +1158,31 @@ def run_workflow_script_suite(
                 "shellcheck_version": sc_ver,
                 "shellcheck_detail": sc_detail,
                 "shellcheck_enabled": use_shellcheck,
+                "shellcheck_debug": sc_debug,
             }
             cache[cache_key] = res
             return res
 
     out: dict[str, dict] = {}
+    al_workflows = (
+        target_files("actionlint", kind="workflow")
+        if "actionlint" in selected_by_name
+        else []
+    )
+    wf_sc_workflows = (
+        target_files("workflow_shellcheck", kind="workflow")
+        if "workflow_shellcheck" in selected_by_name
+        else []
+    )
+    sc_shells = (
+        target_files("shellcheck", kind="shell")
+        if "shellcheck" in selected_by_name
+        else []
+    )
+    zz_workflows = (
+        target_files("zizmor", kind="workflow") if "zizmor" in selected_by_name else []
+    )
+
     inline_adm_key = (
         "workflow_shellcheck"
         if "workflow_shellcheck" in selected_by_name
@@ -1086,10 +1191,26 @@ def run_workflow_script_suite(
     inline_blocked = (
         admissions[inline_adm_key][0] if inline_adm_key in admissions else None
     )
+    inline_target_tuple: tuple[str, ...] | None = None
+    if "workflow_shellcheck" in selected_by_name:
+        inline_target_tuple = tuple(wf_sc_workflows)
+    elif inline_shellcheck_inputs is not None:
+        inline_target_tuple = tuple(
+            sorted(
+                {
+                    norm
+                    for p in inline_shellcheck_inputs
+                    for norm in (_norm_rel_path(p),)
+                    if (root / norm).is_file()
+                }
+                | set(extra_workflows)
+            )
+        )
     want_inline_for_al = (
         bool(shellcheck_inline)
         and ("workflow_shellcheck" in selected_by_name or inline_shellcheck_requested)
         and inline_blocked is None
+        and (inline_target_tuple is None or inline_target_tuple == tuple(al_workflows))
     )
 
     if "actionlint" in selected_by_name:
@@ -1097,7 +1218,7 @@ def run_workflow_script_suite(
         blocked, _ = admissions["actionlint"]
         if blocked is not None:
             out["actionlint"] = blocked
-        elif not workflows:
+        elif not al_workflows:
             out["actionlint"] = {
                 "name": "actionlint",
                 "selected": sel.get("status"),
@@ -1107,7 +1228,8 @@ def run_workflow_script_suite(
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
-            al_run = ensure_actionlint_run(want_inline_for_al)
+            al_target_tuple = tuple(al_workflows)
+            al_run = ensure_actionlint_run(al_target_tuple, want_inline_for_al)
             if not al_run["prepared"]:
                 out["actionlint"] = {
                     "name": "actionlint",
@@ -1133,7 +1255,7 @@ def run_workflow_script_suite(
                     and not rep["actionlint_findings"]
                     and rep["shellcheck_findings"]
                 ):
-                    indep_run = ensure_actionlint_run(False)
+                    indep_run = ensure_actionlint_run(al_target_tuple, False)
                     if not indep_run["prepared"]:
                         out["actionlint"] = {
                             "name": "actionlint",
@@ -1175,10 +1297,10 @@ def run_workflow_script_suite(
                         "executable": al_run["executable"],
                         "tool_version": al_run["tool_version"],
                         "access_id": "actionlint/check",
-                        "input_paths": list(workflows),
+                        "input_paths": list(al_workflows),
                         "coverage": {
-                            "workflows_scanned": len(workflows),
-                            "workflow_files": list(workflows),
+                            "workflows_scanned": len(al_workflows),
+                            "workflow_files": list(al_workflows),
                             "shellcheck_inline_enabled": bool(
                                 rep["shellcheck_enabled"]
                             ),
@@ -1209,7 +1331,7 @@ def run_workflow_script_suite(
                 "access_id": "actionlint/shellcheck-inline",
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
-        elif not workflows:
+        elif not wf_sc_workflows:
             out["workflow_shellcheck"] = {
                 "name": "workflow_shellcheck",
                 "selected": sel.get("status"),
@@ -1236,7 +1358,7 @@ def run_workflow_script_suite(
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
             else:
-                al_run = ensure_actionlint_run(True)
+                al_run = ensure_actionlint_run(tuple(wf_sc_workflows), True)
                 if not al_run["prepared"]:
                     out["workflow_shellcheck"] = {
                         "name": "workflow_shellcheck",
@@ -1264,6 +1386,7 @@ def run_workflow_script_suite(
                     }
                 else:
                     al_rep = al_run["report"]
+                    al_dbg = al_run.get("shellcheck_debug") or {}
                     _, inline_findings = split_actionlint_diagnostics(
                         al_rep["findings"]
                     )
@@ -1272,12 +1395,12 @@ def run_workflow_script_suite(
                         inline_reason = "shellcheck_findings"
                         inline_exit_code = al_rep["exit_code"]
                         inline_exe = al_run["executable"]
-                    elif al_rep["outcome"] == "clean":
-                        inline_status = "passed"
-                        inline_reason = None
-                        inline_exit_code = al_rep["exit_code"]
-                        inline_exe = al_run["executable"]
-                    else:
+                    elif al_dbg.get("disabled"):
+                        inline_status = "not_executed"
+                        inline_reason = "shellcheck_disabled_in_actionlint"
+                        inline_exit_code = None
+                        inline_exe = None
+                    elif al_rep["outcome"] != "clean":
                         # actionlint exited non-zero without inline shellcheck findings:
                         # fail closed as not_executed rather than fabricating pass or
                         # borrowing another tool's failure exit code.
@@ -1285,6 +1408,21 @@ def run_workflow_script_suite(
                         inline_reason = "actionlint_failed_without_shellcheck_verdict"
                         inline_exit_code = None
                         inline_exe = None
+                    elif not al_dbg.get("rule_ran"):
+                        inline_status = "not_executed"
+                        inline_reason = "shellcheck_execution_unproven"
+                        inline_exit_code = None
+                        inline_exe = None
+                    elif int(al_dbg.get("invoked_steps") or 0) <= 0:
+                        inline_status = "not_applicable"
+                        inline_reason = "no_applicable_inline_shell_steps"
+                        inline_exit_code = al_rep["exit_code"]
+                        inline_exe = al_run["executable"]
+                    else:
+                        inline_status = "passed"
+                        inline_reason = None
+                        inline_exit_code = al_rep["exit_code"]
+                        inline_exe = al_run["executable"]
                     out["workflow_shellcheck"] = {
                         "name": "workflow_shellcheck",
                         "selected": sel.get("status"),
@@ -1298,13 +1436,16 @@ def run_workflow_script_suite(
                         "executable": inline_exe,
                         "tool_version": sc_ver if inline_exe else None,
                         "access_id": "actionlint/shellcheck-inline",
-                        "input_paths": list(workflows),
+                        "input_paths": list(wf_sc_workflows),
                         "actionlint_exit_code": al_rep["exit_code"],
                         "shared_actionlint": bool("actionlint" in out),
                         "coverage": {
                             "workflow_inline_shell": inline_status == "passed",
                             "workflow_inline_status": inline_status,
-                            "workflow_files": list(workflows),
+                            "inline_shell_steps_invoked": int(
+                                al_dbg.get("invoked_steps") or 0
+                            ),
+                            "workflow_files": list(wf_sc_workflows),
                             "per_script_clean_receipts_available": False,
                         },
                         **({"rule_ref": rule_ref} if rule_ref is not None else {}),
@@ -1324,7 +1465,7 @@ def run_workflow_script_suite(
         blocked, _ = admissions["shellcheck"]
         if blocked is not None:
             out["shellcheck"] = blocked
-        elif not shells:
+        elif not sc_shells:
             out["shellcheck"] = {
                 "name": "shellcheck",
                 "selected": sel.get("status"),
@@ -1352,7 +1493,7 @@ def run_workflow_script_suite(
                 }
             else:
                 sc_prefix, standalone_exe = _resolve_tool_prefix("shellcheck")
-                sc_pol = shellcheck_policy(shells)
+                sc_pol = shellcheck_policy(sc_shells, config=shellcheck_config)
                 sc_completed = _invoke(
                     runner, [*sc_prefix, *shellcheck_arguments(sc_pol)], root
                 )
@@ -1387,11 +1528,11 @@ def run_workflow_script_suite(
                     "executable": standalone_exe,
                     "tool_version": sc_ver,
                     "access_id": "shellcheck/check",
-                    "input_paths": list(shells),
+                    "input_paths": list(sc_shells),
                     "coverage": {
                         "standalone_shell": standalone_status == "passed",
                         "standalone_status": standalone_status,
-                        "standalone_files": list(shells),
+                        "standalone_files": list(sc_shells),
                         "per_script_clean_receipts_available": False,
                     },
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
@@ -1411,7 +1552,7 @@ def run_workflow_script_suite(
         blocked, _ = admissions["zizmor"]
         if blocked is not None:
             out["zizmor"] = blocked
-        elif not workflows:
+        elif not zz_workflows:
             out["zizmor"] = {
                 "name": "zizmor",
                 "selected": sel.get("status"),
@@ -1442,7 +1583,7 @@ def run_workflow_script_suite(
                 }
             else:
                 zz_pol = zizmor_policy(
-                    workflows,
+                    zz_workflows,
                     config=zizmor_config,
                     persona=zizmor_persona,
                     offline=zizmor_offline,
@@ -1473,10 +1614,10 @@ def run_workflow_script_suite(
                     "executable": zz_exe,
                     "tool_version": obs_zz,
                     "access_id": "zizmor/check",
-                    "input_paths": list(workflows),
+                    "input_paths": list(zz_workflows),
                     "coverage": {
-                        "workflows_scanned": len(workflows),
-                        "workflow_files": list(workflows),
+                        "workflows_scanned": len(zz_workflows),
+                        "workflow_files": list(zz_workflows),
                         "offline": bool(zizmor_offline),
                     },
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),

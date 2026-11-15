@@ -32,6 +32,23 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - shell: bash
+        run: echo "ok"
+"""
+PWSH_ONLY_WORKFLOW = """\
+name: pwsh-only-ci
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - shell: pwsh
         run: Write-Output "ok"
 """
@@ -1122,3 +1139,253 @@ def test_p1_2_config_only_triggers_and_expected_checks(tmp_path):
     s3 = {item["name"]: item for item in p3["check_scope"]}
     for name in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
         assert s3[name]["status"] == "selected", (name, s3[name])
+
+
+def test_pwsh_only_and_unproven_debug_never_satisfy_workflow_shellcheck(tmp_path):
+    # P0-1: pwsh-only workflow has zero applicable inline POSIX shell steps ->
+    # actionlint passes, but workflow_shellcheck MUST report not_applicable (NOT passed)
+    # and MUST return "unsatisfied" against an explicit Required ExpectedCheck.
+    repo_pwsh, _ = _init_repo(
+        tmp_path / "pwsh",
+        checks=("actionlint", "workflow_shellcheck"),
+        workflows={".github/workflows/pwsh.yml": PWSH_ONLY_WORKFLOW},
+    )
+    plan_pwsh, _ = _build_plan_and_expected(repo_pwsh, [".github/workflows/pwsh.yml"])
+    rep_pwsh = execution.execute(plan_pwsh, root=repo_pwsh)
+    by_pwsh = {c["name"]: c for c in rep_pwsh["checks"]}
+    assert by_pwsh["actionlint"]["status"] == "passed"
+    wf_sc = by_pwsh["workflow_shellcheck"]
+    assert wf_sc["status"] == "not_applicable"
+    assert wf_sc["reason"] == "no_applicable_inline_shell_steps"
+    assert wf_sc["coverage"]["workflow_inline_shell"] is False
+    assert wf_sc["coverage"]["inline_shell_steps_invoked"] == 0
+    wf_sc_def = check_contract.definition_for("workflow_shellcheck")
+    nr = wf_sc["native_result"]
+    assert nr["native_exit_code"] == 0
+    assert nr["status"] == "not_applicable"
+    req_expected = {
+        "check_id": wf_sc_def.check_id,
+        "definition_version": wf_sc_def.definition_version,
+        "rule_ref": nr["check"]["rule_ref"],
+        "source_ref": {
+            **nr["source_ref"],
+            "binding_status": "content_digest",
+            "scope_kind": "check_input_closure",
+        },
+    }
+    satisfaction_no_exp = check_contract.evaluate_check_satisfaction(
+        wf_sc_def, wf_sc["native_results"]
+    )
+    assert satisfaction_no_exp["status"] == "unsatisfied"
+    satisfaction = check_contract.evaluate_check_satisfaction(
+        wf_sc_def, wf_sc["native_results"], expected=req_expected
+    )
+    assert satisfaction["status"] == "unsatisfied"
+
+    # P0-2: If actionlint -debug output lacks shellcheck execution proof -> fail closed not_executed.
+    repo_unproven, _ = _init_repo(
+        tmp_path / "unproven",
+        checks=("actionlint", "workflow_shellcheck"),
+        workflows={".github/workflows/bash.yml": CLEAN_ZIZMOR_WORKFLOW},
+    )
+    plan_unp, _ = _build_plan_and_expected(
+        repo_unproven, [".github/workflows/bash.yml"]
+    )
+    unproven_runner = _CountingRunner(
+        overrides={
+            (lambda argv: "-version" in argv and "actionlint" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(
+                    argv, 0, f"{workflow_analysis.ACTIONLINT_VERSION}\n", ""
+                )
+            ),
+            (lambda argv: "--version" in argv and "shellcheck" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(
+                    argv, 0, f"version: {workflow_analysis.SHELLCHECK_VERSION}\n", ""
+                )
+            ),
+            (lambda argv: "actionlint" in " ".join(argv) and "-format" in argv): (
+                lambda argv: subprocess.CompletedProcess(argv, 0, "[]\n", "")
+            ),
+        }
+    )
+    rep_unp = execution.execute(plan_unp, root=repo_unproven, runner=unproven_runner)
+    by_unp = {c["name"]: c for c in rep_unp["checks"]}
+    wf_unp = by_unp["workflow_shellcheck"]
+    assert wf_unp["status"] == "not_executed"
+    assert wf_unp["reason"] == "shellcheck_execution_unproven"
+    assert wf_unp["native_result"]["native_exit_code"] is None
+    assert rep_unp["status"] == "blocked"
+
+
+def test_shellcheck_rcfile_isolation_and_config_tracking(tmp_path):
+    # Case A: ambient .shellcheckrc exists, shellcheck_config is NOT declared ->
+    # execution MUST pass --norc so ambient .shellcheckrc cannot weaken standalone shellcheck.
+    repo_amb, _ = _init_repo(
+        tmp_path / "ambient",
+        checks=("shellcheck",),
+        shells={"scripts/warn.sh": '#!/bin/sh\nval="hello world"\necho $val\n'},
+    )
+    (repo_amb / ".shellcheckrc").write_text(
+        "disable=SC2086\n", encoding="utf-8", newline="\n"
+    )
+    _git(repo_amb, "add", ".shellcheckrc")
+    _git(repo_amb, "commit", "-q", "-m", "add ambient shellcheckrc")
+    plan_amb, _ = _build_plan_and_expected(repo_amb, ["scripts/warn.sh"])
+    calls_amb = _CountingRunner()
+    rep_amb = execution.execute(plan_amb, root=repo_amb, runner=calls_amb)
+    by_amb = {c["name"]: c for c in rep_amb["checks"]}
+    assert by_amb["shellcheck"]["status"] == "failed"
+    assert by_amb["shellcheck"]["native_result"]["native_exit_code"] == 1
+    assert any(
+        f["rule"] == "SC2086"
+        for f in by_amb["shellcheck"]["native_result"]["evidence"]["findings"]
+    )
+    sc_scans_amb = [c for c in calls_amb.calls if "--format=json1" in c]
+    assert sc_scans_amb and all("--norc" in c for c in sc_scans_amb)
+
+    # Case B: declared shellcheck_config = ".shellcheckrc" passes --rcfile=.shellcheckrc,
+    # applies its rule, AND triggers shellcheck + expected_checks when .shellcheckrc changes.
+    repo_cfg, base_sha = _init_repo(
+        tmp_path / "declared",
+        checks=("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"),
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/warn.sh": '#!/bin/sh\nval="hello world"\necho $val\n'},
+        workflow_checks_extra=(
+            '[[non_code_rules]]\nprefix = ".shellcheckrc"\ntests = []\n'
+            'reason = "shellcheck config"\n\n'
+            '[workflow_checks]\nshellcheck_config = ".shellcheckrc"\n'
+        ),
+    )
+    (repo_cfg / ".shellcheckrc").write_text(
+        "disable=SC2086\n", encoding="utf-8", newline="\n"
+    )
+    _git(repo_cfg, "add", ".shellcheckrc")
+    _git(repo_cfg, "commit", "-q", "-m", "add declared shellcheckrc")
+
+    cfg_path = repo_cfg / "ci-selection.toml"
+    cfg = selection.load_config(cfg_path)
+    hyg_path = repo_cfg / "ci-hygiene.toml"
+    hyg_cfg = hygiene.load_config(hyg_path)
+    head_commit = _git(repo_cfg, "rev-parse", "HEAD").strip()
+    head_tree = _git(repo_cfg, "rev-parse", "HEAD^{tree}").strip()
+    cs = selection.ChangeSet(
+        root=repo_cfg,
+        base_ref="origin/main",
+        head_ref="HEAD",
+        base_commit=base_sha,
+        head_commit=head_commit,
+        tree=head_tree,
+        paths=(".shellcheckrc",),
+        worktree_dirty=False,
+        complete=True,
+        snapshot="worktree",
+    )
+    sel = selection.select(cs, cfg, root=repo_cfg)
+    plan_rc = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        root=repo_cfg,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=hyg_path,
+    )
+    exp_rc = expected_checks.derive_expected_checks(
+        cs,
+        plan_rc["check_scope"],
+        config_path=cfg_path,
+        consumer="dymzz/engineering-ci",
+        hygiene_config=hyg_cfg,
+        hygiene_identity=hygiene.config_identity(hyg_path, hyg_cfg, root=repo_cfg),
+        selection_config=cfg,
+    )
+    scope_rc = {item["name"]: item for item in plan_rc["check_scope"]}
+    assert scope_rc["shellcheck"]["status"] == "selected"
+    assert scope_rc["shellcheck"]["inputs"] == ["scripts/warn.sh"]
+    assert scope_rc["actionlint"]["status"] == "not_applicable"
+    assert scope_rc["workflow_shellcheck"]["status"] == "not_applicable"
+    assert scope_rc["zizmor"]["status"] == "not_applicable"
+    exp_sc = next(entry for entry in exp_rc["checks"] if entry["name"] == "shellcheck")
+    assert exp_sc["applicability"]["status"] == "selected"
+    assert exp_sc["input_refs"] == [{"kind": "changed_path", "path": "scripts/warn.sh"}]
+
+    calls_rc = _CountingRunner()
+    rep_rc = execution.execute(plan_rc, root=repo_cfg, runner=calls_rc)
+    assert rep_rc["status"] == "passed", (
+        rep_rc.get("reason"),
+        rep_rc.get("tests"),
+        [
+            (c["name"], c["status"], c.get("reason"), c.get("findings"))
+            for c in rep_rc["checks"]
+        ],
+    )
+    by_rc = {c["name"]: c for c in rep_rc["checks"]}
+    assert by_rc["shellcheck"]["status"] == "passed"
+    assert by_rc["shellcheck"]["native_result"]["native_exit_code"] == 0
+    sc_scans_rc = [c for c in calls_rc.calls if "--format=json1" in c]
+    assert sc_scans_rc and all("--rcfile=.shellcheckrc" in c for c in sc_scans_rc)
+
+
+def test_scoped_execution_scans_and_reports_only_selected_inputs(tmp_path):
+    # Repo contains clean modified workflow a.yml + ok.sh AND untouched failing
+    # workflow b.yml (zizmor unpinned-uses + SC2086 + syntax error) + bad.sh (SC2086).
+    # Incremental selection for a.yml + ok.sh MUST pass only a.yml / ok.sh to
+    # native tools, NativeResult.input_refs, ExpectedChecks, and Report.
+    repo, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"),
+        workflows={
+            ".github/workflows/a.yml": CLEAN_ZIZMOR_WORKFLOW,
+            ".github/workflows/b.yml": UNPINNED_VALID_ACTIONLINT_WORKFLOW.replace(
+                'echo "ok"', "echo $UNQUOTED"
+            ),
+        },
+        shells={
+            "scripts/ok.sh": '#!/bin/sh\necho "clean"\n',
+            "scripts/bad.sh": "#!/bin/sh\necho $BAD_VAR\n",
+        },
+    )
+    plan_doc, exp_doc = _build_plan_and_expected(
+        repo, [".github/workflows/a.yml", "scripts/ok.sh"]
+    )
+    exp_by = {entry["name"]: entry for entry in exp_doc["checks"]}
+    for name in ("actionlint", "workflow_shellcheck", "zizmor"):
+        assert exp_by[name]["input_refs"] == [
+            {"kind": "changed_path", "path": ".github/workflows/a.yml"}
+        ]
+    assert exp_by["shellcheck"]["input_refs"] == [
+        {"kind": "changed_path", "path": "scripts/ok.sh"}
+    ]
+
+    calls = _CountingRunner()
+    report = execution.execute(plan_doc, root=repo, runner=calls)
+    assert report["status"] == "passed", report
+    by_name = {entry["name"]: entry for entry in report["checks"]}
+    for name in ("actionlint", "workflow_shellcheck", "zizmor"):
+        assert by_name[name]["status"] == "passed"
+        ref_paths = {
+            ref["path"]
+            for ref in by_name[name]["native_result"]["input_refs"]
+            if ref.get("kind") == "changed_path"
+        }
+        assert ref_paths == {".github/workflows/a.yml"}
+    sc_paths = {
+        ref["path"]
+        for ref in by_name["shellcheck"]["native_result"]["input_refs"]
+        if ref.get("kind") == "changed_path"
+    }
+    assert sc_paths == {"scripts/ok.sh"}
+
+    al_scans = [c for c in calls.calls if "-format" in c]
+    sc_scans = [c for c in calls.calls if "--format=json1" in c]
+    zz_scans = [c for c in calls.calls if "--format" in c and "json" in c]
+    assert al_scans and all(
+        ".github/workflows/a.yml" in c and ".github/workflows/b.yml" not in c
+        for c in al_scans
+    )
+    assert sc_scans and all(
+        "scripts/ok.sh" in c and "scripts/bad.sh" not in c for c in sc_scans
+    )
+    assert zz_scans and all(
+        ".github/workflows/a.yml" in c and ".github/workflows/b.yml" not in c
+        for c in zz_scans
+    )

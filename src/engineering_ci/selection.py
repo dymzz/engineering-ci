@@ -91,6 +91,7 @@ class CheckScopeConfig:
 @dataclass(frozen=True)
 class WorkflowChecksConfig:
     actionlint_config: str = ""
+    shellcheck_config: str = ""
     zizmor_config: str = ""
     zizmor_persona: str = ""
     zizmor_offline: bool = True
@@ -423,6 +424,7 @@ def _parse_config_bytes(raw):
     wf_raw = value.get("workflow_checks", {})
     if not isinstance(wf_raw, dict) or set(wf_raw) - {
         "actionlint_config",
+        "shellcheck_config",
         "zizmor_config",
         "zizmor_persona",
         "zizmor_offline",
@@ -444,6 +446,11 @@ def _parse_config_bytes(raw):
         actionlint_config=(
             _text(wf_raw["actionlint_config"], "actionlint_config")
             if wf_raw.get("actionlint_config")
+            else ""
+        ),
+        shellcheck_config=(
+            _text(wf_raw["shellcheck_config"], "shellcheck_config")
+            if wf_raw.get("shellcheck_config")
             else ""
         ),
         zizmor_config=(
@@ -647,6 +654,7 @@ def _normalize_config(config):
         },
         "workflow_checks": {
             "actionlint_config": config.workflow_checks.actionlint_config,
+            "shellcheck_config": config.workflow_checks.shellcheck_config,
             "zizmor_config": config.workflow_checks.zizmor_config,
             "zizmor_persona": config.workflow_checks.zizmor_persona,
             "zizmor_offline": config.workflow_checks.zizmor_offline,
@@ -810,6 +818,9 @@ def config_from_identity(identity):
         workflow_checks=WorkflowChecksConfig(
             actionlint_config=str(
                 (norm.get("workflow_checks") or {}).get("actionlint_config") or ""
+            ),
+            shellcheck_config=str(
+                (norm.get("workflow_checks") or {}).get("shellcheck_config") or ""
             ),
             zizmor_config=str(
                 (norm.get("workflow_checks") or {}).get("zizmor_config") or ""
@@ -2539,6 +2550,7 @@ def _workflow_rule_slice(config, name):
     return (
         enabled,
         tuple(config.check_scope.shell_prefixes),
+        wf.shellcheck_config,
         eff,
     )
 
@@ -2607,6 +2619,7 @@ def workflow_script_check_scopes(
     changed_wf = None
     changed_sh = None
     al_cfg_changed = None
+    sc_cfg_changed = None
     zz_cfg_changed = None
     for name in config.checks:
         if name not in _WORKFLOW_SCRIPT_CHECK_NAMES:
@@ -2658,6 +2671,10 @@ def workflow_script_check_scopes(
             ]
             al_cfg_changed = any(
                 workflow_analysis.is_workflow_config(p, wf_cfg.actionlint_config)
+                for p in paths
+            )
+            sc_cfg_changed = any(
+                workflow_analysis.is_shellcheck_config(p, wf_cfg.shellcheck_config)
                 for p in paths
             )
             zz_cfg_changed = any(
@@ -2770,7 +2787,7 @@ def workflow_script_check_scopes(
                     }
                 )
         else:
-            scan_all = bool(full or triggers["shellcheck"])
+            scan_all = bool(full or sc_cfg_changed or triggers["shellcheck"])
             sh_inputs = sorted(
                 set(changed_sh) | (set(repo_shells) if scan_all else set())
             )
@@ -2783,7 +2800,7 @@ def workflow_script_check_scopes(
                         "reason": (
                             "shell files changed"
                             if changed_sh
-                            else "shellcheck rules changed"
+                            else "shellcheck config or rules changed"
                         ),
                     }
                 )

@@ -905,7 +905,21 @@ def _run_workflow_script_checks(
         if config is not None
         else selection.WorkflowChecksConfig()
     )
-    all_selected_names = {item.get("name") for item in _selected_checks(plan)}
+    all_selected = _selected_checks(plan)
+    all_selected_names = {item.get("name") for item in all_selected}
+    inline_wf_sc = next(
+        (item for item in all_selected if item.get("name") == "workflow_shellcheck"),
+        None,
+    )
+    inline_shellcheck_inputs = (
+        tuple(inline_wf_sc.get("inputs") or ())
+        if inline_wf_sc is not None
+        and isinstance(inline_wf_sc.get("inputs"), list)
+        and (
+            inline_wf_sc.get("status") != "unknown" or bool(inline_wf_sc.get("inputs"))
+        )
+        else None
+    )
     suite = workflow_analysis.run_workflow_script_suite(
         selected_by_name,
         root=root,
@@ -913,6 +927,7 @@ def _run_workflow_script_checks(
         workflow_prefixes=tuple(scope_cfg.workflow_prefixes),
         shell_prefixes=tuple(scope_cfg.shell_prefixes),
         actionlint_config=wf_cfg.actionlint_config,
+        shellcheck_config=wf_cfg.shellcheck_config,
         zizmor_config=wf_cfg.zizmor_config,
         zizmor_persona=wf_cfg.zizmor_persona,
         zizmor_offline=wf_cfg.zizmor_offline,
@@ -925,6 +940,7 @@ def _run_workflow_script_checks(
         ),
         shared_cache=shared_cache,
         inline_shellcheck_requested=("workflow_shellcheck" in all_selected_names),
+        inline_shellcheck_inputs=inline_shellcheck_inputs,
     )
     results = []
     any_failed = False

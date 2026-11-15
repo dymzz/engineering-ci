@@ -501,5 +501,34 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(report["limitations"])
 
 
+class ShellCheckConfigAndActionlintDebugTests(unittest.TestCase):
+    def test_shellcheck_arguments_isolate_or_declare_rcfile(self):
+        default_pol = script.shellcheck_policy(["scripts/build.sh"])
+        default_args = script.shellcheck_arguments(default_pol)
+        self.assertIn("--norc", default_args)
+        self.assertFalse(any(arg.startswith("--rcfile=") for arg in default_args))
+
+        configured_pol = script.shellcheck_policy(
+            ["scripts/build.sh"], config=".shellcheckrc"
+        )
+        configured_args = script.shellcheck_arguments(configured_pol)
+        self.assertNotIn("--norc", configured_args)
+        self.assertIn("--rcfile=.shellcheckrc", configured_args)
+
+        with self.assertRaises(ValueError):
+            script.shellcheck_policy(["scripts/build.sh"], config="../.shellcheckrc")
+
+    def test_actionlint_policy_debug_emits_flag(self):
+        pol = script.actionlint_policy(
+            [".github/workflows/ci.yml"],
+            shellcheck=True,
+            json_format=True,
+            debug=True,
+        )
+        args = script.actionlint_arguments(pol)
+        self.assertIn("-debug", args)
+        self.assertIn("-format", args)
+
+
 if __name__ == "__main__":
     unittest.main()
