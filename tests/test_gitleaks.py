@@ -57,8 +57,8 @@ def test_gitleaks_history_finds_and_redacts_secret(history_repo):
     assert len(result["findings"]) == 1
     finding = result["findings"][0]
     assert finding["RuleID"] == "gitlab-pat"
-    assert finding["File"] == "a.txt"
     assert finding["Commit"] == git(history_repo, "rev-parse", "HEAD")
+    assert "File" not in finding
     assert finding["redacted"] is True
     serialized = json.dumps(result)
     assert "glpat-abcdefghijklmnopqrst" not in serialized
@@ -102,14 +102,15 @@ def test_gitleaks_rejects_non_range_scope(tmp_path):
 
 
 def test_sanitizer_removes_secret_from_allowed_fields_and_diagnostics():
-    findings, secrets = gitleaks._sanitize(
+    findings = gitleaks._sanitize(
         [
             {
                 "RuleID": "test-rule",
                 "File": "glpat-abcdefghijklmnopqrst/path.txt",
                 "Description": "secret glpat-abcdefghijklmnopqrst",
-                "Secret": "glpat-abcdefghijklmnopqrst",
-                "Match": "glpat-abcdefghijklmnopqrst",
+                "Secret": "[REDACTED]",
+                "Match": "[REDACTED]",
+                "Commit": "a" * 40,
                 "StartLine": 1,
             }
         ]
@@ -117,13 +118,13 @@ def test_sanitizer_removes_secret_from_allowed_fields_and_diagnostics():
     assert findings == [
         {
             "RuleID": "test-rule",
-            "File": "[REDACTED]/path.txt",
+            "Commit": "a" * 40,
             "StartLine": 1,
             "redacted": True,
         }
     ]
-    assert secrets == {"glpat-abcdefghijklmnopqrst"}
     assert "glpat-" not in json.dumps(findings)
+    assert "File" not in findings[0]
 
 
 def test_sanitizer_refuses_non_list_report():
@@ -147,6 +148,36 @@ def test_gitleaks_rejects_wrong_binary_version(tmp_path):
             environ={"GITLEAKS_BIN": str(fake)},
         )
     assert raised.value.code == "gitleaks_binary_version_mismatch"
+
+
+@requires_gitleaks
+def test_gitleaks_non_ancestor_range_is_insufficient(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("base\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-qb", "other")
+    (root / "b.txt").write_text("other\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "other")
+    other = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "-")
+    (root / "c.txt").write_text("main\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "main")
+    result = gitleaks.scan_git_history(
+        root,
+        revision_range=f"{other}..HEAD",
+        environ={**os.environ, "GITLEAKS_BIN": BINARY},
+    )
+    assert result["coverage"]["complete"] is False
+    assert result["coverage"]["reason"] == "non_ancestor_range"
+    assert result["status"] == "insufficient"
+    assert result["native_status"] in {"passed", "failed"}
 
 
 def test_gitleaks_requires_explicit_scope(tmp_path):
@@ -182,7 +213,12 @@ def test_gitleaks_check_definition_is_process_with_controlled_tool():
     requirement = definition.tool_requirements[0]
     assert requirement.requirement_id == "history-scan"
     tool = requirement.alternatives[0]
-    assert tool.access_id == "gitleaks.git"
+    assert tool.access_id == "gitleaks/git"
     assert tool.tool_id == "gitleaks"
     assert tool.tool_id_source == "eci_pinned_asset"
     assert tool.version == "8.30.1"
+    check_contract.validate_definition(definition)
+    resolved = check_contract.resolve_definitions(["gitleaks"])
+    assert resolved["status"] == "complete"
+    assert resolved["definitions"][0]["check_id"] == definition.check_id
+    assert resolved["definitions"][0]["definition_version"] == 1

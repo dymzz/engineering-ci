@@ -23,15 +23,9 @@ GITLEAKS_VERSION = "8.30.1"
 GITLEAKS_WINDOWS_X64_SHA256 = (
     "17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c"
 )
-_FINDING_FIELDS = (
-    "RuleID",
-    "File",
-    "StartLine",
-    "EndLine",
-    "Commit",
-    "Date",
-    "Fingerprint",
-)
+_SAFE_RULE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_COMMIT = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
+_SAFE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _REVISION_RANGE = re.compile(r"^[^.\s]+\.\.[^.\s]+$")
 
 
@@ -101,15 +95,14 @@ def _verify_binary(binary, environ):
     ]:
         raise GitleaksError("gitleaks_binary_version_mismatch")
     digest = _sha256(binary)
-    expected = environ.get("GITLEAKS_ASSET_SHA256")
     machine = platform.machine().lower()
     windows_x64 = os.name == "nt" and machine in {"amd64", "x86_64"}
-    if windows_x64:
-        expected = expected or GITLEAKS_WINDOWS_X64_SHA256
-    if not expected or digest != "sha256:" + expected.lower().removeprefix("sha256:"):
+    if not windows_x64:
+        raise GitleaksError("gitleaks_asset_unverified")
+    if digest != "sha256:" + GITLEAKS_WINDOWS_X64_SHA256:
         raise GitleaksError("gitleaks_asset_mismatch")
     return {
-        "access_id": "gitleaks.git",
+        "access_id": "gitleaks/git",
         "version": GITLEAKS_VERSION,
         "artifact_sha256": digest,
         "platform": f"{platform.system().lower()}-{machine}",
@@ -117,35 +110,39 @@ def _verify_binary(binary, environ):
     }
 
 
-def _scrub(value, secrets):
-    if not isinstance(value, str):
-        return value
-    for secret in secrets:
-        if secret:
-            value = value.replace(secret, "[REDACTED]")
-    return value
-
-
 def _sanitize(report):
     if not isinstance(report, list):
         raise GitleaksError("gitleaks_report_invalid")
-    secrets = set()
+    findings = []
     for item in report:
         if not isinstance(item, dict):
             raise GitleaksError("gitleaks_report_invalid")
-        for key in ("Secret", "Match"):
-            if isinstance(item.get(key), str) and item[key]:
-                secrets.add(item[key])
-    findings = []
-    for item in report:
+        rule = item.get("RuleID")
+        commit = item.get("Commit")
+        start = item.get("StartLine")
+        if (
+            not isinstance(rule, str)
+            or not _SAFE_RULE.fullmatch(rule)
+            or not isinstance(commit, str)
+            or not _SAFE_COMMIT.fullmatch(commit)
+            or type(start) is not int
+            or start < 1
+        ):
+            raise GitleaksError("gitleaks_report_invalid")
         finding = {
-            key: _scrub(item[key], secrets)
-            for key in _FINDING_FIELDS
-            if key in item and isinstance(item[key], (str, int))
+            "RuleID": rule,
+            "Commit": commit,
+            "StartLine": start,
         }
+        end = item.get("EndLine")
+        if type(end) is int and end >= start:
+            finding["EndLine"] = end
+        date = item.get("Date")
+        if isinstance(date, str) and _SAFE_DATE.fullmatch(date):
+            finding["Date"] = date
         finding["redacted"] = True
         findings.append(finding)
-    return findings, secrets
+    return findings
 
 
 def _resolve_scope(root, revision_range, all_history):
@@ -219,12 +216,19 @@ def scan_git_history(
     binary = find_binary(environ)
     tool = _verify_binary(binary, environ)
     config_path = Path(config_path) if config_path else None
-    if config_path is not None and not config_path.is_file():
-        raise GitleaksError("gitleaks_config_missing")
+    if config_path is not None:
+        if not config_path.is_absolute():
+            config_path = (root / config_path).resolve()
+        if not config_path.is_file():
+            raise GitleaksError("gitleaks_config_missing")
     with tempfile.TemporaryDirectory(
         prefix="eci-gitleaks-", dir=_git_dir(root)
     ) as temporary:
         report_path = Path(temporary) / "gitleaks.json"
+        if revision_range and coverage["old_commit"] and coverage["new_commit"]:
+            scan_range = f"{coverage['old_commit']}..{coverage['new_commit']}"
+        else:
+            scan_range = "--all"
         command = [
             str(binary),
             "git",
@@ -236,7 +240,7 @@ def scan_git_history(
             "json",
             "--report-path",
             str(report_path),
-            f"--log-opts={'--all' if all_history else revision_range}",
+            f"--log-opts={scan_range}",
         ]
         if config_path is not None:
             command.extend(["--config", str(config_path)])
@@ -262,27 +266,38 @@ def scan_git_history(
             report = json.loads(raw.decode("utf-8"))
         except (UnicodeError, ValueError):
             raise GitleaksError("gitleaks_report_invalid") from None
-        findings, _ = _sanitize(report)
+        findings = _sanitize(report)
 
     if completed.returncode == 0 and not findings:
-        status = "passed"
+        native_status = "passed"
         reason = None
     elif completed.returncode == 1 and findings:
-        status = "failed"
+        native_status = "failed"
         reason = "secret_findings"
     elif completed.returncode == 0:
-        status = "error"
+        native_status = "error"
         reason = "gitleaks_exit_inconsistent"
     elif completed.returncode == 1:
-        status = "error"
+        native_status = "error"
         reason = "gitleaks_findings_missing"
     else:
-        status = "error"
+        native_status = "error"
         reason = "gitleaks_scan_failed"
+
+    if native_status == "error":
+        coverage["complete"] = False
+        coverage["reason"] = "scan_incomplete"
+        status = "error"
+    elif not coverage["complete"]:
+        status = "insufficient"
+        reason = coverage["reason"] or "coverage_incomplete"
+    else:
+        status = native_status
 
     return {
         "status": status,
         "reason": reason,
+        "native_status": native_status,
         "native_exit_code": completed.returncode,
         "findings": findings,
         "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),

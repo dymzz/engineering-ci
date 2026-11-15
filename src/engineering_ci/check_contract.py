@@ -415,7 +415,7 @@ _TOOL_REQUIREMENTS = {
             "history-scan",
             (
                 ToolIdentity(
-                    "gitleaks.git",
+                    "gitleaks/git",
                     tool_id="gitleaks",
                     tool_id_source="eci_pinned_asset",
                     version="8.30.1",
