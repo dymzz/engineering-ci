@@ -1686,6 +1686,76 @@ def test_phase_order_incomplete_blocks_the_universe_fact():
     assert check_row(assessment, entry)["status"] == "satisfied"
 
 
+def test_future_only_check_obligation_is_membership_not_omitted():
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach", [entry["expected_check_ref"]], phase="post_publish"
+    )
+    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
+    admission = make_admission(projection)
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "passed"
+    assert "required_check_omitted_by_universe" not in assessment["cross_check_reasons"]
+    assert check_row(assessment, entry)["status"] == "not_yet_due"
+    assert obligation_row(assessment, obligation)["status"] == "not_yet_due"
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
+def test_future_only_non_check_obligation_is_membership_not_omitted():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    obligation = non_check_obligation("o/sbom", phase="post_publish")
+    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "passed"
+    assert (
+        "non_check_obligation_omitted_by_universe"
+        not in assessment["cross_check_reasons"]
+    )
+    assert obligation_row(assessment, obligation)["status"] == "not_yet_due"
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
+def test_future_only_membership_does_not_waive_a_truly_omitted_check():
+    profile = make_profile(
+        obligations=[
+            {"obligation_ref": "o/tach", "check_names": ["tach"]},
+            {"obligation_ref": "o/vulture", "check_names": ["vulture"]},
+        ],
+        declared_checks=["tach", "vulture"],
+    )
+    future_entry = make_entry("tach", required_by=("o/tach",))
+    omitted_entry = make_entry(
+        "vulture",
+        required_by=("o/vulture",),
+        rule_ref=check_contract.rule_ref("vulture", 1, digest="d" * 64),
+    )
+    projection = make_projection(profile, [future_entry, omitted_entry])
+    obligation = check_obligation(
+        "o/tach", [future_entry["expected_check_ref"]], phase="post_publish"
+    )
+    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    assert "required_check_omitted_by_universe" in assessment["cross_check_reasons"]
+    assert check_row(assessment, future_entry)["status"] == "not_yet_due"
+    omitted_row = check_row(assessment, omitted_entry)
+    assert omitted_row["status"] == "unverified"
+    assert omitted_row["reasons"] == ["required_check_omitted_by_universe"]
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
 def test_not_applicable_without_authorized_basis_is_unverified():
     profile = make_profile(
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],

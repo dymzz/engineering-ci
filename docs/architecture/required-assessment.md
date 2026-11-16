@@ -93,6 +93,28 @@ A phase before the assessed phase is an expired Required and stays
   unknown order is `unverified` (`phase_position_unproven`). `not_yet_due` is
   never used for a currently-required obligation whose evidence is missing.
 
+### Membership vs due applicability
+
+Universe completeness and current due applicability are separate judgements.
+An authorized future-phase obligation is already enumerated in the complete
+universe and therefore satisfies the Expected association check (membership /
+closure) even though no current Native Result or non-check evidence is required.
+The Expected v2 projection may retain that same obligation association; R1 must
+not misreport it as `required_check_omitted_by_universe` or
+`non_check_obligation_omitted_by_universe`.
+
+The separating rules are:
+
+- Membership: every Expected Required Check/Non-Check association must appear
+  somewhere in the current universe (any phase/applicability). A truly absent
+  obligation still blocks.
+- Due applicability: only the current-phase `required` instance needs current
+  evidence; future instances remain `not_yet_due`, past instances are
+  `unverified`, and an unproven phase position blocks.
+- A future-only obligation therefore permits a legal current-phase PASS without
+  waiving any currently-due Required. A current Required with missing evidence
+  still blocks.
+
 ## Assessment statuses
 
 | Status | Meaning |
@@ -112,7 +134,7 @@ because they have different owners:
 | --- | --- | --- |
 | `verification.authority` | authorized Profile/policy source | authority status is `verified`, the assessment time is inside the effective window, the profile is not revoked, and the approval source is authoritative. |
 | `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, its required Check definitions/rules are resolved, and it is not claiming unverified authority. |
-| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile and Check-domain identities match the Expected scope, and every current Expected Required check/non-check is enumerated without unknown or out-of-scope instances. |
+| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile and Check-domain identities match the Expected scope, and every Expected Required Check/Non-Check association is enumerated somewhere in the universe (membership, independent of phase/applicability) without unknown or out-of-scope instances. |
 | `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or `not_applicable`, and no in-scope Check or obligation row is `unmet`/`unverified`. |
 
 `status` is `passed` only when all four facts hold. Otherwise it is `blocked`
@@ -322,6 +344,10 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   `not_yet_due`/`not_applicable` basis enforcement; a past phase, a missing or
   incomplete authorized phase order and an unproven position are all blocked
   instead of being deferred;
+- future-only Check and future-only Non-Check obligations that are already
+  enumerated satisfy membership without current evidence (legal Pre-publish
+  PASS), while a truly omitted obligation and an unreliable phase order still
+  BLOCK, as does a due obligation with missing evidence;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
   artifact-level subject fields, commit-only evidence rejected for an
   artifact-level obligation, a legitimate commit-level obligation, missing

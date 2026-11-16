@@ -811,13 +811,16 @@ def _cross_check_universe(universe, scope, checks):
     candidate_values = set((evaluation.get("candidate") or {}).values())
     expected_refs = {entry["expected_check_ref"]: entry for entry in checks}
     current_phase = evaluation["phase"]
+    # Membership/closure is independent of due applicability: an authorized
+    # future-phase obligation is already enumerated and must not be reported as
+    # omitted just because it is not currently due.
     referenced_check_refs = set()
+    universe_non_check_keys = set()
     non_check_expected_keys = {
         _canonical(item.get("obligation_ref"))
         for item in scope["non_check_obligations"]
         if isinstance(item, dict) and item.get("status") == "required"
     }
-    current_non_check_keys = set()
     for obligation in universe["obligations"]:
         if obligation["target_ref"] not in refs:
             reasons.append("obligation_target_out_of_scope")
@@ -831,25 +834,28 @@ def _cross_check_universe(universe, scope, checks):
             reasons.append("obligation_candidate_out_of_scope")
         current = _phase_is_current(obligation, current_phase)
         if obligation["kind"] == "check":
-            if not current:
-                continue
             for ref in obligation["expected_check_refs"]:
                 entry = expected_refs.get(ref)
                 if entry is None:
-                    reasons.append("universe_check_instance_unknown")
+                    # Only a current Required Check instance must exist in this
+                    # Expected domain; a future/inapplicable instance may fall
+                    # outside the current projection.
+                    if current and obligation["applicability"] == "required":
+                        reasons.append("universe_check_instance_unknown")
                     continue
                 referenced_check_refs.add(ref)
-                required_by = {
-                    _canonical(value)
-                    for value in entry.get("required_by_obligations") or ()
-                }
-                if _canonical(obligation["obligation_ref"]) not in required_by:
-                    reasons.append("universe_obligation_mapping_mismatch")
+                if current and obligation["applicability"] == "required":
+                    required_by = {
+                        _canonical(value)
+                        for value in entry.get("required_by_obligations") or ()
+                    }
+                    if _canonical(obligation["obligation_ref"]) not in required_by:
+                        reasons.append("universe_obligation_mapping_mismatch")
         else:
+            key = _canonical(obligation["obligation_ref"])
+            universe_non_check_keys.add(key)
             if not current:
                 continue
-            key = _canonical(obligation["obligation_ref"])
-            current_non_check_keys.add(key)
             if (
                 obligation["applicability"] == "required"
                 and key not in non_check_expected_keys
@@ -861,7 +867,7 @@ def _cross_check_universe(universe, scope, checks):
             and entry["expected_check_ref"] not in referenced_check_refs
         ):
             reasons.append("required_check_omitted_by_universe")
-    for _key in non_check_expected_keys - current_non_check_keys:
+    for _key in non_check_expected_keys - universe_non_check_keys:
         reasons.append("non_check_obligation_omitted_by_universe")
     return _dedupe(reasons)
 
