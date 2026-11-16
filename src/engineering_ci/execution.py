@@ -126,10 +126,12 @@ def _resolved_rule_and_input(
 ):
     rel_path = _stored_rule_path(config_path, root)
     config_input = {"kind": "config", "path": rel_path, "sha256": digest_after}
-    try:
-        identity = identity_fn(config_path, config, root=root)
-    except (OSError, error_type):
-        identity = None
+    identity = None
+    if hasattr(config, "schema_version"):
+        try:
+            identity = identity_fn(config_path, config, root=root)
+        except (OSError, error_type):
+            identity = None
     eff_ref = (identity or {}).get("effective_check_config_ref")
     if isinstance(eff_ref, dict):
         return dict(eff_ref), config_input
