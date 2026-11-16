@@ -540,6 +540,14 @@ def _profile_policy(profile):
     }
 
 
+def _phase_policy_line(profile):
+    return (
+        f'phase = "{profile["phase"]}"\n'
+        if isinstance(profile.get("phase"), str) and profile["phase"]
+        else ""
+    )
+
+
 def _attach_effective_profile_policy(path, profile):
     """Add an independent [effective_profile] approval binding for a profile."""
     profile.pop("governed_rules", None)
@@ -565,7 +573,7 @@ approval_source = "{binding["approval_source"]}"
 approval_digest = "{binding["approval_digest"]}"
 effective_at = "{profile["effective_at"]}"
 declared_checks = {json.dumps(declared)}
-""",
+{_phase_policy_line(profile)}""",
         encoding="utf-8",
     )
     return selection.load_config(config_path)
@@ -589,6 +597,7 @@ def _sample_effective_profile(
     declared_checks=None,
     domain_complete=True,
     governed_rules=None,
+    phase=None,
 ):
     return expected_checks.build_effective_profile(
         profile_ref={"name": "consumer.pr", "version": "1.0.0"},
@@ -609,6 +618,7 @@ def _sample_effective_profile(
         declared_checks=declared_checks,
         domain_complete=domain_complete,
         governed_rules=governed_rules,
+        phase=phase,
     )
 
 
@@ -668,6 +678,70 @@ def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
     with pytest.raises(plan_contract.PlanError) as raised:
         plan_contract.validate(tampered)
     assert raised.value.code == "expected_baseline_mismatch"
+
+
+def test_multi_ref_phase_unverified_does_not_upgrade_local_complete(repo):
+    path, _base = repo
+    profile = _sample_effective_profile(
+        context="push",
+        action="update",
+        target="refs/heads/docs-only",
+        targets=["refs/heads/docs-only", "refs/heads/code-branch"],
+        phase="pre_publish",
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs-branch",
+                "kind": "check",
+                "check_names": ["docs"],
+                "target_refs": ["refs/heads/docs-only"],
+            },
+            {
+                "obligation_ref": "ob/code-unit",
+                "kind": "check",
+                "check_names": ["unittest"],
+                "target_refs": ["refs/heads/code-branch"],
+            },
+        ],
+    )
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach phase profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "docs/guide.md").write_text("# guide\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "docs-only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "code-change")
+    code_commit = run(path, "rev-parse", "HEAD").strip()
+
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base),
+            ("refs/heads/code-branch", code_commit, "refs/heads/code-branch", base),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    expected = plan["expected_checks"]
+    per_ref = {entry["remote_ref"]: entry for entry in expected["per_ref"]}
+    assert per_ref["refs/heads/docs-only"]["status"] == "complete"
+    assert expected["phase_status"] == "unverified"
+    assert expected["status"] != "complete"
+    assert expected["consumer_completeness"] != "expected_domain_complete"
+    plan_contract.validate(plan)
 
 
 def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
@@ -2296,3 +2370,103 @@ def test_p1_inaccessible_odb_or_missing_target_object_requires_materialized_hand
     with pytest.raises(plan_contract.PlanError) as raised_tampered:
         plan_contract.validate(p, materialized_sources=mats)
     assert raised_tampered.value.code == "expected_per_ref_source_unverifiable"
+
+
+def test_phase_profile_projects_check_and_non_check_obligations(repo):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    chosen = selection.select(changes, cfg, root=path)
+    obligations = [
+        {
+            "obligation_ref": "eci/always",
+            "kind": "check",
+            "check_names": ["hygiene"],
+        },
+        {
+            "obligation_ref": "eci/vulture",
+            "kind": "check",
+            "check_names": ["vulture"],
+            "phases": ["post_publish"],
+        },
+        {
+            "obligation_ref": "eci/terminal",
+            "kind": "non_check",
+            "phases": ["post_publish"],
+        },
+    ]
+
+    projections = {}
+    configs = {}
+    config_paths = {}
+    profiles = {}
+    base_config = (path / "ci-selection.toml").read_text(encoding="utf-8")
+    for phase in ("pre_publish", "post_publish"):
+        config_path = path / f"ci-selection-{phase}.toml"
+        config_path.write_text(base_config, encoding="utf-8")
+        profile = _sample_effective_profile(
+            phase=phase,
+            declared_checks=["hygiene", "tach", "vulture"],
+            required_obligations=obligations,
+        )
+        expected_checks.validate_effective_profile(profile)
+        cfg_phase = _attach_effective_profile_policy(config_path, profile)
+        configs[phase] = cfg_phase
+        config_paths[phase] = config_path
+        profiles[phase] = profile
+        plan = selection.plan(
+            chosen,
+            config=cfg_phase,
+            config_path=config_path,
+            root=path,
+            effective_profile=profile,
+        )
+        assert plan["expected_checks"]["authority_status"] == "verified"
+        assert plan["expected_checks"]["phase_status"] == "unverified"
+        assert plan["expected_checks"]["status"] in {"partial", "unknown"}
+        assert (
+            plan["expected_checks"]["consumer_completeness"]
+            != "expected_domain_complete"
+        )
+        plan_contract.validate(plan)
+        projections[phase] = plan["expected_checks"]
+
+    pre = projections["pre_publish"]
+    post = projections["post_publish"]
+    assert pre["expected_set_ref"] != post["expected_set_ref"]
+    assert {item["obligation_ref"] for item in pre["non_check_obligations"]} == set()
+    assert {item["obligation_ref"] for item in post["non_check_obligations"]} == {
+        "eci/terminal"
+    }
+    pre_vulture = next(item for item in pre["checks"] if item["name"] == "vulture")
+    post_vulture = next(item for item in post["checks"] if item["name"] == "vulture")
+    assert "eci/vulture" not in pre_vulture["required_by_obligations"]
+    assert "eci/vulture" in post_vulture["required_by_obligations"]
+
+    with pytest.raises(expected_checks.ExpectedError, match="phase_untrusted"):
+        selection.plan(
+            chosen,
+            config=configs["post_publish"],
+            config_path=config_paths["post_publish"],
+            root=path,
+            effective_profile=profiles["pre_publish"],
+        )
+
+    forged = json.loads(json.dumps(plan))
+    forged["expected_checks"]["status"] = "complete"
+    forged["expected_checks"]["consumer_completeness"] = "expected_domain_complete"
+    with pytest.raises(plan_contract.PlanError) as raised_phase:
+        plan_contract.validate(forged)
+    assert raised_phase.value.code == "expected_phase_complete_unproven"
+
+    for mutate in (
+        lambda value: value["expected_checks"].pop("phase_status"),
+        lambda value: value["expected_checks"].update(phase_status="not_applicable"),
+        lambda value: value["expected_checks"].update(phase="pre_publish"),
+    ):
+        tampered = json.loads(json.dumps(plan))
+        mutate(tampered)
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(tampered)
+        assert raised.value.code == "effective_profile_phase_untrusted"
