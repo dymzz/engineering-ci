@@ -3298,3 +3298,130 @@ def test_issue109_p1a_p1b_satisfaction_sets_authority_and_reasons():
     fail_bad_auth = copy.deepcopy(fail_rec)
     fail_bad_auth["entries"][0]["native_satisfaction"]["required"] = True
     expect_invalid(fail_bad_auth, "receipt_satisfaction_authority_claimed")
+
+
+def test_issue109_expected_failures_complete_and_requirement_reason():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    def expect_invalid(doc, pattern):
+        with pytest.raises(reconciliation.ReconciliationError, match=pattern):
+            reconciliation.validate_receipt(rehash(doc))
+
+    # 1) Tool-bound Check (tach) with uncovered-input passing candidate + full candidate
+    # yields non-empty expected_failures while expected_failures_complete=False (must PASS):
+    entry = make_entry("tach", input_refs=[FILE_A])
+    res_covered = native(
+        "tach",
+        tool_access="tach/check",
+        instance="tach-covered",
+        input_refs=[FILE_A],
+    )
+    for idx in range(16):
+        res_uncovered = native(
+            "tach",
+            tool_access="tach/check",
+            instance=f"tach-uncovered-{idx}",
+            input_refs=[],
+        )
+        if res_uncovered["result_id"] < res_covered["result_id"]:
+            break
+    assert res_uncovered["result_id"] < res_covered["result_id"]
+    tach_rec = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH, input_refs=[FILE_A])],
+        observations=[make_observation("job-1", [res_uncovered, res_covered])],
+    )
+    reconciliation.validate_receipt(tach_rec)
+    tach_sat = tach_rec["entries"][0]["native_satisfaction"]
+    assert tach_sat["expected_failures"]
+    assert tach_sat["expected_failures_complete"] is False
+    assert tach_sat["requirements"][0]["reason"] == "native_pass"
+
+    # P1: expected_failures_complete tampered to True, missing, or non-bool must fail:
+    for bad_complete in (True, "false", 0, None):
+        bad = copy.deepcopy(tach_rec)
+        bad["entries"][0]["native_satisfaction"]["expected_failures_complete"] = (
+            bad_complete
+        )
+        expect_invalid(bad, "receipt_satisfaction_expected_failures_invalid")
+
+    missing_complete = copy.deepcopy(tach_rec)
+    del missing_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ]
+    expect_invalid(missing_complete, "receipt_satisfaction_expected_failures_invalid")
+
+    # P2: satisfied requirement reason deleted or set to None/invalid must fail:
+    del_reason = copy.deepcopy(tach_rec)
+    del del_reason["entries"][0]["native_satisfaction"]["requirements"][0]["reason"]
+    expect_invalid(del_reason, "receipt_requirement_reason_invalid")
+
+    none_reason = copy.deepcopy(tach_rec)
+    none_reason["entries"][0]["native_satisfaction"]["requirements"][0]["reason"] = None
+    expect_invalid(none_reason, "receipt_requirement_reason_invalid")
+
+    # 2) Tool-less Check (forwarding) also enforces expected_failures_complete is False,
+    # even when an earlier candidate produced non-empty expected_failures:
+    fwd_def = check_contract.definition_for("forwarding")
+    fwd_entry = make_entry("forwarding", baseline_ref={"base_commit": "1" * 40})
+    fwd_ok = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-ok",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": []},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_fail = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="failed",
+        result_origin="host",
+        result_instance="fwd-fail",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": ["issue"]},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_rec = reconcile(
+        make_projection([fwd_entry]),
+        routing=[make_routing(fwd_entry)],
+        resolutions=[
+            make_resolution(
+                fwd_entry, rule=RULE_TACH, baseline={"base_commit": "1" * 40}
+            )
+        ],
+        observations=[make_observation("job-1", [fwd_fail, fwd_ok])],
+    )
+    reconciliation.validate_receipt(fwd_rec)
+    fwd_sat = fwd_rec["entries"][0]["native_satisfaction"]
+    assert fwd_sat["expected_failures_complete"] is False
+    if fwd_fail["result_id"] < fwd_ok["result_id"]:
+        assert fwd_sat["expected_failures"]
+
+    fwd_bad_complete = copy.deepcopy(fwd_rec)
+    fwd_bad_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ] = True
+    expect_invalid(fwd_bad_complete, "receipt_satisfaction_expected_failures_invalid")
+
+    fwd_missing_complete = copy.deepcopy(fwd_rec)
+    del fwd_missing_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ]
+    expect_invalid(
+        fwd_missing_complete, "receipt_satisfaction_expected_failures_invalid"
+    )

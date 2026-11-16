@@ -342,12 +342,13 @@ mistaking them for a full observation ledger.
   `all_observations_reconciled`, and `matched` <-> `selected_result_ids` (plus,
   for every `matched` entry, internal consistency of `native_satisfaction` —
   `kind`/`schema_version`/`consumer_scope="supplied_expected_only"`,
-  `required=false`/`trusted=false`, `all_requirements_satisfied` vs tool-less
-  `native_pass` reason, `result_ids` bounded to qualified non-rejected observed
-  candidates — and `requirements[]` against controlled `CheckDefinition`,
-  `resolved_expected.rule_ref`, `requirements[].observed`, `selected_results`,
-  `rejected_results`, `after` prerequisites, tool match, and positional witness
-  order).
+  `required=false`/`trusted=false`, `expected_failures_complete=false`,
+  `all_requirements_satisfied` vs tool-less `native_pass` reason, `result_ids`
+  bounded to qualified non-rejected observed candidates — and `requirements[]`
+  against controlled `CheckDefinition`, `resolved_expected.rule_ref`,
+  `requirements[].reason="native_pass"`, `requirements[].observed`,
+  `selected_results`, `rejected_results`, `after` prerequisites, tool match,
+  and positional witness order).
 - The Expected projection, its identities, and its completeness claims are
   never rewritten or upgraded.
 - `trusted` / `required` are always `false` and

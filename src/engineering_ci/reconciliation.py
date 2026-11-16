@@ -1869,6 +1869,8 @@ def _validate_satisfied_requirements(
     )
     if satisfaction.get("reason") != expected_reason:
         raise ReconciliationError("receipt_satisfaction_reason_invalid")
+    if satisfaction.get("expected_failures_complete") is not False:
+        raise ReconciliationError("receipt_satisfaction_expected_failures_invalid")
 
     reqs = satisfaction.get("requirements")
     if not isinstance(reqs, list):
@@ -1912,7 +1914,7 @@ def _validate_satisfied_requirements(
         req_entry = req_by_id[req_def.requirement_id]
         if req_entry.get("status") != "satisfied":
             raise ReconciliationError("receipt_requirement_unsatisfied")
-        if req_entry.get("reason") not in (None, "native_pass"):
+        if req_entry.get("reason") != "native_pass":
             raise ReconciliationError("receipt_requirement_reason_invalid")
         if req_entry.get("after") != list(req_def.after):
             raise ReconciliationError("receipt_requirement_structure_mismatch")
