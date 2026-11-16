@@ -1,0 +1,681 @@
+{
+  "check_scope": [
+    {
+      "inputs": [],
+      "name": "unittest",
+      "reason": null,
+      "status": "no_tests"
+    },
+    {
+      "inputs": [
+        ".github/workflows/ci.yml",
+        "scripts/ok.sh"
+      ],
+      "name": "whitespace",
+      "reason": "changed files",
+      "status": "selected"
+    },
+    {
+      "inputs": [],
+      "name": "source",
+      "reason": "no source changes",
+      "status": "not_applicable"
+    },
+    {
+      "inputs": [
+        ".github/workflows/ci.yml"
+      ],
+      "name": "actionlint",
+      "reason": "workflow files changed",
+      "status": "selected"
+    },
+    {
+      "inputs": [
+        "scripts/ok.sh"
+      ],
+      "name": "shellcheck",
+      "reason": "shell files changed",
+      "status": "selected"
+    },
+    {
+      "inputs": [
+        ".github/workflows/ci.yml"
+      ],
+      "name": "workflow_shellcheck",
+      "reason": "workflow files changed",
+      "status": "selected"
+    },
+    {
+      "inputs": [
+        ".github/workflows/ci.yml"
+      ],
+      "name": "zizmor",
+      "reason": "workflow security inputs changed",
+      "status": "selected"
+    }
+  ],
+  "dependency_contract": {
+    "edges": [],
+    "required_semantics": [
+      "prerequisite_policy_aggregation"
+    ],
+    "schema_version": 1
+  },
+  "expected_checks": {
+    "applicability_status": "requested_scope",
+    "checks": [
+      {
+        "applicability": {
+          "reason": null,
+          "status": "no_tests"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/tests/unittest",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:06b54f33e284d5a44c356de318d7d0a5b4a0c9b6db9bdbe309f586d09f7e5537",
+        "input_refs": [],
+        "name": "unittest",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "changed files",
+          "status": "selected"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/hygiene/whitespace",
+        "definition_status": "resolved",
+        "definition_version": 2,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:c6ed266a3165f7e720e2ac40051b3212945a397bee67a53cb806abad15197d4d",
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": ".github/workflows/ci.yml"
+          },
+          {
+            "kind": "changed_path",
+            "path": "scripts/ok.sh"
+          }
+        ],
+        "name": "whitespace",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "no source changes",
+          "status": "not_applicable"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/sources/reconcile",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:719d7317c513e46ac9a4800c688682357497f7c15e69e8b2a6bbe8b784cb8abd",
+        "input_refs": [],
+        "name": "source",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "workflow files changed",
+          "status": "selected"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/workflow/actionlint",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:8c4bc7e1cf87269a390153dcd5b3a34ccaec7c95808018c4bc1c6ff400e57fe9",
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": ".github/workflows/ci.yml"
+          }
+        ],
+        "name": "actionlint",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "shell files changed",
+          "status": "selected"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/shell/shellcheck",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:da6ebe8af0bcea4fc402fd32e66e75b21e6d708215469632d21b86485181e08f",
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": "scripts/ok.sh"
+          }
+        ],
+        "name": "shellcheck",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "workflow files changed",
+          "status": "selected"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/workflow/shellcheck",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:265131a18b2a1e5bc90180a216b18ea28291e7956d8c08737ce3331c93766c1b",
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": ".github/workflows/ci.yml"
+          }
+        ],
+        "name": "workflow_shellcheck",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      },
+      {
+        "applicability": {
+          "reason": "workflow security inputs changed",
+          "status": "selected"
+        },
+        "baseline_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb"
+        },
+        "check_id": "eci/workflow/zizmor",
+        "definition_status": "resolved",
+        "definition_version": 1,
+        "event_ref": {
+          "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "base_ref": "origin/main",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "head_ref": "HEAD",
+          "references": []
+        },
+        "expected_check_ref": "sha256:fb06382fe7e4bc7109f3473b09af9cd62d0d5a46f86f60f0fa4c6b2d0cfdb522",
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": ".github/workflows/ci.yml"
+          }
+        ],
+        "name": "zizmor",
+        "policy_status": "unknown",
+        "profile_ref": null,
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+          "version": "1"
+        },
+        "source_ref": {
+          "actual_execution_source": "unknown",
+          "binding_status": "content_digest",
+          "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+          "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+          "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+          "scope_kind": "changed_paths",
+          "snapshot": "worktree",
+          "verified_input_scope": [
+            ".github/workflows/ci.yml",
+            "scripts/ok.sh"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "consumer": null,
+    "consumer_completeness": "not_claimed",
+    "definitions_status": "requested_names_complete",
+    "event_ref": {
+      "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+      "base_ref": "origin/main",
+      "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+      "head_ref": "HEAD",
+      "references": []
+    },
+    "expected_set_ref": "sha256:a119957494d28dea92f0f511513dd6eceb15b87109ac31c7829c7ae845ce77bc",
+    "kind": "engineering-ci-expected-checks",
+    "missing": [],
+    "profile_ref": null,
+    "profile_source": null,
+    "projection_source": "check_scope",
+    "reason": "consumer_profile_not_resolved",
+    "schema_version": 1,
+    "scope_id": "sha256:9511f6b9864663b3f9d1e369ff19bb736a29ae9a1ba5672b83730493be7d46e0",
+    "selection_rule_ref": {
+      "name": "engineering-ci.selection",
+      "sha256": "sha256:7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+      "version": "1"
+    },
+    "source_ref": {
+      "actual_execution_source": "unknown",
+      "binding_status": "content_digest",
+      "content_digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+      "declared_target_tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+      "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+      "scope_kind": "changed_paths",
+      "snapshot": "worktree",
+      "verified_input_scope": [
+        ".github/workflows/ci.yml",
+        "scripts/ok.sh"
+      ]
+    },
+    "status": "partial"
+  },
+  "generator": {
+    "config_sha256": "7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+    "name": "engineering-ci",
+    "tach_sha256": "469c977348b35e4af3d6d9093b084eeeeead1abd3899097e92af7ce4f463ad7e",
+    "version": "0.7.0"
+  },
+  "git": {
+    "base_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+    "base_ref": "origin/main",
+    "base_tip": null,
+    "baseline_status": null,
+    "changed_paths": [
+      ".github/workflows/ci.yml",
+      "scripts/ok.sh"
+    ],
+    "content_binding": {
+      "algorithm": "sha256-paths",
+      "digest": "b811b54fc88e53ec183fd9bd837da397c10ec0d283269d750c50fd016bc9823a",
+      "paths": {
+        ".github/workflows/ci.yml": "36f23da8e975dc66575a098fcf247d330dd520e041d57550de21ac2f9738aac5",
+        "scripts/ok.sh": "b4d644d4279594903f1a9911956432d9473041f2984fc6014c14d7402c7d126c"
+      }
+    },
+    "deleted_paths": [],
+    "execution_tree": null,
+    "force_push": false,
+    "head_commit": "e10e01d99ea9b6dcf2149f6cf68b42f7261cfbdb",
+    "head_ref": "HEAD",
+    "index_file": null,
+    "index_tree": null,
+    "merge_tree": null,
+    "non_check_obligations": [],
+    "object_type": null,
+    "ref_action": null,
+    "references": [],
+    "repo_root": "D:\\workspace\\engineering-ci\\.work\\eci58-dagger3\\repo",
+    "snapshot": "worktree",
+    "source_tree_id": null,
+    "tree": "177bba695dddf042a5e840f9230fab14fa73d9ea",
+    "worktree_dirty": false
+  },
+  "inputs": {
+    "config": {
+      "effective_check_config_ref": {
+        "name": "engineering-ci.selection",
+        "path": "ci-selection.toml",
+        "sha256": "7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+        "version": "1"
+      },
+      "effective_config_ref": {
+        "name": "engineering-ci.selection",
+        "sha256": "sha256:1f80e9aa152ac6a93625bfbb625ba472b9d3a8e0668de5da65d9e20d66b521fd",
+        "version": "1"
+      },
+      "normalized": {
+        "check_scope": {
+          "code_prefixes": [
+            "src/",
+            "scripts/",
+            "tests/"
+          ],
+          "docs_suffixes": [
+            ".md",
+            ".html"
+          ],
+          "shell_prefixes": [],
+          "source_prefixes": [
+            "data/",
+            "sources/"
+          ],
+          "weaver_prefixes": [
+            "telemetry/",
+            "ci-weaver.toml",
+            ".weaver.toml"
+          ],
+          "workflow_prefixes": [
+            ".github/workflows/"
+          ]
+        },
+        "checks": [
+          "actionlint",
+          "shellcheck",
+          "workflow_shellcheck",
+          "zizmor"
+        ],
+        "coverage_required": false,
+        "dependency_edges": [],
+        "effective_profile": null,
+        "escalation_files": [],
+        "escalation_prefixes": [],
+        "framework": "unittest",
+        "ignored_files": [],
+        "ignored_prefixes": [],
+        "module_tests": {},
+        "non_code_rules": [
+          {
+            "exact": null,
+            "prefix": ".github/workflows/",
+            "reason": "workflow files",
+            "tests": []
+          },
+          {
+            "exact": null,
+            "prefix": "scripts/",
+            "reason": "shell scripts",
+            "tests": []
+          }
+        ],
+        "prerequisite_actions": {},
+        "prerequisites": {},
+        "push": {
+          "new_ref_baseline": null,
+          "target_baselines": {}
+        },
+        "schema_version": 1,
+        "src_root": "src",
+        "strict_modules": true,
+        "tach": "tach.toml",
+        "tests_dir": "tests",
+        "workflow_checks": {
+          "actionlint_config": "",
+          "shellcheck_config": "",
+          "shellcheck_inline": true,
+          "zizmor_config": "",
+          "zizmor_offline": true,
+          "zizmor_persona": ""
+        }
+      },
+      "path": "ci-selection.toml",
+      "policy_scope": "repo_target_tree",
+      "schema_version": 1,
+      "sha256": "7765f48bd93d63d69499a81df7764320bcd2e69d28e008e3987ad5b3a78e8353",
+      "workflow_config_digests": {}
+    },
+    "hygiene": {
+      "effective_check_config_ref": {
+        "name": "engineering-ci.hygiene",
+        "sha256": "sha256:b1df061a5f19aa6c5b4bc6bb18fda9ecf05fde01e2a52b48ae833d6a943adf57",
+        "version": "1"
+      },
+      "normalized": {
+        "checks": [
+          "whitespace"
+        ],
+        "docs": {
+          "excluded_prefixes": [],
+          "suffixes": [
+            ".md",
+            ".html"
+          ]
+        },
+        "forwarding": {
+          "source_prefix": "src/"
+        },
+        "lychee": {
+          "arguments": [],
+          "executable": "lychee"
+        },
+        "schema_version": 1,
+        "tach": {
+          "executable": "tach",
+          "external": false,
+          "path": "tach.toml"
+        },
+        "vulture": {
+          "advisory_exit_codes": [
+            3
+          ],
+          "executable": "vulture",
+          "min_confidence": 60,
+          "paths": [
+            "src"
+          ]
+        }
+      },
+      "path": "ci-hygiene.toml",
+      "policy_scope": "repo_target_tree",
+      "schema_version": 1,
+      "sha256": "048ac76f9b2ba45a35fa7a20d42a995b9a4b5733e1d6d43933292ddd5ec6d15d"
+    },
+    "tach": {
+      "all_tests": [
+        "tests.test_mod"
+      ],
+      "modules": [
+        "src"
+      ],
+      "path": "tach.toml",
+      "reverse": {
+        "src": []
+      },
+      "sha256": "469c977348b35e4af3d6d9093b084eeeeead1abd3899097e92af7ce4f463ad7e"
+    }
+  },
+  "kind": "engineering-ci-selection-plan",
+  "prerequisite_actions": {},
+  "schema_version": 2,
+  "selection": {
+    "checks": [
+      "actionlint",
+      "shellcheck",
+      "workflow_shellcheck",
+      "zizmor"
+    ],
+    "code_prefixes": [
+      "src/",
+      "scripts/",
+      "tests/"
+    ],
+    "coverage_required": false,
+    "escalated": false,
+    "escalation_reason": null,
+    "framework": "unittest",
+    "full_tests": false,
+    "prerequisites": [],
+    "reasons": {},
+    "requires_tach_check": true,
+    "source_prefixes": [
+      "data/",
+      "sources/"
+    ],
+    "src_root": "src",
+    "status": "no_tests",
+    "tach_graph_validation": {
+      "status": "not_executed"
+    },
+    "tests": [],
+    "tests_dir": "tests",
+    "weaver_prefixes": {
+      "weaver_semantic_conventions": [
+        "telemetry/",
+        "ci-weaver.toml",
+        ".weaver.toml"
+      ]
+    }
+  }
+}
