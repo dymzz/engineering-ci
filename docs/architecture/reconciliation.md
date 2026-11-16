@@ -408,7 +408,7 @@ mistaking them for a full observation ledger.
 | --- | --- | --- |
 | `#66-C` Structural Receipt (`engineering_ci.reconciliation`) | `status` (`matched`/`partial`/`unrouted`/`unknown`)、`scope_id`、`entries[i].expected_check_ref`、`entries[i].binding_status`、`receipt_ref`、`trusted: false`、`required: false`、`evidence_admission: "not_evaluated"`、`required_gate: "not_evaluated"` | **`trusted=false` 与 `evidence_admission="not_evaluated"` 仅表示 `#66-C` 未执行外部来源签发认证**，**不是**对证据可信性的永久否决；`receipt_ref` 是唯一规范摘要。 |
 | `#63` Independent Admission (上游消费端) | `accepted_coverage_by_instance["<scope_id>/<expected_check_ref>"]`（`admitted` / `rejected` / `unverified`）、`remaining_work[]`（每项含 `scope_id` + `expected_check_ref`） | **必须以 Expected 实例身份 `(scope_id, expected_check_ref)` 为唯一键**（`check_name`/`name` 仅用于展示），严禁以 Check 名称聚合，确保多 Ref（`Ref A` vs `Ref B`）同名 `tach` 实例互不串扰；不回写原 Receipt 字段。 |
-| `#61` Required / Release Gate (下游决策端) | Final Gate Assessment（`passed` / `blocked`） | 汇总完整 Required Obligations、`expected_completeness` 与按实例独立的 `#63` Admission 结论决定最终放行；单实例 `matched` 或局部 `admitted` 不直接等于 Required Release PASS。 |
+| `#61` Required / Release Gate (下游决策端) | Final Gate Assessment（`passed` / `blocked`） | 汇总完整 Required Obligations、`expected_completeness` 与按实例独立的 `#63` Admission 结论决定最终放行；单实例 `matched` 或局部 `admitted` 不直接等于 Required Release PASS。消费者合同见 [Required Assessment](required-assessment.md)。 |
 
 ### 2. Receipt 压缩索引与原始完整 Result / Issuer 的取回验证路径
 

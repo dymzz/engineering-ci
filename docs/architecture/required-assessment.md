@@ -1,0 +1,323 @@
+# Required Assessment (#61 R1)
+
+Status: additive #61 R1 contract and first implementation slice
+(`engineering_ci.required_assessment`). It performs the staged Required
+judgement for one Action x Target x Phase x Ref scope.
+
+It does **not** publish a GitHub Check (#61 R2), inspect Rulesets/Branch
+Protection (#61 R3), extend the Release Manifest (#61 R4) or evaluate a later
+stage by itself (#61 R5). It also does not re-derive policy obligations
+(#66-B2), admit trusted evidence or prove historical reuse (#63), or rebuild
+the structural Binding/Reconciliation receipt (#66-C).
+
+## Position
+
+```text
+authorized Profile/Expected v2 (#66-B2)  ->  Required Obligations universe
+#66-C structural receipt                   ->  current-execution facts
+#63 trusted admission (contract)           ->  per-instance success/fail/conflict
+domain Producer/Verifier                   ->  non-check evidence
+                                               |
+                                       #61 R1 Required Assessment
+                                               |
+                          passed | blocked, with four independent facts
+```
+
+The module consumes five already-produced facts and issues one immutable,
+versioned judgement:
+
+- `engineering-ci-required-obligations` v1 — the authorized universe
+  projection (Profile/authority window, governance-domain closure, evaluation
+  input, Check-domain identity and the obligation instances).
+- `engineering-ci-expected-checks` **Schema v2** — the #66-B Check projection.
+  The assessment consumes one single-Ref scope; a multi-Ref container needs an
+  explicit `ref_scope_id` child, exactly like #66-C.
+- `engineering-ci-evidence-admission` v1 — the #63 trusted admission
+  projection for the same exact scope. This is the consumer contract R1
+  requires; the base per-instance shape is the frozen L2 sample in
+  extended with the authenticated failure/conflict and adjudication facts
+  required by #61 G1.
+- `engineering-ci-expected-result-reconciliation` v1 — the #66-C structural
+  receipt. R1 validates it with `reconciliation.validate_receipt()` and only
+  cites it; it never upgrades `matched` into trusted success.
+- `engineering-ci-non-check-evidence` v1 — normalized non-check evidence from
+  domain Producers/Verifiers. R1 verifies identity, independent verifier
+  authorization, subject/digest binding, validity and the reported result; it
+  does not implement the domain verification algorithm.
+
+R1 never infers the Required set from executed Checks, successful Jobs, a
+matched receipt or an old PASS. A verified empty universe is legal and passes;
+an unproven universe is blocked even when every observed Check passed.
+
+## Identity and instance rules
+
+- Check instance key: **`(scope_id, expected_check_ref)`**. The assessment
+  never aggregates by Check name. Different Refs or scopes with the same
+  `tach` instance are distinct.
+- Non-check instance key:
+  `canonical digest(obligation_ref, kind, target_ref, action, phase,
+  candidate_digest, source_digest)`, exposed as
+  `required_assessment.obligation_instance_ref()`. The same `obligation_ref`
+  across Pre-/Post-publish phases, two Target/Ref scopes or two candidate/source
+  identities is a different instance.
+- An obligation with several required Check instances (M:N) is satisfied only
+  when **each** Check instance is satisfied. Check-level OR/alternative
+  witnesses remain #52 `ToolRequirement` semantics inside one Check; they never
+  become a cross-Check OR for an obligation.
+- Evidence and failures are matched by the same identity. Out-of-scope facts are
+  retained in the assessment but never counted against the current instance.
+
+## Applicability and due point
+
+The universe declares each obligation instance as `required`,
+`not_applicable` or `not_yet_due`. The evaluation `phase` and the per-obligation
+`phase` come from the authorized #66-B2 evaluation (approved EffectiveProfile
+phase and obligation phase applicability); R1 does not infer a phase from Event
+or Job names and does not keep its own policy table.
+
+- `not_applicable` requires an `applicability_basis_ref`; without it the
+  instance is `unverified`, not inapplicable.
+- An obligation instance whose declared `phase` is not the assessed phase (or
+  whose `due_phase`/`due_at` is genuinely in the future, with a basis ref) is
+  `not_yet_due` and does not fail the current phase. `not_yet_due` is never used
+  for a currently-required obligation whose evidence is missing.
+- A required obligation with no due point, a due phase equal to the current
+  phase, or a due time already passed is `unverified`.
+
+## Assessment statuses
+
+| Status | Meaning |
+| --- | --- |
+| `satisfied` | The applicable Required instance has genuine, in-scope evidence: #52 Native Result admitted by #63 (and, for a current Run, matched by #66-C), or a domain-verified non-check result bound to the authorized verifier authorization/rule and target digest. |
+| `not_applicable` | The authorized policy declares the instance inapplicable with a verifiable basis. No evidence is required. |
+| `not_yet_due` | The instance belongs to a future phase or authorized due point. Recorded; not current evidence, not a failure of this phase. |
+| `unmet` | A positive failure fact applies: an authenticated native failure/rejection, an unmet domain verdict, or a rejected admission coverage. |
+| `unverified` | The Required fact cannot be proven: missing admission/receipt/non-check evidence, unauthenticated issuer or raw result, unresolved conflict, unusable/expired/revoked evidence, unbound verifier, out-of-scope/omitted instance, missing basis, or a Check definition/rule that is not resolved. |
+
+## Four independent verification facts
+
+The gate is not one boolean deriving from another fact. R1 keeps these separate
+because they have different owners:
+
+| Fact | Owner | Verified only when |
+| --- | --- | --- |
+| `verification.authority` | authorized Profile/policy source | authority status is `verified`, the assessment time is inside the effective window, the profile is not revoked, and the approval source is authoritative. |
+| `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, its required Check definitions/rules are resolved, and it is not claiming unverified authority. |
+| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile and Check-domain identities match the Expected scope, and every current Expected Required check/non-check is enumerated without unknown or out-of-scope instances. |
+| `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or `not_applicable`, and no in-scope Check or obligation row is `unmet`/`unverified`. |
+
+`status` is `passed` only when all four facts hold. Otherwise it is `blocked`
+and `blocked_reasons` lists the failed facts per instance. A failed fact never
+erases an independently proven row: an authority/closure failure leaves a
+genuine admitted Check `satisfied`; it only blocks the aggregate gate.
+
+## Conflict and adjudication consumption
+
+For every Check instance whose instance scope matches the current
+Target/Phase/Action and candidate identity, R1 reads:
+
+- accepted success coverage (`admission_status="admitted"`) from #63;
+- authenticated native failures/conflicts in the same instance;
+- authoritative adjudications for those result IDs (retry/supersede/conflict
+  resolution), including their authority/policy references, decision time,
+  validity window and revocation.
+
+A historical admitted PASS plus an in-scope current failure stays `unmet`
+until an effective adjudication covers that failure; an admitted coverage plus
+unresolved conflict stays `unverified`. A valid retry/adjudication yields
+`satisfied` only together with admitted current coverage. An old failure whose
+instance scope (Target/Ref, phase, rule, profile) does not match the current one
+is reported as out-of-scope and never blocks unrelated success. #63 remains the
+owner of the raw facts and adjudication basis; R1 does not re-run admission or
+native witness selection.
+
+## Input shape highlights
+
+`engineering-ci-required-obligations` v1:
+
+```json
+{
+  "kind": "engineering-ci-required-obligations",
+  "schema_version": 1,
+  "profile": {"profile_ref": {"name": "…", "version": "…"},
+               "profile_revision": "…", "approval_source": "org-governance",
+               "profile_sha256": "sha256:…", "approval_digest": "sha256:…"},
+  "authority": {"status": "verified", "source_ref": {"name": "…", "version": "…", "sha256": "…"},
+                 "approved_at": "…", "effective_at": "…", "valid_from": null,
+                 "valid_until": null, "revoked_at": null, "evaluated_at": "…"},
+  "governance_domain": {"closure_status": "closed",
+                         "closure_ref": {"name": "…", "version": "…", "sha256": "…"},
+                         "scope": "organization", "delegation_domains": [],
+                         "inheritance": [], "exclusions": []},
+  "evaluation": {"context": "release", "action": "publish", "target": "candidate",
+                  "phase": "pre_publish",
+                  "refs": [{"target_ref": "refs/heads/main", "ref_action": "update"}],
+                  "candidate": {"commit": "…", "tree": "…"},
+                  "evaluated_at": "…"},
+  "check_domain": {"scope_id": "sha256:…", "expected_set_ref": "sha256:…",
+                    "status": "complete", "consumer_completeness": "expected_domain_complete"},
+  "obligations": [
+    {"obligation_ref": "…", "kind": "check", "target_ref": "refs/heads/main",
+     "action": "publish", "phase": null, "candidate_digest": null,
+     "source_digest": null, "applicability": "required",
+     "expected_check_refs": ["sha256:…"]},
+    {"obligation_ref": "…", "kind": "non_check", "target_ref": "refs/heads/main",
+     "action": "publish", "phase": "pre_publish", "candidate_digest": null,
+     "source_digest": null, "applicability": "required",
+     "verifier_ref": {"name": "…", "version": "…", "sha256": "…"},
+     "verifier_authorization_ref": {"name": "…", "version": "…", "sha256": "…"},
+     "verification_rule_ref": {"name": "…", "version": "…", "sha256": "…"}}
+  ],
+  "universe_status": "complete",
+  "universe_ref": "sha256:…"
+}
+```
+
+The document identity is the SHA-256 of the canonical JSON payload excluding
+`universe_ref`; `universe_ref` is `sha256:<64 hex>`. The admission projection
+uses the same rule for `admission_ref`.
+
+`engineering-ci-evidence-admission` v1 requires
+`phase="post_run_evidence_to_gate_projection"` (the frozen L2 order in
+[reconciliation](reconciliation.md)), the exact Expected `scope_id` /
+`expected_set_ref` and:
+
+- `accepted_coverage_by_instance`: key
+  `"<scope_id>/<expected_check_ref>"`, with `admission_status`, `source_kind`,
+  `witness_result_id`, `raw_result_verified`, `issuer_verified`,
+  `origin_trace`, `applicable_to` (Target/Phase/Action plus optional candidate
+  digest, rule and profile SHA-256), and `equivalence_basis` for historical
+  reuse;
+- `authenticated_failures_by_instance`: per-instance result IDs and failure
+  kind (`native_failure` / `conflict`);
+- `adjudications`: instance identity, disposition, result IDs, authority and
+  policy references, decision time and validity/revocation;
+- `remaining_work`: per-instance unresolved work (must not contain an admitted
+  instance).
+
+`engineering-ci-non-check-evidence` v1 carries one entry per verified domain
+result with the same `obligation_ref` / Target / Action / Phase /
+candidate/source identity, the expected `verifier_ref`,
+`verifier_authorization_ref` and `verification_rule_ref`, a `subject_ref`
+(commit/tree/artifact/source digest) bound to the evaluated candidate, the
+verdict (`satisfied` / `unmet` / `unverified`), its own validity window and an
+evidence reference. A verifier identity that differs from the authorized one
+(for example a PR-modified fixed-PASS verifier) is `unverified`; it never
+self-authorizes.
+
+## Assessment shape
+
+```json
+{
+  "kind": "engineering-ci-required-assessment",
+  "schema_version": 1,
+  "status": "blocked",
+  "phase": "pre_publish",
+  "action": "publish",
+  "target": "candidate",
+  "refs": [{"target_ref": "refs/heads/main", "ref_action": "update"}],
+  "candidate": {"commit": "…", "tree": "…"},
+  "evaluated_at": "…",
+  "inputs": {"profile": {"…": "…"}, "authority": {"…": "…"},
+              "governance_domain": {"closure_status": "closed", "…": "…"},
+              "check_domain": {"scope_id": "sha256:…", "expected_set_ref": "sha256:…",
+                                "status": "complete", "consumer_completeness": "…"},
+              "universe_status": "complete", "universe_ref": "sha256:…",
+              "admission_ref": "sha256:…", "receipt_ref": "sha256:…",
+              "contract_sample": true},
+  "verification": {
+    "authority": {"status": "verified", "reasons": []},
+    "check_domain": {"status": "verified", "reasons": []},
+    "obligations_universe": {"status": "verified", "reasons": []},
+    "evidence_satisfaction": {"status": "unsatisfied", "reasons": ["obligation_unverified"]}
+  },
+  "obligations": [
+    {"instance_ref": "sha256:…", "obligation_ref": "…", "kind": "non_check",
+     "target_ref": "refs/heads/main", "action": "publish", "phase": "pre_publish",
+     "applicability": "required", "status": "unverified",
+     "reasons": ["non_check_evidence_missing"], "check_instances": [],
+     "evidence_refs": []}
+  ],
+  "check_instances": [
+    {"scope_id": "sha256:…", "expected_check_ref": "sha256:…", "check_name": "tach",
+     "status": "satisfied", "reasons": [],
+     "admission": {"status": "admitted", "source_kind": "current_run",
+                    "witness_result_id": "sha256:…", "…": "…"},
+     "structural": {"status": "recorded", "binding_status": "matched", "…": "…"},
+     "authenticated_failures": [], "evidence_refs": ["sha256:…"]}
+  ],
+  "summary": {"obligations": {"total": 2, "satisfied": 1, "unmet": 0,
+                               "unverified": 1, "not_applicable": 0,
+                               "not_yet_due": 0},
+               "check_instances": {"total": 1, "satisfied": 1, "unmet": 0,
+                                    "unverified": 0, "not_applicable": 0,
+                                    "not_yet_due": 0}},
+  "blocked_reasons": ["obligation:sha256:…:non_check_evidence_missing"],
+  "limitations": ["assessment_does_not_publish_github_check", "…"],
+  "assessment_ref": "sha256:…"
+}
+```
+
+`validate_assessment()` recomputes `assessment_ref`, re-checks status/summary
+counts, the four facts, and rejects a `passed` assessment containing
+`unmet`/`unverified` rows or contradictory `blocked_reasons`.
+
+## Contract samples and production claims
+
+A synthetic universe/admission/evidence document may set
+`contract_sample: true`. The assessment then labels the inputs
+(`inputs.contract_sample=true`) and adds
+`contract_sample_inputs_not_production_admission`. Such samples verify only the
+R1 aggregation logic; they do not claim that #63 admission, a real trusted
+chain, a GitHub Check, server protection or a Release authorization exists.
+
+The `assessment_does_not_*` limitations record the remaining stage boundaries.
+R2 must bind the assessment to a real trusted PR/main entry point and publish a
+stable GitHub Check. R3 must verify the actual server-side Ruleset/Check source
+behavior. R4 must map the assessment into the existing Release
+Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
+
+## Directed acceptance
+
+`tests/test_required_assessment.py` covers:
+
+- a complete current-run scope with a real #66-C matched receipt (all four
+  facts pass), legal empty Check/obligation universes, historical reuse and
+  non-check satisfaction;
+- authority unverified/expired/revoked, governance closure incomplete or a
+  delegated domain missing, incomplete universe/Check domains, and profile
+  binding/version drift — all blocked while proven Check coverage is retained;
+- the matched-receipt/trusted-boundary negatives, missing current-run receipt,
+  receipt binding/witness mismatches, admitted-but-remaining contradictions and
+  out-of-scope admission facts;
+- historical PASS plus current failure, conflicting failures, authorized retry
+  and expired/revoked adjudications, plus an old failure from another Ref that
+  must not block the current success;
+- same-obligation-ref instances across Pre-/Post-publish phases and across
+  Target/Refs (including `source_digest` identity), M:N Check obligations, and
+  `not_yet_due`/`not_applicable` basis enforcement;
+- non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
+  subject-digest mismatch, expired/revoked/late evidence and unbound verifiers;
+- tampered Expected/universe/admission/receipt identities, wrong-scope
+  admission, multi-Ref container handling and Schema v1 refusal.
+
+## Limits
+
+- A multi-Ref operation needs one Assessment per Ref. R1 refuses the aggregate
+  multi-ref Expected container, exactly like #66-C, so a single child PASS must
+  not be presented as the whole operation's Required result; the caller owns the
+  per-Ref aggregation.
+- R1 consumes contract samples for pure-logic verification; it cannot prove
+  that a trusted admission engine exists. Real #63 T1-a/T1-b/T2 delivery must
+  fill `engineering-ci-evidence-admission` with genuine authenticated facts.
+- R1 does not enumerate or complete policy domains. It verifies the supplied
+  `closure_ref`/`closure_status` and the declared delegation closure; detecting
+  an omitted delegated domain is #66-B2's enumeration duty.
+- R1 does not authenticate issuers, adjudication authorities or verifier
+  approvals. It verifies presence, controlled identity, scope and temporal
+  validity, and consumes the upstream verdict. Unverifiable upstream authority
+  stays blocked.
+- R1 does not read GitHub Rulesets/Branch Protection or publish the final
+  check. Those remain R2/R3.
+- R1 does not rewrite any historical assessment or native fact; a later stage
+  produces a new Assessment with its own `assessment_ref`.
