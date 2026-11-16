@@ -2750,7 +2750,9 @@ def test_whitespace_native_scope_equals_plan_paths_and_source_closure(repo):
 
     report = execution.execute(p, root=path, runner=spy)
     ws = _whitespace_result(report)
-    diff_calls = [a for a in seen if a[:3] == ["git", "diff", "--check"]]
+    diff_calls = [
+        a for a in seen if a[:4] == ["git", "--literal-pathspecs", "diff", "--check"]
+    ]
     assert diff_calls and all(a[-2:] == ["--", "src/pkg/mod.py"] for a in diff_calls)
     # The out-of-Plan file was not read, so it cannot affect the verdict:
     assert ws["status"] == "passed"
@@ -2794,6 +2796,102 @@ def test_whitespace_deleted_and_added_plan_paths_are_scoped(repo):
     sr = ws["native_result"]["source_ref"]
     assert "src/pkg/other.py" not in sr["verified_input_scope"]
     assert "src/pkg/new.py" in sr["verified_input_scope"]
+
+
+def test_whitespace_literal_pathspec_prevents_glob_expansion_on_special_chars(repo):
+    path, _base = repo
+    special_files = [("src/pkg/a[1].py", "src/pkg/a1.py")]
+    if os.name != "nt":
+        special_files.append(("src/pkg/star*.py", "src/pkg/star1.py"))
+
+    for target_rel, decoy_rel in special_files:
+        (path / target_rel).write_text("BASE = 1\n", encoding="utf-8")
+        (path / decoy_rel).write_text("DECOY = 1\n", encoding="utf-8")
+    (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "add special character paths")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    for target_rel, decoy_rel in special_files:
+        # Modify BOTH the literal target (clean whitespace) and decoy (trailing spaces),
+        # while Plan is constructed ONLY from a changeset containing target_rel:
+        (path / target_rel).write_text("BASE = 2\n", encoding="utf-8")
+        (path / decoy_rel).write_text("DECOY = 2   \n", encoding="utf-8")
+
+        # Confirm standard Git pathspec WITHOUT --literal-pathspecs DOES expand to decoy_rel:
+        glob_names = {
+            line
+            for line in run(
+                path, "diff", "--name-only", base, "--", target_rel
+            ).splitlines()
+            if line
+        }
+        assert decoy_rel in glob_names
+
+        # Construct worktree changeset scoped strictly to target_rel:
+        (path / decoy_rel).write_text("DECOY = 1\n", encoding="utf-8")
+        p = _hygiene_worktree_plan(path, base)
+        assert p["git"]["changed_paths"] == [target_rel]
+
+        # Now inject whitespace error into decoy_rel (outside Plan) AFTER Plan creation:
+        (path / decoy_rel).write_text("DECOY = 2   \n", encoding="utf-8")
+        seen = []
+        real = execution.hygiene._run
+
+        def spy(argv, rroot, data=None, *, _seen=seen, _real=real):
+            _seen.append(list(argv))
+            return _real(argv, rroot, data)
+
+        report = execution.execute(p, root=path, runner=spy)
+        ws = _whitespace_result(report)
+        assert ws["status"] == "passed", ws
+        diff_calls = [
+            a
+            for a in seen
+            if a[:4] == ["git", "--literal-pathspecs", "diff", "--check"]
+        ]
+        assert diff_calls
+        diff_paths = diff_calls[0][diff_calls[0].index("--") + 1 :]
+        assert diff_paths == [target_rel]
+        native_read = {
+            line
+            for line in run(
+                path,
+                "--literal-pathspecs",
+                "diff",
+                "--name-only",
+                base,
+                "--",
+                *diff_paths,
+            ).splitlines()
+            if line
+        }
+        assert native_read == {target_rel}
+        assert decoy_rel not in native_read
+        sr = ws["native_result"]["source_ref"]
+        assert sr["scope_kind"] == "check_input_closure"
+        assert target_rel in sr["verified_input_scope"]
+        assert decoy_rel not in sr["verified_input_scope"]
+
+        # Unstaged whitespace error on literal target_rel itself must fail cleanly:
+        (path / target_rel).write_text("BASE = 3   \n", encoding="utf-8")
+        p_err = _hygiene_worktree_plan(path, base)
+        if decoy_rel in p_err["git"]["changed_paths"]:
+            # Reset decoy cleanly so p_err targets only target_rel:
+            (path / decoy_rel).write_text("DECOY = 1\n", encoding="utf-8")
+            p_err = _hygiene_worktree_plan(path, base)
+        assert p_err["git"]["changed_paths"] == [target_rel]
+        fail_unstaged = _whitespace_result(execution.execute(p_err, root=path))
+        assert fail_unstaged["status"] == "failed"
+        assert fail_unstaged["reason"] == "whitespace_errors"
+
+        # Staged whitespace error on literal target_rel also fails cleanly:
+        run(path, "add", target_rel)
+        fail_staged = _whitespace_result(execution.execute(p_err, root=path))
+        assert fail_staged["status"] == "failed"
+        assert fail_staged["reason"] == "whitespace_errors"
+        # Reset repo before next iteration:
+        run(path, "reset", "--hard", "-q", base)
 
 
 def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo):

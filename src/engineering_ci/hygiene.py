@@ -620,15 +620,24 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
 def _whitespace(changes, root, runner, paths=None):
     """Run ``git diff --check`` over exactly the declared changed paths.
 
-    When ``paths`` is given the native read set is limited with a pathspec so it
-    equals the Plan's changed-path set that Source identity proves; an unscoped
-    diff would also read tracked files outside that set.
+    When ``paths`` is given the native read set is limited with literal
+    pathspecs (``--literal-pathspecs``) so characters like ``[ ]`` or ``*`` are
+    never glob-expanded to match tracked files outside the declared Plan set.
     """
-    argv = ["git", "diff", "--check", changes.base_commit]
     if paths is not None:
         if not paths:
             return _result("whitespace", "not_applicable", reason="no_changed_paths")
-        argv += ["--", *paths]
+        argv = [
+            "git",
+            "--literal-pathspecs",
+            "diff",
+            "--check",
+            changes.base_commit,
+            "--",
+            *paths,
+        ]
+    else:
+        argv = ["git", "diff", "--check", changes.base_commit]
     result = runner(argv, root)
     if result.returncode == 0:
         return _result("whitespace", "passed", exit_code=0, executable="git")

@@ -383,3 +383,60 @@ mistaking them for a full observation ledger.
   #52's Expected instance.
 - No CLI, Hook or Report wiring is added in this slice. The receipt is consumed
   by #61/#63 producers and the eventual Hook final-reconciliation path.
+
+## `#63` L2 消费与 Accepted Coverage 合同样例（非 `#63` 已实装代码）
+
+> 本节为基于当前代码真实 Schema（`engineering-ci-expected-result-reconciliation` v1、`check-contract` v2、`expected_checks` v2）的**合同样例与消费映射说明**，用于冻结 `#66-C -> #63` 交接语义；**不代表 `#63` 历史跨 Run 复用引擎或 `#61` 最终 Gate 已在本仓库实装。**
+
+### 1. 字段来源与 Schema 版本映射
+
+| `#63` 消费需求 | Receipt / Entry 真实字段路径（Schema v1 / Check v2） | 生产者验证约束 |
+| --- | --- | --- |
+| 当前 Execution 上下文归因 | 顶层 `expected_set_ref`、`scope_id`、`expected_invocation_ref`、`expected_event_ref`、`receipt_ref` | 当绑定 `invocation_ref` 时，`job_receipt` 必须同时匹配四项（否则拒绝并保留 `job_*_unproven`/`job_*_mismatch`）。 |
+| 被接纳的原生 Witness 身份 | `entries[i].selected_result_ids`、`entries[i].selected_results[]`（`result_id`, `result_instance`, `status`, `result_origin`, `native_exit_code`, `tool`） | `selected_results` 与同 `result_id` 的 `observed_results` 全字段一致，`status == "passed"` 且与 `rejected_results`/`inactive_attempts` 不交。 |
+| Run / Attempt / Report / Issuer 溯源 | `entries[i].selected_results[].{job_ref, run_ref, attempt_ref, runner_ref, report_ref, job_receipt_ref}` 及 `entries[i].job_instances[]` 的 `attempt_eligibility=="eligible"`、`qualification_ref` | `job_instances` 不得为空；#63 必须再独立验真 `job_receipt.issuer_ref` 签发者权威。 |
+| 执行目标、规则与基线等价键 | `entries[i].resolved_expected`（`check_id`, `definition_version`, `rule_ref`, `profile_ref`, `source_ref.{snapshot, declared_target_tree, content_digest, scope_kind, materialization_ref, verified_input_scope}`, `baseline_ref.base_commit`, `input_refs`, `coverage`）与 `entries[i].resolved_expected_ref` | `resolved_expected` 经 `check_contract.validate_expected_instance()` 验证且与 `resolved_expected_ref` 摘要一致；`entries[i].evidence_refs` 提供 `rule_source_ref`/`source_receipt_ref`/`baseline_source_ref`。 |
+| `#52` 单项判定与输入集合约束 | `entries[i].native_satisfaction`（`kind == "engineering-ci-check-satisfaction"`, `schema_version == 2`, `status == "satisfied"`, `selected_result_ids`） | 仅当 `binding_status == "matched"` 时为 `"satisfied"`；非 `"matched"` 时严禁视作通过。 |
+
+### 2. `#63` 接纳/拒绝与 Remaining Work 关联规则（合同样例）
+
+1. **Pre-run（历史复用计算 Remaining Work，phase: `pre_run_history_to_remaining_work`）**：
+   - 仅当候选历史 Receipt 已由 `#63` 认证 `job_receipt.issuer_ref`、目标 Checks 的 `resolved_expected` 与当前 Run 的 `(check_id, definition_version, rule_ref, profile_ref, source_ref[closure digest / tree], baseline_ref, input_refs, coverage)` 严格等价且 `scope_kind` 为静态已封闭范围（`check_input_closure` / `full_input_closure`）时，可纳入 *Accepted Coverage* 并从 **Remaining Work** 移除。
+   - 若仅部分 Check 闭环、或历史证据来自开放范围（如 `vulture`/`source` 的 `changed_paths`/`identity_only`）、或 `expected_event_ref` 基线不等，禁止从 Remaining Work 移除。
+2. **Post-run（当前执行复核，phase: `post_run_evidence_to_gate_projection`）**：
+   - `entries[i].binding_status == "matched"` 且 `#63` 核验 `job_receipt` 发布者与 `evidence_refs` 来源受信后，`entries[i]` 记为 `admitted` 并结清该 Expected 项的当前覆盖。
+   - 任何出现在 `rejected_results`、`rejected_observations`、`inactive_attempts` 或 `unexpected` 中的结果/attempt 均**不得**抵消 Remaining Work，必须在 `#63` 输出中保持可见审计追踪。
+
+### 3. 数据缺失或未验证时的消费端表达（Fail-Closed）
+
+```json
+{
+  "contract_sample": "63_accepted_coverage_projection",
+  "receipt_ref": "sha256:...",
+  "expected_set_ref": "sha256:...",
+  "scope_id": "sha256:...",
+  "admitted_entries": [
+    {
+      "expected_check_ref": "sha256:...",
+      "admission_status": "admitted_current_run",
+      "witness_result_id": "sha256:...",
+      "run_ref": "run/123",
+      "attempt_ref": "attempt/2",
+      "equivalence_digest": "sha256:resolved_expected_ref"
+    }
+  ],
+  "remaining_work": [
+    {
+      "expected_check_ref": "sha256:...",
+      "reason": "source_scope_not_closed_or_issuer_unverified",
+      "receipt_binding_status": "unknown",
+      "receipt_reason": "expected_source_scope_insufficient",
+      "admitted": false
+    }
+  ],
+  "consumer_trusted": false,
+  "gate_action": "block_required_release"
+}
+```
+
+- 当 `entries[i].binding_status` 为 `missing`、`insufficient`、`unknown`、`unrouted`，或 `receipt.trusted == false`、`job_receipt` 签发者未通过 `#63` 认证、`expected_completeness != "complete"`、`all_observations_reconciled == false` 时：消费端必须维持 `admitted=false`（`unproven` / `not_admitted`），保留条目在 `remaining_work` 中，不得升级 `trusted=true` 或作为 `#61` Required/Release 放行依据。
