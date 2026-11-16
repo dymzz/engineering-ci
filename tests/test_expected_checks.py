@@ -540,6 +540,14 @@ def _profile_policy(profile):
     }
 
 
+def _phase_policy_line(profile):
+    return (
+        f'phase = "{profile["phase"]}"\n'
+        if isinstance(profile.get("phase"), str) and profile["phase"]
+        else ""
+    )
+
+
 def _attach_effective_profile_policy(path, profile):
     """Add an independent [effective_profile] approval binding for a profile."""
     profile.pop("governed_rules", None)
@@ -565,7 +573,7 @@ approval_source = "{binding["approval_source"]}"
 approval_digest = "{binding["approval_digest"]}"
 effective_at = "{profile["effective_at"]}"
 declared_checks = {json.dumps(declared)}
-""",
+{_phase_policy_line(profile)}""",
         encoding="utf-8",
     )
     return selection.load_config(config_path)
@@ -2326,20 +2334,31 @@ def test_phase_profile_projects_check_and_non_check_obligations(repo):
     ]
 
     projections = {}
+    configs = {}
+    config_paths = {}
+    profiles = {}
+    base_config = (path / "ci-selection.toml").read_text(encoding="utf-8")
     for phase in ("pre_publish", "post_publish"):
+        config_path = path / f"ci-selection-{phase}.toml"
+        config_path.write_text(base_config, encoding="utf-8")
         profile = _sample_effective_profile(
             phase=phase,
             declared_checks=["hygiene", "tach", "vulture"],
             required_obligations=obligations,
         )
         expected_checks.validate_effective_profile(profile)
+        cfg_phase = _attach_effective_profile_policy(config_path, profile)
+        configs[phase] = cfg_phase
+        config_paths[phase] = config_path
+        profiles[phase] = profile
         plan = selection.plan(
             chosen,
-            config=cfg,
-            config_path=path / "ci-selection.toml",
+            config=cfg_phase,
+            config_path=config_path,
             root=path,
             effective_profile=profile,
         )
+        assert plan["expected_checks"]["authority_status"] == "verified"
         projections[phase] = plan["expected_checks"]
 
     pre = projections["pre_publish"]
@@ -2353,3 +2372,12 @@ def test_phase_profile_projects_check_and_non_check_obligations(repo):
     post_vulture = next(item for item in post["checks"] if item["name"] == "vulture")
     assert "eci/vulture" not in pre_vulture["required_by_obligations"]
     assert "eci/vulture" in post_vulture["required_by_obligations"]
+
+    with pytest.raises(expected_checks.ExpectedError, match="phase_untrusted"):
+        selection.plan(
+            chosen,
+            config=configs["post_publish"],
+            config_path=config_paths["post_publish"],
+            root=path,
+            effective_profile=profiles["pre_publish"],
+        )

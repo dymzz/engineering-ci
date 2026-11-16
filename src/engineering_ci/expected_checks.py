@@ -699,7 +699,15 @@ def _verify_profile_authority(
     if gov is None and isinstance(declared_domain, dict):
         gov = declared_domain.get("governed_rules")
     policy_matched = False
+    phase_proven = "phase" not in profile
     if isinstance(config_policy, dict):
+        policy_phase = config_policy.get("phase")
+        if "phase" in profile:
+            if policy_phase is not None and policy_phase != profile["phase"]:
+                raise ExpectedError("effective_profile_phase_untrusted")
+            phase_proven = policy_phase == profile["phase"]
+        elif policy_phase is not None:
+            raise ExpectedError("effective_profile_phase_untrusted")
         if (
             profile.get("profile_ref") != config_policy.get("profile_ref")
             or profile.get("profile_revision") != config_policy.get("profile_revision")
@@ -748,6 +756,7 @@ def _verify_profile_authority(
     return bool(
         profile.get("authority_verified") is True
         and policy_matched
+        and phase_proven
         and (gov is None or gov_matched)
     )
 
