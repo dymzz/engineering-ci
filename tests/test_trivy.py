@@ -1,0 +1,460 @@
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from engineering_ci import check_contract, trivy
+
+BINARY = os.environ.get("TRIVY_BIN") or shutil.which("trivy")
+requires_trivy = pytest.mark.skipif(
+    not BINARY, reason="fixed trivy binary is not available"
+)
+
+
+@requires_trivy
+def test_trivy_secret_scan_returns_sanitized_findings(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 0
+    assert result["scanners"] == ["secret"]
+    assert result["target"]["path"] == "."
+    assert result["target"]["input_sha256"].startswith("sha256:")
+    assert len(result["findings"]) == 1
+    finding = result["findings"][0]
+    assert finding["kind"] == "secret"
+    assert finding["rule_sha256"].startswith("sha256:")
+    assert finding["target_sha256"].startswith("sha256:")
+    assert finding["start_line"] == 1
+    serialized = json.dumps(result)
+    assert "glpat-abcdefghijklmnopqrst" not in serialized
+    assert "Content" not in serialized
+
+
+@requires_trivy
+def test_trivy_ignores_ambient_skip_environment(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        environ={
+            **os.environ,
+            "TRIVY_BIN": BINARY,
+            "TRIVY_SKIP_FILES": "**",
+        },
+    )
+    assert result["status"] == "findings"
+    assert "TRIVY_SKIP_FILES" in result["policy"]["ignored_env_keys"]
+    assert len(result["findings"]) == 1
+
+
+@requires_trivy
+def test_trivy_clean_scan_passes(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "passed"
+    assert result["native_exit_code"] == 0
+    assert result["findings"] == []
+
+
+def test_trivy_rejects_target_outside_root(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target="../outside", scanners=("secret",))
+    assert raised.value.code == "trivy_target_outside_root"
+
+
+def test_trivy_rejects_unknown_scanner(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target=".", scanners=("unknown",))
+    assert raised.value.code == "trivy_scanners_invalid"
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target=".", scanners=("license",))
+    assert raised.value.code == "trivy_scanners_invalid"
+
+
+def test_trivy_rejects_symlink_target(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    try:
+        (root / "link").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not permitted")
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target=".", scanners=("secret",))
+    assert raised.value.code == "trivy_target_symlink"
+
+
+def test_trivy_rejects_malformed_report():
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy._sanitize({})
+    assert raised.value.code == "trivy_report_invalid"
+
+
+def test_trivy_vulnerability_id_is_hashed():
+    findings, _ = trivy._sanitize(
+        {
+            "SchemaVersion": 2,
+            "Trivy": {"Version": "0.76.1"},
+            "ArtifactType": "filesystem",
+            "Results": [
+                {
+                    "Target": "a.txt",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "CVE-2026-12345",
+                            "Severity": "HIGH",
+                            "PkgName": "openssl",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert findings[0]["kind"] == "vulnerability"
+    assert "vulnerability_id" not in findings[0]
+    assert findings[0]["vulnerability_sha256"].startswith("sha256:")
+    assert "CVE-2026-12345" not in json.dumps(findings)
+
+
+def test_trivy_misconfiguration_statuses_are_separated():
+    findings, summary = trivy._sanitize(
+        {
+            "SchemaVersion": 2,
+            "Trivy": {"Version": "0.76.1"},
+            "ArtifactType": "filesystem",
+            "Results": [
+                {
+                    "Target": "Dockerfile",
+                    "Misconfigurations": [
+                        {
+                            "ID": "DS001",
+                            "Status": "FAIL",
+                            "Severity": "HIGH",
+                        },
+                        {
+                            "ID": "DS002",
+                            "Status": "PASS",
+                            "Severity": "LOW",
+                        },
+                        {
+                            "ID": "DS003",
+                            "Status": "EXCEPTION",
+                            "Severity": "MEDIUM",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    assert summary == {"fail": 1, "pass": 1, "exception": 1}
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "misconfiguration"
+    assert findings[0]["rule_sha256"] == (
+        "sha256:" + hashlib.sha256(b"DS001").hexdigest()
+    )
+
+
+def test_trivy_rejects_wrong_binary_before_execution(tmp_path):
+    if os.name != "nt":
+        pytest.skip("cmd shim fixture is Windows-specific")
+    marker = tmp_path / "called.txt"
+    fake = tmp_path / "fake-trivy.cmd"
+    fake.write_text(f"@echo called> {marker}\n", encoding="utf-8")
+    root = tmp_path / "target"
+    root.mkdir()
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(
+            root,
+            target=".",
+            scanners=("secret",),
+            environ={"TRIVY_BIN": str(fake)},
+        )
+    assert raised.value.code == "trivy_asset_mismatch"
+    assert not marker.exists()
+
+
+def test_find_binary_uses_explicit_empty_environment(tmp_path):
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.find_binary({})
+    assert raised.value.code == "trivy_binary_missing"
+
+
+@requires_trivy
+def test_trivy_configured_exit_code_with_findings(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        exit_code=1,
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 1
+    assert result["coverage"]["scan_completed"] is True
+
+
+@requires_trivy
+def test_trivy_cli_zero_overrides_config_exit_code(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    config = tmp_path / "trivy.yaml"
+    config.write_text("exit-code: 1\n", encoding="utf-8")
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        config_path=config,
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 0
+    assert result["policy"]["exit_code_source"] == "default-zero"
+    assert result["policy"]["effective_exit_code"] == 0
+    assert result["coverage"]["scan_completed"] is True
+
+
+@requires_trivy
+def test_trivy_real_vulnerability_scan(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "name": "fixture",
+                "lockfileVersion": 3,
+                "packages": {"node_modules/lodash": {"version": "4.17.15"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("vuln",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 0
+    assert result["findings"]
+    assert all(finding["kind"] == "vulnerability" for finding in result["findings"])
+    assert result["db"]["authority"] == "unknown"
+    for finding in result["findings"]:
+        assert "vulnerability_id" not in finding
+        assert finding["vulnerability_sha256"].startswith("sha256:")
+
+
+@requires_trivy
+def test_trivy_misconfig_full_scan_separates_status(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "Dockerfile").write_text(
+        "FROM ubuntu:latest\nUSER root\n", encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("misconfig",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["misconfig_summary"]["fail"] >= 1
+    assert result["coverage"]["artifact_type"] == "filesystem"
+
+
+def test_trivy_missing_report_keeps_exit_without_public_stderr(tmp_path, monkeypatch):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    monkeypatch.setattr(trivy, "find_binary", lambda environ: Path("trivy-fake"))
+    monkeypatch.setattr(
+        trivy,
+        "_verify_binary",
+        lambda binary: {
+            "access_id": "trivy/scan",
+            "version": "0.76.1",
+            "artifact_sha256": "sha256:" + "a" * 64,
+            "platform": "windows-amd64",
+            "path": str(binary),
+        },
+    )
+    monkeypatch.setattr(
+        trivy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 7, "", "failed token=glpat-abcdefghijklmnopqrst"
+        ),
+    )
+    result = trivy.scan_filesystem(root, target=".", scanners=("secret",))
+    assert result["status"] == "error"
+    assert result["reason"] == "trivy_report_missing"
+    assert result["native_exit_code"] == 7
+    assert result["coverage"]["scan_completed"] is False
+    assert "diagnostic" not in result
+    assert "glpat-abcdefghijklmnopqrst" not in json.dumps(result)
+
+
+def test_trivy_invalid_subfields_keep_native_exit(tmp_path, monkeypatch):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    monkeypatch.setattr(trivy, "find_binary", lambda environ: Path("trivy-fake"))
+    monkeypatch.setattr(
+        trivy,
+        "_verify_binary",
+        lambda binary: {
+            "access_id": "trivy/scan",
+            "version": "0.76.1",
+            "artifact_sha256": "sha256:" + "a" * 64,
+            "platform": "windows-amd64",
+            "path": str(binary),
+        },
+    )
+    for payload, payload_name in (
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [{"Target": "a.txt", "Secrets": 7}],
+            },
+            "Secrets",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Metadata": "bad",
+                "Results": [],
+            },
+            "Metadata",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "Dockerfile",
+                        "Misconfigurations": [
+                            {"ID": "DS1", "Status": ["FAIL"], "Severity": "HIGH"}
+                        ],
+                    }
+                ],
+            },
+            "Status",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "a.txt",
+                        "Secrets": [{"RuleID": "r", "StartLine": 1, "Severity": []}],
+                    }
+                ],
+            },
+            "Severity",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "a.txt",
+                        "Vulnerabilities": [
+                            {
+                                "VulnerabilityID": "CVE-1",
+                                "Severity": {"bad": True},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "SeverityObject",
+        ),
+    ):
+
+        def run(command, *args, payload=payload, **kwargs):
+            output = Path(command[command.index("--output") + 1])
+            output.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(trivy.subprocess, "run", run)
+        result = trivy.scan_filesystem(root, target=".", scanners=("secret",))
+        assert result["status"] == "error", payload_name
+        assert result["reason"] == "trivy_report_invalid", payload_name
+        assert result["native_exit_code"] == 0, payload_name
+        assert result["coverage"]["report_valid"] is False, payload_name
+
+
+def test_trivy_missing_binary_is_not_clean(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(
+            root,
+            target=".",
+            scanners=("secret",),
+            environ={"TRIVY_BIN": str(tmp_path / "missing")},
+        )
+    assert raised.value.code == "trivy_binary_missing"
+
+
+def test_trivy_check_definition_is_valid_process():
+    definition = check_contract.definition_for("trivy")
+    assert definition.check_id == "eci/security/trivy-scan"
+    assert definition.definition_version == 1
+    assert check_contract._execution_kind(definition.check_id) == "process"
+    check_contract.validate_definition(definition)
+    resolved = check_contract.resolve_definitions(["trivy"])
+    assert resolved["status"] == "complete"
+    assert resolved["definitions"][0]["check_id"] == definition.check_id
+    tool = definition.tool_requirements[0].alternatives[0]
+    assert tool.access_id == "trivy/scan"
+    assert tool.tool_id == "trivy"
+    assert tool.version == "0.76.1"

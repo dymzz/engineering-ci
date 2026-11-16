@@ -1,0 +1,104 @@
+{
+  "coverage": {
+    "artifact_type": "filesystem",
+    "process_terminated": true,
+    "report_valid": true,
+    "results_present": true,
+    "rule_closure_verified": false,
+    "scan_completed": true
+  },
+  "db": {
+    "authority": "unknown",
+    "updated_at": null,
+    "version": null
+  },
+  "findings": [
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "HIGH",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:f918aeba918cf4afd841bb7805c6a3c30b214dd84577ad5b918b7f9f937aa503"
+    },
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "HIGH",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:da7339b11990755265e8259afc82375c3399213ec144c88fbe58b44ae0c15549"
+    },
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "HIGH",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:276ac7904db23c58b16e2677fc2fff7043e58449ad46c554143e73906968e19a"
+    },
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "HIGH",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:dafc104bdd9c02b2ba927e63eb61071823ea6fe5bc0e5f63e869ee6a53770f1a"
+    },
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "MEDIUM",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:a99dd0ee9dbd477bf9172339e9339f4ef2b87c8fff42b15c2f5c011add89648b"
+    },
+    {
+      "kind": "vulnerability",
+      "package_sha256": "sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506",
+      "redacted": true,
+      "severity": "MEDIUM",
+      "target_sha256": "sha256:053150b640a7ce75eff69d1a22cae7f0f94ad64ce9a855db544dda0929316519",
+      "vulnerability_sha256": "sha256:b4835683d98218972614e0bc2d6960efbd04900d61b70573b4e389b380fa7052"
+    }
+  ],
+  "misconfig_summary": {
+    "exception": 0,
+    "fail": 0,
+    "pass": 0
+  },
+  "native_exit_code": 0,
+  "policy": {
+    "config_after_sha256": null,
+    "config_scope": "explicit-file-only",
+    "config_sha256": null,
+    "effective_exit_code": 0,
+    "env_isolated": true,
+    "exit_code_source": "default-zero",
+    "ignored_env_keys": [
+      "TRIVY_BIN"
+    ],
+    "implicit_config": false,
+    "implicit_ignore": false,
+    "implicit_secret_config": false,
+    "rule_closure_verified": false
+  },
+  "reason": "security_findings",
+  "report_sha256": "sha256:d9e485f0acfaf1b9cb500563d89569b1a2d45458f4931d0e60a36f5702a23d93",
+  "scanners": [
+    "vuln"
+  ],
+  "status": "findings",
+  "target": {
+    "after_sha256": "sha256:5d874500846b120d47224420b0ea43a243eb193e57e538a8f2bb21bd753c91a7",
+    "input_sha256": "sha256:5d874500846b120d47224420b0ea43a243eb193e57e538a8f2bb21bd753c91a7",
+    "path": "."
+  },
+  "tool": {
+    "access_id": "trivy/scan",
+    "artifact_sha256": "sha256:94618922c9eb324d7099bf217b01504bfc1f87a0d46d6008cb24ec89b1d1a4bb",
+    "path": "C:\\Users\\Aurola\\.vesryn\\bin\\trivy.exe",
+    "platform": "windows-amd64",
+    "version": "0.76.1"
+  }
+}
