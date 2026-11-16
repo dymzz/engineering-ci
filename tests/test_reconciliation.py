@@ -2227,6 +2227,182 @@ def test_b3_l2_handoff_preserves_compact_refs_partial_coverage_and_untrusted_bou
     assert "cross_run_reuse_requires_upstream_admission" in diff_rec["limitations"]
 
 
+def test_b3_multi_ref_same_check_name_distinct_instances_and_canonical_receipt_ref():
+    # Two distinct Refs (Ref A vs Ref B) both declare Check name "tach":
+    event_a = {
+        **EVENT,
+        "head_ref": "refs/heads/ref-a",
+        "head_commit": "a" * 40,
+    }
+    event_b = {
+        **EVENT,
+        "head_ref": "refs/heads/ref-b",
+        "head_commit": "b" * 40,
+    }
+    entry_a = make_entry("tach", rule=RULE_TACH, event=event_a, profile_ref=PROFILE_REF)
+    entry_b = make_entry("tach", rule=RULE_TACH, event=event_b, profile_ref=PROFILE_REF)
+    assert entry_a["name"] == entry_b["name"] == "tach"
+    assert entry_a["expected_check_ref"] != entry_b["expected_check_ref"]
+
+    scope_id_a = expected_checks.scope_identity(
+        None,
+        PROFILE_REF,
+        PROFILE_SOURCE,
+        event_a,
+        WEAK_SOURCE,
+        SELECTION_RULE,
+        HYGIENE_RULE,
+        SOURCES_RULE,
+        profile_sha256=PROFILE["profile_sha256"],
+        evaluated_at=PROFILE["evaluated_at"],
+    )
+    scope_id_b = expected_checks.scope_identity(
+        None,
+        PROFILE_REF,
+        PROFILE_SOURCE,
+        event_b,
+        WEAK_SOURCE,
+        SELECTION_RULE,
+        HYGIENE_RULE,
+        SOURCES_RULE,
+        profile_sha256=PROFILE["profile_sha256"],
+        evaluated_at=PROFILE["evaluated_at"],
+    )
+    assert scope_id_a != scope_id_b
+
+    multi_proj = {
+        "kind": expected_checks.EXPECTED_KIND,
+        "schema_version": 2,
+        "projection_source": "effective_profile",
+        "effective_profile": PROFILE,
+        "authority_status": "verified",
+        "trusted_admission_status": "not_evaluated",
+        "hygiene_rule_ref": HYGIENE_RULE,
+        "sources_rule_ref": SOURCES_RULE,
+        "status": "partial",
+        "reason": "test",
+        "scope_id": expected_checks.scope_identity(
+            None,
+            PROFILE_REF,
+            PROFILE_SOURCE,
+            EVENT,
+            WEAK_SOURCE,
+            SELECTION_RULE,
+            HYGIENE_RULE,
+            SOURCES_RULE,
+            profile_sha256=PROFILE["profile_sha256"],
+            evaluated_at=PROFILE["evaluated_at"],
+        ),
+        "selection_rule_ref": copy.deepcopy(SELECTION_RULE),
+        "expected_set_ref": expected_checks.set_identity((), (), schema_version=2),
+        "definitions_status": "requested_names_complete",
+        "applicability_status": "requested_scope",
+        "consumer": None,
+        "profile_ref": copy.deepcopy(PROFILE_REF),
+        "profile_source": PROFILE_SOURCE,
+        "consumer_completeness": "per_ref_container_only",
+        "observed_input_closure_status": "not_observed",
+        "event_ref": copy.deepcopy(EVENT),
+        "source_ref": copy.deepcopy(WEAK_SOURCE),
+        "checks": [],
+        "non_check_obligations": [],
+        "missing": [],
+        "conflicts": [],
+        "per_ref": [
+            {
+                "source_ref": "refs/heads/ref-a",
+                "local_ref": "refs/heads/ref-a",
+                "remote_ref": "origin",
+                "ref_action": "update",
+                "force_push": False,
+                "baseline_status": "ok",
+                "event_ref": copy.deepcopy(event_a),
+                "source": copy.deepcopy(WEAK_SOURCE),
+                "scope_id": scope_id_a,
+                "expected_set_ref": expected_checks.set_identity(
+                    [entry_a], (), schema_version=2
+                ),
+                "checks": [entry_a],
+                "non_check_obligations": [],
+                "status": "partial",
+            },
+            {
+                "source_ref": "refs/heads/ref-b",
+                "local_ref": "refs/heads/ref-b",
+                "remote_ref": "origin",
+                "ref_action": "update",
+                "force_push": False,
+                "baseline_status": "ok",
+                "event_ref": copy.deepcopy(event_b),
+                "source": copy.deepcopy(WEAK_SOURCE),
+                "scope_id": scope_id_b,
+                "expected_set_ref": expected_checks.set_identity(
+                    [entry_b], (), schema_version=2
+                ),
+                "checks": [entry_b],
+                "non_check_obligations": [],
+                "status": "partial",
+            },
+        ],
+    }
+
+    tach_res_a = native(
+        "tach", tool_access="tach/check", instance="tach-ref-a", profile_ref=PROFILE_REF
+    )
+    obs_a = make_observation("job-a", [tach_res_a])
+    obs_a["job_receipt"]["invocation_ref"] = "inv/multi"
+    obs_a["job_receipt"]["event_ref"] = copy.deepcopy(event_a)
+    obs_a["job_receipt"]["scope_id"] = scope_id_a
+    obs_a["job_receipt"]["expected_set_ref"] = multi_proj["per_ref"][0][
+        "expected_set_ref"
+    ]
+    routing_a = make_routing(entry_a, jobs=("job-a",))
+    routing_a["job_instances"][0]["invocation_ref"] = "inv/multi"
+
+    rec_a = reconcile(
+        multi_proj,
+        ref_scope_id=scope_id_a,
+        routing=[routing_a],
+        resolutions=[make_resolution(entry_a, rule=RULE_TACH)],
+        observations=[obs_a],
+        invocation_ref="inv/multi",
+    )
+    reconciliation.validate_receipt(rec_a)
+    assert rec_a["scope_id"] == scope_id_a
+    assert rec_a["entries"][0]["expected_check_ref"] == entry_a["expected_check_ref"]
+    assert rec_a["entries"][0]["binding_status"] == "matched"
+
+    # Reconciling Ref B without its own witness, or attempting to reuse Ref A's
+    # witness/observation under Ref B, must NEVER satisfy Ref B:
+    routing_b = make_routing(entry_b, jobs=("job-b",))
+    routing_b["job_instances"][0]["invocation_ref"] = "inv/multi"
+    obs_a_as_b = copy.deepcopy(obs_a)
+    obs_a_as_b["job_ref"] = "job-b"
+    obs_a_as_b["job_receipt"]["job_ref"] = "job-b"
+    rec_b = reconcile(
+        multi_proj,
+        ref_scope_id=scope_id_b,
+        routing=[routing_b],
+        resolutions=[make_resolution(entry_b, rule=RULE_TACH)],
+        observations=[obs_a_as_b],
+        invocation_ref="inv/multi",
+    )
+    reconciliation.validate_receipt(rec_b)
+    assert rec_b["scope_id"] == scope_id_b
+    assert rec_b["entries"][0]["expected_check_ref"] == entry_b["expected_check_ref"]
+    assert rec_b["entries"][0]["binding_status"] == "unknown"
+    assert rec_b["entries"][0]["reason"] in {"job_event_mismatch", "job_scope_mismatch"}
+
+    # Canonical receipt_ref deterministically commits full payload and rejects forgery:
+    payload_a = {k: v for k, v in rec_a.items() if k != "receipt_ref"}
+    assert rec_a["receipt_ref"] == reconciliation._digest(payload_a)
+    tampered_ref = {**copy.deepcopy(rec_a), "receipt_ref": "sha256:" + ("0" * 64)}
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_ref_mismatch"
+    ):
+        reconciliation.validate_receipt(tampered_ref)
+
+
 def test_b1_eci_producer_report_contract_and_dependency_propagation():
     ws_entry = make_entry("whitespace", rule=RULE_WS)
     docs_entry = make_entry("docs", rule=RULE_DOCS)
@@ -2443,7 +2619,13 @@ def test_b3_job_receipt_requires_all_four_attribution_fields_and_frozen_l2_inter
         "scope_id",
         "expected_set_ref",
     )
-    assert "receipt_sha256" in reconciliation.EVIDENCE_ADMISSION_HANDOFF_FIELDS
+    assert reconciliation.EVIDENCE_ADMISSION_HANDOFF_FIELDS == (
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
+        "expected_set_ref",
+        "receipt_ref",
+    )
     assert len(reconciliation.EXECUTION_PHASE_ORDER) == 3
 
     _entry, projection, routing, resolution, obs, _res = matched_setup()

@@ -58,7 +58,6 @@ EVIDENCE_ADMISSION_HANDOFF_FIELDS = (
     "scope_id",
     "expected_set_ref",
     "receipt_ref",
-    "receipt_sha256",
 )
 EXECUTION_PHASE_ORDER = (
     "pre_run_history_to_remaining_work",
