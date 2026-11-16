@@ -39,6 +39,15 @@ SOURCE_RECEIPT_REF = {"name": "p0-source-receipt", "version": "1", "sha256": "5"
 CLOSURE_REF = {"name": "org/policy-closure", "version": "3", "sha256": "6" * 64}
 AUTHORITY_REF = {"name": "org/governance-source", "version": "2", "sha256": "7" * 64}
 BASIS_REF = {"name": "org/inapplicability-rule", "version": "1", "sha256": "0" * 64}
+PHASE_ORDER_REF = {
+    "name": "org/release-phase-order",
+    "version": "1",
+    "sha256": "3" * 64,
+}
+PHASE_ORDER = {
+    "ref": copy.deepcopy(PHASE_ORDER_REF),
+    "phases": ["pre_publish", "publish", "post_publish"],
+}
 VERIFIER_REF = {"name": "trivy", "version": "0.58.0", "sha256": "8" * 64}
 VERIFIER_AUTH_REF = {
     "name": "org/verifier-approval",
@@ -224,7 +233,10 @@ def non_check_obligation(
     verifier_ref=VERIFIER_REF,
     verifier_authorization_ref=VERIFIER_AUTH_REF,
     verification_rule_ref=VERIFIER_RULE_REF,
+    required_subject_fields=None,
 ):
+    if required_subject_fields is None:
+        required_subject_fields = ["commit"] if applicability == "required" else []
     return {
         "obligation_ref": ref,
         "kind": "non_check",
@@ -241,6 +253,7 @@ def non_check_obligation(
         "verifier_ref": copy.deepcopy(verifier_ref),
         "verifier_authorization_ref": copy.deepcopy(verifier_authorization_ref),
         "verification_rule_ref": copy.deepcopy(verification_rule_ref),
+        "required_subject_fields": list(required_subject_fields),
     }
 
 
@@ -254,6 +267,8 @@ def make_universe(
     target="candidate",
     refs=None,
     candidate=None,
+    phase_order=None,
+    include_phase_order=True,
     universe_status="complete",
     universe_reason=None,
     authority_status="verified",
@@ -309,6 +324,11 @@ def make_universe(
             "action": action,
             "target": target,
             "phase": phase,
+            "phase_order": (
+                copy.deepcopy(phase_order if phase_order is not None else PHASE_ORDER)
+                if include_phase_order
+                else None
+            ),
             "refs": copy.deepcopy(
                 refs or [{"target_ref": "refs/heads/main", "ref_action": "update"}]
             ),
@@ -1418,7 +1438,11 @@ def test_same_obligation_ref_is_a_distinct_instance_per_phase():
     post_row = obligation_row(post_assessment, post_obligation)
     assert post_row["status"] == "unverified"
     assert post_row["reasons"] == ["non_check_evidence_missing"]
-    assert obligation_row(post_assessment, pre_obligation)["status"] == ("not_yet_due")
+    # A different phase is not automatically a future phase: the authorized
+    # order proves pre_publish already passed, so it cannot be silently deferred.
+    past_row = obligation_row(post_assessment, pre_obligation)
+    assert past_row["status"] == "unverified"
+    assert past_row["reasons"] == ["phase_already_passed"]
     assert required_assessment.obligation_instance_ref(
         pre_obligation
     ) != required_assessment.obligation_instance_ref(post_obligation)
@@ -1553,6 +1577,115 @@ def test_not_yet_due_requires_an_authorized_basis_and_future_phase():
         assert obligation_row(broken_assessment, broken)["status"] == "unverified"
 
 
+def test_past_phase_not_yet_due_cannot_hide_a_due_obligation():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    obligation = non_check_obligation(
+        "o/sbom",
+        phase="pre_publish",
+        applicability="not_yet_due",
+        basis_ref=BASIS_REF,
+    )
+    universe = make_universe(profile, projection, [obligation], phase="post_publish")
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    row = obligation_row(assessment, obligation)
+    assert row["status"] == "unverified"
+    assert row["reasons"] == ["not_yet_due_phase_already_passed"]
+
+
+def test_required_obligation_in_past_phase_is_unverified():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    obligation = non_check_obligation("o/sbom", phase="pre_publish")
+    universe = make_universe(profile, projection, [obligation], phase="post_publish")
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    row = obligation_row(assessment, obligation)
+    assert row["status"] == "unverified"
+    assert row["reasons"] == ["phase_already_passed"]
+
+
+@pytest.mark.parametrize(
+    "phase_order",
+    [
+        None,
+        {"ref": copy.deepcopy(PHASE_ORDER_REF), "phases": ["pre_publish", "publish"]},
+        {"ref": copy.deepcopy(PHASE_ORDER_REF), "phases": ["post_publish"]},
+    ],
+)
+def test_unknown_phase_order_blocks_future_deferral(phase_order):
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach", [entry["expected_check_ref"]], phase="post_publish"
+    )
+    universe = make_universe(
+        profile,
+        projection,
+        [obligation],
+        phase="pre_publish",
+        phase_order=phase_order,
+        include_phase_order=phase_order is not None,
+    )
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    row = obligation_row(assessment, obligation)
+    assert row["status"] == "unverified"
+    assert row["reasons"] == ["phase_position_unproven"]
+    assert check_row(assessment, entry)["status"] == "unverified"
+    assert "phase_position_unproven" in check_row(assessment, entry)["reasons"]
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
+def test_phase_order_incomplete_blocks_the_universe_fact():
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(
+        profile,
+        projection,
+        [obligation],
+        phase="pre_publish",
+        phase_order={
+            "ref": copy.deepcopy(PHASE_ORDER_REF),
+            "phases": ["publish", "post_publish"],
+        },
+    )
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert (
+        "phase_order_incomplete"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    # The phase-agnostic Required check itself is still provable.
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
 def test_not_applicable_without_authorized_basis_is_unverified():
     profile = make_profile(
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
@@ -1635,7 +1768,7 @@ def test_missing_non_check_evidence_blocks():
         ),
         (
             {"subject_ref": {"source_digest": "9" * 64}},
-            "non_check_subject_unbound",
+            "non_check_subject_incomplete",
         ),
         (
             {"valid_until": "2026-11-16T00:50:00Z"},
@@ -1665,6 +1798,151 @@ def test_pr_modified_or_invalid_non_check_evidence_is_rejected(change, reason):
     row = obligation_row(assessment, obligation)
     assert row["status"] == "unverified"
     assert row["reasons"] == [reason]
+
+
+def test_artifact_level_non_check_requires_the_actual_artifact_digest():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    artifact_digest = "sha256:" + "a" * 64
+    candidate = {"commit": "2" * 40, "artifact_digest": artifact_digest}
+    obligation = non_check_obligation(
+        "o/sbom", required_subject_fields=["artifact_digest"]
+    )
+    universe = make_universe(profile, projection, [obligation], candidate=candidate)
+    admission = make_admission(projection)
+
+    commit_only = evidence_entry("o/sbom", subject_ref={"commit": "2" * 40})
+    assessment = assess(
+        universe,
+        projection,
+        admission=admission,
+        non_check_evidence=make_evidence([commit_only]),
+    )
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, obligation)["reasons"] == [
+        "non_check_subject_incomplete"
+    ]
+
+    wrong_artifact = evidence_entry(
+        "o/sbom",
+        subject_ref={
+            "commit": "2" * 40,
+            "artifact_digest": "sha256:" + "b" * 64,
+        },
+    )
+    assessment = assess(
+        universe,
+        projection,
+        admission=admission,
+        non_check_evidence=make_evidence([wrong_artifact]),
+    )
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, obligation)["reasons"] == [
+        "non_check_subject_mismatch"
+    ]
+
+    right_artifact = evidence_entry(
+        "o/sbom",
+        subject_ref={"commit": "2" * 40, "artifact_digest": artifact_digest},
+    )
+    assessment = assess(
+        universe,
+        projection,
+        admission=admission,
+        non_check_evidence=make_evidence([right_artifact]),
+    )
+    assert assessment["status"] == "passed"
+    assert obligation_row(assessment, obligation)["status"] == "satisfied"
+
+
+def test_commit_level_non_check_obligation_accepts_a_commit_subject():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    candidate = {
+        "commit": "2" * 40,
+        "artifact_digest": "sha256:" + "a" * 64,
+    }
+    obligation = non_check_obligation("o/sbom", required_subject_fields=["commit"])
+    universe = make_universe(profile, projection, [obligation], candidate=candidate)
+    admission = make_admission(projection)
+    commit_only = evidence_entry("o/sbom", subject_ref={"commit": "2" * 40})
+
+    assessment = assess(
+        universe,
+        projection,
+        admission=admission,
+        non_check_evidence=make_evidence([commit_only]),
+    )
+
+    assert assessment["status"] == "passed"
+    assert obligation_row(assessment, obligation)["status"] == "satisfied"
+
+
+def test_candidate_missing_a_required_subject_field_is_unverified():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    obligation = non_check_obligation(
+        "o/sbom", required_subject_fields=["artifact_digest"]
+    )
+    universe = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40},
+    )
+
+    assessment = assess(
+        universe,
+        projection,
+        admission=make_admission(projection),
+        non_check_evidence=make_evidence(
+            [
+                evidence_entry(
+                    "o/sbom",
+                    subject_ref={
+                        "commit": "2" * 40,
+                        "artifact_digest": "sha256:" + "a" * 64,
+                    },
+                )
+            ]
+        ),
+    )
+
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, obligation)["reasons"] == [
+        "non_check_subject_identity_missing"
+    ]
+
+
+def test_missing_subject_requirement_is_unverified():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    obligation = non_check_obligation("o/sbom", required_subject_fields=[])
+    universe = make_universe(profile, projection, [obligation])
+
+    assessment = assess(
+        universe,
+        projection,
+        admission=make_admission(projection),
+        non_check_evidence=make_evidence([evidence_entry("o/sbom")]),
+    )
+
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, obligation)["reasons"] == [
+        "non_check_subject_requirement_missing"
+    ]
 
 
 def test_unmet_non_check_verdict_is_not_promoted():

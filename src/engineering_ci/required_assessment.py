@@ -539,6 +539,26 @@ def _normalize_candidate(candidate):
     return normalized
 
 
+def _normalize_phase_order(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RequiredAssessmentError("universe_evaluation_invalid")
+    phases = value.get("phases")
+    if not isinstance(phases, list) or not phases:
+        raise RequiredAssessmentError("universe_evaluation_invalid")
+    normalized = []
+    for phase in phases:
+        item = _text(phase, "universe_evaluation_invalid")
+        if item in normalized:
+            raise RequiredAssessmentError("universe_evaluation_invalid")
+        normalized.append(item)
+    return {
+        "ref": _evidence_ref(value.get("ref"), "universe_evaluation_invalid"),
+        "phases": normalized,
+    }
+
+
 def _normalize_evaluation(evaluation):
     if not isinstance(evaluation, dict):
         raise RequiredAssessmentError("universe_evaluation_invalid")
@@ -564,6 +584,7 @@ def _normalize_evaluation(evaluation):
         "action": _text(evaluation.get("action"), "universe_evaluation_invalid"),
         "target": _text(evaluation.get("target"), "universe_evaluation_invalid"),
         "phase": _text(evaluation.get("phase"), "universe_evaluation_invalid"),
+        "phase_order": _normalize_phase_order(evaluation.get("phase_order")),
         "refs": normalized_refs,
         "candidate": _normalize_candidate(evaluation.get("candidate")),
         "evaluated_at": _datetime(
@@ -634,10 +655,22 @@ def _normalize_obligation(obligation):
         ),
         "expected_check_refs": [],
         "check_names": [],
+        "required_subject_fields": [],
         "verifier_ref": None,
         "verifier_authorization_ref": None,
         "verification_rule_ref": None,
     }
+    subject_fields = obligation.get("required_subject_fields", [])
+    if not isinstance(subject_fields, list):
+        raise RequiredAssessmentError("universe_obligation_invalid")
+    for field in subject_fields:
+        value = _text(field, "universe_obligation_invalid")
+        if (
+            value not in CANDIDATE_IDENTITY_FIELDS
+            or value in record["required_subject_fields"]
+        ):
+            raise RequiredAssessmentError("universe_obligation_invalid")
+        record["required_subject_fields"].append(value)
     refs = obligation.get("expected_check_refs", [])
     if not isinstance(refs, list):
         raise RequiredAssessmentError("universe_obligation_invalid")
@@ -654,7 +687,7 @@ def _normalize_obligation(obligation):
         _text(name, "universe_obligation_invalid") for name in names
     ]
     if kind == "check":
-        if not record["expected_check_refs"]:
+        if not record["expected_check_refs"] or record["required_subject_fields"]:
             raise RequiredAssessmentError("universe_obligation_invalid")
     else:
         if record["expected_check_refs"]:
@@ -718,6 +751,25 @@ def _validate_universe(universe):
 
 def _phase_is_current(obligation, current_phase):
     return obligation["phase"] is None or obligation["phase"] == current_phase
+
+
+def _phase_position(phase, current_phase, phase_order):
+    """Classify a declared phase against the authorized phase order.
+
+    A different phase is not automatically a future phase: without an
+    authorized order proving the relative position, the result is ``unknown``
+    and the caller must fail closed instead of deferring the obligation.
+    """
+    if phase is None or phase == current_phase:
+        return "current"
+    if phase_order is None:
+        return "unknown"
+    phases = phase_order["phases"]
+    if current_phase not in phases or phase not in phases:
+        return "unknown"
+    if phases.index(phase) > phases.index(current_phase):
+        return "future"
+    return "past"
 
 
 def _cross_check_universe(universe, scope, checks):
@@ -1235,33 +1287,60 @@ def _universe_fact(universe, cross_check_reasons):
         for domain in governance["delegation_domains"]
     ):
         reasons.append("governance_domain_delegation_incomplete")
+    phase_order = universe["evaluation"].get("phase_order")
+    if phase_order is not None and (
+        universe["evaluation"]["phase"] not in phase_order["phases"]
+    ):
+        reasons.append("phase_order_incomplete")
     reasons = _dedupe(reasons)
     return not reasons, reasons
 
 
-def _applicability_status(obligation, *, current_phase, evaluated_at):
-    """Evaluate the declared applicability; never defer a current Required."""
+def _applicability_status(obligation, *, current_phase, phase_order, evaluated_at):
+    """Evaluate the declared applicability; never defer a current Required.
+
+    A phase different from the current phase is only "future" when the
+    authorized phase order proves it. A past, unknown or unavailable order
+    keeps the obligation ``unverified`` instead of silently deferring it.
+    """
     if obligation["applicability"] == "not_applicable":
         if obligation["basis_ref"] is None:
             return "unverified", ["applicability_basis_missing"]
         return "not_applicable", []
+    due_at = obligation["due_at"]
     if obligation["applicability"] == "not_yet_due":
         if obligation["basis_ref"] is None:
             return "unverified", ["applicability_basis_missing"]
-        due_phase = obligation["due_phase"]
-        due_at = obligation["due_at"]
-        if due_phase is not None and due_phase == current_phase:
-            return "unverified", ["not_yet_due_phase_not_future"]
         if due_at is not None and due_at <= evaluated_at:
             return "unverified", ["not_yet_due_time_elapsed"]
-        if due_phase is not None:
+        phase_values = [
+            value
+            for value in (obligation["phase"], obligation["due_phase"])
+            if value is not None
+        ]
+        if phase_values:
+            positions = [
+                _phase_position(value, current_phase, phase_order)
+                for value in phase_values
+            ]
+            if "past" in positions:
+                return "unverified", ["not_yet_due_phase_already_passed"]
+            if "current" in positions:
+                return "unverified", ["not_yet_due_phase_not_future"]
+            if "unknown" in positions:
+                return "unverified", ["not_yet_due_phase_unproven"]
             return "not_yet_due", ["not_yet_due_future_phase"]
         if due_at is None:
             return "unverified", ["not_yet_due_due_point_missing"]
         return "not_yet_due", ["not_yet_due_future_due_point"]
-    if obligation["phase"] is not None and obligation["phase"] != current_phase:
-        return "not_yet_due", ["phase_not_current"]
-    return "required", []
+    position = _phase_position(obligation["phase"], current_phase, phase_order)
+    if position == "current":
+        return "required", []
+    if position == "future":
+        return "not_yet_due", ["phase_after_current"]
+    if position == "past":
+        return "unverified", ["phase_already_passed"]
+    return "unverified", ["phase_position_unproven"]
 
 
 def _effective_adjudication(adjudications, result_id, evaluated_at):
@@ -1404,22 +1483,53 @@ def _check_instance_row(
 ):
     ref = entry["expected_check_ref"]
     phase = universe["evaluation"]["phase"]
-    required_now = [
-        item
+    phase_order = universe["evaluation"].get("phase_order")
+    evaluations = [
+        (
+            item,
+            *_applicability_status(
+                item,
+                current_phase=phase,
+                phase_order=phase_order,
+                evaluated_at=evaluated_at,
+            ),
+        )
         for item in referencing
-        if item["applicability"] == "required" and _phase_is_current(item, phase)
     ]
-    future = [
-        item
-        for item in referencing
-        if item["applicability"] == "not_yet_due" or not _phase_is_current(item, phase)
+    required_now = [item for item, status, _ in evaluations if status == "required"]
+    future_reasons = [
+        reasons for _item, status, reasons in evaluations if status == "not_yet_due"
+    ]
+    problematic = [
+        reasons for _item, status, reasons in evaluations if status == "unverified"
+    ]
+    inapplicable_reasons = [
+        reasons for _item, status, reasons in evaluations if status == "not_applicable"
     ]
     structural = _structural_fact(receipt, ref)
     if not required_now:
-        status = "not_yet_due" if future else "not_applicable"
-        reasons = ["obligation_phase_not_current"] if future else []
-        if status == "not_applicable":
-            reasons = ["obligation_not_applicable"]
+        if problematic:
+            status = "unverified"
+            reasons = _dedupe(
+                [reason for item_reasons in problematic for reason in item_reasons]
+            )
+        elif future_reasons:
+            status = "not_yet_due"
+            reasons = _dedupe(
+                [reason for item_reasons in future_reasons for reason in item_reasons]
+            )
+        elif inapplicable_reasons:
+            status = "not_applicable"
+            reasons = _dedupe(
+                [
+                    reason
+                    for item_reasons in inapplicable_reasons
+                    for reason in item_reasons
+                ]
+            )
+        else:
+            status = "unverified"
+            reasons = ["obligation_applicability_unresolved"]
         return _instance_row(
             entry,
             scope_id=scope["scope_id"],
@@ -1546,7 +1656,13 @@ def _instance_row(
 
 
 def _non_check_evidence_usable(evidence, obligation, universe, evaluated_at):
-    """Return a reason code when one evidence record cannot support the instance."""
+    """Return a reason code when one evidence record cannot support the instance.
+
+    The authorized obligation declares which candidate subject fields the
+    verifier must have actually checked. A source/commit-level obligation may
+    require only the commit identity; an artifact-level obligation must bind the
+    actual artifact digest. Matching any single field is never enough.
+    """
     if (
         evidence["verifier_ref"] != obligation["verifier_ref"]
         or evidence["verifier_authorization_ref"]
@@ -1561,14 +1677,16 @@ def _non_check_evidence_usable(evidence, obligation, universe, evaluated_at):
     if evidence["revoked_at"] is not None:
         return "non_check_evidence_revoked"
     candidate = universe["evaluation"].get("candidate") or {}
-    matched = False
+    for field in obligation["required_subject_fields"]:
+        if candidate.get(field) is None:
+            return "non_check_subject_identity_missing"
+        if evidence["subject_ref"].get(field) is None:
+            return "non_check_subject_incomplete"
+        if evidence["subject_ref"][field] != candidate[field]:
+            return "non_check_subject_mismatch"
     for key, value in evidence["subject_ref"].items():
-        if key in candidate:
-            if candidate[key] != value:
-                return "non_check_subject_mismatch"
-            matched = True
-    if not matched:
-        return "non_check_subject_unbound"
+        if key in candidate and candidate[key] != value:
+            return "non_check_subject_mismatch"
     return None
 
 
@@ -1592,6 +1710,7 @@ def _obligation_row(
         "candidate_digest": obligation["candidate_digest"],
         "source_digest": obligation["source_digest"],
         "applicability": obligation["applicability"],
+        "required_subject_fields": list(obligation["required_subject_fields"]),
         "status": status,
         "reasons": _dedupe(reasons),
         "check_instances": list(check_instance_refs or ()),
@@ -1607,8 +1726,12 @@ def _non_check_obligation_row(
     evidence_by_instance,
 ):
     phase = universe["evaluation"]["phase"]
+    phase_order = universe["evaluation"].get("phase_order")
     status, reasons = _applicability_status(
-        obligation, current_phase=phase, evaluated_at=evaluated_at
+        obligation,
+        current_phase=phase,
+        phase_order=phase_order,
+        evaluated_at=evaluated_at,
     )
     if status != "required":
         return _obligation_row(obligation, status=status, reasons=reasons)
@@ -1619,6 +1742,12 @@ def _non_check_obligation_row(
     ):
         return _obligation_row(
             obligation, status="unverified", reasons=["non_check_verifier_unbound"]
+        )
+    if not obligation["required_subject_fields"]:
+        return _obligation_row(
+            obligation,
+            status="unverified",
+            reasons=["non_check_subject_requirement_missing"],
         )
     entries = evidence_by_instance.get(obligation["instance_ref"], [])
     if not entries:
@@ -1679,9 +1808,14 @@ def _non_check_obligation_row(
     )
 
 
-def _check_obligation_row(obligation, *, check_rows_by_ref, evaluated_at, phase):
+def _check_obligation_row(
+    obligation, *, check_rows_by_ref, evaluated_at, phase, phase_order
+):
     status, reasons = _applicability_status(
-        obligation, current_phase=phase, evaluated_at=evaluated_at
+        obligation,
+        current_phase=phase,
+        phase_order=phase_order,
+        evaluated_at=evaluated_at,
     )
     if status != "required":
         return _obligation_row(obligation, status=status, reasons=reasons)
@@ -1977,6 +2111,7 @@ def assess_required_obligations(
                 ignored_evidence += 1
 
     obligation_rows = []
+    phase_order = normalized_universe["evaluation"].get("phase_order")
     for obligation in normalized_universe["obligations"]:
         if obligation["kind"] == "check":
             row = _check_obligation_row(
@@ -1984,6 +2119,7 @@ def assess_required_obligations(
                 check_rows_by_ref=check_rows_by_ref,
                 evaluated_at=assessed_at,
                 phase=phase,
+                phase_order=phase_order,
             )
         else:
             row = _non_check_obligation_row(

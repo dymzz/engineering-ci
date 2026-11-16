@@ -73,26 +73,35 @@ The universe declares each obligation instance as `required`,
 `not_applicable` or `not_yet_due`. The evaluation `phase` and the per-obligation
 `phase` come from the authorized #66-B2 evaluation (approved EffectiveProfile
 phase and obligation phase applicability); R1 does not infer a phase from Event
-or Job names and does not keep its own policy table.
+or Job names and does not keep its own policy table or built-in phase order.
+
+A phase different from the assessed phase is **not** automatically a future
+phase. The universe must supply the authorized `evaluation.phase_order`
+(`ref` plus the ordered phase names) and R1 only derives `not_yet_due` when that
+order proves the declared phase (or `due_phase`) comes after the assessed phase.
+A phase before the assessed phase is an expired Required and stays
+`unverified`; a missing/unknown order or a phase absent from it is also
+`unverified` and blocks the scope.
 
 - `not_applicable` requires an `applicability_basis_ref`; without it the
   instance is `unverified`, not inapplicable.
-- An obligation instance whose declared `phase` is not the assessed phase (or
-  whose `due_phase`/`due_at` is genuinely in the future, with a basis ref) is
-  `not_yet_due` and does not fail the current phase. `not_yet_due` is never used
-  for a currently-required obligation whose evidence is missing.
-- A required obligation with no due point, a due phase equal to the current
-  phase, or a due time already passed is `unverified`.
+- `not_yet_due` requires an `applicability_basis_ref` and either a provably
+  future phase in `phase`/`due_phase` or a future `due_at`. A current/past
+  phase, an elapsed due time, or no authorized order is `unverified`.
+- A `required` obligation with a provably future phase is `not_yet_due`; a
+  past phase is `unverified` (`phase_already_passed`); an unavailable or
+  unknown order is `unverified` (`phase_position_unproven`). `not_yet_due` is
+  never used for a currently-required obligation whose evidence is missing.
 
 ## Assessment statuses
 
 | Status | Meaning |
 | --- | --- |
-| `satisfied` | The applicable Required instance has genuine, in-scope evidence: #52 Native Result admitted by #63 (and, for a current Run, matched by #66-C), or a domain-verified non-check result bound to the authorized verifier authorization/rule and target digest. |
+| `satisfied` | The applicable Required instance has genuine, in-scope evidence: #52 Native Result admitted by #63 (and, for a current Run, matched by #66-C), or a domain-verified non-check result bound to the authorized verifier authorization/rule and target subject. |
 | `not_applicable` | The authorized policy declares the instance inapplicable with a verifiable basis. No evidence is required. |
-| `not_yet_due` | The instance belongs to a future phase or authorized due point. Recorded; not current evidence, not a failure of this phase. |
+| `not_yet_due` | The authorized phase order proves a future phase, or an authorized future due point exists. Recorded; not current evidence, not a failure of this phase. |
 | `unmet` | A positive failure fact applies: an authenticated native failure/rejection, an unmet domain verdict, or a rejected admission coverage. |
-| `unverified` | The Required fact cannot be proven: missing admission/receipt/non-check evidence, unauthenticated issuer or raw result, unresolved conflict, unusable/expired/revoked evidence, unbound verifier, out-of-scope/omitted instance, missing basis, or a Check definition/rule that is not resolved. |
+| `unverified` | The Required fact cannot be proven: missing admission/receipt/non-check evidence, unauthenticated issuer or raw result, unresolved conflict, unusable/expired/revoked evidence, unbound verifier, out-of-scope/omitted instance, missing basis, past/unproven phase position, or a Check definition/rule that is not resolved. |
 
 ## Four independent verification facts
 
@@ -151,6 +160,9 @@ native witness selection.
                          "inheritance": [], "exclusions": []},
   "evaluation": {"context": "release", "action": "publish", "target": "candidate",
                   "phase": "pre_publish",
+                  "phase_order": {"ref": {"name": "org/release-phase-order",
+                                           "version": "1", "sha256": "…"},
+                                   "phases": ["pre_publish", "publish", "post_publish"]},
                   "refs": [{"target_ref": "refs/heads/main", "ref_action": "update"}],
                   "candidate": {"commit": "…", "tree": "…"},
                   "evaluated_at": "…"},
@@ -164,6 +176,7 @@ native witness selection.
     {"obligation_ref": "…", "kind": "non_check", "target_ref": "refs/heads/main",
      "action": "publish", "phase": "pre_publish", "candidate_digest": null,
      "source_digest": null, "applicability": "required",
+     "required_subject_fields": ["artifact_digest"],
      "verifier_ref": {"name": "…", "version": "…", "sha256": "…"},
      "verifier_authorization_ref": {"name": "…", "version": "…", "sha256": "…"},
      "verification_rule_ref": {"name": "…", "version": "…", "sha256": "…"}}
@@ -175,7 +188,11 @@ native witness selection.
 
 The document identity is the SHA-256 of the canonical JSON payload excluding
 `universe_ref`; `universe_ref` is `sha256:<64 hex>`. The admission projection
-uses the same rule for `admission_ref`.
+uses the same rule for `admission_ref`. `evaluation.phase_order` is optional for
+a phase-agnostic scope and is the only authorized evidence R1 uses to classify
+another declared phase as future. A currently-required non-check obligation
+must declare `required_subject_fields`; otherwise its evidence stays
+`unverified`.
 
 `engineering-ci-evidence-admission` v1 requires
 `phase="post_run_evidence_to_gate_projection"` (the frozen L2 order in
@@ -201,8 +218,15 @@ candidate/source identity, the expected `verifier_ref`,
 `verifier_authorization_ref` and `verification_rule_ref`, a `subject_ref`
 (commit/tree/artifact/source digest) bound to the evaluated candidate, the
 verdict (`satisfied` / `unmet` / `unverified`), its own validity window and an
-evidence reference. A verifier identity that differs from the authorized one
-(for example a PR-modified fixed-PASS verifier) is `unverified`; it never
+evidence reference. The authorized obligation declares which candidate subject
+fields the verifier must actually have checked in `required_subject_fields`;
+R1 requires the candidate and the evidence to carry every declared field with
+equal values. A source/commit-level obligation may require only `commit`, but an
+artifact-level obligation must bind the real `artifact_digest`: a matching
+commit alone never satisfies it. A missing requirement declaration, a missing
+candidate identity field or a missing/mismatched evidence field is
+`unverified`. A verifier identity that differs from the authorized one (for
+example a PR-modified fixed-PASS verifier) is also `unverified`; it never
 self-authorizes.
 
 ## Assessment shape
@@ -295,14 +319,29 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   must not block the current success;
 - same-obligation-ref instances across Pre-/Post-publish phases and across
   Target/Refs (including `source_digest` identity), M:N Check obligations, and
-  `not_yet_due`/`not_applicable` basis enforcement;
+  `not_yet_due`/`not_applicable` basis enforcement; a past phase, a missing or
+  incomplete authorized phase order and an unproven position are all blocked
+  instead of being deferred;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
-  subject-digest mismatch, expired/revoked/late evidence and unbound verifiers;
+  artifact-level subject fields, commit-only evidence rejected for an
+  artifact-level obligation, a legitimate commit-level obligation, missing
+  requirement declarations, subject-digest mismatch, expired/revoked/late
+  evidence and unbound verifiers;
 - tampered Expected/universe/admission/receipt identities, wrong-scope
   admission, multi-Ref container handling and Schema v1 refusal.
 
 ## Limits
 
+- **Phase order is upstream owned.** R1 consumes the universe's
+  `evaluation.phase_order` and never hardcodes a lifecycle or infers one from
+  Event/Job names. #66-B2 (or the authorized policy source) must supply that
+  order; a missing or incomplete order keeps phase-scoped obligations
+  `unverified` rather than letting a different phase be treated as future.
+- **Subject requirements are upstream owned.** R1 consumes
+  `required_subject_fields` from the authorized obligation/domain contract. It
+  does not decide that every domain needs an artifact or build an artifact
+  schema; it only enforces that an artifact-level obligation binds the real
+  artifact digest and that a commit-level obligation binds its declared subject.
 - A multi-Ref operation needs one Assessment per Ref. R1 refuses the aggregate
   multi-ref Expected container, exactly like #66-C, so a single child PASS must
   not be presented as the whole operation's Required result; the caller owns the
