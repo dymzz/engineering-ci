@@ -130,6 +130,7 @@ def _sanitize(report):
     if not isinstance(results, list):
         raise TrivyError("trivy_report_invalid")
     findings = []
+    misconfig_summary = {"fail": 0, "pass": 0, "exception": 0}
     for result in results:
         if not isinstance(result, dict):
             raise TrivyError("trivy_report_invalid")
@@ -177,6 +178,12 @@ def _sanitize(report):
         for item in result.get("Misconfigurations") or ():
             if not isinstance(item, dict) or not isinstance(item.get("ID"), str):
                 raise TrivyError("trivy_report_invalid")
+            status = item.get("Status")
+            if status not in {"FAIL", "PASS", "EXCEPTION"}:
+                raise TrivyError("trivy_report_invalid")
+            misconfig_summary[status.lower()] += 1
+            if status != "FAIL":
+                continue
             findings.append(
                 {
                     "kind": "misconfiguration",
@@ -186,7 +193,7 @@ def _sanitize(report):
                     "redacted": True,
                 }
             )
-    return findings
+    return findings, misconfig_summary
 
 
 def _git_dir(root):
@@ -238,6 +245,15 @@ def scan_filesystem(
         config = config if config.is_absolute() else (root / config).resolve()
         if not config.is_file():
             raise TrivyError("trivy_config_missing")
+    config_before = _sha256(config) if config is not None else None
+    ignored_env = sorted(
+        key for key in (environ or os.environ) if key.startswith("TRIVY_")
+    )
+    child_env = {
+        key: value
+        for key, value in (environ or os.environ).items()
+        if not key.startswith("TRIVY_")
+    }
     with tempfile.TemporaryDirectory(
         prefix="eci-trivy-", dir=_git_dir(root)
     ) as temporary:
@@ -271,6 +287,7 @@ def scan_filesystem(
                 errors="replace",
                 check=False,
                 timeout=timeout,
+                env=child_env,
             )
         except FileNotFoundError:
             raise TrivyError("trivy_binary_missing") from None
@@ -283,9 +300,10 @@ def scan_filesystem(
             report = json.loads(raw.decode("utf-8"))
         except (UnicodeError, ValueError):
             raise TrivyError("trivy_report_invalid") from None
-        findings = _sanitize(report)
+        findings, misconfig_summary = _sanitize(report)
 
     after_digest = _target_digest(target_path)
+    config_after = _sha256(config) if config is not None else None
     if completed.returncode == 0:
         status = "findings" if findings else "passed"
         reason = None
@@ -297,6 +315,9 @@ def scan_filesystem(
     if before_digest != after_digest:
         status = "error"
         reason = "trivy_target_changed"
+    if config_before != config_after:
+        status = "error"
+        reason = "trivy_config_changed"
     return {
         "status": status,
         "reason": reason,
@@ -310,11 +331,15 @@ def scan_filesystem(
         },
         "tool": tool,
         "scanners": list(selected),
+        "misconfig_summary": misconfig_summary,
         "policy": {
-            "config_sha256": _sha256(config) if config is not None else None,
+            "config_sha256": config_before,
+            "config_after_sha256": config_after,
             "implicit_config": False,
             "implicit_ignore": False,
             "implicit_secret_config": False,
+            "env_isolated": True,
+            "ignored_env_keys": ignored_env,
         },
         "db": {
             "updated_at": (report.get("Metadata") or {}).get("DBUpdatedAt"),

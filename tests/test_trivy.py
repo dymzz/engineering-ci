@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -39,6 +40,28 @@ def test_trivy_secret_scan_returns_sanitized_findings(tmp_path):
     serialized = json.dumps(result)
     assert "glpat-abcdefghijklmnopqrst" not in serialized
     assert "Content" not in serialized
+
+
+@requires_trivy
+def test_trivy_ignores_ambient_skip_environment(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        environ={
+            **os.environ,
+            "TRIVY_BIN": BINARY,
+            "TRIVY_SKIP_FILES": "**",
+        },
+    )
+    assert result["status"] == "findings"
+    assert "TRIVY_SKIP_FILES" in result["policy"]["ignored_env_keys"]
+    assert len(result["findings"]) == 1
 
 
 @requires_trivy
@@ -97,7 +120,7 @@ def test_trivy_rejects_malformed_report():
 
 
 def test_trivy_vulnerability_id_is_hashed():
-    findings = trivy._sanitize(
+    findings, _ = trivy._sanitize(
         {
             "SchemaVersion": 2,
             "Trivy": {"Version": "0.76.1"},
@@ -120,6 +143,44 @@ def test_trivy_vulnerability_id_is_hashed():
     assert "vulnerability_id" not in findings[0]
     assert findings[0]["vulnerability_sha256"].startswith("sha256:")
     assert "CVE-2026-12345" not in json.dumps(findings)
+
+
+def test_trivy_misconfiguration_statuses_are_separated():
+    findings, summary = trivy._sanitize(
+        {
+            "SchemaVersion": 2,
+            "Trivy": {"Version": "0.76.1"},
+            "ArtifactType": "filesystem",
+            "Results": [
+                {
+                    "Target": "Dockerfile",
+                    "Misconfigurations": [
+                        {
+                            "ID": "DS001",
+                            "Status": "FAIL",
+                            "Severity": "HIGH",
+                        },
+                        {
+                            "ID": "DS002",
+                            "Status": "PASS",
+                            "Severity": "LOW",
+                        },
+                        {
+                            "ID": "DS003",
+                            "Status": "EXCEPTION",
+                            "Severity": "MEDIUM",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    assert summary == {"fail": 1, "pass": 1, "exception": 1}
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "misconfiguration"
+    assert findings[0]["rule_sha256"] == (
+        "sha256:" + hashlib.sha256(b"DS001").hexdigest()
+    )
 
 
 def test_trivy_missing_binary_is_not_clean(tmp_path):
