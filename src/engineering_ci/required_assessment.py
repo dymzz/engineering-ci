@@ -779,7 +779,7 @@ def _cross_check_universe(universe, scope, checks):
             reasons.append("obligation_candidate_out_of_scope")
         current = _phase_is_current(obligation, current_phase)
         if obligation["kind"] == "check":
-            if not current or obligation["applicability"] != "required":
+            if not current:
                 continue
             for ref in obligation["expected_check_refs"]:
                 entry = expected_refs.get(ref)

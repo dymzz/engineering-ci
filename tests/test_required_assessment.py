@@ -98,6 +98,7 @@ def make_entry(
     rule_ref=RULE_TACH,
     event=None,
     source=None,
+    applicability="selected",
 ):
     definition = check_contract.definition_for(name)
     entry = {
@@ -110,7 +111,7 @@ def make_entry(
         "rule_ref": copy.deepcopy(rule_ref),
         "rule_status": "resolved",
         "profile_ref": copy.deepcopy(PROFILE_REF),
-        "applicability": {"status": "selected", "reason": "test"},
+        "applicability": {"status": applicability, "reason": "test"},
         "policy_status": "resolved",
         "source_ref": copy.deepcopy(source or SOURCE),
         "input_refs": [{"kind": "changed_path", "path": "src/engineering_ci/x.py"}],
@@ -811,6 +812,45 @@ def test_authorized_not_applicable_obligation_is_not_required_evidence():
     assert assessment["status"] == "passed"
     row = obligation_row(assessment, obligation)
     assert row["status"] == "not_applicable"
+
+
+def test_authorized_check_inapplicability_passes_without_native_evidence():
+    profile = make_profile()
+    entry = make_entry(applicability="not_applicable")
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach",
+        [entry["expected_check_ref"]],
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+    )
+    universe = make_universe(profile, projection, [obligation])
+    admission = make_admission(projection)
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "passed"
+    assert check_row(assessment, entry)["status"] == "not_applicable"
+    assert obligation_row(assessment, obligation)["status"] == "not_applicable"
+    assert "required_check_omitted_by_universe" not in assessment["cross_check_reasons"]
+
+
+def test_inapplicable_check_cannot_satisfy_a_required_obligation():
+    profile = make_profile()
+    entry = make_entry(applicability="not_applicable")
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, projection, [obligation])
+    admission = make_admission(projection)
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    row = check_row(assessment, entry)
+    assert row["status"] == "unverified"
+    assert "check_inapplicable_for_required_obligation" in row["reasons"]
+    assert obligation_row(assessment, obligation)["status"] == "unverified"
+    assert required_assessment.validate_assessment(assessment) is assessment
 
 
 # ---------------------------------------------------------------------------
