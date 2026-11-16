@@ -107,7 +107,13 @@ reinterpreted):
   `vulture`, `whitespace`, `unittest`, `pytest`, `weaver_registry`,
   `weaver_live`, `weaver_terminal`) require a real native exit and evidence for
   passed/failed; internal Checks (`forwarding`, `source`) carry structured
-  evidence without a process exit. Configuration failures are `not_started`,
+  evidence without a process exit. Every registered Check must declare exactly
+  one of these kinds; a Check in neither table, or in both, is refused with
+  `check_execution_kind_unknown` / `check_execution_kind_ambiguous` at
+  registration, definition validation and Native Result construction/acceptance
+  instead of falling back to `unknown`. The kind belongs to the Check (not a
+  definition version), so historical definition versions keep it and stored
+  Results are not rewritten. Configuration failures are `not_started`,
   carry no Native Result, and cannot be reported as native failures.
 - `baseline_ref` is part of the result digest when a comparison baseline exists;
   equal new Trees with different baselines produce different `content_id`s.

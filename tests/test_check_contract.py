@@ -1229,3 +1229,202 @@ def test_empty_results_use_layered_native_result_missing_reason():
         "result_missing",
         "prerequisite_unmet",
     ]
+
+
+def _recompute_result_ids(result_value):
+    payload = {
+        key: value
+        for key, value in result_value.items()
+        if key not in {"content_id", "result_id"}
+    }
+    content = {key: value for key, value in payload.items() if key != "result_instance"}
+    recomputed = {**payload, "content_id": check_contract._digest(content)}
+    recomputed["result_id"] = check_contract._digest(recomputed)
+    return recomputed
+
+
+def test_every_registered_check_declares_one_execution_category():
+    registered = set(check_contract.CHECK_IDS.values())
+    process = set(check_contract.PROCESS_CHECK_IDS)
+    internal = set(check_contract.INTERNAL_CHECK_IDS)
+    assert process.isdisjoint(internal)
+    assert registered <= process | internal
+    for check_id in registered:
+        assert check_contract._execution_kind(check_id) in {"process", "internal"}
+
+
+def test_registration_refuses_unclassified_and_duplicate_categories(monkeypatch):
+    docs_id = check_contract.definition_for("docs").check_id
+    monkeypatch.setattr(
+        check_contract,
+        "PROCESS_CHECK_IDS",
+        check_contract.PROCESS_CHECK_IDS - {docs_id},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_unknown"
+    ):
+        check_contract._validate_registered_execution_kinds()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        check_contract,
+        "INTERNAL_CHECK_IDS",
+        check_contract.INTERNAL_CHECK_IDS | {docs_id},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_ambiguous"
+    ):
+        check_contract._validate_registered_execution_kinds()
+
+
+def test_unclassified_check_is_refused_on_definition_and_result_paths(monkeypatch):
+    definition = check_contract.definition_for("docs")
+    stored = result(instance="classified-before")
+    monkeypatch.setattr(
+        check_contract,
+        "PROCESS_CHECK_IDS",
+        check_contract.PROCESS_CHECK_IDS - {definition.check_id},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_unknown"
+    ):
+        check_contract.validate_definition(definition)
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_unknown"
+    ):
+        check_contract.native_result(
+            definition,
+            source=source(),
+            status="passed",
+            result_origin="host",
+            result_instance="unclassified",
+            native_exit_code=0,
+            evidence={"stdout": ""},
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_unknown"
+    ):
+        check_contract.validate_result(stored)
+
+
+def test_duplicate_execution_category_is_refused(monkeypatch):
+    definition = check_contract.definition_for("source")
+    monkeypatch.setattr(
+        check_contract,
+        "PROCESS_CHECK_IDS",
+        check_contract.PROCESS_CHECK_IDS | {definition.check_id},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_ambiguous"
+    ):
+        check_contract.validate_definition(definition)
+    with pytest.raises(
+        check_contract.CheckContractError, match="check_execution_kind_ambiguous"
+    ):
+        check_contract.native_result(
+            definition,
+            source=source(),
+            status="passed",
+            result_origin="host",
+            result_instance="ambiguous",
+            evidence={"analysis": "sources"},
+        )
+
+
+def test_execution_category_requires_native_exit_and_evidence():
+    process = check_contract.definition_for("tach")
+    process_base = {
+        "source": source(),
+        "status": "passed",
+        "result_origin": "host",
+        "result_instance": "process-run",
+    }
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_native_exit_missing"
+    ):
+        check_contract.native_result(process, evidence={"stdout": ""}, **process_base)
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.native_result(process, native_exit_code=0, **process_base)
+    native = check_contract.native_result(
+        process, native_exit_code=0, evidence={"stdout": ""}, **process_base
+    )
+    assert check_contract.validate_result(native) is native
+
+    internal = check_contract.definition_for("forwarding")
+    internal_base = {
+        "source": source(),
+        "status": "passed",
+        "result_origin": "host",
+        "result_instance": "internal-run",
+        "baseline_ref": {"base_commit": "a" * 40},
+    }
+    internal_native = check_contract.native_result(
+        internal, evidence={"analysis": "forwarding"}, **internal_base
+    )
+    assert internal_native["native_exit_code"] is None
+    assert check_contract.validate_result(internal_native) is internal_native
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.native_result(internal, **internal_base)
+
+
+def test_result_validator_rejects_missing_native_exit_and_evidence():
+    process = check_contract.definition_for("tach")
+    stored = check_contract.native_result(
+        process,
+        source=source(),
+        status="passed",
+        result_origin="host",
+        result_instance="process-run",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_native_exit_missing"
+    ):
+        check_contract.validate_result(
+            _recompute_result_ids({**stored, "native_exit_code": None})
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.validate_result(
+            _recompute_result_ids({**stored, "evidence": None})
+        )
+
+    internal = check_contract.definition_for("forwarding")
+    stored_internal = check_contract.native_result(
+        internal,
+        source=source(),
+        status="passed",
+        result_origin="host",
+        result_instance="internal-run",
+        baseline_ref={"base_commit": "a" * 40},
+        evidence={"analysis": "forwarding"},
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.validate_result(
+            _recompute_result_ids({**stored_internal, "evidence": None})
+        )
+
+
+def test_historical_definition_version_keeps_its_execution_category():
+    legacy = check_contract.definition_for("docs", 1)
+    assert legacy is not None
+    assert legacy.tool_requirements == ()
+    assert check_contract._execution_kind(legacy.check_id) == "process"
+    native = check_contract.native_result(
+        legacy,
+        source=source(),
+        status="passed",
+        result_origin="host",
+        result_instance="legacy-docs",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+    )
+    assert check_contract.validate_result(native) is native
