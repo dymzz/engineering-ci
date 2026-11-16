@@ -117,7 +117,14 @@ def _target_digest(path):
 
 
 def _severity(value):
-    return value if value in _SEVERITIES else "UNKNOWN"
+    return value if isinstance(value, str) and value in _SEVERITIES else "UNKNOWN"
+
+
+def _checked_severity(item):
+    value = item.get("Severity")
+    if value is not None and not isinstance(value, str):
+        raise TrivyError("trivy_report_invalid")
+    return _severity(value)
 
 
 def _sanitize(report):
@@ -162,7 +169,7 @@ def _sanitize(report):
             finding = {
                 "kind": "secret",
                 "rule_sha256": _hash_text(item["RuleID"]),
-                "severity": _severity(item.get("Severity")),
+                "severity": _checked_severity(item),
                 "target_sha256": target_hash,
                 "start_line": start,
                 "redacted": True,
@@ -182,7 +189,7 @@ def _sanitize(report):
             finding = {
                 "kind": "vulnerability",
                 "vulnerability_sha256": _hash_text(vuln_id),
-                "severity": _severity(item.get("Severity")),
+                "severity": _checked_severity(item),
                 "target_sha256": target_hash,
                 "redacted": True,
             }
@@ -194,7 +201,11 @@ def _sanitize(report):
             if not isinstance(item, dict) or not isinstance(item.get("ID"), str):
                 raise TrivyError("trivy_report_invalid")
             status = item.get("Status")
-            if status not in {"FAIL", "PASS", "EXCEPTION"}:
+            if not isinstance(status, str) or status not in {
+                "FAIL",
+                "PASS",
+                "EXCEPTION",
+            }:
                 raise TrivyError("trivy_report_invalid")
             misconfig_summary[status.lower()] += 1
             if status != "FAIL":
@@ -203,7 +214,7 @@ def _sanitize(report):
                 {
                     "kind": "misconfiguration",
                     "rule_sha256": _hash_text(item["ID"]),
-                    "severity": _severity(item.get("Severity")),
+                    "severity": _checked_severity(item),
                     "target_sha256": target_hash,
                     "redacted": True,
                 }

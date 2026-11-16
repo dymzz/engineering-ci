@@ -338,6 +338,55 @@ def test_trivy_invalid_subfields_keep_native_exit(tmp_path, monkeypatch):
             },
             "Metadata",
         ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "Dockerfile",
+                        "Misconfigurations": [
+                            {"ID": "DS1", "Status": ["FAIL"], "Severity": "HIGH"}
+                        ],
+                    }
+                ],
+            },
+            "Status",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "a.txt",
+                        "Secrets": [{"RuleID": "r", "StartLine": 1, "Severity": []}],
+                    }
+                ],
+            },
+            "Severity",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [
+                    {
+                        "Target": "a.txt",
+                        "Vulnerabilities": [
+                            {
+                                "VulnerabilityID": "CVE-1",
+                                "Severity": {"bad": True},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "SeverityObject",
+        ),
     ):
 
         def run(command, *args, payload=payload, **kwargs):
