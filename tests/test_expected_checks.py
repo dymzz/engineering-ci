@@ -680,6 +680,56 @@ def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
     assert raised.value.code == "expected_baseline_mismatch"
 
 
+def test_multi_ref_phase_unverified_does_not_upgrade_local_complete(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "branch-a")
+    branch_a = run(path, "rev-parse", "HEAD").strip()
+    run(path, "checkout", "-q", base)
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "shared-target")
+    shared = run(path, "rev-parse", "HEAD").strip()
+
+    config_path = path / "ci-selection-multi-phase.toml"
+    config_path.write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    profile = _sample_effective_profile(
+        context="push",
+        action="multi",
+        target="refs/heads/a",
+        targets=["refs/heads/a", "refs/heads/b"],
+        phase="pre_publish",
+        declared_checks=["hygiene", "tach", "vulture"],
+    )
+    cfg = _attach_effective_profile_policy(config_path, profile)
+    multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/a", shared, "refs/heads/a", base),
+            ("refs/heads/b", shared, "refs/heads/b", branch_a),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=config_path,
+        root=path,
+        effective_profile=profile,
+    )
+    expected = plan["expected_checks"]
+    assert expected["phase_status"] == "unverified"
+    assert expected["status"] != "complete"
+    assert expected["consumer_completeness"] != "expected_domain_complete"
+    assert all(item.get("status") != "complete" for item in expected["per_ref"]) or (
+        expected["status"] != "complete"
+    )
+    plan_contract.validate(plan)
+
+
 def test_schema_v2_effective_profile_many_to_many_and_completeness(repo):
     path, base = repo
     (path / "docs/guide.md").write_text("# docs change\n", encoding="utf-8")
@@ -2395,3 +2445,14 @@ def test_phase_profile_projects_check_and_non_check_obligations(repo):
     with pytest.raises(plan_contract.PlanError) as raised_phase:
         plan_contract.validate(forged)
     assert raised_phase.value.code == "expected_phase_complete_unproven"
+
+    for mutate in (
+        lambda value: value["expected_checks"].pop("phase_status"),
+        lambda value: value["expected_checks"].update(phase_status="not_applicable"),
+        lambda value: value["expected_checks"].update(phase="pre_publish"),
+    ):
+        tampered = json.loads(json.dumps(plan))
+        mutate(tampered)
+        with pytest.raises(plan_contract.PlanError) as raised:
+            plan_contract.validate(tampered)
+        assert raised.value.code == "effective_profile_phase_untrusted"

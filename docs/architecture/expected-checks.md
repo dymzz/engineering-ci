@@ -121,6 +121,12 @@ no `job_refs`/scheduler activation.
   covers the configured check domain, all check definitions and rules are
   resolved, applicability is not `unknown`/`incomplete`, `conflicts` is empty,
   and all `per_ref` projections are `complete`.
+- When `EffectiveProfile.phase` is present, `phase_status=unverified` records
+  that the current lifecycle phase is not independently proven. Such a parent
+  projection cannot be `complete` or
+  `consumer_completeness=expected_domain_complete`; a per-ref `complete`
+  remains only that Ref's local structural projection and must not be promoted
+  to a current-Phase Required universe.
 - Worktree Source identity includes the existing changed-path `content_digest`;
   same HEAD/paths but different file bytes changes Expected identity. This is
   not a full Check input closure.

@@ -2917,6 +2917,17 @@ def validate_projection(
                 raise ExpectedError("expected_non_check_obligations_mismatch")
     else:
         profile = validate_effective_profile(expected.get("effective_profile"), git=git)
+        canonical_phase = profile.get("phase")
+        expected_phase = expected.get("phase")
+        phase_status = expected.get("phase_status")
+        if canonical_phase is not None:
+            if expected_phase != canonical_phase or phase_status != "unverified":
+                raise ExpectedError("effective_profile_phase_untrusted")
+        elif expected_phase is not None or phase_status not in {
+            None,
+            "not_applicable",
+        }:
+            raise ExpectedError("effective_profile_phase_untrusted")
         sel_cfg, _tach_graph, _all_tests = _selection_for_validation(plan)
         authority_proven = _verify_profile_authority(
             profile,
