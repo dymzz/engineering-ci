@@ -356,30 +356,77 @@ def test_pre_execution_equivalence_enforces_baseline_rule_tool_and_enables_no_re
         "native_result"
     ]
 
-    # Current pre-execution proof for same commit + SAME base_a matches without running runner:
+    # Current pre-execution proof for same commit + SAME base_a matches that single Native Result's inputs:
     pre_a_ws = execution.build_pre_execution_source_proof(
         plan_from_a, "whitespace", root=root
     )
     eq = execution.compare_pre_execution_to_historical_result(pre_a_ws, hist_ws)
+    assert eq["comparison_scope"] == "single_native_result"
     assert eq["equivalent"] is True
+    assert eq["single_result_inputs_equivalent"] is True
+    assert eq["matched_requirement_id"] == "diff-hygiene"
+    assert eq["whole_check_reuse_admitted"] is False
+    assert eq["check_satisfaction_evaluated"] is False
     assert eq["reason"] is None
     assert eq["trusted"] is False
     assert eq["admission_status"] == "not_evaluated"
 
-    # Simulated #63 T2 reuse gate: skip native execution because pre-execution inputs match historical PASS:
-    spy_runner = _HostRunner()
-    if eq["equivalent"] and hist_ws["status"] == "passed":
-        ran_native = False
-    else:
-        ran_native = True
-        execution.run_host_check(
-            plan_from_a,
-            {"name": "whitespace", "status": "selected"},
-            root=root,
-            runner=spy_runner,
-        )
-    assert not ran_native
-    assert spy_runner.calls == []
+    # Historical Result missing recorded git_whitespace_config cannot prove whitespace config parity:
+    legacy_ws = check_contract.native_result(
+        check_contract.definition_for("whitespace"),
+        source=hist_ws["source_ref"],
+        status="passed",
+        result_origin=hist_ws["result_origin"],
+        result_instance="legacy-ws",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("git/diff-check"),
+        evidence={"stdout": ""},
+        rule_ref=hist_ws["check"]["rule_ref"],
+        runner_ref=hist_ws["runner_ref"],
+        baseline_ref=hist_ws["baseline_ref"],
+    )
+    assert (
+        execution.compare_pre_execution_to_historical_result(pre_a_ws, legacy_ws)[
+            "reason"
+        ]
+        == "whitespace_config_mismatch"
+    )
+
+    # Identical source files, HEAD, Baseline and ci-hygiene.toml, changing ONLY effective core.whitespace:
+    _git(root, "config", "core.whitespace", "blank-at-eol")
+    pre_ws_eol = execution.build_pre_execution_source_proof(
+        plan_from_a, "whitespace", root=root
+    )
+    assert pre_ws_eol["environment_inputs"]["core.whitespace"] == "blank-at-eol"
+    assert pre_ws_eol["closure_digest"] != pre_a_ws["closure_digest"]
+    assert (
+        execution.compare_pre_execution_to_historical_result(pre_ws_eol, hist_ws)[
+            "reason"
+        ]
+        == "whitespace_config_mismatch"
+    )
+    exec_eol = execution.execute(plan_from_a, root=root, runner=_HostRunner())
+    hist_ws_eol = next(c for c in exec_eol["checks"] if c["name"] == "whitespace")[
+        "native_result"
+    ]
+    assert (
+        execution.compare_pre_execution_to_historical_result(pre_ws_eol, hist_ws_eol)[
+            "equivalent"
+        ]
+        is True
+    )
+    _git(root, "config", "core.whitespace", "-blank-at-eol")
+    pre_ws_no_eol = execution.build_pre_execution_source_proof(
+        plan_from_a, "whitespace", root=root
+    )
+    assert pre_ws_no_eol["environment_inputs"]["core.whitespace"] == "-blank-at-eol"
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            pre_ws_no_eol, hist_ws_eol
+        )["reason"]
+        == "whitespace_config_mismatch"
+    )
+    _git(root, "config", "--unset", "core.whitespace")
 
     # Same target Tree (head), DIFFERENT old->new baseline (base_b != base_a) -> REFUSED:
     pre_b_ws = execution.build_pre_execution_source_proof(
@@ -585,7 +632,8 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
     assert del_tach["status"] == "unverified"
     assert del_tach["source_ref"] is None
 
-    # Pre-execution data prerequisite edge without materialized artifacts stays unverified:
+    # Pre-execution data prerequisite: non-empty unrelated artifact_paths NEVER grants closure;
+    # genuine verified Producer + output_ref under artifact_root IS bound & checked on reuse:
     wt_plan = _worktree_plan(root, base_b)
     wt_with_data_dep = {
         **wt_plan,
@@ -601,13 +649,217 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
                     "consumer_ref": {"kind": "check", "name": "tach"},
                     "dependency_kind": "data",
                     "execution_phase": "pre_execution",
-                    "output_ref": "generated/schema.py",
+                    "output_ref": {"kind": "file", "path": "generated/schema.py"},
                 }
             ],
         },
     }
+    (root / "unrelated.txt").write_text("decoy\n", encoding="utf-8")
     dep_unproven = execution.build_pre_execution_source_proof(
-        wt_with_data_dep, "tach", root=root
+        wt_with_data_dep,
+        "tach",
+        root=root,
+        artifact_paths=("unrelated.txt",),
     )
     assert dep_unproven["status"] == "unverified"
     assert dep_unproven["reason"] == "pre_execution_prerequisite_unproven"
+
+    artifact_root = tmp_path / "artifacts"
+    wrong_ns = execution.producer_artifact_root(
+        artifact_root, {"kind": "prerequisite_action", "name": "other"}
+    )
+    (wrong_ns / "generated").mkdir(parents=True)
+    (wrong_ns / "generated" / "schema.py").write_text("X = 1\n", encoding="utf-8")
+    assert (
+        execution.build_pre_execution_source_proof(
+            wt_with_data_dep,
+            "tach",
+            root=root,
+            artifact_root=artifact_root,
+            prerequisite_results={"codegen": {"status": "passed"}},
+        )["reason"]
+        == "data_artifact_missing"
+    )
+
+    real_ns = execution.producer_artifact_root(
+        artifact_root, {"kind": "prerequisite_action", "name": "codegen"}
+    )
+    (real_ns / "generated").mkdir(parents=True)
+    schema_file = real_ns / "generated" / "schema.py"
+    schema_file.write_text("SCHEMA = 1\n", encoding="utf-8")
+    assert (
+        execution.build_pre_execution_source_proof(
+            wt_with_data_dep,
+            "tach",
+            root=root,
+            artifact_root=artifact_root,
+            prerequisite_results={"codegen": {"status": "failed"}},
+        )["reason"]
+        == "data_artifact_missing"
+        or execution.build_pre_execution_source_proof(
+            {
+                **wt_with_data_dep,
+                "dependency_contract": {
+                    "schema_version": 2,
+                    "edges": [
+                        {
+                            **wt_with_data_dep["dependency_contract"]["edges"][0],
+                            "requires_pass": True,
+                        }
+                    ],
+                },
+            },
+            "tach",
+            root=root,
+            artifact_root=artifact_root,
+            prerequisite_results={"codegen": {"status": "failed"}},
+        )["reason"]
+        == "pre_execution_prerequisite_failed"
+    )
+
+    dep_verified = execution.build_pre_execution_source_proof(
+        wt_with_data_dep,
+        "tach",
+        root=root,
+        artifact_root=artifact_root,
+        prerequisite_results={"codegen": {"status": "passed"}},
+    )
+    assert dep_verified["status"] == "verified_candidate_inputs"
+    gen_refs = dep_verified["prerequisite_inputs"][0]["generated_input_refs"]
+    assert gen_refs[0]["path"] == "generated/schema.py"
+    assert gen_refs[0]["sha256"] == check_contract.file_digest(schema_file)
+
+    # Historical result missing that generated_input fails prerequisite_artifact_mismatch:
+    tach_def = check_contract.definition_for("tach")
+    wt_rep = execution.execute(wt_plan, root=root, runner=_HostRunner())
+    wt_tach_src = next(c for c in wt_rep["checks"] if c["name"] == "tach")[
+        "native_result"
+    ]["source_ref"]
+    hist_no_gen = check_contract.native_result(
+        tach_def,
+        source=wt_tach_src,
+        status="passed",
+        result_origin="host",
+        result_instance="tach-no-gen",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("tach/check"),
+        evidence={"stdout": "ok"},
+        rule_ref=dep_verified["rule_ref"],
+        runner_ref="execution:host",
+        baseline_ref=dep_verified["baseline_ref"],
+        input_refs=[],
+    )
+    assert (
+        execution.compare_pre_execution_to_historical_result(dep_verified, hist_no_gen)[
+            "reason"
+        ]
+        == "prerequisite_artifact_mismatch"
+    )
+    hist_with_gen = check_contract.native_result(
+        tach_def,
+        source=hist_no_gen["source_ref"],
+        status="passed",
+        result_origin="host",
+        result_instance="tach-with-gen",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("tach/check"),
+        evidence={"stdout": "ok"},
+        rule_ref=dep_verified["rule_ref"],
+        runner_ref="execution:host",
+        baseline_ref=dep_verified["baseline_ref"],
+        input_refs=list(gen_refs),
+    )
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            dep_verified, hist_with_gen
+        )["equivalent"]
+        is True
+    )
+
+
+def test_pre_execution_single_result_match_never_implies_composite_check_reuse(
+    tmp_path,
+):
+    root, base = _init_repo(tmp_path)
+    (root / "docs.md").write_text("# Updated\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+
+    docs_pre = execution.build_pre_execution_source_proof(plan, "docs", root=root)
+    assert docs_pre["status"] == "verified_candidate_inputs"
+    assert [t["requirement_id"] for t in docs_pre["tool_identities"]] == [
+        "inventory",
+        "links",
+    ]
+
+    # Build strict Expected for docs from the plan:
+    docs_expected_entry = next(
+        c for c in plan["expected_checks"]["checks"] if c["name"] == "docs"
+    )
+    strict_docs = {
+        "check_id": docs_expected_entry["check_id"],
+        "definition_version": docs_expected_entry["definition_version"],
+        "rule_ref": docs_pre["rule_ref"],
+        "baseline_ref": docs_pre["baseline_ref"],
+        "source_ref": {
+            **docs_pre["source_ref"],
+            "actual_execution_source": "worktree",
+        },
+        "input_refs": [],
+    }
+    docs_def = check_contract.definition_for("docs")
+    inv_only = check_contract.native_result(
+        docs_def,
+        source=strict_docs["source_ref"],
+        status="passed",
+        result_origin="host",
+        result_instance="inv-1",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs.md\n"},
+        rule_ref=docs_pre["rule_ref"],
+        runner_ref="execution:host",
+        baseline_ref=docs_pre["baseline_ref"],
+    )
+
+    # Single-Result input equivalence certifies ONLY the 'inventory' result, NEVER full Check reuse:
+    eq_inv = execution.compare_pre_execution_to_historical_result(docs_pre, inv_only)
+    assert eq_inv["comparison_scope"] == "single_native_result"
+    assert eq_inv["equivalent"] is True
+    assert eq_inv["single_result_inputs_equivalent"] is True
+    assert eq_inv["matched_requirement_id"] == "inventory"
+    assert eq_inv["whole_check_reuse_admitted"] is False
+    assert eq_inv["check_satisfaction_evaluated"] is False
+
+    # Confirm via #52 that inv_only alone leaves composite docs UNSATISFIED (cannot skip links!):
+    partial_sat = check_contract.evaluate_expected_satisfaction([inv_only], strict_docs)
+    assert partial_sat["status"] == "unsatisfied"
+
+    # When both inventory AND links exist, each passes single-Result input check AND #52 satisfies:
+    links_nr = check_contract.native_result(
+        docs_def,
+        source=strict_docs["source_ref"],
+        status="passed",
+        result_origin="host",
+        result_instance="links-1",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("lychee/docs"),
+        evidence={"stdout": "0 errors\n"},
+        rule_ref=docs_pre["rule_ref"],
+        runner_ref="execution:host",
+        baseline_ref=docs_pre["baseline_ref"],
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": inv_only["result_id"],
+                "path": "git/ls-files",
+            }
+        ],
+    )
+    eq_links = execution.compare_pre_execution_to_historical_result(docs_pre, links_nr)
+    assert eq_links["equivalent"] is True
+    assert eq_links["matched_requirement_id"] == "links"
+    assert eq_links["whole_check_reuse_admitted"] is False
+    full_sat = check_contract.evaluate_expected_satisfaction(
+        [inv_only, links_nr], strict_docs
+    )
+    assert full_sat["status"] == "satisfied"

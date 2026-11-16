@@ -2460,6 +2460,94 @@ def _active_tool_identities(definition, rule_ref):
     ]
 
 
+def _effective_git_whitespace_config(root):
+    if root is None:
+        return None, "whitespace_config_unreadable"
+    git_dir = selection._resolve_git_dir(root)
+    if git_dir is None:
+        return None, "whitespace_config_unreadable"
+    res = selection._git(root, "config", "--get", "core.whitespace")
+    if res.returncode == 1:
+        core_ws = None
+    elif res.returncode == 0:
+        core_ws = res.stdout.strip()
+    else:
+        return None, "whitespace_config_unreadable"
+    info_attrs = git_dir / "info" / "attributes"
+    try:
+        info_attrs_sha = (
+            hashlib.sha256(info_attrs.read_bytes()).hexdigest()
+            if info_attrs.is_file()
+            else None
+        )
+    except OSError:
+        return None, "whitespace_config_unreadable"
+    return {
+        "core.whitespace": core_ws,
+        "info_attributes_sha256": info_attrs_sha,
+    }, None
+
+
+def _verify_pre_execution_prerequisites(
+    incoming,
+    check_name,
+    *,
+    artifact_root=None,
+    prerequisite_results=None,
+):
+    prereq_inputs = []
+    seen_paths = {}
+    consumer_ref = {"kind": "check", "name": check_name}
+    for edge in incoming:
+        p_ref = edge.get("producer_ref") or {}
+        p_kind, p_name = p_ref.get("kind"), p_ref.get("name")
+        if edge.get("dependency_kind") == "data":
+            if p_kind != "prerequisite_action":
+                return None, "data_check_producer_unsupported"
+            if artifact_root is None or not isinstance(prerequisite_results, dict):
+                return None, "pre_execution_prerequisite_unproven"
+            producer_res = prerequisite_results.get((p_kind, p_name))
+            if producer_res is None:
+                producer_res = prerequisite_results.get(p_name)
+            if not isinstance(producer_res, dict):
+                return None, "pre_execution_prerequisite_unproven"
+            try:
+                p_root = producer_artifact_root(artifact_root, p_ref)
+            except ValueError:
+                return None, "pre_execution_prerequisite_unproven"
+            ok, reason, closure = evaluate_edge(
+                edge, producer_res, artifact_root=p_root
+            )
+            if not ok or closure is None or not closure.get("verified"):
+                return None, reason or "pre_execution_prerequisite_unproven"
+            for obj in closure.get("materialized_objects") or ():
+                rel = obj["path"]
+                if (rel in seen_paths and seen_paths[rel] != str(p_root)) or any(
+                    _artifact_paths_overlap(rel, existing) and owner != str(p_root)
+                    for existing, owner in seen_paths.items()
+                ):
+                    return None, "data_artifact_conflict"
+                seen_paths[rel] = str(p_root)
+            gen_refs = generated_input_refs([closure], consumer_ref)
+            prereq_inputs.append(
+                {
+                    "producer_ref": p_ref,
+                    "dependency_kind": edge.get("dependency_kind"),
+                    "output_ref": edge.get("output_ref"),
+                    "generated_input_refs": gen_refs,
+                }
+            )
+        else:
+            prereq_inputs.append(
+                {
+                    "producer_ref": p_ref,
+                    "dependency_kind": edge.get("dependency_kind"),
+                    "output_ref": edge.get("output_ref"),
+                }
+            )
+    return prereq_inputs, None
+
+
 def build_pre_execution_source_proof(
     plan,
     check_name,
@@ -2472,6 +2560,8 @@ def build_pre_execution_source_proof(
     selection_config=None,
     execution_context="host",
     artifact_paths=(),
+    prerequisite_results=None,
+    artifact_root=None,
 ):
     """Resolve a candidate Host Check input closure *before* native execution.
 
@@ -2562,22 +2652,32 @@ def build_pre_execution_source_proof(
         return unverified(baseline_reason)
 
     incoming = pre_execution_edges(scoped_plan).get(("check", check_name), ())
-    prereq_inputs = []
-    for edge in incoming:
-        if edge.get("dependency_kind") == "data" and not artifact_paths:
-            return unverified("pre_execution_prerequisite_unproven")
-        prereq_inputs.append(
-            {
-                "producer_ref": edge.get("producer_ref"),
-                "dependency_kind": edge.get("dependency_kind"),
-                "output_ref": edge.get("output_ref"),
-            }
-        )
+    prereq_inputs, prereq_reason = _verify_pre_execution_prerequisites(
+        incoming,
+        check_name,
+        artifact_root=artifact_root,
+        prerequisite_results=prerequisite_results,
+    )
+    if prereq_reason is not None:
+        return unverified(prereq_reason)
+
+    env_inputs = None
+    if check_name == "whitespace":
+        env_inputs, ws_err = _effective_git_whitespace_config(resolved_root)
+        if ws_err is not None:
+            return unverified(ws_err)
 
     tool_identities = _active_tool_identities(definition, rule_ref)
     if tool_identities is None:
         return unverified("pre_execution_rule_conditions_unresolved")
 
+    # Never fold unverified caller-supplied artifact_paths into file closure
+    # when incoming data edges require producer artifact verification.
+    effective_artifact_paths = (
+        ()
+        if any(edge.get("dependency_kind") == "data" for edge in incoming)
+        else artifact_paths
+    )
     snapshots = _prepare_source_snapshots(
         scoped_plan,
         [item],
@@ -2585,7 +2685,7 @@ def build_pre_execution_source_proof(
         execution_context=execution_context,
         hygiene_config=hygiene_config,
         sources_config=sources_config,
-        artifact_paths=artifact_paths,
+        artifact_paths=effective_artifact_paths,
     )
     source = _verified_check_source_ref(
         scoped_plan,
@@ -2596,7 +2696,7 @@ def build_pre_execution_source_proof(
         source_snapshots=snapshots,
         hygiene_config=hygiene_config,
         sources_config=sources_config,
-        artifact_paths=artifact_paths,
+        artifact_paths=effective_artifact_paths,
         require_execution_started=False,
     )
     if source is None:
@@ -2634,6 +2734,7 @@ def build_pre_execution_source_proof(
         "profile_ref": profile_ref,
         "baseline_ref": baseline_ref,
         "baseline_source_ref": baseline_source_ref,
+        "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
     }
@@ -2658,6 +2759,7 @@ def build_pre_execution_source_proof(
         "profile_ref": profile_ref,
         "baseline_ref": baseline_ref,
         "baseline_source_ref": baseline_source_ref,
+        "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
         "closure_digest": _canonical_sha256(closure_payload),
@@ -2667,13 +2769,23 @@ def build_pre_execution_source_proof(
 def compare_pre_execution_to_historical_result(pre_proof, historical_result):
     """Compare a P0 pre-execution proof to one historical Native Result's inputs.
 
-    Pure factual equivalence helper for #63 T2 reuse consumers: never verifies
-    issuer trust, PASS/FAIL policy, or declares Trusted/Required admission.
+    Evaluates **only single-Result factual input equivalence**
+    (``comparison_scope="single_native_result"``). It never checks multi-requirement
+    completeness (all-required / after / alternatives), Witness composition,
+    issuer trust, PASS/FAIL policy, or whole-Check skip/reuse eligibility.
+    Callers evaluating Check satisfaction or cross-run reuse must combine
+    per-Result facts with ``check_contract.evaluate_expected_satisfaction()`` and
+    #63 T2 admission.
     """
 
     def mismatch(reason):
         return {
+            "comparison_scope": "single_native_result",
             "equivalent": False,
+            "single_result_inputs_equivalent": False,
+            "matched_requirement_id": None,
+            "whole_check_reuse_admitted": False,
+            "check_satisfaction_evaluated": False,
             "reason": reason,
             "closure_digest": (
                 pre_proof.get("closure_digest") if isinstance(pre_proof, dict) else None
@@ -2753,6 +2865,35 @@ def compare_pre_execution_to_historical_result(pre_proof, historical_result):
     ):
         return mismatch("profile_mismatch")
 
+    if pre_proof.get("check_name") == "whitespace":
+        pre_env = pre_proof.get("environment_inputs")
+        hist_env = (historical_result.get("evidence") or {}).get(
+            "git_whitespace_config"
+        )
+        if (
+            not isinstance(pre_env, dict)
+            or not isinstance(hist_env, dict)
+            or (hist_env != pre_env)
+        ):
+            return mismatch("whitespace_config_mismatch")
+
+    pre_gen = [
+        ref
+        for entry in (pre_proof.get("prerequisite_inputs") or ())
+        for ref in (entry.get("generated_input_refs") or ())
+    ]
+    hist_gen = [
+        ref
+        for ref in (historical_result.get("input_refs") or ())
+        if isinstance(ref, dict) and ref.get("kind") == "generated_input"
+    ]
+    if sorted(
+        pre_gen, key=lambda x: json.dumps(x, sort_keys=True, separators=(",", ":"))
+    ) != sorted(
+        hist_gen, key=lambda x: json.dumps(x, sort_keys=True, separators=(",", ":"))
+    ):
+        return mismatch("prerequisite_artifact_mismatch")
+
     definition = check_contract.definition_for(pre_proof.get("check_name"))
     tool_reqs = pre_proof.get("tool_identities")
     if isinstance(tool_reqs, list) and tool_reqs:
@@ -2778,18 +2919,29 @@ def compare_pre_execution_to_historical_result(pre_proof, historical_result):
                 break
         if not matched_pre:
             return mismatch("tool_mismatch")
+    matched_req_id = None
     if definition is not None and definition.tool_requirements:
         active_reqs = check_contract._active_requirements(
             definition, rule=pre_proof.get("rule_ref")
         )
-        if not any(
-            check_contract._result_matches_requirement(req, historical_result)
-            for req in active_reqs
-        ):
+        matched_req_id = next(
+            (
+                req.requirement_id
+                for req in active_reqs
+                if check_contract._result_matches_requirement(req, historical_result)
+            ),
+            None,
+        )
+        if matched_req_id is None:
             return mismatch("tool_mismatch")
 
     return {
+        "comparison_scope": "single_native_result",
         "equivalent": True,
+        "single_result_inputs_equivalent": True,
+        "matched_requirement_id": matched_req_id,
+        "whole_check_reuse_admitted": False,
+        "check_satisfaction_evaluated": False,
         "reason": None,
         "closure_digest": pre_proof.get("closure_digest"),
         "trusted": False,
@@ -3143,6 +3295,8 @@ def _check_evidence(item, name):
         ):
             if key in item and item[key] is not None:
                 evidence[key] = item[key]
+    if name == "whitespace" and isinstance(item.get("git_whitespace_config"), dict):
+        evidence["git_whitespace_config"] = item["git_whitespace_config"]
     if not evidence and name == "forwarding":
         evidence = {
             "analysis": "forwarding",
@@ -3483,10 +3637,20 @@ def _decorate_checks(
             }
             continue
         rule = item.get("rule_ref")
+        result_item = item
+        if (
+            name == "whitespace"
+            and execution_context == "host"
+            and root is not None
+            and item.get("git_whitespace_config") is None
+        ):
+            ws_cfg, ws_err = _effective_git_whitespace_config(root)
+            if ws_err is None and ws_cfg is not None:
+                result_item = {**item, "git_whitespace_config": ws_cfg}
         try:
             native_results = _native_results(
                 definition,
-                item,
+                result_item,
                 name=name,
                 source=source,
                 rule=rule,
