@@ -1777,6 +1777,9 @@ def _derive_v2_from_profile(
         and not missing_declared_domain
         and not declared_domain_incomplete
     )
+    phase_status = (
+        "unverified" if effective_profile.get("phase") is not None else "not_applicable"
+    )
     per_ref_incomplete = bool(
         per_ref and any(item.get("status") != "complete" for item in per_ref)
     )
@@ -1793,6 +1796,10 @@ def _derive_v2_from_profile(
     elif not authority_proven:
         status = "partial"
         reason = "effective_profile_authority_unverified"
+        consumer_completeness = "incomplete_profile"
+    elif phase_status == "unverified":
+        status = "partial"
+        reason = "effective_profile_phase_unverified"
         consumer_completeness = "incomplete_profile"
     elif is_multi:
         status = "partial"
@@ -1858,6 +1865,8 @@ def _derive_v2_from_profile(
         "profile_source": profile_source,
         "effective_profile": json.loads(json.dumps(effective_profile)),
         "authority_status": "verified" if authority_proven else "unverified",
+        "phase": effective_profile.get("phase"),
+        "phase_status": phase_status,
         "trusted_admission_status": "not_evaluated",
         "consumer_completeness": consumer_completeness,
         "observed_input_closure_status": "not_observed",
@@ -2921,6 +2930,14 @@ def validate_projection(
         auth_status = expected.get("authority_status")
         if auth_status not in {None, "verified", "unverified"}:
             raise ExpectedError("effective_profile_authority_untrusted")
+        phase_status = expected.get("phase_status")
+        if phase_status not in {None, "not_applicable", "unverified"}:
+            raise ExpectedError("effective_profile_phase_untrusted")
+        if phase_status == "unverified" and (
+            expected.get("status") == "complete"
+            or expected.get("consumer_completeness") == "expected_domain_complete"
+        ):
+            raise ExpectedError("expected_phase_complete_unproven")
         if auth_status == "verified" and not authority_proven:
             raise ExpectedError("expected_complete_unproven")
         if not authority_proven and expected.get("consumer_completeness") == (

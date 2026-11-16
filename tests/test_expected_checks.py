@@ -2359,6 +2359,13 @@ def test_phase_profile_projects_check_and_non_check_obligations(repo):
             effective_profile=profile,
         )
         assert plan["expected_checks"]["authority_status"] == "verified"
+        assert plan["expected_checks"]["phase_status"] == "unverified"
+        assert plan["expected_checks"]["status"] in {"partial", "unknown"}
+        assert (
+            plan["expected_checks"]["consumer_completeness"]
+            != "expected_domain_complete"
+        )
+        plan_contract.validate(plan)
         projections[phase] = plan["expected_checks"]
 
     pre = projections["pre_publish"]
@@ -2381,3 +2388,10 @@ def test_phase_profile_projects_check_and_non_check_obligations(repo):
             root=path,
             effective_profile=profiles["pre_publish"],
         )
+
+    forged = json.loads(json.dumps(plan))
+    forged["expected_checks"]["status"] = "complete"
+    forged["expected_checks"]["consumer_completeness"] = "expected_domain_complete"
+    with pytest.raises(plan_contract.PlanError) as raised_phase:
+        plan_contract.validate(forged)
+    assert raised_phase.value.code == "expected_phase_complete_unproven"

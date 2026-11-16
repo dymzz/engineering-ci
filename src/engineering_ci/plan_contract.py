@@ -91,6 +91,17 @@ def _validate_expected(expected, git, plan, *, root=None, materialized_sources=N
             raise PlanError("expected_consumer_completeness_invalid")
         if expected.get("authority_status") not in {None, "verified", "unverified"}:
             raise PlanError("effective_profile_authority_untrusted")
+        if expected.get("phase_status") not in {
+            None,
+            "not_applicable",
+            "unverified",
+        }:
+            raise PlanError("effective_profile_phase_untrusted")
+        if expected.get("phase_status") == "unverified" and (
+            expected.get("status") == "complete"
+            or expected.get("consumer_completeness") == "expected_domain_complete"
+        ):
+            raise PlanError("expected_phase_complete_unproven")
         if expected.get("trusted_admission_status", "not_evaluated") != "not_evaluated":
             raise PlanError("expected_trusted_admission_unproven")
         if expected.get("observed_input_closure_status") not in {
