@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -266,6 +268,39 @@ def test_trivy_misconfig_full_scan_separates_status(tmp_path):
     assert result["status"] == "findings"
     assert result["misconfig_summary"]["fail"] >= 1
     assert result["coverage"]["artifact_type"] == "filesystem"
+
+
+def test_trivy_missing_report_keeps_exit_and_sanitized_diagnostic(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    monkeypatch.setattr(trivy, "find_binary", lambda environ: Path("trivy-fake"))
+    monkeypatch.setattr(
+        trivy,
+        "_verify_binary",
+        lambda binary: {
+            "access_id": "trivy/scan",
+            "version": "0.76.1",
+            "artifact_sha256": "sha256:" + "a" * 64,
+            "platform": "windows-amd64",
+            "path": str(binary),
+        },
+    )
+    monkeypatch.setattr(
+        trivy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 7, "", "failed token=glpat-abcdefghijklmnopqrst"
+        ),
+    )
+    result = trivy.scan_filesystem(root, target=".", scanners=("secret",))
+    assert result["status"] == "error"
+    assert result["reason"] == "trivy_report_missing"
+    assert result["native_exit_code"] == 7
+    assert result["coverage"]["scan_completed"] is False
+    assert "glpat-abcdefghijklmnopqrst" not in result["diagnostic"]
 
 
 def test_trivy_missing_binary_is_not_clean(tmp_path):

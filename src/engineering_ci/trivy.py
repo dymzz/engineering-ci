@@ -28,9 +28,28 @@ _SCANNERS = frozenset({"vuln", "misconfig", "secret"})
 
 
 class TrivyError(ValueError):
-    def __init__(self, code):
+    def __init__(self, code, *, native_exit_code=None, diagnostic=None):
         self.code = code
+        self.native_exit_code = native_exit_code
+        self.diagnostic = diagnostic
         super().__init__(code)
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"glpat-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?i)(secret|token|password|authorization)\s*[:=]\s*\S+"),
+)
+
+
+def _safe_diagnostic(text):
+    if not isinstance(text, str):
+        return ""
+    value = text[-2000:]
+    for pattern in _SECRET_PATTERNS:
+        value = pattern.sub("[REDACTED]", value)
+    return value
 
 
 def find_binary(environ=None):
@@ -199,24 +218,6 @@ def _sanitize(report):
     return findings, misconfig_summary
 
 
-def _git_dir(root):
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    path = Path(result.stdout.strip())
-    if not path.is_absolute():
-        path = Path(root) / path
-    return path.resolve()
-
-
 def scan_filesystem(
     root,
     *,
@@ -255,9 +256,7 @@ def scan_filesystem(
     child_env = {
         key: value for key, value in base_env.items() if not key.startswith("TRIVY_")
     }
-    with tempfile.TemporaryDirectory(
-        prefix="eci-trivy-", dir=_git_dir(root)
-    ) as temporary:
+    with tempfile.TemporaryDirectory(prefix="eci-trivy-") as temporary:
         report_path = Path(temporary) / "report.json"
         command = [
             str(binary),
@@ -298,18 +297,32 @@ def scan_filesystem(
             raise TrivyError("trivy_binary_missing") from None
         except subprocess.TimeoutExpired:
             raise TrivyError("trivy_timeout") from None
+        raw = None
+        report = {}
+        findings = []
+        misconfig_summary = {"fail": 0, "pass": 0, "exception": 0}
+        report_error = None
         if not report_path.is_file():
-            raise TrivyError("trivy_report_missing")
-        raw = report_path.read_bytes()
-        try:
-            report = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, ValueError):
-            raise TrivyError("trivy_report_invalid") from None
-        findings, misconfig_summary = _sanitize(report)
+            report_error = "trivy_report_missing"
+        else:
+            raw = report_path.read_bytes()
+            try:
+                report = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, ValueError):
+                report_error = "trivy_report_invalid"
+            else:
+                try:
+                    findings, misconfig_summary = _sanitize(report)
+                except TrivyError as error:
+                    report_error = error.code
 
     after_digest = _target_digest(target_path)
     config_after = _sha256(config) if config is not None else None
-    if completed.returncode == 0:
+    diagnostic = _safe_diagnostic(completed.stderr)
+    if report_error is not None:
+        status = "error"
+        reason = report_error
+    elif completed.returncode == 0:
         status = "findings" if findings else "passed"
         reason = "security_findings" if findings else None
     elif findings and completed.returncode == effective_exit:
@@ -329,7 +342,10 @@ def scan_filesystem(
         "reason": reason,
         "native_exit_code": completed.returncode,
         "findings": findings,
-        "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "diagnostic": diagnostic,
+        "report_sha256": (
+            "sha256:" + hashlib.sha256(raw).hexdigest() if raw is not None else None
+        ),
         "target": {
             "path": relative_target,
             "input_sha256": before_digest,
@@ -341,7 +357,7 @@ def scan_filesystem(
             "artifact_type": report.get("ArtifactType"),
             "results_present": "Results" in report,
             "process_terminated": True,
-            "report_valid": True,
+            "report_valid": report_error is None,
             "scan_completed": status in {"passed", "findings"},
             "rule_closure_verified": False,
         },
