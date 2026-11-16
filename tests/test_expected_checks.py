@@ -681,52 +681,66 @@ def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
 
 
 def test_multi_ref_phase_unverified_does_not_upgrade_local_complete(repo):
-    path, base = repo
-    (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")
-    run(path, "add", "-A")
-    run(path, "commit", "-q", "-m", "branch-a")
-    branch_a = run(path, "rev-parse", "HEAD").strip()
-    run(path, "checkout", "-q", base)
-    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
-    run(path, "add", "-A")
-    run(path, "commit", "-q", "-m", "shared-target")
-    shared = run(path, "rev-parse", "HEAD").strip()
-
-    config_path = path / "ci-selection-multi-phase.toml"
-    config_path.write_text(
-        (path / "ci-selection.toml").read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    path, _base = repo
     profile = _sample_effective_profile(
         context="push",
-        action="multi",
-        target="refs/heads/a",
-        targets=["refs/heads/a", "refs/heads/b"],
+        action="update",
+        target="refs/heads/docs-only",
+        targets=["refs/heads/docs-only", "refs/heads/code-branch"],
         phase="pre_publish",
-        declared_checks=["hygiene", "tach", "vulture"],
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs-branch",
+                "kind": "check",
+                "check_names": ["docs"],
+                "target_refs": ["refs/heads/docs-only"],
+            },
+            {
+                "obligation_ref": "ob/code-unit",
+                "kind": "check",
+                "check_names": ["unittest"],
+                "target_refs": ["refs/heads/code-branch"],
+            },
+        ],
     )
-    cfg = _attach_effective_profile_policy(config_path, profile)
+    cfg = _attach_effective_profile_policy(path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "attach phase profile")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "docs/guide.md").write_text("# guide\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "docs-only")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "checkout", "-q", base)
+    (path / "src/pkg/sub.py").write_text("VALUE = 42\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-q", "-m", "code-change")
+    code_commit = run(path, "rev-parse", "HEAD").strip()
+
     multi = selection.changeset_multi(
         path,
         [
-            ("refs/heads/a", shared, "refs/heads/a", base),
-            ("refs/heads/b", shared, "refs/heads/b", branch_a),
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base),
+            ("refs/heads/code-branch", code_commit, "refs/heads/code-branch", base),
         ],
     )
     sel = selection.select(multi, cfg, root=path)
     plan = selection.plan(
         sel,
         config=cfg,
-        config_path=config_path,
+        config_path=path / "ci-selection.toml",
         root=path,
         effective_profile=profile,
     )
     expected = plan["expected_checks"]
+    per_ref = {entry["remote_ref"]: entry for entry in expected["per_ref"]}
+    assert per_ref["refs/heads/docs-only"]["status"] == "complete"
     assert expected["phase_status"] == "unverified"
     assert expected["status"] != "complete"
     assert expected["consumer_completeness"] != "expected_domain_complete"
-    assert all(item.get("status") != "complete" for item in expected["per_ref"]) or (
-        expected["status"] != "complete"
-    )
     plan_contract.validate(plan)
 
 
