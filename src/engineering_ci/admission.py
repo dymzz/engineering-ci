@@ -113,6 +113,14 @@ def _authority(value):
     return value
 
 
+def _resolution_authority(value):
+    if value is None:
+        return None
+    if not callable(value):
+        raise AdmissionError("admission_resolution_authority_verifier_required")
+    return value
+
+
 def _policy(value):
     if not isinstance(value, dict) or set(value) - POLICY_KEYS:
         raise AdmissionError("admission_policy_invalid")
@@ -413,7 +421,17 @@ def _same_observed_scope(left, right):
     return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
-def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
+def _entry_admission_v2(
+    entry,
+    *,
+    expected_entry,
+    reports,
+    job_receipts,
+    policy,
+    authority,
+    resolution,
+    resolution_authority,
+):
     if entry.get("binding_status") == "not_applicable":
         return {
             "scope_id": entry.get("scope_id"),
@@ -430,6 +448,39 @@ def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
             "facts": [],
             "reasons": [],
         }
+    resolution_status = "verified"
+    resolution_reason = None
+    if resolution is None:
+        resolution_status = "unverified"
+        resolution_reason = "resolution_missing"
+    elif resolution_authority is None:
+        resolution_status = "unverified"
+        resolution_reason = "resolution_authority_verifier_missing"
+    else:
+        context = {
+            "scope_id": entry.get("scope_id"),
+            "expected_check_ref": entry["expected_check_ref"],
+            "resolution": copy.deepcopy(resolution),
+        }
+        try:
+            authorized = resolution_authority(context)
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            resolution_status = "rejected"
+            resolution_reason = "resolution_authority_verifier_error"
+            authorized = False
+        if authorized is not True:
+            resolution_status = "unverified"
+            resolution_reason = "resolution_authority_unverified"
+        else:
+            recomputed, status, reason, _evidence = reconciliation._resolve_expected(
+                expected_entry, resolution
+            )
+            if recomputed is None or status != "matched":
+                resolution_status = "unverified"
+                resolution_reason = reason or "resolution_unresolved"
+            elif _digest(recomputed) != entry.get("resolved_expected_ref"):
+                resolution_status = "rejected"
+                resolution_reason = "resolved_expected_derivation_mismatch"
     selected_ids = list(entry.get("selected_result_ids") or ())
     observed_ids = list(entry.get("observed_result_ids") or ())
     evidence_by_id = {}
@@ -517,11 +568,15 @@ def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
         and decision.get("status") == "satisfied"
         and selected_decision == set(selected_ids)
     )
-    selected_clean = bool(selected_facts) and all(
-        fact.get("integrity_status") == "verified"
-        and fact.get("issuer_status") == "verified"
-        and fact.get("implementation_status") == "approved"
-        for fact in selected_facts
+    selected_clean = (
+        bool(selected_facts)
+        and resolution_status == "verified"
+        and all(
+            fact.get("integrity_status") == "verified"
+            and fact.get("issuer_status") == "verified"
+            and fact.get("implementation_status") == "approved"
+            for fact in selected_facts
+        )
     )
     admitted = (
         entry.get("binding_status") == "matched"
@@ -535,6 +590,7 @@ def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
     if (
         any(fact.get("origin_status") == "rejected" for fact in selected_facts)
         or contaminated
+        or resolution_status == "rejected"
     ):
         origin_status = "rejected"
     elif selected_facts:
@@ -588,6 +644,8 @@ def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
         reasons.append("native_failed")
     if contaminated:
         reasons.append("selected_witness_contaminated")
+    if resolution_reason is not None:
+        reasons.append(resolution_reason)
     if decision_reason is not None:
         reasons.append(decision_reason)
     if decision is not None and not decision_ok:
@@ -629,6 +687,7 @@ def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
         "status": status,
         "origin_status": origin_status,
         "integrity_status": integrity_status,
+        "resolution_status": resolution_status,
         "obligation_status": obligation_status,
         "admitted": admitted,
         "native_outcome": native_outcome,
@@ -666,6 +725,8 @@ def admit_evidence(
     job_receipts=(),
     policy,
     authority=None,
+    resolutions=(),
+    resolution_authority=None,
     ref_scope_id=None,
 ):
     """Admit raw evidence for one #66-C Receipt and emit T1-a coverage.
@@ -673,9 +734,16 @@ def admit_evidence(
     ``reports`` and ``job_receipts`` are the independently obtained raw objects;
     receipt compact references alone are never accepted as raw evidence.
     ``policy`` is the explicit trust/approval input. ``authority`` is the
-    separately established issuer/provenance proof; without it, no production
-    coverage is admitted. This function does not execute or re-run a Check.
+    separately established issuer/provenance verifier; ``resolutions`` are the
+    independently sourced derivation inputs and ``resolution_authority`` is
+    their verifier. Without these, no production coverage is admitted.
     """
+    if isinstance(receipt, dict):
+        raw_entries = receipt.get("entries")
+        if isinstance(raw_entries, list):
+            refs = [item.get("expected_check_ref") for item in raw_entries]
+            if len(set(refs)) != len(refs):
+                raise AdmissionError("admission_receipt_duplicate_entry")
     try:
         reconciliation.validate_receipt(receipt)
     except reconciliation.ReconciliationError as error:
@@ -698,6 +766,15 @@ def admit_evidence(
     reports = _index_reports(reports)
     job_receipts = _index_job_receipts(job_receipts)
     expected_by_ref = {item["expected_check_ref"]: item for item in scope["checks"]}
+    try:
+        resolutions_by_ref = reconciliation._normalize_resolutions(
+            resolutions, set(expected_by_ref)
+        )
+    except reconciliation.ReconciliationError as error:
+        raise AdmissionError(
+            "admission_resolution_invalid", native_code=error.code
+        ) from None
+    resolution_authority = _resolution_authority(resolution_authority)
     raw_entries = receipt.get("entries")
     if not isinstance(raw_entries, list):
         raise AdmissionError("admission_receipt_invalid")
@@ -710,10 +787,13 @@ def admit_evidence(
             raise AdmissionError("admission_expected_entry_missing")
         entry = _entry_admission_v2(
             raw_entry,
+            expected_entry=expected_entry,
             reports=reports,
             job_receipts=job_receipts,
             policy=policy,
             authority=authority,
+            resolution=resolutions_by_ref.get(raw_entry.get("expected_check_ref")),
+            resolution_authority=resolution_authority,
         )
         entry["scope_id"] = scope.get("scope_id")
         entry["resolved_expected_check_id"] = (

@@ -19,6 +19,13 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
   Job/Run/Attempt、Result 与 `verification_implementation` 上下文并返回最终验证结果。
   任意 JSON `{"verification_status":"verified"}` 不是信任边界；没有 verifier 时不产生
   生产覆盖率。
+- **独立来源的 Resolution 及其 `resolution_authority` verifier**：Admission 使用原始
+  Expected entry 和该 Resolution 重新调用现有 `reconciliation._resolve_expected()`
+  语义，检查 re-derived strict Expected 的摘要等于 Receipt 的
+  `resolved_expected_ref`。不能只相信 Receipt 内部自洽的 `resolved_expected`；Source/
+  Rule/Input/Baseline/Profile 约束必须来自当前 Expected 与受权 Resolution。
+- 重复 `expected_check_ref` 的 Receipt entries 在 Receipt/Admission 边界直接拒绝，不静默
+  去重。
 
 它**不**执行 Check、不重算 Expected、不修改 #66-C Receipt、不生成新的 Native Result、
 不判定 #61 Required/Release。
@@ -41,6 +48,7 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - `origin_status`: 只有 integrity 与 issuer 都已证明时才为 `verified`；Raw FAIL 可保留
   真实 native fact，但不会成为成功覆盖。
 - `obligation_status`: `satisfied` / `unsatisfied` / `unknown` / `not_applicable`。
+- `resolution_status`: Expected→Resolution→Receipt 的派生证明；不匹配时不得 admitted。
 - `admitted`: 仅当完整 selected Witness 集合被 #52 一次性选中、全部成员通过
   integrity/authority/implementation 检查、且均为原生 PASS。
 - `verified_native_facts` 只含 authenticated origin（`origin_status=verified`）；

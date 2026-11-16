@@ -69,7 +69,7 @@ IMPLEMENTATION = {
 }
 
 
-def make_entry(name="tach", *, rule_ref=RULE_TACH, **changes):
+def make_entry(name="tach", *, rule_ref=RULE_TACH, source=WEAK_SOURCE, **changes):
     definition = check_contract.definition_for(name)
     entry = {
         "name": name,
@@ -83,7 +83,7 @@ def make_entry(name="tach", *, rule_ref=RULE_TACH, **changes):
         "profile_ref": None,
         "applicability": {"status": "selected", "reason": "selected-test"},
         "policy_status": "unknown",
-        "source_ref": copy.deepcopy(WEAK_SOURCE),
+        "source_ref": copy.deepcopy(source),
         "input_refs": [],
         "baseline_ref": None,
     }
@@ -92,7 +92,7 @@ def make_entry(name="tach", *, rule_ref=RULE_TACH, **changes):
     return entry
 
 
-def make_projection(entry):
+def make_projection(entry, *, source=WEAK_SOURCE):
     entries = [entry] if isinstance(entry, dict) else list(entry)
     projection = {
         "kind": expected_checks.EXPECTED_KIND,
@@ -109,7 +109,7 @@ def make_projection(entry):
         "consumer_completeness": "not_claimed",
         "observed_input_closure_status": "not_observed",
         "event_ref": copy.deepcopy(EVENT),
-        "source_ref": copy.deepcopy(WEAK_SOURCE),
+        "source_ref": copy.deepcopy(source),
         "checks": entries,
         "non_check_obligations": [],
         "missing": [],
@@ -120,7 +120,7 @@ def make_projection(entry):
         None,
         None,
         EVENT,
-        WEAK_SOURCE,
+        source,
         SELECTION_RULE,
     )
     projection["expected_set_ref"] = expected_checks.set_identity(
@@ -298,8 +298,46 @@ def authority_for(issuer=JOB_ISSUER, implementation=IMPLEMENTATION):
     return verify
 
 
+def resolution_authority_for():
+    return lambda context: context["resolution"].get("source_receipt_ref") is not None
+
+
+def resolutions_for(receipt):
+    resolutions = []
+    for entry in receipt["entries"]:
+        resolved = entry.get("resolved_expected") or {}
+        resolution = {
+            "expected_check_ref": entry["expected_check_ref"],
+            "rule_ref": copy.deepcopy(resolved.get("rule_ref")),
+            "source_ref": copy.deepcopy(resolved.get("source_ref")),
+            "baseline_ref": copy.deepcopy(resolved.get("baseline_ref")),
+            "rule_source_ref": {
+                "name": "test-rule-source",
+                "version": "1",
+                "sha256": "7" * 64,
+            },
+            "source_receipt_ref": {
+                "name": "test-source-receipt",
+                "version": "1",
+                "sha256": "8" * 64,
+            },
+        }
+        if resolved.get("input_refs"):
+            resolution["input_refs"] = copy.deepcopy(resolved["input_refs"])
+        if resolved.get("baseline_ref"):
+            resolution["baseline_source_ref"] = {
+                "name": "test-baseline-source",
+                "version": "1",
+                "sha256": "6" * 64,
+            }
+        resolutions.append(resolution)
+    return resolutions
+
+
 def admit_evidence(projection, receipt, **kwargs):
     kwargs.setdefault("authority", authority_for())
+    kwargs.setdefault("resolutions", resolutions_for(receipt))
+    kwargs.setdefault("resolution_authority", resolution_authority_for())
     return admission.admit_evidence(projection, receipt, **kwargs)
 
 
@@ -892,3 +930,67 @@ def test_t1a_schema_v2_same_name_refs_are_separate_instances():
     assert second_key not in first_result["accepted_coverage_by_instance"]
     assert second_key in second_result["accepted_coverage_by_instance"]
     assert second_key not in first_result["accepted_coverage_by_instance"]
+
+
+def test_t1a_expected_source_derivation_is_enforced():
+    entry = make_entry(source=STRONG_SOURCE)
+    projection = make_projection(entry, source=STRONG_SOURCE)
+    result = native(source=STRONG_SOURCE)
+    report = report_for(result)
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    resolution = resolution_for(entry)
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[resolution],
+        observations=[observation_for(report, report_ref, job_receipt)],
+    )
+    positive = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        resolutions=[resolution],
+    )
+    assert positive["status"] == "admitted"
+
+    forged = copy.deepcopy(resolution)
+    forged["source_ref"] = copy.deepcopy(OTHER_SOURCE)
+    negative = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        resolutions=[forged],
+    )
+    entry_result = negative["entries"][0]
+    assert entry_result["admitted"] is False
+    assert entry_result["resolution_status"] == "unverified"
+    assert negative["remaining_work"]
+
+
+def test_t1a_duplicate_receipt_entry_is_rejected():
+    projection, receipt, report, job_receipt = setup()
+    duplicate = copy.deepcopy(receipt)
+    duplicate["entries"].append(copy.deepcopy(duplicate["entries"][0]))
+    duplicate["receipt_ref"] = reconciliation._digest(
+        {key: value for key, value in duplicate.items() if key != "receipt_ref"}
+    )
+    with pytest.raises(
+        admission.AdmissionError, match="admission_receipt_duplicate_entry"
+    ):
+        admit_evidence(
+            projection,
+            duplicate,
+            reports=[report],
+            job_receipts=[job_receipt],
+            policy=policy_for(),
+        )
+    with pytest.raises(
+        reconciliation.ReconciliationError,
+        match="receipt_expected_check_ref_duplicate",
+    ):
+        reconciliation.validate_receipt(duplicate)
