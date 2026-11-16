@@ -316,9 +316,11 @@ def test_all_history_records_local_ref_scope_without_raw_revision(tmp_path):
     coverage = gitleaks._resolve_scope(root, None, True)
     assert coverage["scope"] == "local_refs"
     assert coverage["scope_authority"] == "local_git_refs"
+    assert coverage["scope_limit"] == "local_refs_and_odb"
     assert coverage["ref_count"] >= 1
     assert coverage["ref_set_sha256"].startswith("sha256:")
     assert coverage["complete"] is True
+    assert coverage["head_commit"] == git(root, "rev-parse", "HEAD")
     assert "revision_range" not in coverage
 
 

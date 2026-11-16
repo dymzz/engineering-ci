@@ -168,12 +168,15 @@ def _resolve_scope(root, revision_range, all_history):
         if count.returncode != 0:
             raise GitleaksError("gitleaks_history_unavailable")
         ref_scope = _ref_scope(root)
+        head = _git(root, "rev-parse", "HEAD")
         return {
             "mode": "all-history",
             "scope": "local_refs",
             "scope_authority": "local_git_refs",
+            "scope_limit": "local_refs_and_odb",
             "old_commit": None,
             "new_commit": None,
+            "head_commit": head.stdout.strip() if head.returncode == 0 else None,
             "commit_count": int(count.stdout.strip()),
             "ref_count": ref_scope["ref_count"],
             "ref_set_sha256": ref_scope["ref_set_sha256"],
