@@ -190,6 +190,7 @@ def _approval_digest(profile):
         "declared_checks",
         "targets",
         "governed_rules",
+        "phase",
     ):
         if optional in profile and profile[optional] is not None:
             payload[optional] = profile[optional]
@@ -220,6 +221,7 @@ def profile_digest(profile):
         "targets",
         "governed_rules",
         "approval_binding",
+        "phase",
     ):
         if optional in profile and profile[optional] is not None:
             payload[optional] = profile[optional]
@@ -275,6 +277,7 @@ def build_effective_profile(
     valid_until=None,
     required_obligations=(),
     advisory_checks=(),
+    phase=None,
     allowed_inapplicability=(),
     declared_checks=None,
     domain_complete=False,
@@ -297,6 +300,10 @@ def build_effective_profile(
         "allowed_inapplicability": list(allowed_inapplicability),
         "domain_complete": bool(domain_complete),
     }
+    if phase is not None:
+        if not isinstance(phase, str) or not phase:
+            raise ExpectedError("effective_profile_phase_invalid")
+        profile["phase"] = phase
     if targets is not None:
         profile["targets"] = list(targets)
     if valid_from is not None:
@@ -312,6 +319,8 @@ def build_effective_profile(
         "action": action,
         "target": target,
     }
+    if phase is not None:
+        target_scope["phase"] = phase
     if targets is not None:
         target_scope["targets"] = list(targets)
     effective_window = {"effective_at": effective_at}
@@ -397,6 +406,8 @@ def effective_profile_identity(path=None, profile=None, *, root=None):
         "domain_complete": bool(profile.get("domain_complete", False)),
         "authority_verified": bool(profile.get("authority_verified", False)),
     }
+    if "phase" in profile:
+        identity["phase"] = profile["phase"]
     if "declared_checks" in profile:
         identity["declared_checks"] = list(profile["declared_checks"])
     if "targets" in profile:
@@ -520,6 +531,8 @@ def validate_effective_profile(profile, *, git=None):
         value = profile.get(field)
         if not isinstance(value, str) or not value:
             raise ExpectedError("effective_profile_scope_missing")
+    if "phase" in profile and (not isinstance(profile["phase"], str) or not profile["phase"]):
+        raise ExpectedError("effective_profile_phase_invalid")
     if (
         profile.get("approval_source") not in AUTHORITATIVE_APPROVAL_SOURCES
         or type(profile.get("authority_verified", False)) is not bool
@@ -548,6 +561,8 @@ def validate_effective_profile(profile, *, git=None):
             or t_scope.get("context") != profile.get("context")
             or t_scope.get("action") != profile.get("action")
             or t_scope.get("target") != profile.get("target")
+            or ("phase" in profile and t_scope.get("phase") != profile["phase"])
+            or ("phase" not in profile and "phase" in t_scope)
             or (
                 "targets" in profile
                 and t_scope.get("targets") != profile.get("targets")
@@ -618,6 +633,11 @@ def validate_effective_profile(profile, *, git=None):
             not isinstance(item, str) or not item for item in declared
         ):
             raise ExpectedError("effective_profile_declared_checks_invalid")
+    if "phase" not in profile and any(
+        isinstance(o, dict) and "phases" in o
+        for o in list(required) + list(advisory)
+    ):
+        raise ExpectedError("effective_profile_phase_unresolved")
     for item in required:
         if not isinstance(item, dict):
             raise ExpectedError("effective_profile_obligations_invalid")
@@ -637,21 +657,21 @@ def validate_effective_profile(profile, *, git=None):
                 or any(not isinstance(n, str) or not n for n in names)
             ):
                 raise ExpectedError("effective_profile_check_names_invalid")
-        for opt_list in ("target_refs", "actions"):
+        for opt_list in ("target_refs", "actions", "phases"):
             if opt_list in item:
                 vals = item[opt_list]
-                if not isinstance(vals, list) or any(
+                if (not isinstance(vals, list) or (opt_list == "phases" and not vals) or any(
                     not isinstance(v, str) or not v for v in vals
-                ):
+                )):
                     raise ExpectedError("effective_profile_obligations_invalid")
     for item in advisory:
         if isinstance(item, dict):
-            for opt_list in ("target_refs", "actions"):
+            for opt_list in ("target_refs", "actions", "phases"):
                 if opt_list in item:
                     vals = item[opt_list]
-                    if not isinstance(vals, list) or any(
+                    if (not isinstance(vals, list) or (opt_list == "phases" and not vals) or any(
                         not isinstance(v, str) or not v for v in vals
-                    ):
+                    )):
                         raise ExpectedError("effective_profile_obligations_invalid")
     if git is not None:
         _match_profile_event(profile, git)
@@ -735,9 +755,12 @@ def _target_matches(target_ref, allowed_targets):
     return False
 
 
-def _obligation_matches_scope(item, *, target_ref=None, ref_action=None):
+def _obligation_matches_scope(item, *, target_ref=None, ref_action=None, phase=None):
     if not isinstance(item, dict):
         return True
+    phases = item.get("phases")
+    if phases is not None and (phase is None or phase not in phases):
+        return False
     target_refs = item.get("target_refs")
     if (
         target_ref is not None
@@ -811,6 +834,7 @@ def _parse_profile_obligations(
     ref_action=None,
     ref_scopes=None,
 ):
+    phase = effective_profile.get("phase")
     obligations_by_check = {}
     required_by_check = {}
     advisory_by_check = {}
@@ -825,12 +849,12 @@ def _parse_profile_obligations(
             matched_refs = [
                 src
                 for src, tgt, act in ref_scopes
-                if _obligation_matches_scope(ob, target_ref=tgt, ref_action=act)
+                if _obligation_matches_scope(ob, target_ref=tgt, ref_action=act, phase=phase)
             ]
             if not matched_refs:
                 continue
         elif not _obligation_matches_scope(
-            ob, target_ref=target_ref, ref_action=ref_action
+            ob, target_ref=target_ref, ref_action=ref_action, phase=phase
         ):
             continue
         ob_ref = ob["obligation_ref"]
@@ -866,12 +890,12 @@ def _parse_profile_obligations(
                 matched_refs = [
                     src
                     for src, tgt, act in ref_scopes
-                    if _obligation_matches_scope(adv, target_ref=tgt, ref_action=act)
+                    if _obligation_matches_scope(adv, target_ref=tgt, ref_action=act, phase=phase)
                 ]
                 if not matched_refs:
                     continue
             elif not _obligation_matches_scope(
-                adv, target_ref=target_ref, ref_action=ref_action
+                adv, target_ref=target_ref, ref_action=ref_action, phase=phase
             ):
                 continue
         elif ref_scopes is not None:
