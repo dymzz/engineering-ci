@@ -21,12 +21,24 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import check_contract, hygiene, plan_contract, selection, sources
+from . import (
+    check_contract,
+    expected_checks,
+    hygiene,
+    plan_contract,
+    security_policy,
+    selection,
+    sources,
+    workflow_analysis,
+)
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
 _HYGIENE_CHECKS = frozenset(
     {"docs", "tach", "tach_external", "vulture", "whitespace", "forwarding"}
+)
+_WORKFLOW_SCRIPT_CHECKS = frozenset(
+    {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
 )
 
 
@@ -106,8 +118,83 @@ def _sources_config_path(plan, root, sources_config):
     )
 
 
+def _normalized_workflow_config_snapshot(digests):
+    if not isinstance(digests, dict):
+        return None
+    normalized = {}
+    for rel_path, entry in sorted(digests.items()):
+        if isinstance(entry, dict):
+            normalized[str(rel_path)] = (
+                entry.get("status"),
+                entry.get("sha256"),
+                entry.get("reason"),
+            )
+        elif isinstance(entry, str):
+            normalized[str(rel_path)] = ("legacy", entry, None)
+        else:
+            normalized[str(rel_path)] = ("invalid", None, None)
+    return normalized
+
+
+def _workflow_config_drift_reason(plan, root, selection_config=None):
+    """Fail closed if tracked workflow/script tool configs changed after Plan creation."""
+    inputs = plan.get("inputs") or {}
+    declared_cfg = inputs.get("config") if isinstance(inputs, dict) else None
+    chosen = plan.get("selection") if isinstance(plan, dict) else None
+    check_names = set()
+    if isinstance(chosen, dict):
+        check_names.update(
+            item for item in chosen.get("checks") or () if isinstance(item, str)
+        )
+        for source in (chosen.get("check_scope"), plan.get("check_scope")):
+            for item in source or ():
+                if isinstance(item, dict) and isinstance(item.get("name"), str):
+                    check_names.add(item["name"])
+    needs_snapshot = bool(check_names & plan_contract.WORKFLOW_SCRIPT_CHECK_NAMES)
+    if (
+        not isinstance(declared_cfg, dict)
+        or "workflow_config_digests" not in declared_cfg
+    ):
+        return "workflow_config_snapshot_invalid" if needs_snapshot else None
+    declared_norm = _normalized_workflow_config_snapshot(
+        declared_cfg.get("workflow_config_digests")
+    )
+    if declared_norm is None:
+        return "workflow_config_snapshot_invalid"
+    wf_obj = (
+        getattr(selection_config, "workflow_checks", None)
+        if selection_config is not None
+        else None
+    )
+    norm_cfg = (declared_cfg.get("normalized") or {}).get("workflow_checks") or {}
+    admitted = declared_cfg.get("workflow_external_configs")
+    current = workflow_analysis.workflow_config_digests(
+        root,
+        wf_obj,
+        actionlint_config=str(norm_cfg.get("actionlint_config") or ""),
+        shellcheck_config=str(norm_cfg.get("shellcheck_config") or ""),
+        zizmor_config=str(norm_cfg.get("zizmor_config") or ""),
+        admitted_external_configs=admitted,
+    )
+    if _normalized_workflow_config_snapshot(current) != declared_norm:
+        return "workflow_config_snapshot_stale"
+    return None
+
+
 def _verify_execution_binding(plan, root, *, execution_context="host"):
     """Return (ok, reason, expected_tree). ok False means refuse execution."""
+    ok, reason, expected_tree = _verify_git_execution_binding(
+        plan, root, execution_context=execution_context
+    )
+    if not ok:
+        return False, reason, expected_tree
+    wf_reason = _workflow_config_drift_reason(plan, root)
+    if wf_reason is not None:
+        return False, wf_reason, expected_tree
+    return True, None, expected_tree
+
+
+def _verify_git_execution_binding(plan, root, *, execution_context="host"):
     git = plan["git"]
     expected_tree = git.get("execution_tree")
     explicit_snapshot = git.get("snapshot")
@@ -679,6 +766,305 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
     return payload, report.status == "failed"
 
 
+def _load_optional_selection_config(plan, root, selection_config=None):
+    inputs = plan.get("inputs") or {}
+    declared = inputs.get("config") if isinstance(inputs, dict) else None
+    default_cfg = Path(root) / "ci-selection.toml"
+    if selection_config is None and declared is None and not default_cfg.is_file():
+        return None, None, None
+    config, config_path, digest_after, reason = _load_verified_config(
+        plan,
+        root,
+        selection_config,
+        key="config",
+        default_name="ci-selection.toml",
+        loader=selection.load_config,
+        error_type=selection.SelectionError,
+        identity_fn=selection.config_identity,
+    )
+    if reason is not None:
+        return None, None, reason
+    wf_drift = _workflow_config_drift_reason(plan, root, selection_config=config)
+    if wf_drift is not None:
+        return None, None, wf_drift
+    stored_path = str(config_path)
+    try:
+        resolved_root = Path(root).resolve()
+        if config_path.is_relative_to(resolved_root):
+            stored_path = config_path.relative_to(resolved_root).as_posix()
+    except OSError:
+        pass
+    rule = check_contract.rule_ref(
+        "engineering-ci.selection",
+        getattr(config, "schema_version", 1),
+        path=stored_path,
+        digest=digest_after,
+    )
+    return config, rule, None
+
+
+def _build_workflow_admission_fn(plan, *, policy_admission=None):
+    plan_adm = plan.get("policy_admission")
+    effective_profile = plan.get("effective_profile")
+    protected = (
+        policy_admission is not None
+        or plan_adm is not None
+        or plan.get("protected_profile") is not None
+        or (
+            isinstance(effective_profile, dict)
+            and bool(effective_profile.get("protected"))
+        )
+    )
+    if not protected:
+        return None
+    adm = (
+        policy_admission
+        if isinstance(policy_admission, dict)
+        else (plan_adm if isinstance(plan_adm, dict) else {})
+    )
+    snapshot = adm.get("snapshot")
+    state_path = adm.get("state_path")
+    selection_id = adm.get("selection_id") or "workflow-script-execution"
+    selection_policy_revision = adm.get("selection_policy_revision")
+    protected_profile = adm.get("protected_profile") or plan.get("protected_profile")
+    platform = adm.get("platform") or {"os": "linux", "arch": "x86_64"}
+    assets = adm.get("assets") if isinstance(adm.get("assets"), dict) else {}
+    now = adm.get("now")
+
+    def admit(check_name, access_id, version):
+        if not isinstance(snapshot, dict) or not state_path:
+            return {
+                "decision": "unknown",
+                "allowed": False,
+                "reason": "policy_admission_missing",
+            }
+        override = assets.get(check_name)
+        asset = dict(override) if isinstance(override, dict) else {}
+        asset.setdefault("tool_id", check_name)
+        asset.setdefault("access_id", access_id)
+        asset.setdefault("version", version)
+        asset.setdefault("platform", platform)
+        try:
+            decision = security_policy.decide(
+                snapshot,
+                asset,
+                state_path=Path(state_path),
+                selection_id=selection_id,
+                selection_policy_revision=selection_policy_revision,
+                protected_profile=protected_profile,
+                now=now,
+            )
+        except security_policy.PolicyError as error:
+            return {
+                "decision": "unknown",
+                "allowed": False,
+                "reason": error.code,
+            }
+        if not decision.get("allowed"):
+            return {
+                "decision": decision.get("decision", "deny"),
+                "allowed": False,
+                "reason": decision.get("reason") or "policy_admission_denied",
+                "rule_id": decision.get("rule_id"),
+            }
+        return decision
+
+    return admit
+
+
+def omitted_workflow_script_checks(
+    plan,
+    selected,
+    *,
+    root,
+    selection_config=None,
+    extra_paths=(),
+):
+    """Return decorated not_executed entries for configured workflow/script checks omitted from plan."""
+    has_bound_cfg = isinstance((plan.get("inputs") or {}).get("config"), dict)
+    if not has_bound_cfg:
+        return []
+    config, rule, reason = _load_optional_selection_config(
+        plan, root, selection_config=selection_config
+    )
+    if reason is not None or config is None:
+        return []
+    cfg_input = (plan.get("inputs") or {}).get("config")
+    admitted_ext = (
+        cfg_input.get("workflow_external_configs")
+        if isinstance(cfg_input, dict)
+        else None
+    )
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(
+        rule, config, root=root, admitted_external_configs=admitted_ext
+    )
+    configured = set(config.checks) & _WORKFLOW_SCRIPT_CHECKS
+    if not configured:
+        return []
+    changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
+    config_path = cfg_input.get("path") if isinstance(cfg_input, dict) else None
+    full = bool((plan.get("selection") or {}).get("full_tests"))
+    scoped = selection.workflow_script_check_scopes(
+        changes,
+        config,
+        root=root,
+        config_path=config_path,
+        full=full,
+    )
+    selected_names = {
+        item.get("name")
+        for item in selected
+        if item.get("name") in _WORKFLOW_SCRIPT_CHECKS
+    }
+    omitted = []
+    for item in scoped:
+        name = item.get("name")
+        if (
+            name in configured
+            and name not in selected_names
+            and item.get("status") != "not_applicable"
+        ):
+            eff_rule = rule_refs.get(name) if isinstance(rule_refs, dict) else rule
+            entry = {
+                "name": name,
+                "selected": "omitted",
+                "status": "not_executed",
+                "reason": "workflow_script_check_omitted_from_plan",
+                "plan_authorized": False,
+                "routing_conflict": "configured_check_omitted_from_plan",
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
+            if eff_rule is not None:
+                entry["rule_ref"] = eff_rule
+            omitted.append(entry)
+    return omitted
+
+
+def _run_workflow_script_checks(
+    plan,
+    selected,
+    *,
+    root,
+    runner,
+    selection_config=None,
+    policy_admission=None,
+    extra_paths=(),
+    generated_input_refs=(),
+    check_omitted=True,
+    shared_cache=None,
+):
+    wanted = [item for item in selected if item.get("name") in _WORKFLOW_SCRIPT_CHECKS]
+    omitted_entries = (
+        omitted_workflow_script_checks(
+            plan,
+            selected,
+            root=root,
+            selection_config=selection_config,
+            extra_paths=extra_paths,
+        )
+        if check_omitted
+        else []
+    )
+    if not wanted:
+        return omitted_entries, False
+    selected_by_name = {item.get("name"): item for item in wanted}
+    config, rule, reason = _load_optional_selection_config(
+        plan, root, selection_config=selection_config
+    )
+    if reason is not None:
+        return [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": reason,
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
+            for name, item in selected_by_name.items()
+        ] + omitted_entries, True
+
+    cfg_input = (plan.get("inputs") or {}).get("config")
+    admitted_ext = (
+        cfg_input.get("workflow_external_configs")
+        if isinstance(cfg_input, dict)
+        else None
+    )
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(
+        rule, config, root=root, admitted_external_configs=admitted_ext
+    )
+    scope_cfg = (
+        config.check_scope if config is not None else selection.CheckScopeConfig()
+    )
+    wf_cfg = (
+        config.workflow_checks
+        if config is not None
+        else selection.WorkflowChecksConfig()
+    )
+    all_selected = _selected_checks(plan)
+    all_selected_names = {item.get("name") for item in all_selected}
+    inline_wf_sc = next(
+        (item for item in all_selected if item.get("name") == "workflow_shellcheck"),
+        None,
+    )
+    inline_shellcheck_inputs = (
+        tuple(inline_wf_sc.get("inputs") or ())
+        if inline_wf_sc is not None
+        and isinstance(inline_wf_sc.get("inputs"), list)
+        and (
+            inline_wf_sc.get("status") != "unknown" or bool(inline_wf_sc.get("inputs"))
+        )
+        else None
+    )
+    suite = workflow_analysis.run_workflow_script_suite(
+        selected_by_name,
+        root=root,
+        runner=runner,
+        workflow_prefixes=tuple(scope_cfg.workflow_prefixes),
+        shell_prefixes=tuple(scope_cfg.shell_prefixes),
+        actionlint_config=wf_cfg.actionlint_config,
+        shellcheck_config=wf_cfg.shellcheck_config,
+        zizmor_config=wf_cfg.zizmor_config,
+        zizmor_persona=wf_cfg.zizmor_persona,
+        zizmor_offline=wf_cfg.zizmor_offline,
+        shellcheck_inline=wf_cfg.shellcheck_inline,
+        rule_ref=rule,
+        rule_refs=rule_refs,
+        extra_paths=extra_paths,
+        generated_input_refs=generated_input_refs,
+        admission_fn=_build_workflow_admission_fn(
+            plan, policy_admission=policy_admission
+        ),
+        shared_cache=shared_cache,
+        inline_shellcheck_requested=("workflow_shellcheck" in all_selected_names),
+        inline_shellcheck_inputs=inline_shellcheck_inputs,
+        admitted_external_configs=admitted_ext,
+    )
+    results = []
+    any_failed = False
+    for item in wanted:
+        name = item.get("name")
+        item_rule = rule_refs.get(name) if isinstance(rule_refs, dict) else rule
+        entry = suite.get(name) or {
+            "name": name,
+            "selected": item.get("status"),
+            "status": "not_executed",
+            "reason": "workflow_script_check_missing",
+            **({"rule_ref": item_rule} if item_rule is not None else {}),
+        }
+        entry = dict(entry)
+        entry.setdefault("plan_authorized", True)
+        if entry.get("status") == "failed" or (
+            entry.get("status") == "not_executed"
+            and str(entry.get("reason") or "").startswith("workflow_config_")
+        ):
+            any_failed = True
+        results.append(entry)
+    results.extend(omitted_entries)
+    return results, any_failed
+
+
 def _prerequisite_actions(plan, override):
     if override is not None:
         return dict(override)
@@ -1137,6 +1523,88 @@ def _baseline_reference(plan):
     return ref
 
 
+def _profile_reference(plan, *, profile_ref=None):
+    """Extract the bound, authority-verified EffectiveProfile ref without inventing one."""
+    if not isinstance(plan, dict):
+        return None
+    inputs = plan.get("inputs") or {}
+    prof_input = inputs.get("effective_profile")
+    gen_sha = (plan.get("generator") or {}).get("effective_profile_sha256")
+    cfg_input = inputs.get("config")
+    sel_cfg = None
+    if isinstance(cfg_input, dict) and isinstance(cfg_input.get("normalized"), dict):
+        try:
+            sel_cfg = selection.config_from_identity(cfg_input)
+        except selection.SelectionError:
+            return None
+
+    expected = plan.get("expected_checks")
+    if isinstance(expected, dict):
+        if expected.get("schema_version") != expected_checks.EXPECTED_V2:
+            return None
+        if expected.get("projection_source") != "effective_profile":
+            return None
+        if expected.get("authority_status") != "verified":
+            return None
+        profile = expected.get("effective_profile")
+        if (
+            not isinstance(profile, dict)
+            or profile.get("authority_verified") is not True
+        ):
+            return None
+        ref = expected.get("profile_ref")
+        if not isinstance(ref, dict) or profile.get("profile_ref") != ref:
+            return None
+        profile_sha = profile.get("profile_sha256")
+        if (
+            not isinstance(prof_input, dict)
+            or not isinstance(profile_sha, str)
+            or not profile_sha
+            or (prof_input.get("effective_profile_ref") or {}).get("sha256")
+            != profile_sha
+            or prof_input.get("profile_ref") != ref
+            or prof_input.get("authority_verified") is not True
+            or gen_sha != profile_sha
+        ):
+            return None
+        try:
+            validated = expected_checks.validate_effective_profile(
+                profile, git=plan.get("git")
+            )
+            proven = expected_checks._verify_profile_authority(
+                validated,
+                selection_rule=expected.get("selection_rule_ref"),
+                hygiene_rule=expected.get("hygiene_rule_ref"),
+                sources_rule=expected.get("sources_rule_ref"),
+                config_policy=(
+                    sel_cfg.effective_profile_policy if sel_cfg is not None else None
+                ),
+            )
+        except expected_checks.ExpectedError:
+            return None
+        if not proven:
+            return None
+        return dict(validated["profile_ref"])
+
+    # Narrowed Dagger host adapters drop plan["expected_checks"] after
+    # validate_plan(full_plan) already verified authority; only accept an
+    # explicit profile_ref when Plan inputs and config policy prove it.
+    if (
+        profile_ref is None
+        or not isinstance(prof_input, dict)
+        or prof_input.get("authority_verified") is not True
+        or prof_input.get("profile_ref") != profile_ref
+        or not isinstance(prof_input.get("profile_sha256"), str)
+        or gen_sha != prof_input.get("profile_sha256")
+        or sel_cfg is None
+    ):
+        return None
+    policy = sel_cfg.effective_profile_policy
+    if not isinstance(policy, dict) or policy.get("profile_ref") != profile_ref:
+        return None
+    return dict(profile_ref)
+
+
 def _input_refs(rule):
     if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
         return [{"kind": "config", "path": rule["path"], "sha256": rule["sha256"]}]
@@ -1149,6 +1617,20 @@ def _check_evidence(item, name):
         for key in ("stdout", "stderr", "findings", "counts", "failures")
         if item.get(key) is not None
     }
+    if name in _WORKFLOW_SCRIPT_CHECKS:
+        for key in (
+            "coverage",
+            "composite_mode",
+            "independent_shellcheck_exit_code",
+            "actionlint_exit_code",
+            "per_script_clean_receipts_available",
+            "shared_actionlint",
+            "native_json",
+            "input_paths",
+            "admission",
+        ):
+            if key in item and item[key] is not None:
+                evidence[key] = item[key]
     if not evidence and name == "forwarding":
         evidence = {
             "analysis": "forwarding",
@@ -1192,7 +1674,12 @@ def _observed_tool(definition, access_id, item):
     # claim a tool observation for a not-executed or pre-execution result.
     if item.get("executable") is None and item.get("exit_code") is None:
         return None
-    return _tool_observation(definition, access_id, executable=item.get("executable"))
+    return _tool_observation(
+        definition,
+        access_id,
+        executable=item.get("executable"),
+        version=item.get("tool_version"),
+    )
 
 
 def _result_origin_and_runner(execution_context):
@@ -1214,6 +1701,7 @@ def _inventory_result(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
@@ -1249,6 +1737,7 @@ def _inventory_result(
         result_instance=f"{run_instance}:{origin}:{index}:{name}:{access_id}",
         input_refs=[],
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_tool_observation(definition, access_id, executable=inventory.get("tool")),
         evidence=evidence,
         baseline_ref=baseline,
@@ -1267,6 +1756,7 @@ def _native_results(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
@@ -1306,6 +1796,7 @@ def _native_results(
             origin=origin,
             run_instance=run_instance,
             index=index,
+            profile_ref=profile_ref,
             runner_ref=resolved_runner,
             execution_context=execution_context,
             parent_execution_context=parent_execution_context,
@@ -1329,6 +1820,7 @@ def _native_results(
             result_instance=instance(links_access),
             input_refs=links_inputs,
             rule_ref=rule,
+            profile_ref=profile_ref,
             tool=_observed_tool(definition, links_access, item),
             evidence=with_context(_check_evidence(item, name)),
             baseline_ref=baseline,
@@ -1338,7 +1830,20 @@ def _native_results(
     requirement = (
         definition.tool_requirements[0] if definition.tool_requirements else None
     )
-    access_id = requirement.alternatives[0].access_id if requirement else name
+    declared_access_ids = (
+        {alt.access_id for alt in requirement.alternatives} if requirement else set()
+    )
+    requested_access = item.get("access_id")
+    access_id = (
+        requested_access
+        if requested_access in declared_access_ids
+        else (requirement.alternatives[0].access_id if requirement else name)
+    )
+    extra_inputs = list(item.get("generated_input_refs") or ())
+    for path in item.get("input_paths") or ():
+        ref = {"kind": "changed_path", "path": path}
+        if ref not in inputs and ref not in extra_inputs:
+            extra_inputs.append(ref)
     native = check_contract.native_result(
         definition,
         source=source,
@@ -1347,8 +1852,9 @@ def _native_results(
         result_origin=origin,
         runner_ref=resolved_runner,
         result_instance=instance(access_id),
-        input_refs=inputs,
+        input_refs=[*inputs, *extra_inputs],
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_observed_tool(definition, access_id, item) if requirement else None,
         evidence=with_context(_check_evidence(item, name)),
         baseline_ref=baseline,
@@ -1357,9 +1863,12 @@ def _native_results(
     return [native]
 
 
-def _decorate_checks(plan, checks, *, execution_context, run_instance):
+def _decorate_checks(
+    plan, checks, *, execution_context, run_instance, profile_ref=None
+):
     source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
+    profile = _profile_reference(plan, profile_ref=profile_ref)
     origin, runner_ref, parent_ctx = _result_origin_and_runner(execution_context)
     for index, item in enumerate(checks):
         name = item.get("name")
@@ -1397,6 +1906,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                         origin=origin,
                         run_instance=run_instance,
                         index=index,
+                        profile_ref=profile,
                         runner_ref=runner_ref,
                         execution_context=execution_context,
                         parent_execution_context=parent_ctx,
@@ -1436,6 +1946,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 origin=origin,
                 run_instance=run_instance,
                 index=index,
+                profile_ref=profile,
                 runner_ref=runner_ref,
                 execution_context=execution_context,
                 parent_execution_context=parent_ctx,
@@ -1477,13 +1988,17 @@ def run_host_check(
     root,
     hygiene_config=None,
     sources_config=None,
+    selection_config=None,
+    policy_admission=None,
     runner=None,
     execution_context="host",
     run_instance=None,
     artifact_paths=(),
     generated_input_refs=(),
+    shared_cache=None,
+    profile_ref=None,
 ):
-    """Run one selected Host check (hygiene or source) with contract decoration."""
+    """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
     run_instance = run_instance or uuid.uuid4().hex
     if name in _HYGIENE_CHECKS:
@@ -1510,6 +2025,27 @@ def run_host_check(
             plan, [item], root=root, sources_config=sources_config, runner=runner
         )
         raw = [result] if result is not None else []
+    elif name in _WORKFLOW_SCRIPT_CHECKS:
+        results, _ = _run_workflow_script_checks(
+            plan,
+            [item],
+            root=root,
+            runner=runner,
+            selection_config=selection_config,
+            policy_admission=policy_admission,
+            extra_paths=artifact_paths,
+            generated_input_refs=generated_input_refs,
+            check_omitted=False,
+            shared_cache=shared_cache,
+        )
+        raw = results or [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "workflow_script_check_missing",
+            }
+        ]
     else:
         raw = [
             {
@@ -1520,7 +2056,11 @@ def run_host_check(
             }
         ]
     decorated = _decorate_checks(
-        plan, raw, execution_context=execution_context, run_instance=run_instance
+        plan,
+        raw,
+        execution_context=execution_context,
+        run_instance=run_instance,
+        profile_ref=profile_ref,
     )
     return decorated[0]
 
@@ -1545,12 +2085,15 @@ def _execute_with_dependencies(
     junit_path,
     hygiene_config,
     sources_config,
+    selection_config=None,
+    policy_admission=None,
     actions,
     execution_context,
     runner,
     run_instance,
     expected_tree,
     report,
+    profile_ref=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -1561,6 +2104,7 @@ def _execute_with_dependencies(
     incoming = pre_execution_edges(plan)
     prereq_cache = {}
     check_cache = {}
+    script_cache = {}
     closure_records = []
 
     with tempfile.TemporaryDirectory() as artifact_dir:
@@ -1722,6 +2266,7 @@ def _execute_with_dependencies(
                     blocked_by,
                     execution_context=execution_context,
                     run_instance=run_instance,
+                    profile_ref=profile_ref,
                 )
             elif files:
                 temporary, consumer_root = build_consumer_view(root, files)
@@ -1732,11 +2277,15 @@ def _execute_with_dependencies(
                         root=consumer_root,
                         hygiene_config=hygiene_config,
                         sources_config=sources_config,
+                        selection_config=selection_config,
+                        policy_admission=policy_admission,
                         runner=runner,
                         execution_context=execution_context,
                         run_instance=run_instance,
                         artifact_paths=artifact_target_paths(files),
                         generated_input_refs=generated_refs,
+                        shared_cache=script_cache,
+                        profile_ref=profile_ref,
                     )
                 finally:
                     temporary.cleanup()
@@ -1747,9 +2296,13 @@ def _execute_with_dependencies(
                     root=root,
                     hygiene_config=hygiene_config,
                     sources_config=sources_config,
+                    selection_config=selection_config,
+                    policy_admission=policy_admission,
                     runner=runner,
                     execution_context=execution_context,
                     run_instance=run_instance,
+                    shared_cache=script_cache,
+                    profile_ref=profile_ref,
                 )
             check_cache[name] = entry
             return entry
@@ -1868,6 +2421,11 @@ def _execute_with_dependencies(
         selected,
         root=root,
         hygiene_config=hygiene_config,
+    ) + omitted_workflow_script_checks(
+        plan,
+        selected,
+        root=root,
+        selection_config=selection_config,
     )
     if omitted:
         checks_out.extend(
@@ -1876,6 +2434,7 @@ def _execute_with_dependencies(
                 omitted,
                 execution_context=execution_context,
                 run_instance=run_instance,
+                profile_ref=profile_ref,
             )
         )
     report["checks"] = checks_out
@@ -1897,13 +2456,22 @@ def _execute_with_dependencies(
 
 
 def _decorated_blocked_check(
-    plan, name, selected_status, reason, blocked_by, *, execution_context, run_instance
+    plan,
+    name,
+    selected_status,
+    reason,
+    blocked_by,
+    *,
+    execution_context,
+    run_instance,
+    profile_ref=None,
 ):
     return _decorate_checks(
         plan,
         [_blocked_consumer_entry(name, selected_status, reason, blocked_by)],
         execution_context=execution_context,
         run_instance=run_instance,
+        profile_ref=profile_ref,
     )[0]
 
 
@@ -2082,10 +2650,13 @@ def execute(
     junit_path=None,
     hygiene_config=None,
     sources_config=None,
+    selection_config=None,
+    policy_admission=None,
     prerequisite_actions=None,
     execution_context="host",
     runner=None,
     run_instance=None,
+    profile_ref=None,
 ):
     try:
         validate_plan(plan)
@@ -2160,12 +2731,15 @@ def execute(
             junit_path=junit_path,
             hygiene_config=hygiene_config,
             sources_config=sources_config,
+            selection_config=selection_config,
+            policy_admission=policy_admission,
             actions=actions,
             execution_context=execution_context,
             runner=runner,
             run_instance=run_instance,
             expected_tree=expected_tree,
             report=report,
+            profile_ref=profile_ref,
         )
         if early is not None:
             return early
@@ -2237,7 +2811,15 @@ def execute(
         sources_config=sources_config,
         runner=runner,
     )
-    native_checks = list(hygiene_results)
+    workflow_script_results, _ = _run_workflow_script_checks(
+        plan,
+        selected,
+        root=root,
+        runner=runner,
+        selection_config=selection_config,
+        policy_admission=policy_admission,
+    )
+    native_checks = [*hygiene_results, *workflow_script_results]
     if source_result is not None:
         native_checks.append(source_result)
     covered = {item["name"] for item in native_checks}
@@ -2256,6 +2838,7 @@ def execute(
         native_checks + remaining,
         execution_context=execution_context,
         run_instance=run_instance,
+        profile_ref=profile_ref,
     )
     prereq_results, _ = _run_prerequisites(
         prerequisites,

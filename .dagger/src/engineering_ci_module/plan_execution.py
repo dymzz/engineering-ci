@@ -388,11 +388,28 @@ def _consumer_ref_from_key(consumer_key):
     return {"kind": str(consumer_key)}
 
 
-def _make_hygiene_runner(module, consumer_source, loop):
-    """Delegate missing Lychee / read-only Git calls to Dagger containers."""
+def _make_hygiene_runner(
+    module,
+    consumer_source,
+    loop,
+    *,
+    exec_cache=None,
+    allow_container_workflow_tools=True,
+):
+    """Delegate missing Lychee / read-only Git / pinned workflow calls to Dagger containers."""
     from engineering_ci import hygiene
 
     _readonly_git = {"ls-files", "diff", "show", "cat-file"}
+    _workflow_tools = {"actionlint", "shellcheck", "zizmor"}
+
+    def _is_pinned_workflow_uvx(argv_list):
+        if not argv_list or Path(argv_list[0]).name != "uvx":
+            return False
+        joined = " ".join(argv_list)
+        return any(
+            marker in joined
+            for marker in ("actionlint-py==", "shellcheck-py==", "zizmor==")
+        )
 
     def _runner(argv, cwd, data=None):
         argv_list = [str(item) for item in argv]
@@ -422,6 +439,29 @@ def _make_hygiene_runner(module, consumer_source, loop):
             outcome = asyncio.run_coroutine_threadsafe(
                 module._run_git(consumer_source, argv_list[1:]), loop
             ).result()
+            return subprocess.CompletedProcess(
+                argv_list,
+                outcome["exit_code"],
+                outcome["stdout"],
+                outcome["stderr"],
+            )
+        if (
+            allow_container_workflow_tools
+            and hasattr(module, "_exec_uv_tool")
+            and (
+                _is_pinned_workflow_uvx(argv_list)
+                or (tool_name in _workflow_tools and shutil.which(tool) is None)
+            )
+        ):
+            key = tuple(argv_list)
+            if exec_cache is not None and key in exec_cache:
+                outcome = exec_cache[key]
+            else:
+                outcome = asyncio.run_coroutine_threadsafe(
+                    module._exec_uv_tool(consumer_source, argv_list), loop
+                ).result()
+                if exec_cache is not None:
+                    exec_cache[key] = outcome
             return subprocess.CompletedProcess(
                 argv_list,
                 outcome["exit_code"],
@@ -521,6 +561,7 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
+    verified_profile = execution._profile_reference(value)
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
@@ -528,6 +569,8 @@ async def _execute_dag(
     closure_records = []
     produced_files = []
     materialized_cache = {}
+    script_shared_cache = {}
+    script_exec_cache = {}
 
     with tempfile.TemporaryDirectory(
         dir=scratch_root, prefix=".eci-artifacts-"
@@ -755,6 +798,7 @@ async def _execute_dag(
                             [entry],
                             execution_context="dagger_export",
                             run_instance=run_instance,
+                            profile_ref=verified_profile,
                         )[0]
                     return entry, None, {}
                 generated_refs = execution.generated_input_refs(
@@ -780,7 +824,13 @@ async def _execute_dag(
                 fs_files = [
                     (p_root, rel, obj_kind) for p_root, rel, obj_kind, _ in delivered
                 ]
-                runner = _make_hygiene_runner(module, consumer_source, loop)
+                runner = _make_hygiene_runner(
+                    module,
+                    consumer_source,
+                    loop,
+                    exec_cache=script_exec_cache,
+                    allow_container_workflow_tools=not bool(fs_files),
+                )
                 temporary = None
                 consumer_root = Path(directory)
                 artifact_paths = ()
@@ -800,6 +850,8 @@ async def _execute_dag(
                         run_instance=run_instance,
                         artifact_paths=artifact_paths,
                         generated_input_refs=generated_refs,
+                        shared_cache=None if fs_files else script_shared_cache,
+                        profile_ref=verified_profile,
                     )
                 finally:
                     if temporary is not None:
@@ -982,6 +1034,8 @@ async def _execute_dag(
                 report["prerequisites"].append(output)
 
         omitted = execution.omitted_hygiene_checks(
+            host_plan, host_checks, root=directory
+        ) + execution.omitted_workflow_script_checks(
             host_plan, host_checks, root=directory
         )
         if omitted:
@@ -1221,6 +1275,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 if item.get("name") not in weaver_checks
             ]
             check_plan = _host_adapter_plan(value, host_checks)
+            verified_profile = execution._profile_reference(value)
             loop = asyncio.get_running_loop()
             host = (
                 await asyncio.to_thread(
@@ -1229,6 +1284,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     root=directory,
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
+                    profile_ref=verified_profile,
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {

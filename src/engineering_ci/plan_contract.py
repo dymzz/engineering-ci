@@ -653,6 +653,34 @@ def _validate_dependency_v2(value, chosen, contract, names, actions, generator):
     _check_cycles(pre_pairs)
 
 
+WORKFLOW_SCRIPT_CHECK_NAMES = frozenset(
+    {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
+)
+
+
+def _plan_check_names(value, chosen):
+    names = set()
+    for item in chosen.get("checks") or ():
+        if isinstance(item, str):
+            names.add(item)
+    for source in (chosen.get("check_scope"), value.get("check_scope")):
+        for item in source or ():
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                names.add(item["name"])
+    return names
+
+
+def _validate_workflow_config_snapshot(value, chosen):
+    if not (_plan_check_names(value, chosen) & WORKFLOW_SCRIPT_CHECK_NAMES):
+        return
+    inputs = value.get("inputs")
+    config = inputs.get("config") if isinstance(inputs, dict) else None
+    if not isinstance(config, dict) or "workflow_config_digests" not in config:
+        raise PlanError("workflow_config_snapshot_missing")
+    if not isinstance(config["workflow_config_digests"], dict):
+        raise PlanError("workflow_config_snapshot_invalid")
+
+
 def validate(value, *, root=None, materialized_sources=None):
     """Common fail-closed rules for CLI, direct Python and Dagger entry points."""
     if not isinstance(value, dict) or value.get("kind") != PLAN_KIND:
@@ -670,6 +698,8 @@ def validate(value, *, root=None, materialized_sources=None):
     if not isinstance(framework, str) or framework not in {"pytest", "unittest"}:
         raise PlanError("framework_invalid")
     _validate_consumer_fields(value, chosen, git)
+    if version == PLAN_VERSION:
+        _validate_workflow_config_snapshot(value, chosen)
     if "expected_checks" in value:
         if version != PLAN_VERSION:
             raise PlanError("expected_checks_requires_plan_v2")
