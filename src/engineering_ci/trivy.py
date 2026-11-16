@@ -28,28 +28,10 @@ _SCANNERS = frozenset({"vuln", "misconfig", "secret"})
 
 
 class TrivyError(ValueError):
-    def __init__(self, code, *, native_exit_code=None, diagnostic=None):
+    def __init__(self, code, *, native_exit_code=None):
         self.code = code
         self.native_exit_code = native_exit_code
-        self.diagnostic = diagnostic
         super().__init__(code)
-
-
-_SECRET_PATTERNS = (
-    re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
-    re.compile(r"glpat-[A-Za-z0-9_-]{20,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"(?i)(secret|token|password|authorization)\s*[:=]\s*\S+"),
-)
-
-
-def _safe_diagnostic(text):
-    if not isinstance(text, str):
-        return ""
-    value = text[-2000:]
-    for pattern in _SECRET_PATTERNS:
-        value = pattern.sub("[REDACTED]", value)
-    return value
 
 
 def find_binary(environ=None):
@@ -151,6 +133,9 @@ def _sanitize(report):
     results = report.get("Results", [])
     if not isinstance(results, list):
         raise TrivyError("trivy_report_invalid")
+    metadata = report.get("Metadata", {})
+    if not isinstance(metadata, dict):
+        raise TrivyError("trivy_report_invalid")
     findings = []
     misconfig_summary = {"fail": 0, "pass": 0, "exception": 0}
     for result in results:
@@ -160,7 +145,15 @@ def _sanitize(report):
         if not isinstance(target, str):
             raise TrivyError("trivy_report_invalid")
         target_hash = _hash_text(target)
-        for item in result.get("Secrets") or ():
+        secrets = result.get("Secrets", [])
+        vulnerabilities = result.get("Vulnerabilities", [])
+        misconfigurations = result.get("Misconfigurations", [])
+        if not all(
+            isinstance(value, list)
+            for value in (secrets, vulnerabilities, misconfigurations)
+        ):
+            raise TrivyError("trivy_report_invalid")
+        for item in secrets:
             if not isinstance(item, dict) or not isinstance(item.get("RuleID"), str):
                 raise TrivyError("trivy_report_invalid")
             start = item.get("StartLine")
@@ -178,7 +171,7 @@ def _sanitize(report):
             if type(end) is int and end >= start:
                 finding["end_line"] = end
             findings.append(finding)
-        for item in result.get("Vulnerabilities") or ():
+        for item in vulnerabilities:
             if not isinstance(item, dict) or not isinstance(
                 item.get("VulnerabilityID"), str
             ):
@@ -197,7 +190,7 @@ def _sanitize(report):
             if isinstance(package, str):
                 finding["package_sha256"] = _hash_text(package)
             findings.append(finding)
-        for item in result.get("Misconfigurations") or ():
+        for item in misconfigurations:
             if not isinstance(item, dict) or not isinstance(item.get("ID"), str):
                 raise TrivyError("trivy_report_invalid")
             status = item.get("Status")
@@ -315,10 +308,10 @@ def scan_filesystem(
                     findings, misconfig_summary = _sanitize(report)
                 except TrivyError as error:
                     report_error = error.code
+                    report = {}
 
     after_digest = _target_digest(target_path)
     config_after = _sha256(config) if config is not None else None
-    diagnostic = _safe_diagnostic(completed.stderr)
     if report_error is not None:
         status = "error"
         reason = report_error
@@ -342,7 +335,6 @@ def scan_filesystem(
         "reason": reason,
         "native_exit_code": completed.returncode,
         "findings": findings,
-        "diagnostic": diagnostic,
         "report_sha256": (
             "sha256:" + hashlib.sha256(raw).hexdigest() if raw is not None else None
         ),

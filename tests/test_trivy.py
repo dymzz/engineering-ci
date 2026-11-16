@@ -270,9 +270,7 @@ def test_trivy_misconfig_full_scan_separates_status(tmp_path):
     assert result["coverage"]["artifact_type"] == "filesystem"
 
 
-def test_trivy_missing_report_keeps_exit_and_sanitized_diagnostic(
-    tmp_path, monkeypatch
-):
+def test_trivy_missing_report_keeps_exit_without_public_stderr(tmp_path, monkeypatch):
     root = tmp_path / "target"
     root.mkdir()
     (root / "a.txt").write_text("clean\n", encoding="utf-8")
@@ -300,7 +298,59 @@ def test_trivy_missing_report_keeps_exit_and_sanitized_diagnostic(
     assert result["reason"] == "trivy_report_missing"
     assert result["native_exit_code"] == 7
     assert result["coverage"]["scan_completed"] is False
-    assert "glpat-abcdefghijklmnopqrst" not in result["diagnostic"]
+    assert "diagnostic" not in result
+    assert "glpat-abcdefghijklmnopqrst" not in json.dumps(result)
+
+
+def test_trivy_invalid_subfields_keep_native_exit(tmp_path, monkeypatch):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    monkeypatch.setattr(trivy, "find_binary", lambda environ: Path("trivy-fake"))
+    monkeypatch.setattr(
+        trivy,
+        "_verify_binary",
+        lambda binary: {
+            "access_id": "trivy/scan",
+            "version": "0.76.1",
+            "artifact_sha256": "sha256:" + "a" * 64,
+            "platform": "windows-amd64",
+            "path": str(binary),
+        },
+    )
+    for payload, payload_name in (
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Results": [{"Target": "a.txt", "Secrets": 7}],
+            },
+            "Secrets",
+        ),
+        (
+            {
+                "SchemaVersion": 2,
+                "Trivy": {"Version": "0.76.1"},
+                "ArtifactType": "filesystem",
+                "Metadata": "bad",
+                "Results": [],
+            },
+            "Metadata",
+        ),
+    ):
+
+        def run(command, *args, payload=payload, **kwargs):
+            output = Path(command[command.index("--output") + 1])
+            output.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(trivy.subprocess, "run", run)
+        result = trivy.scan_filesystem(root, target=".", scanners=("secret",))
+        assert result["status"] == "error", payload_name
+        assert result["reason"] == "trivy_report_invalid", payload_name
+        assert result["native_exit_code"] == 0, payload_name
+        assert result["coverage"]["report_valid"] is False, payload_name
 
 
 def test_trivy_missing_binary_is_not_clean(tmp_path):
