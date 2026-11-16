@@ -1,47 +1,613 @@
-"""Contract regressions for #66-P0 pre-execution Source proof."""
+"""Contract regressions for #66-P0 pre-execution Source proof & reuse handoff."""
 
-from engineering_ci import execution
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from engineering_ci import check_contract, execution, hygiene, selection
 
 
-def _plan(path, name="whitespace"):
-    return {
-        "selection": {
-            "check_scope": [{"name": name, "status": "selected"}],
+def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        env=merged,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+
+
+def _init_repo(tmp_path: Path, name: str = "repo") -> tuple[Path, str]:
+    root = tmp_path / name
+    root.mkdir()
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    (root / "tach.toml").write_text(
+        'source_roots = ["src"]\nexact = true\n',
+        encoding="utf-8",
+    )
+    (root / "ci-selection.toml").write_text(
+        'schema_version = 1\ntach = "tach.toml"\ntests_dir = "tests"\n'
+        'src_root = "src"\nframework = "unittest"\n'
+        'checks = ["hygiene", "tach", "vulture"]\n',
+        encoding="utf-8",
+    )
+    (root / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["whitespace", "forwarding", "docs", "vulture", "tach"]\n'
+        '[lychee]\narguments = ["--offline"]\n'
+        '[tach]\npath = "tach.toml"\nexternal = false\n',
+        encoding="utf-8",
+    )
+    (root / "ci-sources.toml").write_text(
+        'schema_version = 1\nacquired_roots = ["data/acquired"]\nmanifest = "sources.json"\n',
+        encoding="utf-8",
+    )
+    (root / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "docs.md").write_text("# Doc\n", encoding="utf-8")
+
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "p0@example.invalid")
+    _git(root, "config", "user.name", "P0 Test")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    return root, _git(root, "rev-parse", "HEAD").strip()
+
+
+def _worktree_plan(root: Path, base: str):
+    cfg = selection.load_config(root / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(root / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(root, base=base, mode="worktree"), cfg, root=root
+    )
+    return selection.plan(
+        sel,
+        config=cfg,
+        config_path=root / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=root / "ci-hygiene.toml",
+        sources_config_path=root / "ci-sources.toml",
+        root=root,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(root / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
-        "git": {
-            "snapshot": "worktree",
-            "changed_paths": [path],
+    )
+
+
+class _HostRunner:
+    def __init__(self):
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, argv, root, data=None):
+        self.calls.append(tuple(argv))
+        if argv[0] == "git":
+            return hygiene._run(argv, root, data)
+        return subprocess.CompletedProcess(argv, 0, "ok\n", "")
+
+
+def test_pre_execution_proof_binds_closed_checks_and_detects_gitattributes_and_drift(
+    tmp_path,
+):
+    root, base = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+
+    ws_proof = execution.build_pre_execution_source_proof(plan, "whitespace", root=root)
+    assert ws_proof["phase"] == "pre_execution"
+    assert ws_proof["execution_started"] is False
+    assert ws_proof["trusted"] is False
+    assert ws_proof["required"] is False
+    assert ws_proof["status"] == "verified_candidate_inputs"
+    assert ws_proof["baseline_ref"]["base_commit"] == base
+    assert ws_proof["baseline_source_ref"]["name"] == "git-odb-commit"
+    assert ws_proof["rule_ref"]["sha256"].startswith("sha256:")
+    ws_src = ws_proof["source_ref"]
+    assert ws_src["scope_kind"] == "check_input_closure"
+    assert ws_src["binding_status"] == "content_digest"
+    assert ws_src["actual_execution_source"] == "planned_host_worktree"
+    assert "src/pkg/mod.py" in ws_src["verified_input_scope"]
+
+    # Mutating changed file after Plan causes fail-closed worktree_snapshot_stale:
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 3\n", encoding="utf-8")
+    stale = execution.build_pre_execution_source_proof(plan, "whitespace", root=root)
+    assert stale["status"] == "unverified"
+    assert stale["reason"] == "worktree_snapshot_stale"
+    assert stale["source_ref"] is None
+
+    # Re-plan with .gitattributes committed, then edit .gitattributes -> closure changes:
+    (root / ".gitattributes").write_text("*.py text\n", encoding="utf-8")
+    _git(root, "add", ".gitattributes")
+    _git(root, "commit", "-q", "-m", "add gitattributes")
+    base2 = _git(root, "rev-parse", "HEAD").strip()
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 4\n", encoding="utf-8")
+    plan_attr_1 = _worktree_plan(root, base2)
+    proof_attr_1 = execution.build_pre_execution_source_proof(
+        plan_attr_1, "whitespace", root=root
+    )
+    assert ".gitattributes" in proof_attr_1["source_ref"]["verified_input_scope"]
+
+    (root / ".gitattributes").write_text("*.py -whitespace\n", encoding="utf-8")
+    plan_attr_2 = _worktree_plan(root, base2)
+    proof_attr_2 = execution.build_pre_execution_source_proof(
+        plan_attr_2, "whitespace", root=root
+    )
+    assert proof_attr_2["closure_digest"] != proof_attr_1["closure_digest"]
+    assert (
+        proof_attr_2["source_ref"]["content_digest"]
+        != proof_attr_1["source_ref"]["content_digest"]
+    )
+
+
+def test_pre_execution_open_world_external_and_dynamic_checks_stay_unverified(
+    tmp_path,
+):
+    root, base = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 5\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+
+    # Open-world vulture cannot claim closure before execution:
+    vul_proof = execution.build_pre_execution_source_proof(plan, "vulture", root=root)
+    assert vul_proof["status"] == "unverified"
+    assert vul_proof["source_ref"] is None
+    assert vul_proof["execution_started"] is False
+
+    # Partial changed_paths PASS from real execution must NEVER be accepted as closure-equivalent:
+    report = execution.execute(plan, root=root, runner=_HostRunner())
+    vul_nr = next(c for c in report["checks"] if c["name"] == "vulture")[
+        "native_result"
+    ]
+    assert vul_nr["status"] == "passed"
+    assert vul_nr["source_ref"]["scope_kind"] == "changed_paths"
+    assert not execution.compare_pre_execution_to_historical_result(vul_proof, vul_nr)[
+        "equivalent"
+    ]
+
+    # Dynamic/external checks: source, tach_external, online docs, dagger_export:
+    src_proof = execution.build_pre_execution_source_proof(
+        {
+            "selection": {"check_scope": [{"name": "source", "status": "selected"}]},
+            "git": {"snapshot": "worktree", "changed_paths": ["src/pkg/mod.py"]},
+        },
+        "source",
+        root=root,
+    )
+    assert src_proof["status"] == "unverified"
+    assert src_proof["source_ref"] is None
+
+    dagger_proof = execution.build_pre_execution_source_proof(
+        plan, "tach", root=root, execution_context="dagger_export"
+    )
+    assert dagger_proof["status"] == "unverified"
+    assert dagger_proof["reason"] == "dagger_export_pre_execution_unverified"
+
+    (root / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["whitespace", "forwarding", "docs", "vulture", "tach", "tach_external"]\n'
+        '[tach]\npath = "tach.toml"\nexternal = true\n',
+        encoding="utf-8",
+    )
+    (root / "docs.md").write_text("# Changed Doc\n", encoding="utf-8")
+    ext_plan = _worktree_plan(root, base)
+    assert (
+        execution.build_pre_execution_source_proof(
+            ext_plan, "tach_external", root=root
+        )["status"]
+        == "unverified"
+    )
+    assert (
+        execution.build_pre_execution_source_proof(ext_plan, "docs", root=root)[
+            "status"
+        ]
+        == "unverified"
+    )
+
+
+def test_pre_execution_refuses_index_worktree_divergence_missing_odb_and_config_drift(
+    tmp_path,
+):
+    root, base = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 10\n", encoding="utf-8")
+    index_b = tmp_path / "index.b"
+    env_b = {"GIT_INDEX_FILE": str(index_b)}
+    _git(root, "read-tree", "HEAD", env=env_b)
+    _git(root, "add", "src/pkg/mod.py", env=env_b)
+
+    cfg = selection.load_config(root / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(root / "ci-hygiene.toml")
+    idx_cs = selection.changeset(root, base=base, mode="index", index_file=str(index_b))
+    idx_sel = selection.select(idx_cs, cfg, root=root)
+    idx_plan = selection.plan(
+        idx_sel,
+        config=cfg,
+        config_path=root / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=root / "ci-hygiene.toml",
+        root=root,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(root / cfg.tach),
+            "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
+        },
+    )
+
+    # Matched Index=B == Worktree=B -> full_input_closure downgraded from byte_tree to content_digest:
+    idx_proof = execution.build_pre_execution_source_proof(idx_plan, "tach", root=root)
+    assert idx_proof["status"] == "verified_candidate_inputs"
+    assert idx_proof["source_ref"]["scope_kind"] == "full_input_closure"
+    assert idx_proof["source_ref"]["binding_status"] == "content_digest"
+    assert "materialization_ref" not in idx_proof["source_ref"]
+    assert idx_proof["source_ref"]["actual_execution_source"] == "planned_host_worktree"
+
+    # Worktree=C diverges from Index=B -> explicit index_worktree_mismatch refusal:
+    (root / "src" / "pkg" / "mod.py").write_text(
+        "VALUE = 11  # drift C\n", encoding="utf-8"
+    )
+    drifted_idx = execution.build_pre_execution_source_proof(
+        idx_plan, "tach", root=root
+    )
+    assert drifted_idx["status"] == "unverified"
+    assert drifted_idx["reason"] == "index_worktree_mismatch"
+    assert drifted_idx["source_ref"] is None
+
+    # Config drift in ci-hygiene.toml after Plan creation -> refuses instead of passing stale config:
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 10\n", encoding="utf-8")
+    wt_cfg_plan = _worktree_plan(root, base)
+    (root / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach"]\n[tach]\npath = "tach.toml"\nexternal = false\n',
+        encoding="utf-8",
+    )
+    cfg_drifted = execution.build_pre_execution_source_proof(
+        wt_cfg_plan, "tach", root=root
+    )
+    assert cfg_drifted["status"] == "unverified"
+    assert cfg_drifted["reason"] == "hygiene_config_digest_mismatch"
+
+    # Baseline-requiring Checks refuse missing base_commit or unavailable Git ODB object:
+    missing_base = execution.build_pre_execution_source_proof(
+        {
+            "selection": {
+                "check_scope": [{"name": "whitespace", "status": "selected"}]
+            },
+            "git": {"snapshot": "worktree", "changed_paths": ["src/pkg/mod.py"]},
+        },
+        "whitespace",
+        root=root,
+    )
+    assert missing_base["status"] == "unverified"
+    assert missing_base["reason"] == "pre_execution_baseline_missing"
+
+    missing_odb = execution.build_pre_execution_source_proof(
+        {
+            "selection": {
+                "check_scope": [{"name": "forwarding", "status": "selected"}]
+            },
+            "git": {
+                "snapshot": "worktree",
+                "base_commit": "f" * 40,
+                "changed_paths": ["src/pkg/mod.py"],
+            },
+        },
+        "forwarding",
+        root=root,
+    )
+    assert missing_odb["status"] == "unverified"
+    assert missing_odb["reason"] == "baseline_object_unavailable"
+
+
+def test_pre_execution_equivalence_enforces_baseline_rule_tool_and_enables_no_rerun(
+    tmp_path, monkeypatch
+):
+    root, base_a = _init_repo(tmp_path)
+    # Create second base commit base_b so we can push same target tree with two different baselines:
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 20\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/mod.py")
+    _git(root, "commit", "-q", "-m", "second base")
+    base_b = _git(root, "rev-parse", "HEAD").strip()
+
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 30\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/mod.py")
+    _git(root, "commit", "-q", "-m", "target commit")
+    head = _git(root, "rev-parse", "HEAD").strip()
+
+    cfg = selection.load_config(root / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(root / "ci-hygiene.toml")
+
+    def commit_plan(base_oid):
+        cs = selection.changeset(root, base=base_oid, head=head, mode="commit")
+        sel = selection.select(cs, cfg, root=root)
+        return selection.plan(
+            sel,
+            config=cfg,
+            config_path=root / "ci-selection.toml",
+            hygiene_config=hyg_cfg,
+            hygiene_config_path=root / "ci-hygiene.toml",
+            root=root,
+            tach_validation={
+                "status": "passed",
+                "tach_sha256": selection._digest(root / cfg.tach),
+                "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+            },
+        )
+
+    plan_from_a = commit_plan(base_a)
+    plan_from_b = commit_plan(base_b)
+    exec_report = execution.execute(plan_from_a, root=root, runner=_HostRunner())
+    hist_ws = next(c for c in exec_report["checks"] if c["name"] == "whitespace")[
+        "native_result"
+    ]
+    hist_tach = next(c for c in exec_report["checks"] if c["name"] == "tach")[
+        "native_result"
+    ]
+
+    # Current pre-execution proof for same commit + SAME base_a matches without running runner:
+    pre_a_ws = execution.build_pre_execution_source_proof(
+        plan_from_a, "whitespace", root=root
+    )
+    eq = execution.compare_pre_execution_to_historical_result(pre_a_ws, hist_ws)
+    assert eq["equivalent"] is True
+    assert eq["reason"] is None
+    assert eq["trusted"] is False
+    assert eq["admission_status"] == "not_evaluated"
+
+    # Simulated #63 T2 reuse gate: skip native execution because pre-execution inputs match historical PASS:
+    spy_runner = _HostRunner()
+    if eq["equivalent"] and hist_ws["status"] == "passed":
+        ran_native = False
+    else:
+        ran_native = True
+        execution.run_host_check(
+            plan_from_a,
+            {"name": "whitespace", "status": "selected"},
+            root=root,
+            runner=spy_runner,
+        )
+    assert not ran_native
+    assert spy_runner.calls == []
+
+    # Same target Tree (head), DIFFERENT old->new baseline (base_b != base_a) -> REFUSED:
+    pre_b_ws = execution.build_pre_execution_source_proof(
+        plan_from_b, "whitespace", root=root
+    )
+    assert pre_b_ws["closure_digest"] != pre_a_ws["closure_digest"]
+    diff_base = execution.compare_pre_execution_to_historical_result(pre_b_ws, hist_ws)
+    assert diff_base["equivalent"] is False
+    assert diff_base["reason"] == "baseline_mismatch"
+
+    # Rule and check identity mismatches before mutating registered tach definition:
+    pre_tach = execution.build_pre_execution_source_proof(
+        plan_from_a, "tach", root=root
+    )
+    assert (
+        execution.compare_pre_execution_to_historical_result(pre_tach, hist_tach)[
+            "equivalent"
+        ]
+        is True
+    )
+    assert (
+        execution.compare_pre_execution_to_historical_result(pre_tach, hist_ws)[
+            "reason"
+        ]
+        == "check_identity_mismatch"
+    )
+    altered_rule_proof = {
+        **pre_tach,
+        "rule_ref": check_contract.rule_ref(
+            "engineering-ci.hygiene", 1, digest="0" * 64
+        ),
+    }
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            altered_rule_proof, hist_tach
+        )["reason"]
+        == "rule_mismatch"
+    )
+
+    # Tool identity/pin change (e.g. pinned ToolIdentity version changed in current pre-proof) -> REFUSED:
+    tach_def = check_contract.definition_for("tach")
+    from dataclasses import replace
+
+    both_tach_def = replace(
+        tach_def,
+        tool_requirements=check_contract.validate_tool_requirements(
+            (
+                check_contract.ToolRequirement(
+                    "tach-check",
+                    (check_contract.ToolIdentity("tach/check", version="0.10.0"),),
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        check_contract,
+        "_CURRENT_BY_ID",
+        {**check_contract._CURRENT_BY_ID, tach_def.check_id: both_tach_def},
+    )
+    monkeypatch.setattr(
+        check_contract,
+        "_BUILTIN_BY_VERSION",
+        {
+            **check_contract._BUILTIN_BY_VERSION,
+            (tach_def.check_id, tach_def.definition_version): both_tach_def,
+        },
+    )
+    wrong_tool_nr = check_contract.native_result(
+        both_tach_def,
+        source=hist_tach["source_ref"],
+        status="passed",
+        result_origin=hist_tach["result_origin"],
+        result_instance="other-tool",
+        native_exit_code=0,
+        tool=check_contract.tool_ref("tach/check", version="0.10.0"),
+        evidence={"stdout": "ok"},
+        rule_ref=hist_tach["check"]["rule_ref"],
+        runner_ref=hist_tach["runner_ref"],
+        baseline_ref=hist_tach.get("baseline_ref"),
+    )
+    pre_tach_v2 = execution.build_pre_execution_source_proof(
+        plan_from_a, "tach", root=root
+    )
+    upgraded_proof = {
+        **pre_tach_v2,
+        "tool_identities": [
+            {
+                "requirement_id": "tach-check",
+                "after": [],
+                "alternatives": [
+                    {
+                        "access_id": "tach/check",
+                        "tool_id": None,
+                        "tool_id_source": None,
+                        "version": "0.20.0",
+                        "artifact_sha256": None,
+                        "authority": "eci_local_entry",
+                    }
+                ],
+            }
+        ],
+    }
+    bad_tach = execution.compare_pre_execution_to_historical_result(
+        upgraded_proof, wrong_tool_nr
+    )
+    assert bad_tach["equivalent"] is False
+    assert bad_tach["reason"] == "tool_mismatch"
+
+
+def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_path):
+    root, base_a = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 40\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/mod.py")
+    _git(root, "commit", "-q", "-m", "commit B")
+    base_b = _git(root, "rev-parse", "HEAD").strip()
+
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 50\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/mod.py")
+    _git(root, "commit", "-q", "-m", "target head")
+    head = _git(root, "rev-parse", "HEAD").strip()
+    head_tree = _git(root, "rev-parse", f"{head}^{{tree}}").strip()
+
+    cfg = selection.load_config(root / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(root / "ci-hygiene.toml")
+    multi_cs = selection.changeset_multi(
+        root,
+        [
+            {
+                "remote_ref": "refs/heads/ref-a",
+                "local_ref": "refs/heads/ref-a",
+                "source_ref": "refs/heads/ref-a",
+                "before": base_a,
+                "after": head,
+                "tree": head_tree,
+                "ref_action": "update",
+                "baseline_ref": base_a,
+            },
+            {
+                "remote_ref": "refs/heads/ref-b",
+                "local_ref": "refs/heads/ref-b",
+                "source_ref": "refs/heads/ref-b",
+                "before": base_b,
+                "after": head,
+                "tree": head_tree,
+                "ref_action": "update",
+                "baseline_ref": base_b,
+            },
+            {
+                "remote_ref": "refs/heads/deleted",
+                "local_ref": "(delete)",
+                "source_ref": "refs/heads/deleted",
+                "before": base_a,
+                "after": "0" * 40,
+                "tree": None,
+                "ref_action": "delete",
+                "baseline_ref": None,
+            },
+        ],
+    )
+    sel = selection.select(multi_cs, cfg, root=root)
+    multi_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=root / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=root / "ci-hygiene.toml",
+        root=root,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(root / cfg.tach),
+            "source_tree": head_tree,
+        },
+    )
+    per_ref_scopes = multi_plan["expected_checks"]["per_ref"]
+    scope_a = next(s for s in per_ref_scopes if s["source_ref"] == "refs/heads/ref-a")
+    scope_b = next(s for s in per_ref_scopes if s["source_ref"] == "refs/heads/ref-b")
+    scope_del = next(
+        s for s in per_ref_scopes if s["source_ref"] == "refs/heads/deleted"
+    )
+
+    # Ambiguous multi-ref call without scope_id/expected_check_ref is rejected:
+    with pytest.raises(execution.ExecutionError, match="pre_execution_scope_required"):
+        execution.build_pre_execution_source_proof(multi_plan, "whitespace", root=root)
+
+    proof_a = execution.build_pre_execution_source_proof(
+        multi_plan, "whitespace", root=root, scope_id=scope_a["scope_id"]
+    )
+    proof_b = execution.build_pre_execution_source_proof(
+        multi_plan, "whitespace", root=root, scope_id=scope_b["scope_id"]
+    )
+    assert proof_a["status"] == "verified_candidate_inputs"
+    assert proof_b["status"] == "verified_candidate_inputs"
+    assert proof_a["scope_id"] == scope_a["scope_id"]
+    assert proof_b["scope_id"] == scope_b["scope_id"]
+    assert proof_a["baseline_ref"]["base_commit"] == base_a
+    assert proof_b["baseline_ref"]["base_commit"] == base_b
+    assert proof_a["closure_digest"] != proof_b["closure_digest"]
+
+    # Deleted Ref keeps safe unverified boundary:
+    del_tach = execution.build_pre_execution_source_proof(
+        multi_plan, "tach", root=root, scope_id=scope_del["scope_id"]
+    )
+    assert del_tach["status"] == "unverified"
+    assert del_tach["source_ref"] is None
+
+    # Pre-execution data prerequisite edge without materialized artifacts stays unverified:
+    wt_plan = _worktree_plan(root, base_b)
+    wt_with_data_dep = {
+        **wt_plan,
+        "selection": {
+            **wt_plan["selection"],
+            "prerequisites": ["codegen"],
+        },
+        "dependency_contract": {
+            "schema_version": 2,
+            "edges": [
+                {
+                    "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
+                    "consumer_ref": {"kind": "check", "name": "tach"},
+                    "dependency_kind": "data",
+                    "execution_phase": "pre_execution",
+                    "output_ref": "generated/schema.py",
+                }
+            ],
         },
     }
-
-
-def test_pre_execution_proof_binds_host_check_inputs_without_native_result(tmp_path):
-    (tmp_path / "file.txt").write_text("first\n", encoding="utf-8")
-    plan = _plan("file.txt")
-    first = execution.build_pre_execution_source_proof(
-        plan, "whitespace", root=tmp_path
+    dep_unproven = execution.build_pre_execution_source_proof(
+        wt_with_data_dep, "tach", root=root
     )
-    assert first["phase"] == "pre_execution"
-    assert first["execution_started"] is False
-    assert first["status"] == "verified_candidate_inputs"
-    source = first["source_ref"]
-    assert source["scope_kind"] == "check_input_closure"
-    assert source["binding_status"] == "content_digest"
-    assert source["actual_execution_source"] == "planned_host_worktree"
-    assert "file.txt" in source["verified_input_scope"]
-
-    (tmp_path / "file.txt").write_text("changed\n", encoding="utf-8")
-    second = execution.build_pre_execution_source_proof(
-        plan, "whitespace", root=tmp_path
-    )
-    assert second["source_ref"]["content_digest"] != source["content_digest"]
-
-
-def test_pre_execution_unknown_dynamic_tool_does_not_claim_trusted_execution(tmp_path):
-    (tmp_path / "file.txt").write_text("source\n", encoding="utf-8")
-    proof = execution.build_pre_execution_source_proof(
-        _plan("file.txt", name="source"), "source", root=tmp_path
-    )
-    assert proof["status"] == "unverified"
-    assert proof["source_ref"] is None
-    assert proof["execution_started"] is False
+    assert dep_unproven["status"] == "unverified"
+    assert dep_unproven["reason"] == "pre_execution_prerequisite_unproven"
