@@ -1,12 +1,17 @@
+import concurrent.futures
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from engineering_ci import hooks
+
+SECRET_URL = "https://user:token@example.com/org/repo.git?access_token=topsecret"
 
 
 def git(root, *args, env=None):
@@ -34,33 +39,92 @@ def repo(tmp_path):
     return root
 
 
-def test_capture_pre_push_preserves_argv_stdin_and_redacts_credentials(repo):
+def write_remote_file(path, value):
+    path.write_text(value, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def pre_push_event(repo, *, name="origin", location="origin"):
     before = git(repo, "rev-parse", "HEAD")
     stdin_text = (
         f"refs/heads/main {before} refs/heads/main {'0' * 40}\n"
         f"refs/heads/topic {'f' * 40} refs/heads/topic {before}\n"
         f"refs/heads/gone {'0' * 40} refs/heads/gone {before}\n"
     )
-    event = hooks.capture_pre_push(
+    return hooks.capture_pre_push(repo, name, location, stdin_text)
+
+
+def test_capture_pre_push_preserves_args_and_redacts_location(repo):
+    event = pre_push_event(
         repo,
-        "origin",
-        "https://user:secret@example.com/org/repo.git?token=topsecret",
-        stdin_text,
+        location="https://user:secret@example.com/org/repo.git?token=topsecret",
     )
     remote = event["remote"]
-    assert remote["name"] == "origin"
+    assert remote["name"] == {
+        "kind": "alias",
+        "value": "origin",
+        "sha256": remote["name"]["sha256"],
+        "credentials_redacted": False,
+    }
+    assert remote["location"]["kind"] == "url"
+    assert remote["location"]["host"] == "example.com"
+    assert remote["location"]["credentials_redacted"] is True
     assert "secret" not in json.dumps(event)
     assert "topsecret" not in json.dumps(event)
-    assert remote["location"]["kind"] == "url"
-    assert remote["location"]["credentials_redacted"] is True
-    assert remote["location"]["sha256"].startswith("sha256:")
+    assert remote["identity"].startswith("sha256:")
     assert [ref["ref_action"] for ref in event["refs"]] == [
         "create",
         "update",
         "delete",
     ]
-    assert event["refs"][0]["before"] == "0" * 40
-    assert event["refs"][2]["after"] == "0" * 40
+
+
+def test_capture_pre_push_redacts_credentialed_name_and_location(repo):
+    event = hooks.capture_pre_push(
+        repo,
+        SECRET_URL,
+        SECRET_URL,
+        f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
+    )
+    serialized = json.dumps(event)
+    for secret in ("user", "token", "topsecret", "access_token", "org/repo"):
+        assert secret not in serialized
+    assert event["remote"]["name"]["kind"] == "url"
+    assert event["remote"]["location"]["kind"] == "url"
+    assert event["remote"]["name"]["credentials_redacted"] is True
+    assert event["remote"]["location"]["credentials_redacted"] is True
+
+    reference = hooks.persist_event(repo, event)
+    assert event["remote"]["name"]["sha256"].startswith("sha256:")
+    persisted = reference.event_path.read_bytes()
+    for secret in ("user", "token", "topsecret", "access_token", "org/repo"):
+        assert secret.encode() not in persisted
+
+
+def test_capture_pre_push_redacts_scp_like_and_nonstandard_inputs(repo):
+    event = hooks.capture_pre_push(
+        repo,
+        "gituser@example.com:org/repo.git",
+        "ssh://deploy:secret@example.com/org/repo.git?access_token=hidden",
+        f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
+    )
+    serialized = json.dumps(event)
+    for secret in (
+        "gituser",
+        "deploy",
+        "secret",
+        "access_token",
+        "org/repo",
+    ):
+        assert secret not in serialized
+    assert event["remote"]["name"]["kind"] == "scp"
+    assert event["remote"]["name"]["credentials_redacted"] is True
+    assert event["remote"]["location"]["kind"] == "url"
+    assert event["remote"]["location"]["credentials_redacted"] is True
 
 
 def test_capture_pre_push_accepts_sha256_zero_oid(repo):
@@ -98,34 +162,96 @@ def test_capture_pre_commit_uses_actual_index(repo, tmp_path):
     )
     event = hooks.capture_pre_commit(repo, environ=env)
     assert event["hook"] == "pre-commit"
-    assert event["index"]["tree"] == git(
-        repo, "write-tree", env={**__import__("os").environ, **env}
-    )
+    assert event["index"]["tree"] == git(repo, "write-tree", env={**os.environ, **env})
     assert event["index"]["sha256"].startswith("sha256:")
     assert "alternate-index" in event["index"]["file"]
 
 
-def test_persist_event_is_content_addressed(repo):
-    event = hooks.capture_pre_push(
-        repo,
-        "origin",
-        "origin",
-        f"refs/heads/main {'a' * 40} refs/heads/main {'b' * 40}\n",
-    )
+def test_pre_commit_index_change_during_capture_is_refused(repo, monkeypatch):
+    real_git = hooks._git
+    changed = False
+
+    def racing_git(root, *args, env=None):
+        nonlocal changed
+        result = real_git(root, *args, env=env)
+        if args and args[0] == "write-tree" and not changed:
+            changed = True
+            (Path(root) / "raced.txt").write_text("raced\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "raced.txt"],
+                cwd=root,
+                check=True,
+                env={**os.environ, **(env or {})},
+            )
+        return result
+
+    monkeypatch.setattr(hooks, "_git", racing_git)
+    with pytest.raises(hooks.HookEventError) as raised:
+        hooks.capture_pre_commit(repo)
+    assert raised.value.code == "index_changed_during_capture"
+
+
+def test_persist_event_has_content_and_invocation_identity(repo):
+    event = pre_push_event(repo)
     first = hooks.persist_event(repo, event)
     second = hooks.persist_event(repo, event)
-    assert first == second
-    assert first.parent.name == "events"
-    assert first.parent.parent.name == "eci-hooks"
-    assert json.loads(first.read_text(encoding="utf-8")) == event
+    assert first.event_path == second.event_path
+    assert first.invocation_ref != second.invocation_ref
+    assert first.event_payload_ref == second.event_payload_ref
+    assert first.event_path.stem == first.event_payload_ref.split(":", 1)[1]
+    assert hashlib.sha256(first.event_path.read_bytes()).hexdigest() == (
+        first.event_path.stem
+    )
+    assert hooks.load_event(first.event_path) == event
+    assert first.invocation_path.is_file()
+    assert second.invocation_path.is_file()
+    invocation = json.loads(first.invocation_path.read_text(encoding="utf-8"))
+    assert invocation["invocation_ref"] == first.invocation_ref
+    assert invocation["event_payload_ref"] == first.event_payload_ref
+    assert invocation["event_file"].endswith(first.event_path.name)
+    assert not list(first.event_path.parent.glob("*.tmp"))
 
 
-def test_cli_capture_writes_content_addressed_event(repo, tmp_path):
+def test_persist_event_same_payload_concurrent_writers(repo):
+    event = pre_push_event(repo)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        references = list(
+            executor.map(lambda _: hooks.persist_event(repo, event), range(8))
+        )
+    assert len({reference.event_path for reference in references}) == 1
+    assert len({reference.invocation_ref for reference in references}) == 8
+    assert len({reference.event_payload_ref for reference in references}) == 1
+    assert hooks.load_event(references[0].event_path) == event
+    assert not list(references[0].event_path.parent.glob("*.tmp"))
+    assert len(list(references[0].invocation_path.parent.glob("*.json"))) == 8
+
+
+def test_load_event_rejects_noncanonical_or_tampered_payload(repo):
+    reference = hooks.persist_event(repo, pre_push_event(repo))
+    reference.event_path.write_bytes(reference.event_path.read_bytes() + b" ")
+    with pytest.raises(hooks.HookEventError, match="event_payload_mismatch"):
+        hooks.load_event(reference.event_path)
+
+
+def test_prune_events_uses_explicit_retention_boundary(repo):
+    reference = hooks.persist_event(repo, pre_push_event(repo))
+    old = time.time() - hooks.EVENT_RETENTION_SECONDS - 60
+    os.utime(reference.event_path, (old, old))
+    os.utime(reference.invocation_path, (old, old))
+    removed = hooks.prune_events(repo)
+    assert removed == 2
+    assert not reference.event_path.exists()
+    assert not reference.invocation_path.exists()
+
+
+def test_cli_capture_redacts_remote_files_and_emits_invocation(repo, tmp_path):
     stdin_file = tmp_path / "stdin.txt"
     stdin_file.write_text(
         f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
         encoding="utf-8",
     )
+    name_file = write_remote_file(tmp_path / "remote-name.txt", SECRET_URL)
+    location_file = write_remote_file(tmp_path / "remote-location.txt", SECRET_URL)
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
     result = subprocess.run(
         [
@@ -137,10 +263,10 @@ def test_cli_capture_writes_content_addressed_event(repo, tmp_path):
             "pre-push",
             "--root",
             str(repo),
-            "--remote-name",
-            "origin",
-            "--remote-location",
-            "https://example.com/org/repo.git",
+            "--remote-name-file",
+            str(name_file),
+            "--remote-location-file",
+            str(location_file),
             "--stdin-file",
             str(stdin_file),
             "--json",
@@ -152,7 +278,16 @@ def test_cli_capture_writes_content_addressed_event(repo, tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    for secret in ("user", "token", "topsecret", "access_token"):
+        assert secret not in result.stdout
     payload = json.loads(result.stdout)
-    assert payload["event"]["remote"]["location"]["kind"] == "url"
+    assert payload["event"]["remote"]["name"]["kind"] == "url"
     assert payload["event"]["refs"][0]["ref_action"] == "create"
-    assert Path(payload["path"]).is_file()
+    assert payload["event_payload_ref"].startswith("sha256:")
+    assert payload["invocation_ref"].startswith("invocation:")
+    event_path = Path(payload["path"])
+    invocation_path = Path(payload["invocation_path"])
+    assert event_path.is_file()
+    assert invocation_path.is_file()
+    for secret in ("user", "token", "topsecret", "access_token"):
+        assert secret.encode() not in event_path.read_bytes()
