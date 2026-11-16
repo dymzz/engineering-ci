@@ -2138,6 +2138,11 @@ def test_a1_profile_reference_fail_closed_converged_contract(repo):
         hygiene_config_path=path / "ci-hygiene.toml",
         root=path,
         effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
     )
 
     assert execution._profile_reference(p, root=path) == prof_ref
@@ -2181,6 +2186,180 @@ def test_a1_profile_reference_fail_closed_converged_contract(repo):
 
 
 def test_a2_real_non_mocked_host_execution_and_reconciliation(repo):
+    from test_reconciliation import (
+        ATTEMPT_QUALIFICATION_REF,
+        ATTEMPT_REF,
+        JOB_ISSUER_REF,
+        RUN_REF,
+        _attach_effective_profile_policy,
+        report_ref_for,
+    )
+
+    from engineering_ci import expected_checks, reconciliation
+
+    path, base = repo
+    (path / "src/pkg/mod.py").write_text(
+        'VALUE = 22\n__all__ = ["VALUE"]\n', encoding="utf-8"
+    )
+
+    # Always-available non-mocked Host execution (git diff-check + AST forwarding):
+    declared = ["whitespace", "forwarding"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = path / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-real-host-core",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    exp = p["expected_checks"]
+
+    pre_resolutions = [
+        execution.build_source_resolution(p, name, root=path) for name in declared
+    ]
+    res_by_name = {
+        c["name"]: r
+        for c, r in zip(
+            [next(e for e in exp["checks"] if e["name"] == n) for n in declared],
+            pre_resolutions,
+            strict=True,
+        )
+    }
+
+    report = execution.execute(p, root=path, runner=None)
+    by_name = {c["name"]: c for c in report["checks"]}
+    for name in declared:
+        assert by_name[name]["status"] == "passed", by_name[name]
+        assert by_name[name]["native_result"]["status"] == "passed"
+        assert (
+            by_name[name]["native_result"]["source_ref"]["scope_kind"]
+            == "check_input_closure"
+        )
+        assert res_by_name[name]["source_ref"]["scope_kind"] == "check_input_closure"
+
+    exp_by = {c["name"]: c for c in exp["checks"] if c["name"] in declared}
+    raw_results = []
+    routings = []
+    for name in declared:
+        check_entry = by_name[name]
+        raw_results.extend(check_entry["native_results"])
+        primary = check_entry["native_result"]
+        routings.append(
+            {
+                "expected_check_ref": exp_by[name]["expected_check_ref"],
+                "job_refs": ["job-real-host"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-real-host",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": primary["runner_ref"],
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                        "invocation_ref": "inv-real-host",
+                    }
+                ],
+                "mapping_status": "routed",
+            }
+        )
+
+    exec_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": by_name[name]["name"],
+                "check_id": by_name[name]["check_id"],
+                "status": by_name[name]["status"],
+                "plan_authorized": True,
+                "check_contract": by_name[name]["check_contract"],
+                "native_result": by_name[name]["native_result"],
+                "native_results": by_name[name]["native_results"],
+            }
+            for name in declared
+        ],
+    }
+    rref = report_ref_for(exec_report)
+    primary_runner = by_name["whitespace"]["native_result"]["runner_ref"]
+    obs = {
+        "job_ref": "job-real-host",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": primary_runner,
+        "report": exec_report,
+        "report_ref": rref,
+        "native_results": raw_results,
+        "job_receipt": {
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "job_ref": "job-real-host",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": primary_runner,
+            "report_ref": rref,
+            "issuer_ref": dict(JOB_ISSUER_REF),
+            "verification_status": "upstream_verified",
+            "invocation_ref": "inv-real-host",
+            "event_ref": exp["event_ref"],
+            "scope_id": exp["scope_id"],
+            "expected_set_ref": exp["expected_set_ref"],
+        },
+    }
+    all_routings = routings + [
+        {"expected_check_ref": c["expected_check_ref"], "mapping_status": "unrouted"}
+        for c in exp["checks"]
+        if c["name"] not in declared
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        exp,
+        routing=all_routings,
+        resolutions=pre_resolutions,
+        observations=[obs],
+        invocation_ref="inv-real-host",
+    )
+    reconciliation.validate_receipt(receipt)
+    rec_by = {item["name"]: item for item in receipt["entries"]}
+    for name in declared:
+        assert rec_by[name]["binding_status"] == "matched", rec_by[name]
+
+
+@pytest.mark.skipif(
+    shutil.which("tach") is None or shutil.which("vulture") is None,
+    reason="tach/vulture binaries unavailable on PATH",
+)
+def test_a2_real_non_mocked_tach_and_vulture_host_e2e(repo):
     from test_reconciliation import (
         ATTEMPT_QUALIFICATION_REF,
         ATTEMPT_REF,
