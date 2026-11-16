@@ -20,21 +20,28 @@ trivy fs docs/verification/trivy-fs/fixture \
   --quiet --no-progress --exit-code 0
 ```
 
-Observed: exit `0`, one filesystem result, six `Vulnerabilities` for `lodash`.
-The report itself is committed as `trivy-vuln-report.json`; its SHA-256 is
-`7a4f3c924b5007c6754db49c8ae13e424dfa74285d9293255014b16bd9eaf780`.
+Observed: native exit `0`, one filesystem result, six `Vulnerabilities` for
+`lodash`.
+
+The archived native report is `trivy-vuln-report.json`:
+
+- bytes: `32282`
+- SHA-256:
+  `d9e485f0acfaf1b9cb500563d89569b1a2d45458f4931d0e60a36f5702a23d93`
 
 ## Sanitized adapter result
 
-`sanitized-result.json` was produced by:
+`sanitized-result.json` is derived from that same archived native report via
+the public `_sanitize` mapping and the adapter's target/coverage metadata. Its
+`report_sha256` is therefore identical to the archived report SHA-256 above.
 
-```text
-scan_filesystem(fixture, target=".", scanners=("vuln",))
-```
-
-It reports `status=findings`, `native_exit_code=0`, six findings, and only
-hashed vulnerability/package identities. Target content digest:
-`sha256:5d874500846b120d47224420b0ea43a243eb193e57e538a8f2bb21bd753c91a7`.
+- `status`: `findings`
+- `native_exit_code`: `0`
+- findings: six, only hashed vulnerability/package identities
+- target content digest:
+  `sha256:5d874500846b120d47224420b0ea43a243eb193e57e538a8f2bb21bd753c91a7`
+- sanitized result SHA-256:
+  `3e9c85ade64c9a2d3fed6317ff3ea57c55484fadb408bb1471ac56a10b098a99`
 
 First finding: vulnerability `sha256:f918aeba...`, severity `HIGH`, package
 `sha256:94a755535d135f12850ccd5848d10cc7266bbcdb74ad22c7817228ce7abaa506`.

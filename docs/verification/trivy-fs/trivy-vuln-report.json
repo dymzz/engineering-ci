@@ -3,8 +3,8 @@
   "Trivy": {
     "Version": "0.76.1"
   },
-  "ReportID": "01a1e2e1-1ed4-7636-886d-4477f29eafdd",
-  "CreatedAt": "2026-11-16T13:42:46.7404071+08:00",
+  "ReportID": "01a1e2f0-2af1-73cc-8c8a-052d2c57beb7",
+  "CreatedAt": "2026-11-16T13:59:12.881249+08:00",
   "ArtifactName": "D:/workspace/engineering-ci/.tmp/worktree/engineering-ci/docs/verification/trivy-fs/fixture",
   "ArtifactType": "filesystem",
   "Results": [

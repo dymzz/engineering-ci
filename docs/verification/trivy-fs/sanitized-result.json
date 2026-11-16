@@ -84,7 +84,7 @@
     "rule_closure_verified": false
   },
   "reason": "security_findings",
-  "report_sha256": "sha256:8ae117b87e9ca9921e218e16dd7106ac921c295213ce1bd1304e883a5797b2df",
+  "report_sha256": "sha256:d9e485f0acfaf1b9cb500563d89569b1a2d45458f4931d0e60a36f5702a23d93",
   "scanners": [
     "vuln"
   ],
