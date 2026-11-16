@@ -2159,3 +2159,223 @@ def test_b3_invocation_and_event_attribution_refuse_old_run_replay():
     reconciliation.validate_receipt(matched_curr)
     assert matched_curr["entries"][0]["binding_status"] == "matched"
     assert matched_curr["expected_invocation_ref"] == "inv/current"
+
+
+def test_b1_eci_producer_report_contract_and_dependency_propagation():
+    ws_entry = make_entry("whitespace", rule=RULE_WS)
+    docs_entry = make_entry("docs", rule=RULE_DOCS)
+    tach_entry = make_entry("tach", rule=RULE_TACH)
+    projection = make_projection([ws_entry, docs_entry, tach_entry])
+
+    ws_res = native(
+        "whitespace",
+        rule=RULE_WS,
+        tool_access="git/diff-check",
+        baseline={"base_commit": "1" * 40},
+        instance="ws-ok",
+    )
+    docs_res = native(
+        "docs",
+        rule=RULE_DOCS,
+        tool_access="lychee/docs",
+        instance="docs-links",
+        input_refs=[FILE_A],
+    )
+    tach_res = native(tool_access="tach/check", instance="tach-ok")
+
+    # ECI Producer Report: valid whitespace, missing check_contract on docs,
+    # missing plan_authorized on tach, PLUS blocked_by:
+    mixed_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "whitespace",
+                "check_id": ws_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "native_result": ws_res,
+                "native_results": [ws_res],
+            },
+            {
+                "name": "docs",
+                "check_id": docs_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "native_result": docs_res,
+                "native_results": [docs_res],
+            },
+            {
+                "name": "tach",
+                "check_id": tach_entry["check_id"],
+                "status": "passed",
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "blocked_by": [
+                    {
+                        "producer_ref": {"kind": "check", "name": "docs"},
+                        "reason": "pre_execution_prerequisite_failed",
+                    }
+                ],
+                "native_result": tach_res,
+                "native_results": [tach_res],
+            },
+        ],
+    }
+    rref = report_ref_for(mixed_report)
+    obs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": rref,
+        "report": mixed_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, rref),
+        "native_results": [ws_res, docs_res, tach_res],
+    }
+    receipt = reconcile(
+        projection,
+        routing=[
+            make_routing(ws_entry),
+            make_routing(docs_entry),
+            make_routing(tach_entry),
+        ],
+        resolutions=[
+            make_resolution(ws_entry, rule=RULE_WS, baseline={"base_commit": "1" * 40}),
+            make_resolution(docs_entry, rule=RULE_DOCS),
+            make_resolution(tach_entry, rule=RULE_TACH),
+        ],
+        observations=[obs],
+    )
+    reconciliation.validate_receipt(receipt)
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["whitespace"]["binding_status"] == "matched"
+    assert by_name["docs"]["binding_status"] == "insufficient"
+    assert by_name["docs"]["reason"] == "report_check_contract_invalid"
+    assert by_name["tach"]["binding_status"] == "insufficient"
+    assert by_name["tach"]["reason"] in {
+        "report_check_unauthorized",
+        "report_prerequisite_failed",
+    }
+
+    # Report-wide plan_declaration_consistent=False rejects every Check in the report:
+    inconsistent_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "plan_declaration_consistent": False,
+        "checks": [mixed_report["checks"][0]],
+    }
+    iref = report_ref_for(inconsistent_report)
+    iobs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": iref,
+        "report": inconsistent_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, iref),
+        "native_results": [ws_res],
+    }
+    p_single = make_projection([ws_entry])
+    inc_rec = reconcile(
+        p_single,
+        routing=[make_routing(ws_entry)],
+        resolutions=[
+            make_resolution(ws_entry, rule=RULE_WS, baseline={"base_commit": "1" * 40})
+        ],
+        observations=[iobs],
+    )
+    reconciliation.validate_receipt(inc_rec)
+    assert inc_rec["entries"][0]["binding_status"] == "insufficient"
+    assert inc_rec["entries"][0]["reason"] == "report_plan_declaration_inconsistent"
+
+
+def test_b2_validate_receipt_entry_semantic_invariants():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    _e, matched_proj, routing, resolution, obs, _res = matched_setup()
+    matched = reconcile(
+        matched_proj,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[obs],
+    )
+
+    bad_satisfaction = copy.deepcopy(matched)
+    bad_satisfaction["entries"][0]["native_satisfaction"]["status"] = "unsatisfied"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_satisfaction_invalid"
+    ):
+        reconciliation.validate_receipt(rehash(bad_satisfaction))
+
+    forged_ref = copy.deepcopy(matched)
+    forged_ref["entries"][0]["resolved_expected_ref"] = "sha256:" + ("0" * 64)
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_resolved_expected_mismatch"
+    ):
+        reconciliation.validate_receipt(rehash(forged_ref))
+
+    overlap = copy.deepcopy(matched)
+    overlap["entries"][0]["rejected_results"].append(
+        {"result_id": overlap["entries"][0]["selected_result_ids"][0], "reason": "bad"}
+    )
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_rejected_conflict"
+    ):
+        reconciliation.validate_receipt(rehash(overlap))
+
+    bad_sel_status = copy.deepcopy(matched)
+    bad_sel_status["entries"][0]["selected_results"][0]["status"] = "advisory"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_status_invalid"
+    ):
+        reconciliation.validate_receipt(rehash(bad_sel_status))
+
+
+def test_b3_job_receipt_requires_all_four_attribution_fields_and_frozen_l2_interface():
+    assert reconciliation.CURRENT_EXECUTION_ATTRIBUTION_FIELDS == (
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
+        "expected_set_ref",
+    )
+    assert "receipt_sha256" in reconciliation.EVIDENCE_ADMISSION_HANDOFF_FIELDS
+    assert len(reconciliation.EXECUTION_PHASE_ORDER) == 3
+
+    _entry, projection, routing, resolution, obs, _res = matched_setup()
+    curr_routing = copy.deepcopy(routing)
+    curr_routing["job_instances"][0]["invocation_ref"] = "inv/curr"
+    base_obs = copy.deepcopy(obs)
+    base_obs["job_receipt"]["invocation_ref"] = "inv/curr"
+    base_obs["job_receipt"]["event_ref"] = dict(EVENT)
+    base_obs["job_receipt"]["scope_id"] = projection["scope_id"]
+    base_obs["job_receipt"]["expected_set_ref"] = projection["expected_set_ref"]
+
+    for drop_field, expected_reason in (
+        ("event_ref", "job_event_unproven"),
+        ("scope_id", "job_scope_unproven"),
+        ("expected_set_ref", "job_expected_set_unproven"),
+    ):
+        bad_obs = copy.deepcopy(base_obs)
+        bad_obs["job_receipt"].pop(drop_field)
+        rec = reconcile(
+            projection,
+            routing=[curr_routing],
+            resolutions=[resolution],
+            observations=[bad_obs],
+            invocation_ref="inv/curr",
+        )
+        reconciliation.validate_receipt(rec)
+        assert rec["entries"][0]["binding_status"] == "unknown"
+        assert rec["entries"][0]["reason"] == expected_reason

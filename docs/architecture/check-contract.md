@@ -119,6 +119,14 @@ reinterpreted):
   definition version), so historical definition versions keep it and stored
   Results are not rewritten. Configuration failures are `not_started`,
   carry no Native Result, and cannot be reported as native failures.
+- Native `advisory` vs policy `advisory_checks`: `advisory` on a Native Result is
+  an **executed native verdict** (process Checks record actual
+  `native_exit_code` and `evidence`, e.g. `vulture` `advisory_exit_codes = [3]`;
+  internal Checks forbid `native_exit_code` and require `evidence`), distinct from
+  Expected/Profile policy `advisory_checks`. Native `advisory` does not satisfy
+  strict `satisfy_expected_instance()` (`result_not_passed` -> `insufficient`).
+  `#59` Trivy (`engineering_ci.trivy`) reports native gate statuses only and does
+  not emit `advisory`.
 - `baseline_ref` is part of the result digest when a comparison baseline exists;
   equal new Trees with different baselines produce different `content_id`s.
 
@@ -514,12 +522,10 @@ exits and the resulting Report) is recorded in
 
 ## Limits / next slices
 
-- Execution now emits per-Check `check_input_closure` (`content_digest`) for
-  verified `worktree` executions and `full_input_closure` (`byte_tree` +
-  `materialization_ref`) for verified `index`/`commit`/`push`/`pr_merge`
-  snapshots where pre/post byte reads succeed; when verification fails or no
-  root bytes are bound, it falls back to `changed_paths` rather than
-  fabricating closure proof.
+- **Per-Producer Source closure matrix (`execution.execute()` / `build_source_resolution()`)**:
+  - **Verified (`check_input_closure` on Host `worktree`, `full_input_closure`/`byte_tree` on verified Host `index`/`commit`/`push`/`pr_merge`)**: only Checks whose tool-relevant inputs form a closed static set — `whitespace`, `forwarding`, `--offline` `docs` (with succeeded `inventory`), and local `tach` (`tach.external == false` with `tach.toml` on disk).
+  - **Limited (`changed_paths` / `identity_only`)**: `vulture` (open-world dead-code scan), `tach_external` (external module inspection), online `docs` (without `--offline`), `source`, test runners (`unittest`/`pytest` in `execution.execute()`), and `dagger_export` without full verified closure; these never claim `check_input_closure` or `full_input_closure`.
+  - **Undelivered / N/A**: Native Result producers for `unittest`/`pytest`/`weaver_registry`/`weaver_live`/`weaver_terminal` live outside `execution.execute()` (synthetic contract fixtures only for weaver), `#63` issuer/admission trust, `#61` required gate, `#72/#102` hook dispatch/collect.
 - No verified Runtime ToolAsset identity exists for the Host `git`/Lychee/
   Vulture/Tach tools, so their results keep `authority=eci_local_entry`,
   `tool_id=null` and `tool_id_source=null`. The `runtime_tool_access` authority
@@ -530,13 +536,13 @@ exits and the resulting Report) is recorded in
   Checks. Consumers must select the version they intend: a version 1 result or
   expectation never satisfies a version 2 Check. No second version catalogue is
   created; the controlled table lives in `check_contract`.
-- Dagger `execute-plan` reuses the Host function and forwards `profile_ref`
-  when backed by a verified v2 EffectiveProfile in `Plan.inputs.config`
-  (leaving unverified/v1 `profile_ref` as `null`), while `dagger_export` still
-  does not claim verified Host index parity and the Dagger tool pins (`tach`,
-  `lychee`, `weaver`) are not recorded as observations. The separate Dagger
-  `tach-check`/`lychee-check` functions still return their own ad-hoc JSON.
-  Three-entry-point parity is not claimed.
+- Dagger `execute-plan` forwards verified `profile_ref` only when `Plan`
+  carries a verified `EffectiveProfile` (`expected_checks`, `inputs.effective_profile`,
+  `generator.effective_profile_sha256`), `git.source_tree_id` matches
+  `directory_content_id(root)`, and `repo_target_tree` config matches disk;
+  `dagger_export` still does not claim Host index parity (`identity_only`/narrowed)
+  and Dagger `tach-check`/`lychee-check` keep their ad-hoc JSON. Three-entry-point
+  parity is not claimed.
 - The `all-required` relation is real only for `docs` (`git` + Lychee). No
   production `allowed-alternative` instance exists yet; the alternative path is
   covered by controlled contract tests, and `after` edges are declared only

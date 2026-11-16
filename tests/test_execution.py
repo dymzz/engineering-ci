@@ -2045,6 +2045,7 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
             "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
         },
     )
+    closed_checks = {"whitespace", "forwarding", "docs", "tach"}
     idx_report = execution.execute(idx_plan, root=path, runner=FakeRunner())
     assert idx_report["checks"]
     for check in idx_report["checks"]:
@@ -2052,10 +2053,14 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         if not check.get("native_result"):
             continue
         sr = check["native_result"]["source_ref"]
-        assert sr["scope_kind"] == "full_input_closure"
-        assert sr["binding_status"] == "byte_tree"
-        assert sr["materialization_ref"].startswith("sha256:")
-        assert "src/pkg/mod.py" in sr["verified_input_scope"]
+        if check["name"] in closed_checks:
+            assert sr["scope_kind"] == "full_input_closure"
+            assert sr["binding_status"] == "byte_tree"
+            assert sr["materialization_ref"].startswith("sha256:")
+            assert "src/pkg/mod.py" in sr["verified_input_scope"]
+        else:
+            assert sr["scope_kind"] == "changed_paths"
+            assert sr["binding_status"] != "byte_tree"
 
     run(path, "commit", "-q", "-m", "commit mod change")
     head = run(path, "rev-parse", "HEAD").strip()
@@ -2081,7 +2086,444 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         if not check.get("native_result"):
             continue
         sr = check["native_result"]["source_ref"]
-        assert sr["scope_kind"] == "full_input_closure"
-        assert sr["binding_status"] == "byte_tree"
-        assert sr["declared_target_tree"] == idx_cs.index_tree
-        assert sr["materialization_ref"].startswith("sha256:")
+        if check["name"] in closed_checks:
+            assert sr["scope_kind"] == "full_input_closure"
+            assert sr["binding_status"] == "byte_tree"
+            assert sr["declared_target_tree"] == idx_cs.index_tree
+            assert sr["materialization_ref"].startswith("sha256:")
+        else:
+            assert sr["scope_kind"] == "changed_paths"
+            assert sr["binding_status"] != "byte_tree"
+
+
+def test_a1_profile_reference_fail_closed_converged_contract(repo):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks
+
+    path, base = repo
+    (path / "src/pkg/mod.py").write_text("VALUE = 11\n", encoding="utf-8")
+    declared = ["whitespace", "forwarding", "tach"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = path / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-a1",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+    )
+
+    assert execution._profile_reference(p, root=path) == prof_ref
+
+    # Policy in ci-selection.toml alone without Plan expected/effective_profile has NO authority:
+    bare_plan = json.loads(json.dumps(p))
+    bare_plan.pop("expected_checks", None)
+    bare_plan["inputs"].pop("effective_profile", None)
+    bare_plan["generator"].pop("effective_profile_sha256", None)
+    assert execution._profile_reference(bare_plan, root=path) is None
+
+    # Dagger export context requires matching source_tree_id + disk config proof:
+    dagger_plan = json.loads(json.dumps(p))
+    assert (
+        execution._profile_reference(
+            dagger_plan, root=path, execution_context="dagger_export"
+        )
+        is None
+    )
+    dagger_plan["git"]["source_tree_id"] = selection.directory_content_id(path)
+    assert (
+        execution._profile_reference(
+            dagger_plan, root=path, execution_context="dagger_export"
+        )
+        == prof_ref
+    )
+    dagger_plan["git"]["source_tree_id"] = "0" * 64
+    assert (
+        execution._profile_reference(
+            dagger_plan, root=path, execution_context="dagger_export"
+        )
+        is None
+    )
+
+    # Tampering or deleting ci-selection.toml on Host fails closed:
+    original_toml = cfg_path.read_text(encoding="utf-8")
+    cfg_path.write_text(original_toml + "\n# tampered\n", encoding="utf-8")
+    assert execution._profile_reference(p, root=path) is None
+    cfg_path.unlink()
+    assert execution._profile_reference(p, root=path) is None
+
+
+def test_a2_real_non_mocked_host_execution_and_reconciliation(repo):
+    from test_reconciliation import (
+        ATTEMPT_QUALIFICATION_REF,
+        ATTEMPT_REF,
+        JOB_ISSUER_REF,
+        RUN_REF,
+        _attach_effective_profile_policy,
+        report_ref_for,
+    )
+
+    from engineering_ci import expected_checks, reconciliation
+
+    path, base = repo
+    # Satisfy real tach.toml dependencies cleanly on base commit and avoid dead symbols:
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        "exact = true\n"
+        "forbid_circular_dependencies = true\n"
+        'root_module = "forbid"\n\n'
+        '[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.other"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text(
+        'VALUE = 1\n__all__ = ["VALUE"]\n', encoding="utf-8"
+    )
+    (path / "src/pkg/other.py").write_text(
+        'VALUE = 2\n__all__ = ["VALUE"]\n', encoding="utf-8"
+    )
+    (path / "src/pkg/mod.py").write_text(
+        'VALUE = 1\n__all__ = ["VALUE"]\n', encoding="utf-8"
+    )
+    run(
+        path, "add", "tach.toml", "src/pkg/sub.py", "src/pkg/other.py", "src/pkg/mod.py"
+    )
+    run(path, "commit", "-q", "-m", "clean tach graph for real host execution")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "src/pkg/mod.py").write_text(
+        'VALUE = 22\n__all__ = ["VALUE"]\n', encoding="utf-8"
+    )
+
+    # Include closed static checks (whitespace, forwarding, tach) + open-world vulture:
+    declared = ["whitespace", "forwarding", "tach", "vulture"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = path / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-real-host",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    exp = p["expected_checks"]
+
+    # Build independent Source Resolutions BEFORE running execute() — never reads native_result:
+    pre_resolutions = [
+        execution.build_source_resolution(p, name, root=path) for name in declared
+    ]
+    res_by_name = {
+        c["name"]: r
+        for c, r in zip(
+            [next(e for e in exp["checks"] if e["name"] == n) for n in declared],
+            pre_resolutions,
+            strict=True,
+        )
+    }
+
+    # Real non-mocked Host execution (runner=None invokes real git, AST forwarding, tach, vulture):
+    report = execution.execute(p, root=path, runner=None)
+    by_name = {c["name"]: c for c in report["checks"]}
+    for name in declared:
+        assert by_name[name]["status"] == "passed", by_name[name]
+        assert by_name[name]["native_result"]["status"] == "passed"
+
+    for closed in ("whitespace", "forwarding", "tach"):
+        assert (
+            by_name[closed]["native_result"]["source_ref"]["scope_kind"]
+            == "check_input_closure"
+        )
+        assert res_by_name[closed]["source_ref"]["scope_kind"] == "check_input_closure"
+
+    # Open-world vulture must NOT claim check_input_closure or full_input_closure:
+    assert (
+        by_name["vulture"]["native_result"]["source_ref"]["scope_kind"]
+        == "changed_paths"
+    )
+    assert res_by_name["vulture"]["source_ref"]["scope_kind"] == "changed_paths"
+
+    exp_by = {c["name"]: c for c in exp["checks"] if c["name"] in declared}
+    raw_results = []
+    routings = []
+    for name in declared:
+        check_entry = by_name[name]
+        raw_results.extend(check_entry["native_results"])
+        primary = check_entry["native_result"]
+        routings.append(
+            {
+                "expected_check_ref": exp_by[name]["expected_check_ref"],
+                "job_refs": ["job-real-host"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-real-host",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": primary["runner_ref"],
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                        "invocation_ref": "inv-real-host",
+                    }
+                ],
+                "mapping_status": "routed",
+            }
+        )
+
+    exec_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": by_name[name]["name"],
+                "check_id": by_name[name]["check_id"],
+                "status": by_name[name]["status"],
+                "plan_authorized": True,
+                "check_contract": by_name[name]["check_contract"],
+                "native_result": by_name[name]["native_result"],
+                "native_results": by_name[name]["native_results"],
+            }
+            for name in declared
+        ],
+    }
+    rref = report_ref_for(exec_report)
+    primary_runner = by_name["tach"]["native_result"]["runner_ref"]
+    obs = {
+        "job_ref": "job-real-host",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": primary_runner,
+        "report": exec_report,
+        "report_ref": rref,
+        "native_results": raw_results,
+        "job_receipt": {
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "job_ref": "job-real-host",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": primary_runner,
+            "report_ref": rref,
+            "issuer_ref": dict(JOB_ISSUER_REF),
+            "verification_status": "upstream_verified",
+            "invocation_ref": "inv-real-host",
+            "event_ref": exp["event_ref"],
+            "scope_id": exp["scope_id"],
+            "expected_set_ref": exp["expected_set_ref"],
+        },
+    }
+    all_routings = routings + [
+        {"expected_check_ref": c["expected_check_ref"], "mapping_status": "unrouted"}
+        for c in exp["checks"]
+        if c["name"] not in declared
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        exp,
+        routing=all_routings,
+        resolutions=pre_resolutions,
+        observations=[obs],
+        invocation_ref="inv-real-host",
+    )
+    reconciliation.validate_receipt(receipt)
+    rec_by = {item["name"]: item for item in receipt["entries"]}
+    for closed in ("whitespace", "forwarding", "tach"):
+        assert rec_by[closed]["binding_status"] == "matched", rec_by[closed]
+    assert rec_by["vulture"]["binding_status"] == "unknown", rec_by["vulture"]
+    assert rec_by["vulture"]["reason"] == "expected_source_scope_insufficient"
+
+    # Real vulture advisory exit 3 on unused symbol: native verdict advisory != passed:
+    (path / "src/pkg/mod.py").write_text(
+        "VALUE = 22\n\n\ndef _unused_dead_fn():\n    return 99\n",
+        encoding="utf-8",
+    )
+    adv_sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    adv_plan = selection.plan(
+        adv_sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": adv_sel.changeset.execution_tree or adv_sel.changeset.tree,
+        },
+    )
+    adv_report = execution.execute(adv_plan, root=path, runner=None)
+    adv_vulture = next(c for c in adv_report["checks"] if c["name"] == "vulture")
+    assert adv_vulture["status"] == "advisory"
+    assert adv_vulture["native_result"]["status"] == "advisory"
+    assert adv_vulture["native_result"]["native_exit_code"] == 3
+    assert adv_vulture["native_result"]["source_ref"]["scope_kind"] == "changed_paths"
+
+
+def test_a2_negative_index_b_worktree_c_divergence_and_resolution_refusals(
+    repo, tmp_path
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks
+
+    path, base = repo
+    cfg_path = path / "ci-selection.toml"
+    declared = ["whitespace", "forwarding", "tach"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-neg-idx",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-q", "-m", "commit profile policy before index B")
+    base = run(path, "rev-parse", "HEAD").strip()
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+
+    # Stage change ONLY into temporary Index B while Index A stays clean and Worktree C drifts:
+    (path / "src/pkg/mod.py").write_text("VALUE = 101\n", encoding="utf-8")
+    index_b = tmp_path / "index.b"
+    env_b = {**os.environ, "GIT_INDEX_FILE": str(index_b)}
+    subprocess.run(["git", "read-tree", "HEAD"], cwd=path, env=env_b, check=True)
+    subprocess.run(["git", "add", "src/pkg/mod.py"], cwd=path, env=env_b, check=True)
+    idx_cs = selection.changeset(path, base=base, mode="index", index_file=str(index_b))
+    idx_sel = selection.select(idx_cs, cfg, root=path)
+    idx_plan = selection.plan(
+        idx_sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
+        },
+    )
+
+    # Worktree C diverges from Temp Index B -> Host closure proof MUST refuse byte_tree:
+    (path / "src/pkg/mod.py").write_text(
+        "VALUE = 999  # drifted worktree C\n", encoding="utf-8"
+    )
+    assert selection.index_source_refusal(
+        path, idx_cs.index_tree, index_file=str(index_b)
+    )
+    res_drifted = execution.build_source_resolution(idx_plan, "whitespace", root=path)
+    assert res_drifted["source_ref"]["binding_status"] != "byte_tree"
+
+    with pytest.raises(
+        execution.ExecutionError, match="source_resolution_changed_paths_stale"
+    ):
+        # Stale changed_paths in worktree mode raises explicitly:
+        wt_profile = expected_checks.build_effective_profile(
+            profile_ref=prof_ref,
+            profile_revision="rev-neg-wt",
+            approval_source="governance-signed",
+            effective_at="2026-11-16T00:00:00Z",
+            evaluated_at="2026-11-16T00:00:00Z",
+            context="worktree",
+            action="worktree",
+            target="HEAD",
+            declared_checks=declared,
+            required_obligations=[
+                {"obligation_ref": f"req-{name}", "check_names": [name]}
+                for name in declared
+            ],
+            governed_rules=rules,
+            domain_complete=True,
+            authority_verified=True,
+        )
+        wt_cfg = _attach_effective_profile_policy(cfg_path, wt_profile)
+        wt_cs = selection.changeset(path, base=base, mode="worktree")
+        wt_sel = selection.select(wt_cs, wt_cfg, root=path)
+        wt_plan = selection.plan(
+            wt_sel,
+            config=wt_cfg,
+            config_path=cfg_path,
+            root=path,
+            effective_profile=wt_profile,
+        )
+        (path / "src/pkg/mod.py").write_text("VALUE = 1000\n", encoding="utf-8")
+        execution.build_source_resolution(wt_plan, "whitespace", root=path)
+
+    # Deleted ci-selection.toml refuses independent rule/profile verification:
+    cfg_path.unlink()
+    with pytest.raises(
+        execution.ExecutionError, match="source_resolution_profile_unverified"
+    ):
+        execution.build_source_resolution(idx_plan, "tach", root=path)

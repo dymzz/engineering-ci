@@ -365,10 +365,19 @@ mistaking them for a full observation ledger.
   `expected_set_ref` is rejected; legitimate reuse must go through the existing
   #63 admission path upstream.
 - Resolution evidence is separately sourced (controlled rule/config, #66-P0
-  Source materialization, comparison baseline). The module verifies presence,
-  shape, digest pins and consistency with the immutable Expected instance, not
-  the external truth of those sources; #63 remains responsible for admission.
-- Full byte/input closure remains a #66-P0 proof. This slice checks the
+  Source materialization via `execution.build_source_resolution()`, which reads
+  only Plan + disk configs + Git ODB + `expected_check_ref`/`scope_id` and never
+  reads `native_result`, comparison baseline). The module verifies presence,
+  shape, digest pins, `profile_ref` authority, and consistency with the immutable
+  Expected instance, not the external truth of those sources; #63 remains
+  responsible for admission.
+- **Frozen `#63` L2 Consumer Interface & Acyclic Execution Phases**:
+  - `CURRENT_EXECUTION_ATTRIBUTION_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref")` — when `invocation_ref` is bound on `reconcile_expected_results()`, all four must appear and match on `job_receipt` (`job_*_unproven` / `job_*_mismatch` otherwise).
+  - `EVIDENCE_ADMISSION_HANDOFF_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref", "receipt_ref", "receipt_sha256")`.
+  - `EXECUTION_PHASE_ORDER` (acyclic): `pre_run_history_to_remaining_work` (`#63` pre-run history -> Remaining Work) -> `current_execution_to_reconciliation` (`#66-C`) -> `post_run_evidence_to_gate_projection` (`#63` post-run admission -> `#61`).
+- Full byte/input closure remains a #66-P0 proof (`whitespace`, `forwarding`,
+  offline `docs` with succeeded `inventory`, local non-external `tach` on Host;
+  open-world/external checks remain `changed_paths`/`identity_only`). This slice checks the
   Expected changed-path scope against the resolved verified scope, preserves
   the Expected input floor, and delegates native input/coverage equality to
   #52's Expected instance.

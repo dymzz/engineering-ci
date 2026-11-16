@@ -789,7 +789,11 @@ async def _execute_dag(
                         consumer_root, fs_files
                     )
                     artifact_paths = execution.artifact_target_paths(fs_files)
-                verified_profile = execution._profile_reference(value, root=directory)
+                verified_profile = execution._profile_reference(
+                    value,
+                    root=directory,
+                    execution_context="dagger_export",
+                )
                 try:
                     entry = await asyncio.to_thread(
                         execution.run_host_check,
@@ -1224,7 +1228,11 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             ]
             check_plan = _host_adapter_plan(value, host_checks)
             loop = asyncio.get_running_loop()
-            verified_profile = execution._profile_reference(value, root=directory)
+            verified_profile = execution._profile_reference(
+                value,
+                root=directory,
+                execution_context="dagger_export",
+            )
             host = (
                 await asyncio.to_thread(
                     execution.execute,
