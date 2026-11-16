@@ -22,6 +22,7 @@ result. A verified native FAIL is preserved as ``verified`` +
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -30,6 +31,10 @@ from . import check_contract, reconciliation
 
 ADMISSION_KIND = "engineering-ci-evidence-admission"
 ADMISSION_VERSION = 1
+AUTHORITY_KIND = "engineering-ci-evidence-authority"
+AUTHORITY_KEYS = frozenset(
+    {"kind", "issuer_refs", "authority_ref", "verification_status"}
+)
 ORIGIN_STATUSES = frozenset({"verified", "rejected", "unverified"})
 OBLIGATION_STATUSES = frozenset(
     {"satisfied", "unsatisfied", "unknown", "not_applicable"}
@@ -100,6 +105,30 @@ def _evidence_ref(value, code):
         raise AdmissionError(code)
     if value.get("path") is not None:
         _text(value["path"], code)
+    return value
+
+
+def _authority(value):
+    """Validate an externally supplied provenance proof.
+
+    The policy allowlist alone is not treated as issuer authentication. This
+    object is deliberately separate so a real transport can provide it later;
+    callers that only configure a policy get no production coverage.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != AUTHORITY_KEYS:
+        raise AdmissionError("admission_authority_invalid")
+    if value.get("kind") != AUTHORITY_KIND:
+        raise AdmissionError("admission_authority_invalid")
+    issuer_refs = value.get("issuer_refs")
+    if not isinstance(issuer_refs, (list, tuple)) or not issuer_refs:
+        raise AdmissionError("admission_authority_invalid")
+    for issuer in issuer_refs:
+        _evidence_ref(issuer, "admission_authority_invalid")
+    _evidence_ref(value.get("authority_ref"), "admission_authority_invalid")
+    if value.get("verification_status") != "verified":
+        raise AdmissionError("admission_authority_invalid")
     return value
 
 
@@ -258,23 +287,23 @@ class _EvidenceFailure(Exception):
         self.reason = reason
 
 
-def _authenticate(
+def _authenticate_evidence(
     evidence,
     *,
     reports,
     job_receipts,
     policy,
-    resolved_expected,
+    authority,
 ):
+    """Authenticate one raw Result without applying any-Result satisfaction."""
     if not isinstance(evidence, dict):
         raise _EvidenceFailure("unverified", "evidence_invalid")
     result_id = evidence.get("result_id")
     if not isinstance(result_id, str) or not result_id:
         raise _EvidenceFailure("unverified", "result_id_missing")
-    report_ref = evidence.get("report_ref")
     try:
         report_ref = reconciliation._report_ref(
-            report_ref, "admission_report_ref_invalid"
+            evidence.get("report_ref"), "admission_report_ref_invalid"
         )
     except reconciliation.ReconciliationError:
         raise _EvidenceFailure("rejected", "report_ref_invalid") from None
@@ -299,13 +328,11 @@ def _authenticate(
         raise _EvidenceFailure("unverified", "job_receipt_missing")
     job_receipt = job_receipts.get(receipt_ref)
     if job_receipt is None:
-        matching = [
-            item
-            for item in job_receipts.values()
-            if item.get("job_ref") == evidence.get("job_ref")
+        if any(
+            item.get("job_ref") == evidence.get("job_ref")
             and item.get("report_ref") == report_ref
-        ]
-        if matching:
+            for item in job_receipts.values()
+        ):
             raise _EvidenceFailure("rejected", "job_receipt_identity_mismatch")
         raise _EvidenceFailure("unverified", "job_receipt_missing")
     try:
@@ -323,113 +350,75 @@ def _authenticate(
         raise _EvidenceFailure("rejected", "job_receipt_digest_mismatch")
     if job_receipt.get("verification_status") != "upstream_verified":
         raise _EvidenceFailure("rejected", "job_receipt_not_verified")
-    if job_receipt.get("issuer_ref") not in policy["trusted_issuers"]:
-        raise _EvidenceFailure("rejected", "issuer_untrusted")
-    allowed_runners = policy["allowed_runner_refs"]
     if (
-        allowed_runners is not None
-        and evidence.get("runner_ref") not in allowed_runners
+        policy["allowed_runner_refs"] is not None
+        and evidence.get("runner_ref") not in policy["allowed_runner_refs"]
     ):
         raise _EvidenceFailure("rejected", "runner_not_authorized")
-    allowed_origins = policy["allowed_result_origins"]
     if (
-        allowed_origins is not None
-        and result.get("result_origin") not in allowed_origins
+        policy["allowed_result_origins"] is not None
+        and result.get("result_origin") not in policy["allowed_result_origins"]
     ):
         raise _EvidenceFailure("rejected", "origin_not_authorized")
 
+    issuer_ref = job_receipt.get("issuer_ref")
+    if authority is None:
+        issuer_status = "unverified"
+        issuer_reason = "authority_missing"
+    elif (
+        issuer_ref not in authority["issuer_refs"]
+        or issuer_ref not in policy["trusted_issuers"]
+    ):
+        raise _EvidenceFailure("rejected", "issuer_untrusted")
+    else:
+        issuer_status = "verified"
+        issuer_reason = None
     approved = _approved_implementation(policy, result["check"], implementation)
-    try:
-        decision = check_contract.evaluate_expected_satisfaction(
-            [result], resolved_expected
-        )
-    except (check_contract.CheckContractError, ValueError, KeyError, TypeError):
-        raise _EvidenceFailure("rejected", "native_satisfaction_invalid") from None
-    selected = decision.get("selected_result_ids") or []
-    is_selected = result_id in selected
-    status = result.get("status")
-    if approved is None:
-        return {
-            "result_id": result_id,
-            "status": status,
-            "result_origin": result.get("result_origin"),
-            "native_exit_code": result.get("native_exit_code"),
-            "job_ref": evidence.get("job_ref"),
-            "run_ref": evidence.get("run_ref"),
-            "attempt_ref": evidence.get("attempt_ref"),
-            "runner_ref": evidence.get("runner_ref"),
-            "report_ref": report_ref,
-            "job_receipt_ref": receipt_ref,
-            "implementation": implementation,
-            "implementation_approved": False,
-            "selected": is_selected,
-            "origin_status": "verified",
-            "obligation_status": "unsatisfied",
-            "admitted": False,
-            "reasons": ["verification_implementation_unapproved"],
-        }
-    if status == "failed":
-        return {
-            "result_id": result_id,
-            "status": status,
-            "result_origin": result.get("result_origin"),
-            "native_exit_code": result.get("native_exit_code"),
-            "job_ref": evidence.get("job_ref"),
-            "run_ref": evidence.get("run_ref"),
-            "attempt_ref": evidence.get("attempt_ref"),
-            "runner_ref": evidence.get("runner_ref"),
-            "report_ref": report_ref,
-            "job_receipt_ref": receipt_ref,
-            "implementation": implementation,
-            "implementation_approved": True,
-            "selected": is_selected,
-            "origin_status": "verified",
-            "obligation_status": "unsatisfied",
-            "admitted": False,
-            "reasons": ["native_failed"],
-        }
-    if not is_selected or status != "passed":
-        return {
-            "result_id": result_id,
-            "status": status,
-            "result_origin": result.get("result_origin"),
-            "native_exit_code": result.get("native_exit_code"),
-            "job_ref": evidence.get("job_ref"),
-            "run_ref": evidence.get("run_ref"),
-            "attempt_ref": evidence.get("attempt_ref"),
-            "runner_ref": evidence.get("runner_ref"),
-            "report_ref": report_ref,
-            "job_receipt_ref": receipt_ref,
-            "implementation": implementation,
-            "implementation_approved": True,
-            "selected": is_selected,
-            "origin_status": "verified",
-            "obligation_status": "unsatisfied",
-            "admitted": False,
-            "reasons": ["native_witness_not_selected"],
-        }
+    implementation_status = "approved" if approved is not None else "unapproved"
+    reasons = []
+    if issuer_reason is not None:
+        reasons.append(issuer_reason)
+    if implementation_status == "unapproved":
+        reasons.append("verification_implementation_unapproved")
     return {
         "result_id": result_id,
-        "status": status,
+        "status": result.get("status"),
         "result_origin": result.get("result_origin"),
         "native_exit_code": result.get("native_exit_code"),
-        "job_ref": evidence.get("job_ref"),
-        "run_ref": evidence.get("run_ref"),
-        "attempt_ref": evidence.get("attempt_ref"),
-        "runner_ref": evidence.get("runner_ref"),
+        "job_ref": job_receipt["job_ref"],
+        "run_ref": job_receipt["run_ref"],
+        "attempt_ref": job_receipt["attempt_ref"],
+        "runner_ref": job_receipt["runner_ref"],
         "report_ref": report_ref,
         "job_receipt_ref": receipt_ref,
         "implementation": implementation,
-        "implementation_approved": True,
-        "selected": True,
-        "origin_status": "verified",
-        "obligation_status": "satisfied",
-        "admitted": True,
-        "reasons": [],
+        "implementation_approved": approved is not None,
+        "integrity_status": "verified",
+        "issuer_status": issuer_status,
+        "implementation_status": implementation_status,
+        "origin_status": "verified" if issuer_status == "verified" else "unverified",
+        "obligation_status": "unsatisfied"
+        if implementation_status == "unapproved"
+        else "unknown",
+        "admitted": False,
+        "selected": False,
+        "reasons": reasons,
+        "_raw_result": result,
     }
 
 
-def _entry_admission(entry, *, reports, job_receipts, policy):
+def _same_observed_scope(left, right):
+    left_report = left.get("report_ref") or {}
+    right_report = right.get("report_ref") or {}
+    if left_report.get("sha256") and left_report.get("sha256") == right_report.get(
+        "sha256"
+    ):
+        return True
+    keys = ("job_ref", "run_ref", "attempt_ref")
+    return all(left.get(key) and left.get(key) == right.get(key) for key in keys)
+
+
+def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
     if entry.get("binding_status") == "not_applicable":
         return {
             "scope_id": entry.get("scope_id"),
@@ -438,6 +427,7 @@ def _entry_admission(entry, *, reports, job_receipts, policy):
             "check_id": entry.get("check_id"),
             "status": "not_applicable",
             "origin_status": "unverified",
+            "integrity_status": "unverified",
             "obligation_status": "not_applicable",
             "admitted": False,
             "native_outcome": None,
@@ -458,6 +448,7 @@ def _entry_admission(entry, *, reports, job_receipts, policy):
         if result_id not in ordered_ids:
             ordered_ids.append(result_id)
     facts = []
+    raw_by_id = {}
     resolved_expected = entry.get("resolved_expected")
     for result_id in ordered_ids:
         evidence = evidence_by_id.get(result_id)
@@ -465,72 +456,156 @@ def _entry_admission(entry, *, reports, job_receipts, policy):
             facts.append(
                 {
                     "result_id": result_id,
+                    "integrity_status": "unverified",
+                    "issuer_status": "unverified",
+                    "implementation_status": "unverified",
                     "origin_status": "unverified",
                     "obligation_status": "unknown",
                     "admitted": False,
+                    "selected": result_id in selected_ids,
                     "reasons": ["result_evidence_missing"],
                 }
             )
             continue
         try:
-            fact = _authenticate(
+            fact = _authenticate_evidence(
                 evidence,
                 reports=reports,
                 job_receipts=job_receipts,
                 policy=policy,
-                resolved_expected=resolved_expected,
+                authority=authority,
             )
+            raw_by_id[result_id] = fact.pop("_raw_result", None)
         except _EvidenceFailure as failure:
             fact = {
                 "result_id": result_id,
-                "result_origin": evidence.get("result_origin"),
-                "native_exit_code": evidence.get("native_exit_code"),
+                "report_ref": copy.deepcopy(evidence.get("report_ref"))
+                if isinstance(evidence.get("report_ref"), dict)
+                else None,
                 "job_ref": evidence.get("job_ref"),
                 "run_ref": evidence.get("run_ref"),
                 "attempt_ref": evidence.get("attempt_ref"),
                 "runner_ref": evidence.get("runner_ref"),
+                "integrity_status": failure.origin_status,
+                "issuer_status": "unverified",
+                "implementation_status": "unverified",
                 "origin_status": failure.origin_status,
                 "obligation_status": "unknown",
                 "admitted": False,
+                "selected": result_id in selected_ids,
                 "reasons": [failure.reason],
             }
+        fact["selected"] = result_id in selected_ids
         facts.append(fact)
 
-    selected_facts = [fact for fact in facts if fact.get("result_id") in selected_ids]
+    selected_facts = [fact for fact in facts if fact["selected"]]
+    bad_facts = [fact for fact in facts if fact["origin_status"] != "verified"]
+    contaminated = any(
+        _same_observed_scope(selected, bad)
+        for selected in selected_facts
+        for bad in bad_facts
+        if bad is not selected
+    )
+    selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
+    decision = None
+    decision_reason = None
+    if selected_ids and len(selected_raw) == len(selected_ids):
+        try:
+            decision = check_contract.evaluate_expected_satisfaction(
+                selected_raw, resolved_expected
+            )
+        except (check_contract.CheckContractError, ValueError, KeyError, TypeError):
+            decision_reason = "native_satisfaction_invalid"
+    selected_decision = set((decision or {}).get("selected_result_ids") or ())
+    decision_ok = (
+        decision is not None
+        and decision.get("status") == "satisfied"
+        and selected_decision == set(selected_ids)
+    )
+    selected_clean = bool(selected_facts) and all(
+        fact.get("integrity_status") == "verified"
+        and fact.get("issuer_status") == "verified"
+        and fact.get("implementation_status") == "approved"
+        for fact in selected_facts
+    )
     admitted = (
         entry.get("binding_status") == "matched"
         and bool(selected_ids)
-        and bool(selected_facts)
-        and all(fact.get("admitted") is True for fact in selected_facts)
+        and selected_clean
+        and not contaminated
+        and decision_ok
+        and all(fact.get("status") == "passed" for fact in selected_facts)
     )
-    if any(fact.get("origin_status") == "rejected" for fact in facts):
+
+    if (
+        any(fact.get("origin_status") == "rejected" for fact in selected_facts)
+        or contaminated
+    ):
         origin_status = "rejected"
-    elif any(fact.get("origin_status") == "unverified" for fact in facts):
-        origin_status = "unverified"
-    elif facts:
+    elif selected_facts:
+        origin_status = (
+            "verified"
+            if all(fact.get("origin_status") == "verified" for fact in selected_facts)
+            else "unverified"
+        )
+    elif any(fact.get("origin_status") == "verified" for fact in facts):
         origin_status = "verified"
     else:
         origin_status = "unverified"
-
-    if admitted:
-        obligation_status = "satisfied"
-    elif any(
-        fact.get("origin_status") == "verified" and fact.get("status") == "failed"
-        for fact in facts
+    integrity_status = (
+        "verified"
+        if any(fact.get("integrity_status") == "verified" for fact in facts)
+        else "unverified"
+    )
+    if (
+        any(
+            fact.get("selected")
+            and fact.get("integrity_status") == "verified"
+            and fact.get("status") == "failed"
+            for fact in facts
+        )
+        or any(
+            fact.get("implementation_status") == "unapproved" for fact in selected_facts
+        )
+        or (decision is not None and decision.get("status") == "unsatisfied")
+        or entry.get("binding_status") == "insufficient"
     ):
         obligation_status = "unsatisfied"
-    elif any(fact.get("origin_status") in {"rejected", "unverified"} for fact in facts):
+    elif any(
+        fact.get("origin_status") in {"unverified", "rejected"}
+        for fact in selected_facts
+    ):
         obligation_status = "unknown"
+    elif admitted:
+        obligation_status = "satisfied"
     else:
-        obligation_status = "unsatisfied"
+        obligation_status = "unknown"
 
     reasons = []
     if entry.get("binding_status") != "matched":
         reasons.append(f"receipt_status_{entry.get('binding_status')}")
     if not selected_ids:
         reasons.append("selected_witness_missing")
-    for fact in facts:
+    if any(
+        fact.get("integrity_status") == "verified" and fact.get("status") == "failed"
+        for fact in facts
+    ):
+        reasons.append("native_failed")
+    if contaminated:
+        reasons.append("selected_witness_contaminated")
+    if decision_reason is not None:
+        reasons.append(decision_reason)
+    if decision is not None and not decision_ok:
+        reasons.append("selected_witness_mismatch")
+    for fact in selected_facts:
         reasons.extend(fact.get("reasons") or ())
+    if not selected_clean and selected_facts:
+        if any(
+            fact.get("implementation_status") == "unapproved" for fact in selected_facts
+        ):
+            reasons.append("verification_implementation_unapproved")
+        if any(fact.get("issuer_status") == "unverified" for fact in selected_facts):
+            reasons.append("authority_missing")
     reasons = list(dict.fromkeys(reasons))
     if admitted:
         status = "admitted"
@@ -541,12 +616,15 @@ def _entry_admission(entry, *, reports, job_receipts, policy):
     else:
         status = "unverified"
     native_outcome = next(
-        (
-            fact.get("status")
-            for fact in facts
-            if fact.get("origin_status") == "verified" and fact.get("status")
+        (fact.get("status") for fact in selected_facts if fact.get("status")),
+        next(
+            (
+                fact.get("status")
+                for fact in facts
+                if fact.get("integrity_status") == "verified" and fact.get("status")
+            ),
+            None,
         ),
-        None,
     )
     return {
         "scope_id": entry.get("scope_id"),
@@ -555,27 +633,33 @@ def _entry_admission(entry, *, reports, job_receipts, policy):
         "check_id": entry.get("check_id"),
         "status": status,
         "origin_status": origin_status,
+        "integrity_status": integrity_status,
         "obligation_status": obligation_status,
         "admitted": admitted,
         "native_outcome": native_outcome,
         "result_ids": selected_ids,
         "facts": facts,
+        "observed_diagnostics": [fact for fact in facts if not fact.get("selected")],
         "reasons": reasons,
     }
 
 
 def _coverage_entry(entry):
-    facts = [fact for fact in entry["facts"] if fact.get("origin_status") == "verified"]
+    facts = [fact for fact in entry["facts"] if fact.get("selected")]
     return {
         "scope_id": entry["scope_id"],
         "expected_check_ref": entry["expected_check_ref"],
-        "admitted": True,
-        "origin_status": "verified",
-        "obligation_status": "satisfied",
+        "check_name": entry.get("name"),
+        "admission_status": entry["status"],
+        "admitted": entry.get("admitted") is True,
+        "origin_status": entry.get("origin_status"),
+        "integrity_status": entry.get("integrity_status"),
+        "obligation_status": entry.get("obligation_status"),
         "native_outcome": entry.get("native_outcome"),
-        "result_ids": list(entry["result_ids"]),
+        "result_ids": list(entry.get("result_ids") or ()),
         "report_refs": [fact.get("report_ref") for fact in facts],
         "job_receipt_refs": [fact.get("job_receipt_ref") for fact in facts],
+        "reasons": list(entry.get("reasons") or ()),
     }
 
 
@@ -586,14 +670,16 @@ def admit_evidence(
     reports=(),
     job_receipts=(),
     policy,
+    authority=None,
     ref_scope_id=None,
 ):
     """Admit raw evidence for one #66-C Receipt and emit T1-a coverage.
 
     ``reports`` and ``job_receipts`` are the independently obtained raw objects;
     receipt compact references alone are never accepted as raw evidence.
-    ``policy`` is the explicit trust/approval input. This function does not
-    execute or re-run a Check.
+    ``policy`` is the explicit trust/approval input. ``authority`` is the
+    separately established issuer/provenance proof; without it, no production
+    coverage is admitted. This function does not execute or re-run a Check.
     """
     try:
         reconciliation.validate_receipt(receipt)
@@ -613,6 +699,7 @@ def admit_evidence(
     ) != scope.get("expected_set_ref"):
         raise AdmissionError("admission_receipt_scope_mismatch")
     policy = _policy(policy)
+    authority = _authority(authority)
     reports = _index_reports(reports)
     job_receipts = _index_job_receipts(job_receipts)
     expected_by_ref = {item["expected_check_ref"]: item for item in scope["checks"]}
@@ -626,11 +713,12 @@ def admit_evidence(
         expected_entry = expected_by_ref.get(raw_entry.get("expected_check_ref"))
         if expected_entry is None:
             raise AdmissionError("admission_expected_entry_missing")
-        entry = _entry_admission(
+        entry = _entry_admission_v2(
             raw_entry,
             reports=reports,
             job_receipts=job_receipts,
             policy=policy,
+            authority=authority,
         )
         entry["scope_id"] = scope.get("scope_id")
         entry["resolved_expected_check_id"] = (
@@ -667,7 +755,7 @@ def admit_evidence(
         fact
         for entry in entries
         for fact in entry["facts"]
-        if fact.get("origin_status") == "verified"
+        if fact.get("integrity_status") == "verified"
     ]
     rejected_facts = [
         fact
@@ -681,7 +769,10 @@ def admit_evidence(
         for fact in entry["facts"]
         if fact.get("origin_status") == "unverified"
     ]
-    accepted = [_coverage_entry(entry) for entry in admitted_entries]
+    accepted = {
+        f"{entry['scope_id']}/{entry['expected_check_ref']}": _coverage_entry(entry)
+        for entry in entries
+    }
     summary = {
         "expected": len(entries),
         "admitted": len(admitted_entries),
@@ -702,6 +793,7 @@ def admit_evidence(
         "expected_status": scope.get("status"),
         "receipt_status": receipt.get("status"),
         "ref": scope.get("ref"),
+        "authority_ref": None if authority is None else authority["authority_ref"],
         "status": status,
         "entries": entries,
         "accepted_coverage_by_instance": accepted,
@@ -714,7 +806,7 @@ def admit_evidence(
         "required_gate": "not_evaluated",
         "limitations": [
             "receipt_is_structural_not_self_authenticating",
-            "issuer_authority_from_explicit_admission_policy",
+            "issuer_authority_requires_external_authority_proof",
             "verification_implementation_from_report_check",
             "legally_empty_expected_is_not_trusted_complete",
             "cross_run_reuse_not_evaluated",

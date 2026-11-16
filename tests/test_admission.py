@@ -250,17 +250,20 @@ def setup(
     return projection, receipt, report, job_receipt
 
 
-def policy_for(
-    *, issuer=JOB_ISSUER, implementation=IMPLEMENTATION, allowed_runner_refs=None
+def policy_for_check(
+    check_id,
+    definition_version,
+    *,
+    issuer=JOB_ISSUER,
+    implementation=IMPLEMENTATION,
+    allowed_runner_refs=None,
 ):
     policy = {
         "trusted_issuers": [copy.deepcopy(issuer)],
         "approved_implementations": [
             {
-                "check_id": "eci/hygiene/tach",
-                "definition_version": check_contract.definition_for(
-                    "tach"
-                ).definition_version,
+                "check_id": check_id,
+                "definition_version": definition_version,
                 "implementation_id": implementation["implementation_id"],
                 "implementation_version": implementation["implementation_version"],
                 "implementation_sha256": implementation["implementation_sha256"],
@@ -272,8 +275,64 @@ def policy_for(
     return policy
 
 
+def policy_for(
+    *, issuer=JOB_ISSUER, implementation=IMPLEMENTATION, allowed_runner_refs=None
+):
+    return policy_for_check(
+        "eci/hygiene/tach",
+        check_contract.definition_for("tach").definition_version,
+        issuer=issuer,
+        implementation=implementation,
+        allowed_runner_refs=allowed_runner_refs,
+    )
+
+
+def authority_for(issuer=JOB_ISSUER):
+    return {
+        "kind": "engineering-ci-evidence-authority",
+        "issuer_refs": [copy.deepcopy(issuer)],
+        "authority_ref": {
+            "name": "test-controlled-authority",
+            "version": "1",
+            "sha256": "9" * 64,
+        },
+        "verification_status": "verified",
+    }
+
+
+def admit_evidence(projection, receipt, **kwargs):
+    kwargs.setdefault("authority", authority_for())
+    return admission.admit_evidence(projection, receipt, **kwargs)
+
+
+def compact_evidence(result, report_ref, job_receipt):
+    return {
+        "result_id": result["result_id"],
+        "status": result["status"],
+        "result_origin": result["result_origin"],
+        "native_exit_code": result.get("native_exit_code"),
+        "job_ref": job_receipt["job_ref"],
+        "run_ref": job_receipt["run_ref"],
+        "attempt_ref": job_receipt["attempt_ref"],
+        "runner_ref": job_receipt["runner_ref"],
+        "report_ref": copy.deepcopy(report_ref),
+        "job_receipt_ref": reconciliation._digest(job_receipt),
+    }
+
+
+def with_observed(receipt, evidence):
+    updated = copy.deepcopy(receipt)
+    entry = updated["entries"][0]
+    entry["observed_result_ids"].append(evidence["result_id"])
+    entry["observed_results"].append(copy.deepcopy(evidence))
+    updated["receipt_ref"] = reconciliation._digest(
+        {key: value for key, value in updated.items() if key != "receipt_ref"}
+    )
+    return updated
+
+
 def admit(projection, receipt, report, job_receipt, policy):
-    return admission.admit_evidence(
+    return admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -291,10 +350,10 @@ def test_t1a_admits_real_verified_native_pass():
     assert entry["origin_status"] == "verified"
     assert entry["obligation_status"] == "satisfied"
     assert entry["admitted"] is True
-    assert (
-        result["accepted_coverage_by_instance"][0]["expected_check_ref"]
-        == (receipt["entries"][0]["expected_check_ref"])
-    )
+    key = f"{receipt['scope_id']}/{receipt['entries'][0]['expected_check_ref']}"
+    coverage = result["accepted_coverage_by_instance"][key]
+    assert coverage["expected_check_ref"] == receipt["entries"][0]["expected_check_ref"]
+    assert coverage["admission_status"] == "admitted"
     assert result["remaining_work"] == []
     assert result["verified_native_facts"][0]["native_exit_code"] == 0
 
@@ -306,14 +365,14 @@ def test_t1a_verified_native_fail_is_unsatisfied_not_accepted():
     assert entry["origin_status"] == "verified"
     assert entry["obligation_status"] == "unsatisfied"
     assert entry["admitted"] is False
-    assert result["accepted_coverage_by_instance"] == []
+    assert result["summary"]["admitted"] == 0
     assert "native_failed" in entry["reasons"]
     assert result["status"] in {"partial", "rejected", "unknown"}
 
 
 def test_t1a_missing_raw_report_is_unverified_and_remaining():
     projection, receipt, _report, job_receipt = setup()
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection, receipt, reports=[], job_receipts=[job_receipt], policy=policy_for()
     )
     entry = result["entries"][0]
@@ -329,7 +388,7 @@ def test_t1a_tampered_report_is_rejected():
     tampered["checks"][0]["native_results"][0]["status"] = "passed"
     tampered["checks"][0]["native_results"][0]["native_exit_code"] = 0
     tampered["checks"][0]["native_results"][0]["evidence"] = {"stdout": "changed"}
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[tampered],
@@ -344,7 +403,7 @@ def test_t1a_tampered_report_is_rejected():
 def test_t1a_untrusted_issuer_is_rejected():
     projection, receipt, report, job_receipt = setup()
     other_issuer = {"name": "untrusted", "version": "1", "sha256": "e" * 64}
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -364,7 +423,7 @@ def test_t1a_unapproved_implementation_rejects_coverage_not_execution_fact():
         "implementation_version": "1",
         "implementation_sha256": "f" * 64,
     }
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -388,7 +447,7 @@ def test_t1a_receipt_scope_mismatch_is_refused():
     with pytest.raises(
         admission.AdmissionError, match="admission_receipt_scope_mismatch"
     ):
-        admission.admit_evidence(
+        admit_evidence(
             projection,
             other_receipt,
             reports=[report],
@@ -400,7 +459,7 @@ def test_t1a_receipt_scope_mismatch_is_refused():
 def test_t1a_policy_requires_trusted_issuer_and_approved_implementation():
     projection, receipt, report, job_receipt = setup()
     with pytest.raises(admission.AdmissionError, match="admission_policy"):
-        admission.admit_evidence(
+        admit_evidence(
             projection,
             receipt,
             reports=[report],
@@ -412,7 +471,7 @@ def test_t1a_policy_requires_trusted_issuer_and_approved_implementation():
 
 def test_t1a_wrong_source_is_verified_but_unsatisfied():
     projection, receipt, report, job_receipt = setup(result_source=OTHER_SOURCE)
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -423,14 +482,14 @@ def test_t1a_wrong_source_is_verified_but_unsatisfied():
     assert entry["origin_status"] == "verified"
     assert entry["obligation_status"] == "unsatisfied"
     assert entry["admitted"] is False
-    assert result["accepted_coverage_by_instance"] == []
+    assert result["summary"]["admitted"] == 0
 
 
 def test_t1a_job_receipt_tamper_or_wrong_attempt_is_rejected():
     projection, receipt, report, job_receipt = setup()
     tampered = copy.deepcopy(job_receipt)
     tampered["attempt_ref"] = "attempt/2"
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -444,7 +503,7 @@ def test_t1a_job_receipt_tamper_or_wrong_attempt_is_rejected():
 
 def test_t1a_runner_outside_policy_is_rejected():
     projection, receipt, report, job_receipt = setup()
-    result = admission.admit_evidence(
+    result = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -470,7 +529,7 @@ def test_t1a_partial_admission_keeps_unrouted_remaining_work():
         resolutions=[resolution_for(tach)],
         observations=[observation_for(report, report_ref, job_receipt)],
     )
-    admitted = admission.admit_evidence(
+    admitted = admit_evidence(
         projection,
         receipt,
         reports=[report],
@@ -479,9 +538,182 @@ def test_t1a_partial_admission_keeps_unrouted_remaining_work():
     )
     assert admitted["status"] == "partial"
     assert admitted["summary"]["admitted"] == 1
-    assert len(admitted["accepted_coverage_by_instance"]) == 1
+    assert len(admitted["accepted_coverage_by_instance"]) == 2
+    assert (
+        sum(
+            item["admitted"]
+            for item in admitted["accepted_coverage_by_instance"].values()
+        )
+        == 1
+    )
     assert len(admitted["remaining_work"]) == 1
     assert (
         admitted["remaining_work"][0]["expected_check_ref"]
         == (vulture["expected_check_ref"])
     )
+
+
+def test_t1a_without_authority_does_not_admit_production_coverage():
+    projection, receipt, report, job_receipt = setup()
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        authority=None,
+    )
+    entry = result["entries"][0]
+    assert entry["origin_status"] == "unverified"
+    assert entry["admitted"] is False
+    assert result["summary"]["admitted"] == 0
+    assert result["remaining_work"]
+
+
+def test_t1a_multi_requirement_witness_is_evaluated_collectively():
+    definition = check_contract.definition_for("docs")
+    rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    required_input = {
+        "kind": "data",
+        "path": "docs/guide.md",
+        "sha256": "b" * 64,
+    }
+    inventory = check_contract.native_result(
+        definition,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="inventory",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("git/ls-files"),
+        evidence={"stdout": "docs/guide.md"},
+        runner_ref=RUNNER_REF,
+    )
+    links = check_contract.native_result(
+        definition,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="links",
+        native_exit_code=0,
+        rule_ref=rule,
+        tool=check_contract.tool_ref("lychee/docs"),
+        input_refs=[
+            {"kind": "check_result", "result_id": inventory["result_id"]},
+            required_input,
+        ],
+        evidence={"stdout": "ok"},
+        runner_ref=RUNNER_REF,
+    )
+    entry = make_entry("docs", rule_ref=rule, input_refs=[required_input])
+    projection = make_projection(entry)
+    routing = routing_for(entry)
+    resolution = {
+        "expected_check_ref": entry["expected_check_ref"],
+        "rule_ref": copy.deepcopy(rule),
+        "source_ref": copy.deepcopy(STRONG_SOURCE),
+        "baseline_ref": None,
+        "rule_source_ref": {"name": "docs-rule", "version": "1", "sha256": "7" * 64},
+        "source_receipt_ref": {
+            "name": "docs-source",
+            "version": "1",
+            "sha256": "8" * 64,
+        },
+    }
+    report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "reconciled",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [inventory, links],
+            }
+        ],
+    }
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[
+            {
+                "job_ref": "job-1",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": report,
+                "report_ref": report_ref,
+                "native_results": [inventory, links],
+                "job_receipt": job_receipt,
+            }
+        ],
+    )
+    assert set(receipt["entries"][0]["selected_result_ids"]) == {
+        inventory["result_id"],
+        links["result_id"],
+    }
+    admitted = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for_check(definition.check_id, definition.definition_version),
+    )
+    assert admitted["status"] == "admitted"
+    assert admitted["entries"][0]["admitted"] is True
+    assert set(admitted["entries"][0]["result_ids"]) == {
+        inventory["result_id"],
+        links["result_id"],
+    }
+
+
+def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
+    projection, receipt, report, job_receipt = setup()
+    bad_result = native(status="failed")
+    bad_report = report_for(bad_result)
+    bad_report_ref = report_ref_for(bad_report)
+    bad_job_receipt = job_receipt_for(bad_report_ref)
+    bad_job_receipt["job_ref"] = "job-2"
+    bad_job_receipt["run_ref"] = "run/2"
+    bad_job_receipt["attempt_ref"] = "attempt/2"
+    evidence = compact_evidence(bad_result, bad_report_ref, bad_job_receipt)
+    updated = with_observed(receipt, evidence)
+    result = admit_evidence(
+        projection,
+        updated,
+        reports=[report, bad_report],
+        job_receipts=[job_receipt, bad_job_receipt],
+        policy=policy_for(),
+    )
+    entry = result["entries"][0]
+    assert entry["admitted"] is True
+    assert entry["origin_status"] == "verified"
+    assert entry["observed_diagnostics"]
+    assert result["summary"]["admitted"] == 1
+
+
+def test_t1a_shared_report_contamination_blocks_selected_witness():
+    projection, receipt, report, job_receipt = setup()
+    bad_result = native(status="failed")
+    bad_report = report_for(bad_result)
+    # Deliberately point the bad observation at the selected report identity.
+    evidence = compact_evidence(
+        bad_result,
+        receipt["entries"][0]["selected_results"][0]["report_ref"],
+        job_receipt,
+    )
+    updated = with_observed(receipt, evidence)
+    result = admit_evidence(
+        projection,
+        updated,
+        reports=[report, bad_report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+    )
+    entry = result["entries"][0]
+    assert entry["admitted"] is False
+    assert entry["origin_status"] == "rejected"
+    assert "selected_witness_contaminated" in entry["reasons"]
