@@ -129,7 +129,7 @@ def make_projection(entry):
     return projection
 
 
-def native(*, status="passed", source=STRONG_SOURCE, rule=RULE_TACH):
+def native(*, status="passed", source=STRONG_SOURCE, rule=RULE_TACH, profile_ref=None):
     definition = check_contract.definition_for("tach")
     exit_code = 0 if status == "passed" else 1 if status == "failed" else None
     return check_contract.native_result(
@@ -142,6 +142,7 @@ def native(*, status="passed", source=STRONG_SOURCE, rule=RULE_TACH):
         evidence={"stdout": ""},
         rule_ref=copy.deepcopy(rule),
         runner_ref=RUNNER_REF,
+        profile_ref=copy.deepcopy(profile_ref),
         tool=check_contract.tool_ref("tach/check"),
     )
 
@@ -287,17 +288,14 @@ def policy_for(
     )
 
 
-def authority_for(issuer=JOB_ISSUER):
-    return {
-        "kind": "engineering-ci-evidence-authority",
-        "issuer_refs": [copy.deepcopy(issuer)],
-        "authority_ref": {
-            "name": "test-controlled-authority",
-            "version": "1",
-            "sha256": "9" * 64,
-        },
-        "verification_status": "verified",
-    }
+def authority_for(issuer=JOB_ISSUER, implementation=IMPLEMENTATION):
+    def verify(context):
+        return (
+            context["issuer_ref"] == issuer
+            and context["implementation"] == implementation
+        )
+
+    return verify
 
 
 def admit_evidence(projection, receipt, **kwargs):
@@ -567,7 +565,40 @@ def test_t1a_without_authority_does_not_admit_production_coverage():
     assert entry["origin_status"] == "unverified"
     assert entry["admitted"] is False
     assert result["summary"]["admitted"] == 0
+    assert result["verified_native_facts"] == []
+    assert result["integrity_validated_native_facts"]
     assert result["remaining_work"]
+
+
+def test_t1a_arbitrary_authority_json_is_not_a_trust_boundary():
+    projection, receipt, report, job_receipt = setup()
+    with pytest.raises(
+        admission.AdmissionError, match="admission_authority_verifier_required"
+    ):
+        admission.admit_evidence(
+            projection,
+            receipt,
+            reports=[report],
+            job_receipts=[job_receipt],
+            policy=policy_for(),
+            authority={"verification_status": "verified"},
+        )
+
+
+def test_t1a_authority_verifier_can_reject_a_matching_fixture():
+    projection, receipt, report, job_receipt = setup()
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        authority=lambda context: False,
+    )
+    entry = result["entries"][0]
+    assert entry["origin_status"] == "rejected"
+    assert entry["admitted"] is False
+    assert result["summary"]["admitted"] == 0
 
 
 def test_t1a_multi_requirement_witness_is_evaluated_collectively():
@@ -675,10 +706,9 @@ def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
     bad_result = native(status="failed")
     bad_report = report_for(bad_result)
     bad_report_ref = report_ref_for(bad_report)
+    # Same Job/Run/Attempt labels as the selected observation, but an
+    # independent Report and Job Receipt.
     bad_job_receipt = job_receipt_for(bad_report_ref)
-    bad_job_receipt["job_ref"] = "job-2"
-    bad_job_receipt["run_ref"] = "run/2"
-    bad_job_receipt["attempt_ref"] = "attempt/2"
     evidence = compact_evidence(bad_result, bad_report_ref, bad_job_receipt)
     updated = with_observed(receipt, evidence)
     result = admit_evidence(
@@ -717,3 +747,148 @@ def test_t1a_shared_report_contamination_blocks_selected_witness():
     assert entry["admitted"] is False
     assert entry["origin_status"] == "rejected"
     assert "selected_witness_contaminated" in entry["reasons"]
+
+
+def test_t1a_schema_v2_same_name_refs_are_separate_instances():
+    from test_reconciliation import (
+        EVENT as V2_EVENT,
+    )
+    from test_reconciliation import (
+        HYGIENE_RULE,
+        PROFILE,
+        PROFILE_REF,
+        PROFILE_SOURCE,
+        SOURCES_RULE,
+    )
+    from test_reconciliation import (
+        SELECTION_RULE as V2_RULE,
+    )
+    from test_reconciliation import (
+        WEAK_SOURCE as V2_SOURCE,
+    )
+    from test_reconciliation import (
+        make_entry as fixture_entry,
+    )
+
+    other_event = {**V2_EVENT, "head_ref": "refs/heads/topic2"}
+    first = fixture_entry(
+        "tach",
+        rule_ref=RULE_TACH,
+        source=V2_SOURCE,
+        event=V2_EVENT,
+        selection_rule=V2_RULE,
+        profile_ref=PROFILE_REF,
+    )
+    second = fixture_entry(
+        "tach",
+        rule_ref=RULE_TACH,
+        source=OTHER_SOURCE,
+        event=other_event,
+        selection_rule=V2_RULE,
+        profile_ref=PROFILE_REF,
+    )
+
+    def scope_for(event, source):
+        return expected_checks.scope_identity(
+            None,
+            PROFILE_REF,
+            PROFILE_SOURCE,
+            event,
+            source,
+            V2_RULE,
+            HYGIENE_RULE,
+            SOURCES_RULE,
+            profile_sha256=PROFILE["profile_sha256"],
+            evaluated_at=PROFILE["evaluated_at"],
+        )
+
+    def ref_for(entry, event, source):
+        return {
+            "source_ref": "refs/heads/topic",
+            "local_ref": "refs/heads/topic",
+            "remote_ref": "origin",
+            "ref_action": "update",
+            "force_push": False,
+            "baseline_status": "ok",
+            "event_ref": copy.deepcopy(event),
+            "source": copy.deepcopy(source),
+            "scope_id": scope_for(event, source),
+            "expected_set_ref": expected_checks.set_identity(
+                [entry], (), schema_version=2
+            ),
+            "checks": [entry],
+            "non_check_obligations": [],
+            "status": "partial",
+        }
+
+    first_ref = ref_for(first, V2_EVENT, V2_SOURCE)
+    second_ref = ref_for(second, other_event, OTHER_SOURCE)
+    projection = {
+        "kind": expected_checks.EXPECTED_KIND,
+        "schema_version": 2,
+        "projection_source": "effective_profile",
+        "status": "partial",
+        "reason": "test",
+        "effective_profile": copy.deepcopy(PROFILE),
+        "trusted_admission_status": "not_evaluated",
+        "hygiene_rule_ref": copy.deepcopy(HYGIENE_RULE),
+        "sources_rule_ref": copy.deepcopy(SOURCES_RULE),
+        "selection_rule_ref": copy.deepcopy(V2_RULE),
+        "event_ref": copy.deepcopy(V2_EVENT),
+        "source_ref": copy.deepcopy(V2_SOURCE),
+        "checks": [],
+        "non_check_obligations": [],
+        "consumer": None,
+        "profile_ref": copy.deepcopy(PROFILE_REF),
+        "profile_source": PROFILE_SOURCE,
+        "consumer_completeness": "per_ref_container_only",
+        "per_ref": [first_ref, second_ref],
+    }
+    result = native(profile_ref=PROFILE_REF)
+    report = report_for(result)
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    first_receipt = reconciliation.reconcile_expected_results(
+        projection,
+        ref_scope_id=first_ref["scope_id"],
+        routing=[routing_for(first)],
+        resolutions=[resolution_for(first)],
+        observations=[observation_for(report, report_ref, job_receipt)],
+    )
+    second_receipt = reconciliation.reconcile_expected_results(
+        projection,
+        ref_scope_id=second_ref["scope_id"],
+        routing=[],
+        resolutions=[],
+        observations=[],
+    )
+    first_result = admit_evidence(
+        projection,
+        first_receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        ref_scope_id=first_ref["scope_id"],
+    )
+    second_result = admit_evidence(
+        projection,
+        second_receipt,
+        reports=[],
+        job_receipts=[],
+        policy=policy_for(),
+        ref_scope_id=second_ref["scope_id"],
+    )
+    assert first_result["status"] == "admitted", (
+        first_result["entries"][0]["reasons"],
+        first_result["entries"][0]["origin_status"],
+        first_result["entries"][0]["integrity_status"],
+        first_result["entries"][0].get("facts"),
+    )
+    assert first_result["entries"][0]["admitted"] is True
+    assert second_result["entries"][0]["admitted"] is False
+    first_key = f"{first_ref['scope_id']}/{first['expected_check_ref']}"
+    second_key = f"{second_ref['scope_id']}/{second['expected_check_ref']}"
+    assert first_key in first_result["accepted_coverage_by_instance"]
+    assert second_key not in first_result["accepted_coverage_by_instance"]
+    assert second_key in second_result["accepted_coverage_by_instance"]
+    assert second_key not in first_result["accepted_coverage_by_instance"]

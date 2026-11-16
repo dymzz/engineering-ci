@@ -31,10 +31,6 @@ from . import check_contract, reconciliation
 
 ADMISSION_KIND = "engineering-ci-evidence-admission"
 ADMISSION_VERSION = 1
-AUTHORITY_KIND = "engineering-ci-evidence-authority"
-AUTHORITY_KEYS = frozenset(
-    {"kind", "issuer_refs", "authority_ref", "verification_status"}
-)
 ORIGIN_STATUSES = frozenset({"verified", "rejected", "unverified"})
 OBLIGATION_STATUSES = frozenset(
     {"satisfied", "unsatisfied", "unknown", "not_applicable"}
@@ -109,26 +105,11 @@ def _evidence_ref(value, code):
 
 
 def _authority(value):
-    """Validate an externally supplied provenance proof.
-
-    The policy allowlist alone is not treated as issuer authentication. This
-    object is deliberately separate so a real transport can provide it later;
-    callers that only configure a policy get no production coverage.
-    """
+    """Require an integration-supplied verifier, not a JSON trust claim."""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != AUTHORITY_KEYS:
-        raise AdmissionError("admission_authority_invalid")
-    if value.get("kind") != AUTHORITY_KIND:
-        raise AdmissionError("admission_authority_invalid")
-    issuer_refs = value.get("issuer_refs")
-    if not isinstance(issuer_refs, (list, tuple)) or not issuer_refs:
-        raise AdmissionError("admission_authority_invalid")
-    for issuer in issuer_refs:
-        _evidence_ref(issuer, "admission_authority_invalid")
-    _evidence_ref(value.get("authority_ref"), "admission_authority_invalid")
-    if value.get("verification_status") != "verified":
-        raise AdmissionError("admission_authority_invalid")
+    if not callable(value):
+        raise AdmissionError("admission_authority_verifier_required")
     return value
 
 
@@ -364,13 +345,27 @@ def _authenticate_evidence(
     issuer_ref = job_receipt.get("issuer_ref")
     if authority is None:
         issuer_status = "unverified"
-        issuer_reason = "authority_missing"
-    elif (
-        issuer_ref not in authority["issuer_refs"]
-        or issuer_ref not in policy["trusted_issuers"]
-    ):
-        raise _EvidenceFailure("rejected", "issuer_untrusted")
+        issuer_reason = "authority_verifier_missing"
     else:
+        context = {
+            "issuer_ref": issuer_ref,
+            "report_ref": report_ref,
+            "job_receipt_ref": receipt_ref,
+            "job_ref": job_receipt["job_ref"],
+            "run_ref": job_receipt["run_ref"],
+            "attempt_ref": job_receipt["attempt_ref"],
+            "runner_ref": job_receipt["runner_ref"],
+            "result_id": result_id,
+            "implementation": copy.deepcopy(implementation),
+        }
+        try:
+            verified = authority(context)
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            raise _EvidenceFailure("rejected", "authority_verifier_error") from None
+        if verified is not True:
+            raise _EvidenceFailure("rejected", "authority_rejected")
+        if issuer_ref not in policy["trusted_issuers"]:
+            raise _EvidenceFailure("rejected", "issuer_untrusted")
         issuer_status = "verified"
         issuer_reason = None
     approved = _approved_implementation(policy, result["check"], implementation)
@@ -414,8 +409,8 @@ def _same_observed_scope(left, right):
         "sha256"
     ):
         return True
-    keys = ("job_ref", "run_ref", "attempt_ref")
-    return all(left.get(key) and left.get(key) == right.get(key) for key in keys)
+    left_receipt = left.get("job_receipt_ref")
+    return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
 def _entry_admission_v2(entry, *, reports, job_receipts, policy, authority):
@@ -751,11 +746,17 @@ def admit_evidence(
         for entry in applicable
         if not entry["admitted"]
     ]
-    verified_facts = [
+    integrity_facts = [
         fact
         for entry in entries
         for fact in entry["facts"]
         if fact.get("integrity_status") == "verified"
+    ]
+    verified_facts = [
+        fact
+        for entry in entries
+        for fact in entry["facts"]
+        if fact.get("origin_status") == "verified"
     ]
     rejected_facts = [
         fact
@@ -778,6 +779,7 @@ def admit_evidence(
         "admitted": len(admitted_entries),
         "remaining": len(remaining_work),
         "verified_native_facts": len(verified_facts),
+        "integrity_validated_native_facts": len(integrity_facts),
         "rejected_evidence": len(rejected_facts),
         "unverified_evidence": len(unverified_facts),
         "not_applicable": sum(
@@ -793,12 +795,12 @@ def admit_evidence(
         "expected_status": scope.get("status"),
         "receipt_status": receipt.get("status"),
         "ref": scope.get("ref"),
-        "authority_ref": None if authority is None else authority["authority_ref"],
         "status": status,
         "entries": entries,
         "accepted_coverage_by_instance": accepted,
         "remaining_work": remaining_work,
         "verified_native_facts": verified_facts,
+        "integrity_validated_native_facts": integrity_facts,
         "rejected_evidence": rejected_facts,
         "unverified_evidence": unverified_facts,
         "summary": summary,

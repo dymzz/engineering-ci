@@ -15,8 +15,10 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - 独立取得的 Raw Execution Report 与 Job/Attempt Receipt；
 - Report check 中的 `verification_implementation` 身份；
 - 显式 Admission Policy（issuer allowlist + 已批准 Check/definition 实现摘要）；
-- **独立的 `authority` provenance proof**（issuer refs、authority ref、verification
-  status）。Policy 本身不认证 issuer；没有 `authority` 时不会产生生产覆盖率。
+- **集成方提供的 `authority` verifier callable**，接收 issuer、Report/Job Receipt、
+  Job/Run/Attempt、Result 与 `verification_implementation` 上下文并返回最终验证结果。
+  任意 JSON `{"verification_status":"verified"}` 不是信任边界；没有 verifier 时不产生
+  生产覆盖率。
 
 它**不**执行 Check、不重算 Expected、不修改 #66-C Receipt、不生成新的 Native Result、
 不判定 #61 Required/Release。
@@ -32,16 +34,18 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 
 - `integrity_status`: raw Report digest/membership、Job Receipt digest/identity 等
   raw-object 一致性。
-- `issuer_status`: 由独立 `authority` proof 认证；只有 policy allowlist 时为
-  `unverified`，不得当成生产受信。
-- `implementation_status`: `approved` / `unapproved` / `unverified`。
+- `issuer_status`: 由集成方 authority verifier 对具体 Report/Job Receipt/Run/Attempt/
+  implementation 上下文验证；只有 policy allowlist 时为 `unverified`，不得当成生产受信。
+- `implementation_status`: `approved` / `unapproved` / `unverified`。批准摘要最终必须由
+  verifier 绑定到真实 executable/checker；Report 内字符串本身只是待验证输入。
 - `origin_status`: 只有 integrity 与 issuer 都已证明时才为 `verified`；Raw FAIL 可保留
   真实 native fact，但不会成为成功覆盖。
 - `obligation_status`: `satisfied` / `unsatisfied` / `unknown` / `not_applicable`。
 - `admitted`: 仅当完整 selected Witness 集合被 #52 一次性选中、全部成员通过
   integrity/authority/implementation 检查、且均为原生 PASS。
-- `verified_native_facts`, `rejected_evidence`, `unverified_evidence`,
-  `remaining_work[]` 分开保存。
+- `verified_native_facts` 只含 authenticated origin（`origin_status=verified`）；
+  `integrity_validated_native_facts` 另存 raw-object 验证通过但 origin 未认证的事实。
+  `rejected_evidence`, `unverified_evidence`, `remaining_work[]` 分开保存。
 
 语义不变量：
 
@@ -54,8 +58,9 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - 未批准实现（例如 PR 自改 Checker 固定 PASS）保留真实执行事实为 `verified`，但义务为
   `unsatisfied`，原因是 `verification_implementation_unapproved`。
 - 缺失原始 Report/Receipt 为 `unverified`，不是 clean。
-- 未选中（unrelated）的坏 observation 只进入 diagnostics；只有共享同一 Report/
-  Job/Run/Attempt 的坏事实才污染 selected witness。
+- 未选中（unrelated）的坏 observation 只进入 diagnostics；只有共享同一具体
+  Report/Job Receipt（或其他实际共同依赖）的坏事实才污染 selected witness；仅共享
+  Job/Run/Attempt 标签不构成污染。
 - 合法空 Expected 不会被自动升级为完整/受信 PASS。
 
 ## 信任边界
