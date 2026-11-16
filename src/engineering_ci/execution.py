@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import (
     check_contract,
+    expected_checks,
     hygiene,
     plan_contract,
     security_policy,
@@ -1420,6 +1421,88 @@ def _baseline_reference(plan):
     return ref
 
 
+def _profile_reference(plan, *, profile_ref=None):
+    """Extract the bound, authority-verified EffectiveProfile ref without inventing one."""
+    if not isinstance(plan, dict):
+        return None
+    inputs = plan.get("inputs") or {}
+    prof_input = inputs.get("effective_profile")
+    gen_sha = (plan.get("generator") or {}).get("effective_profile_sha256")
+    cfg_input = inputs.get("config")
+    sel_cfg = None
+    if isinstance(cfg_input, dict) and isinstance(cfg_input.get("normalized"), dict):
+        try:
+            sel_cfg = selection.config_from_identity(cfg_input)
+        except selection.SelectionError:
+            return None
+
+    expected = plan.get("expected_checks")
+    if isinstance(expected, dict):
+        if expected.get("schema_version") != expected_checks.EXPECTED_V2:
+            return None
+        if expected.get("projection_source") != "effective_profile":
+            return None
+        if expected.get("authority_status") != "verified":
+            return None
+        profile = expected.get("effective_profile")
+        if (
+            not isinstance(profile, dict)
+            or profile.get("authority_verified") is not True
+        ):
+            return None
+        ref = expected.get("profile_ref")
+        if not isinstance(ref, dict) or profile.get("profile_ref") != ref:
+            return None
+        profile_sha = profile.get("profile_sha256")
+        if (
+            not isinstance(prof_input, dict)
+            or not isinstance(profile_sha, str)
+            or not profile_sha
+            or (prof_input.get("effective_profile_ref") or {}).get("sha256")
+            != profile_sha
+            or prof_input.get("profile_ref") != ref
+            or prof_input.get("authority_verified") is not True
+            or gen_sha != profile_sha
+        ):
+            return None
+        try:
+            validated = expected_checks.validate_effective_profile(
+                profile, git=plan.get("git")
+            )
+            proven = expected_checks._verify_profile_authority(
+                validated,
+                selection_rule=expected.get("selection_rule_ref"),
+                hygiene_rule=expected.get("hygiene_rule_ref"),
+                sources_rule=expected.get("sources_rule_ref"),
+                config_policy=(
+                    sel_cfg.effective_profile_policy if sel_cfg is not None else None
+                ),
+            )
+        except expected_checks.ExpectedError:
+            return None
+        if not proven:
+            return None
+        return dict(validated["profile_ref"])
+
+    # Narrowed Dagger host adapters drop plan["expected_checks"] after
+    # validate_plan(full_plan) already verified authority; only accept an
+    # explicit profile_ref when Plan inputs and config policy prove it.
+    if (
+        profile_ref is None
+        or not isinstance(prof_input, dict)
+        or prof_input.get("authority_verified") is not True
+        or prof_input.get("profile_ref") != profile_ref
+        or not isinstance(prof_input.get("profile_sha256"), str)
+        or gen_sha != prof_input.get("profile_sha256")
+        or sel_cfg is None
+    ):
+        return None
+    policy = sel_cfg.effective_profile_policy
+    if not isinstance(policy, dict) or policy.get("profile_ref") != profile_ref:
+        return None
+    return dict(profile_ref)
+
+
 def _input_refs(rule):
     if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
         return [{"kind": "config", "path": rule["path"], "sha256": rule["sha256"]}]
@@ -1516,6 +1599,7 @@ def _inventory_result(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
@@ -1551,6 +1635,7 @@ def _inventory_result(
         result_instance=f"{run_instance}:{origin}:{index}:{name}:{access_id}",
         input_refs=[],
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_tool_observation(definition, access_id, executable=inventory.get("tool")),
         evidence=evidence,
         baseline_ref=baseline,
@@ -1569,6 +1654,7 @@ def _native_results(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
@@ -1608,6 +1694,7 @@ def _native_results(
             origin=origin,
             run_instance=run_instance,
             index=index,
+            profile_ref=profile_ref,
             runner_ref=resolved_runner,
             execution_context=execution_context,
             parent_execution_context=parent_execution_context,
@@ -1631,6 +1718,7 @@ def _native_results(
             result_instance=instance(links_access),
             input_refs=links_inputs,
             rule_ref=rule,
+            profile_ref=profile_ref,
             tool=_observed_tool(definition, links_access, item),
             evidence=with_context(_check_evidence(item, name)),
             baseline_ref=baseline,
@@ -1664,6 +1752,7 @@ def _native_results(
         result_instance=instance(access_id),
         input_refs=[*inputs, *extra_inputs],
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_observed_tool(definition, access_id, item) if requirement else None,
         evidence=with_context(_check_evidence(item, name)),
         baseline_ref=baseline,
@@ -1672,9 +1761,12 @@ def _native_results(
     return [native]
 
 
-def _decorate_checks(plan, checks, *, execution_context, run_instance):
+def _decorate_checks(
+    plan, checks, *, execution_context, run_instance, profile_ref=None
+):
     source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
+    profile = _profile_reference(plan, profile_ref=profile_ref)
     origin, runner_ref, parent_ctx = _result_origin_and_runner(execution_context)
     for index, item in enumerate(checks):
         name = item.get("name")
@@ -1712,6 +1804,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                         origin=origin,
                         run_instance=run_instance,
                         index=index,
+                        profile_ref=profile,
                         runner_ref=runner_ref,
                         execution_context=execution_context,
                         parent_execution_context=parent_ctx,
@@ -1751,6 +1844,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 origin=origin,
                 run_instance=run_instance,
                 index=index,
+                profile_ref=profile,
                 runner_ref=runner_ref,
                 execution_context=execution_context,
                 parent_execution_context=parent_ctx,
@@ -1800,6 +1894,7 @@ def run_host_check(
     artifact_paths=(),
     generated_input_refs=(),
     shared_cache=None,
+    profile_ref=None,
 ):
     """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
@@ -1859,7 +1954,11 @@ def run_host_check(
             }
         ]
     decorated = _decorate_checks(
-        plan, raw, execution_context=execution_context, run_instance=run_instance
+        plan,
+        raw,
+        execution_context=execution_context,
+        run_instance=run_instance,
+        profile_ref=profile_ref,
     )
     return decorated[0]
 
@@ -1892,6 +1991,7 @@ def _execute_with_dependencies(
     run_instance,
     expected_tree,
     report,
+    profile_ref=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -2064,6 +2164,7 @@ def _execute_with_dependencies(
                     blocked_by,
                     execution_context=execution_context,
                     run_instance=run_instance,
+                    profile_ref=profile_ref,
                 )
             elif files:
                 temporary, consumer_root = build_consumer_view(root, files)
@@ -2082,6 +2183,7 @@ def _execute_with_dependencies(
                         artifact_paths=artifact_target_paths(files),
                         generated_input_refs=generated_refs,
                         shared_cache=script_cache,
+                        profile_ref=profile_ref,
                     )
                 finally:
                     temporary.cleanup()
@@ -2098,6 +2200,7 @@ def _execute_with_dependencies(
                     execution_context=execution_context,
                     run_instance=run_instance,
                     shared_cache=script_cache,
+                    profile_ref=profile_ref,
                 )
             check_cache[name] = entry
             return entry
@@ -2229,6 +2332,7 @@ def _execute_with_dependencies(
                 omitted,
                 execution_context=execution_context,
                 run_instance=run_instance,
+                profile_ref=profile_ref,
             )
         )
     report["checks"] = checks_out
@@ -2250,13 +2354,22 @@ def _execute_with_dependencies(
 
 
 def _decorated_blocked_check(
-    plan, name, selected_status, reason, blocked_by, *, execution_context, run_instance
+    plan,
+    name,
+    selected_status,
+    reason,
+    blocked_by,
+    *,
+    execution_context,
+    run_instance,
+    profile_ref=None,
 ):
     return _decorate_checks(
         plan,
         [_blocked_consumer_entry(name, selected_status, reason, blocked_by)],
         execution_context=execution_context,
         run_instance=run_instance,
+        profile_ref=profile_ref,
     )[0]
 
 
@@ -2441,6 +2554,7 @@ def execute(
     execution_context="host",
     runner=None,
     run_instance=None,
+    profile_ref=None,
 ):
     try:
         validate_plan(plan)
@@ -2523,6 +2637,7 @@ def execute(
             run_instance=run_instance,
             expected_tree=expected_tree,
             report=report,
+            profile_ref=profile_ref,
         )
         if early is not None:
             return early
@@ -2621,6 +2736,7 @@ def execute(
         native_checks + remaining,
         execution_context=execution_context,
         run_instance=run_instance,
+        profile_ref=profile_ref,
     )
     prereq_results, _ = _run_prerequisites(
         prerequisites,

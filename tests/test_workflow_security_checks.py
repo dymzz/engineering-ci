@@ -12,6 +12,7 @@ from engineering_ci import (
     execution,
     expected_checks,
     hygiene,
+    reconciliation,
     selection,
     workflow_analysis,
 )
@@ -1389,3 +1390,477 @@ def test_scoped_execution_scans_and_reports_only_selected_inputs(tmp_path):
         ".github/workflows/a.yml" in c and ".github/workflows/b.yml" not in c
         for c in zz_scans
     )
+
+
+def test_profile_to_native_result_to_expected_strict_binding(tmp_path):
+    from test_reconciliation import (
+        ATTEMPT_QUALIFICATION_REF,
+        ATTEMPT_REF,
+        BASELINE_SOURCE_REF,
+        JOB_ISSUER_REF,
+        RULE_SOURCE_REF,
+        RUN_REF,
+        RUNNER_REF,
+        SOURCE_RECEIPT_REF,
+        report_ref_for,
+    )
+
+    # Positive E2E: Authority-verified EffectiveProfile v2 -> Plan/CheckScope/Expected ->
+    # real native execution (whitespace + actionlint + shellcheck + workflow_shellcheck + zizmor) ->
+    # evaluate_expected_satisfaction & #104 reconcile_expected_results.
+    repo, _ = _init_repo(
+        tmp_path / "verified",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/ok.sh": '#!/bin/sh\necho "clean"\n'},
+    )
+    declared = [
+        "whitespace",
+        "actionlint",
+        "shellcheck",
+        "workflow_shellcheck",
+        "zizmor",
+    ]
+    prof_ref_v1 = check_contract.profile_ref("eci/default", "1.0.0")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref_v1,
+        profile_revision="rev-1",
+        approval_source="governance-signed",
+        effective_at="2026-11-15T00:00:00Z",
+        evaluated_at="2026-11-15T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    binding = profile["approval_binding"]
+    cfg_path = repo / "ci-selection.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8", newline="\n")
+        + f"""
+[effective_profile]
+profile_ref = {{ name = "{prof_ref_v1["name"]}", version = "{prof_ref_v1["version"]}" }}
+profile_revision = "{profile["profile_revision"]}"
+approval_source = "{binding["approval_source"]}"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "{profile["effective_at"]}"
+declared_checks = {json.dumps(declared)}
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo, "add", "ci-selection.toml")
+    _git(repo, "commit", "-q", "-m", "bind effective profile policy")
+
+    plan_v2, exp_v2 = _build_plan_and_expected(
+        repo,
+        [".github/workflows/ci.yml", "scripts/ok.sh"],
+        effective_profile=profile,
+    )
+    assert exp_v2["schema_version"] == 2
+    assert exp_v2["authority_status"] == "verified"
+    assert exp_v2["status"] == "complete"
+
+    report = execution.execute(plan_v2, root=repo)
+    assert report["status"] == "passed", report
+    by_name = {entry["name"]: entry for entry in report["checks"]}
+
+    # Common Execution Producer binds verified profile_ref onto every Check family
+    # while keeping Rule, Source, and Input identities intact.
+    for name in declared:
+        nr = by_name[name]["native_result"]
+        assert nr["check"]["profile_ref"] == prof_ref_v1
+        assert nr["check"]["rule_ref"]["sha256"]
+        assert nr["source_ref"]["binding_status"] == "content_digest"
+        if name in {"actionlint", "workflow_shellcheck", "zizmor"}:
+            assert {"kind": "changed_path", "path": ".github/workflows/ci.yml"} in nr[
+                "input_refs"
+            ]
+        elif name == "shellcheck":
+            assert {"kind": "changed_path", "path": "scripts/ok.sh"} in nr["input_refs"]
+
+    # Closure-scoped Expected satisfaction + #104 Reconciliation using actual executed results.
+    exp_by_name = {entry["name"]: entry for entry in exp_v2["checks"]}
+    al_nr = by_name["actionlint"]["native_result"]
+    closure_source = {
+        **al_nr["source_ref"],
+        "scope_kind": "check_input_closure",
+    }
+    strict_al = {
+        "check_id": al_nr["check"]["check_id"],
+        "definition_version": al_nr["check"]["definition_version"],
+        "rule_ref": al_nr["check"]["rule_ref"],
+        "profile_ref": exp_by_name["actionlint"]["profile_ref"],
+        "source_ref": closure_source,
+        "input_refs": al_nr["input_refs"],
+    }
+    # Actual unmodified host worktree result matches profile/rule/input identities under
+    # #52 result_matches_expected when compared against worktree source_ref, and refuses
+    # a mismatched profile_ref.
+    assert check_contract.result_matches_expected(
+        al_nr,
+        {**strict_al, "source_ref": al_nr["source_ref"]},
+    )
+    assert not check_contract.result_matches_expected(
+        al_nr,
+        {
+            **strict_al,
+            "source_ref": al_nr["source_ref"],
+            "profile_ref": check_contract.profile_ref("eci/default", "2.0.0"),
+        },
+    )
+
+    # Full #52 evaluate_expected_satisfaction + #104 reconcile_expected_results closure proof.
+    closure_results_by_name = {}
+    resolutions = []
+    routings = []
+    all_closure_results = []
+    for name in declared:
+        orig_nr = by_name[name]["native_result"]
+        entry = exp_by_name[name]
+        defn = check_contract.definition_for(name)
+        closed_nr = check_contract.native_result(
+            defn,
+            source=closure_source,
+            status=orig_nr["status"],
+            result_origin=orig_nr["result_origin"],
+            result_instance=orig_nr["result_instance"],
+            native_exit_code=orig_nr["native_exit_code"],
+            input_refs=orig_nr["input_refs"],
+            coverage=orig_nr.get("coverage"),
+            rule_ref=orig_nr["check"]["rule_ref"],
+            profile_ref=orig_nr["check"]["profile_ref"],
+            evidence=orig_nr["evidence"],
+            runner_ref=RUNNER_REF,
+            baseline_ref=orig_nr.get("baseline_ref"),
+            tool=orig_nr.get("tool"),
+        )
+        closure_results_by_name[name] = closed_nr
+        all_closure_results.append(closed_nr)
+        res_item = {
+            "expected_check_ref": entry["expected_check_ref"],
+            "rule_ref": orig_nr["check"]["rule_ref"],
+            "source_ref": closure_source,
+            "baseline_ref": orig_nr.get("baseline_ref"),
+            "input_refs": orig_nr["input_refs"],
+            "rule_source_ref": dict(RULE_SOURCE_REF),
+            "source_receipt_ref": dict(SOURCE_RECEIPT_REF),
+        }
+        if orig_nr.get("baseline_ref") is not None:
+            res_item["baseline_source_ref"] = dict(BASELINE_SOURCE_REF)
+        resolutions.append(res_item)
+        routings.append(
+            {
+                "expected_check_ref": entry["expected_check_ref"],
+                "job_refs": ["job-1"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-1",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": RUNNER_REF,
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                    }
+                ],
+                "mapping_status": "routed",
+                "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
+                "effective_config_ref": {"name": "hook-job", "version": "1"},
+                "reason": None,
+            }
+        )
+
+    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
+        nr_w = closure_results_by_name[wf_check]
+        sat = check_contract.evaluate_expected_satisfaction(
+            [nr_w],
+            {
+                "check_id": nr_w["check"]["check_id"],
+                "definition_version": nr_w["check"]["definition_version"],
+                "rule_ref": nr_w["check"]["rule_ref"],
+                "profile_ref": exp_by_name[wf_check]["profile_ref"],
+                "source_ref": closure_source,
+                "input_refs": nr_w["input_refs"],
+            },
+        )
+        assert sat["status"] == "satisfied", (wf_check, sat)
+
+    rec_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [{"name": "reconciled", "native_results": all_closure_results}],
+    }
+    rec_report_ref = report_ref_for(rec_report)
+    rec_observation = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report": rec_report,
+        "report_ref": rec_report_ref,
+        "native_results": all_closure_results,
+        "job_receipt": {
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": RUNNER_REF,
+            "report_ref": rec_report_ref,
+            "issuer_ref": dict(JOB_ISSUER_REF),
+            "verification_status": "upstream_verified",
+        },
+    }
+    matched_receipt = reconciliation.reconcile_expected_results(
+        exp_v2,
+        routing=routings,
+        resolutions=resolutions,
+        observations=[rec_observation],
+    )
+    matched_by_name = {item["name"]: item for item in matched_receipt["entries"]}
+    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
+        assert matched_by_name[wf_check]["binding_status"] == "matched", (
+            wf_check,
+            matched_by_name[wf_check],
+        )
+    assert matched_receipt["summary"]["matched"] >= 4
+
+    # Negative 1: Profile without [effective_profile] policy proof (authority_status == "unverified") ->
+    # Execution Producer MUST keep native profile_ref None and strict satisfaction/reconciliation MUST fail.
+    repo_unauth, _ = _init_repo(
+        tmp_path / "unauth",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/ok.sh": '#!/bin/sh\necho "clean"\n'},
+    )
+    rules_unauth = expected_checks.governed_domain_rules(
+        repo_unauth, config_path=repo_unauth / "ci-selection.toml"
+    )
+    unauth_profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref_v1,
+        profile_revision="rev-1",
+        approval_source="governance-signed",
+        effective_at="2026-11-15T00:00:00Z",
+        evaluated_at="2026-11-15T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules_unauth,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    plan_unauth, exp_unauth = _build_plan_and_expected(
+        repo_unauth,
+        [".github/workflows/ci.yml", "scripts/ok.sh"],
+        effective_profile=unauth_profile,
+    )
+    assert exp_unauth["authority_status"] == "unverified"
+    rep_unauth = execution.execute(plan_unauth, root=repo_unauth)
+    by_unauth = {entry["name"]: entry for entry in rep_unauth["checks"]}
+    for name in declared:
+        assert by_unauth[name]["native_result"]["check"]["profile_ref"] is None
+
+    unauth_nr = by_unauth["actionlint"]["native_result"]
+    unauth_sat = check_contract.evaluate_expected_satisfaction(
+        [unauth_nr],
+        {
+            "check_id": unauth_nr["check"]["check_id"],
+            "definition_version": unauth_nr["check"]["definition_version"],
+            "rule_ref": unauth_nr["check"]["rule_ref"],
+            "profile_ref": prof_ref_v1,
+            "source_ref": {
+                **unauth_nr["source_ref"],
+                "scope_kind": "check_input_closure",
+            },
+        },
+    )
+    assert unauth_sat["status"] == "unsatisfied"
+
+    al_closure_unauth = {
+        **unauth_nr["source_ref"],
+        "scope_kind": "check_input_closure",
+    }
+    al_unauth_closed = check_contract.native_result(
+        check_contract.definition_for("actionlint"),
+        source=al_closure_unauth,
+        status=unauth_nr["status"],
+        result_origin=unauth_nr["result_origin"],
+        result_instance=unauth_nr["result_instance"],
+        native_exit_code=unauth_nr["native_exit_code"],
+        input_refs=unauth_nr["input_refs"],
+        coverage=unauth_nr.get("coverage"),
+        rule_ref=unauth_nr["check"]["rule_ref"],
+        profile_ref=None,
+        evidence=unauth_nr["evidence"],
+        runner_ref=RUNNER_REF,
+        tool=unauth_nr.get("tool"),
+    )
+    unauth_exp_al = next(e for e in exp_unauth["checks"] if e["name"] == "actionlint")
+    unauth_rec_rep = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [{"name": "reconciled", "native_results": [al_unauth_closed]}],
+    }
+    unauth_rec_ref = report_ref_for(unauth_rec_rep)
+    unauth_rec = reconciliation.reconcile_expected_results(
+        exp_unauth,
+        routing=[
+            {
+                "expected_check_ref": unauth_exp_al["expected_check_ref"],
+                "job_refs": ["job-1"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-1",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": RUNNER_REF,
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                    }
+                ],
+                "mapping_status": "routed",
+                "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
+                "effective_config_ref": {"name": "hook-job", "version": "1"},
+                "reason": None,
+            }
+        ],
+        resolutions=[
+            {
+                "expected_check_ref": unauth_exp_al["expected_check_ref"],
+                "rule_ref": unauth_nr["check"]["rule_ref"],
+                "source_ref": al_closure_unauth,
+                "input_refs": unauth_nr["input_refs"],
+                "rule_source_ref": dict(RULE_SOURCE_REF),
+                "source_receipt_ref": dict(SOURCE_RECEIPT_REF),
+            }
+        ],
+        observations=[
+            {
+                "job_ref": "job-1",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": unauth_rec_rep,
+                "report_ref": unauth_rec_ref,
+                "native_results": [al_unauth_closed],
+                "job_receipt": {
+                    "kind": reconciliation.JOB_RECEIPT_KIND,
+                    "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+                    "job_ref": "job-1",
+                    "run_ref": RUN_REF,
+                    "attempt_ref": ATTEMPT_REF,
+                    "runner_ref": RUNNER_REF,
+                    "report_ref": unauth_rec_ref,
+                    "issuer_ref": dict(JOB_ISSUER_REF),
+                    "verification_status": "upstream_verified",
+                },
+            }
+        ],
+    )
+    unauth_al_entry = next(
+        e for e in unauth_rec["entries"] if e["name"] == "actionlint"
+    )
+    assert unauth_al_entry["binding_status"] == "unknown"
+    assert unauth_al_entry["reason"] == "expected_profile_binding_missing"
+    assert unauth_al_entry["rejected_results"][0]["reason"] == "profile_binding_missing"
+
+    # Negative 2: Expected binds a different Profile version (2.0.0 vs 1.0.0) ->
+    # reconciliation refuses with expected_profile_mismatch and never returns matched.
+    prof_ref_v2 = check_contract.profile_ref("eci/default", "2.0.0")
+    profile_other = expected_checks.build_effective_profile(
+        profile_ref=prof_ref_v2,
+        profile_revision="rev-2",
+        approval_source="governance-signed",
+        effective_at="2026-11-15T00:00:00Z",
+        evaluated_at="2026-11-15T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    hyg_path = repo / "ci-hygiene.toml"
+    hyg_cfg = hygiene.load_config(hyg_path)
+    other_cs = selection.ChangeSet(
+        root=repo,
+        base_ref="origin/main",
+        head_ref="HEAD",
+        base_commit=plan_v2["git"]["base_commit"],
+        head_commit=plan_v2["git"]["head_commit"],
+        tree=plan_v2["git"]["tree"],
+        paths=(".github/workflows/ci.yml", "scripts/ok.sh"),
+        worktree_dirty=False,
+        complete=True,
+        snapshot="worktree",
+    )
+    exp_v2_other = expected_checks.derive_expected_checks(
+        other_cs,
+        plan_v2["check_scope"],
+        config_path=cfg_path,
+        consumer="dymzz/engineering-ci",
+        content_binding=plan_v2["git"]["content_binding"],
+        hygiene_config=hyg_cfg,
+        hygiene_identity=hygiene.config_identity(hyg_path, hyg_cfg, root=repo),
+        effective_profile=profile_other,
+    )
+    other_ref_by_name = {
+        e["name"]: e["expected_check_ref"] for e in exp_v2_other["checks"]
+    }
+    orig_name_by_ref = {e["expected_check_ref"]: e["name"] for e in exp_v2["checks"]}
+    other_routings = [
+        {
+            **r,
+            "expected_check_ref": other_ref_by_name[
+                orig_name_by_ref[r["expected_check_ref"]]
+            ],
+        }
+        for r in routings
+    ]
+    other_resolutions = [
+        {
+            **res,
+            "expected_check_ref": other_ref_by_name[
+                orig_name_by_ref[res["expected_check_ref"]]
+            ],
+        }
+        for res in resolutions
+    ]
+    mismatch_rec = reconciliation.reconcile_expected_results(
+        exp_v2_other,
+        routing=other_routings,
+        resolutions=other_resolutions,
+        observations=[rec_observation],
+    )
+    assert mismatch_rec["status"] != "matched"
+    mismatch_by_name = {item["name"]: item for item in mismatch_rec["entries"]}
+    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
+        item = mismatch_by_name[wf_check]
+        assert item["binding_status"] == "unknown"
+        assert item["reason"] == "expected_profile_mismatch"
+        assert item["rejected_results"][0]["reason"] == "profile_mismatch"
+
+    # Negative 3: Spoofed profile_ref override without Plan/inputs/config proof is rejected,
+    # while verified Dagger host-adapter narrowing retains verified profile_ref.
+    assert execution._profile_reference(plan_unauth, profile_ref=prof_ref_v1) is None
+    narrowed_valid = json.loads(json.dumps(plan_v2))
+    narrowed_valid.pop("expected_checks", None)
+    assert (
+        execution._profile_reference(narrowed_valid, profile_ref=prof_ref_v1)
+        == prof_ref_v1
+    )
+    narrowed_valid["inputs"]["config"]["normalized"]["effective_profile"] = None
+    assert execution._profile_reference(narrowed_valid, profile_ref=prof_ref_v1) is None

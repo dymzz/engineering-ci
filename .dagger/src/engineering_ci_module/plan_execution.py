@@ -561,6 +561,7 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
+    verified_profile = execution._profile_reference(value)
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
@@ -797,6 +798,7 @@ async def _execute_dag(
                             [entry],
                             execution_context="dagger_export",
                             run_instance=run_instance,
+                            profile_ref=verified_profile,
                         )[0]
                     return entry, None, {}
                 generated_refs = execution.generated_input_refs(
@@ -849,6 +851,7 @@ async def _execute_dag(
                         artifact_paths=artifact_paths,
                         generated_input_refs=generated_refs,
                         shared_cache=None if fs_files else script_shared_cache,
+                        profile_ref=verified_profile,
                     )
                 finally:
                     if temporary is not None:
@@ -1272,6 +1275,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 if item.get("name") not in weaver_checks
             ]
             check_plan = _host_adapter_plan(value, host_checks)
+            verified_profile = execution._profile_reference(value)
             loop = asyncio.get_running_loop()
             host = (
                 await asyncio.to_thread(
@@ -1280,6 +1284,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     root=directory,
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
+                    profile_ref=verified_profile,
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {
