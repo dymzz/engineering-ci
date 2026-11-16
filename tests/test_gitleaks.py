@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -54,7 +55,10 @@ def test_gitleaks_history_finds_and_redacts_secret(history_repo):
     assert result["status"] == "failed"
     assert result["native_exit_code"] == 1
     assert result["coverage"]["mode"] == "revision-range"
-    assert result["coverage"]["revision_range"] == f"{base}..HEAD"
+    assert result["coverage"]["scope"] == "revision_range"
+    assert result["coverage"]["old_commit"] == base
+    assert result["coverage"]["new_commit"] == git(history_repo, "rev-parse", "HEAD")
+    assert result["coverage"]["diff_mode"] == "first-parent-merges"
     assert len(result["findings"]) == 1
     finding = result["findings"][0]
     assert finding["rule_sha256"] == (
@@ -93,6 +97,8 @@ def test_gitleaks_clean_range_passes(tmp_path):
     assert result["coverage"]["complete"] is True
     assert result["coverage"]["old_commit"] == git(root, "rev-parse", "HEAD~1")
     assert result["coverage"]["new_commit"] == git(root, "rev-parse", "HEAD")
+    assert result["coverage"]["scope"] == "revision_range"
+    assert result["coverage"]["diff_mode"] == "first-parent-merges"
 
 
 def test_gitleaks_rejects_non_range_scope(tmp_path):
@@ -283,3 +289,134 @@ def test_gitleaks_check_definition_is_process_with_controlled_tool():
     assert resolved["status"] == "complete"
     assert resolved["definitions"][0]["check_id"] == definition.check_id
     assert resolved["definitions"][0]["definition_version"] == 1
+
+
+def test_native_err_diagnostics_are_not_clean():
+    assert gitleaks._native_outcome(
+        0, [], 'time ERR error="stderr is not empty"\n'
+    ) == ("error", "gitleaks_native_error")
+    assert gitleaks._native_outcome(0, [], "time INF no leaks found\n") == (
+        "passed",
+        None,
+    )
+    assert gitleaks._native_outcome(
+        0, [{"Commit": "a" * 40}], "time INF no leaks found\n"
+    ) == ("error", "gitleaks_exit_inconsistent")
+
+
+def test_all_history_records_local_ref_scope_without_raw_revision(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "base")
+    coverage = gitleaks._resolve_scope(root, None, True)
+    assert coverage["scope"] == "local_refs"
+    assert coverage["scope_authority"] == "local_git_refs"
+    assert coverage["ref_count"] >= 1
+    assert coverage["ref_set_sha256"].startswith("sha256:")
+    assert coverage["complete"] is True
+    assert "revision_range" not in coverage
+
+
+@requires_gitleaks
+def test_gitleaks_git_stderr_failure_is_not_clean(history_repo):
+    base = git(history_repo, "rev-parse", "HEAD~1")
+    result = gitleaks.scan_git_history(
+        history_repo,
+        revision_range=f"{base}..HEAD",
+        environ={
+            **os.environ,
+            "GITLEAKS_BIN": BINARY,
+            "GIT_TRACE": "1",
+        },
+    )
+    assert result["native_status"] == "error"
+    assert result["status"] == "error"
+    assert result["coverage"]["complete"] is False
+
+
+@requires_gitleaks
+def test_gitleaks_merge_resolution_secret_is_covered(tmp_path):
+    root = tmp_path / "merge"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "master")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("base\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-qb", "feature")
+    (root / "a.txt").write_text("feature\n", encoding="utf-8")
+    git(root, "commit", "-qam", "feature")
+    git(root, "checkout", "-q", "master")
+    (root / "a.txt").write_text("main\n", encoding="utf-8")
+    git(root, "commit", "-qam", "main")
+    subprocess.run(
+        ["git", "merge", "feature"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    (root / "a.txt").write_text("MERGE_SECRET\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "merge resolution")
+    merge_commit = git(root, "rev-parse", "HEAD")
+    config = tmp_path / "gitleaks.toml"
+    config.write_text(
+        """
+title = "merge-test"
+[[rules]]
+id = "merge-secret"
+description = "merge secret"
+regex = '''MERGE_SECRET'''
+""",
+        encoding="utf-8",
+    )
+    result = gitleaks.scan_git_history(
+        root,
+        all_history=True,
+        config_path=config,
+        environ={**os.environ, "GITLEAKS_BIN": BINARY},
+    )
+    assert result["status"] == "failed"
+    assert result["coverage"]["diff_mode"] == "first-parent-merges"
+    assert any(finding["Commit"] == merge_commit for finding in result["findings"])
+
+
+@requires_gitleaks
+def test_gitleaks_public_result_omits_raw_scope_and_binary_path(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("clean\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "base")
+    token = "glpat-abcdefghijklmnopqrst"
+    git(root, "branch", token)
+    (root / "a.txt").write_text("next\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "next")
+    binary_dir = tmp_path / token
+    binary_dir.mkdir()
+    binary = binary_dir / Path(BINARY).name
+    shutil.copy2(BINARY, binary)
+    result = gitleaks.scan_git_history(
+        root,
+        revision_range=f"refs/heads/{token}..HEAD",
+        environ={**os.environ, "GITLEAKS_BIN": str(binary)},
+    )
+    serialized = json.dumps(result)
+    assert token not in serialized
+    assert str(binary) not in serialized
+    assert "path" not in result["tool"]
+    assert "revision_range" not in result["coverage"]
+    assert result["coverage"]["old_commit"]
+    assert result["coverage"]["new_commit"]

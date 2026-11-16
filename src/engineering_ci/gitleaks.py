@@ -57,6 +57,21 @@ def _sha256(path):
     return "sha256:" + digest.hexdigest()
 
 
+def _sha256_text(value):
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _ref_scope(root):
+    result = _git(root, "for-each-ref", "--format=%(refname) %(objectname)")
+    if result.returncode != 0:
+        raise GitleaksError("gitleaks_history_unavailable")
+    refs = sorted(line for line in result.stdout.splitlines() if line)
+    return {
+        "ref_count": len(refs),
+        "ref_set_sha256": _sha256_text("\n".join(refs)),
+    }
+
+
 def _git_dir(root):
     result = _git(root, "rev-parse", "--git-dir")
     if result.returncode != 0:
@@ -106,7 +121,6 @@ def _verify_binary(binary, environ):
         "version": GITLEAKS_VERSION,
         "artifact_sha256": digest,
         "platform": f"{platform.system().lower()}-{machine}",
-        "path": str(binary),
     }
 
 
@@ -153,12 +167,17 @@ def _resolve_scope(root, revision_range, all_history):
         count = _git(root, "rev-list", "--count", "--all")
         if count.returncode != 0:
             raise GitleaksError("gitleaks_history_unavailable")
+        ref_scope = _ref_scope(root)
         return {
             "mode": "all-history",
-            "revision_range": None,
+            "scope": "local_refs",
+            "scope_authority": "local_git_refs",
             "old_commit": None,
             "new_commit": None,
             "commit_count": int(count.stdout.strip()),
+            "ref_count": ref_scope["ref_count"],
+            "ref_set_sha256": ref_scope["ref_set_sha256"],
+            "diff_mode": "first-parent-merges",
             "shallow": shallow,
             "complete": not shallow,
             "reason": "shallow_repository" if shallow else None,
@@ -188,14 +207,32 @@ def _resolve_scope(root, revision_range, all_history):
         reason = "shallow_repository"
     return {
         "mode": "revision-range",
-        "revision_range": revision_range,
+        "scope": "revision_range",
+        "scope_authority": "resolved_commits",
+        "requested_scope_sha256": _sha256_text(revision_range),
         "old_commit": old_sha,
         "new_commit": new_sha,
         "commit_count": int(count.stdout.strip()),
+        "diff_mode": "first-parent-merges",
         "shallow": shallow,
         "complete": complete,
         "reason": reason,
     }
+
+
+def _native_outcome(returncode, findings, diagnostics):
+    """Classify Gitleaks without treating a partial/error scan as clean."""
+    if re.search(r"(?m)(?:^|\s)ERR(?:\s|$)", diagnostics):
+        return "error", "gitleaks_native_error"
+    if returncode == 0 and not findings:
+        return "passed", None
+    if returncode == 1 and findings:
+        return "failed", "secret_findings"
+    if returncode == 0:
+        return "error", "gitleaks_exit_inconsistent"
+    if returncode == 1:
+        return "error", "gitleaks_findings_missing"
+    return "error", "gitleaks_scan_failed"
 
 
 def scan_git_history(
@@ -226,9 +263,12 @@ def scan_git_history(
     ) as temporary:
         report_path = Path(temporary) / "gitleaks.json"
         if revision_range and coverage["old_commit"] and coverage["new_commit"]:
-            scan_range = f"{coverage['old_commit']}..{coverage['new_commit']}"
+            scan_range = (
+                f"{coverage['old_commit']}..{coverage['new_commit']} "
+                "--diff-merges=first-parent"
+            )
         else:
-            scan_range = "--all"
+            scan_range = "--all --diff-merges=first-parent"
         command = [
             str(binary),
             "git",
@@ -254,6 +294,7 @@ def scan_git_history(
                 errors="replace",
                 check=False,
                 timeout=timeout,
+                env={**os.environ, **environ},
             )
         except FileNotFoundError:
             raise GitleaksError("gitleaks_binary_missing") from None
@@ -268,21 +309,8 @@ def scan_git_history(
             raise GitleaksError("gitleaks_report_invalid") from None
         findings = _sanitize(report)
 
-    if completed.returncode == 0 and not findings:
-        native_status = "passed"
-        reason = None
-    elif completed.returncode == 1 and findings:
-        native_status = "failed"
-        reason = "secret_findings"
-    elif completed.returncode == 0:
-        native_status = "error"
-        reason = "gitleaks_exit_inconsistent"
-    elif completed.returncode == 1:
-        native_status = "error"
-        reason = "gitleaks_findings_missing"
-    else:
-        native_status = "error"
-        reason = "gitleaks_scan_failed"
+    diagnostics = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    native_status, reason = _native_outcome(completed.returncode, findings, diagnostics)
 
     if native_status == "error":
         coverage["complete"] = False
@@ -299,6 +327,7 @@ def scan_git_history(
         "reason": reason,
         "native_status": native_status,
         "native_exit_code": completed.returncode,
+        "native_diagnostics_sha256": _sha256_text(diagnostics),
         "findings": findings,
         "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
         "tool": tool,
