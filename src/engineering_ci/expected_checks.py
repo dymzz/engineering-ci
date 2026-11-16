@@ -190,7 +190,6 @@ def _approval_digest(profile):
         "declared_checks",
         "targets",
         "governed_rules",
-        "phase",
     ):
         if optional in profile and profile[optional] is not None:
             payload[optional] = profile[optional]
@@ -531,7 +530,9 @@ def validate_effective_profile(profile, *, git=None):
         value = profile.get(field)
         if not isinstance(value, str) or not value:
             raise ExpectedError("effective_profile_scope_missing")
-    if "phase" in profile and (not isinstance(profile["phase"], str) or not profile["phase"]):
+    if "phase" in profile and (
+        not isinstance(profile["phase"], str) or not profile["phase"]
+    ):
         raise ExpectedError("effective_profile_phase_invalid")
     if (
         profile.get("approval_source") not in AUTHORITATIVE_APPROVAL_SOURCES
@@ -554,6 +555,8 @@ def validate_effective_profile(profile, *, git=None):
         or digest != profile_digest(profile)
     ):
         raise ExpectedError("effective_profile_digest_mismatch")
+    if "phase" in profile and "target_scope" not in binding:
+        raise ExpectedError("effective_profile_phase_scope_missing")
     if "target_scope" in binding:
         t_scope = binding["target_scope"]
         if (
@@ -634,8 +637,7 @@ def validate_effective_profile(profile, *, git=None):
         ):
             raise ExpectedError("effective_profile_declared_checks_invalid")
     if "phase" not in profile and any(
-        isinstance(o, dict) and "phases" in o
-        for o in list(required) + list(advisory)
+        isinstance(o, dict) and "phases" in o for o in list(required) + list(advisory)
     ):
         raise ExpectedError("effective_profile_phase_unresolved")
     for item in required:
@@ -853,7 +855,9 @@ def _parse_profile_obligations(
             matched_refs = [
                 src
                 for src, tgt, act in ref_scopes
-                if _obligation_matches_scope(ob, target_ref=tgt, ref_action=act, phase=phase)
+                if _obligation_matches_scope(
+                    ob, target_ref=tgt, ref_action=act, phase=phase
+                )
             ]
             if not matched_refs:
                 continue
@@ -894,7 +898,9 @@ def _parse_profile_obligations(
                 matched_refs = [
                     src
                     for src, tgt, act in ref_scopes
-                    if _obligation_matches_scope(adv, target_ref=tgt, ref_action=act, phase=phase)
+                    if _obligation_matches_scope(
+                        adv, target_ref=tgt, ref_action=act, phase=phase
+                    )
                 ]
                 if not matched_refs:
                     continue

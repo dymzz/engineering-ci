@@ -38,17 +38,30 @@ def test_approved_phase_is_bound_in_identity_and_scope():
     expected_checks.validate_effective_profile(before)
     expected_checks.validate_effective_profile(after)
     assert before["profile_sha256"] != after["profile_sha256"]
+    assert (
+        before["approval_binding"]["approval_digest"]
+        == after["approval_binding"]["approval_digest"]
+    )
     assert before["approval_binding"]["target_scope"]["phase"] == "pre_publish"
-    assert expected_checks._obligation_matches_scope(
-        before["required_obligations"][0], phase="post_publish"
-    )
-    assert not expected_checks._obligation_matches_scope(
-        before["required_obligations"][0], phase="pre_publish"
-    )
+    assert after["approval_binding"]["target_scope"]["phase"] == "post_publish"
     modified = dict(after)
     modified["phase"] = "pre_publish"
     with pytest.raises(expected_checks.ExpectedError, match="digest_mismatch"):
         expected_checks.validate_effective_profile(modified)
+
+
+def test_phase_profile_requires_bound_target_scope():
+    profile = _profile("pre_publish")
+    del profile["approval_binding"]["target_scope"]
+    profile["profile_sha256"] = expected_checks.profile_digest(profile)
+    with pytest.raises(expected_checks.ExpectedError, match="phase_scope_missing"):
+        expected_checks.validate_effective_profile(profile)
+
+    tampered = _profile("pre_publish")
+    tampered["approval_binding"]["target_scope"]["phase"] = "post_publish"
+    tampered["profile_sha256"] = expected_checks.profile_digest(tampered)
+    with pytest.raises(expected_checks.ExpectedError, match="authority_untrusted"):
+        expected_checks.validate_effective_profile(tampered)
 
 
 def test_unscoped_obligations_keep_existing_behavior():

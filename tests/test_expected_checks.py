@@ -589,6 +589,7 @@ def _sample_effective_profile(
     declared_checks=None,
     domain_complete=True,
     governed_rules=None,
+    phase=None,
 ):
     return expected_checks.build_effective_profile(
         profile_ref={"name": "consumer.pr", "version": "1.0.0"},
@@ -609,6 +610,7 @@ def _sample_effective_profile(
         declared_checks=declared_checks,
         domain_complete=domain_complete,
         governed_rules=governed_rules,
+        phase=phase,
     )
 
 
@@ -2296,3 +2298,58 @@ def test_p1_inaccessible_odb_or_missing_target_object_requires_materialized_hand
     with pytest.raises(plan_contract.PlanError) as raised_tampered:
         plan_contract.validate(p, materialized_sources=mats)
     assert raised_tampered.value.code == "expected_per_ref_source_unverifiable"
+
+
+def test_phase_profile_projects_check_and_non_check_obligations(repo):
+    path, base = repo
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    chosen = selection.select(changes, cfg, root=path)
+    obligations = [
+        {
+            "obligation_ref": "eci/always",
+            "kind": "check",
+            "check_names": ["hygiene"],
+        },
+        {
+            "obligation_ref": "eci/vulture",
+            "kind": "check",
+            "check_names": ["vulture"],
+            "phases": ["post_publish"],
+        },
+        {
+            "obligation_ref": "eci/terminal",
+            "kind": "non_check",
+            "phases": ["post_publish"],
+        },
+    ]
+
+    projections = {}
+    for phase in ("pre_publish", "post_publish"):
+        profile = _sample_effective_profile(
+            phase=phase,
+            declared_checks=["hygiene", "tach", "vulture"],
+            required_obligations=obligations,
+        )
+        expected_checks.validate_effective_profile(profile)
+        plan = selection.plan(
+            chosen,
+            config=cfg,
+            config_path=path / "ci-selection.toml",
+            root=path,
+            effective_profile=profile,
+        )
+        projections[phase] = plan["expected_checks"]
+
+    pre = projections["pre_publish"]
+    post = projections["post_publish"]
+    assert pre["expected_set_ref"] != post["expected_set_ref"]
+    assert {item["obligation_ref"] for item in pre["non_check_obligations"]} == set()
+    assert {item["obligation_ref"] for item in post["non_check_obligations"]} == {
+        "eci/terminal"
+    }
+    pre_vulture = next(item for item in pre["checks"] if item["name"] == "vulture")
+    post_vulture = next(item for item in post["checks"] if item["name"] == "vulture")
+    assert "eci/vulture" not in pre_vulture["required_by_obligations"]
+    assert "eci/vulture" in post_vulture["required_by_obligations"]
