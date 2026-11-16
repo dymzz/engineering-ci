@@ -106,6 +106,39 @@ def _config_path(plan, root, override, *, key, default_name):
     return root / default_name
 
 
+def _rebased_consumer_plan(plan, source_root):
+    """Rebase repo-local absolute config paths to repo-relative for consumer views."""
+    inputs = plan.get("inputs")
+    if not isinstance(inputs, dict):
+        return plan
+    resolved_src = Path(source_root).resolve()
+    new_inputs = None
+    for key in ("config", "hygiene", "hygiene_config", "sources", "sources_config"):
+        entry = inputs.get(key)
+        if not isinstance(entry, dict) or entry.get("policy_scope") == "event_external":
+            continue
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        cand = Path(raw_path)
+        if not cand.is_absolute():
+            continue
+        try:
+            resolved = cand.resolve()
+        except OSError:
+            continue
+        if resolved.is_relative_to(resolved_src):
+            if new_inputs is None:
+                new_inputs = dict(inputs)
+            new_inputs[key] = {
+                **entry,
+                "path": resolved.relative_to(resolved_src).as_posix(),
+            }
+    if new_inputs is None:
+        return plan
+    return {**plan, "inputs": new_inputs}
+
+
 def _stored_rule_path(config_path, root):
     resolved = Path(config_path).resolve()
     resolved_root = Path(root).resolve()
@@ -747,11 +780,19 @@ def _run_hygiene_checks(
     run_kwargs = {"root": root, "runner": runner or hygiene._run}
     if code_prefixes is not None:
         run_kwargs["code_prefixes"] = code_prefixes
+    ws_before = None
+    ws_err_before = None
+    if "whitespace" in checks:
+        ws_before, ws_err_before = _effective_git_whitespace_config(root)
     report = hygiene.run(
         changes,
         run_config,
         **run_kwargs,
     )
+    ws_after = None
+    ws_err_after = None
+    if "whitespace" in checks:
+        ws_after, ws_err_after = _effective_git_whitespace_config(root)
     results = []
     seen = set()
     any_failed = report["status"] == "failed"
@@ -769,6 +810,16 @@ def _run_hygiene_checks(
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
+        if name == "whitespace":
+            if (
+                ws_err_before is None
+                and ws_err_after is None
+                and ws_before is not None
+                and ws_before == ws_after
+            ):
+                payload["git_whitespace_config"] = dict(ws_before)
+            else:
+                payload["git_whitespace_config_drifted"] = True
         origin = selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "not_selected"
         if origin and isinstance(origin.get("inputs"), list):
@@ -2463,28 +2514,63 @@ def _active_tool_identities(definition, rule_ref):
 def _effective_git_whitespace_config(root):
     if root is None:
         return None, "whitespace_config_unreadable"
-    git_dir = selection._resolve_git_dir(root)
+    root_path = Path(root)
+    git_dir = selection._resolve_git_dir(root_path)
     if git_dir is None:
         return None, "whitespace_config_unreadable"
-    res = selection._git(root, "config", "--get", "core.whitespace")
+    res = selection._git(root_path, "config", "--get", "core.whitespace")
     if res.returncode == 1:
         core_ws = None
     elif res.returncode == 0:
         core_ws = res.stdout.strip()
     else:
         return None, "whitespace_config_unreadable"
-    info_attrs = git_dir / "info" / "attributes"
+
+    info_res = selection._git(root_path, "rev-parse", "--git-path", "info/attributes")
+    if info_res.returncode != 0 or not info_res.stdout.strip():
+        return None, "whitespace_config_unreadable"
+    info_raw = Path(info_res.stdout.strip())
+    info_attrs = info_raw if info_raw.is_absolute() else (root_path / info_raw)
     try:
-        info_attrs_sha = (
-            hashlib.sha256(info_attrs.read_bytes()).hexdigest()
-            if info_attrs.is_file()
-            else None
-        )
+        if info_attrs.is_file():
+            info_attrs_sha = hashlib.sha256(info_attrs.read_bytes()).hexdigest()
+        elif info_attrs.exists():
+            return None, "whitespace_config_unreadable"
+        else:
+            info_attrs_sha = None
     except OSError:
         return None, "whitespace_config_unreadable"
+
+    attr_res = selection._git(
+        root_path, "config", "--path", "--get", "core.attributesfile"
+    )
+    if attr_res.returncode == 1:
+        core_attrs = None
+    elif attr_res.returncode == 0:
+        raw_attr = attr_res.stdout.strip()
+        if not raw_attr:
+            core_attrs = None
+        else:
+            attr_raw = Path(raw_attr)
+            attr_path = attr_raw if attr_raw.is_absolute() else (root_path / attr_raw)
+            try:
+                if attr_path.is_file():
+                    core_attrs = (
+                        "sha256:" + hashlib.sha256(attr_path.read_bytes()).hexdigest()
+                    )
+                elif attr_path.exists():
+                    return None, "whitespace_config_unreadable"
+                else:
+                    core_attrs = f"missing:{attr_path.as_posix()}"
+            except OSError:
+                return None, "whitespace_config_unreadable"
+    else:
+        return None, "whitespace_config_unreadable"
+
     return {
         "core.whitespace": core_ws,
         "info_attributes_sha256": info_attrs_sha,
+        "core_attributes_file_sha256": core_attrs,
     }, None
 
 
@@ -2496,6 +2582,7 @@ def _verify_pre_execution_prerequisites(
     prerequisite_results=None,
 ):
     prereq_inputs = []
+    verified_files = []
     seen_paths = {}
     consumer_ref = {"kind": "check", "name": check_name}
     for edge in incoming:
@@ -2503,31 +2590,32 @@ def _verify_pre_execution_prerequisites(
         p_kind, p_name = p_ref.get("kind"), p_ref.get("name")
         if edge.get("dependency_kind") == "data":
             if p_kind != "prerequisite_action":
-                return None, "data_check_producer_unsupported"
+                return None, None, "data_check_producer_unsupported"
             if artifact_root is None or not isinstance(prerequisite_results, dict):
-                return None, "pre_execution_prerequisite_unproven"
+                return None, None, "pre_execution_prerequisite_unproven"
             producer_res = prerequisite_results.get((p_kind, p_name))
             if producer_res is None:
                 producer_res = prerequisite_results.get(p_name)
             if not isinstance(producer_res, dict):
-                return None, "pre_execution_prerequisite_unproven"
+                return None, None, "pre_execution_prerequisite_unproven"
             try:
                 p_root = producer_artifact_root(artifact_root, p_ref)
             except ValueError:
-                return None, "pre_execution_prerequisite_unproven"
+                return None, None, "pre_execution_prerequisite_unproven"
             ok, reason, closure = evaluate_edge(
                 edge, producer_res, artifact_root=p_root
             )
             if not ok or closure is None or not closure.get("verified"):
-                return None, reason or "pre_execution_prerequisite_unproven"
+                return None, None, reason or "pre_execution_prerequisite_unproven"
             for obj in closure.get("materialized_objects") or ():
                 rel = obj["path"]
                 if (rel in seen_paths and seen_paths[rel] != str(p_root)) or any(
                     _artifact_paths_overlap(rel, existing) and owner != str(p_root)
                     for existing, owner in seen_paths.items()
                 ):
-                    return None, "data_artifact_conflict"
+                    return None, None, "data_artifact_conflict"
                 seen_paths[rel] = str(p_root)
+                verified_files.append((p_root, rel, obj["kind"]))
             gen_refs = generated_input_refs([closure], consumer_ref)
             prereq_inputs.append(
                 {
@@ -2545,7 +2633,7 @@ def _verify_pre_execution_prerequisites(
                     "output_ref": edge.get("output_ref"),
                 }
             )
-    return prereq_inputs, None
+    return prereq_inputs, verified_files, None
 
 
 def build_pre_execution_source_proof(
@@ -2652,7 +2740,7 @@ def build_pre_execution_source_proof(
         return unverified(baseline_reason)
 
     incoming = pre_execution_edges(scoped_plan).get(("check", check_name), ())
-    prereq_inputs, prereq_reason = _verify_pre_execution_prerequisites(
+    prereq_inputs, verified_files, prereq_reason = _verify_pre_execution_prerequisites(
         incoming,
         check_name,
         artifact_root=artifact_root,
@@ -2673,43 +2761,57 @@ def build_pre_execution_source_proof(
 
     # Never fold unverified caller-supplied artifact_paths into file closure
     # when incoming data edges require producer artifact verification.
-    effective_artifact_paths = (
-        ()
-        if any(edge.get("dependency_kind") == "data" for edge in incoming)
-        else artifact_paths
-    )
-    snapshots = _prepare_source_snapshots(
-        scoped_plan,
-        [item],
-        root=resolved_root,
-        execution_context=execution_context,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
-        artifact_paths=effective_artifact_paths,
-    )
-    source = _verified_check_source_ref(
-        scoped_plan,
-        check_name,
-        item,
-        root=resolved_root,
-        execution_context=execution_context,
-        source_snapshots=snapshots,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
-        artifact_paths=effective_artifact_paths,
-        require_execution_started=False,
-    )
-    if source is None:
-        return unverified(
-            _pre_execution_unproven_reason(
-                scoped_plan,
+    # When verified producer artifacts exist, mirror _execute_with_dependencies()
+    # via build_consumer_view() so overlaid files match host execution views.
+    has_data_edge = any(edge.get("dependency_kind") == "data" for edge in incoming)
+    temporary = None
+    unproven_reason = None
+    try:
+        if verified_files:
+            temporary, effective_root = build_consumer_view(
+                resolved_root, verified_files
+            )
+            effective_plan = _rebased_consumer_plan(scoped_plan, resolved_root)
+            effective_artifact_paths = artifact_target_paths(verified_files)
+        else:
+            effective_root = resolved_root
+            effective_plan = scoped_plan
+            effective_artifact_paths = () if has_data_edge else artifact_paths
+        snapshots = _prepare_source_snapshots(
+            effective_plan,
+            [item],
+            root=effective_root,
+            execution_context=execution_context,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=effective_artifact_paths,
+        )
+        source = _verified_check_source_ref(
+            effective_plan,
+            check_name,
+            item,
+            root=effective_root,
+            execution_context=execution_context,
+            source_snapshots=snapshots,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=effective_artifact_paths,
+            require_execution_started=False,
+        )
+        if source is None:
+            unproven_reason = _pre_execution_unproven_reason(
+                effective_plan,
                 check_name,
                 item,
-                root=resolved_root,
+                root=effective_root,
                 execution_context=execution_context,
                 hygiene_config=hygiene_config,
             )
-        )
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+    if source is None:
+        return unverified(unproven_reason)
     source = dict(source)
     # byte_tree denotes a materialized execution view. A planned source
     # snapshot can prove the relevant bytes without pretending a tool ran.
@@ -3643,6 +3745,7 @@ def _decorate_checks(
             and execution_context == "host"
             and root is not None
             and item.get("git_whitespace_config") is None
+            and not item.get("git_whitespace_config_drifted")
         ):
             ws_cfg, ws_err = _effective_git_whitespace_config(root)
             if ws_err is None and ws_cfg is not None:
@@ -3999,7 +4102,7 @@ def _execute_with_dependencies(
                 temporary, consumer_root = build_consumer_view(root, files)
                 try:
                     entry = run_host_check(
-                        plan,
+                        _rebased_consumer_plan(plan, root),
                         item,
                         root=consumer_root,
                         hygiene_config=hygiene_config,

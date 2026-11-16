@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from engineering_ci import check_contract, execution, hygiene, selection
+from engineering_ci import check_contract, execution, hygiene, plan_contract, selection
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -97,7 +98,7 @@ class _HostRunner:
 
     def __call__(self, argv, root, data=None):
         self.calls.append(tuple(argv))
-        if argv[0] == "git":
+        if argv[0] in {"git", sys.executable}:
             return hygiene._run(argv, root, data)
         return subprocess.CompletedProcess(argv, 0, "ok\n", "")
 
@@ -635,24 +636,46 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
     # Pre-execution data prerequisite: non-empty unrelated artifact_paths NEVER grants closure;
     # genuine verified Producer + output_ref under artifact_root IS bound & checked on reuse:
     wt_plan = _worktree_plan(root, base_b)
+    real_producer_action = {
+        "type": "command",
+        "argv": [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib, sys; "
+                "p = pathlib.Path(sys.argv[1]) / 'generated' / 'schema.py'; "
+                "p.parent.mkdir(parents=True, exist_ok=True); "
+                "p.write_text('SCHEMA = 1\\n', encoding='utf-8')"
+            ),
+            "{artifact_dir}",
+        ],
+    }
+    data_edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
+        "consumer_ref": {"kind": "check", "name": "tach"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "execution_phase": "pre_execution",
+        "output_ref": {"kind": "file", "path": "generated/schema.py"},
+        "source_binding_ref": "git",
+        "declaration_ref": {
+            "path": "ci-selection.toml",
+            "sha256": selection._digest(root / "ci-selection.toml"),
+            "section": "prerequisite_actions.codegen",
+        },
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
     wt_with_data_dep = {
         **wt_plan,
         "selection": {
             **wt_plan["selection"],
             "prerequisites": ["codegen"],
         },
-        "dependency_contract": {
-            "schema_version": 2,
-            "edges": [
-                {
-                    "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
-                    "consumer_ref": {"kind": "check", "name": "tach"},
-                    "dependency_kind": "data",
-                    "execution_phase": "pre_execution",
-                    "output_ref": {"kind": "file", "path": "generated/schema.py"},
-                }
-            ],
-        },
+        "prerequisite_actions": {"codegen": real_producer_action},
+        "dependency_contract": plan_contract.graph_contract(
+            [data_edge], required_semantics=["data_dependency"]
+        ),
     }
     (root / "unrelated.txt").write_text("decoy\n", encoding="utf-8")
     dep_unproven = execution.build_pre_execution_source_proof(
@@ -661,6 +684,7 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
         root=root,
         artifact_paths=("unrelated.txt",),
     )
+    (root / "unrelated.txt").unlink()
     assert dep_unproven["status"] == "unverified"
     assert dep_unproven["reason"] == "pre_execution_prerequisite_unproven"
 
@@ -725,22 +749,64 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
         prerequisite_results={"codegen": {"status": "passed"}},
     )
     assert dep_verified["status"] == "verified_candidate_inputs"
+    assert "generated/schema.py" in dep_verified["source_ref"]["verified_input_scope"]
     gen_refs = dep_verified["prerequisite_inputs"][0]["generated_input_refs"]
     assert gen_refs[0]["path"] == "generated/schema.py"
     assert gen_refs[0]["sha256"] == check_contract.file_digest(schema_file)
 
-    # Historical result missing that generated_input fails prerequisite_artifact_mismatch:
-    tach_def = check_contract.definition_for("tach")
-    wt_rep = execution.execute(wt_plan, root=root, runner=_HostRunner())
-    wt_tach_src = next(c for c in wt_rep["checks"] if c["name"] == "tach")[
+    # Real Producer -> Consumer View (build_consumer_view) -> execution.execute() parity,
+    # without fabricating source_ref or generated_input refs:
+    real_dep_rep = execution.execute(wt_with_data_dep, root=root, runner=_HostRunner())
+    assert real_dep_rep["status"] == "passed", real_dep_rep
+    real_tach_nr = next(c for c in real_dep_rep["checks"] if c["name"] == "tach")[
         "native_result"
-    ]["source_ref"]
-    hist_no_gen = check_contract.native_result(
-        tach_def,
-        source=wt_tach_src,
+    ]
+    assert "generated/schema.py" in real_tach_nr["source_ref"]["verified_input_scope"]
+    assert any(
+        ref.get("kind") == "generated_input"
+        and ref.get("path") == "generated/schema.py"
+        and ref.get("sha256") == check_contract.file_digest(schema_file)
+        for ref in real_tach_nr["input_refs"]
+    )
+    eq_real_dep = execution.compare_pre_execution_to_historical_result(
+        dep_verified, real_tach_nr
+    )
+    assert eq_real_dep["equivalent"] is True
+    assert eq_real_dep["single_result_inputs_equivalent"] is True
+    assert eq_real_dep["whole_check_reuse_admitted"] is False
+
+    # Mutating generated/schema.py in artifact_root changes content_digest + generated_input -> refused:
+    schema_file.write_text("SCHEMA = 2\n", encoding="utf-8")
+    dep_verified_mut = execution.build_pre_execution_source_proof(
+        wt_with_data_dep,
+        "tach",
+        root=root,
+        artifact_root=artifact_root,
+        prerequisite_results={"codegen": {"status": "passed"}},
+    )
+    bad_changed_artifact = execution.compare_pre_execution_to_historical_result(
+        dep_verified_mut, real_tach_nr
+    )
+    assert bad_changed_artifact["equivalent"] is False
+    assert bad_changed_artifact["reason"] == "source_content_mismatch"
+
+    # Historical result executed WITHOUT data dependency (missing generated/schema.py overlay) -> refused:
+    wt_rep = execution.execute(wt_plan, root=root, runner=_HostRunner())
+    hist_without_dep = next(c for c in wt_rep["checks"] if c["name"] == "tach")[
+        "native_result"
+    ]
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            dep_verified, hist_without_dep
+        )["reason"]
+        == "source_content_mismatch"
+    )
+    hist_missing_input_ref = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=real_tach_nr["source_ref"],
         status="passed",
         result_origin="host",
-        result_instance="tach-no-gen",
+        result_instance="tach-no-gen-ref",
         native_exit_code=0,
         tool=check_contract.tool_ref("tach/check"),
         evidence={"stdout": "ok"},
@@ -750,30 +816,10 @@ def test_pre_execution_multi_ref_per_ref_and_data_prerequisite_boundaries(tmp_pa
         input_refs=[],
     )
     assert (
-        execution.compare_pre_execution_to_historical_result(dep_verified, hist_no_gen)[
-            "reason"
-        ]
-        == "prerequisite_artifact_mismatch"
-    )
-    hist_with_gen = check_contract.native_result(
-        tach_def,
-        source=hist_no_gen["source_ref"],
-        status="passed",
-        result_origin="host",
-        result_instance="tach-with-gen",
-        native_exit_code=0,
-        tool=check_contract.tool_ref("tach/check"),
-        evidence={"stdout": "ok"},
-        rule_ref=dep_verified["rule_ref"],
-        runner_ref="execution:host",
-        baseline_ref=dep_verified["baseline_ref"],
-        input_refs=list(gen_refs),
-    )
-    assert (
         execution.compare_pre_execution_to_historical_result(
-            dep_verified, hist_with_gen
-        )["equivalent"]
-        is True
+            dep_verified, hist_missing_input_ref
+        )["reason"]
+        == "prerequisite_artifact_mismatch"
     )
 
 
@@ -863,3 +909,116 @@ def test_pre_execution_single_result_match_never_implies_composite_check_reuse(
         [inv_only, links_nr], strict_docs
     )
     assert full_sat["status"] == "satisfied"
+
+
+def test_whitespace_linked_worktree_core_attributes_and_drift(tmp_path, monkeypatch):
+    main_root, base = _init_repo(tmp_path, name="main_wt")
+    linked = tmp_path / "linked_wt"
+    _git(main_root, "worktree", "add", "-q", "-b", "feature", str(linked))
+    (linked / "src" / "pkg" / "mod.py").write_text("VALUE = 9\n", encoding="utf-8")
+
+    # 1. Shared .git/info/attributes is resolved through linked worktree commondir:
+    plan_wt = _worktree_plan(linked, base)
+    proof_initial = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    assert proof_initial["status"] == "verified_candidate_inputs"
+    assert proof_initial["environment_inputs"]["info_attributes_sha256"] is None
+    assert proof_initial["environment_inputs"]["core_attributes_file_sha256"] is None
+
+    rep_wt = execution.execute(plan_wt, root=linked, runner=_HostRunner())
+    ws_nr_initial = next(c for c in rep_wt["checks"] if c["name"] == "whitespace")[
+        "native_result"
+    ]
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            proof_initial, ws_nr_initial
+        )["equivalent"]
+        is True
+    )
+
+    # Mutating main repo's shared .git/info/attributes changes linked worktree closure:
+    shared_info_attrs = main_root / ".git" / "info" / "attributes"
+    shared_info_attrs.parent.mkdir(parents=True, exist_ok=True)
+    shared_info_attrs.write_text("*.py -whitespace\n", encoding="utf-8")
+    proof_shared_info = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    assert proof_shared_info["environment_inputs"]["info_attributes_sha256"] is not None
+    assert proof_shared_info["closure_digest"] != proof_initial["closure_digest"]
+    bad_info = execution.compare_pre_execution_to_historical_result(
+        proof_shared_info, ws_nr_initial
+    )
+    assert bad_info["equivalent"] is False
+    assert bad_info["reason"] == "whitespace_config_mismatch"
+
+    # 2. core.attributesFile is hashed when set, distinguished if missing, and blocks mismatch:
+    global_attrs = tmp_path / "custom.gitattributes"
+    global_attrs.write_text("*.py whitespace=tab-in-indent\n", encoding="utf-8")
+    _git(linked, "config", "core.attributesfile", str(global_attrs))
+    proof_attr_v1 = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    attr_digest = proof_attr_v1["environment_inputs"]["core_attributes_file_sha256"]
+    assert isinstance(attr_digest, str) and attr_digest.startswith("sha256:")
+
+    rep_attr_v1 = execution.execute(plan_wt, root=linked, runner=_HostRunner())
+    ws_nr_attr_v1 = next(c for c in rep_attr_v1["checks"] if c["name"] == "whitespace")[
+        "native_result"
+    ]
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            proof_attr_v1, ws_nr_attr_v1
+        )["equivalent"]
+        is True
+    )
+
+    global_attrs.write_text("*.py whitespace=trailing-space\n", encoding="utf-8")
+    proof_attr_v2 = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    assert (
+        proof_attr_v2["environment_inputs"]["core_attributes_file_sha256"]
+        != attr_digest
+    )
+    bad_global_attr = execution.compare_pre_execution_to_historical_result(
+        proof_attr_v2, ws_nr_attr_v1
+    )
+    assert bad_global_attr["equivalent"] is False
+    assert bad_global_attr["reason"] == "whitespace_config_mismatch"
+
+    global_attrs.unlink()
+    proof_attr_missing = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    assert str(
+        proof_attr_missing["environment_inputs"]["core_attributes_file_sha256"]
+    ).startswith("missing:")
+
+    # 3. Mid-execution git whitespace config drift keeps native PASS fact intact
+    #    while omitting git_whitespace_config from evidence (no post-hoc fallback):
+    _git(linked, "config", "--unset", "core.attributesfile")
+    shared_info_attrs.unlink()
+    orig_hygiene_run = hygiene.run
+
+    def _drifting_hygiene_run(changes, cfg, **kwargs):
+        res = orig_hygiene_run(changes, cfg, **kwargs)
+        _git(linked, "config", "core.whitespace", "tab-in-indent")
+        return res
+
+    monkeypatch.setattr(hygiene, "run", _drifting_hygiene_run)
+    drifted_rep = execution.execute(plan_wt, root=linked, runner=_HostRunner())
+    drifted_ws = next(c for c in drifted_rep["checks"] if c["name"] == "whitespace")
+    assert drifted_ws["status"] == "passed"
+    drifted_nr = drifted_ws["native_result"]
+    assert drifted_nr["status"] == "passed"
+    assert "git_whitespace_config" not in (drifted_nr.get("evidence") or {})
+
+    proof_post_drift = execution.build_pre_execution_source_proof(
+        plan_wt, "whitespace", root=linked
+    )
+    refused_drift = execution.compare_pre_execution_to_historical_result(
+        proof_post_drift, drifted_nr
+    )
+    assert refused_drift["equivalent"] is False
+    assert refused_drift["reason"] == "whitespace_config_mismatch"
