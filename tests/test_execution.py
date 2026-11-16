@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import execution, hygiene, selection
+from engineering_ci import check_contract, execution, hygiene, selection
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -1855,3 +1855,233 @@ require_text_unset = false
     tampered_report = execution.execute(p, root=path, runner=FakeRunner())
     assert tampered_report["status"] == "failed"
     assert tampered_report["checks"][0]["reason"] == "hygiene_config_digest_mismatch"
+
+
+def test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end(
+    repo, tmp_path
+):
+    from test_reconciliation import (
+        ATTEMPT_QUALIFICATION_REF,
+        ATTEMPT_REF,
+        JOB_ISSUER_REF,
+        RUN_REF,
+        _attach_effective_profile_policy,
+        report_ref_for,
+    )
+
+    from engineering_ci import expected_checks, reconciliation
+
+    path, base = repo
+    (path / "docs/guide.md").write_text("# updated\n", encoding="utf-8")
+    (path / "src/pkg/mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    declared = ["whitespace", "docs", "tach"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = path / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-107",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    cs = selection.changeset(path, base=base, mode="worktree")
+    sel = selection.select(cs, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    exp = p["expected_checks"]
+    assert exp["authority_status"] == "verified"
+
+    report = execution.execute(p, root=path, runner=FakeRunner())
+    by_name = {c["name"]: c for c in report["checks"]}
+    for name in declared:
+        assert by_name[name]["status"] == "passed", by_name[name]
+
+    # Unmodified raw NativeResults carry bound profile_ref, relative rule_ref,
+    # changed_path input_refs, and verified check_input_closure source_ref:
+    resolutions = []
+    routings = []
+    raw_results = []
+    exp_by = {c["name"]: c for c in exp["checks"] if c["name"] in declared}
+    for name in declared:
+        check_entry = by_name[name]
+        for nr in check_entry["native_results"]:
+            assert nr["check"]["profile_ref"] == prof_ref
+            assert nr["source_ref"]["scope_kind"] == "check_input_closure"
+            assert nr["source_ref"]["binding_status"] == "content_digest"
+            assert "ci-hygiene.toml" in nr["source_ref"]["verified_input_scope"]
+            raw_results.append(nr)
+        primary = check_entry["native_result"]
+        assert primary["check"]["rule_ref"] == exp_by[name]["rule_ref"]
+        resolutions.append(execution.source_resolution_receipt(p, check_entry))
+        routings.append(
+            {
+                "expected_check_ref": exp_by[name]["expected_check_ref"],
+                "job_refs": ["job-1"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-1",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": primary["runner_ref"],
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                        "invocation_ref": "inv-107",
+                    }
+                ],
+                "mapping_status": "routed",
+            }
+        )
+
+    exec_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": by_name[name]["name"],
+                "check_id": by_name[name]["check_id"],
+                "status": by_name[name]["status"],
+                "plan_authorized": True,
+                "check_contract": by_name[name]["check_contract"],
+                "native_result": by_name[name]["native_result"],
+                "native_results": by_name[name]["native_results"],
+            }
+            for name in declared
+        ],
+    }
+    rref = report_ref_for(exec_report)
+    primary_runner = by_name["tach"]["native_result"]["runner_ref"]
+    obs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": primary_runner,
+        "report": exec_report,
+        "report_ref": rref,
+        "native_results": raw_results,
+        "job_receipt": {
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": primary_runner,
+            "report_ref": rref,
+            "issuer_ref": dict(JOB_ISSUER_REF),
+            "verification_status": "upstream_verified",
+            "invocation_ref": "inv-107",
+            "event_ref": exp["event_ref"],
+            "scope_id": exp["scope_id"],
+            "expected_set_ref": exp["expected_set_ref"],
+        },
+    }
+    # Expected only includes applicable checks; check non-applicable ones aren't broken:
+    all_routings = routings + [
+        {"expected_check_ref": c["expected_check_ref"], "mapping_status": "unrouted"}
+        for c in exp["checks"]
+        if c["name"] not in declared
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        exp,
+        routing=all_routings,
+        resolutions=resolutions,
+        observations=[obs],
+        invocation_ref="inv-107",
+    )
+    reconciliation.validate_receipt(receipt)
+    rec_by = {item["name"]: item for item in receipt["entries"]}
+    for name in declared:
+        assert rec_by[name]["binding_status"] == "matched", rec_by[name]
+
+
+def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
+    path, _base = repo
+    (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    run(path, "add", ".gitignore")
+    run(path, "commit", "-q", "-m", "ignore pycache")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "src/pkg/mod.py").write_text("VALUE = 3\n", encoding="utf-8")
+    run(path, "add", "src/pkg/mod.py")
+    idx_cs = selection.changeset(path, base=base, mode="index")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    idx_sel = selection.select(idx_cs, cfg, root=path)
+    idx_plan = selection.plan(
+        idx_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
+        },
+    )
+    idx_report = execution.execute(idx_plan, root=path, runner=FakeRunner())
+    assert idx_report["checks"]
+    for check in idx_report["checks"]:
+        assert check["status"] in {"passed", "not_applicable"}, check
+        if not check.get("native_result"):
+            continue
+        sr = check["native_result"]["source_ref"]
+        assert sr["scope_kind"] == "full_input_closure"
+        assert sr["binding_status"] == "byte_tree"
+        assert sr["materialization_ref"].startswith("sha256:")
+        assert "src/pkg/mod.py" in sr["verified_input_scope"]
+
+    run(path, "commit", "-q", "-m", "commit mod change")
+    head = run(path, "rev-parse", "HEAD").strip()
+    cmt_cs = selection.changeset(path, base=base, head=head, mode="commit")
+    cmt_sel = selection.select(cmt_cs, cfg, root=path)
+    cmt_plan = selection.plan(
+        cmt_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": cmt_sel.changeset.execution_tree or cmt_sel.changeset.tree,
+        },
+    )
+    cmt_report = execution.execute(cmt_plan, root=path, runner=FakeRunner())
+    assert cmt_report["checks"]
+    for check in cmt_report["checks"]:
+        assert check["status"] in {"passed", "not_applicable"}, check
+        if not check.get("native_result"):
+            continue
+        sr = check["native_result"]["source_ref"]
+        assert sr["scope_kind"] == "full_input_closure"
+        assert sr["binding_status"] == "byte_tree"
+        assert sr["declared_target_tree"] == idx_cs.index_tree
+        assert sr["materialization_ref"].startswith("sha256:")

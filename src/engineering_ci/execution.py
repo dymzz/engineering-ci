@@ -21,7 +21,14 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import check_contract, hygiene, plan_contract, selection, sources
+from . import (
+    check_contract,
+    expected_checks,
+    hygiene,
+    plan_contract,
+    selection,
+    sources,
+)
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -92,6 +99,50 @@ def _config_path(plan, root, override, *, key, default_name):
         path = Path(declared["path"])
         return path if path.is_absolute() else root / path
     return root / default_name
+
+
+def _stored_rule_path(config_path, root):
+    resolved = Path(config_path).resolve()
+    resolved_root = Path(root).resolve()
+    try:
+        if resolved.is_relative_to(resolved_root):
+            return resolved.relative_to(resolved_root).as_posix()
+    except OSError:
+        pass
+    return str(config_path)
+
+
+def _rule_ref_with_path(name, version, config_path, root, digest):
+    return check_contract.rule_ref(
+        name,
+        version,
+        path=_stored_rule_path(config_path, root),
+        digest=digest,
+    )
+
+
+def _resolved_rule_and_input(
+    identity_fn, error_type, config_path, config, root, *, fallback_name, digest_after
+):
+    rel_path = _stored_rule_path(config_path, root)
+    config_input = {"kind": "config", "path": rel_path, "sha256": digest_after}
+    try:
+        identity = identity_fn(config_path, config, root=root)
+    except (OSError, error_type):
+        identity = None
+    eff_ref = (identity or {}).get("effective_check_config_ref")
+    if isinstance(eff_ref, dict):
+        return dict(eff_ref), config_input
+    return (
+        _rule_ref_with_path(
+            fallback_name,
+            getattr(config, "schema_version", 1),
+            config_path,
+            root,
+            digest_after,
+        ),
+        config_input,
+    )
 
 
 def _hygiene_config_path(plan, root, hygiene_config):
@@ -426,7 +477,15 @@ def _resolved_code_prefixes(plan, root):
 
 
 def _find_omitted_hygiene_entries(
-    plan, selected_names, *, changes, config, root, code_prefixes, rule
+    plan,
+    selected_names,
+    *,
+    changes,
+    config,
+    root,
+    code_prefixes,
+    rule,
+    config_input=None,
 ):
     has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
     if not has_bound_hygiene:
@@ -449,21 +508,20 @@ def _find_omitted_hygiene_entries(
             expected_app.get(name, {}).get("status") == "selected"
             and name not in selected_names
         ):
-            omitted.append(
-                {
-                    "name": name,
-                    "selected": raw_scope.get(name, {}).get(
-                        "status", "omitted_from_plan"
-                    ),
-                    "status": "not_executed",
-                    "reason": "configured_check_omitted_from_plan",
-                    "execution_started": False,
-                    "execution_kind": "not_started",
-                    "rule_ref": rule,
-                    "plan_authorized": False,
-                    "routing_conflict": "configured_check_omitted_from_plan",
-                }
-            )
+            entry = {
+                "name": name,
+                "selected": raw_scope.get(name, {}).get("status", "omitted_from_plan"),
+                "status": "not_executed",
+                "reason": "configured_check_omitted_from_plan",
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "rule_ref": rule,
+                "plan_authorized": False,
+                "routing_conflict": "configured_check_omitted_from_plan",
+            }
+            if config_input is not None:
+                entry["config_input_ref"] = dict(config_input)
+            omitted.append(entry)
     return omitted
 
 
@@ -494,11 +552,14 @@ def omitted_hygiene_checks(
     )
     if reason is not None:
         return []
-    rule = check_contract.rule_ref(
-        "engineering-ci.hygiene",
-        1,
-        path=str(config_path),
-        digest=digest_after,
+    rule, config_input = _resolved_rule_and_input(
+        hygiene.config_identity,
+        hygiene.HygieneError,
+        config_path,
+        config,
+        root,
+        fallback_name="engineering-ci.hygiene",
+        digest_after=digest_after,
     )
     changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
     selected_names = {
@@ -512,6 +573,7 @@ def omitted_hygiene_checks(
         root=root,
         code_prefixes=code_prefixes,
         rule=rule,
+        config_input=config_input,
     )
 
 
@@ -548,11 +610,14 @@ def _run_hygiene_checks(
     )
     if reason is not None:
         return _hygiene_failure_results(wanted, selected_by_name, reason)
-    rule = check_contract.rule_ref(
-        "engineering-ci.hygiene",
-        1,
-        path=str(config_path),
-        digest=digest_after,
+    rule, config_input = _resolved_rule_and_input(
+        hygiene.config_identity,
+        hygiene.HygieneError,
+        config_path,
+        config,
+        root,
+        fallback_name="engineering-ci.hygiene",
+        digest_after=digest_after,
     )
     configured = hygiene.effective_checks(config)
     changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
@@ -565,6 +630,7 @@ def _run_hygiene_checks(
             root=root,
             code_prefixes=code_prefixes,
             rule=rule,
+            config_input=config_input,
         )
         if check_omitted
         else []
@@ -578,6 +644,7 @@ def _run_hygiene_checks(
                 "status": "not_executed",
                 "reason": "hygiene_check_disabled",
                 "rule_ref": rule,
+                "config_input_ref": dict(config_input),
             }
             for name, item in selected_by_name.items()
         ] + omitted_entries, False
@@ -603,6 +670,7 @@ def _run_hygiene_checks(
         authorized = name in selected_by_name
         payload = dict(native)
         payload["rule_ref"] = rule
+        payload["config_input_ref"] = dict(config_input)
         payload["plan_authorized"] = authorized
         if not authorized:
             payload["routing_conflict"] = "unauthorized_check_executed"
@@ -613,6 +681,8 @@ def _run_hygiene_checks(
             payload["inventory"] = report.get("inventory")
         origin = selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "not_selected"
+        if origin and isinstance(origin.get("inputs"), list):
+            payload["inputs"] = list(origin["inputs"])
         if payload.get("status") == "failed":
             any_failed = True
         results.append(payload)
@@ -631,6 +701,7 @@ def _run_hygiene_checks(
                     else "hygiene_check_missing"
                 ),
                 "rule_ref": rule,
+                "config_input_ref": dict(config_input),
             }
         )
     results.extend(omitted_entries)
@@ -662,6 +733,15 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         }, True
     source_runner = runner or sources._run
     report = sources.reconcile(config, root=root, runner=source_runner)
+    source_rule, config_input = _resolved_rule_and_input(
+        sources.config_identity,
+        sources.SourcesError,
+        config_path,
+        config,
+        root,
+        fallback_name="engineering-ci.sources",
+        digest_after=digest_after,
+    )
     payload = {
         "name": "source",
         "selected": item.get("status"),
@@ -669,13 +749,11 @@ def _run_source_check(plan, selected, *, root, sources_config, runner):
         "reason": None if report.status == "passed" else "source_reconcile_failed",
         "counts": dict(report.counts),
         "failures": list(report.failures),
-        "rule_ref": check_contract.rule_ref(
-            "engineering-ci.sources",
-            1,
-            path=str(config_path),
-            digest=digest_after,
-        ),
+        "rule_ref": source_rule,
+        "config_input_ref": dict(config_input),
     }
+    if isinstance(item.get("inputs"), list):
+        payload["inputs"] = list(item["inputs"])
     return payload, report.status == "failed"
 
 
@@ -1137,10 +1215,423 @@ def _baseline_reference(plan):
     return ref
 
 
-def _input_refs(rule):
-    if isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
-        return [{"kind": "config", "path": rule["path"], "sha256": rule["sha256"]}]
-    return []
+def _profile_reference(plan, *, root=None, profile_ref=None):
+    """Return the bound EffectiveProfile identity only when backed by verified Plan proof."""
+    if not isinstance(plan, dict):
+        return None
+    inputs = plan.get("inputs") or {}
+    cfg_decl = inputs.get("config") if isinstance(inputs, dict) else None
+    if not isinstance(cfg_decl, dict):
+        return None
+    norm = cfg_decl.get("normalized")
+    if not isinstance(norm, dict):
+        return None
+    try:
+        selection.verify_config_identity_matches_file(cfg_decl, root=root)
+    except selection.SelectionError:
+        return None
+    ep_policy = norm.get("effective_profile")
+    if not isinstance(ep_policy, dict) or not ep_policy:
+        return None
+    try:
+        policy_pref = check_contract.profile_ref(
+            (ep_policy.get("profile_ref") or {}).get("name"),
+            (ep_policy.get("profile_ref") or {}).get("version"),
+        )
+    except (AttributeError, check_contract.CheckContractError):
+        return None
+    expected_block = plan.get("expected_checks")
+    if isinstance(expected_block, dict):
+        if expected_block.get("authority_status") != "verified":
+            return None
+        exp_profile = expected_block.get("effective_profile")
+        if not isinstance(exp_profile, dict):
+            return None
+        if exp_profile.get("profile_ref") != policy_pref:
+            return None
+        try:
+            validated = expected_checks.validate_effective_profile(
+                exp_profile, git=plan.get("git")
+            )
+        except expected_checks.ExpectedError:
+            return None
+        if not expected_checks._verify_profile_authority(
+            validated,
+            selection_rule=expected_block.get("selection_rule_ref"),
+            hygiene_rule=expected_block.get("hygiene_rule_ref"),
+            sources_rule=expected_block.get("sources_rule_ref"),
+            config_policy=ep_policy,
+        ):
+            return None
+    if profile_ref is not None and profile_ref != policy_pref:
+        return None
+    return policy_pref
+
+
+def _relative_existing_files(root, rel_dir):
+    resolved_root = Path(root).resolve()
+    target = (resolved_root / rel_dir).resolve()
+    if not target.is_relative_to(resolved_root):
+        return []
+    if target.is_file():
+        return [target.relative_to(resolved_root).as_posix()]
+    if not target.is_dir():
+        return []
+    out = []
+    for path in sorted(target.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(resolved_root).as_posix()
+            if rel != ".git" and not rel.startswith(".git/"):
+                out.append(rel)
+    return out
+
+
+def _closure_paths_for_check(
+    plan,
+    root,
+    name,
+    item,
+    *,
+    hygiene_config=None,
+    sources_config=None,
+    artifact_paths=(),
+):
+    resolved_root = Path(root).resolve()
+    paths: set[str] = set()
+    for p in (plan.get("git") or {}).get("changed_paths") or ():
+        if isinstance(p, str) and p and (resolved_root / p).is_file():
+            paths.add(p.replace("\\", "/"))
+    for p in (item or {}).get("inputs") or ():
+        if isinstance(p, str) and p and (resolved_root / p).is_file():
+            paths.add(p.replace("\\", "/"))
+    for p in artifact_paths or ():
+        if isinstance(p, str) and p and (resolved_root / p).is_file():
+            paths.add(p.replace("\\", "/"))
+
+    def add_rel_file(candidate):
+        if candidate is None:
+            return
+        try:
+            res = Path(candidate).resolve()
+            if res.is_relative_to(resolved_root) and res.is_file():
+                paths.add(res.relative_to(resolved_root).as_posix())
+        except OSError:
+            pass
+
+    if name in _HYGIENE_CHECKS:
+        add_rel_file(_hygiene_config_path(plan, resolved_root, hygiene_config))
+        loaded_hyg = None
+        if hygiene_config is not None and not isinstance(hygiene_config, (str, Path)):
+            loaded_hyg = hygiene_config
+        else:
+            try:
+                loaded_hyg = hygiene.load_config(
+                    _hygiene_config_path(plan, resolved_root, hygiene_config)
+                )
+            except (OSError, hygiene.HygieneError):
+                loaded_hyg = None
+        if name == "docs":
+            inv = (item or {}).get("inventory") or {}
+            for p in inv.get("files") or ():
+                if isinstance(p, str) and (resolved_root / p).is_file():
+                    paths.add(p.replace("\\", "/"))
+            for p in _relative_existing_files(resolved_root, "."):
+                if p.endswith((".md", ".html")):
+                    paths.add(p)
+        elif name in {"tach", "tach_external"}:
+            tach_rel = loaded_hyg.tach.path if loaded_hyg is not None else "tach.toml"
+            add_rel_file(resolved_root / tach_rel)
+            if (resolved_root / tach_rel).is_file():
+                try:
+                    import tomllib
+
+                    tach_data = tomllib.loads(
+                        (resolved_root / tach_rel).read_text(encoding="utf-8")
+                    )
+                    for sr in tach_data.get("source_roots") or ("src",):
+                        for p in _relative_existing_files(resolved_root, str(sr)):
+                            if p.endswith(".py"):
+                                paths.add(p)
+                except (OSError, ValueError):
+                    pass
+        elif name == "vulture":
+            scan_roots = (
+                loaded_hyg.vulture.paths
+                if loaded_hyg is not None and loaded_hyg.vulture.paths
+                else ("src", "tests")
+            )
+            for sr in scan_roots:
+                for p in _relative_existing_files(resolved_root, str(sr)):
+                    if p.endswith(".py"):
+                        paths.add(p)
+    elif name == "source":
+        src_cfg_path = _sources_config_path(plan, resolved_root, sources_config)
+        add_rel_file(src_cfg_path)
+        loaded_src = None
+        if sources_config is not None and not isinstance(sources_config, (str, Path)):
+            loaded_src = sources_config
+        else:
+            try:
+                loaded_src = sources.load_config(src_cfg_path)
+            except (OSError, sources.SourcesError):
+                loaded_src = None
+        if loaded_src is not None:
+            if getattr(loaded_src, "manifest", None):
+                add_rel_file(resolved_root / str(loaded_src.manifest))
+            for root_dir in getattr(loaded_src, "acquired_roots", ()) or ():
+                paths.update(_relative_existing_files(resolved_root, str(root_dir)))
+    return sorted(paths)
+
+
+def _tree_files_for_snapshot(plan, root, execution_context):
+    git = plan.get("git") or {}
+    snapshot = str(git.get("snapshot") or "worktree")
+    if execution_context == "host" and snapshot == "index":
+        env = (
+            {"GIT_INDEX_FILE": str(Path(git["index_file"]).resolve())}
+            if git.get("index_file")
+            else None
+        )
+        listed = selection._git(root, "ls-files", "-z", env=env)
+        if listed.returncode == 0:
+            return sorted(
+                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
+            )
+    if (
+        execution_context == "host"
+        and snapshot in {"commit", "push", "pr_merge"}
+        and (git.get("execution_tree") or git.get("tree") or git.get("merge_tree"))
+    ):
+        tree_oid = git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
+        listed = selection._git(root, "ls-tree", "-r", "--name-only", "-z", tree_oid)
+        if listed.returncode == 0:
+            return sorted(
+                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
+            )
+    if git.get("source_tree_id"):
+        return sorted(_relative_existing_files(root, "."))
+    return None
+
+
+def _prepare_source_snapshots(
+    plan,
+    selected,
+    *,
+    root,
+    execution_context,
+    hygiene_config=None,
+    sources_config=None,
+    artifact_paths=(),
+):
+    git = plan.get("git") or {}
+    snapshot = str(git.get("snapshot") or "worktree")
+    if snapshot in {"index", "commit", "push", "pr_merge"}:
+        tree_files = _tree_files_for_snapshot(plan, root, execution_context)
+        if tree_files:
+            binding = selection.worktree_content_binding(root, tree_files)
+            return {
+                "kind": "full",
+                "files": tree_files,
+                "binding": binding,
+            }
+    per_check = {}
+    for item in selected or ():
+        name = item.get("name")
+        if not name:
+            continue
+        cpaths = _closure_paths_for_check(
+            plan,
+            root,
+            name,
+            item,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=artifact_paths,
+        )
+        if cpaths:
+            per_check[name] = {
+                "files": cpaths,
+                "binding": selection.worktree_content_binding(root, cpaths),
+            }
+    return {"kind": "per_check", "checks": per_check}
+
+
+def _verified_check_source_ref(
+    plan,
+    name,
+    item,
+    *,
+    root,
+    execution_context,
+    source_snapshots,
+    hygiene_config=None,
+    sources_config=None,
+    artifact_paths=(),
+):
+    if item.get("execution_started") is False or source_snapshots is None:
+        return None
+    git = plan.get("git") or {}
+    snapshot = str(git.get("snapshot") or "worktree")
+    declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    actual = "worktree" if execution_context == "host" else "dagger_directory"
+    if source_snapshots.get("kind") == "full":
+        files = source_snapshots["files"]
+        before = source_snapshots["binding"]
+        if snapshot == "index":
+            exp_tree = declared
+            if selection.index_source_refusal(
+                root, exp_tree, index_file=git.get("index_file")
+            ):
+                return None
+            actual = "index_verified_worktree"
+        elif snapshot in {"commit", "push", "pr_merge"} and execution_context == "host":
+            if selection.worktree_tree_refusal(root, declared):
+                return None
+        after = selection.worktree_content_binding(root, files)
+        if after != before:
+            return None
+        mat_digest = (
+            str(git["source_tree_id"])
+            if git.get("source_tree_id")
+            else str(before["digest"])
+        )
+        return check_contract.source_ref(
+            snapshot,
+            declared_target_tree=declared,
+            actual_execution_source=actual,
+            head_commit=git.get("head_commit"),
+            index_tree=git.get("index_tree"),
+            content_digest=before["digest"],
+            verified_scope=files,
+            binding_status="byte_tree",
+            scope_kind="full_input_closure",
+            materialization_ref=f"sha256:{mat_digest}",
+        )
+    entry = (source_snapshots.get("checks") or {}).get(name)
+    if entry is None:
+        return None
+    before_files = entry["files"]
+    before = entry["binding"]
+    if name == "docs" and isinstance((item or {}).get("inventory"), dict):
+        # Also include any discovered inventory files that did not exist under '.' scan.
+        final_files = _closure_paths_for_check(
+            plan,
+            root,
+            name,
+            item,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=artifact_paths,
+        )
+        if set(final_files) != set(before_files):
+            return None
+    after = selection.worktree_content_binding(root, before_files)
+    if after != before:
+        return None
+    plan_binding = (git.get("content_binding") or {}).get("paths")
+    if isinstance(plan_binding, dict):
+        for rel_path, expected_sha in plan_binding.items():
+            if (
+                expected_sha is not None
+                and before["paths"].get(rel_path) != expected_sha
+            ):
+                return None
+    return check_contract.source_ref(
+        snapshot,
+        declared_target_tree=declared,
+        actual_execution_source=actual,
+        head_commit=git.get("head_commit"),
+        index_tree=git.get("index_tree"),
+        content_digest=before["digest"],
+        verified_scope=before_files,
+        binding_status="content_digest",
+        scope_kind="check_input_closure",
+    )
+
+
+def source_resolution_receipt(plan, check_entry):
+    """Build a #66-C resolution item directly from a verified Plan and executed Check."""
+    if not isinstance(plan, dict) or not isinstance(check_entry, dict):
+        raise ExecutionError("source_resolution_invalid")
+    nr = check_entry.get("native_result")
+    if not isinstance(nr, dict):
+        raise ExecutionError("source_resolution_invalid")
+    source_ref = nr.get("source_ref")
+    if not isinstance(source_ref, dict) or source_ref.get("scope_kind") not in {
+        "check_input_closure",
+        "full_input_closure",
+    }:
+        raise ExecutionError("source_resolution_closure_unproven")
+    rule_ref = (nr.get("check") or {}).get("rule_ref")
+    if not isinstance(rule_ref, dict) or not rule_ref.get("sha256"):
+        raise ExecutionError("source_resolution_rule_unproven")
+    expected_entries = (plan.get("expected_checks") or {}).get("checks") or []
+    matched_expected = next(
+        (e for e in expected_entries if e.get("name") == check_entry.get("name")),
+        None,
+    )
+    if matched_expected is None:
+        raise ExecutionError("source_resolution_expected_missing")
+    receipt_payload = {
+        "source_ref": source_ref,
+        "result_id": nr.get("result_id"),
+        "content_id": nr.get("content_id"),
+    }
+    receipt_sha = hashlib.sha256(
+        json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    rule_sha = (
+        rule_ref["sha256"].split(":", 1)[1]
+        if ":" in rule_ref["sha256"]
+        else rule_ref["sha256"]
+    )
+    item = {
+        "expected_check_ref": matched_expected["expected_check_ref"],
+        "rule_ref": rule_ref,
+        "source_ref": source_ref,
+        "baseline_ref": nr.get("baseline_ref"),
+        "input_refs": list(nr.get("input_refs") or ()),
+        "rule_source_ref": {
+            "name": rule_ref["name"],
+            "version": str(rule_ref["version"]),
+            "sha256": rule_sha,
+        },
+        "source_receipt_ref": {
+            "name": "p0-source-closure",
+            "version": "1",
+            "sha256": receipt_sha,
+        },
+    }
+    changed_digest = ((plan.get("git") or {}).get("content_binding") or {}).get(
+        "digest"
+    )
+    if isinstance(changed_digest, str) and changed_digest:
+        item["changed_paths_content_digest"] = changed_digest
+    if nr.get("baseline_ref") is not None:
+        base_commit = str((nr["baseline_ref"] or {}).get("base_commit") or "")
+        item["baseline_source_ref"] = {
+            "name": "git-baseline",
+            "version": "1",
+            "sha256": hashlib.sha256(base_commit.encode("utf-8")).hexdigest(),
+        }
+    return item
+
+
+def _input_refs(rule, item=None):
+    refs = []
+    cfg_ref = (item or {}).get("config_input_ref")
+    if isinstance(cfg_ref, dict) and cfg_ref.get("path") and cfg_ref.get("sha256"):
+        refs.append(
+            {"kind": "config", "path": cfg_ref["path"], "sha256": cfg_ref["sha256"]}
+        )
+    elif isinstance(rule, dict) and rule.get("path") and rule.get("sha256"):
+        refs.append({"kind": "config", "path": rule["path"], "sha256": rule["sha256"]})
+    for path in (item or {}).get("inputs") or ():
+        if isinstance(path, str) and path:
+            refs.append({"kind": "changed_path", "path": path})
+    return refs
 
 
 def _check_evidence(item, name):
@@ -1214,6 +1705,7 @@ def _inventory_result(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
@@ -1249,6 +1741,7 @@ def _inventory_result(
         result_instance=f"{run_instance}:{origin}:{index}:{name}:{access_id}",
         input_refs=[],
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_tool_observation(definition, access_id, executable=inventory.get("tool")),
         evidence=evidence,
         baseline_ref=baseline,
@@ -1267,11 +1760,12 @@ def _native_results(
     origin,
     run_instance,
     index,
+    profile_ref=None,
     runner_ref=None,
     execution_context=None,
     parent_execution_context=None,
 ):
-    inputs = _input_refs(rule)
+    inputs = _input_refs(rule, item)
     resolved_runner = runner_ref or f"execution:{origin}"
 
     def instance(access_id):
@@ -1306,6 +1800,7 @@ def _native_results(
             origin=origin,
             run_instance=run_instance,
             index=index,
+            profile_ref=profile_ref,
             runner_ref=resolved_runner,
             execution_context=execution_context,
             parent_execution_context=parent_execution_context,
@@ -1329,6 +1824,7 @@ def _native_results(
             result_instance=instance(links_access),
             input_refs=links_inputs,
             rule_ref=rule,
+            profile_ref=profile_ref,
             tool=_observed_tool(definition, links_access, item),
             evidence=with_context(_check_evidence(item, name)),
             baseline_ref=baseline,
@@ -1349,6 +1845,7 @@ def _native_results(
         result_instance=instance(access_id),
         input_refs=inputs,
         rule_ref=rule,
+        profile_ref=profile_ref,
         tool=_observed_tool(definition, access_id, item) if requirement else None,
         evidence=with_context(_check_evidence(item, name)),
         baseline_ref=baseline,
@@ -1357,10 +1854,23 @@ def _native_results(
     return [native]
 
 
-def _decorate_checks(plan, checks, *, execution_context, run_instance):
-    source = _source_reference(plan, execution_context)
+def _decorate_checks(
+    plan,
+    checks,
+    *,
+    execution_context,
+    run_instance,
+    root=None,
+    profile_ref=None,
+    source_snapshots=None,
+    hygiene_config=None,
+    sources_config=None,
+    artifact_paths=(),
+):
+    fallback_source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
     origin, runner_ref, parent_ctx = _result_origin_and_runner(execution_context)
+    verified_profile = _profile_reference(plan, root=root, profile_ref=profile_ref)
     for index, item in enumerate(checks):
         name = item.get("name")
         item["execution_context"] = execution_context
@@ -1381,6 +1891,21 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
             continue
         item["check_id"] = definition.check_id
         item["check_version"] = definition.definition_version
+        source = (
+            _verified_check_source_ref(
+                plan,
+                name,
+                item,
+                root=root,
+                execution_context=execution_context,
+                source_snapshots=source_snapshots,
+                hygiene_config=hygiene_config,
+                sources_config=sources_config,
+                artifact_paths=artifact_paths,
+            )
+            if root is not None
+            else None
+        ) or fallback_source
         if item.get("execution_started") is False:
             # ``execution_started`` describes the Check's own verdict process
             # (for docs: the Lychee scan). A prerequisite tool that already ran
@@ -1397,6 +1922,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                         origin=origin,
                         run_instance=run_instance,
                         index=index,
+                        profile_ref=verified_profile,
                         runner_ref=runner_ref,
                         execution_context=execution_context,
                         parent_execution_context=parent_ctx,
@@ -1436,6 +1962,7 @@ def _decorate_checks(plan, checks, *, execution_context, run_instance):
                 origin=origin,
                 run_instance=run_instance,
                 index=index,
+                profile_ref=verified_profile,
                 runner_ref=runner_ref,
                 execution_context=execution_context,
                 parent_execution_context=parent_ctx,
@@ -1482,10 +2009,20 @@ def run_host_check(
     run_instance=None,
     artifact_paths=(),
     generated_input_refs=(),
+    profile_ref=None,
 ):
     """Run one selected Host check (hygiene or source) with contract decoration."""
     name = item.get("name")
     run_instance = run_instance or uuid.uuid4().hex
+    source_snapshots = _prepare_source_snapshots(
+        plan,
+        [item],
+        root=root,
+        execution_context=execution_context,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+        artifact_paths=artifact_paths,
+    )
     if name in _HYGIENE_CHECKS:
         results, _ = _run_hygiene_checks(
             plan,
@@ -1520,7 +2057,16 @@ def run_host_check(
             }
         ]
     decorated = _decorate_checks(
-        plan, raw, execution_context=execution_context, run_instance=run_instance
+        plan,
+        raw,
+        execution_context=execution_context,
+        run_instance=run_instance,
+        root=root,
+        profile_ref=profile_ref,
+        source_snapshots=source_snapshots,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+        artifact_paths=artifact_paths,
     )
     return decorated[0]
 
@@ -1551,6 +2097,7 @@ def _execute_with_dependencies(
     run_instance,
     expected_tree,
     report,
+    profile_ref=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -1722,6 +2269,7 @@ def _execute_with_dependencies(
                     blocked_by,
                     execution_context=execution_context,
                     run_instance=run_instance,
+                    profile_ref=profile_ref,
                 )
             elif files:
                 temporary, consumer_root = build_consumer_view(root, files)
@@ -1737,6 +2285,7 @@ def _execute_with_dependencies(
                         run_instance=run_instance,
                         artifact_paths=artifact_target_paths(files),
                         generated_input_refs=generated_refs,
+                        profile_ref=profile_ref,
                     )
                 finally:
                     temporary.cleanup()
@@ -1750,6 +2299,7 @@ def _execute_with_dependencies(
                     runner=runner,
                     execution_context=execution_context,
                     run_instance=run_instance,
+                    profile_ref=profile_ref,
                 )
             check_cache[name] = entry
             return entry
@@ -1876,6 +2426,8 @@ def _execute_with_dependencies(
                 omitted,
                 execution_context=execution_context,
                 run_instance=run_instance,
+                root=root,
+                profile_ref=profile_ref,
             )
         )
     report["checks"] = checks_out
@@ -1897,13 +2449,22 @@ def _execute_with_dependencies(
 
 
 def _decorated_blocked_check(
-    plan, name, selected_status, reason, blocked_by, *, execution_context, run_instance
+    plan,
+    name,
+    selected_status,
+    reason,
+    blocked_by,
+    *,
+    execution_context,
+    run_instance,
+    profile_ref=None,
 ):
     return _decorate_checks(
         plan,
         [_blocked_consumer_entry(name, selected_status, reason, blocked_by)],
         execution_context=execution_context,
         run_instance=run_instance,
+        profile_ref=profile_ref,
     )[0]
 
 
@@ -2086,6 +2647,7 @@ def execute(
     execution_context="host",
     runner=None,
     run_instance=None,
+    profile_ref=None,
 ):
     try:
         validate_plan(plan)
@@ -2166,6 +2728,7 @@ def execute(
             run_instance=run_instance,
             expected_tree=expected_tree,
             report=report,
+            profile_ref=profile_ref,
         )
         if early is not None:
             return early
@@ -2223,6 +2786,14 @@ def execute(
     else:
         report["tests"] = {"status": "not_executed", "exit_code": 3}
 
+    source_snapshots = _prepare_source_snapshots(
+        plan,
+        selected,
+        root=root,
+        execution_context=execution_context,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+    )
     hygiene_results, _ = _run_hygiene_checks(
         plan,
         selected,
@@ -2256,6 +2827,11 @@ def execute(
         native_checks + remaining,
         execution_context=execution_context,
         run_instance=run_instance,
+        root=root,
+        profile_ref=profile_ref,
+        source_snapshots=source_snapshots,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
     )
     prereq_results, _ = _run_prerequisites(
         prerequisites,

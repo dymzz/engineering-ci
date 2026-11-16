@@ -789,6 +789,7 @@ async def _execute_dag(
                         consumer_root, fs_files
                     )
                     artifact_paths = execution.artifact_target_paths(fs_files)
+                verified_profile = execution._profile_reference(value, root=directory)
                 try:
                     entry = await asyncio.to_thread(
                         execution.run_host_check,
@@ -800,6 +801,7 @@ async def _execute_dag(
                         run_instance=run_instance,
                         artifact_paths=artifact_paths,
                         generated_input_refs=generated_refs,
+                        profile_ref=verified_profile,
                     )
                 finally:
                     if temporary is not None:
@@ -1222,6 +1224,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             ]
             check_plan = _host_adapter_plan(value, host_checks)
             loop = asyncio.get_running_loop()
+            verified_profile = execution._profile_reference(value, root=directory)
             host = (
                 await asyncio.to_thread(
                     execution.execute,
@@ -1229,6 +1232,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     root=directory,
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
+                    profile_ref=verified_profile,
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {

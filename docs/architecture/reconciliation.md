@@ -326,14 +326,20 @@ mistaking them for a full observation ledger.
 - The resolved source must cover the Expected snapshot, declared Tree, content
   digest, commit/index identities, and the Expected changed-path scope.
 - Native Results enter the candidate group only from an `eligible` activated
-  Job attempt whose Run/Attempt (and declared runner/report) match the
-  observation, whose Execution Report digest and result membership are
-  verified, whose upstream Job receipt binds that report to the attempt, and
-  whose Check/Rule/Source/Baseline/Phase/Profile identity matches the resolved
-  Expected instance.
+  Job attempt whose Run/Attempt (and declared runner/report, plus any bound
+  `invocation_ref`/`event_ref`/`scope_id`/`expected_set_ref` attribution) match
+  the observation, whose Execution Report digest, per-Check admissibility
+  (`plan_authorized`, `check_contract.status == "valid"`, `check_id`, `status`,
+  primary `native_result` consistency) and result membership are verified,
+  whose upstream Job receipt binds that report to the attempt, and whose
+  Check/Rule/Source/Baseline/Phase/Profile identity matches the resolved
+  Expected instance (including `changed_paths_content_digest` when expanding a
+  `changed_paths` Expected scope to `check_input_closure`/`full_input_closure`).
 - `evaluate_expected_satisfaction()` is called exactly once for that qualified
   candidate group. A failed, rejected, inactive-attempt or unselected result
-  cannot complete an expected input or coverage reference.
+  cannot complete an expected input or coverage reference. `validate_receipt()`
+  recomputes and enforces internal consistency across `status`, `summary`,
+  `all_observations_reconciled`, and `matched` <-> `selected_result_ids`.
 - The Expected projection, its identities, and its completeness claims are
   never rewritten or upgraded.
 - `trusted` / `required` are always `false` and
@@ -344,16 +350,20 @@ mistaking them for a full observation ledger.
 - The caller must pass a Plan-validated Expected projection. This module
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
-- Scheduler routing evidence is not produced by this slice; #72 owns Hook Job
-  activation and lifecycle. A routed Expected without activated Job instances
-  stays `unknown`.
+- Scheduler routing, Hook Dispatch/Collect, and Qualification evidence remain
+  upstream in #72/#102 (`engineering-ci.hook.dispatch.v1`); this module verifies
+  supplied routing and `job_receipt` / `invocation_ref` / `event_ref`
+  attribution without generating Hook receipts itself. A routed Expected without
+  activated Job instances stays `unknown`.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
-  the Report digest, Report→Result membership and receipt consistency, but does
-  not authenticate the issuer; #63 remains responsible for admission.
+  the Report digest, Report->Result membership, attribution fields, and receipt
+  logical consistency, but does not authenticate the issuer; #63 remains
+  responsible for admission.
 - Cross-Run/Attempt historical reuse is not accepted as current execution
-  evidence here (`cross_run_reuse_requires_upstream_admission`). It must be
-  represented through the existing #63 admission path upstream; reattaching an
-  old result to a new Job remains `job_instance_not_activated`/`unexpected`.
+  evidence here (`cross_run_reuse_requires_upstream_admission`). Replaying a
+  report from another `invocation_ref`, `event_ref`, `scope_id`, or
+  `expected_set_ref` is rejected; legitimate reuse must go through the existing
+  #63 admission path upstream.
 - Resolution evidence is separately sourced (controlled rule/config, #66-P0
   Source materialization, comparison baseline). The module verifies presence,
   shape, digest pins and consistency with the immutable Expected instance, not

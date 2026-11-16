@@ -1428,3 +1428,129 @@ def test_historical_definition_version_keeps_its_execution_category():
         evidence={"stdout": ""},
     )
     assert check_contract.validate_result(native) is native
+
+
+def test_advisory_requires_native_exit_and_evidence():
+    vulture = check_contract.definition_for("vulture")
+    valid_adv = check_contract.native_result(
+        vulture,
+        source=source(),
+        status="advisory",
+        result_origin="host",
+        result_instance="vulture-adv",
+        native_exit_code=3,
+        evidence={"stdout": "unused func", "findings": [{"line": 1}]},
+    )
+    assert check_contract.validate_result(valid_adv) is valid_adv
+
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_native_exit_missing"
+    ):
+        check_contract.native_result(
+            vulture,
+            source=source(),
+            status="advisory",
+            result_origin="host",
+            result_instance="vulture-no-exit",
+            native_exit_code=None,
+            evidence={"stdout": "unused func"},
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.native_result(
+            vulture,
+            source=source(),
+            status="advisory",
+            result_origin="host",
+            result_instance="vulture-no-ev",
+            native_exit_code=3,
+            evidence=None,
+        )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_native_exit_missing"
+    ):
+        check_contract.validate_result(
+            _recompute_result_ids({**valid_adv, "native_exit_code": None})
+        )
+
+    forwarding = check_contract.definition_for("forwarding")
+    valid_internal_adv = check_contract.native_result(
+        forwarding,
+        source=source(),
+        status="advisory",
+        result_origin="host",
+        result_instance="fwd-adv",
+        baseline_ref={"base_commit": "a" * 40},
+        evidence={"analysis": "forwarding", "findings": []},
+    )
+    assert check_contract.validate_result(valid_internal_adv) is valid_internal_adv
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_evidence_missing"
+    ):
+        check_contract.validate_result(
+            _recompute_result_ids({**valid_internal_adv, "evidence": None})
+        )
+
+
+def test_internal_check_forbids_native_exit_code():
+    for name in ("forwarding", "source"):
+        definition = check_contract.definition_for(name)
+        kwargs = (
+            {"baseline_ref": {"base_commit": "a" * 40}}
+            if definition.requires_baseline
+            else {}
+        )
+        valid = check_contract.native_result(
+            definition,
+            source=source(),
+            status="passed",
+            result_origin="host",
+            result_instance=f"{name}-valid",
+            evidence={"analysis": name},
+            **kwargs,
+        )
+        with pytest.raises(
+            check_contract.CheckContractError, match="result_internal_exit_forbidden"
+        ):
+            check_contract.native_result(
+                definition,
+                source=source(),
+                status="passed",
+                result_origin="host",
+                result_instance=f"{name}-exit",
+                native_exit_code=0,
+                evidence={"analysis": name},
+                **kwargs,
+            )
+        with pytest.raises(
+            check_contract.CheckContractError, match="result_internal_exit_forbidden"
+        ):
+            check_contract.validate_result(
+                _recompute_result_ids({**valid, "native_exit_code": 1})
+            )
+
+
+def test_validate_definition_enforces_registered_semantics_and_tool_requirements():
+    whitespace = check_contract.definition_for("whitespace")
+    bad_baseline = check_contract.CheckDefinition(
+        check_id=whitespace.check_id,
+        definition_version=whitespace.definition_version,
+        requires_baseline=False,
+        tool_requirements=whitespace.tool_requirements,
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_check_semantics_mismatch"
+    ):
+        check_contract.validate_definition(bad_baseline)
+
+    docs = check_contract.definition_for("docs")
+    bad_tools = check_contract.CheckDefinition(
+        check_id=docs.check_id,
+        definition_version=docs.definition_version,
+        tool_requirements=(),
+    )
+    with pytest.raises(
+        check_contract.CheckContractError, match="result_tool_requirements_mismatch"
+    ):
+        check_contract.validate_definition(bad_tools)

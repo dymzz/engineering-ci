@@ -54,6 +54,13 @@
 
 **定向验收**：Native Checks 全部 PASS 但上一 Run 的 Required Terminal 见证缺失时 Release 拒绝；Required Obligations 不为空但 Expected Checks 合法为空时不能获得 Required PASS；Required 子集为空但 Advisory 适用；Profile 实际合法空 Expected vs 未加载/未批准；已 Required 但 Job 缺失；相同目标 Tree、不同 old→new 的差分型 Check 不得错误复用；Index B vs Worktree C；两个必须的 Native Result 少一个不能通过；真实 Result 结构有效但 #63 来源不受信；合格历史 PASS 可在输入等价时复用。将验收分配给真正的接口生产/消费方；不为文档修订重跑原生扫描。
 
+## 后续合并与复审进展（PR #101 / PR #104 / Issue #107）
+
+- **PR #101**：收敛 #52 状态与工具契约基础，显式区分 `process` 与 `internal` 检查并补齐已注册内置 Check。
+- **PR #104**：收敛 v2 `EffectiveProfile` 授权投影、`expected_checks`（#66-B）与 `reconciliation`（#66-C）对账原语。
+- **Issue #107 复审与修复**：打通真实 Producer（`selection`/`execution`/`.dagger`）到 Expected/Result 对账的端到端契约：从已验证 `Plan` 向 Host/Dagger `NativeResult` 传递 `profile_ref`；实现 `#66-P0` `check_input_closure`（worktree）与 `full_input_closure`/`byte_tree`（已验证 index/commit/push/pr_merge）真实字节/树closure 证明、统一 canonical `rule_ref` 与 `changed_path` `input_refs`；补充 Check 级 Execution Report 准入（`plan_authorized` / `check_contract` / 主结果一致性）、`validate_receipt()` 自重算逻辑一致性检验、`invocation_ref`/`event_ref`/`scope_id`/`expected_set_ref` 归因校验，以及 `advisory` exit/evidence、`internal` 禁用 `native_exit_code`、`validate_definition()` 语义与工具一致性；各模块仍可按实际缺陷继续修复。
+- **尚未闭合的上游/下游边界**：Hook Dispatch/Collect/Qualification 生产仍在 `#72/#102`（`engineering-ci.hook.dispatch.v1`），跨 Run 历史复用准入与发布方签名验证仍在 `#63`，最终门禁授权仍在 `#61`。
+
 ## 历史说明
 
 本文件**分支历史**此前版本在 §1–§6 重复叙述 Check/Expected/Profile 的规范条款，并把“以后创建的 #52-A PR”作为未来事项。实际 [PR #93](https://github.com/dymzz/engineering-ci/pull/93) 已于 2026-11-13 合并至 `main`（merge `c8dbdd2edfef57bfe1fbb1900b7b49d04df44977`）；旧章节在分支编辑过程中被收敛为非规范性审计索引。**相对 `main` 的当前 PR Diff 并没有对应的整段删除；不得将分支历史删除误记为本 PR 的 Files Changed 删除。**此前 Issue 中直接修改的事实和 Review 记录仍可通过 GitHub 历史查询。本 PR 合并不等于 Issue 或运行时代码已按设计完成。
