@@ -374,6 +374,10 @@ def persist_event(root, event):
     if target.exists():
         if target.read_bytes() != payload:
             raise HookEventError("event_payload_conflict")
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
     else:
         _write_private_file(target, payload)
     git_dir = _git_dir(root)
