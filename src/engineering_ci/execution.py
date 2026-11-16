@@ -2512,11 +2512,11 @@ def _active_tool_identities(definition, rule_ref):
 
 
 def _effective_whitespace_attributes(root_path, paths):
-    """Final native `whitespace` attribute per checked path via `git check-attr`.
+    """All final Git attributes per checked path via `git check-attr -a`.
 
     Uses Git itself so every attribute source (info/attributes, explicit or
     default user-level attributes, in-tree .gitattributes) is resolved with
-    Git's own precedence under the same environment as the native check.
+    Git's own precedence under the same environment as the native check. All\r\n    attributes are bound because git diff --check is also affected by e.g.\r\n    conflict-marker-size and diff, not only whitespace.
     """
     unique = sorted({str(p).replace("\\", "/") for p in paths or () if p})
     if not unique:
@@ -2524,7 +2524,7 @@ def _effective_whitespace_attributes(root_path, paths):
     payload = b"".join(p.encode("utf-8") + b"\0" for p in unique)
     try:
         res = subprocess.run(
-            ["git", "check-attr", "-z", "--stdin", "whitespace"],
+            ["git", "check-attr", "-a", "-z", "--stdin"],
             cwd=root_path,
             input=payload,
             capture_output=True,
@@ -2537,15 +2537,18 @@ def _effective_whitespace_attributes(root_path, paths):
     fields = res.stdout.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
-    if len(fields) != 3 * len(unique):
+    if len(fields) % 3 != 0:
         return None, "whitespace_config_unreadable"
+    known = set(unique)
     effective = []
     for index in range(0, len(fields), 3):
-        if fields[index + 1] != b"whitespace":
+        path = fields[index].decode("utf-8", errors="replace")
+        if path not in known:
             return None, "whitespace_config_unreadable"
         effective.append(
             [
-                fields[index].decode("utf-8", errors="replace"),
+                path,
+                fields[index + 1].decode("utf-8", errors="replace"),
                 fields[index + 2].decode("utf-8", errors="replace"),
             ]
         )
@@ -2616,7 +2619,7 @@ def _effective_git_whitespace_config(root, paths=()):
         "core.whitespace": core_ws,
         "info_attributes_sha256": info_attrs_sha,
         "core_attributes_file_sha256": core_attrs,
-        "effective_whitespace_attributes_sha256": effective_attrs,
+        "effective_git_attributes_sha256": effective_attrs,
     }, None
 
 

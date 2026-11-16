@@ -1061,10 +1061,77 @@ def test_whitespace_default_user_attributes_enter_effective_rule_identity(
     assert proof_after["status"] == "verified_candidate_inputs"
     assert proof_after["environment_inputs"]["core_attributes_file_sha256"] is None
     assert (
-        proof_after["environment_inputs"]["effective_whitespace_attributes_sha256"]
-        != proof_before["environment_inputs"]["effective_whitespace_attributes_sha256"]
+        proof_after["environment_inputs"]["effective_git_attributes_sha256"]
+        != proof_before["environment_inputs"]["effective_git_attributes_sha256"]
     )
     assert proof_after["closure_digest"] != proof_before["closure_digest"]
+    stale = execution.compare_pre_execution_to_historical_result(proof_after, nr_before)
+    assert stale["equivalent"] is False
+    assert stale["reason"] == "whitespace_config_mismatch"
+
+    after_rep = execution.execute(plan, root=root, runner=_HostRunner())
+    ws_after = next(c for c in after_rep["checks"] if c["name"] == "whitespace")
+    assert ws_after["status"] == "passed"
+    assert (
+        execution.compare_pre_execution_to_historical_result(
+            proof_after, ws_after["native_result"]
+        )["equivalent"]
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "default_attributes"),
+    [
+        (
+            "<<<<<<< ours\nVALUE = 1\n=======\nVALUE = 2\n>>>>>>> theirs\n",
+            "* conflict-marker-size=8\n",
+        ),
+        ("VALUE = 2   \n", "* -diff\n"),
+    ],
+    ids=["conflict-marker-size", "diff"],
+)
+def test_default_user_attributes_beyond_whitespace_enter_rule_identity(
+    tmp_path, monkeypatch, content, default_attributes
+):
+    xdg = tmp_path / "xdg"
+    (xdg / "git").mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    root, base = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text(content, encoding="utf-8")
+    plan = _worktree_plan(root, base)
+
+    proof_before = execution.build_pre_execution_source_proof(
+        plan, "whitespace", root=root
+    )
+    before_rep = execution.execute(plan, root=root, runner=_HostRunner())
+    ws_before = next(c for c in before_rep["checks"] if c["name"] == "whitespace")
+    assert ws_before["status"] == "failed"
+    nr_before = ws_before["native_result"]
+    assert (
+        execution.compare_pre_execution_to_historical_result(proof_before, nr_before)[
+            "equivalent"
+        ]
+        is True
+    )
+
+    (xdg / "git" / "attributes").write_text(default_attributes, encoding="utf-8")
+    # whitespace itself stays unspecified; only another attribute changed.
+    assert (
+        _git(root, "check-attr", "whitespace", "--", "src/pkg/mod.py")
+        .strip()
+        .endswith("unspecified")
+    )
+    proof_after = execution.build_pre_execution_source_proof(
+        plan, "whitespace", root=root
+    )
+    assert proof_after["closure_digest"] != proof_before["closure_digest"]
+    assert (
+        proof_after["environment_inputs"]["effective_git_attributes_sha256"]
+        != proof_before["environment_inputs"]["effective_git_attributes_sha256"]
+    )
     stale = execution.compare_pre_execution_to_historical_result(proof_after, nr_before)
     assert stale["equivalent"] is False
     assert stale["reason"] == "whitespace_config_mismatch"
