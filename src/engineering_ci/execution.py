@@ -783,7 +783,7 @@ def _run_hygiene_checks(
     ws_before = None
     ws_err_before = None
     if "whitespace" in checks:
-        ws_before, ws_err_before = _effective_git_whitespace_config(root)
+        ws_before, ws_err_before = _effective_git_whitespace_config(root, changes.paths)
     report = hygiene.run(
         changes,
         run_config,
@@ -792,7 +792,7 @@ def _run_hygiene_checks(
     ws_after = None
     ws_err_after = None
     if "whitespace" in checks:
-        ws_after, ws_err_after = _effective_git_whitespace_config(root)
+        ws_after, ws_err_after = _effective_git_whitespace_config(root, changes.paths)
     results = []
     seen = set()
     any_failed = report["status"] == "failed"
@@ -2511,7 +2511,48 @@ def _active_tool_identities(definition, rule_ref):
     ]
 
 
-def _effective_git_whitespace_config(root):
+def _effective_whitespace_attributes(root_path, paths):
+    """Final native `whitespace` attribute per checked path via `git check-attr`.
+
+    Uses Git itself so every attribute source (info/attributes, explicit or
+    default user-level attributes, in-tree .gitattributes) is resolved with
+    Git's own precedence under the same environment as the native check.
+    """
+    unique = sorted({str(p).replace("\\", "/") for p in paths or () if p})
+    if not unique:
+        return _canonical_sha256([]), None
+    payload = b"".join(p.encode("utf-8") + b"\0" for p in unique)
+    try:
+        res = subprocess.run(
+            ["git", "check-attr", "-z", "--stdin", "whitespace"],
+            cwd=root_path,
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None, "whitespace_config_unreadable"
+    if res.returncode != 0:
+        return None, "whitespace_config_unreadable"
+    fields = res.stdout.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) != 3 * len(unique):
+        return None, "whitespace_config_unreadable"
+    effective = []
+    for index in range(0, len(fields), 3):
+        if fields[index + 1] != b"whitespace":
+            return None, "whitespace_config_unreadable"
+        effective.append(
+            [
+                fields[index].decode("utf-8", errors="replace"),
+                fields[index + 2].decode("utf-8", errors="replace"),
+            ]
+        )
+    return _canonical_sha256(sorted(effective)), None
+
+
+def _effective_git_whitespace_config(root, paths=()):
     if root is None:
         return None, "whitespace_config_unreadable"
     root_path = Path(root)
@@ -2567,10 +2608,15 @@ def _effective_git_whitespace_config(root):
     else:
         return None, "whitespace_config_unreadable"
 
+    effective_attrs, attrs_err = _effective_whitespace_attributes(root_path, paths)
+    if attrs_err is not None:
+        return None, attrs_err
+
     return {
         "core.whitespace": core_ws,
         "info_attributes_sha256": info_attrs_sha,
         "core_attributes_file_sha256": core_attrs,
+        "effective_whitespace_attributes_sha256": effective_attrs,
     }, None
 
 
@@ -2751,7 +2797,14 @@ def build_pre_execution_source_proof(
 
     env_inputs = None
     if check_name == "whitespace":
-        env_inputs, ws_err = _effective_git_whitespace_config(resolved_root)
+        env_inputs, ws_err = _effective_git_whitespace_config(
+            resolved_root,
+            _changeset_from_plan(
+                scoped_plan,
+                resolved_root,
+                extra_paths=artifact_target_paths(verified_files),
+            ).paths,
+        )
         if ws_err is not None:
             return unverified(ws_err)
 
@@ -3747,7 +3800,9 @@ def _decorate_checks(
             and item.get("git_whitespace_config") is None
             and not item.get("git_whitespace_config_drifted")
         ):
-            ws_cfg, ws_err = _effective_git_whitespace_config(root)
+            ws_cfg, ws_err = _effective_git_whitespace_config(
+                root, _changeset_from_plan(plan, root).paths
+            )
             if ws_err is None and ws_cfg is not None:
                 result_item = {**item, "git_whitespace_config": ws_cfg}
         try:
