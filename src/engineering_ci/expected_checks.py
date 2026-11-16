@@ -220,6 +220,7 @@ def profile_digest(profile):
         "targets",
         "governed_rules",
         "approval_binding",
+        "phase",
     ):
         if optional in profile and profile[optional] is not None:
             payload[optional] = profile[optional]
@@ -275,6 +276,7 @@ def build_effective_profile(
     valid_until=None,
     required_obligations=(),
     advisory_checks=(),
+    phase=None,
     allowed_inapplicability=(),
     declared_checks=None,
     domain_complete=False,
@@ -297,6 +299,10 @@ def build_effective_profile(
         "allowed_inapplicability": list(allowed_inapplicability),
         "domain_complete": bool(domain_complete),
     }
+    if phase is not None:
+        if not isinstance(phase, str) or not phase:
+            raise ExpectedError("effective_profile_phase_invalid")
+        profile["phase"] = phase
     if targets is not None:
         profile["targets"] = list(targets)
     if valid_from is not None:
@@ -312,6 +318,8 @@ def build_effective_profile(
         "action": action,
         "target": target,
     }
+    if phase is not None:
+        target_scope["phase"] = phase
     if targets is not None:
         target_scope["targets"] = list(targets)
     effective_window = {"effective_at": effective_at}
@@ -397,6 +405,8 @@ def effective_profile_identity(path=None, profile=None, *, root=None):
         "domain_complete": bool(profile.get("domain_complete", False)),
         "authority_verified": bool(profile.get("authority_verified", False)),
     }
+    if "phase" in profile:
+        identity["phase"] = profile["phase"]
     if "declared_checks" in profile:
         identity["declared_checks"] = list(profile["declared_checks"])
     if "targets" in profile:
@@ -520,6 +530,10 @@ def validate_effective_profile(profile, *, git=None):
         value = profile.get(field)
         if not isinstance(value, str) or not value:
             raise ExpectedError("effective_profile_scope_missing")
+    if "phase" in profile and (
+        not isinstance(profile["phase"], str) or not profile["phase"]
+    ):
+        raise ExpectedError("effective_profile_phase_invalid")
     if (
         profile.get("approval_source") not in AUTHORITATIVE_APPROVAL_SOURCES
         or type(profile.get("authority_verified", False)) is not bool
@@ -541,6 +555,8 @@ def validate_effective_profile(profile, *, git=None):
         or digest != profile_digest(profile)
     ):
         raise ExpectedError("effective_profile_digest_mismatch")
+    if "phase" in profile and "target_scope" not in binding:
+        raise ExpectedError("effective_profile_phase_scope_missing")
     if "target_scope" in binding:
         t_scope = binding["target_scope"]
         if (
@@ -548,6 +564,8 @@ def validate_effective_profile(profile, *, git=None):
             or t_scope.get("context") != profile.get("context")
             or t_scope.get("action") != profile.get("action")
             or t_scope.get("target") != profile.get("target")
+            or ("phase" in profile and t_scope.get("phase") != profile["phase"])
+            or ("phase" not in profile and "phase" in t_scope)
             or (
                 "targets" in profile
                 and t_scope.get("targets") != profile.get("targets")
@@ -618,6 +636,10 @@ def validate_effective_profile(profile, *, git=None):
             not isinstance(item, str) or not item for item in declared
         ):
             raise ExpectedError("effective_profile_declared_checks_invalid")
+    if "phase" not in profile and any(
+        isinstance(o, dict) and "phases" in o for o in list(required) + list(advisory)
+    ):
+        raise ExpectedError("effective_profile_phase_unresolved")
     for item in required:
         if not isinstance(item, dict):
             raise ExpectedError("effective_profile_obligations_invalid")
@@ -637,20 +659,24 @@ def validate_effective_profile(profile, *, git=None):
                 or any(not isinstance(n, str) or not n for n in names)
             ):
                 raise ExpectedError("effective_profile_check_names_invalid")
-        for opt_list in ("target_refs", "actions"):
+        for opt_list in ("target_refs", "actions", "phases"):
             if opt_list in item:
                 vals = item[opt_list]
-                if not isinstance(vals, list) or any(
-                    not isinstance(v, str) or not v for v in vals
+                if (
+                    not isinstance(vals, list)
+                    or (opt_list == "phases" and not vals)
+                    or any(not isinstance(v, str) or not v for v in vals)
                 ):
                     raise ExpectedError("effective_profile_obligations_invalid")
     for item in advisory:
         if isinstance(item, dict):
-            for opt_list in ("target_refs", "actions"):
+            for opt_list in ("target_refs", "actions", "phases"):
                 if opt_list in item:
                     vals = item[opt_list]
-                    if not isinstance(vals, list) or any(
-                        not isinstance(v, str) or not v for v in vals
+                    if (
+                        not isinstance(vals, list)
+                        or (opt_list == "phases" and not vals)
+                        or any(not isinstance(v, str) or not v for v in vals)
                     ):
                         raise ExpectedError("effective_profile_obligations_invalid")
     if git is not None:
@@ -673,7 +699,15 @@ def _verify_profile_authority(
     if gov is None and isinstance(declared_domain, dict):
         gov = declared_domain.get("governed_rules")
     policy_matched = False
+    phase_proven = "phase" not in profile
     if isinstance(config_policy, dict):
+        policy_phase = config_policy.get("phase")
+        if "phase" in profile:
+            if policy_phase is not None and policy_phase != profile["phase"]:
+                raise ExpectedError("effective_profile_phase_untrusted")
+            phase_proven = policy_phase == profile["phase"]
+        elif policy_phase is not None:
+            raise ExpectedError("effective_profile_phase_untrusted")
         if (
             profile.get("profile_ref") != config_policy.get("profile_ref")
             or profile.get("profile_revision") != config_policy.get("profile_revision")
@@ -722,6 +756,7 @@ def _verify_profile_authority(
     return bool(
         profile.get("authority_verified") is True
         and policy_matched
+        and phase_proven
         and (gov is None or gov_matched)
     )
 
@@ -735,9 +770,12 @@ def _target_matches(target_ref, allowed_targets):
     return False
 
 
-def _obligation_matches_scope(item, *, target_ref=None, ref_action=None):
+def _obligation_matches_scope(item, *, target_ref=None, ref_action=None, phase=None):
     if not isinstance(item, dict):
         return True
+    phases = item.get("phases")
+    if phases is not None and (phase is None or phase not in phases):
+        return False
     target_refs = item.get("target_refs")
     if (
         target_ref is not None
@@ -811,6 +849,7 @@ def _parse_profile_obligations(
     ref_action=None,
     ref_scopes=None,
 ):
+    phase = effective_profile.get("phase")
     obligations_by_check = {}
     required_by_check = {}
     advisory_by_check = {}
@@ -825,12 +864,14 @@ def _parse_profile_obligations(
             matched_refs = [
                 src
                 for src, tgt, act in ref_scopes
-                if _obligation_matches_scope(ob, target_ref=tgt, ref_action=act)
+                if _obligation_matches_scope(
+                    ob, target_ref=tgt, ref_action=act, phase=phase
+                )
             ]
             if not matched_refs:
                 continue
         elif not _obligation_matches_scope(
-            ob, target_ref=target_ref, ref_action=ref_action
+            ob, target_ref=target_ref, ref_action=ref_action, phase=phase
         ):
             continue
         ob_ref = ob["obligation_ref"]
@@ -866,12 +907,14 @@ def _parse_profile_obligations(
                 matched_refs = [
                     src
                     for src, tgt, act in ref_scopes
-                    if _obligation_matches_scope(adv, target_ref=tgt, ref_action=act)
+                    if _obligation_matches_scope(
+                        adv, target_ref=tgt, ref_action=act, phase=phase
+                    )
                 ]
                 if not matched_refs:
                     continue
             elif not _obligation_matches_scope(
-                adv, target_ref=target_ref, ref_action=ref_action
+                adv, target_ref=target_ref, ref_action=ref_action, phase=phase
             ):
                 continue
         elif ref_scopes is not None:
@@ -1734,6 +1777,9 @@ def _derive_v2_from_profile(
         and not missing_declared_domain
         and not declared_domain_incomplete
     )
+    phase_status = (
+        "unverified" if effective_profile.get("phase") is not None else "not_applicable"
+    )
     per_ref_incomplete = bool(
         per_ref and any(item.get("status") != "complete" for item in per_ref)
     )
@@ -1750,6 +1796,10 @@ def _derive_v2_from_profile(
     elif not authority_proven:
         status = "partial"
         reason = "effective_profile_authority_unverified"
+        consumer_completeness = "incomplete_profile"
+    elif phase_status == "unverified":
+        status = "partial"
+        reason = "effective_profile_phase_unverified"
         consumer_completeness = "incomplete_profile"
     elif is_multi:
         status = "partial"
@@ -1815,6 +1865,8 @@ def _derive_v2_from_profile(
         "profile_source": profile_source,
         "effective_profile": json.loads(json.dumps(effective_profile)),
         "authority_status": "verified" if authority_proven else "unverified",
+        "phase": effective_profile.get("phase"),
+        "phase_status": phase_status,
         "trusted_admission_status": "not_evaluated",
         "consumer_completeness": consumer_completeness,
         "observed_input_closure_status": "not_observed",
@@ -2865,6 +2917,17 @@ def validate_projection(
                 raise ExpectedError("expected_non_check_obligations_mismatch")
     else:
         profile = validate_effective_profile(expected.get("effective_profile"), git=git)
+        canonical_phase = profile.get("phase")
+        expected_phase = expected.get("phase")
+        phase_status = expected.get("phase_status")
+        if canonical_phase is not None:
+            if expected_phase != canonical_phase or phase_status != "unverified":
+                raise ExpectedError("effective_profile_phase_untrusted")
+        elif expected_phase is not None or phase_status not in {
+            None,
+            "not_applicable",
+        }:
+            raise ExpectedError("effective_profile_phase_untrusted")
         sel_cfg, _tach_graph, _all_tests = _selection_for_validation(plan)
         authority_proven = _verify_profile_authority(
             profile,
@@ -2878,6 +2941,14 @@ def validate_projection(
         auth_status = expected.get("authority_status")
         if auth_status not in {None, "verified", "unverified"}:
             raise ExpectedError("effective_profile_authority_untrusted")
+        phase_status = expected.get("phase_status")
+        if phase_status not in {None, "not_applicable", "unverified"}:
+            raise ExpectedError("effective_profile_phase_untrusted")
+        if phase_status == "unverified" and (
+            expected.get("status") == "complete"
+            or expected.get("consumer_completeness") == "expected_domain_complete"
+        ):
+            raise ExpectedError("expected_phase_complete_unproven")
         if auth_status == "verified" and not authority_proven:
             raise ExpectedError("expected_complete_unproven")
         if not authority_proven and expected.get("consumer_completeness") == (

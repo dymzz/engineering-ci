@@ -543,6 +543,7 @@ def _parse_effective_profile_policy(raw):
         "domain_complete",
         "declared_checks",
         "governed_rules",
+        "phase",
     }:
         raise SelectionError("effective_profile_policy_invalid")
     prof_ref = raw.get("profile_ref")
@@ -594,6 +595,9 @@ def _parse_effective_profile_policy(raw):
         "domain_complete": domain_complete,
         "declared_checks": declared,
         "governed_rules": dict(gov) if isinstance(gov, dict) else None,
+        "phase": (
+            _text(raw["phase"], "phase") if raw.get("phase") is not None else None
+        ),
     }
 
 
