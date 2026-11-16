@@ -1814,6 +1814,153 @@ def reconcile_expected_results(
     return payload
 
 
+def _result_id_list(value, code):
+    if not isinstance(value, list) or not value:
+        raise ReconciliationError(code)
+    seen = set()
+    for item in value:
+        if not isinstance(item, str) or not item or item in seen:
+            raise ReconciliationError(code)
+        seen.add(item)
+    return value
+
+
+def _validate_satisfied_requirements(
+    entry,
+    satisfaction,
+    resolved_expected,
+    *,
+    selected,
+    observed_by_id,
+    selected_by_id,
+    rejected_ids,
+):
+    """Verify matched native_satisfaction and requirements[] consistency."""
+    if (
+        satisfaction.get("kind") != check_contract.SATISFACTION_KIND
+        or satisfaction.get("schema_version") != check_contract.CONTRACT_VERSION
+        or satisfaction.get("consumer_scope") != "supplied_expected_only"
+    ):
+        raise ReconciliationError("receipt_satisfaction_invalid")
+    if (
+        satisfaction.get("required") is not False
+        or satisfaction.get("trusted") is not False
+    ):
+        raise ReconciliationError("receipt_satisfaction_authority_claimed")
+    sat_result_ids = _result_id_list(
+        satisfaction.get("result_ids"), "receipt_satisfaction_result_ids_invalid"
+    )
+    sat_result_ids_set = set(sat_result_ids)
+    if sat_result_ids_set & rejected_ids:
+        raise ReconciliationError("receipt_satisfaction_rejected_conflict")
+    if not sat_result_ids_set.issubset(observed_by_id) or not set(selected).issubset(
+        sat_result_ids_set
+    ):
+        raise ReconciliationError("receipt_satisfaction_result_ids_mismatch")
+    try:
+        definition = check_contract._registered_definition(
+            entry.get("check_id"), entry.get("definition_version")
+        )
+    except check_contract.CheckContractError:
+        raise ReconciliationError("receipt_satisfaction_invalid") from None
+
+    expected_reason = (
+        "all_requirements_satisfied" if definition.tool_requirements else "native_pass"
+    )
+    if satisfaction.get("reason") != expected_reason:
+        raise ReconciliationError("receipt_satisfaction_reason_invalid")
+    if satisfaction.get("expected_failures_complete") is not False:
+        raise ReconciliationError("receipt_satisfaction_expected_failures_invalid")
+
+    reqs = satisfaction.get("requirements")
+    if not isinstance(reqs, list):
+        raise ReconciliationError("receipt_satisfaction_requirements_invalid")
+
+    if not definition.tool_requirements:
+        if reqs:
+            raise ReconciliationError("receipt_satisfaction_requirements_mismatch")
+        if len(selected) != 1:
+            raise ReconciliationError("receipt_witness_mismatch")
+        return
+
+    rule = resolved_expected.get("rule_ref")
+    if check_contract._unresolved_conditions(definition, rule=rule):
+        raise ReconciliationError("receipt_satisfaction_rule_unresolved")
+    expected_reqs = check_contract._requirement_order(
+        check_contract._active_requirements(definition, rule=rule)
+    )
+    if not expected_reqs:
+        raise ReconciliationError("receipt_satisfaction_requirements_mismatch")
+
+    req_by_id = {}
+    for item in reqs:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("requirement_id"), str)
+            or not item.get("requirement_id")
+        ):
+            raise ReconciliationError("receipt_satisfaction_requirements_invalid")
+        req_id = item["requirement_id"]
+        if req_id in req_by_id:
+            raise ReconciliationError("receipt_requirement_duplicate")
+        req_by_id[req_id] = item
+
+    expected_ids = [req.requirement_id for req in expected_reqs]
+    if set(req_by_id) != set(expected_ids):
+        raise ReconciliationError("receipt_satisfaction_requirements_mismatch")
+
+    selected_set = set(selected)
+    for req_def in expected_reqs:
+        req_entry = req_by_id[req_def.requirement_id]
+        if req_entry.get("status") != "satisfied":
+            raise ReconciliationError("receipt_requirement_unsatisfied")
+        if req_entry.get("reason") != "native_pass":
+            raise ReconciliationError("receipt_requirement_reason_invalid")
+        if req_entry.get("after") != list(req_def.after):
+            raise ReconciliationError("receipt_requirement_structure_mismatch")
+        expected_alts = [alt.access_id for alt in req_def.alternatives]
+        if req_entry.get("alternatives") != expected_alts:
+            raise ReconciliationError("receipt_requirement_structure_mismatch")
+        sat_by = req_entry.get("satisfied_by")
+        if not isinstance(sat_by, str) or not sat_by:
+            raise ReconciliationError("receipt_requirement_witness_missing")
+        if sat_by in rejected_ids:
+            raise ReconciliationError("receipt_selected_rejected_conflict")
+        if sat_by not in selected_set or sat_by not in selected_by_id:
+            raise ReconciliationError("receipt_requirement_witness_unselected")
+        req_observed = _result_id_list(
+            req_entry.get("observed"), "receipt_requirement_observed_invalid"
+        )
+        req_observed_set = set(req_observed)
+        if req_observed_set & rejected_ids:
+            raise ReconciliationError("receipt_requirement_rejected_conflict")
+        if not req_observed_set.issubset(sat_result_ids_set):
+            raise ReconciliationError("receipt_requirement_observed_mismatch")
+        if sat_by not in req_observed_set:
+            raise ReconciliationError("receipt_requirement_witness_unobserved")
+        sel_item = selected_by_id[sat_by]
+        if not check_contract._result_matches_requirement(req_def, sel_item):
+            raise ReconciliationError("receipt_requirement_tool_mismatch")
+        expected_req_observed = [
+            rid
+            for rid in sat_result_ids
+            if check_contract._result_matches_requirement(req_def, observed_by_id[rid])
+        ]
+        if req_observed != expected_req_observed:
+            raise ReconciliationError("receipt_requirement_observed_mismatch")
+        for pred_id in req_def.after:
+            pred_entry = req_by_id.get(pred_id)
+            if (
+                not isinstance(pred_entry, dict)
+                or pred_entry.get("status") != "satisfied"
+                or pred_entry.get("satisfied_by") == sat_by
+            ):
+                raise ReconciliationError("receipt_requirement_prerequisite_invalid")
+
+    if [req_by_id[req_id]["satisfied_by"] for req_id in expected_ids] != selected:
+        raise ReconciliationError("receipt_witness_mismatch")
+
+
 def validate_receipt(receipt):
     """Validate the receipt shape and recompute its immutable reference."""
     if not isinstance(receipt, dict):
@@ -1876,12 +2023,14 @@ def validate_receipt(receipt):
         }
         if len(observed_by_id) != len(observed_results):
             raise ReconciliationError("receipt_result_evidence_mismatch")
+        selected_by_id = {}
         for item in selected_results:
             if (
                 not isinstance(item, dict)
                 or observed_by_id.get(item.get("result_id")) != item
             ):
                 raise ReconciliationError("receipt_result_evidence_mismatch")
+            selected_by_id[item["result_id"]] = item
         job_instances = entry.get("job_instances")
         if not isinstance(job_instances, list) or any(
             not isinstance(item, dict)
@@ -1966,10 +2115,23 @@ def validate_receipt(receipt):
                 # A matched witness must come from an activated eligible attempt.
                 if attempt_key not in eligible_attempts:
                     raise ReconciliationError("receipt_selected_unqualified_attempt")
-        elif (
-            isinstance(satisfaction, dict) and satisfaction.get("status") == "satisfied"
-        ):
-            raise ReconciliationError("receipt_entry_status_inconsistent")
+            _validate_satisfied_requirements(
+                entry,
+                satisfaction,
+                resolved_expected,
+                selected=selected,
+                observed_by_id=observed_by_id,
+                selected_by_id=selected_by_id,
+                rejected_ids=rejected_ids,
+            )
+        elif isinstance(satisfaction, dict):
+            if satisfaction.get("status") == "satisfied":
+                raise ReconciliationError("receipt_entry_status_inconsistent")
+            if (
+                satisfaction.get("required") is not False
+                or satisfaction.get("trusted") is not False
+            ):
+                raise ReconciliationError("receipt_satisfaction_authority_claimed")
     for key in ("unexpected", "duplicate"):
         if not isinstance(receipt.get(key), list):
             raise ReconciliationError("receipt_observations_invalid")

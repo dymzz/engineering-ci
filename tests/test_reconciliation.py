@@ -2654,3 +2654,774 @@ def test_b3_job_receipt_requires_all_four_attribution_fields_and_frozen_l2_inter
         reconciliation.validate_receipt(rec)
         assert rec["entries"][0]["binding_status"] == "unknown"
         assert rec["entries"][0]["reason"] == expected_reason
+
+
+def test_issue109_requirement_details_internal_consistency_negatives():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    def expect_invalid(doc, pattern):
+        with pytest.raises(reconciliation.ReconciliationError, match=pattern):
+            reconciliation.validate_receipt(rehash(doc))
+
+    # 1) Single-requirement Check (tach) with extra candidate + rejected result:
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    res_ok = native("tach", tool_access="tach/check", instance="tach-1")
+    res_alt = native("tach", tool_access="tach/check", instance="tach-2")
+    wrong_source = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="f" * 40,
+        actual_execution_source="worktree",
+        content_digest="e" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+    res_wrong_source = native(
+        "tach",
+        tool_access="tach/check",
+        instance="tach-bad-src",
+        source=wrong_source,
+    )
+    receipt = reconcile(
+        projection,
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH)],
+        observations=[make_observation("job-1", [res_ok, res_alt, res_wrong_source])],
+    )
+    reconciliation.validate_receipt(receipt)
+    selected_id = receipt["entries"][0]["selected_result_ids"][0]
+    unselected_id = (
+        res_alt["result_id"]
+        if selected_id == res_ok["result_id"]
+        else res_ok["result_id"]
+    )
+    rejected_id = res_wrong_source["result_id"]
+
+    # Counterexample 1 (Core): requirement status flipped to unsatisfied while top-level stays matched/satisfied:
+    bad_req_status = copy.deepcopy(receipt)
+    bad_req_status["entries"][0]["native_satisfaction"]["requirements"][0]["status"] = (
+        "unsatisfied"
+    )
+    expect_invalid(bad_req_status, "receipt_requirement_unsatisfied")
+
+    # Counterexample 2a: satisfied_by missing / empty:
+    bad_missing_by = copy.deepcopy(receipt)
+    bad_missing_by["entries"][0]["native_satisfaction"]["requirements"][0][
+        "satisfied_by"
+    ] = None
+    expect_invalid(bad_missing_by, "receipt_requirement_witness_missing")
+
+    # Counterexample 2b: satisfied_by points to valid observed but unselected result:
+    bad_unselected = copy.deepcopy(receipt)
+    bad_unselected["entries"][0]["native_satisfaction"]["requirements"][0][
+        "satisfied_by"
+    ] = unselected_id
+    expect_invalid(bad_unselected, "receipt_requirement_witness_unselected")
+
+    # Counterexample 2c: satisfied_by points to rejected result:
+    bad_rejected = copy.deepcopy(receipt)
+    bad_rejected["entries"][0]["native_satisfaction"]["requirements"][0][
+        "satisfied_by"
+    ] = rejected_id
+    expect_invalid(bad_rejected, "receipt_selected_rejected_conflict")
+
+    # Counterexample 2d: failure reason retained on satisfied requirement:
+    bad_reason = copy.deepcopy(receipt)
+    bad_reason["entries"][0]["native_satisfaction"]["requirements"][0]["reason"] = (
+        "prerequisite_unmet"
+    )
+    expect_invalid(bad_reason, "receipt_requirement_reason_invalid")
+
+    # Counterexample 3a: duplicate requirement_id or missing/extra requirement:
+    dup_req = copy.deepcopy(receipt)
+    dup_req["entries"][0]["native_satisfaction"]["requirements"].append(
+        copy.deepcopy(dup_req["entries"][0]["native_satisfaction"]["requirements"][0])
+    )
+    expect_invalid(dup_req, "receipt_requirement_duplicate")
+
+    missing_req = copy.deepcopy(receipt)
+    missing_req["entries"][0]["native_satisfaction"]["requirements"] = []
+    expect_invalid(missing_req, "receipt_satisfaction_requirements_mismatch")
+
+    extra_req = copy.deepcopy(receipt)
+    extra_req["entries"][0]["native_satisfaction"]["requirements"].append(
+        {
+            "requirement_id": "extra-req",
+            "after": [],
+            "alternatives": ["tach/check"],
+            "observed": [selected_id],
+            "satisfied_by": selected_id,
+            "status": "satisfied",
+            "reason": "native_pass",
+        }
+    )
+    expect_invalid(extra_req, "receipt_satisfaction_requirements_mismatch")
+
+    # 2) Prerequisite chain (docs: inventory -> links):
+    docs_entry = make_entry("docs")
+    docs_proj = make_projection([docs_entry])
+    inv = native("docs", tool_access="git/ls-files", rule=RULE_DOCS, instance="inv-1")
+    links = native(
+        "docs",
+        tool_access="lychee/docs",
+        rule=RULE_DOCS,
+        instance="links-1",
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": inv["result_id"],
+                "path": "git/ls-files",
+            },
+            FILE_A,
+        ],
+    )
+    docs_rec = reconcile(
+        docs_proj,
+        routing=[make_routing(docs_entry)],
+        resolutions=[make_resolution(docs_entry, rule=RULE_DOCS)],
+        observations=[make_observation("job-1", [inv, links])],
+    )
+    reconciliation.validate_receipt(docs_rec)
+    assert docs_rec["entries"][0]["binding_status"] == "matched"
+
+    # Predecessor requirement marked unsatisfied while links stays satisfied:
+    bad_pred_status = copy.deepcopy(docs_rec)
+    bad_pred_status["entries"][0]["native_satisfaction"]["requirements"][0][
+        "status"
+    ] = "unsatisfied"
+    expect_invalid(bad_pred_status, "receipt_requirement_unsatisfied")
+
+    # Swap satisfied_by between inventory and links:
+    # (a) without updating observed[] -> caught as witness unobserved;
+    # (b) with observed[] also forged -> caught as tool mismatch against controlled definition:
+    swapped_unobs = copy.deepcopy(docs_rec)
+    reqs_u = swapped_unobs["entries"][0]["native_satisfaction"]["requirements"]
+    reqs_u[0]["satisfied_by"], reqs_u[1]["satisfied_by"] = (
+        reqs_u[1]["satisfied_by"],
+        reqs_u[0]["satisfied_by"],
+    )
+    expect_invalid(swapped_unobs, "receipt_requirement_witness_unobserved")
+
+    swapped_docs = copy.deepcopy(docs_rec)
+    reqs = swapped_docs["entries"][0]["native_satisfaction"]["requirements"]
+    reqs[0]["satisfied_by"], reqs[1]["satisfied_by"] = (
+        reqs[1]["satisfied_by"],
+        reqs[0]["satisfied_by"],
+    )
+    reqs[0]["observed"] = [reqs[0]["satisfied_by"]]
+    reqs[1]["observed"] = [reqs[1]["satisfied_by"]]
+    swapped_docs["entries"][0]["selected_result_ids"] = [
+        reqs[0]["satisfied_by"],
+        reqs[1]["satisfied_by"],
+    ]
+    swapped_docs["entries"][0]["native_satisfaction"]["selected_result_ids"] = [
+        reqs[0]["satisfied_by"],
+        reqs[1]["satisfied_by"],
+    ]
+    swapped_docs["entries"][0]["selected_results"] = list(
+        reversed(swapped_docs["entries"][0]["selected_results"])
+    )
+    expect_invalid(swapped_docs, "receipt_requirement_tool_mismatch")
+
+    # Tamper prerequisite metadata (`after` cleared on links):
+    bad_after = copy.deepcopy(docs_rec)
+    bad_after["entries"][0]["native_satisfaction"]["requirements"][1]["after"] = []
+    expect_invalid(bad_after, "receipt_requirement_structure_mismatch")
+
+    # Misaligned selected_result_ids order relative to requirement order refuses:
+    bad_order = copy.deepcopy(docs_rec)
+    bad_order["entries"][0]["selected_result_ids"] = list(
+        reversed(bad_order["entries"][0]["selected_result_ids"])
+    )
+    bad_order["entries"][0]["selected_results"] = list(
+        reversed(bad_order["entries"][0]["selected_results"])
+    )
+    expect_invalid(bad_order, "receipt_witness_mismatch")
+
+    # 3) Conditional requirement driven by controlled Rule (weaver_registry):
+    from test_native_tool_contract import (
+        _weaver_baseline_chain,
+        _weaver_packaging_chain,
+    )
+
+    reg_def = check_contract.definition_for("weaver_registry")
+    baseline_rule = check_contract.rule_ref(
+        "ci-weaver", 1, path="ci-weaver.toml", digest="a" * 64, baseline_required=True
+    )
+    non_baseline_rule = check_contract.rule_ref(
+        "ci-weaver", 1, path="ci-weaver.toml", digest="b" * 64, baseline_required=False
+    )
+    reg_entry = make_entry("weaver_registry", rule_ref=baseline_rule)
+    reg_pack = _weaver_packaging_chain(
+        reg_def, source=STRONG_SOURCE, rule=baseline_rule, prefix="pack"
+    )
+    reg_base = _weaver_baseline_chain(
+        reg_def,
+        source=STRONG_SOURCE,
+        rule=baseline_rule,
+        registry_local=reg_pack[-1],
+        include_diff=True,
+    )
+    reg_rec = reconcile(
+        make_projection([reg_entry]),
+        routing=[make_routing(reg_entry)],
+        resolutions=[make_resolution(reg_entry, rule=baseline_rule)],
+        observations=[make_observation("job-1", [*reg_pack, *reg_base])],
+    )
+    reconciliation.validate_receipt(reg_rec)
+    assert reg_rec["entries"][0]["binding_status"] == "matched"
+
+    # Dropping an active conditional baseline requirement under baseline_required=True refuses:
+    dropped_cond = copy.deepcopy(reg_rec)
+    dropped_cond["entries"][0]["native_satisfaction"]["requirements"] = [
+        r
+        for r in dropped_cond["entries"][0]["native_satisfaction"]["requirements"]
+        if r["requirement_id"] != "registry-diff"
+    ]
+    expect_invalid(dropped_cond, "receipt_satisfaction_requirements_mismatch")
+
+    # Conversely, under baseline_required=False only 3 packaging requirements are active;
+    # injecting an inactive conditional requirement refuses:
+    reg_no_base_entry = make_entry("weaver_registry", rule_ref=non_baseline_rule)
+    reg_pack_only = _weaver_packaging_chain(
+        reg_def, source=STRONG_SOURCE, rule=non_baseline_rule, prefix="nobase"
+    )
+    reg_no_base_rec = reconcile(
+        make_projection([reg_no_base_entry]),
+        routing=[make_routing(reg_no_base_entry)],
+        resolutions=[make_resolution(reg_no_base_entry, rule=non_baseline_rule)],
+        observations=[make_observation("job-1", reg_pack_only)],
+    )
+    reconciliation.validate_receipt(reg_no_base_rec)
+    injected_inactive = copy.deepcopy(reg_no_base_rec)
+    injected_inactive["entries"][0]["native_satisfaction"]["requirements"].append(
+        {
+            "requirement_id": "baseline-check",
+            "after": [],
+            "alternatives": ["weaver/baseline-check"],
+            "observed": [reg_pack_only[0]["result_id"]],
+            "satisfied_by": reg_pack_only[0]["result_id"],
+            "status": "satisfied",
+            "reason": "native_pass",
+        }
+    )
+    expect_invalid(injected_inactive, "receipt_satisfaction_requirements_mismatch")
+
+    # 4) Tool-less internal Check (forwarding): non-empty requirements[] is refused:
+    fwd_def = check_contract.definition_for("forwarding")
+    fwd_entry = make_entry("forwarding", baseline_ref={"base_commit": "1" * 40})
+    fwd_res = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-ok",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": []},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_rec = reconcile(
+        make_projection([fwd_entry]),
+        routing=[make_routing(fwd_entry)],
+        resolutions=[
+            make_resolution(
+                fwd_entry, rule=RULE_TACH, baseline={"base_commit": "1" * 40}
+            )
+        ],
+        observations=[make_observation("job-1", [fwd_res])],
+    )
+    reconciliation.validate_receipt(fwd_rec)
+    assert fwd_rec["entries"][0]["native_satisfaction"]["requirements"] == []
+    fwd_fake_reqs = copy.deepcopy(fwd_rec)
+    fwd_fake_reqs["entries"][0]["native_satisfaction"]["requirements"] = [
+        {"requirement_id": "fake", "status": "satisfied"}
+    ]
+    expect_invalid(fwd_fake_reqs, "receipt_satisfaction_requirements_mismatch")
+
+
+def test_issue109_preserves_valid_failure_unknown_and_partial_diagnostics():
+    # Real non-matched failure where inventory succeeded ("satisfied") and links failed
+    # ("unsatisfied") must pass validate_receipt() and retain diagnostic details:
+    docs_entry = make_entry("docs")
+    missing_entry = make_entry("tach")
+    na_entry = make_entry("whitespace", applicability="not_applicable")
+    inv_ok = native(
+        "docs", tool_access="git/ls-files", rule=RULE_DOCS, instance="inv-ok"
+    )
+    links_fail = native(
+        "docs",
+        tool_access="lychee/docs",
+        rule=RULE_DOCS,
+        status="failed",
+        instance="links-fail",
+        evidence={"broken": 2},
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": inv_ok["result_id"],
+                "path": "git/ls-files",
+            },
+            FILE_A,
+        ],
+    )
+    receipt = reconcile(
+        make_projection([docs_entry, missing_entry, na_entry]),
+        routing=[
+            make_routing(docs_entry),
+            make_routing(missing_entry, jobs=(), status="unrouted"),
+        ],
+        resolutions=[make_resolution(docs_entry, rule=RULE_DOCS)],
+        observations=[make_observation("job-1", [inv_ok, links_fail])],
+    )
+    reconciliation.validate_receipt(receipt)
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["docs"]["binding_status"] == "insufficient"
+    assert [
+        (r["requirement_id"], r["status"])
+        for r in by_name["docs"]["native_satisfaction"]["requirements"]
+    ] == [("inventory", "satisfied"), ("links", "unsatisfied")]
+    assert by_name["tach"]["binding_status"] == "unrouted"
+    assert by_name["whitespace"]["binding_status"] == "not_applicable"
+
+
+def test_issue109_allows_multi_alternative_requirement_satisfaction(monkeypatch):
+    from dataclasses import replace
+
+    tach_def = check_contract.definition_for("tach")
+    alt_def = replace(
+        tach_def,
+        tool_requirements=check_contract.validate_tool_requirements(
+            (
+                check_contract.ToolRequirement(
+                    "lint",
+                    (
+                        check_contract.ToolIdentity("lint/primary"),
+                        check_contract.ToolIdentity("lint/fallback"),
+                    ),
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        check_contract,
+        "_CURRENT_BY_ID",
+        {**check_contract._CURRENT_BY_ID, alt_def.check_id: alt_def},
+    )
+    monkeypatch.setattr(
+        check_contract,
+        "_BUILTIN_BY_VERSION",
+        {
+            **check_contract._BUILTIN_BY_VERSION,
+            (alt_def.check_id, alt_def.definition_version): alt_def,
+        },
+    )
+
+    entry = make_entry("tach", definition=alt_def, rule_ref=RULE_TACH)
+    res_alt2 = native(
+        "tach",
+        definition=alt_def,
+        tool_access="lint/fallback",
+        instance="fallback-1",
+    )
+    receipt = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH)],
+        observations=[make_observation("job-1", [res_alt2])],
+    )
+    reconciliation.validate_receipt(receipt)
+    req_entry = receipt["entries"][0]["native_satisfaction"]["requirements"][0]
+    assert req_entry["alternatives"] == ["lint/primary", "lint/fallback"]
+    assert req_entry["satisfied_by"] == res_alt2["result_id"]
+
+    # Tampering alternatives[] to drop an allowed option refuses:
+    bad = copy.deepcopy(receipt)
+    bad["entries"][0]["native_satisfaction"]["requirements"][0]["alternatives"] = [
+        "lint/primary"
+    ]
+    payload = {k: v for k, v in bad.items() if k != "receipt_ref"}
+    bad["receipt_ref"] = reconciliation._digest(payload)
+    with pytest.raises(
+        reconciliation.ReconciliationError,
+        match="receipt_requirement_structure_mismatch",
+    ):
+        reconciliation.validate_receipt(bad)
+
+    # Also verify _validate_satisfied_requirements refuses unresolved rule conditions:
+    calls = 0
+
+    def _unresolved_on_req_check(*a, **kw):
+        nonlocal calls
+        calls += 1
+        return () if calls == 1 else ("registry_baseline_rule",)
+
+    monkeypatch.setattr(
+        check_contract,
+        "_unresolved_conditions",
+        _unresolved_on_req_check,
+    )
+    with pytest.raises(
+        reconciliation.ReconciliationError,
+        match="receipt_satisfaction_rule_unresolved",
+    ):
+        reconciliation.validate_receipt(receipt)
+
+
+def test_issue109_p1a_p1b_satisfaction_sets_authority_and_reasons():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    def expect_invalid(doc, pattern):
+        with pytest.raises(reconciliation.ReconciliationError, match=pattern):
+            reconciliation.validate_receipt(rehash(doc))
+
+    # 1) Tool-bound Check (tach) with legitimate unselected candidate + rejected candidate:
+    entry = make_entry("tach")
+    res_ok = native("tach", tool_access="tach/check", instance="tach-1")
+    res_alt = native("tach", tool_access="tach/check", instance="tach-2")
+    wrong_source = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="f" * 40,
+        actual_execution_source="worktree",
+        content_digest="e" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+    res_wrong_source = native(
+        "tach",
+        tool_access="tach/check",
+        instance="tach-bad-src",
+        source=wrong_source,
+    )
+    receipt = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH)],
+        observations=[make_observation("job-1", [res_ok, res_alt, res_wrong_source])],
+    )
+    reconciliation.validate_receipt(receipt)
+    sat = receipt["entries"][0]["native_satisfaction"]
+    selected_id = receipt["entries"][0]["selected_result_ids"][0]
+    unselected_id = (
+        res_alt["result_id"]
+        if selected_id == res_ok["result_id"]
+        else res_ok["result_id"]
+    )
+    rejected_id = res_wrong_source["result_id"]
+    assert set(sat["result_ids"]) == {res_ok["result_id"], res_alt["result_id"]}
+    assert rejected_id not in sat["result_ids"]
+
+    # P1-A: requirements[].observed missing / non-list / empty / duplicate / nonexistent / rejected / shrunk:
+    missing_obs = copy.deepcopy(receipt)
+    del missing_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"]
+    expect_invalid(missing_obs, "receipt_requirement_observed_invalid")
+
+    nonlist_obs = copy.deepcopy(receipt)
+    nonlist_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"] = (
+        selected_id
+    )
+    expect_invalid(nonlist_obs, "receipt_requirement_observed_invalid")
+
+    empty_obs = copy.deepcopy(receipt)
+    empty_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"] = []
+    expect_invalid(empty_obs, "receipt_requirement_observed_invalid")
+
+    dup_obs = copy.deepcopy(receipt)
+    dup_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"] = [
+        selected_id,
+        selected_id,
+    ]
+    expect_invalid(dup_obs, "receipt_requirement_observed_invalid")
+
+    fake_obs = copy.deepcopy(receipt)
+    fake_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"].append(
+        "sha256:" + "0" * 64
+    )
+    expect_invalid(fake_obs, "receipt_requirement_observed_mismatch")
+
+    rejected_in_obs = copy.deepcopy(receipt)
+    rejected_in_obs["entries"][0]["native_satisfaction"]["requirements"][0][
+        "observed"
+    ].append(rejected_id)
+    expect_invalid(rejected_in_obs, "receipt_requirement_rejected_conflict")
+
+    shrunk_obs = copy.deepcopy(receipt)
+    shrunk_obs["entries"][0]["native_satisfaction"]["requirements"][0]["observed"] = [
+        selected_id
+    ]
+    expect_invalid(shrunk_obs, "receipt_requirement_observed_mismatch")
+
+    # P1-A: native_satisfaction.result_ids missing / non-list / empty / duplicate / rejected / conflicting with selected:
+    for bad_val in ([], None, selected_id, [selected_id, selected_id]):
+        bad_sat_res = copy.deepcopy(receipt)
+        bad_sat_res["entries"][0]["native_satisfaction"]["result_ids"] = bad_val
+        expect_invalid(bad_sat_res, "receipt_satisfaction_result_ids_invalid")
+
+    bad_sat_unselected = copy.deepcopy(receipt)
+    bad_sat_unselected["entries"][0]["native_satisfaction"]["result_ids"] = [
+        unselected_id
+    ]
+    expect_invalid(bad_sat_unselected, "receipt_satisfaction_result_ids_mismatch")
+
+    bad_sat_fake = copy.deepcopy(receipt)
+    bad_sat_fake["entries"][0]["native_satisfaction"]["result_ids"].append(
+        "sha256:" + "0" * 64
+    )
+    expect_invalid(bad_sat_fake, "receipt_satisfaction_result_ids_mismatch")
+
+    bad_sat_rej = copy.deepcopy(receipt)
+    bad_sat_rej["entries"][0]["native_satisfaction"]["result_ids"].append(rejected_id)
+    expect_invalid(bad_sat_rej, "receipt_satisfaction_rejected_conflict")
+
+    # P1-A cross-requirement observed contamination on multi-tool Check (docs):
+    docs_entry = make_entry("docs")
+    inv = native("docs", tool_access="git/ls-files", rule=RULE_DOCS, instance="inv-1")
+    links = native(
+        "docs",
+        tool_access="lychee/docs",
+        rule=RULE_DOCS,
+        instance="links-1",
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": inv["result_id"],
+                "path": "git/ls-files",
+            },
+            FILE_A,
+        ],
+    )
+    docs_rec = reconcile(
+        make_projection([docs_entry]),
+        routing=[make_routing(docs_entry)],
+        resolutions=[make_resolution(docs_entry, rule=RULE_DOCS)],
+        observations=[make_observation("job-1", [inv, links])],
+    )
+    docs_cross_obs = copy.deepcopy(docs_rec)
+    docs_cross_obs["entries"][0]["native_satisfaction"]["requirements"][0][
+        "observed"
+    ].append(links["result_id"])
+    expect_invalid(docs_cross_obs, "receipt_requirement_observed_mismatch")
+
+    # P1-B: nested native_satisfaction authority flags, consumer_scope, and success reason (tool-bound):
+    for field in ("trusted", "required"):
+        bad_auth = copy.deepcopy(receipt)
+        bad_auth["entries"][0]["native_satisfaction"][field] = True
+        expect_invalid(bad_auth, "receipt_satisfaction_authority_claimed")
+
+    bad_scope = copy.deepcopy(receipt)
+    bad_scope["entries"][0]["native_satisfaction"]["consumer_scope"] = (
+        "supplied_results_only"
+    )
+    expect_invalid(bad_scope, "receipt_satisfaction_invalid")
+
+    for bad_reason in ("native_result_missing", "native_pass", None):
+        bad_sat_reason = copy.deepcopy(receipt)
+        bad_sat_reason["entries"][0]["native_satisfaction"]["reason"] = bad_reason
+        expect_invalid(bad_sat_reason, "receipt_satisfaction_reason_invalid")
+
+    # P1-B & P1-A on tool-less Check (forwarding):
+    fwd_def = check_contract.definition_for("forwarding")
+    fwd_entry = make_entry("forwarding", baseline_ref={"base_commit": "1" * 40})
+    fwd_res = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-ok",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": []},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_rec = reconcile(
+        make_projection([fwd_entry]),
+        routing=[make_routing(fwd_entry)],
+        resolutions=[
+            make_resolution(
+                fwd_entry, rule=RULE_TACH, baseline={"base_commit": "1" * 40}
+            )
+        ],
+        observations=[make_observation("job-1", [fwd_res])],
+    )
+    reconciliation.validate_receipt(fwd_rec)
+    assert fwd_rec["entries"][0]["native_satisfaction"]["reason"] == "native_pass"
+
+    fwd_bad_reason = copy.deepcopy(fwd_rec)
+    fwd_bad_reason["entries"][0]["native_satisfaction"]["reason"] = (
+        "all_requirements_satisfied"
+    )
+    expect_invalid(fwd_bad_reason, "receipt_satisfaction_reason_invalid")
+
+    fwd_bad_auth = copy.deepcopy(fwd_rec)
+    fwd_bad_auth["entries"][0]["native_satisfaction"]["trusted"] = True
+    expect_invalid(fwd_bad_auth, "receipt_satisfaction_authority_claimed")
+
+    fwd_bad_res_ids = copy.deepcopy(fwd_rec)
+    fwd_bad_res_ids["entries"][0]["native_satisfaction"]["result_ids"] = []
+    expect_invalid(fwd_bad_res_ids, "receipt_satisfaction_result_ids_invalid")
+
+    # Non-matched native_satisfaction cannot claim trusted=True or required=True either:
+    fail_links = native(
+        "docs",
+        tool_access="lychee/docs",
+        rule=RULE_DOCS,
+        status="failed",
+        instance="links-fail",
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": inv["result_id"],
+                "path": "git/ls-files",
+            },
+            FILE_A,
+        ],
+    )
+    fail_rec = reconcile(
+        make_projection([docs_entry]),
+        routing=[make_routing(docs_entry)],
+        resolutions=[make_resolution(docs_entry, rule=RULE_DOCS)],
+        observations=[make_observation("job-1", [inv, fail_links])],
+    )
+    reconciliation.validate_receipt(fail_rec)
+    fail_bad_auth = copy.deepcopy(fail_rec)
+    fail_bad_auth["entries"][0]["native_satisfaction"]["required"] = True
+    expect_invalid(fail_bad_auth, "receipt_satisfaction_authority_claimed")
+
+
+def test_issue109_expected_failures_complete_and_requirement_reason():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    def expect_invalid(doc, pattern):
+        with pytest.raises(reconciliation.ReconciliationError, match=pattern):
+            reconciliation.validate_receipt(rehash(doc))
+
+    # 1) Tool-bound Check (tach) with uncovered-input passing candidate + full candidate
+    # yields non-empty expected_failures while expected_failures_complete=False (must PASS):
+    entry = make_entry("tach", input_refs=[FILE_A])
+    res_covered = native(
+        "tach",
+        tool_access="tach/check",
+        instance="tach-covered",
+        input_refs=[FILE_A],
+    )
+    for idx in range(16):
+        res_uncovered = native(
+            "tach",
+            tool_access="tach/check",
+            instance=f"tach-uncovered-{idx}",
+            input_refs=[],
+        )
+        if res_uncovered["result_id"] < res_covered["result_id"]:
+            break
+    assert res_uncovered["result_id"] < res_covered["result_id"]
+    tach_rec = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH, input_refs=[FILE_A])],
+        observations=[make_observation("job-1", [res_uncovered, res_covered])],
+    )
+    reconciliation.validate_receipt(tach_rec)
+    tach_sat = tach_rec["entries"][0]["native_satisfaction"]
+    assert tach_sat["expected_failures"]
+    assert tach_sat["expected_failures_complete"] is False
+    assert tach_sat["requirements"][0]["reason"] == "native_pass"
+
+    # P1: expected_failures_complete tampered to True, missing, or non-bool must fail:
+    for bad_complete in (True, "false", 0, None):
+        bad = copy.deepcopy(tach_rec)
+        bad["entries"][0]["native_satisfaction"]["expected_failures_complete"] = (
+            bad_complete
+        )
+        expect_invalid(bad, "receipt_satisfaction_expected_failures_invalid")
+
+    missing_complete = copy.deepcopy(tach_rec)
+    del missing_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ]
+    expect_invalid(missing_complete, "receipt_satisfaction_expected_failures_invalid")
+
+    # P2: satisfied requirement reason deleted or set to None/invalid must fail:
+    del_reason = copy.deepcopy(tach_rec)
+    del del_reason["entries"][0]["native_satisfaction"]["requirements"][0]["reason"]
+    expect_invalid(del_reason, "receipt_requirement_reason_invalid")
+
+    none_reason = copy.deepcopy(tach_rec)
+    none_reason["entries"][0]["native_satisfaction"]["requirements"][0]["reason"] = None
+    expect_invalid(none_reason, "receipt_requirement_reason_invalid")
+
+    # 2) Tool-less Check (forwarding) also enforces expected_failures_complete is False,
+    # even when an earlier candidate produced non-empty expected_failures:
+    fwd_def = check_contract.definition_for("forwarding")
+    fwd_entry = make_entry("forwarding", baseline_ref={"base_commit": "1" * 40})
+    fwd_ok = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-ok",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": []},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_fail = check_contract.native_result(
+        fwd_def,
+        source=STRONG_SOURCE,
+        status="failed",
+        result_origin="host",
+        result_instance="fwd-fail",
+        native_exit_code=None,
+        tool=None,
+        evidence={"analysis": "forwarding", "findings": ["issue"]},
+        rule_ref=RULE_TACH,
+        profile_ref=fwd_def.profile_ref,
+        runner_ref=RUNNER_REF,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    fwd_rec = reconcile(
+        make_projection([fwd_entry]),
+        routing=[make_routing(fwd_entry)],
+        resolutions=[
+            make_resolution(
+                fwd_entry, rule=RULE_TACH, baseline={"base_commit": "1" * 40}
+            )
+        ],
+        observations=[make_observation("job-1", [fwd_fail, fwd_ok])],
+    )
+    reconciliation.validate_receipt(fwd_rec)
+    fwd_sat = fwd_rec["entries"][0]["native_satisfaction"]
+    assert fwd_sat["expected_failures_complete"] is False
+    if fwd_fail["result_id"] < fwd_ok["result_id"]:
+        assert fwd_sat["expected_failures"]
+
+    fwd_bad_complete = copy.deepcopy(fwd_rec)
+    fwd_bad_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ] = True
+    expect_invalid(fwd_bad_complete, "receipt_satisfaction_expected_failures_invalid")
+
+    fwd_missing_complete = copy.deepcopy(fwd_rec)
+    del fwd_missing_complete["entries"][0]["native_satisfaction"][
+        "expected_failures_complete"
+    ]
+    expect_invalid(
+        fwd_missing_complete, "receipt_satisfaction_expected_failures_invalid"
+    )
