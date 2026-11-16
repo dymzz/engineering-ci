@@ -422,3 +422,48 @@ def test_gitleaks_public_result_omits_raw_scope_and_binary_path(tmp_path):
     assert "revision_range" not in result["coverage"]
     assert result["coverage"]["old_commit"]
     assert result["coverage"]["new_commit"]
+
+
+def test_gitleaks_rejects_conflicting_git_environment(tmp_path):
+    root = tmp_path / "a"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "base")
+    other = tmp_path / "b"
+    other.mkdir()
+    git(other, "init", "-q")
+    git(other, "config", "user.email", "test@example.com")
+    git(other, "config", "user.name", "test")
+    (other / "a.txt").write_text("b\n", encoding="utf-8")
+    git(other, "add", "a.txt")
+    git(other, "commit", "-qm", "base")
+    with pytest.raises(
+        gitleaks.GitleaksError, match="gitleaks_git_environment_conflict"
+    ):
+        gitleaks.scan_git_history(
+            root,
+            all_history=True,
+            environ={**os.environ, "GIT_DIR": str(other / ".git")},
+        )
+
+
+@requires_gitleaks
+def test_gitleaks_relative_root_and_binary_are_resolved_once(
+    history_repo, tmp_path, monkeypatch
+):
+    binary = tmp_path / "bin" / Path(BINARY).name
+    binary.parent.mkdir()
+    shutil.copy2(BINARY, binary)
+    monkeypatch.chdir(tmp_path)
+    base = git(history_repo, "rev-parse", "HEAD~1")
+    result = gitleaks.scan_git_history(
+        "repo",
+        revision_range=f"{base}..HEAD",
+        environ={"GITLEAKS_BIN": str(binary.relative_to(tmp_path))},
+    )
+    assert result["status"] == "failed"
+    assert result["coverage"]["complete"] is True

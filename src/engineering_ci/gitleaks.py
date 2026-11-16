@@ -27,6 +27,13 @@ _SAFE_RULE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SAFE_COMMIT = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 _SAFE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _REVISION_RANGE = re.compile(r"^[^.\s]+\.\.[^.\s]+$")
+_GIT_LOCATION_KEYS = ("GIT_DIR", "GIT_WORK_TREE")
+_GIT_OVERRIDE_KEYS = (
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+)
 
 
 class GitleaksError(ValueError):
@@ -37,7 +44,7 @@ class GitleaksError(ValueError):
         super().__init__(code)
 
 
-def _git(root, *args):
+def _git(root, *args, env=None):
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -46,6 +53,7 @@ def _git(root, *args):
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=env,
     )
 
 
@@ -61,8 +69,8 @@ def _sha256_text(value):
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _ref_scope(root):
-    result = _git(root, "for-each-ref", "--format=%(refname) %(objectname)")
+def _ref_scope(root, env=None):
+    result = _git(root, "for-each-ref", "--format=%(refname) %(objectname)", env=env)
     if result.returncode != 0:
         raise GitleaksError("gitleaks_history_unavailable")
     refs = sorted(line for line in result.stdout.splitlines() if line)
@@ -72,8 +80,8 @@ def _ref_scope(root):
     }
 
 
-def _git_dir(root):
-    result = _git(root, "rev-parse", "--git-dir")
+def _git_dir(root, env=None):
+    result = _git(root, "rev-parse", "--git-dir", env=env)
     if result.returncode != 0:
         raise GitleaksError("gitleaks_git_directory_unavailable")
     path = Path(result.stdout.strip())
@@ -82,18 +90,45 @@ def _git_dir(root):
     return path.resolve()
 
 
+def _validated_git_environment(root, environ):
+    """Use one verified Git environment for preflight and native execution."""
+    root = Path(root).resolve()
+    merged = {**os.environ, **environ}
+    for key in _GIT_OVERRIDE_KEYS:
+        if merged.get(key):
+            raise GitleaksError("gitleaks_git_environment_unsupported")
+    clean = {
+        key: value for key, value in merged.items() if key not in _GIT_LOCATION_KEYS
+    }
+    expected_git_dir = _git_dir(root, env=clean)
+    expected = {
+        "GIT_DIR": expected_git_dir,
+        "GIT_WORK_TREE": root,
+    }
+    for key, expected_path in expected.items():
+        value = merged.get(key)
+        if not value:
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if path.resolve() != expected_path:
+            raise GitleaksError("gitleaks_git_environment_conflict")
+    return clean
+
+
 def find_binary(environ=None):
     environ = os.environ if environ is None else environ
     configured = environ.get("GITLEAKS_BIN")
     if configured:
-        path = Path(configured)
+        path = Path(configured).resolve()
         if path.is_file():
             return path
         raise GitleaksError("gitleaks_binary_missing")
     found = shutil.which("gitleaks")
     if not found:
         raise GitleaksError("gitleaks_binary_missing")
-    return Path(found)
+    return Path(found).resolve()
 
 
 def _verify_binary(binary, environ):
@@ -159,16 +194,17 @@ def _sanitize(report):
     return findings
 
 
-def _resolve_scope(root, revision_range, all_history):
+def _resolve_scope(root, revision_range, all_history, env=None):
     shallow = (
-        _git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        _git(root, "rev-parse", "--is-shallow-repository", env=env).stdout.strip()
+        == "true"
     )
     if all_history:
-        count = _git(root, "rev-list", "--count", "--all")
+        count = _git(root, "rev-list", "--count", "--all", env=env)
         if count.returncode != 0:
             raise GitleaksError("gitleaks_history_unavailable")
-        ref_scope = _ref_scope(root)
-        head = _git(root, "rev-parse", "HEAD")
+        ref_scope = _ref_scope(root, env=env)
+        head = _git(root, "rev-parse", "HEAD", env=env)
         return {
             "mode": "all-history",
             "scope": "local_refs",
@@ -191,14 +227,14 @@ def _resolve_scope(root, revision_range, all_history):
     ):
         raise GitleaksError("gitleaks_revision_invalid")
     old, new = revision_range.split("..", 1)
-    old_commit = _git(root, "rev-parse", "--verify", f"{old}^{{commit}}")
-    new_commit = _git(root, "rev-parse", "--verify", f"{new}^{{commit}}")
+    old_commit = _git(root, "rev-parse", "--verify", f"{old}^{{commit}}", env=env)
+    new_commit = _git(root, "rev-parse", "--verify", f"{new}^{{commit}}", env=env)
     if old_commit.returncode != 0 or new_commit.returncode != 0:
         raise GitleaksError("gitleaks_revision_unavailable")
     old_sha = old_commit.stdout.strip()
     new_sha = new_commit.stdout.strip()
-    ancestor = _git(root, "merge-base", "--is-ancestor", old_sha, new_sha)
-    count = _git(root, "rev-list", "--count", f"{old_sha}..{new_sha}")
+    ancestor = _git(root, "merge-base", "--is-ancestor", old_sha, new_sha, env=env)
+    count = _git(root, "rev-list", "--count", f"{old_sha}..{new_sha}", env=env)
     if count.returncode != 0:
         raise GitleaksError("gitleaks_history_unavailable")
     reachable = ancestor.returncode == 0
@@ -248,13 +284,14 @@ def scan_git_history(
     timeout=120,
 ):
     """Run Gitleaks over one explicit Git revision scope."""
-    root = Path(root)
-    environ = os.environ if environ is None else environ
+    root = Path(root).resolve()
+    environ = {} if environ is None else environ
+    git_env = _validated_git_environment(root, environ)
     if bool(revision_range) == bool(all_history):
         raise GitleaksError("gitleaks_scope_required")
-    coverage = _resolve_scope(root, revision_range, all_history)
-    binary = find_binary(environ)
-    tool = _verify_binary(binary, environ)
+    coverage = _resolve_scope(root, revision_range, all_history, env=git_env)
+    binary = find_binary(git_env)
+    tool = _verify_binary(binary, git_env)
     config_path = Path(config_path) if config_path else None
     if config_path is not None:
         if not config_path.is_absolute():
@@ -262,7 +299,7 @@ def scan_git_history(
         if not config_path.is_file():
             raise GitleaksError("gitleaks_config_missing")
     with tempfile.TemporaryDirectory(
-        prefix="eci-gitleaks-", dir=_git_dir(root)
+        prefix="eci-gitleaks-", dir=_git_dir(root, env=git_env)
     ) as temporary:
         report_path = Path(temporary) / "gitleaks.json"
         if revision_range and coverage["old_commit"] and coverage["new_commit"]:
@@ -297,7 +334,7 @@ def scan_git_history(
                 errors="replace",
                 check=False,
                 timeout=timeout,
-                env={**os.environ, **environ},
+                env=git_env,
             )
         except FileNotFoundError:
             raise GitleaksError("gitleaks_binary_missing") from None
