@@ -407,8 +407,20 @@ def _controlled_event_path(git_dir, event_file):
     candidate_file = Path(event_file)
     if candidate_file.is_absolute() or ".." in candidate_file.parts:
         raise HookEventError("invocation_event_outside_store")
-    event_root = (Path(git_dir) / "eci-hooks" / "events").resolve()
-    candidate = (Path(git_dir) / candidate_file).resolve()
+    git_dir = Path(git_dir).resolve()
+    eci_dir = git_dir / "eci-hooks"
+    events_dir = eci_dir / "events"
+    # The trust anchor is the physical Git directory, not the resolved Events
+    # directory: an Events symlink/junction to another repository must not
+    # redefine the accepted source domain.
+    if eci_dir.is_symlink() or events_dir.is_symlink():
+        raise HookEventError("invocation_event_outside_store")
+    try:
+        event_root = events_dir.resolve()
+        event_root.relative_to(git_dir)
+    except (OSError, ValueError):
+        raise HookEventError("invocation_event_outside_store") from None
+    candidate = (git_dir / candidate_file).resolve()
     try:
         candidate.relative_to(event_root)
     except ValueError:

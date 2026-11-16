@@ -37,6 +37,25 @@ def make_repo(root):
     return root
 
 
+def make_directory_link(link, target):
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except OSError:
+        pass
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+    pytest.skip("directory symlink/junction is unavailable")
+
+
 @pytest.fixture()
 def repo(tmp_path):
     root = tmp_path / "repo"
@@ -330,6 +349,18 @@ def test_load_invocation_limits_event_to_same_repo_and_hook(repo, tmp_path):
     invocation["event_payload_ref"] = precommit.event_payload_ref
     reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
     with pytest.raises(hooks.HookEventError, match="invocation_hook_mismatch"):
+        hooks.load_invocation(reference.invocation_path)
+
+
+def test_load_invocation_rejects_symlinked_event_directory(repo, tmp_path):
+    other = make_repo(tmp_path / "other")
+    event = pre_push_event(other)
+    other_reference = hooks.persist_event(other, event)
+    eci_dir = repo / ".git" / "eci-hooks"
+    eci_dir.mkdir(parents=True, exist_ok=True)
+    make_directory_link(eci_dir / "events", other_reference.event_path.parent)
+    reference = hooks.persist_event(repo, event)
+    with pytest.raises(hooks.HookEventError, match="invocation_event_outside_store"):
         hooks.load_invocation(reference.invocation_path)
 
 
