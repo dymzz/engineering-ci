@@ -395,11 +395,38 @@ def _invocation_git_dir(path):
     path = Path(path).resolve()
     if path.parent.name != "invocations" or path.parent.parent.name != "eci-hooks":
         raise HookEventError("invocation_path_invalid")
-    return path.parent.parent.parent
+    git_dir = path.parent.parent.parent
+    if not (git_dir / "HEAD").is_file():
+        raise HookEventError("invocation_path_invalid")
+    return git_dir
 
 
-def load_invocation(path, *, git_dir=None):
-    """Read an Invocation and verify its Event content/reference linkage."""
+def _controlled_event_path(git_dir, event_file):
+    if not isinstance(event_file, str) or not event_file:
+        raise HookEventError("invocation_payload_invalid")
+    candidate_file = Path(event_file)
+    if candidate_file.is_absolute() or ".." in candidate_file.parts:
+        raise HookEventError("invocation_event_outside_store")
+    event_root = (Path(git_dir) / "eci-hooks" / "events").resolve()
+    candidate = (Path(git_dir) / candidate_file).resolve()
+    try:
+        candidate.relative_to(event_root)
+    except ValueError:
+        raise HookEventError("invocation_event_outside_store") from None
+    if candidate.parent != event_root or not re.fullmatch(
+        r"[0-9a-f]{64}\.json", candidate.name
+    ):
+        raise HookEventError("invocation_event_outside_store")
+    return candidate
+
+
+def load_invocation(path):
+    """Read an Invocation and verify its Event content/reference linkage.
+
+    The referenced Event must be a direct child of this repository's
+    ``eci-hooks/events`` namespace; absolute paths, ``..`` escapes and
+    cross-repository references are rejected.
+    """
     path = Path(path)
     raw = path.read_bytes()
     try:
@@ -416,14 +443,12 @@ def load_invocation(path, *, git_dir=None):
     expected_ref = f"invocation:{path.stem}"
     if invocation.get("invocation_ref") != expected_ref:
         raise HookEventError("invocation_ref_mismatch")
-    event_file = invocation.get("event_file")
-    if not isinstance(event_file, str) or not event_file:
-        raise HookEventError("invocation_payload_invalid")
-    git_dir = _invocation_git_dir(path) if git_dir is None else Path(git_dir)
-    event_path = Path(event_file)
-    if not event_path.is_absolute():
-        event_path = git_dir / event_path
+    git_dir = _invocation_git_dir(path)
+    event_path = _controlled_event_path(git_dir, invocation.get("event_file"))
     event = load_event(event_path)
+    hook = invocation.get("hook")
+    if hook not in HOOKS or event.get("hook") != hook:
+        raise HookEventError("invocation_hook_mismatch")
     if event_payload_ref(event) != invocation.get("event_payload_ref"):
         raise HookEventError("invocation_event_mismatch")
     return event

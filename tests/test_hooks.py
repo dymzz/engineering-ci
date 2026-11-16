@@ -26,6 +26,17 @@ def git(root, *args, env=None):
     ).stdout.strip()
 
 
+def make_repo(root):
+    root.mkdir(parents=True, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "init")
+    return root
+
+
 @pytest.fixture()
 def repo(tmp_path):
     root = tmp_path / "repo"
@@ -288,6 +299,120 @@ def test_load_invocation_verifies_event_reference(repo):
     reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
     with pytest.raises(hooks.HookEventError, match="invocation_event_mismatch"):
         hooks.load_invocation(reference.invocation_path)
+
+
+def test_load_invocation_limits_event_to_same_repo_and_hook(repo, tmp_path):
+    reference = hooks.persist_event(repo, pre_push_event(repo))
+    original = json.loads(reference.invocation_path.read_text(encoding="utf-8"))
+    other = make_repo(tmp_path / "other")
+    other_reference = hooks.persist_event(other, pre_push_event(other))
+
+    invocation = dict(original)
+    invocation["event_file"] = str(other_reference.event_path)
+    invocation["event_payload_ref"] = other_reference.event_payload_ref
+    reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
+    with pytest.raises(hooks.HookEventError, match="invocation_event_outside_store"):
+        hooks.load_invocation(reference.invocation_path)
+
+    traversal = os.path.relpath(other_reference.event_path, repo / ".git")
+    invocation = dict(original)
+    invocation["event_file"] = traversal
+    invocation["event_payload_ref"] = other_reference.event_payload_ref
+    reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
+    with pytest.raises(hooks.HookEventError, match="invocation_event_outside_store"):
+        hooks.load_invocation(reference.invocation_path)
+
+    precommit = hooks.persist_event(repo, hooks.capture_pre_commit(repo))
+    invocation = dict(original)
+    invocation["event_file"] = precommit.event_path.relative_to(
+        repo / ".git"
+    ).as_posix()
+    invocation["event_payload_ref"] = precommit.event_payload_ref
+    reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
+    with pytest.raises(hooks.HookEventError, match="invocation_hook_mismatch"):
+        hooks.load_invocation(reference.invocation_path)
+
+
+def test_persist_event_cross_process_lock(repo, tmp_path):
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(pre_push_event(repo)), encoding="utf-8")
+    start_file = tmp_path / "start"
+    script = (
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "from engineering_ci import hooks\n"
+        "repo = Path(sys.argv[1])\n"
+        "event = json.loads(Path(sys.argv[2]).read_text())\n"
+        "start = Path(sys.argv[3])\n"
+        "while not start.exists():\n"
+        "    time.sleep(0.01)\n"
+        "for _ in range(10):\n"
+        "    hooks.persist_event(repo, event)\n"
+    )
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+    }
+    command = [
+        sys.executable,
+        "-c",
+        script,
+        str(repo),
+        str(event_file),
+        str(start_file),
+    ]
+    first = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
+    )
+    second = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
+    )
+    start_file.write_text("go", encoding="utf-8")
+    first_out, first_err = first.communicate(timeout=120)
+    second_out, second_err = second.communicate(timeout=120)
+    assert first.returncode == 0, (first_out, first_err)
+    assert second.returncode == 0, (second_out, second_err)
+    events = list((repo / ".git" / "eci-hooks" / "events").glob("*.json"))
+    invocations = list((repo / ".git" / "eci-hooks" / "invocations").glob("*.json"))
+    assert len(events) == 1
+    assert len(invocations) == 20
+    for invocation in invocations:
+        hooks.load_invocation(invocation)
+    assert not list((repo / ".git" / "eci-hooks" / "events").glob("*.tmp"))
+
+
+def test_capture_real_sha256_repository(tmp_path):
+    root = tmp_path / "sha256"
+    root.mkdir()
+    initialized = subprocess.run(
+        ["git", "init", "-q", "--object-format=sha256"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if initialized.returncode != 0:
+        pytest.skip("Git does not support sha256 object format")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "test")
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-qm", "init")
+    before = git(root, "rev-parse", "HEAD")
+    assert len(before) == 64
+    zero = "0" * len(before)
+    event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "origin",
+        f"refs/heads/main {before} refs/heads/main {zero}\n",
+    )
+    assert event["refs"][0]["before"] == zero
+    assert event["refs"][0]["ref_action"] == "create"
+    assert len(event["refs"][0]["after"]) == 64
+    precommit = hooks.capture_pre_commit(root)
+    assert len(precommit["index"]["tree"]) == 64
 
 
 def test_prune_keeps_event_referenced_by_current_invocation(repo):
