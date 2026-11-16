@@ -2750,10 +2750,10 @@ def test_whitespace_native_scope_equals_plan_paths_and_source_closure(repo):
 
     report = execution.execute(p, root=path, runner=spy)
     ws = _whitespace_result(report)
-    diff_calls = [
-        a for a in seen if a[:4] == ["git", "--literal-pathspecs", "diff", "--check"]
-    ]
-    assert diff_calls and all(a[-2:] == ["--", "src/pkg/mod.py"] for a in diff_calls)
+    diff_calls = [a for a in seen if a[:3] == ["git", "diff", "--check"]]
+    assert diff_calls and all(
+        a[-2:] == ["--", ":(literal)src/pkg/mod.py"] for a in diff_calls
+    )
     # The out-of-Plan file was not read, so it cannot affect the verdict:
     assert ws["status"] == "passed"
     sr = ws["native_result"]["source_ref"]
@@ -2845,19 +2845,14 @@ def test_whitespace_literal_pathspec_prevents_glob_expansion_on_special_chars(re
         report = execution.execute(p, root=path, runner=spy)
         ws = _whitespace_result(report)
         assert ws["status"] == "passed", ws
-        diff_calls = [
-            a
-            for a in seen
-            if a[:4] == ["git", "--literal-pathspecs", "diff", "--check"]
-        ]
+        diff_calls = [a for a in seen if a[:3] == ["git", "diff", "--check"]]
         assert diff_calls
         diff_paths = diff_calls[0][diff_calls[0].index("--") + 1 :]
-        assert diff_paths == [target_rel]
+        assert diff_paths == [f":(literal){target_rel}"]
         native_read = {
             line
             for line in run(
                 path,
-                "--literal-pathspecs",
                 "diff",
                 "--name-only",
                 base,
