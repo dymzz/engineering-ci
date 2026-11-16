@@ -1,0 +1,323 @@
+"""Trivy native filesystem scans with sanitized public evidence.
+
+This slice executes Trivy and returns only controlled, non-content fields. It
+does not convert raw scan output into an SBOM yet and does not decide a final
+Required/Release policy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TRIVY_VERSION = "0.76.1"
+TRIVY_WINDOWS_X64_SHA256 = (
+    "94618922c9eb324d7099bf217b01504bfc1f87a0d46d6008cb24ec89b1d1a4bb"
+)
+_SEVERITIES = frozenset({"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_SCANNERS = frozenset({"vuln", "misconfig", "secret", "license"})
+
+
+class TrivyError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def find_binary(environ=None):
+    environ = os.environ if environ is None else environ
+    configured = environ.get("TRIVY_BIN")
+    if configured:
+        path = Path(configured)
+        if path.is_file():
+            return path
+        raise TrivyError("trivy_binary_missing")
+    found = shutil.which("trivy")
+    if not found:
+        raise TrivyError("trivy_binary_missing")
+    return Path(found)
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _verify_binary(binary):
+    result = subprocess.run(
+        [str(binary), "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    version = None
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Version:"):
+            version = line.split(":", 1)[1].strip()
+            break
+    if result.returncode != 0 or version != TRIVY_VERSION:
+        raise TrivyError("trivy_binary_version_mismatch")
+    machine = platform.machine().lower()
+    if not (os.name == "nt" and machine in {"amd64", "x86_64"}):
+        raise TrivyError("trivy_asset_unverified")
+    digest = _sha256(binary)
+    if digest != "sha256:" + TRIVY_WINDOWS_X64_SHA256:
+        raise TrivyError("trivy_asset_mismatch")
+    return {
+        "access_id": "trivy/scan",
+        "version": TRIVY_VERSION,
+        "artifact_sha256": digest,
+        "platform": f"{platform.system().lower()}-{machine}",
+        "path": str(binary),
+    }
+
+
+def _hash_text(value):
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _target_digest(path):
+    path = Path(path)
+    if path.is_file():
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for item in sorted(
+        path.rglob("*"), key=lambda value: value.relative_to(path).as_posix()
+    ):
+        rel = item.relative_to(path).as_posix()
+        if item.is_dir():
+            digest.update(b"D" + rel.encode("utf-8") + b"\0")
+        elif item.is_file():
+            digest.update(b"F" + rel.encode("utf-8") + b"\0")
+            digest.update(hashlib.sha256(item.read_bytes()).digest())
+    return "sha256:" + digest.hexdigest()
+
+
+def _severity(value):
+    return value if value in _SEVERITIES else "UNKNOWN"
+
+
+def _sanitize(report):
+    if not isinstance(report, dict):
+        raise TrivyError("trivy_report_invalid")
+    results = report.get("Results", [])
+    if not isinstance(results, list):
+        raise TrivyError("trivy_report_invalid")
+    findings = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise TrivyError("trivy_report_invalid")
+        target = result.get("Target")
+        if not isinstance(target, str):
+            raise TrivyError("trivy_report_invalid")
+        target_hash = _hash_text(target)
+        for item in result.get("Secrets") or ():
+            if not isinstance(item, dict) or not isinstance(item.get("RuleID"), str):
+                raise TrivyError("trivy_report_invalid")
+            start = item.get("StartLine")
+            if type(start) is not int or start < 1:
+                raise TrivyError("trivy_report_invalid")
+            finding = {
+                "kind": "secret",
+                "rule_sha256": _hash_text(item["RuleID"]),
+                "severity": _severity(item.get("Severity")),
+                "target_sha256": target_hash,
+                "start_line": start,
+                "redacted": True,
+            }
+            end = item.get("EndLine")
+            if type(end) is int and end >= start:
+                finding["end_line"] = end
+            findings.append(finding)
+        for item in result.get("Vulnerabilities") or ():
+            if not isinstance(item, dict) or not isinstance(
+                item.get("VulnerabilityID"), str
+            ):
+                raise TrivyError("trivy_report_invalid")
+            vuln_id = item["VulnerabilityID"]
+            if not _SAFE_ID.fullmatch(vuln_id):
+                raise TrivyError("trivy_report_invalid")
+            finding = {
+                "kind": "vulnerability",
+                "vulnerability_id": vuln_id,
+                "severity": _severity(item.get("Severity")),
+                "target_sha256": target_hash,
+                "redacted": True,
+            }
+            package = item.get("PkgName")
+            if isinstance(package, str):
+                finding["package_sha256"] = _hash_text(package)
+            findings.append(finding)
+        for item in result.get("Misconfigurations") or ():
+            if not isinstance(item, dict) or not isinstance(item.get("ID"), str):
+                raise TrivyError("trivy_report_invalid")
+            findings.append(
+                {
+                    "kind": "misconfiguration",
+                    "rule_sha256": _hash_text(item["ID"]),
+                    "severity": _severity(item.get("Severity")),
+                    "target_sha256": target_hash,
+                    "redacted": True,
+                }
+            )
+    return findings
+
+
+def _git_dir(root):
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = Path(root) / path
+    return path.resolve()
+
+
+def scan_filesystem(
+    root,
+    *,
+    target=".",
+    scanners=("secret",),
+    config_path=None,
+    environ=None,
+    timeout=180,
+):
+    root = Path(root).resolve()
+    target_path = (root / target).resolve()
+    try:
+        relative_target = target_path.relative_to(root).as_posix()
+    except ValueError:
+        raise TrivyError("trivy_target_outside_root") from None
+    if not target_path.exists():
+        raise TrivyError("trivy_target_missing")
+    selected = tuple(dict.fromkeys(scanners))
+    if not selected or any(item not in _SCANNERS for item in selected):
+        raise TrivyError("trivy_scanners_invalid")
+    binary = find_binary(environ)
+    tool = _verify_binary(binary)
+    config = Path(config_path) if config_path else None
+    if config is not None:
+        config = config if config.is_absolute() else (root / config).resolve()
+        if not config.is_file():
+            raise TrivyError("trivy_config_missing")
+    with tempfile.TemporaryDirectory(
+        prefix="eci-trivy-", dir=_git_dir(root)
+    ) as temporary:
+        report_path = Path(temporary) / "report.json"
+        command = [
+            str(binary),
+            "fs",
+            str(target_path),
+            "--scanners",
+            ",".join(selected),
+            "--format",
+            "json",
+            "--output",
+            str(report_path),
+            "--quiet",
+            "--no-progress",
+        ]
+        if config is not None:
+            command.extend(["--config", str(config)])
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=timeout,
+            )
+        except FileNotFoundError:
+            raise TrivyError("trivy_binary_missing") from None
+        except subprocess.TimeoutExpired:
+            raise TrivyError("trivy_timeout") from None
+        if not report_path.is_file():
+            raise TrivyError("trivy_report_missing")
+        raw = report_path.read_bytes()
+        try:
+            report = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise TrivyError("trivy_report_invalid") from None
+        findings = _sanitize(report)
+
+    if completed.returncode == 0:
+        status = "findings" if findings else "passed"
+        reason = None
+    else:
+        status = "error"
+        reason = "trivy_scan_failed"
+    if completed.returncode == 0 and findings:
+        reason = "security_findings" if completed.returncode == 0 else None
+    return {
+        "status": status,
+        "reason": reason,
+        "native_exit_code": completed.returncode,
+        "findings": findings,
+        "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "target": {
+            "path": relative_target,
+            "input_sha256": _target_digest(target_path),
+        },
+        "tool": tool,
+        "scanners": list(selected),
+        "db": {
+            "updated_at": (report.get("Metadata") or {}).get("DBUpdatedAt"),
+            "version": (report.get("Metadata") or {}).get("DBVersion"),
+        },
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Run Trivy filesystem scans")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    scan = subparsers.add_parser("scan")
+    scan.add_argument("--root", default=".")
+    scan.add_argument("--target", default=".")
+    scan.add_argument("--scanners", default="secret")
+    scan.add_argument("--config")
+    scan.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        result = scan_filesystem(
+            Path(args.root),
+            target=args.target,
+            scanners=tuple(item for item in args.scanners.split(",") if item),
+            config_path=args.config,
+        )
+    except TrivyError as error:
+        print(error.code, file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(
+            f"{result['status']} exit={result['native_exit_code']} "
+            f"findings={len(result['findings'])}"
+        )
+    return 0 if result["status"] == "passed" else 1

@@ -53,6 +53,7 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/hygiene/tach-external",
         "eci/tests/unittest",
         "eci/tests/pytest",
+        "eci/security/trivy-scan",
         "eci/weaver/registry",
         "eci/weaver/live",
         "eci/weaver/terminal",
@@ -79,6 +80,7 @@ CHECK_IDS = MappingProxyType(
         "tach": "eci/hygiene/tach",
         "tach_external": "eci/hygiene/tach-external",
         "source": "eci/sources/reconcile",
+        "trivy": "eci/security/trivy-scan",
         "unittest": "eci/tests/unittest",
         "pytest": "eci/tests/pytest",
         "weaver_registry": "eci/weaver/registry",
@@ -412,6 +414,22 @@ _TOOL_REQUIREMENTS = {
     "whitespace": (ToolRequirement("diff-hygiene", (ToolIdentity("git/diff-check"),)),),
     "unittest": (ToolRequirement("test-runner", (ToolIdentity("python/unittest"),)),),
     "pytest": (ToolRequirement("test-runner", (ToolIdentity("python/pytest"),)),),
+    "trivy": (
+        ToolRequirement(
+            "filesystem-scan",
+            (
+                ToolIdentity(
+                    "trivy/scan",
+                    tool_id="trivy",
+                    tool_id_source="eci_pinned_asset",
+                    version="0.76.1",
+                    artifact_sha256=(
+                        "94618922c9eb324d7099bf217b01504bfc1f87a0d46d6008cb24ec89b1d1a4bb"
+                    ),
+                ),
+            ),
+        ),
+    ),
     "weaver_registry": (
         *_WEAVER_PACKAGING_REQUIREMENTS,
         ToolRequirement(
@@ -471,6 +489,7 @@ _CURRENT_DEFINITION_VERSION = {
     "tach": 2,
     "tach_external": 2,
     "source": 1,
+    "trivy": 1,
     "unittest": 1,
     "pytest": 1,
     "weaver_registry": 1,
