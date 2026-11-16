@@ -16,8 +16,13 @@ Security boundaries:
   ``invocation_ref`` and invocation record; a later Coordinator maps that to
   Run/Attempt. No #104 strict receipt field is extended here.
 - Event files are written with a unique temporary name, flushed, and atomically
-  published with owner-only permissions. Pre-commit captures verify that the
-  Index bytes did not change while ``git write-tree`` ran.
+  published with owner-only permissions. Capture publication and pruning share
+  a small per-repository lock; pruning keeps Events referenced by current
+  Invocations. Pre-commit captures verify that the Index bytes did not change
+  while ``git write-tree`` ran.
+- The raw remote files handed to the CLI are owned by the native Hook wrapper:
+  it must create them with owner-only access and delete them on success and
+  failure. The capture CLI only reads them and never deletes caller files.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -44,7 +50,8 @@ INVOCATION_SCHEMA_VERSION = 1
 INVOCATION_KIND = "engineering-ci-hook-invocation"
 EVENT_RETENTION_SECONDS = 24 * 60 * 60
 _SAFE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SCP_LIKE = re.compile(r"^(?:(?P<user>[^/@:]+)@)?(?P<host>[^/:]+):(?P<path>.*)$")
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+_SCP_LIKE = re.compile(r"^(?:(?P<user>[^/@:]+)@)?(?P<host>[^@/:]+):(?P<path>.*)$")
 _WINDOWS_ABS = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -93,10 +100,62 @@ def _digest_bytes(value):
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+@contextmanager
+def _capture_lock(git_dir):
+    """Serialize Event publication and pruning for one repository.
+
+    A one-byte lock file avoids an Event database while ensuring a prune cannot
+    delete an Event between the content write and the Invocation publication.
+    """
+    lock_dir = Path(git_dir) / "eci-hooks"
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = lock_dir / "capture.lock"
+    with open(lock_path, "a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+
+
 def _identity_value(value, *, field):
     if not isinstance(value, str) or not value:
         raise HookEventError(f"{field}_invalid")
     return value
+
+
+def _safe_host(host):
+    if not host:
+        return None
+    if _SAFE_HOST.fullmatch(host):
+        return host
+    if ":" in host and re.fullmatch(r"[0-9A-Fa-f:]+", host):
+        return host
+    return None
 
 
 def redact_remote(value, *, field="remote"):
@@ -116,11 +175,25 @@ def redact_remote(value, *, field="remote"):
             "sha256": digest,
             "credentials_redacted": False,
         }
-    parts = urlsplit(value)
-    if parts.scheme and parts.netloc:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        parts = None
+    if parts is not None and parts.scheme and parts.netloc:
+        try:
+            hostname = parts.hostname or ""
+        except ValueError:
+            hostname = ""
+        host = _safe_host(hostname)
+        if host is None:
+            return {
+                "kind": "opaque",
+                "sha256": digest,
+                "credentials_redacted": True,
+            }
         identity = {
             "kind": "url",
-            "host": parts.hostname or "",
+            "host": host,
             "sha256": digest,
             "credentials_redacted": bool(
                 parts.username is not None
@@ -137,10 +210,22 @@ def redact_remote(value, *, field="remote"):
             identity["port"] = port
         return identity
     scp_like = _SCP_LIKE.fullmatch(value)
-    if scp_like and not os.path.isabs(value) and not _WINDOWS_ABS.match(value):
+    if (
+        scp_like
+        and "://" not in value
+        and not os.path.isabs(value)
+        and not _WINDOWS_ABS.match(value)
+    ):
+        host = _safe_host(scp_like.group("host"))
+        if host is None:
+            return {
+                "kind": "opaque",
+                "sha256": digest,
+                "credentials_redacted": True,
+            }
         return {
             "kind": "scp",
-            "host": scp_like.group("host"),
+            "host": host,
             "sha256": digest,
             "credentials_redacted": scp_like.group("user") is not None,
         }
@@ -290,14 +375,57 @@ def event_path(root, event):
 
 
 def load_event(path):
-    """Read an Event and verify that its bytes are the canonical payload."""
-    raw = Path(path).read_bytes()
+    """Read an Event and verify canonical bytes plus its filename identity."""
+    path = Path(path)
+    raw = path.read_bytes()
     try:
         event = json.loads(raw)
     except ValueError:
         raise HookEventError("event_payload_invalid") from None
     if not isinstance(event, dict) or canonical_event_bytes(event) != raw:
         raise HookEventError("event_payload_mismatch")
+    if not re.fullmatch(r"[0-9a-f]{64}", path.stem):
+        raise HookEventError("event_path_invalid")
+    if hashlib.sha256(raw).hexdigest() != path.stem:
+        raise HookEventError("event_payload_mismatch")
+    return event
+
+
+def _invocation_git_dir(path):
+    path = Path(path).resolve()
+    if path.parent.name != "invocations" or path.parent.parent.name != "eci-hooks":
+        raise HookEventError("invocation_path_invalid")
+    return path.parent.parent.parent
+
+
+def load_invocation(path, *, git_dir=None):
+    """Read an Invocation and verify its Event content/reference linkage."""
+    path = Path(path)
+    raw = path.read_bytes()
+    try:
+        invocation = json.loads(raw)
+    except ValueError:
+        raise HookEventError("invocation_payload_invalid") from None
+    if not isinstance(invocation, dict) or canonical_event_bytes(invocation) != raw:
+        raise HookEventError("invocation_payload_invalid")
+    if (
+        invocation.get("kind") != INVOCATION_KIND
+        or invocation.get("schema_version") != INVOCATION_SCHEMA_VERSION
+    ):
+        raise HookEventError("invocation_payload_invalid")
+    expected_ref = f"invocation:{path.stem}"
+    if invocation.get("invocation_ref") != expected_ref:
+        raise HookEventError("invocation_ref_mismatch")
+    event_file = invocation.get("event_file")
+    if not isinstance(event_file, str) or not event_file:
+        raise HookEventError("invocation_payload_invalid")
+    git_dir = _invocation_git_dir(path) if git_dir is None else Path(git_dir)
+    event_path = Path(event_file)
+    if not event_path.is_absolute():
+        event_path = git_dir / event_path
+    event = load_event(event_path)
+    if event_payload_ref(event) != invocation.get("event_payload_ref"):
+        raise HookEventError("invocation_event_mismatch")
     return event
 
 
@@ -369,64 +497,106 @@ def persist_event(root, event):
     ``invocation_ref`` and a separate invocation file. A pre-existing target
     is reused only when its stored bytes equal the canonical payload.
     """
-    payload = canonical_event_bytes(event)
-    target = event_path(root, event)
-    if target.exists():
-        if target.read_bytes() != payload:
-            raise HookEventError("event_payload_conflict")
-        try:
-            os.chmod(target, 0o600)
-        except OSError:
-            pass
-    else:
-        _write_private_file(target, payload)
     git_dir = _git_dir(root)
-    invocation_id = uuid.uuid4().hex
-    invocation_ref = f"invocation:{invocation_id}"
+    with _capture_lock(git_dir):
+        payload = canonical_event_bytes(event)
+        target = event_path(root, event)
+        if target.exists():
+            if target.read_bytes() != payload:
+                raise HookEventError("event_payload_conflict")
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+        else:
+            _write_private_file(target, payload)
+        invocation_id = uuid.uuid4().hex
+        invocation_ref = f"invocation:{invocation_id}"
+        try:
+            event_file = target.relative_to(git_dir).as_posix()
+        except ValueError:
+            event_file = str(target)
+        invocation_path = _invocation_path(git_dir, invocation_id)
+        invocation = {
+            "schema_version": INVOCATION_SCHEMA_VERSION,
+            "kind": INVOCATION_KIND,
+            "invocation_ref": invocation_ref,
+            "event_payload_ref": event_payload_ref(event),
+            "event_file": event_file,
+            "hook": event.get("hook"),
+        }
+        _write_private_file(invocation_path, canonical_event_bytes(invocation))
+        return HookInvocation(
+            invocation_ref=invocation_ref,
+            event_payload_ref=invocation["event_payload_ref"],
+            event_path=target,
+            invocation_path=invocation_path,
+        )
+
+
+def _invocation_event_path(path, git_dir):
     try:
-        event_file = target.relative_to(git_dir).as_posix()
-    except ValueError:
-        event_file = str(target)
-    invocation_path = _invocation_path(git_dir, invocation_id)
-    invocation = {
-        "schema_version": INVOCATION_SCHEMA_VERSION,
-        "kind": INVOCATION_KIND,
-        "invocation_ref": invocation_ref,
-        "event_payload_ref": event_payload_ref(event),
-        "event_file": event_file,
-        "hook": event.get("hook"),
-    }
-    _write_private_file(invocation_path, canonical_event_bytes(invocation))
-    return HookInvocation(
-        invocation_ref=invocation_ref,
-        event_payload_ref=invocation["event_payload_ref"],
-        event_path=target,
-        invocation_path=invocation_path,
-    )
+        invocation = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(invocation, dict):
+        return None
+    event_file = invocation.get("event_file")
+    if not isinstance(event_file, str) or not event_file:
+        return None
+    event_path = Path(event_file)
+    if not event_path.is_absolute():
+        event_path = git_dir / event_path
+    try:
+        return event_path.resolve()
+    except OSError:
+        return None
 
 
 def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
-    """Delete Event/Invocation files older than the explicit retention boundary.
+    """Prune expired Invocations and unreferenced expired Events.
 
-    The caller runs this outside an active capture. This is a bounded lifecycle
-    helper, not an Event database.
+    Current Invocations protect their referenced Event even when the Event
+    itself is old (content-addressed Events are reused by newer Invocations).
+    The per-repository capture lock prevents a concurrent persist from
+    publishing a new reference between the protection scan and deletion.
     """
     if type(retention_seconds) not in (int, float) or retention_seconds < 0:
         raise HookEventError("retention_invalid")
     cutoff = (time.time() if now is None else now) - retention_seconds
     git_dir = _git_dir(root)
     removed = 0
-    for directory in ("events", "invocations"):
-        parent = git_dir / "eci-hooks" / directory
-        if not parent.is_dir():
-            continue
-        for path in parent.glob("*.json"):
-            try:
-                if path.stat().st_mtime < cutoff:
-                    path.unlink()
-                    removed += 1
-            except OSError:
-                continue
+    with _capture_lock(git_dir):
+        protected = set()
+        invocation_dir = git_dir / "eci-hooks" / "invocations"
+        if invocation_dir.is_dir():
+            for path in invocation_dir.glob("*.json"):
+                try:
+                    expired = path.stat().st_mtime < cutoff
+                except OSError:
+                    continue
+                if expired:
+                    try:
+                        path.unlink()
+                        removed += 1
+                    except OSError:
+                        continue
+                    continue
+                event_path = _invocation_event_path(path, git_dir)
+                if event_path is not None:
+                    protected.add(event_path)
+        event_dir = git_dir / "eci-hooks" / "events"
+        if event_dir.is_dir():
+            for path in event_dir.glob("*.json"):
+                try:
+                    resolved = path.resolve()
+                    if resolved in protected:
+                        continue
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError:
+                    continue
     return removed
 
 
@@ -449,8 +619,14 @@ def main(argv=None):
     # Raw remote argv is deliberately not accepted as a CLI argument: process
     # arguments are observable by other processes. The native hook writes the
     # two values to controlled files and passes only those paths here.
-    capture.add_argument("--remote-name-file")
-    capture.add_argument("--remote-location-file")
+    capture.add_argument(
+        "--remote-name-file",
+        help="Caller-owned 0600 file; capture reads it and never deletes it.",
+    )
+    capture.add_argument(
+        "--remote-location-file",
+        help="Caller-owned 0600 file; capture reads it and never deletes it.",
+    )
     capture.add_argument("--stdin-file")
     capture.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -488,5 +664,7 @@ def main(argv=None):
             )
         )
     else:
-        print(reference.event_path)
+        # The default handoff identifies this invocation, not merely its
+        # reusable payload content. The Event path is available in --json.
+        print(reference.invocation_ref)
     return 0

@@ -233,6 +233,87 @@ def test_load_event_rejects_noncanonical_or_tampered_payload(repo):
         hooks.load_event(reference.event_path)
 
 
+def test_capture_pre_push_redacts_irregular_scp_like_inputs(repo):
+    value = "a@b@example.com:org/repo.git"
+    event = hooks.capture_pre_push(
+        repo,
+        value,
+        value,
+        f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
+    )
+    assert event["remote"]["name"]["kind"] == "opaque"
+    assert event["remote"]["location"]["kind"] == "opaque"
+    serialized = json.dumps(event)
+    assert "b@example.com" not in serialized
+    assert "org/repo" not in serialized
+
+    malformed = "https://[::1"
+    event = hooks.capture_pre_push(
+        repo,
+        malformed,
+        malformed,
+        f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
+    )
+    assert event["remote"]["name"]["kind"] == "opaque"
+    assert malformed not in json.dumps(event)
+
+
+def test_load_event_rejects_filename_content_mismatch(repo):
+    first = hooks.persist_event(repo, pre_push_event(repo))
+    other_event = hooks.capture_pre_push(
+        repo,
+        "origin",
+        "origin",
+        f"refs/heads/other {'a' * 40} refs/heads/other {'0' * 40}\n",
+    )
+    other = hooks.persist_event(repo, other_event)
+    first.event_path.write_bytes(other.event_path.read_bytes())
+    with pytest.raises(hooks.HookEventError, match="event_payload_mismatch"):
+        hooks.load_event(first.event_path)
+
+
+def test_load_invocation_verifies_event_reference(repo):
+    event = pre_push_event(repo)
+    reference = hooks.persist_event(repo, event)
+    assert hooks.load_invocation(reference.invocation_path) == event
+    other_event = hooks.capture_pre_push(
+        repo,
+        "origin",
+        "origin",
+        f"refs/heads/other {'b' * 40} refs/heads/other {'0' * 40}\n",
+    )
+    other = hooks.persist_event(repo, other_event)
+    invocation = json.loads(reference.invocation_path.read_text(encoding="utf-8"))
+    invocation["event_payload_ref"] = other.event_payload_ref
+    reference.invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
+    with pytest.raises(hooks.HookEventError, match="invocation_event_mismatch"):
+        hooks.load_invocation(reference.invocation_path)
+
+
+def test_prune_keeps_event_referenced_by_current_invocation(repo):
+    event = pre_push_event(repo)
+    first = hooks.persist_event(repo, event)
+    old = time.time() - hooks.EVENT_RETENTION_SECONDS - 60
+    os.utime(first.event_path, (old, old))
+    second = hooks.persist_event(repo, event)
+    os.utime(second.event_path, (old, old))
+    removed = hooks.prune_events(repo)
+    assert removed == 0
+    assert second.event_path.exists()
+    assert first.invocation_path.exists()
+    assert second.invocation_path.exists()
+
+    for path in (
+        first.invocation_path,
+        second.invocation_path,
+        second.event_path,
+    ):
+        os.utime(path, (old, old))
+    removed = hooks.prune_events(repo)
+    assert removed == 3
+    assert not second.event_path.exists()
+
+
 def test_prune_events_uses_explicit_retention_boundary(repo):
     reference = hooks.persist_event(repo, pre_push_event(repo))
     old = time.time() - hooks.EVENT_RETENTION_SECONDS - 60
@@ -291,3 +372,47 @@ def test_cli_capture_redacts_remote_files_and_emits_invocation(repo, tmp_path):
     assert invocation_path.is_file()
     for secret in ("user", "token", "topsecret", "access_token"):
         assert secret.encode() not in event_path.read_bytes()
+    assert name_file.exists()
+    assert location_file.exists()
+    assert hooks.load_invocation(invocation_path)["remote"]["name"]["kind"] == "url"
+
+
+def test_cli_default_handoff_identifies_each_invocation(repo, tmp_path):
+    stdin_file = tmp_path / "stdin.txt"
+    stdin_file.write_text(
+        f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}\n",
+        encoding="utf-8",
+    )
+    name_file = write_remote_file(tmp_path / "remote-name.txt", "origin")
+    location_file = write_remote_file(tmp_path / "remote-location.txt", "origin")
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+    command = [
+        sys.executable,
+        "-m",
+        "engineering_ci.cli",
+        "hooks",
+        "capture",
+        "pre-push",
+        "--root",
+        str(repo),
+        "--remote-name-file",
+        str(name_file),
+        "--remote-location-file",
+        str(location_file),
+        "--stdin-file",
+        str(stdin_file),
+    ]
+    first = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", env=env, check=False
+    )
+    second = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", env=env, check=False
+    )
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    first_ref = first.stdout.strip()
+    second_ref = second.stdout.strip()
+    assert first_ref.startswith("invocation:")
+    assert second_ref.startswith("invocation:")
+    assert first_ref != second_ref
+    assert name_file.exists() and location_file.exists()
