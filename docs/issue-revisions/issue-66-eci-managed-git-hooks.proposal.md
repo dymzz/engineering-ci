@@ -329,7 +329,11 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 - **L2（ECI 独占安装的原生入口先读取 argv/stdin，再委托 Lefthook Job）是当前可证明的入口。**
 - 若选择 L1，必须提供固定版 Lefthook 实际支持的外层 wrapper/模板证据；不得虚构 Job 参数 API。
 
-`remote_location` 只允许在受控 Prepare 运行范围使用原值；持久 Report/Artifact/诊断写入去敏的可关联身份（remote name + 规范化/摘要，或受控引用），不得输出含 Token/凭据 URL。首次 Push、远端 Ref 删除、强推、多 Ref、非 HEAD、同 Tree 不同 old→new 均按各自 tuple 保留，不得用单一 `HEAD`/`origin/main` 替代。
+**Git 原始 argv 整体未受信，`remote_name` 也可能含凭据（2026-11-16 补）：** Git 官方 pre-push 的两个 argv 都是 remote 标识；在未使用命名 remote 直接 push URL 时，`remote_name` 与 `remote_location` 都可能是带 `user:token`、认证 query 或其他敏感片段的 URL（例如 `git push https://user:token@example.com/org/repo.git HEAD:main`）。因此 **`remote_name` 不能先验当作安全字段**：两者都只允许在受控 Prepare 内部短暂使用；持久 Event、CLI `--json` stdout、日志、Job/Report/Artifact 一律写入去敏且可关联的 remote 身份（如受控 host/path 规范化摘要或稳定 label），不得原样输出用户名、密码、Token、认证 query 或其他确证含密片段。处理必须覆盖非 https、scp-like（`user@host:path`）及其它非标准表示，不能只依赖 `urlsplit()` 的 https happy path。
+
+PR #102 的实际 `capture_pre_push()`/`persist_event()`/`--json` 产出须统一清洗 `remote_name` 与 `remote_location`；#59/#60 的 Secret 扫描不能替代 Hook argv 的安全序列化，也不新建通用脱敏服务或第二套 Event Store。定向回归：`remote_name == remote_location == "https://user:token@example.com/org/repo.git?access_token=…"` 时，持久 Event 文件与 `hooks capture --json` stdout 均不得出现 user/token/query secret，同时仍保留可关联的稳定 remote 身份；另以必要的非命名/非标准 remote 输入验证该身份可用。
+
+`remote_location`（以及经清洗后的 `remote_name`）不得出现在不受控持久路径；首次 Push、远端 Ref 删除、强推、多 Ref、非 HEAD、同 Tree 不同 old→new 均按各自 tuple 保留，不得用单一 `HEAD`/`origin/main` 替代。
 
 **Event 内容身份不得替代 Invocation/Run/Attempt 身份（2026-11-16 修订）：**
 
@@ -423,7 +427,7 @@ stdin = refs/heads/master <new_oid> refs/heads/master <old_oid>
 
 - **ECI Event Coordinator** 是逻辑上的一次 Hook 事件控制路径，可以复用现行 ECI CLI/Execution/Plan/Result 能力；不批准第二个 Runner、工作流 FSM、结果数据库或 Check Gate。输入包含真实 pre-commit Index 或 pre-push argv+所有 Ref 元组；生成独立 `invocation_ref` 与逐 Ref 的 `run_ref`/`attempt_ref`；输出为同次、按 Ref 受控的 Source/Selection/执行前 Expected 及可消费的 Source Execution View。
 - **Dispatcher** 使用成熟工具已经支持的静态 Job/Group 条件并行、必要依赖及诊断；每个 Job 消费同次 Event/Ref/Source，产出已有 #52/Runtime Native Check/Result。调度器的 `glob/root` 只作保守唤醒，不承担 Expected 枚举权威或受信 PASS 判定。
-- **Final Reconciliation 是一个外层阶段，不是一次 #104 调用**：Dispatcher 返回后，即使部分 Job 失败、缺失或被过滤，外层 Coordinator 仍须执行该阶段。对每个可执行 Ref Scope 分别调用 `reconcile_expected_results(expected, ref_scope_id=…, routing=…, resolutions=…, observations=…)`；多 Ref 聚合容器不是可执行 Source，不能整体传给 #104。每个 Ref 产生独立 Receipt，再由外层统一汇总未归属 Observations、缺失/失败/unknown 和当前本地策略，形成一个 Git Hook Exit。跨 Ref 的原生 Result 复用仍须 Check/Rule/Source/Baseline/Input/Attempt 等价证明，不能因逐 Ref 调用机械重复执行；一个 Ref PASS 不能掩盖另一个 Ref 的 missing/FAIL。Job Receipt 只在核对实际 Execution Report 与 Job/Run/Attempt 后生成，不能把 Job exit=0 填入 `upstream_verified`。若进程被强制终止，无法保证回执存在，不能伪称完成；可控异常或结果缺失时应禁止成功退出。
+- **Final Reconciliation 是一个外层阶段，不是一次 #104 调用**：Dispatcher 返回后，即使部分 Job 失败、缺失或被过滤，外层 Coordinator 仍须执行该阶段。对多 Ref 的每个可执行 Ref Scope 分别传 `ref_scope_id` 调用 `reconcile_expected_results(expected, ref_scope_id=…, …)`；单 Scope Expected 不传 `ref_scope_id` 或传 `None`（非空会被拒绝为 `expected_ref_scope_unexpected`）；多 Ref 聚合容器不是可执行 Source，不能整体传给 #104。每个 Scope 产生独立 Receipt，再由外层统一汇总未归属 Observations、缺失/失败/unknown 和当前本地策略，形成一个 Git Hook Exit。跨 Ref 的原生 Result 复用仍须 Check/Rule/Source/Baseline/Input/Attempt 等价证明，不能因逐 Ref 调用机械重复执行；一个 Ref PASS 不能掩盖另一个 Ref 的 missing/FAIL。Job Receipt 只在核对实际 Execution Report 与 Job/Run/Attempt 后生成，不能把 Job exit=0 填入 `upstream_verified`。若进程被强制终止，无法保证回执存在，不能伪称完成；可控异常或结果缺失时应禁止成功退出。
 - **Hook Exit** 只聚合当前本地策略下所有 Ref/Check 的执行许可，失败 Ref 不被成功 Ref 覆盖；Native Exit/Check 归因原样保留，不替代 #63/#61 受信和最终 Required 判定。Expected 域未完整认证时必须保留 `partial/unknown`，不能把已运行 Job 的成功当成完整 ExpectedSet。
 
 #### 8.5.2 候选拓扑与优先筛选
@@ -451,6 +455,7 @@ Source Execution View **不是新增 Schema/存储层**：从 #66 P0 现行 Sour
 
 - 连续两次内容完全相同的 pre-push（相同 `event_payload_ref`）产生不同 `invocation_ref`/Attempt；第二次不能沿用第一次 PASS，旧 Result 只能按 #63 显式受信等价规则复用；#104 输入使用独立 Run/Attempt/Receipt，不注入未定义 `invocation_ref` 字段；
 - 多 Ref：对每个可执行 Ref Scope 分别传 `ref_scope_id` 调用 #104，产生多个 Ref Receipt；外层汇总未归属 Observations/缺失/失败/unknown 后形成一个 Hook Exit，不能把聚合容器整体传入；
+- 单 Scope Expected：调用时不传 `ref_scope_id`/传 `None`，非空值必须被 #104 拒绝为 `expected_ref_scope_unexpected`；合法空 Expected 不因空集自动成为受信完整 PASS；
 - L2 单所有者：ECI 安装/委托前后实际 Hook 文件（或 `core.hooksPath` 目标）路径与哈希不变，未执行 `lefthook install`；第三方 Hook 与已有 `core.hooksPath` 的安装/退出恢复可核对；
 - 错误 Job/Run/Attempt/runner/report 或缺失 Job Receipt 时 #104 返回 unknown/missing，不得由 Job exit=0、自报 receipt 或同内容 Event 路径提升为 matched；
 - 提前拒绝/blocked/not_executed：生产方提供合法 `checks=[]` Report 时，Collect/Verify 保留真实 status/exit/reason 并交由对账；不产生合法 Report 时不得伪造 Result/Receipt，外层将缺失证据作为 unknown/missing/blocked 并保持非零 Hook Exit；
@@ -515,9 +520,10 @@ lefthook run --no-auto-install pre-push
 
 **敏感信息边界：**
 
-- 上述原型使用无凭据的本地 bare remote，所以临时 `argv.txt/stdin.txt` 未含 credentials；
-- 生产 Event Prepare 必须限制原始事件暂存位置、访问、存续与清理；普通日志/持久 Artifact 只输出 §8.4.1 的去敏 remote 身份；
-- 不得把原型 `.git/eci-event/*.txt` 的持久化方式直接作为正式接口，也不为此新建通用 Secret 管理服务。
+- 上述原型使用无凭据的本地 bare remote，所以临时 `argv.txt/stdin.txt` 未含 credentials；这只是夹具条件，**不证明生产直接 URL Push 安全**。Git 的 `remote_name` 与 `remote_location` 都是未受信原始参数，二者都可能含 `user:token`、认证 query 或 scp-like 凭据。
+- 生产 Event Prepare 必须限制原始事件暂存位置、访问、存续与清理；原始两个 remote argv 只在受控 Prepare 内使用，持久 Event、CLI `--json`、日志、Job/Report/Artifact 只输出 §8.4.1 的统一去敏、可关联 remote 身份（含对 `remote_name` 的处理）。
+- 回归必须断言持久 Event 文件与 `hooks capture --json` stdout 均不含 user/token/query secret，并保留非命名 remote 的稳定关联身份；不能只用无凭据 bare remote 或仅处理 `remote_location` 的 https 路径证明安全。
+- 不得把原型 `.git/eci-event/*.txt` 的持久化方式直接作为正式接口，也不为此新建通用 Secret 管理服务；#59/#60 的扫描报告不能替代 Hook argv 的安全序列化。
 
 **同时观察到的限制：**
 
@@ -534,7 +540,11 @@ lefthook run --no-auto-install pre-push
 2. **Job 执行包装**：消费同次 Event/Ref/Source，调用既有 `execution.execute()` 或等价原生入口，产出 Execution Report；Job 自身成功/失败只作为执行事实，不是 Check PASS 或 #63 受信。**提前拒绝/blocked/not_executed 等路径必须由生产方提供 #104 可验证的 Report 结构**（至少 `checks=[]`，并保留真实 `status/exit_code/reason`），或明确声明不产生有效 Report；Collect/Verify 不得伪造 `checks`、Native Result 或 `upstream_verified`。此接口修改属于对应 Runtime/Execution 实施 PR，本文只规定交接要求。
 3. **ECI Collect/Verify 层（Job Receipt 生产者）**：在调度器返回后读取实际 Execution Report，计算 `report_ref` digest，核对 Report→Result 成员关系；只有同时核对实际激活 Job/Run/Attempt/runner 后，才生成 `kind=engineering-ci-job-attempt-receipt`、`report_ref`、同一 Job/Run/Attempt/runner、ECI Producer `issuer_ref` 与 `verification_status=upstream_verified` 的 Receipt。**不得用 Job 成功字符串、Hook exit=0 或自报配置直接填写 `upstream_verified`。** Report 缺失、`checks` 非法或结果成员关系不可证明时，不签发 receipt，把该 Job 作为 `missing/unknown/blocked` 执行事实传给外层对账，并保留非零 Hook Exit 的可能。
 4. **Resolution 生产者**：从受控规则/配置、#66-P0 Source materialization/baseline、真实执行事实产生 #104 的 `resolutions`；Native Result 的 Rule/Source 不能被反写成 Expected，缺失证据保持 unknown/insufficient。
-5. **Final Reconciliation（逐 Ref 调用）**：Dispatcher 正常/失败/过滤返回后，外层 Coordinator 执行一次 Reconciliation 阶段；对每个可执行 Ref Scope 分别传入 `ref_scope_id`、该 Ref 的 Routing/Resolutions/Observations 调用 #104，产生多个 Ref Receipt。随后由外层汇总所有 Receipt、未归属 Observations、缺失/失败/unknown 与当前本地策略，形成一个 Git Hook Exit。不能把多 Ref 聚合 Expected 容器整体传给 #104；一个 Ref PASS 不能覆盖另一个 Ref 的 missing/FAIL；跨 Ref 原生 Result 复用仍需 Check/Rule/Source/Baseline/Input/Attempt 等价证明，不因逐 Ref 调用重复执行。
+5. **Final Reconciliation（逐 Scope 调用）**：Dispatcher 正常/失败/过滤返回后，外层 Coordinator 执行一次 Reconciliation 阶段，并按 Expected 形态调用 #104：
+   - Schema v2 多 Ref `per_ref` 容器：对每个可执行 Ref Scope 分别传对应 `ref_scope_id`、该 Ref 的 Routing/Resolutions/Observations；
+   - 单 Scope Expected（不含 `per_ref`）：调用时不传 `ref_scope_id` 或传 `None`；传非空值会触发 `expected_ref_scope_unexpected`，不得为统一循环伪造 `ref_scope_id`。
+
+   每个调用产生独立 Receipt；外层汇总所有 Receipt、未归属 Observations、真实失败/缺失/unknown、跨 Ref 结果与当前本地策略，形成一个 Git Hook Exit。不能把多 Ref 聚合 Expected 容器整体传给 #104；一个 Ref PASS 不能覆盖另一个 Ref 的 missing/FAIL；跨 Ref 原生 Result 复用仍需 Check/Rule/Source/Baseline/Input/Attempt 等价证明，不因逐 Ref 调用重复执行。合法空 Expected 仍须按完整义务与不可信/未知来源处理，不能仅因空集自动成为受信完整 PASS。
 6. **接口不足的处理**：真实接线若证明 #104 公共接口不足，应修订 `engineering_ci.reconciliation` 的公共接口并按其实际变化验收；**不得**另建第二套对账、证据数据库、Scheduler 或 Required Gate。
 
 **定向验收（运行时 PR 执行）：** 合法 Report→Result/Job Attempt 正例；同 Payload 不同 Invocation 负例（旧 PASS 不满足新事件）；错误 Runner/Report/Attempt、旧 Run 重挂、过滤/未启动、终态 FAIL 后仍执行 Final Reconciliation；#104 receipt 的 unknown/missing 正确映射到非零 Hook Exit；单所有者安装文件哈希不变。文档 PR 不重跑真实 Dagger/Tach/Lychee/Sources 全矩阵。
