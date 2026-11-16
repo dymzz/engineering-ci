@@ -1,2 +1,4 @@
 # Canonical policy input is hashed and must retain its published bytes.
 config/security-policy.example.json -text
+docs/verification/trivy-fs/fixture/package-lock.json -text
+docs/verification/trivy-fs/*.json -text
