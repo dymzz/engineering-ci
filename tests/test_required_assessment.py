@@ -89,6 +89,7 @@ def make_profile(
         context="release",
         action="publish",
         target="candidate",
+        phase=phase,
         required_obligations=list(
             obligations
             if obligations is not None
@@ -99,8 +100,6 @@ def make_profile(
         ),
         domain_complete=domain_complete,
     )
-    if phase is not None:
-        profile["phase"] = phase
     return profile
 
 
@@ -147,9 +146,13 @@ def make_projection(
     status="complete",
     event=None,
     source=None,
+    phase_status=None,
 ):
     event = event or EVENT
     source = source or SOURCE
+    phase = profile.get("phase")
+    if phase_status is None:
+        phase_status = "unverified" if phase is not None else "not_applicable"
     scope_id = expected_checks.scope_identity(
         "engineering-ci/required-assessment",
         PROFILE_REF,
@@ -180,6 +183,8 @@ def make_projection(
         "profile_source": PROFILE_SOURCE,
         "effective_profile": profile,
         "authority_status": "verified",
+        "phase": phase,
+        "phase_status": phase_status,
         "trusted_admission_status": "not_evaluated",
         "consumer_completeness": "expected_domain_complete",
         "observed_input_closure_status": "not_observed",
@@ -190,6 +195,63 @@ def make_projection(
         "missing": [],
         "conflicts": [],
     }
+
+
+def make_per_ref_container(
+    profile,
+    checks,
+    *,
+    ref_action="update",
+    local_ref="refs/heads/main",
+    event=None,
+    source=None,
+    non_check=(),
+    child_status="complete",
+    parent_status="partial",
+    parent_completeness="per_ref_container_only",
+    parent_phase_status=None,
+):
+    single = make_projection(
+        profile,
+        checks,
+        non_check=non_check,
+        event=event,
+        source=source,
+    )
+    child = {
+        "source_ref": local_ref,
+        "local_ref": local_ref,
+        "remote_ref": "origin",
+        "ref_action": ref_action,
+        "force_push": False,
+        "baseline_status": "ok",
+        "event_ref": copy.deepcopy(event or EVENT),
+        "source": copy.deepcopy(source or SOURCE),
+        "scope_id": single["scope_id"],
+        "expected_set_ref": single["expected_set_ref"],
+        "checks": checks,
+        "non_check_obligations": list(non_check),
+        "conflicts": [],
+        "status": child_status,
+        "consumer_completeness": "per_ref",
+        "effective_profile": profile,
+    }
+    container = copy.deepcopy(single)
+    container["status"] = parent_status
+    container["consumer_completeness"] = parent_completeness
+    container["checks"] = []
+    container["non_check_obligations"] = []
+    container["expected_set_ref"] = expected_checks.set_identity(
+        [], (), schema_version=2
+    )
+    if parent_phase_status is None:
+        parent_phase_status = (
+            "unverified" if profile.get("phase") is not None else "not_applicable"
+        )
+    container["phase"] = profile.get("phase")
+    container["phase_status"] = parent_phase_status
+    container["per_ref"] = [child]
+    return container, child
 
 
 def check_obligation(
@@ -1136,10 +1198,38 @@ def test_universe_evaluation_ref_must_match_expected_event():
     assert check_row(assessment, entry)["status"] == "satisfied"
 
 
-def test_universe_phase_must_match_authorized_profile_phase():
+def test_phase_bearing_scope_with_unverified_phase_blocks():
     profile = make_profile(phase="pre_publish")
     entry = make_entry()
     projection = make_projection(profile, [entry])
+    assert projection["phase"] == "pre_publish"
+    assert projection["phase_status"] == "unverified"
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert assessment["verification"]["check_domain"]["status"] == "unverified"
+    assert (
+        "expected_phase_unverified"
+        in assessment["verification"]["check_domain"]["reasons"]
+    )
+    # The local Check evidence is preserved; only the phase authorization blocks.
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+def test_future_trusted_phase_contract_sample_can_pass():
+    # Contract sample for a future trusted lifecycle Phase Producer: #112's
+    # current producer emits phase_status="unverified", so this is not a claim
+    # that real lifecycle Phase authorization is already delivered.
+    profile = make_profile(phase="pre_publish")
+    entry = make_entry()
+    projection = make_projection(profile, [entry], phase_status="verified")
     obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
     admission = make_admission(
         projection,
@@ -2669,6 +2759,93 @@ def test_multi_ref_container_requires_one_explicit_ref_scope():
     assert child_assessment["refs"] == [
         {"target_ref": "refs/heads/main", "ref_action": "update"}
     ]
+
+
+def test_multi_ref_child_complete_cannot_upgrade_unverified_parent_phase():
+    profile = make_profile(phase="pre_publish")
+    entry = make_entry()
+    container, child = make_per_ref_container(
+        profile, [entry], parent_phase_status="unverified"
+    )
+    assert container["phase"] == "pre_publish"
+    assert container["phase_status"] == "unverified"
+    assert child["status"] == "complete"
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, child, [obligation], phase="pre_publish")
+    admission = make_admission(
+        child,
+        coverage_entries=[(entry, historical_coverage(child, entry))],
+    )
+
+    assessment = assess(
+        universe,
+        container,
+        ref_scope_id=child["scope_id"],
+        admission=admission,
+    )
+
+    assert assessment["status"] == "blocked"
+    assert assessment["verification"]["check_domain"]["status"] == "unverified"
+    assert (
+        "expected_phase_unverified"
+        in assessment["verification"]["check_domain"]["reasons"]
+    )
+    # Local structural completeness proves the Check, not the lifecycle phase.
+    assert check_row(assessment, entry)["status"] == "satisfied"
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
+def test_per_ref_ref_action_conflict_blocks_but_keeps_check_witness():
+    profile = make_profile()
+    entry = make_entry()
+    container, child = make_per_ref_container(profile, [entry], ref_action="update")
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(
+        profile,
+        child,
+        [obligation],
+        refs=[{"target_ref": "refs/heads/main", "ref_action": "delete"}],
+    )
+    admission = make_admission(
+        child,
+        coverage_entries=[(entry, historical_coverage(child, entry))],
+    )
+
+    assessment = assess(
+        universe,
+        container,
+        ref_scope_id=child["scope_id"],
+        admission=admission,
+    )
+
+    assert assessment["status"] == "blocked"
+    assert (
+        "evaluation_ref_action_mismatch"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+@pytest.mark.parametrize("ref_action", ["update", "delete"])
+def test_per_ref_ref_action_update_and_delete_are_legal(ref_action):
+    profile = make_profile(obligations=[], declared_checks=[])
+    container, child = make_per_ref_container(profile, [], ref_action=ref_action)
+    universe = make_universe(
+        profile,
+        child,
+        [],
+        refs=[{"target_ref": "refs/heads/main", "ref_action": ref_action}],
+    )
+
+    assessment = assess(
+        universe,
+        container,
+        ref_scope_id=child["scope_id"],
+        admission=make_admission(child),
+    )
+
+    assert assessment["status"] == "passed"
+    assert assessment["verification"]["obligations_universe"]["status"] == "verified"
 
 
 def test_v1_projection_is_not_accepted():

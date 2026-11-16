@@ -278,6 +278,8 @@ def _select_expected_scope(expected, ref_scope_id):
             "expected_set_ref": ref.get("expected_set_ref"),
             "consumer_completeness": "per_ref",
             "per_ref": True,
+            "phase": expected.get("phase"),
+            "phase_status": expected.get("phase_status"),
             "conflicts": ref.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -308,6 +310,8 @@ def _select_expected_scope(expected, ref_scope_id):
             "expected_set_ref": expected.get("expected_set_ref"),
             "consumer_completeness": expected.get("consumer_completeness"),
             "per_ref": False,
+            "phase": expected.get("phase"),
+            "phase_status": expected.get("phase_status"),
             "conflicts": expected.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -345,6 +349,17 @@ def _verify_expected_scope(scope):
         raise RequiredAssessmentError("expected_authority_status_invalid")
     if scope.get("trusted_admission_status", "not_evaluated") != "not_evaluated":
         raise RequiredAssessmentError("expected_trust_claimed")
+    profile_phase = profile.get("phase")
+    scope_phase = scope.get("phase")
+    phase_status = scope.get("phase_status")
+    if profile_phase is not None:
+        if scope_phase != profile_phase or phase_status not in {
+            "unverified",
+            "verified",
+        }:
+            raise RequiredAssessmentError("expected_phase_status_invalid")
+    elif scope_phase is not None or phase_status not in {None, "not_applicable"}:
+        raise RequiredAssessmentError("expected_phase_status_invalid")
 
     checks = []
     seen = set()
@@ -877,6 +892,33 @@ def _cross_check_universe(universe, scope, checks):
         for item in evaluation["refs"]:
             if item["target_ref"] not in event_refs:
                 reasons.append("evaluation_ref_not_in_expected_event")
+    event_action = scope["event_ref"].get("ref_action")
+    if event_action is not None:
+        for item in evaluation["refs"]:
+            if item["ref_action"] != event_action:
+                reasons.append("evaluation_ref_action_mismatch")
+    if scope.get("per_ref"):
+        ref_meta = scope.get("ref") or {}
+        child_ref = (
+            ref_meta.get("local_ref")
+            or ref_meta.get("remote_ref")
+            or ref_meta.get("source_ref")
+        )
+        child_action = ref_meta.get("ref_action")
+        exact = [
+            item
+            for item in evaluation["refs"]
+            if item["target_ref"] == child_ref and item["ref_action"] == child_action
+        ]
+        target_matches = [
+            item for item in evaluation["refs"] if item["target_ref"] == child_ref
+        ]
+        if len(evaluation["refs"]) != 1 or len(exact) != 1:
+            reasons.append(
+                "evaluation_ref_action_mismatch"
+                if target_matches and not exact
+                else "evaluation_ref_scope_mismatch"
+            )
     expected_source_digest = _normalized_source_digest(
         scope["source_ref"].get("content_digest")
     )
@@ -1357,6 +1399,8 @@ def _check_domain_fact(scope, checks):
         reasons.append("expected_check_conflicts")
     if scope.get("authority_status") != "verified":
         reasons.append("expected_authority_unverified")
+    if scope.get("phase_status") == "unverified":
+        reasons.append("expected_phase_unverified")
     if scope["status"] == "complete":
         expected_label = (
             "per_ref" if scope.get("per_ref") else "expected_domain_complete"
