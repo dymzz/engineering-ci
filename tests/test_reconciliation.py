@@ -2161,6 +2161,72 @@ def test_b3_invocation_and_event_attribution_refuse_old_run_replay():
     assert matched_curr["expected_invocation_ref"] == "inv/current"
 
 
+def test_b3_l2_handoff_preserves_compact_refs_partial_coverage_and_untrusted_boundary():
+    tach_entry = make_entry("tach", rule=RULE_TACH)
+    ws_entry = make_entry(
+        "whitespace", rule=RULE_WS, baseline_ref={"base_commit": "1" * 40}
+    )
+    partial_proj = make_projection(
+        [tach_entry, ws_entry], consumer_completeness="not_claimed"
+    )
+    tach_res = native("tach", tool_access="tach/check", instance="tach-ok")
+    obs = make_observation("job-1", [tach_res])
+    receipt = reconcile(
+        partial_proj,
+        routing=[
+            make_routing(tach_entry),
+            make_routing(ws_entry, jobs=(), status="unrouted"),
+        ],
+        resolutions=[make_resolution(tach_entry, rule=RULE_TACH)],
+        observations=[obs],
+    )
+    reconciliation.validate_receipt(receipt)
+
+    # 1. Structural Receipt always keeps trusted=False / evidence_admission=not_evaluated
+    # (signaling #66-C has not authenticated external issuers, NOT a permanent veto):
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
+    assert receipt["status"] == "partial"
+
+    # 2. Partial scope keeps matched per-check entries intact alongside unrouted/missing ones:
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["tach"]["binding_status"] == "matched"
+    assert by_name["whitespace"]["binding_status"] == "unrouted"
+
+    # 3. Selected witness evidence in Receipt is a compact index referencing the raw Report,
+    # NOT a full NativeResult copy (#63 must fetch & verify raw NativeResult via report_ref):
+    compact = by_name["tach"]["selected_results"][0]
+    for required_pointer in (
+        "result_id",
+        "job_ref",
+        "run_ref",
+        "attempt_ref",
+        "runner_ref",
+        "report_ref",
+        "job_receipt_ref",
+        "result_origin",
+    ):
+        assert compact.get(required_pointer) is not None
+    for full_only_field in ("source_ref", "rule_ref", "input_refs", "evidence"):
+        assert full_only_field not in compact
+
+    # 4. Different Event ref is refused only for current-run #66-C attribution, while
+    # explicitly pointing callers to upstream #63 cross-run equivalence admission:
+    diff_event_obs = copy.deepcopy(obs)
+    diff_event_obs["job_receipt"]["event_ref"] = {**EVENT, "head_commit": "e" * 40}
+    diff_rec = reconcile(
+        make_projection([tach_entry]),
+        routing=[make_routing(tach_entry)],
+        resolutions=[make_resolution(tach_entry, rule=RULE_TACH)],
+        observations=[diff_event_obs],
+    )
+    assert diff_rec["entries"][0]["binding_status"] == "unknown"
+    assert diff_rec["entries"][0]["reason"] == "job_event_mismatch"
+    assert "cross_run_reuse_requires_upstream_admission" in diff_rec["limitations"]
+
+
 def test_b1_eci_producer_report_contract_and_dependency_propagation():
     ws_entry = make_entry("whitespace", rule=RULE_WS)
     docs_entry = make_entry("docs", rule=RULE_DOCS)

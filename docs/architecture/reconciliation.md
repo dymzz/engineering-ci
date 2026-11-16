@@ -386,57 +386,138 @@ mistaking them for a full observation ledger.
 
 ## `#63` L2 消费与 Accepted Coverage 合同样例（非 `#63` 已实装代码）
 
-> 本节为基于当前代码真实 Schema（`engineering-ci-expected-result-reconciliation` v1、`check-contract` v2、`expected_checks` v2）的**合同样例与消费映射说明**，用于冻结 `#66-C -> #63` 交接语义；**不代表 `#63` 历史跨 Run 复用引擎或 `#61` 最终 Gate 已在本仓库实装。**
+> 本节为基于当前代码真实 Schema（`engineering-ci-expected-result-reconciliation` v1、`check-contract` v2、`expected_checks` v2）的**合同样例与消费映射说明**，用于冻结 `#66-C -> #63 -> #61` L2 交接语义；**不代表 `#63` 历史跨 Run 复用引擎或 `#61` 最终 Gate 已在本仓库实装。**
 
-### 1. 字段来源与 Schema 版本映射
+### 1. 三层状态职责分离（#66-C 结构 Receipt vs #63 独立 Admission vs #61 最终 Gate）
 
-| `#63` 消费需求 | Receipt / Entry 真实字段路径（Schema v1 / Check v2） | 生产者验证约束 |
+| 层级与模块 | 负责输出字段 / 状态 | 精确语义与消费边界 |
 | --- | --- | --- |
-| 当前 Execution 上下文归因 | 顶层 `expected_set_ref`、`scope_id`、`expected_invocation_ref`、`expected_event_ref`、`receipt_ref` | 当绑定 `invocation_ref` 时，`job_receipt` 必须同时匹配四项（否则拒绝并保留 `job_*_unproven`/`job_*_mismatch`）。 |
-| 被接纳的原生 Witness 身份 | `entries[i].selected_result_ids`、`entries[i].selected_results[]`（`result_id`, `result_instance`, `status`, `result_origin`, `native_exit_code`, `tool`） | `selected_results` 与同 `result_id` 的 `observed_results` 全字段一致，`status == "passed"` 且与 `rejected_results`/`inactive_attempts` 不交。 |
-| Run / Attempt / Report / Issuer 溯源 | `entries[i].selected_results[].{job_ref, run_ref, attempt_ref, runner_ref, report_ref, job_receipt_ref}` 及 `entries[i].job_instances[]` 的 `attempt_eligibility=="eligible"`、`qualification_ref` | `job_instances` 不得为空；#63 必须再独立验真 `job_receipt.issuer_ref` 签发者权威。 |
-| 执行目标、规则与基线等价键 | `entries[i].resolved_expected`（`check_id`, `definition_version`, `rule_ref`, `profile_ref`, `source_ref.{snapshot, declared_target_tree, content_digest, scope_kind, materialization_ref, verified_input_scope}`, `baseline_ref.base_commit`, `input_refs`, `coverage`）与 `entries[i].resolved_expected_ref` | `resolved_expected` 经 `check_contract.validate_expected_instance()` 验证且与 `resolved_expected_ref` 摘要一致；`entries[i].evidence_refs` 提供 `rule_source_ref`/`source_receipt_ref`/`baseline_source_ref`。 |
-| `#52` 单项判定与输入集合约束 | `entries[i].native_satisfaction`（`kind == "engineering-ci-check-satisfaction"`, `schema_version == 2`, `status == "satisfied"`, `selected_result_ids`） | 仅当 `binding_status == "matched"` 时为 `"satisfied"`；非 `"matched"` 时严禁视作通过。 |
+| `#66-C` Structural Receipt (`engineering_ci.reconciliation`) | `status` (`matched`/`partial`/`unrouted`/`unknown`)、`entries[i].binding_status`、`trusted: false`、`required: false`、`evidence_admission: "not_evaluated"`、`required_gate: "not_evaluated"` | **`trusted=false` 与 `evidence_admission="not_evaluated"` 仅表示 `#66-C` 未执行外部来源签发认证**，**不是**对证据可信性的永久否决，不可阻止 `#63` 基于原始证据独立接纳。 |
+| `#63` Independent Admission (上游消费端) | `accepted_coverage_by_check[check]`（`admitted` / `rejected` / `unverified`）、`remaining_work[]` | 根据原始 Execution Report、`NativeResult`、签发收据与等价条件按 **逐 Check** 独立裁定接纳或拒绝；**不回写或篡改**已签发的 `#66-C` Receipt 字段（原 Receipt 维持不可变与 `trusted=false`）。 |
+| `#61` Required / Release Gate (下游决策端) | Final Gate Assessment（`passed` / `blocked`） | 汇总完整 Required Obligations（包含无 Native Check 的义务）、`expected_completeness` 与 `#63` Admission 结论决定最终放行；单 Check `matched` 或局部 `admitted` 不直接等于 Required Release PASS。 |
 
-### 2. `#63` 接纳/拒绝与 Remaining Work 关联规则（合同样例）
+### 2. Receipt 压缩索引与原始完整 Result / Issuer 的取回验证路径
 
-1. **Pre-run（历史复用计算 Remaining Work，phase: `pre_run_history_to_remaining_work`）**：
-   - 仅当候选历史 Receipt 已由 `#63` 认证 `job_receipt.issuer_ref`、目标 Checks 的 `resolved_expected` 与当前 Run 的 `(check_id, definition_version, rule_ref, profile_ref, source_ref[closure digest / tree], baseline_ref, input_refs, coverage)` 严格等价且 `scope_kind` 为静态已封闭范围（`check_input_closure` / `full_input_closure`）时，可纳入 *Accepted Coverage* 并从 **Remaining Work** 移除。
-   - 若仅部分 Check 闭环、或历史证据来自开放范围（如 `vulture`/`source` 的 `changed_paths`/`identity_only`）、或 `expected_event_ref` 基线不等，禁止从 Remaining Work 移除。
-2. **Post-run（当前执行复核，phase: `post_run_evidence_to_gate_projection`）**：
-   - `entries[i].binding_status == "matched"` 且 `#63` 核验 `job_receipt` 发布者与 `evidence_refs` 来源受信后，`entries[i]` 记为 `admitted` 并结清该 Expected 项的当前覆盖。
-   - 任何出现在 `rejected_results`、`rejected_observations`、`inactive_attempts` 或 `unexpected` 中的结果/attempt 均**不得**抵消 Remaining Work，必须在 `#63` 输出中保持可见审计追踪。
+`reconciliation._result_evidence()`（`src/engineering_ci/reconciliation.py:1234–1250`）仅生成**压缩证据索引**（`result_id`、`result_instance`、`status`、`result_origin`、`native_exit_code`、`tool`、`job_ref`、`run_ref`、`attempt_ref`、`runner_ref`、`report_ref`、`job_receipt_ref`），**有意不包含**原始 `NativeResult` 的 `source_ref`、`check.rule_ref`、`check.profile_ref`、`input_refs`、`baseline_ref`、`coverage`、`evidence`；同时 `entries[i].resolved_expected` 是 `#66-B` 的预期对象，**不得**将预期对象当作实际执行证据形成循环证明。
 
-### 3. 数据缺失或未验证时的消费端表达（Fail-Closed）
+`#63` 消费端的独立取回与验证步骤：
+
+1. **定位原始载荷**：通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从 Run Artifact / 归档存储（或本仓库现有 `gh` Run/Artifact 下载通道与 `#72/#102` 调度产物）获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。
+2. **摘要与签发者独立验真**：
+   - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
+   - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；
+   - 独立认证 `job_receipt.issuer_ref` 与 Run/Attempt 调度来源权威（外部签名/OIDC/信任链，不采信自声明）。
+3. **提取并校验完整 Raw `NativeResult`**：
+   - 从已验真 Raw Report 按 `result_id` 提取完整 `engineering-ci-native-check-result` (v2)，调用 `check_contract.validate_result(raw_result)` 验证其 `content_id`/`result_id`；
+   - **直接读取** `raw_result["source_ref"]`、`raw_result["check"]["rule_ref"]`、`raw_result["check"]["profile_ref"]`、`raw_result["input_refs"]`、`raw_result["baseline_ref"]`、`raw_result["tool"]`、`raw_result["coverage"]`、`raw_result["evidence"]`，与当前 Check 需求比对语义等价性（可用 `entries[i].evidence_refs` 辅助核查规则/来源收据指纹）。
+4. **缺失或不可验证的处理**：若 Raw Report、原始 `NativeResult` 或 `job_receipt` 任一缺失、SHA-256 不匹配或 `issuer_ref` 不可验真，**严禁**凭 Receipt 压缩记录或 `resolved_expected` 降级放行；消费端必须维持 `admission_status: "unverified"`（或 `"rejected"`），并将该 Check 保留在 `remaining_work`。
+
+### 3. 逐 Check Accepted Coverage、完整性上限与同/跨 Run 等价规则
+
+1. **逐 Check 覆盖 vs 整体完整性/Gate 解耦**：
+   - 在 N 个适用 Check 中（例如 10 个适用 Check 里有 6 个已独立认证完整结果并满足本次等价，4 个缺失证据），`#63` 对已核实的 6 项在 `accepted_coverage_by_check` 记为 `admitted` 并**从 `remaining_work` 移除**，对其余 4 项保留在 `remaining_work`（`unverified`/`rejected`）。
+   - 上游 `expected_completeness != "complete"` 或 `all_observations_reconciled == false` 限制整体证明上限及 `#61` Required Gate 放行，**不得无条件抹消**无冲突 Check 已核实的逐项覆盖。
+   - **共享前提/污染收敛**：仅当异常结果/rejected observation/失败 prerequisite 与某些 Check **共享**同一受污染 `job_ref`/`run_ref`/`attempt_ref`、`source_ref`、报告级 `plan_declaration_consistent == false` 或 `blocked_by` / `pre_execution_prerequisite_failed` 依赖边时，按实际传播范围使受影响 Check 的覆盖失效。
+2. **同次执行归因 (`#66-C`) vs 跨次历史复用 (`#63`)**：
+   - **同次执行 (`#66-C`)**：严格校验当前 `invocation_ref`、`expected_event_ref`、`scope_id`、`expected_set_ref`（不一致即在同次对账拒绝，并写入 `limitations: ["cross_run_reuse_requires_upstream_admission"]`）。
+   - **跨次历史复用 (`#63`)**：历史 Run 具有不同的 `event_ref`（如不同的 `head_ref`/`head_commit`/`base_ref`）或不同 `invocation_ref` 属于**正常跨 Run 前提**，不得仅因 `expected_event_ref` 不同就否决复用；`#63` 保留历史原始 `(run_ref, attempt_ref, runner_ref, result_origin, event_ref)` 溯源，独立验证以下 **语义等价要件**：
+     - 同一 `check_id`、`definition_version` 与受批准的 `rule_ref` / `profile_ref`（含当前生效窗与策略许可）；
+     - 静态闭合的 `source_ref`（`scope_kind` 为 `check_input_closure` / `full_input_closure`，实际被检输入闭包摘要/材质一致性且满足当前 Target 语义）；开放范围（`changed_paths`/`identity_only`，如 `vulture`/`source`）不得冒充全闭包等价复用；
+     - 若 Check 依赖对比基线或输入清单：实际消耗的 `baseline_ref.base_commit`、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
+
+### 4. `#63` L2 消费投影合同样例
+
+#### 样例 A — 部分逐 Check 独立认证成功 + 未认证项保留 Remaining Work（同次 / 混合）
 
 ```json
 {
   "contract_sample": "63_accepted_coverage_projection",
-  "receipt_ref": "sha256:...",
-  "expected_set_ref": "sha256:...",
-  "scope_id": "sha256:...",
-  "admitted_entries": [
-    {
-      "expected_check_ref": "sha256:...",
-      "admission_status": "admitted_current_run",
-      "witness_result_id": "sha256:...",
-      "run_ref": "run/123",
-      "attempt_ref": "attempt/2",
-      "equivalence_digest": "sha256:resolved_expected_ref"
+  "phase": "post_run_evidence_to_gate_projection",
+  "immutable_receipt_ref": "sha256:receipt_digest",
+  "immutable_receipt_trusted_flag": false,
+  "expected_set_ref": "sha256:expected_set",
+  "scope_id": "sha256:scope",
+  "expected_completeness": "not_claimed",
+  "all_observations_reconciled": true,
+  "accepted_coverage_by_check": {
+    "whitespace": {
+      "admission_status": "admitted",
+      "source_kind": "current_run",
+      "witness_result_id": "sha256:raw_ws_result_id",
+      "raw_report_ref": {"kind": "engineering-ci-execution-report", "schema_version": 1, "sha256": "..."},
+      "raw_result_verified": true,
+      "issuer_verified": true,
+      "origin_trace": {"run_ref": "run/123", "attempt_ref": "attempt/2", "runner_ref": "execution:host", "result_origin": "host"}
+    },
+    "tach": {
+      "admission_status": "admitted",
+      "source_kind": "current_run",
+      "witness_result_id": "sha256:raw_tach_result_id",
+      "raw_result_verified": true,
+      "issuer_verified": true
+    },
+    "vulture": {
+      "admission_status": "unverified",
+      "reason": "source_scope_not_closed",
+      "receipt_binding_status": "unknown"
+    },
+    "unittest": {
+      "admission_status": "unverified",
+      "reason": "raw_report_missing_or_issuer_unverified",
+      "receipt_binding_status": "matched"
     }
-  ],
-  "remaining_work": [
-    {
-      "expected_check_ref": "sha256:...",
-      "reason": "source_scope_not_closed_or_issuer_unverified",
-      "receipt_binding_status": "unknown",
-      "receipt_reason": "expected_source_scope_insufficient",
-      "admitted": false
-    }
-  ],
-  "consumer_trusted": false,
-  "gate_action": "block_required_release"
+  },
+  "remaining_work": ["vulture", "unittest"],
+  "required_gate_ready": false,
+  "required_gate_block_reason": "remaining_work_non_empty_and_completeness_unproven"
 }
 ```
+> 注：上例中 `unittest` 在结构 Receipt 内即使呈现 `matched`，但因 `#63` 尚缺原始 Report/签发者认证而保持 `unverified` 与留在 `remaining_work`；相反，`whitespace`/`tach` 虽来源 Receipt 的原始 `trusted` 为 `false`，经 `#63` 取回完整原始载荷独立验真后仍合法计入 `accepted_coverage_by_check` 并移出 `remaining_work`（原始 Receipt 仍保持不变），最终集合则因 `remaining_work` 非空及完整性未证明仍由 `#61` 阻断整体 Required 放行。
 
-- 当 `entries[i].binding_status` 为 `missing`、`insufficient`、`unknown`、`unrouted`，或 `receipt.trusted == false`、`job_receipt` 签发者未通过 `#63` 认证、`expected_completeness != "complete"`、`all_observations_reconciled == false` 时：消费端必须维持 `admitted=false`（`unproven` / `not_admitted`），保留条目在 `remaining_work` 中，不得升级 `trusted=true` 或作为 `#61` Required/Release 放行依据。
+#### 样例 B — 跨 Run 历史复用正反例（Event Ref 不同时的等价判断）
+
+```json
+{
+  "contract_sample": "63_cross_run_reuse_decisions",
+  "phase": "pre_run_history_to_remaining_work",
+  "decisions": [
+    {
+      "check": "tach",
+      "historical_event_ref": {"base_commit": "aaa...", "head_commit": "111...", "head_ref": "refs/heads/pr-old"},
+      "current_event_ref": {"base_commit": "bbb...", "head_commit": "222...", "head_ref": "refs/heads/pr-new"},
+      "admission_status": "admitted",
+      "source_kind": "historical_reuse",
+      "equivalence_basis": {
+        "requires_baseline": false,
+        "closed_source_scope_kind": "check_input_closure",
+        "raw_native_source_digest_equal": true,
+        "raw_native_rule_and_profile_equal": true,
+        "issuer_verified": true
+      },
+      "origin_trace": {"run_ref": "run/099", "attempt_ref": "attempt/1", "result_origin": "dagger_export"},
+      "remove_from_remaining_work": true
+    },
+    {
+      "check": "whitespace",
+      "historical_event_ref": {"base_commit": "aaa...", "head_commit": "111..."},
+      "current_event_ref": {"base_commit": "bbb...", "head_commit": "222..."},
+      "admission_status": "rejected",
+      "reason": "baseline_mismatch",
+      "equivalence_basis": {
+        "requires_baseline": true,
+        "target_tree_equal": true,
+        "raw_native_baseline_commit": "aaa...",
+        "current_expected_baseline_commit": "bbb..."
+      },
+      "remove_from_remaining_work": false
+    },
+    {
+      "check": "tach_after_shared_dep_failure",
+      "admission_status": "rejected",
+      "reason": "shared_prerequisite_or_source_conflict",
+      "remove_from_remaining_work": false
+    }
+  ]
+}
+```
+> 注：样例 B 第一项说明不同 `event_ref` / `invocation_ref` 下，只要不依赖旧比较基线且 `#63` 基于完整原始 `NativeResult` 与签发链证明闭环字节/规则/Profile/工具等价，仍可合法复用；第二项说明差分型 Check（如 `whitespace`/`forwarding`）即使目标 Tree 相同但实际比较 `base_commit` 不同，必须拒绝复用；第三项说明存在共享前提或污染冲突的 Check 须连带保留在 `remaining_work`。
