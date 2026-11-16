@@ -25,7 +25,7 @@ TRIVY_WINDOWS_X64_SHA256 = (
 )
 _SEVERITIES = frozenset({"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
-_SCANNERS = frozenset({"vuln", "misconfig", "secret", "license"})
+_SCANNERS = frozenset({"vuln", "misconfig", "secret"})
 
 
 class TrivyError(ValueError):
@@ -93,12 +93,16 @@ def _hash_text(value):
 
 def _target_digest(path):
     path = Path(path)
+    if path.is_symlink():
+        raise TrivyError("trivy_target_symlink")
     if path.is_file():
         return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     digest = hashlib.sha256()
     for item in sorted(
         path.rglob("*"), key=lambda value: value.relative_to(path).as_posix()
     ):
+        if item.is_symlink():
+            raise TrivyError("trivy_target_symlink")
         rel = item.relative_to(path).as_posix()
         if item.is_dir():
             digest.update(b"D" + rel.encode("utf-8") + b"\0")
@@ -114,6 +118,13 @@ def _severity(value):
 
 def _sanitize(report):
     if not isinstance(report, dict):
+        raise TrivyError("trivy_report_invalid")
+    if (
+        report.get("SchemaVersion") != 2
+        or not isinstance(report.get("Trivy"), dict)
+        or report["Trivy"].get("Version") != TRIVY_VERSION
+        or not isinstance(report.get("ArtifactType"), str)
+    ):
         raise TrivyError("trivy_report_invalid")
     results = report.get("Results", [])
     if not isinstance(results, list):
@@ -154,7 +165,7 @@ def _sanitize(report):
                 raise TrivyError("trivy_report_invalid")
             finding = {
                 "kind": "vulnerability",
-                "vulnerability_id": vuln_id,
+                "vulnerability_sha256": _hash_text(vuln_id),
                 "severity": _severity(item.get("Severity")),
                 "target_sha256": target_hash,
                 "redacted": True,
@@ -206,7 +217,10 @@ def scan_filesystem(
     timeout=180,
 ):
     root = Path(root).resolve()
-    target_path = (root / target).resolve()
+    raw_target = root / target
+    if raw_target.is_symlink():
+        raise TrivyError("trivy_target_symlink")
+    target_path = raw_target.resolve()
     try:
         relative_target = target_path.relative_to(root).as_posix()
     except ValueError:
@@ -216,6 +230,7 @@ def scan_filesystem(
     selected = tuple(dict.fromkeys(scanners))
     if not selected or any(item not in _SCANNERS for item in selected):
         raise TrivyError("trivy_scanners_invalid")
+    before_digest = _target_digest(target_path)
     binary = find_binary(environ)
     tool = _verify_binary(binary)
     config = Path(config_path) if config_path else None
@@ -239,9 +254,13 @@ def scan_filesystem(
             str(report_path),
             "--quiet",
             "--no-progress",
+            "--config",
+            str(config) if config is not None else "",
+            "--ignorefile",
+            "",
+            "--secret-config",
+            "",
         ]
-        if config is not None:
-            command.extend(["--config", str(config)])
         try:
             completed = subprocess.run(
                 command,
@@ -266,6 +285,7 @@ def scan_filesystem(
             raise TrivyError("trivy_report_invalid") from None
         findings = _sanitize(report)
 
+    after_digest = _target_digest(target_path)
     if completed.returncode == 0:
         status = "findings" if findings else "passed"
         reason = None
@@ -273,7 +293,10 @@ def scan_filesystem(
         status = "error"
         reason = "trivy_scan_failed"
     if completed.returncode == 0 and findings:
-        reason = "security_findings" if completed.returncode == 0 else None
+        reason = "security_findings"
+    if before_digest != after_digest:
+        status = "error"
+        reason = "trivy_target_changed"
     return {
         "status": status,
         "reason": reason,
@@ -282,10 +305,17 @@ def scan_filesystem(
         "report_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
         "target": {
             "path": relative_target,
-            "input_sha256": _target_digest(target_path),
+            "input_sha256": before_digest,
+            "after_sha256": after_digest,
         },
         "tool": tool,
         "scanners": list(selected),
+        "policy": {
+            "config_sha256": _sha256(config) if config is not None else None,
+            "implicit_config": False,
+            "implicit_ignore": False,
+            "implicit_secret_config": False,
+        },
         "db": {
             "updated_at": (report.get("Metadata") or {}).get("DBUpdatedAt"),
             "version": (report.get("Metadata") or {}).get("DBVersion"),

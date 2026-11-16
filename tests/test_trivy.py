@@ -71,6 +71,55 @@ def test_trivy_rejects_unknown_scanner(tmp_path):
     with pytest.raises(trivy.TrivyError) as raised:
         trivy.scan_filesystem(root, target=".", scanners=("unknown",))
     assert raised.value.code == "trivy_scanners_invalid"
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target=".", scanners=("license",))
+    assert raised.value.code == "trivy_scanners_invalid"
+
+
+def test_trivy_rejects_symlink_target(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    try:
+        (root / "link").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not permitted")
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(root, target=".", scanners=("secret",))
+    assert raised.value.code == "trivy_target_symlink"
+
+
+def test_trivy_rejects_malformed_report():
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy._sanitize({})
+    assert raised.value.code == "trivy_report_invalid"
+
+
+def test_trivy_vulnerability_id_is_hashed():
+    findings = trivy._sanitize(
+        {
+            "SchemaVersion": 2,
+            "Trivy": {"Version": "0.76.1"},
+            "ArtifactType": "filesystem",
+            "Results": [
+                {
+                    "Target": "a.txt",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "CVE-2026-12345",
+                            "Severity": "HIGH",
+                            "PkgName": "openssl",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert findings[0]["kind"] == "vulnerability"
+    assert "vulnerability_id" not in findings[0]
+    assert findings[0]["vulnerability_sha256"].startswith("sha256:")
+    assert "CVE-2026-12345" not in json.dumps(findings)
 
 
 def test_trivy_missing_binary_is_not_clean(tmp_path):
