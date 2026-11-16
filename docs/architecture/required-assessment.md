@@ -83,8 +83,22 @@ A phase before the assessed phase is an expired Required and stays
 `unverified`; a missing/unknown order or a phase absent from it is also
 `unverified` and blocks the scope.
 
-- `not_applicable` requires an `applicability_basis_ref`; without it the
-  instance is `unverified`, not inapplicable.
+- `not_applicable` requires an `applicability_basis_ref` **and** proof that the
+  authorization covers this exact Required instance; a basis reference alone is
+  never authorization.
+  - For a Check obligation R1 recomputes the authorized waiver from the
+    EffectiveProfile for the actual `(check name, obligation_ref, target_ref,
+    ref_action, phase)` scope using the existing #66-B2
+    `_parse_profile_obligations()` semantics. A waiver must be present in the
+    Profile (`allowed_inapplicability` or obligation `allow_inapplicable`);
+    otherwise `applicability_unauthorized`.
+  - For a Non-Check obligation the universe must carry a controlled
+    `applicability_authorization` (authority ref equal to the basis ref, rule
+    ref equal to `verification_rule_ref`, scope equal to the obligation's
+    Target/Action/Phase, plus validity/revocation). Missing, mismatched,
+    wrong-scope, expired/not-yet-valid or revoked authorization keeps the
+    instance `unverified`. R1 adds no domain Policy/Verifier/Authorization
+    registry; the fact must come from the authorized #66-B2/domain contract.
 - `not_yet_due` requires an `applicability_basis_ref` and either a provably
   future phase in `phase`/`due_phase` or a future `due_at`. A current/past
   phase, an elapsed due time, or no authorized order is `unverified`.
@@ -92,6 +106,26 @@ A phase before the assessed phase is an expired Required and stays
   past phase is `unverified` (`phase_already_passed`); an unavailable or
   unknown order is `unverified` (`phase_position_unproven`). `not_yet_due` is
   never used for a currently-required obligation whose evidence is missing.
+
+### Inapplicability authorization facts
+
+A Non-Check inapplicability authorization takes this controlled shape in the
+universe obligation:
+
+```json
+"applicability": "not_applicable",
+"applicability_basis_ref": {"name": "…", "version": "…", "sha256": "…"},
+"applicability_authorization": {
+  "authority_ref": {"name": "…", "version": "…", "sha256": "…"},
+  "rule_ref": {"name": "…", "version": "…", "sha256": "…"},
+  "scope": {"target_ref": "refs/heads/main", "action": "publish", "phase": null},
+  "valid_from": null, "valid_until": null, "revoked_at": null
+}
+```
+
+`authority_ref` must equal `applicability_basis_ref`; `rule_ref` must equal the
+obligation `verification_rule_ref`; `scope` must equal the obligation's
+Target/Action/Phase. The fact is consumed, not issued, by R1.
 
 ### Phase authorization
 
@@ -187,7 +221,7 @@ because they have different owners:
 | `verification.authority` | authorized Profile/policy source | authority status is `verified`, the assessment time is inside the effective window, the profile is not revoked, and the approval source is authoritative. |
 | `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, declares `authority_status="verified"`, uses the completeness label for its scope kind (single-Ref `expected_domain_complete`, per-Ref child `per_ref`), has no unverified or unauthenticated phase (`phase` must be `None` until an authenticated upstream lifecycle Phase Producer proof contract exists; `phase_status="unverified"` and bare self-reported `phase_status="verified"` both block), and its required Check definitions/rules are resolved. |
 | `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile/Check-domain and evaluation scope identities match the Expected scope (for multi-Ref children matching upstream `remote_ref or local_ref` paired with `ref_action`), every Expected Required Check/Non-Check and current-phase Profile obligation has a matching current-phase instance (only Profile-restricted `phases[]` strictly in the future allow future-only enumeration), and declared candidate/source identities match the evaluated and Expected identities. |
-| `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or `not_applicable`, and no in-scope Check or obligation row is `unmet`/`unverified`. |
+| `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or has an authorized `not_applicable` (Profile waiver for a Check, valid scoped authorization for a Non-Check), and no in-scope Check or obligation row is `unmet`/`unverified`. |
 
 `status` is `passed` only when all four facts hold. Otherwise it is `blocked`
 and `blocked_reasons` lists the failed facts per instance. A failed fact never
@@ -425,6 +459,14 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   upstream `_multi_ref_scopes`, paired with its real `(target_ref, ref_action)`:
   `local != remote` pre-push passes on `remote_ref`, fails on `local_ref`-only
   target or mismatched `ref_action`, and legal `update`/`delete` samples PASS;
+- a Check `not_applicable` with a plausible basis but no Profile waiver BLOCKs
+  (`applicability_unauthorized`); a Profile `allowed_inapplicability`/
+  `allow_inapplicable` waiver for the exact obligation/scope PASSes; a waiver
+  for another obligation or target does not; an unauthorized inapplicability
+  keeps an independently satisfied Check witness;
+- a Non-Check `not_applicable` without `applicability_authorization` BLOCKs; a
+  valid, scoped, current authorization PASSes; wrong authority/rule/target/
+  phase, expired, not-yet-valid and revoked authorizations BLOCK;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
   artifact-level subject fields, commit-only evidence rejected for an
   artifact-level obligation, a legitimate commit-level obligation, missing
@@ -440,6 +482,14 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   Event/Job names. #66-B2 (or the authorized policy source) must supply that
   order; a missing or incomplete order keeps phase-scoped obligations
   `unverified` rather than letting a different phase be treated as future.
+- **Inapplicability authorization is upstream owned.** A Check waiver is
+  recomputed from the authorized EffectiveProfile using the existing #66-B2
+  waiver semantics for the actual Target/Action/Phase; a basis reference alone
+  is never authorization. A Non-Check waiver requires the controlled
+  `applicability_authorization` fact from the authorized #66-B2/domain
+  contract. R1 creates no parallel waiver Policy, Verifier registry or
+  authorization store; if the upstream fact is absent or unverifiable, the
+  instance stays `unverified`.
 - **Lifecycle Phase authorization is upstream owned.** R1 consumes
   `Expected.phase`/`phase_status` and never issues Phase evidence or infers it
   from Event/Job names. The current #66-B2 producer marks phase-bearing

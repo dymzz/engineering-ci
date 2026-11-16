@@ -631,6 +631,43 @@ def _normalize_check_domain(check_domain):
     }
 
 
+def _normalize_applicability_authorization(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RequiredAssessmentError("universe_obligation_invalid")
+    scope = value.get("scope")
+    if not isinstance(scope, dict):
+        raise RequiredAssessmentError("universe_obligation_invalid")
+    record = {
+        "authority_ref": _evidence_ref(
+            value.get("authority_ref"), "universe_obligation_invalid"
+        ),
+        "rule_ref": _evidence_ref(value.get("rule_ref"), "universe_obligation_invalid"),
+        "scope": {
+            "target_ref": _text(scope.get("target_ref"), "universe_obligation_invalid"),
+            "action": _text(scope.get("action"), "universe_obligation_invalid"),
+            "phase": _optional_text(scope.get("phase"), "universe_obligation_invalid"),
+        },
+        "valid_from": _optional_datetime(
+            value.get("valid_from"), "universe_obligation_invalid"
+        ),
+        "valid_until": _optional_datetime(
+            value.get("valid_until"), "universe_obligation_invalid"
+        ),
+        "revoked_at": _optional_datetime(
+            value.get("revoked_at"), "universe_obligation_invalid"
+        ),
+    }
+    if (
+        record["valid_from"] is not None
+        and record["valid_until"] is not None
+        and record["valid_until"] < record["valid_from"]
+    ):
+        raise RequiredAssessmentError("universe_obligation_invalid")
+    return record
+
+
 def _normalize_obligation(obligation):
     if not isinstance(obligation, dict):
         raise RequiredAssessmentError("universe_obligation_invalid")
@@ -663,6 +700,9 @@ def _normalize_obligation(obligation):
         "basis_ref": _optional_evidence_ref(
             obligation.get("applicability_basis_ref"),
             "universe_obligation_invalid",
+        ),
+        "applicability_authorization": _normalize_applicability_authorization(
+            obligation.get("applicability_authorization")
         ),
         "due_phase": _optional_text(
             obligation.get("due_phase"), "universe_obligation_invalid"
@@ -830,6 +870,44 @@ def _target_in_scope(target, patterns):
     return False
 
 
+def _scope_ref_binding(scope):
+    """The actual (target_ref, ref_action) scope of the selected Expected scope."""
+    if scope.get("per_ref"):
+        ref_meta = scope.get("ref") or {}
+        return (
+            ref_meta.get("remote_ref")
+            or ref_meta.get("local_ref")
+            or ref_meta.get("source_ref"),
+            ref_meta.get("ref_action"),
+        )
+    event = scope["event_ref"]
+    return event.get("base_ref") or event.get("head_ref"), event.get("ref_action")
+
+
+def _authorized_check_waivers(scope):
+    """Recompute the authorized (check_name, obligation_ref) waiver map.
+
+    This reuses the existing #66-B2 EffectiveProfile waiver evaluation for the
+    actual Target/Action/Phase scope; R1 does not invent a parallel policy.
+    """
+    target_ref, ref_action = _scope_ref_binding(scope)
+    try:
+        *_, waivers, _ = expected_checks._parse_profile_obligations(
+            scope["effective_profile"],
+            hygiene_rule=scope.get("hygiene_rule_ref"),
+            sources_rule=scope.get("sources_rule_ref"),
+            selection_rule=scope.get("selection_rule_ref"),
+            weaver_rule=scope.get("selection_rule_ref"),
+            target_ref=target_ref,
+            ref_action=ref_action,
+        )
+    except expected_checks.ExpectedError as error:
+        raise RequiredAssessmentError(
+            "expected_profile_invalid", native_code=error.code
+        ) from None
+    return waivers
+
+
 def _cross_check_universe(universe, scope, checks):
     """Cross-check the universe against the Expected Check domain.
 
@@ -897,21 +975,18 @@ def _cross_check_universe(universe, scope, checks):
         for item in evaluation["refs"]:
             if item["ref_action"] != event_action:
                 reasons.append("evaluation_ref_action_mismatch")
+    scope_target_ref, scope_ref_action = _scope_ref_binding(scope)
     if scope.get("per_ref"):
-        ref_meta = scope.get("ref") or {}
-        child_ref = (
-            ref_meta.get("remote_ref")
-            or ref_meta.get("local_ref")
-            or ref_meta.get("source_ref")
-        )
-        child_action = ref_meta.get("ref_action")
         exact = [
             item
             for item in evaluation["refs"]
-            if item["target_ref"] == child_ref and item["ref_action"] == child_action
+            if item["target_ref"] == scope_target_ref
+            and item["ref_action"] == scope_ref_action
         ]
         target_matches = [
-            item for item in evaluation["refs"] if item["target_ref"] == child_ref
+            item
+            for item in evaluation["refs"]
+            if item["target_ref"] == scope_target_ref
         ]
         if len(evaluation["refs"]) != 1 or len(exact) != 1:
             reasons.append(
@@ -919,12 +994,6 @@ def _cross_check_universe(universe, scope, checks):
                 if target_matches and not exact
                 else "evaluation_ref_scope_mismatch"
             )
-        scope_target_ref = child_ref
-        scope_ref_action = child_action
-    else:
-        event = scope["event_ref"]
-        scope_target_ref = event.get("base_ref") or event.get("head_ref")
-        scope_ref_action = event.get("ref_action")
     expected_source_digest = _normalized_source_digest(
         scope["source_ref"].get("content_digest")
     )
@@ -1524,17 +1593,84 @@ def _universe_fact(universe, cross_check_reasons):
     return not reasons, reasons
 
 
-def _applicability_status(obligation, *, current_phase, phase_order, evaluated_at):
+def _check_inapplicability_status(obligation, *, check_waivers, expected_checks_by_ref):
+    """A Check waiver is authorized only by the EffectiveProfile evaluation."""
+    if check_waivers is None or expected_checks_by_ref is None:
+        return "unverified", ["applicability_authorization_unproven"]
+    ob_key = _canonical(obligation["obligation_ref"])
+    for ref in obligation["expected_check_refs"]:
+        entry = expected_checks_by_ref.get(ref)
+        if entry is None:
+            return "unverified", ["applicability_check_instance_unresolved"]
+        if ob_key not in check_waivers.get(entry.get("name"), set()):
+            return "unverified", ["applicability_unauthorized"]
+    return "not_applicable", []
+
+
+def _non_check_inapplicability_status(obligation, evaluated_at):
+    """A Non-Check waiver requires a controlled, scoped authorization fact."""
+    authorization = obligation["applicability_authorization"]
+    if authorization is None:
+        return "unverified", ["applicability_authorization_missing"]
+    if _canonical(authorization["authority_ref"]) != _canonical(
+        obligation["basis_ref"]
+    ):
+        return "unverified", ["applicability_authorization_mismatch"]
+    if obligation["verification_rule_ref"] is None or (
+        _canonical(authorization["rule_ref"])
+        != _canonical(obligation["verification_rule_ref"])
+    ):
+        return "unverified", ["applicability_rule_mismatch"]
+    scope = authorization["scope"]
+    if (
+        scope["target_ref"] != obligation["target_ref"]
+        or scope["action"] != obligation["action"]
+        or scope["phase"] != obligation["phase"]
+    ):
+        return "unverified", ["applicability_scope_mismatch"]
+    if authorization["revoked_at"] is not None:
+        return "unverified", ["applicability_authorization_revoked"]
+    if (
+        authorization["valid_from"] is not None
+        and evaluated_at < authorization["valid_from"]
+    ):
+        return "unverified", ["applicability_authorization_not_yet_valid"]
+    if (
+        authorization["valid_until"] is not None
+        and evaluated_at > authorization["valid_until"]
+    ):
+        return "unverified", ["applicability_authorization_expired"]
+    return "not_applicable", []
+
+
+def _applicability_status(
+    obligation,
+    *,
+    current_phase,
+    phase_order,
+    evaluated_at,
+    check_waivers=None,
+    expected_checks_by_ref=None,
+):
     """Evaluate the declared applicability; never defer a current Required.
 
     A phase different from the current phase is only "future" when the
     authorized phase order proves it. A past, unknown or unavailable order
-    keeps the obligation ``unverified`` instead of silently deferring it.
+    keeps the obligation ``unverified`` instead of silently deferring it. An
+    inapplicability is only accepted when the authorized Profile/domain
+    authorization covers this exact instance; a basis reference alone is not
+    authorization.
     """
     if obligation["applicability"] == "not_applicable":
         if obligation["basis_ref"] is None:
             return "unverified", ["applicability_basis_missing"]
-        return "not_applicable", []
+        if obligation["kind"] == "check":
+            return _check_inapplicability_status(
+                obligation,
+                check_waivers=check_waivers,
+                expected_checks_by_ref=expected_checks_by_ref,
+            )
+        return _non_check_inapplicability_status(obligation, evaluated_at)
     due_at = obligation["due_at"]
     if obligation["applicability"] == "not_yet_due":
         if obligation["basis_ref"] is None:
@@ -1708,6 +1844,8 @@ def _check_instance_row(
     admission,
     receipt,
     evaluated_at,
+    check_waivers=None,
+    expected_checks_by_ref=None,
 ):
     ref = entry["expected_check_ref"]
     phase = universe["evaluation"]["phase"]
@@ -1720,6 +1858,8 @@ def _check_instance_row(
                 current_phase=phase,
                 phase_order=phase_order,
                 evaluated_at=evaluated_at,
+                check_waivers=check_waivers,
+                expected_checks_by_ref=expected_checks_by_ref,
             ),
         )
         for item in referencing
@@ -2037,13 +2177,22 @@ def _non_check_obligation_row(
 
 
 def _check_obligation_row(
-    obligation, *, check_rows_by_ref, evaluated_at, phase, phase_order
+    obligation,
+    *,
+    check_rows_by_ref,
+    evaluated_at,
+    phase,
+    phase_order,
+    check_waivers=None,
+    expected_checks_by_ref=None,
 ):
     status, reasons = _applicability_status(
         obligation,
         current_phase=phase,
         phase_order=phase_order,
         evaluated_at=evaluated_at,
+        check_waivers=check_waivers,
+        expected_checks_by_ref=expected_checks_by_ref,
     )
     if status != "required":
         return _obligation_row(obligation, status=status, reasons=reasons)
@@ -2278,6 +2427,7 @@ def assess_required_obligations(
 
     phase = normalized_universe["evaluation"]["phase"]
     checks_by_ref = {entry["expected_check_ref"]: entry for entry in checks}
+    check_waivers = _authorized_check_waivers(scope)
     referencing_by_ref = {ref: [] for ref in checks_by_ref}
     for obligation in normalized_universe["obligations"]:
         for ref in obligation["expected_check_refs"]:
@@ -2298,6 +2448,8 @@ def assess_required_obligations(
             admission=admission_facts,
             receipt=receipt_facts,
             evaluated_at=assessed_at,
+            check_waivers=check_waivers,
+            expected_checks_by_ref=checks_by_ref,
         )
         check_rows.append(row)
         check_rows_by_ref[ref] = row
@@ -2348,6 +2500,8 @@ def assess_required_obligations(
                 evaluated_at=assessed_at,
                 phase=phase,
                 phase_order=phase_order,
+                check_waivers=check_waivers,
+                expected_checks_by_ref=checks_by_ref,
             )
         else:
             row = _non_check_obligation_row(

@@ -78,6 +78,7 @@ def make_profile(
     domain_complete=True,
     evaluated_at="2026-11-16T00:10:00Z",
     phase=None,
+    allowed_inapplicability=None,
 ):
     profile = expected_checks.build_effective_profile(
         profile_ref=copy.deepcopy(PROFILE_REF),
@@ -95,6 +96,8 @@ def make_profile(
             if obligations is not None
             else [{"obligation_ref": "o/tach", "check_names": ["tach"]}]
         ),
+        advisory_checks=[],
+        allowed_inapplicability=list(allowed_inapplicability or ()),
         declared_checks=list(
             declared_checks if declared_checks is not None else ["tach"]
         ),
@@ -298,6 +301,7 @@ def non_check_obligation(
     due_phase=None,
     due_at=None,
     basis_ref=None,
+    applicability_authorization=None,
     verifier_ref=VERIFIER_REF,
     verifier_authorization_ref=VERIFIER_AUTH_REF,
     verification_rule_ref=VERIFIER_RULE_REF,
@@ -316,12 +320,38 @@ def non_check_obligation(
         "applicability": applicability,
         "reason": "required_by_effective_profile",
         "applicability_basis_ref": copy.deepcopy(basis_ref),
+        "applicability_authorization": copy.deepcopy(applicability_authorization),
         "due_phase": due_phase,
         "due_at": due_at,
         "verifier_ref": copy.deepcopy(verifier_ref),
         "verifier_authorization_ref": copy.deepcopy(verifier_authorization_ref),
         "verification_rule_ref": copy.deepcopy(verification_rule_ref),
         "required_subject_fields": list(required_subject_fields),
+    }
+
+
+def inapplicability_authorization(
+    *,
+    authority_ref=BASIS_REF,
+    rule_ref=VERIFIER_RULE_REF,
+    target_ref="refs/heads/main",
+    action="publish",
+    phase=None,
+    valid_from=None,
+    valid_until=None,
+    revoked_at=None,
+):
+    return {
+        "authority_ref": copy.deepcopy(authority_ref),
+        "rule_ref": copy.deepcopy(rule_ref),
+        "scope": {
+            "target_ref": target_ref,
+            "action": action,
+            "phase": phase,
+        },
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "revoked_at": revoked_at,
     }
 
 
@@ -896,7 +926,10 @@ def test_authorized_not_applicable_obligation_is_not_required_evidence():
     )
     projection = make_projection(profile, [], non_check=[non_check_expected()])
     obligation = non_check_obligation(
-        "o/sbom", applicability="not_applicable", basis_ref=BASIS_REF
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        applicability_authorization=inapplicability_authorization(),
     )
     universe = make_universe(profile, projection, [obligation])
     admission = make_admission(projection)
@@ -909,7 +942,15 @@ def test_authorized_not_applicable_obligation_is_not_required_evidence():
 
 
 def test_authorized_check_inapplicability_passes_without_native_evidence():
-    profile = make_profile()
+    profile = make_profile(
+        obligations=[
+            {
+                "obligation_ref": "o/tach",
+                "check_names": ["tach"],
+                "allow_inapplicable": True,
+            }
+        ]
+    )
     entry = make_entry(applicability="not_applicable")
     projection = make_projection(profile, [entry])
     obligation = check_obligation(
@@ -927,6 +968,176 @@ def test_authorized_check_inapplicability_passes_without_native_evidence():
     assert check_row(assessment, entry)["status"] == "not_applicable"
     assert obligation_row(assessment, obligation)["status"] == "not_applicable"
     assert "required_check_omitted_by_universe" not in assessment["cross_check_reasons"]
+
+
+def test_check_inapplicability_requires_profile_waiver():
+    profile = make_profile()
+    entry = make_entry(applicability="not_applicable")
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach",
+        [entry["expected_check_ref"]],
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+    )
+    universe = make_universe(profile, projection, [obligation])
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    row = check_row(assessment, entry)
+    assert row["status"] == "unverified"
+    assert "applicability_unauthorized" in row["reasons"]
+    assert obligation_row(assessment, obligation)["status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "obligations",
+    [
+        [
+            {
+                "obligation_ref": "o/other",
+                "check_names": ["tach"],
+                "allow_inapplicable": True,
+            }
+        ],
+        [
+            {
+                "obligation_ref": "o/tach",
+                "check_names": ["tach"],
+                "allow_inapplicable": True,
+                "target_refs": ["refs/heads/other"],
+            }
+        ],
+    ],
+)
+def test_check_inapplicability_waiver_must_match_obligation_scope(obligations):
+    profile = make_profile(obligations=obligations)
+    entry = make_entry(applicability="not_applicable")
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach",
+        [entry["expected_check_ref"]],
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+    )
+    universe = make_universe(profile, projection, [obligation])
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, obligation)["status"] == "unverified"
+    assert "applicability_unauthorized" in check_row(assessment, entry)["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("authorization_change", "reason"),
+    [
+        (None, "applicability_authorization_missing"),
+        (
+            {
+                "authority_ref": {
+                    "name": "other/rule",
+                    "version": "1",
+                    "sha256": "9" * 64,
+                }
+            },
+            "applicability_authorization_mismatch",
+        ),
+        (
+            {
+                "rule_ref": {
+                    "name": "other/rule",
+                    "version": "1",
+                    "sha256": "9" * 64,
+                }
+            },
+            "applicability_rule_mismatch",
+        ),
+        ({"target_ref": "refs/heads/other"}, "applicability_scope_mismatch"),
+        ({"phase": "post_publish"}, "applicability_scope_mismatch"),
+        (
+            {"revoked_at": "2026-11-16T00:50:00Z"},
+            "applicability_authorization_revoked",
+        ),
+        (
+            {"valid_until": "2026-11-16T00:50:00Z"},
+            "applicability_authorization_expired",
+        ),
+        (
+            {"valid_from": "2026-11-16T02:00:00Z"},
+            "applicability_authorization_not_yet_valid",
+        ),
+    ],
+)
+def test_non_check_inapplicability_requires_a_valid_scoped_authorization(
+    authorization_change, reason
+):
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    authorization = (
+        None
+        if authorization_change is None
+        else inapplicability_authorization(**authorization_change)
+    )
+    obligation = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        applicability_authorization=authorization,
+    )
+    universe = make_universe(profile, projection, [obligation])
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    row = obligation_row(assessment, obligation)
+    assert row["status"] == "unverified"
+    assert row["reasons"] == [reason]
+
+
+def test_unauthorized_inapplicability_keeps_proven_check_witness():
+    profile = make_profile(
+        obligations=[
+            {"obligation_ref": "o/tach", "check_names": ["tach"]},
+            {"obligation_ref": "o/vulture", "check_names": ["vulture"]},
+        ],
+        declared_checks=["tach", "vulture"],
+    )
+    kept = make_entry("tach", required_by=("o/tach",))
+    unauthorized = make_entry(
+        "vulture",
+        required_by=("o/vulture",),
+        rule_ref=check_contract.rule_ref("vulture", 1, digest="d" * 64),
+        applicability="not_applicable",
+    )
+    projection = make_projection(profile, [kept, unauthorized])
+    kept_obligation = check_obligation("o/tach", [kept["expected_check_ref"]])
+    unauthorized_obligation = check_obligation(
+        "o/vulture",
+        [unauthorized["expected_check_ref"]],
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+    )
+    universe = make_universe(
+        profile, projection, [kept_obligation, unauthorized_obligation]
+    )
+    admission = make_admission(
+        projection,
+        coverage_entries=[(kept, historical_coverage(projection, kept))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert check_row(assessment, kept)["status"] == "satisfied"
+    assert check_row(assessment, unauthorized)["status"] == "unverified"
+    assert (
+        "applicability_unauthorized" in check_row(assessment, unauthorized)["reasons"]
+    )
 
 
 def test_inapplicable_check_cannot_satisfy_a_required_obligation():
