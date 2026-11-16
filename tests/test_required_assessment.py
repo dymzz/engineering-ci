@@ -77,8 +77,9 @@ def make_profile(
     authority_verified=True,
     domain_complete=True,
     evaluated_at="2026-11-16T00:10:00Z",
+    phase=None,
 ):
-    return expected_checks.build_effective_profile(
+    profile = expected_checks.build_effective_profile(
         profile_ref=copy.deepcopy(PROFILE_REF),
         profile_revision="rev-2026-11-16",
         approval_source=PROFILE_SOURCE,
@@ -98,6 +99,9 @@ def make_profile(
         ),
         domain_complete=domain_complete,
     )
+    if phase is not None:
+        profile["phase"] = phase
+    return profile
 
 
 def make_entry(
@@ -265,8 +269,10 @@ def make_universe(
     phase="pre_publish",
     action="publish",
     target="candidate",
+    context="release",
     refs=None,
     candidate=None,
+    include_candidate=True,
     phase_order=None,
     include_phase_order=True,
     universe_status="complete",
@@ -320,7 +326,7 @@ def make_universe(
             "exclusions": [],
         },
         "evaluation": {
-            "context": "release",
+            "context": context,
             "action": action,
             "target": target,
             "phase": phase,
@@ -332,8 +338,12 @@ def make_universe(
             "refs": copy.deepcopy(
                 refs or [{"target_ref": "refs/heads/main", "ref_action": "update"}]
             ),
-            "candidate": copy.deepcopy(
-                candidate if candidate is not None else {"commit": "2" * 40}
+            "candidate": (
+                copy.deepcopy(
+                    candidate if candidate is not None else {"commit": "2" * 40}
+                )
+                if include_candidate
+                else None
             ),
             "evaluated_at": profile["evaluated_at"],
         },
@@ -1052,6 +1062,254 @@ def test_universe_status_and_profile_binding_are_facts():
     )
 
 
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"context": "pull_request"}, "evaluation_context_mismatch"),
+        ({"action": "verify"}, "evaluation_action_mismatch"),
+        ({"target": "release"}, "evaluation_target_mismatch"),
+    ],
+)
+def test_universe_evaluation_context_action_target_bind_to_profile(change, reason):
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach",
+        [entry["expected_check_ref"]],
+        action=change.get("action", "publish"),
+    )
+    universe = make_universe(profile, projection, [obligation], **change)
+    admission = make_admission(
+        projection,
+        coverage_entries=[
+            (
+                entry,
+                historical_coverage(
+                    projection,
+                    entry,
+                    action=change.get("action", "publish"),
+                ),
+            )
+        ],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert reason in assessment["verification"]["obligations_universe"]["reasons"]
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+def test_universe_evaluation_ref_must_match_expected_event():
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/tach",
+        [entry["expected_check_ref"]],
+        target_ref="refs/heads/other",
+    )
+    universe = make_universe(
+        profile,
+        projection,
+        [obligation],
+        refs=[{"target_ref": "refs/heads/other", "ref_action": "update"}],
+    )
+    admission = make_admission(
+        projection,
+        coverage_entries=[
+            (
+                entry,
+                historical_coverage(projection, entry, target_ref="refs/heads/other"),
+            )
+        ],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert (
+        "evaluation_ref_not_in_expected_event"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+def test_universe_phase_must_match_authorized_profile_phase():
+    profile = make_profile(phase="pre_publish")
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    matching = make_universe(profile, projection, [obligation], phase="pre_publish")
+    assert assess(matching, projection, admission=admission)["status"] == "passed"
+
+    mismatched = make_universe(profile, projection, [obligation], phase="post_publish")
+    mismatched_admission = make_admission(
+        projection,
+        coverage_entries=[
+            (
+                entry,
+                historical_coverage(projection, entry, phase="post_publish"),
+            )
+        ],
+    )
+    assessment = assess(mismatched, projection, admission=mismatched_admission)
+
+    assert assessment["status"] == "blocked"
+    assert (
+        "evaluation_phase_mismatch"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+def test_obligation_candidate_digest_requires_a_real_candidate_identity():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    artifact_a = "sha256:" + "a" * 64
+    artifact_b = "sha256:" + "b" * 64
+    obligation = non_check_obligation("o/sbom", candidate_digest=artifact_a)
+    admission = make_admission(projection)
+
+    missing = make_universe(profile, projection, [obligation], include_candidate=False)
+    assessment = assess(missing, projection, admission=admission)
+    assert assessment["status"] == "blocked"
+    assert (
+        "obligation_candidate_identity_missing"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+
+    different = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40, "artifact_digest": artifact_b},
+    )
+    assessment = assess(different, projection, admission=admission)
+    assert assessment["status"] == "blocked"
+    assert (
+        "obligation_candidate_out_of_scope"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+
+    matching = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40, "artifact_digest": artifact_a},
+    )
+    evidence = make_evidence([evidence_entry("o/sbom", candidate_digest=artifact_a)])
+    assessment = assess(
+        matching,
+        projection,
+        admission=admission,
+        non_check_evidence=evidence,
+    )
+    assert assessment["status"] == "passed"
+
+
+def test_obligation_source_digest_binds_expected_source_and_candidate():
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    source_a = "sha256:" + "1" * 64
+    source_b = "sha256:" + "2" * 64
+
+    def projection_for_source(raw_digest):
+        source = check_contract.source_ref(
+            "worktree",
+            declared_target_tree="3" * 40,
+            actual_execution_source="worktree",
+            content_digest=raw_digest,
+            verified_scope=["src/engineering_ci/x.py"],
+            scope_kind="check_input_closure",
+        )
+        return make_projection(
+            profile, [], non_check=[non_check_expected()], source=source
+        )
+
+    projection = projection_for_source("1" * 64)
+    obligation = non_check_obligation("o/sbom", source_digest=source_a)
+    admission = make_admission(projection)
+    evidence = make_evidence([evidence_entry("o/sbom", source_digest=source_a)])
+
+    matching = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40, "source_digest": source_a},
+    )
+    assessment = assess(
+        matching,
+        projection,
+        admission=admission,
+        non_check_evidence=evidence,
+    )
+    assert assessment["status"] == "passed"
+
+    missing = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40},
+    )
+    assessment = assess(
+        missing,
+        projection,
+        admission=admission,
+        non_check_evidence=evidence,
+    )
+    assert assessment["status"] == "blocked"
+    assert (
+        "obligation_source_identity_missing"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert obligation_row(assessment, obligation)["status"] == "satisfied"
+
+    different = make_universe(
+        profile,
+        projection,
+        [obligation],
+        candidate={"commit": "2" * 40, "source_digest": source_b},
+    )
+    assessment = assess(
+        different,
+        projection,
+        admission=admission,
+        non_check_evidence=evidence,
+    )
+    assert assessment["status"] == "blocked"
+    assert (
+        "obligation_source_out_of_scope"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert obligation_row(assessment, obligation)["status"] == "satisfied"
+
+    mismatched_source = projection_for_source("2" * 64)
+    mismatched_admission = make_admission(mismatched_source)
+    assessment = assess(
+        matching,
+        mismatched_source,
+        admission=mismatched_admission,
+        non_check_evidence=evidence,
+    )
+    assert assessment["status"] == "blocked"
+    assert (
+        "obligation_source_out_of_scope"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+
+
 def test_incomplete_check_domain_blocks_even_with_satisfied_evidence():
     profile = make_profile()
     entry = make_entry()
@@ -1069,6 +1327,54 @@ def test_incomplete_check_domain_blocks_even_with_satisfied_evidence():
     assert assessment["verification"]["check_domain"]["status"] == "unverified"
     assert (
         "expected_check_domain_incomplete"
+        in assessment["verification"]["check_domain"]["reasons"]
+    )
+    assert check_row(assessment, entry)["status"] == "satisfied"
+
+
+def test_missing_authority_status_does_not_verify_check_domain():
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    del projection["authority_status"]
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, projection, [obligation])
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert assessment["verification"]["check_domain"]["status"] == "unverified"
+    assert (
+        "expected_authority_unverified"
+        in assessment["verification"]["check_domain"]["reasons"]
+    )
+
+
+@pytest.mark.parametrize(
+    "label", [None, "unknown", "per_ref_container_only", "incomplete_profile"]
+)
+def test_complete_check_domain_requires_matching_completeness_label(label):
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    projection["consumer_completeness"] = label
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, projection, [obligation])
+    admission = make_admission(
+        projection,
+        coverage_entries=[(entry, historical_coverage(projection, entry))],
+    )
+
+    assessment = assess(universe, projection, admission=admission)
+
+    assert assessment["status"] == "blocked"
+    assert assessment["verification"]["check_domain"]["status"] == "unverified"
+    assert (
+        "expected_consumer_completeness_unproven"
         in assessment["verification"]["check_domain"]["reasons"]
     )
     assert check_row(assessment, entry)["status"] == "satisfied"
@@ -1453,26 +1759,33 @@ def test_same_obligation_ref_is_a_distinct_instance_per_ref():
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
         declared_checks=[],
     )
-    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    event_a = {**EVENT, "head_ref": "refs/heads/a", "head_commit": "a" * 40}
+    event_b = {**EVENT, "head_ref": "refs/heads/b", "head_commit": "b" * 40}
+    projection_a = make_projection(
+        profile, [], non_check=[non_check_expected()], event=event_a
+    )
+    projection_b = make_projection(
+        profile, [], non_check=[non_check_expected()], event=event_b
+    )
     ref_a = non_check_obligation("o/sbom", target_ref="refs/heads/a")
     ref_b = non_check_obligation("o/sbom", target_ref="refs/heads/b")
     universe_a = make_universe(
         profile,
-        projection,
+        projection_a,
         [ref_a],
         refs=[{"target_ref": "refs/heads/a", "ref_action": "update"}],
     )
     universe_b = make_universe(
         profile,
-        projection,
+        projection_b,
         [ref_b],
         refs=[{"target_ref": "refs/heads/b", "ref_action": "update"}],
     )
-    admission_a = make_admission(projection)
+    admission_a = make_admission(projection_a)
     evidence_a = make_evidence([evidence_entry("o/sbom", target_ref="refs/heads/a")])
     assessment_a = assess(
         universe_a,
-        projection,
+        projection_a,
         admission=admission_a,
         non_check_evidence=evidence_a,
     )
@@ -1482,12 +1795,17 @@ def test_same_obligation_ref_is_a_distinct_instance_per_ref():
         ref_a
     ) != required_assessment.obligation_instance_ref(ref_b)
 
-    # The Ref A evidence document cannot satisfy the Ref B instance, and the
-    # Ref A admission is not a valid admission for the Ref B scope.
+    # The Ref A admission is not a valid admission for the Ref B scope, and the
+    # Ref A evidence document cannot satisfy the Ref B instance.
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_scope_mismatch",
+    ):
+        assess(universe_b, projection_b, admission=admission_a)
     assessment_b = assess(
         universe_b,
-        projection,
-        admission=admission_a,
+        projection_b,
+        admission=make_admission(projection_b),
         non_check_evidence=evidence_a,
     )
     assert assessment_b["status"] == "blocked"
@@ -1753,6 +2071,27 @@ def test_future_only_membership_does_not_waive_a_truly_omitted_check():
     omitted_row = check_row(assessment, omitted_entry)
     assert omitted_row["status"] == "unverified"
     assert omitted_row["reasons"] == ["required_check_omitted_by_universe"]
+    assert required_assessment.validate_assessment(assessment) is assessment
+
+
+def test_future_only_membership_requires_the_same_obligation_ref():
+    profile = make_profile()
+    entry = make_entry()
+    projection = make_projection(profile, [entry])
+    obligation = check_obligation(
+        "o/other", [entry["expected_check_ref"]], phase="post_publish"
+    )
+    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    assert "required_check_association_unresolved" in assessment["cross_check_reasons"]
+    assert (
+        "required_check_association_unresolved"
+        in assessment["verification"]["obligations_universe"]["reasons"]
+    )
+    assert check_row(assessment, entry)["status"] == "not_yet_due"
     assert required_assessment.validate_assessment(assessment) is assessment
 
 
@@ -2231,13 +2570,24 @@ def test_source_digest_distinguishes_non_check_instances():
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
         declared_checks=[],
     )
-    projection = make_projection(profile, [], non_check=[non_check_expected()])
+    source = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="worktree",
+        content_digest="1" * 64,
+        verified_scope=["src/engineering_ci/x.py"],
+        scope_kind="check_input_closure",
+    )
+    projection = make_projection(
+        profile, [], non_check=[non_check_expected()], source=source
+    )
     source_a = "sha256:" + "1" * 64
     source_b = "sha256:" + "2" * 64
+    candidate = {"commit": "2" * 40, "source_digest": source_a}
     obligation_a = non_check_obligation("o/sbom", source_digest=source_a)
     obligation_b = non_check_obligation("o/sbom", source_digest=source_b)
-    universe_a = make_universe(profile, projection, [obligation_a])
-    universe_b = make_universe(profile, projection, [obligation_b])
+    universe_a = make_universe(profile, projection, [obligation_a], candidate=candidate)
+    universe_b = make_universe(profile, projection, [obligation_b], candidate=candidate)
     admission = make_admission(projection)
     evidence_a = make_evidence([evidence_entry("o/sbom", source_digest=source_a)])
 

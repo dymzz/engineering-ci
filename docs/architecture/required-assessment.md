@@ -106,14 +106,43 @@ not misreport it as `required_check_omitted_by_universe` or
 The separating rules are:
 
 - Membership: every Expected Required Check/Non-Check association must appear
-  somewhere in the current universe (any phase/applicability). A truly absent
-  obligation still blocks.
+  in the current universe (any phase/applicability). For Check obligations the
+  actual `(obligation_ref, expected_check_ref)` pair is checked, not the Check
+  Ref alone: a different `obligation_ref` referencing the same Check Ref cannot
+  substitute for the Expected association (`required_check_association_unresolved`).
+  A truly absent obligation still blocks.
 - Due applicability: only the current-phase `required` instance needs current
   evidence; future instances remain `not_yet_due`, past instances are
   `unverified`, and an unproven phase position blocks.
 - A future-only obligation therefore permits a legal current-phase PASS without
   waiving any currently-due Required. A current Required with missing evidence
   still blocks.
+
+## Evaluation scope and subject binding
+
+Universe scope identity is not only a Profile/Check hash. R1 also binds the
+evaluation to the authorized Profile, Expected Event and checked Source:
+
+- `evaluation.context`, `action`, `target` must equal the authorized Profile's
+  values (and the target must be allowed by the Profile `targets` when declared).
+- When the authorized Profile declares `phase`, it must equal
+  `evaluation.phase`. #66-B2 is the producer of that profile phase; without it
+  R1 cannot independently prove the phase binding and production wiring must
+  supply it.
+- Every `evaluation.refs[].target_ref` must appear in the Expected Event refs
+  (`base_ref`/`head_ref`/reference refs) when those are present.
+- An obligation that declares `candidate_digest` requires an actual candidate
+  identity: no candidate identity → `obligation_candidate_identity_missing`;
+  a different candidate → `obligation_candidate_out_of_scope`.
+- An obligation that declares `source_digest` requires both the evaluated
+  candidate and the Expected checked Source to carry the same digest. A missing
+  candidate/Expected Source digest → `obligation_source_identity_missing`; a
+  mismatch → `obligation_source_out_of_scope`. Raw 64-hex and `sha256:` forms
+  of the Expected `source_ref.content_digest` are normalized to the same
+  identity.
+- Legitimately candidate/source-less scopes are not forced to invent an
+  Artifact or Source identity; only the requirement each obligation actually
+  declares is enforced. No Source Store or policy evaluator is added.
 
 ## Assessment statuses
 
@@ -133,8 +162,8 @@ because they have different owners:
 | Fact | Owner | Verified only when |
 | --- | --- | --- |
 | `verification.authority` | authorized Profile/policy source | authority status is `verified`, the assessment time is inside the effective window, the profile is not revoked, and the approval source is authoritative. |
-| `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, its required Check definitions/rules are resolved, and it is not claiming unverified authority. |
-| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile and Check-domain identities match the Expected scope, and every Expected Required Check/Non-Check association is enumerated somewhere in the universe (membership, independent of phase/applicability) without unknown or out-of-scope instances. |
+| `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, declares `authority_status="verified"`, uses the completeness label for its scope kind (single-Ref `expected_domain_complete`, per-Ref child `per_ref`), and its required Check definitions/rules are resolved. |
+| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile/Check-domain and evaluation scope identities match the Expected scope, every Expected Required Check/Non-Check association is enumerated with the same obligation identity (membership, independent of phase/applicability), and declared candidate/source identities are real and equal to the evaluated and Expected identities. |
 | `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or `not_applicable`, and no in-scope Check or obligation row is `unmet`/`unverified`. |
 
 `status` is `passed` only when all four facts hold. Otherwise it is `blocked`
@@ -172,7 +201,8 @@ native witness selection.
   "schema_version": 1,
   "profile": {"profile_ref": {"name": "…", "version": "…"},
                "profile_revision": "…", "approval_source": "org-governance",
-               "profile_sha256": "sha256:…", "approval_digest": "sha256:…"},
+               "profile_sha256": "sha256:…", "approval_digest": "sha256:…",
+               "phase": "pre_publish"},
   "authority": {"status": "verified", "source_ref": {"name": "…", "version": "…", "sha256": "…"},
                  "approved_at": "…", "effective_at": "…", "valid_from": null,
                  "valid_until": null, "revoked_at": null, "evaluated_at": "…"},
@@ -212,9 +242,12 @@ The document identity is the SHA-256 of the canonical JSON payload excluding
 `universe_ref`; `universe_ref` is `sha256:<64 hex>`. The admission projection
 uses the same rule for `admission_ref`. `evaluation.phase_order` is optional for
 a phase-agnostic scope and is the only authorized evidence R1 uses to classify
-another declared phase as future. A currently-required non-check obligation
-must declare `required_subject_fields`; otherwise its evidence stays
-`unverified`.
+another declared phase as future. The universe `profile` may carry the
+authorized `phase`; when present it must equal the evaluation phase. Candidate
+and source digests are only required when the corresponding obligation declares
+them, and must equal the evaluated/Expected identities. A currently-required
+non-check obligation must declare `required_subject_fields`; otherwise its
+evidence stays `unverified`.
 
 `engineering-ci-evidence-admission` v1 requires
 `phase="post_run_evidence_to_gate_projection"` (the frozen L2 order in
@@ -347,7 +380,16 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
 - future-only Check and future-only Non-Check obligations that are already
   enumerated satisfy membership without current evidence (legal Pre-publish
   PASS), while a truly omitted obligation and an unreliable phase order still
-  BLOCK, as does a due obligation with missing evidence;
+  BLOCK, as does a due obligation with missing evidence; a different
+  `obligation_ref` referencing the same Check Ref does not close the Expected
+  association;
+- missing `authority_status`, `status=complete` with a non-matching
+  completeness label, an evaluation context/action/target/phase/ref outside the
+  authorized Profile/Expected Event, a declared candidate digest with no real
+  candidate identity, and a declared source digest missing/mismatching the
+  candidate or Expected Source all leave Check Domain / Universe unverified;
+  correctly bound scopes (including per-Ref child labels and candidate/source
+  identities) still PASS;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
   artifact-level subject fields, commit-only evidence rejected for an
   artifact-level obligation, a legitimate commit-level obligation, missing
@@ -363,6 +405,13 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   Event/Job names. #66-B2 (or the authorized policy source) must supply that
   order; a missing or incomplete order keeps phase-scoped obligations
   `unverified` rather than letting a different phase be treated as future.
+- **Evaluation identity is upstream owned.** Context/action/target are bound to
+  the authorized Profile and evaluation refs to the Expected Event. Phase is
+  bound when the authorized Profile declares it; #66-B2 must project that field
+  (with its approval identity) for production phase binding. Candidate/Source
+  digests are only checked when an obligation declares them, against the
+  evaluated candidate and the Expected checked Source (raw 64-hex and
+  `sha256:` forms are normalized). R1 adds no Source Store or Artifact schema.
 - **Subject requirements are upstream owned.** R1 consumes
   `required_subject_fields` from the authorized obligation/domain contract. It
   does not decide that every domain needs an artifact or build an artifact

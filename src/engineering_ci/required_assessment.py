@@ -277,6 +277,7 @@ def _select_expected_scope(expected, ref_scope_id):
             "scope_id": ref.get("scope_id"),
             "expected_set_ref": ref.get("expected_set_ref"),
             "consumer_completeness": "per_ref",
+            "per_ref": True,
             "conflicts": ref.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -306,6 +307,7 @@ def _select_expected_scope(expected, ref_scope_id):
             "scope_id": expected.get("scope_id"),
             "expected_set_ref": expected.get("expected_set_ref"),
             "consumer_completeness": expected.get("consumer_completeness"),
+            "per_ref": False,
             "conflicts": expected.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -772,6 +774,47 @@ def _phase_position(phase, current_phase, phase_order):
     return "past"
 
 
+def _normalized_source_digest(value):
+    if not isinstance(value, str) or not value:
+        return None
+    if _SHA256_REF_RE.fullmatch(value):
+        return value
+    if _SHA256_RE.fullmatch(value):
+        return "sha256:" + value
+    return None
+
+
+def _expected_event_refs(event_ref):
+    refs = set()
+    for key in ("base_ref", "head_ref"):
+        value = event_ref.get(key)
+        if isinstance(value, str) and value:
+            refs.add(value)
+    references = event_ref.get("references")
+    if isinstance(references, list):
+        for ref in references:
+            if not isinstance(ref, dict):
+                continue
+            for key in ("remote_ref", "local_ref"):
+                value = ref.get(key)
+                if isinstance(value, str) and value:
+                    refs.add(value)
+    return refs
+
+
+def _target_in_scope(target, patterns):
+    for pattern in patterns:
+        if pattern == target:
+            return True
+        if (
+            isinstance(pattern, str)
+            and pattern.endswith("/*")
+            and target.startswith(pattern[:-1])
+        ):
+            return True
+    return False
+
+
 def _cross_check_universe(universe, scope, checks):
     """Cross-check the universe against the Expected Check domain.
 
@@ -808,13 +851,46 @@ def _cross_check_universe(universe, scope, checks):
 
     evaluation = universe["evaluation"]
     refs = {item["target_ref"] for item in evaluation["refs"]}
-    candidate_values = set((evaluation.get("candidate") or {}).values())
+    candidate = evaluation.get("candidate") or {}
+    candidate_values = set(candidate.values())
     expected_refs = {entry["expected_check_ref"]: entry for entry in checks}
     current_phase = evaluation["phase"]
+
+    # Bind the evaluation input to the authorized Profile, Expected Event and
+    # checked Source. A self-consistent hash over a different evaluation scope
+    # is not the same evaluation.
+    if evaluation["context"] != profile.get("context"):
+        reasons.append("evaluation_context_mismatch")
+    if evaluation["action"] != profile.get("action"):
+        reasons.append("evaluation_action_mismatch")
+    targets = profile.get("targets")
+    if evaluation["target"] != profile.get("target") or (
+        isinstance(targets, list)
+        and targets
+        and not _target_in_scope(evaluation["target"], targets)
+    ):
+        reasons.append("evaluation_target_mismatch")
+    if profile.get("phase") is not None and evaluation["phase"] != profile["phase"]:
+        reasons.append("evaluation_phase_mismatch")
+    event_refs = _expected_event_refs(scope["event_ref"])
+    if event_refs:
+        for item in evaluation["refs"]:
+            if item["target_ref"] not in event_refs:
+                reasons.append("evaluation_ref_not_in_expected_event")
+    expected_source_digest = _normalized_source_digest(
+        scope["source_ref"].get("content_digest")
+    )
+
     # Membership/closure is independent of due applicability: an authorized
     # future-phase obligation is already enumerated and must not be reported as
-    # omitted just because it is not currently due.
-    referenced_check_refs = set()
+    # omitted just because it is not currently due. Membership is checked on the
+    # actual (obligation_ref, expected_check_ref) association, not on the Check
+    # ref alone.
+    required_by_ref = {
+        ref: {_canonical(value) for value in entry.get("required_by_obligations") or ()}
+        for ref, entry in expected_refs.items()
+    }
+    universe_associations = {}
     universe_non_check_keys = set()
     non_check_expected_keys = {
         _canonical(item.get("obligation_ref"))
@@ -826,14 +902,23 @@ def _cross_check_universe(universe, scope, checks):
             reasons.append("obligation_target_out_of_scope")
         if obligation["action"] != evaluation["action"]:
             reasons.append("obligation_action_out_of_scope")
-        if (
-            obligation["candidate_digest"] is not None
-            and candidate_values
-            and obligation["candidate_digest"] not in candidate_values
-        ):
-            reasons.append("obligation_candidate_out_of_scope")
+        if obligation["candidate_digest"] is not None:
+            if not candidate_values:
+                reasons.append("obligation_candidate_identity_missing")
+            elif obligation["candidate_digest"] not in candidate_values:
+                reasons.append("obligation_candidate_out_of_scope")
+        if obligation["source_digest"] is not None:
+            candidate_source = candidate.get("source_digest")
+            if expected_source_digest is None or candidate_source is None:
+                reasons.append("obligation_source_identity_missing")
+            elif (
+                obligation["source_digest"] != candidate_source
+                or obligation["source_digest"] != expected_source_digest
+            ):
+                reasons.append("obligation_source_out_of_scope")
         current = _phase_is_current(obligation, current_phase)
         if obligation["kind"] == "check":
+            key = _canonical(obligation["obligation_ref"])
             for ref in obligation["expected_check_refs"]:
                 entry = expected_refs.get(ref)
                 if entry is None:
@@ -843,14 +928,13 @@ def _cross_check_universe(universe, scope, checks):
                     if current and obligation["applicability"] == "required":
                         reasons.append("universe_check_instance_unknown")
                     continue
-                referenced_check_refs.add(ref)
-                if current and obligation["applicability"] == "required":
-                    required_by = {
-                        _canonical(value)
-                        for value in entry.get("required_by_obligations") or ()
-                    }
-                    if _canonical(obligation["obligation_ref"]) not in required_by:
-                        reasons.append("universe_obligation_mapping_mismatch")
+                universe_associations.setdefault(ref, set()).add(key)
+                if (
+                    current
+                    and obligation["applicability"] == "required"
+                    and key not in required_by_ref[ref]
+                ):
+                    reasons.append("universe_obligation_mapping_mismatch")
         else:
             key = _canonical(obligation["obligation_ref"])
             universe_non_check_keys.add(key)
@@ -861,12 +945,15 @@ def _cross_check_universe(universe, scope, checks):
                 and key not in non_check_expected_keys
             ):
                 reasons.append("non_check_obligation_not_in_expected")
-    for entry in checks:
-        if (
-            entry.get("required_by_obligations")
-            and entry["expected_check_ref"] not in referenced_check_refs
-        ):
+    for ref, expected_keys in required_by_ref.items():
+        if not expected_keys:
+            continue
+        present = universe_associations.get(ref, set())
+        if not present:
             reasons.append("required_check_omitted_by_universe")
+            continue
+        if expected_keys - present:
+            reasons.append("required_check_association_unresolved")
     for _key in non_check_expected_keys - universe_non_check_keys:
         reasons.append("non_check_obligation_omitted_by_universe")
     return _dedupe(reasons)
@@ -1268,8 +1355,14 @@ def _check_domain_fact(scope, checks):
         reasons.append("expected_check_domain_incomplete")
     if scope.get("conflicts"):
         reasons.append("expected_check_conflicts")
-    if scope.get("authority_status") == "unverified":
+    if scope.get("authority_status") != "verified":
         reasons.append("expected_authority_unverified")
+    if scope["status"] == "complete":
+        expected_label = (
+            "per_ref" if scope.get("per_ref") else "expected_domain_complete"
+        )
+        if scope.get("consumer_completeness") != expected_label:
+            reasons.append("expected_consumer_completeness_unproven")
     for entry in checks:
         if not entry.get("required_by_obligations"):
             continue
