@@ -9,11 +9,14 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from engineering_ci import (
     check_contract,
     execution,
     expected_checks,
     hygiene,
+    plan_contract,
     reconciliation,
     selection,
     workflow_analysis,
@@ -2222,6 +2225,24 @@ declared_checks = {json.dumps(declared)}
     assert rep_ok["status"] == "passed", rep_ok
     sc_ok = next(c for c in rep_ok["checks"] if c["name"] == "shellcheck")
     assert sc_ok["native_result"]["check"]["rule_ref"] == exp1_sc["rule_ref"]
+
+    # A persisted Plan missing the workflow config snapshot must not execute.
+    missing = json.loads(json.dumps(plan1))
+    del missing["inputs"]["config"]["workflow_config_digests"]
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(missing)
+    assert raised.value.code == "workflow_config_snapshot_missing"
+
+    missing_invoked = []
+
+    def missing_runner(argv, root, data=None):
+        missing_invoked.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    missing_report = execution.execute(missing, root=repo, runner=missing_runner)
+    assert missing_report["status"] == "not_executed"
+    assert missing_report["reason"] == "workflow_config_snapshot_missing"
+    assert missing_invoked == []
 
     # T2: mutate ONLY .shellcheckrc (not in plan1.git.changed_paths).
     (repo / ".shellcheckrc").write_text(

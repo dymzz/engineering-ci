@@ -140,11 +140,22 @@ def _workflow_config_drift_reason(plan, root, selection_config=None):
     """Fail closed if tracked workflow/script tool configs changed after Plan creation."""
     inputs = plan.get("inputs") or {}
     declared_cfg = inputs.get("config") if isinstance(inputs, dict) else None
+    chosen = plan.get("selection") if isinstance(plan, dict) else None
+    check_names = set()
+    if isinstance(chosen, dict):
+        check_names.update(
+            item for item in chosen.get("checks") or () if isinstance(item, str)
+        )
+        for source in (chosen.get("check_scope"), plan.get("check_scope")):
+            for item in source or ():
+                if isinstance(item, dict) and isinstance(item.get("name"), str):
+                    check_names.add(item["name"])
+    needs_snapshot = bool(check_names & plan_contract.WORKFLOW_SCRIPT_CHECK_NAMES)
     if (
         not isinstance(declared_cfg, dict)
         or "workflow_config_digests" not in declared_cfg
     ):
-        return None
+        return "workflow_config_snapshot_invalid" if needs_snapshot else None
     declared_norm = _normalized_workflow_config_snapshot(
         declared_cfg.get("workflow_config_digests")
     )
