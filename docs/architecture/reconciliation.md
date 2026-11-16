@@ -339,7 +339,11 @@ mistaking them for a full observation ledger.
   candidate group. A failed, rejected, inactive-attempt or unselected result
   cannot complete an expected input or coverage reference. `validate_receipt()`
   recomputes and enforces internal consistency across `status`, `summary`,
-  `all_observations_reconciled`, and `matched` <-> `selected_result_ids`.
+  `all_observations_reconciled`, and `matched` <-> `selected_result_ids` (plus,
+  for every `matched` entry, internal consistency of
+  `native_satisfaction.requirements[]` against controlled `CheckDefinition`,
+  `resolved_expected.rule_ref`, `selected_results`, `rejected_results`,
+  `after` prerequisites, tool match, and positional witness order).
 - The Expected projection, its identities, and its completeness claims are
   never rewritten or upgraded.
 - `trusted` / `required` are always `false` and
@@ -370,7 +374,12 @@ mistaking them for a full observation ledger.
   reads `native_result`, comparison baseline). The module verifies presence,
   shape, digest pins, `profile_ref` authority, and consistency with the immutable
   Expected instance, not the external truth of those sources; #63 remains
-  responsible for admission.
+  responsible for admission. Similarly, `validate_receipt()` operates strictly
+  on the compressed Receipt representation (which summarizes `selected_results`
+  without replaying raw `NativeResult.input_refs` or original Observation
+  reports), so upstream cross-check_result prerequisite `input_refs` graphs are
+  enforced during `reconcile_expected_results()` / `#52` evaluation rather than
+  re-synthesized in compressed-receipt validation.
 - **Frozen `#63` L2 Consumer Interface & Acyclic Execution Phases**:
   - `CURRENT_EXECUTION_ATTRIBUTION_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref")` — when `invocation_ref` is bound on `reconcile_expected_results()`, all four must appear and match on `job_receipt` (`job_*_unproven` / `job_*_mismatch` otherwise).
   - `EVIDENCE_ADMISSION_HANDOFF_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref", "receipt_ref")` — reuses the canonical Receipt digest `receipt_ref` (`sha256:<64-hex>` computed over the full payload by `reconcile_expected_results()` and verified by `validate_receipt()`, rejecting forged/mismatched digests with `receipt_ref_invalid` / `receipt_ref_mismatch`); no second unverified hash field is emitted.
