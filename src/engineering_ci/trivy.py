@@ -278,10 +278,10 @@ def scan_filesystem(
             "--secret-config",
             "",
         ]
-        if exit_code is not None:
-            if type(exit_code) is not int or exit_code < 1:
-                raise TrivyError("trivy_exit_code_invalid")
-            command.extend(["--exit-code", str(exit_code)])
+        if exit_code is not None and (type(exit_code) is not int or exit_code < 0):
+            raise TrivyError("trivy_exit_code_invalid")
+        effective_exit = 0 if exit_code is None else exit_code
+        command.extend(["--exit-code", str(effective_exit)])
         try:
             completed = subprocess.run(
                 command,
@@ -312,7 +312,7 @@ def scan_filesystem(
     if completed.returncode == 0:
         status = "findings" if findings else "passed"
         reason = "security_findings" if findings else None
-    elif findings and exit_code is not None and completed.returncode == exit_code:
+    elif findings and completed.returncode == effective_exit:
         status = "findings"
         reason = "security_findings"
     else:
@@ -340,8 +340,9 @@ def scan_filesystem(
         "coverage": {
             "artifact_type": report.get("ArtifactType"),
             "results_present": "Results" in report,
-            "scan_completed": completed.returncode
-            in ({0} | ({exit_code} if exit_code is not None else set())),
+            "process_terminated": True,
+            "report_valid": True,
+            "scan_completed": status in {"passed", "findings"},
             "rule_closure_verified": False,
         },
         "misconfig_summary": misconfig_summary,
@@ -349,6 +350,8 @@ def scan_filesystem(
             "config_sha256": config_before,
             "config_after_sha256": config_after,
             "config_scope": "explicit-file-only",
+            "effective_exit_code": effective_exit,
+            "exit_code_source": "cli" if exit_code is not None else "default-zero",
             "rule_closure_verified": False,
             "implicit_config": False,
             "implicit_ignore": False,

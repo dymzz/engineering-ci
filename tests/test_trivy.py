@@ -228,6 +228,29 @@ def test_trivy_configured_exit_code_with_findings(tmp_path):
 
 
 @requires_trivy
+def test_trivy_cli_zero_overrides_config_exit_code(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    config = tmp_path / "trivy.yaml"
+    config.write_text("exit-code: 1\n", encoding="utf-8")
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        config_path=config,
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 0
+    assert result["policy"]["exit_code_source"] == "default-zero"
+    assert result["policy"]["effective_exit_code"] == 0
+    assert result["coverage"]["scan_completed"] is True
+
+
+@requires_trivy
 def test_trivy_misconfig_full_scan_separates_status(tmp_path):
     root = tmp_path / "target"
     root.mkdir()
