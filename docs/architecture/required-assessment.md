@@ -317,6 +317,10 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   approvals. It verifies presence, controlled identity, scope and temporal
   validity, and consumes the upstream verdict. Unverifiable upstream authority
   stays blocked.
+- Shared Job/Run/Attempt, source or prerequisite contamination is determined by
+  #63 (including the L2 §3.1 propagation rule) and by the domain verifiers; R1
+  consumes the resulting per-instance admission/evidence facts and does not
+  re-derive contamination or native witness selection.
 - R1 does not read GitHub Rulesets/Branch Protection or publish the final
   check. Those remain R2/R3.
 - R1 does not rewrite any historical assessment or native fact; a later stage
