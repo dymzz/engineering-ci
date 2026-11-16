@@ -100,6 +100,39 @@ def _digest_bytes(value):
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _hook_storage(git_dir, *, create=False):
+    """Return the controlled Events/Invocations directories for one repository.
+
+    The physical Git directory is the trust anchor. A symlink/junction for
+    ``eci-hooks``, ``events`` or ``invocations`` that resolves outside that
+    Git directory is rejected before any write or prune.
+    """
+    git_dir = Path(git_dir).resolve()
+    eci_dir = git_dir / "eci-hooks"
+    events_dir = eci_dir / "events"
+    invocations_dir = eci_dir / "invocations"
+    directories = (eci_dir, events_dir, invocations_dir)
+    for directory in directories:
+        if directory.is_symlink():
+            raise HookEventError("hook_storage_outside_repository")
+        if directory.exists():
+            try:
+                directory.resolve().relative_to(git_dir)
+            except (OSError, ValueError):
+                raise HookEventError("hook_storage_outside_repository") from None
+    if create:
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in directories:
+        if not directory.exists():
+            continue
+        try:
+            directory.resolve().relative_to(git_dir)
+        except (OSError, ValueError):
+            raise HookEventError("hook_storage_outside_repository") from None
+    return events_dir, invocations_dir
+
+
 @contextmanager
 def _capture_lock(git_dir):
     """Serialize Event publication and pruning for one repository.
@@ -107,9 +140,11 @@ def _capture_lock(git_dir):
     A one-byte lock file avoids an Event database while ensuring a prune cannot
     delete an Event between the content write and the Invocation publication.
     """
+    _hook_storage(git_dir, create=True)
     lock_dir = Path(git_dir) / "eci-hooks"
-    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = lock_dir / "capture.lock"
+    if lock_path.is_symlink():
+        raise HookEventError("hook_storage_outside_repository")
     with open(lock_path, "a+b") as handle:
         if handle.tell() == 0:
             handle.write(b"\0")
@@ -408,18 +443,11 @@ def _controlled_event_path(git_dir, event_file):
     if candidate_file.is_absolute() or ".." in candidate_file.parts:
         raise HookEventError("invocation_event_outside_store")
     git_dir = Path(git_dir).resolve()
-    eci_dir = git_dir / "eci-hooks"
-    events_dir = eci_dir / "events"
-    # The trust anchor is the physical Git directory, not the resolved Events
-    # directory: an Events symlink/junction to another repository must not
-    # redefine the accepted source domain.
-    if eci_dir.is_symlink() or events_dir.is_symlink():
-        raise HookEventError("invocation_event_outside_store")
     try:
-        event_root = events_dir.resolve()
-        event_root.relative_to(git_dir)
-    except (OSError, ValueError):
+        events_dir, _invocations_dir = _hook_storage(git_dir, create=False)
+    except HookEventError:
         raise HookEventError("invocation_event_outside_store") from None
+    event_root = events_dir.resolve()
     candidate = (git_dir / candidate_file).resolve()
     try:
         candidate.relative_to(event_root)

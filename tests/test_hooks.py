@@ -359,9 +359,41 @@ def test_load_invocation_rejects_symlinked_event_directory(repo, tmp_path):
     eci_dir = repo / ".git" / "eci-hooks"
     eci_dir.mkdir(parents=True, exist_ok=True)
     make_directory_link(eci_dir / "events", other_reference.event_path.parent)
-    reference = hooks.persist_event(repo, event)
+    invocation_dir = eci_dir / "invocations"
+    invocation_dir.mkdir()
+    invocation_id = "a" * 32
+    invocation = {
+        "schema_version": hooks.INVOCATION_SCHEMA_VERSION,
+        "kind": hooks.INVOCATION_KIND,
+        "invocation_ref": f"invocation:{invocation_id}",
+        "event_payload_ref": other_reference.event_payload_ref,
+        "event_file": f"eci-hooks/events/{other_reference.event_path.name}",
+        "hook": "pre-push",
+    }
+    invocation_path = invocation_dir / f"{invocation_id}.json"
+    invocation_path.write_bytes(hooks.canonical_event_bytes(invocation))
     with pytest.raises(hooks.HookEventError, match="invocation_event_outside_store"):
-        hooks.load_invocation(reference.invocation_path)
+        hooks.load_invocation(invocation_path)
+
+
+def test_publish_and_prune_reject_symlinked_event_directory(repo, tmp_path):
+    other = make_repo(tmp_path / "other")
+    event = pre_push_event(other)
+    other_reference = hooks.persist_event(other, event)
+    eci_dir = repo / ".git" / "eci-hooks"
+    eci_dir.mkdir(parents=True, exist_ok=True)
+    make_directory_link(eci_dir / "events", other_reference.event_path.parent)
+    original = other_reference.event_path.read_bytes()
+
+    with pytest.raises(hooks.HookEventError, match="hook_storage_outside_repository"):
+        hooks.persist_event(repo, event)
+    assert other_reference.event_path.read_bytes() == original
+
+    old = time.time() - hooks.EVENT_RETENTION_SECONDS - 60
+    os.utime(other_reference.event_path, (old, old))
+    with pytest.raises(hooks.HookEventError, match="hook_storage_outside_repository"):
+        hooks.prune_events(repo)
+    assert other_reference.event_path.exists()
 
 
 def test_persist_event_cross_process_lock(repo, tmp_path):
