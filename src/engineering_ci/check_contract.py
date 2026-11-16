@@ -56,6 +56,10 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/weaver/registry",
         "eci/weaver/live",
         "eci/weaver/terminal",
+        "eci/workflow/actionlint",
+        "eci/shell/shellcheck",
+        "eci/workflow/shellcheck",
+        "eci/workflow/zizmor",
     }
 )
 INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile"})
@@ -84,6 +88,10 @@ CHECK_IDS = MappingProxyType(
         "weaver_registry": "eci/weaver/registry",
         "weaver_live": "eci/weaver/live",
         "weaver_terminal": "eci/weaver/terminal",
+        "actionlint": "eci/workflow/actionlint",
+        "shellcheck": "eci/shell/shellcheck",
+        "workflow_shellcheck": "eci/workflow/shellcheck",
+        "zizmor": "eci/workflow/zizmor",
     }
 )
 
@@ -455,6 +463,16 @@ _TOOL_REQUIREMENTS = {
             after=("registry-local-check",),
         ),
     ),
+    "actionlint": (
+        ToolRequirement("workflow-lint", (ToolIdentity("actionlint/check"),)),
+    ),
+    "shellcheck": (ToolRequirement("shell-lint", (ToolIdentity("shellcheck/check"),)),),
+    "workflow_shellcheck": (
+        ToolRequirement(
+            "workflow-inline-shell", (ToolIdentity("actionlint/shellcheck-inline"),)
+        ),
+    ),
+    "zizmor": (ToolRequirement("actions-security", (ToolIdentity("zizmor/check"),)),),
 }
 # Declaring tool requirements changes when a Check can be satisfied, so it is a
 # definition-version change, not only a Result schema change. Version 1 remains
@@ -477,13 +495,21 @@ _CURRENT_DEFINITION_VERSION = {
     "weaver_registry": 1,
     "weaver_live": 1,
     "weaver_terminal": 1,
+    "actionlint": 1,
+    "shellcheck": 1,
+    "workflow_shellcheck": 1,
+    "zizmor": 1,
 }
 
 
 def _builtin_definitions():
+    if PROCESS_CHECK_IDS & INTERNAL_CHECK_IDS:
+        raise CheckContractError("check_execution_kind_conflict")
     by_version = {}
     current = {}
     for name, check_id in CHECK_IDS.items():
+        if check_id not in PROCESS_CHECK_IDS and check_id not in INTERNAL_CHECK_IDS:
+            raise CheckContractError("check_execution_kind_unknown")
         latest = _CURRENT_DEFINITION_VERSION[name]
         for version in range(1, latest + 1):
             requirements = (

@@ -12,6 +12,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -201,10 +202,12 @@ def load_config(path):
 
 
 def _run(argv, root, data=None):
+    clean_env = {k: v for k, v in os.environ.items() if k != "SHELLCHECK_OPTS"}
     try:
         return subprocess.run(
             [str(item) for item in argv],
             cwd=root,
+            env=clean_env,
             input=data,
             text=True,
             encoding="utf-8",

@@ -1837,3 +1837,117 @@ def test_external_hygiene_scope_drives_dag_producer_and_dagger_consumption(
         ["--offline", "--no-progress", "docs/generated.md", "docs/guide.md"]
     ]
     asyncio.run(saved_on.enforce())
+
+
+def test_pr103_pr108_converged_dagger_profile_chain(modules, tmp_path):
+    import shutil
+
+    from test_execution import ROOT, FakeRunner, run
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import check_contract, execution, expected_checks, selection
+
+    _result, collector = modules
+    fixture = ROOT / "tests/fixtures/selection-app"
+    repo = tmp_path / "repo"
+    shutil.copytree(fixture, repo)
+    run(repo, "init", "-q", "-b", "main")
+    run(repo, "config", "user.email", "dagger@example.invalid")
+    run(repo, "config", "user.name", "Dagger Test")
+    run(repo, "add", "-A")
+    run(repo, "commit", "-q", "-m", "init")
+    base = run(repo, "rev-parse", "HEAD").strip()
+
+    declared = ["whitespace", "forwarding"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = repo / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(repo, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-pr103-108",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="commit",
+        action="commit",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{n}", "check_names": [n]} for n in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    (repo / "docs/guide.md").write_text("# updated\n", encoding="utf-8")
+    (repo / "src/pkg/mod.py").write_text("VALUE = 77\n", encoding="utf-8")
+    run(repo, "add", "-A")
+    run(repo, "commit", "-q", "-m", "change")
+
+    cs = selection.changeset(repo, base=base, head="HEAD", mode="commit")
+    sel = selection.select(cs, cfg, root=repo)
+    plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        root=repo,
+        effective_profile=profile,
+    )
+    # Simulate exporting the target tree into an isolated Dagger scratch directory
+    # where the original absolute repo_root path is outside exported_dir:
+    exported_dir = tmp_path / "dagger_export"
+    shutil.copytree(repo, exported_dir, ignore=shutil.ignore_patterns(".git"))
+
+    rel_plan = collector._plan_with_repo_relative_configs(plan)
+    assert rel_plan["inputs"]["config"]["path"] == "ci-selection.toml"
+    verified = execution._profile_reference(
+        rel_plan, root=exported_dir, execution_context="dagger_export"
+    )
+    assert verified == prof_ref
+
+    selected_checks = [
+        c for c in plan["check_scope"] if c.get("status") in {"selected", "unknown"}
+    ]
+    assert selected_checks
+    host_plan = collector._host_adapter_plan(plan, selected_checks)
+    assert "expected_checks" not in host_plan
+    assert (
+        execution._profile_reference(
+            host_plan, root=exported_dir, execution_context="dagger_export"
+        )
+        is None
+    )
+    entry = execution.run_host_check(
+        host_plan,
+        selected_checks[0],
+        root=exported_dir,
+        runner=FakeRunner(),
+        execution_context="dagger_export",
+        profile_ref=verified,
+    )
+    assert entry["native_result"]["check"]["profile_ref"] == prof_ref
+    assert entry["plan_authorized"] is True
+
+    # Tampering config on exported_dir or dropping source_tree_id fails closed:
+    tampered_dir = tmp_path / "dagger_tampered"
+    shutil.copytree(exported_dir, tampered_dir)
+    (tampered_dir / "ci-selection.toml").write_text(
+        (tampered_dir / "ci-selection.toml").read_text(encoding="utf-8")
+        + "\n# tampered\n",
+        encoding="utf-8",
+    )
+    assert (
+        execution._profile_reference(
+            rel_plan, root=tampered_dir, execution_context="dagger_export"
+        )
+        is None
+    )
+    no_tree_plan = json.loads(json.dumps(rel_plan))
+    no_tree_plan["git"]["source_tree_id"] = None
+    assert (
+        execution._profile_reference(
+            no_tree_plan, root=exported_dir, execution_context="dagger_export"
+        )
+        is None
+    )

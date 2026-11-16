@@ -38,6 +38,9 @@ _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _HYGIENE_MANAGED = frozenset(
     {"whitespace", "forwarding", "docs", "vulture", "tach", "tach_external"}
 )
+_WORKFLOW_SCRIPT_MANAGED = frozenset(
+    {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
+)
 
 
 class ExpectedError(ValueError):
@@ -767,12 +770,42 @@ def _multi_ref_scopes(references):
     return scopes
 
 
+def _resolve_workflow_rules(
+    selection_check_rule,
+    selection_config,
+    *,
+    root=None,
+    file_digests=None,
+    changeset=None,
+    config_path=None,
+):
+    if selection_check_rule is None or selection_config is None:
+        return None
+    from engineering_ci import workflow_analysis
+
+    effective_root = root
+    if effective_root is None and changeset is not None:
+        effective_root = getattr(changeset, "root", None)
+    if effective_root is None and config_path is not None:
+        cfg_candidate = Path(config_path)
+        if cfg_candidate.is_file():
+            effective_root = cfg_candidate.parent
+    return workflow_analysis.effective_workflow_rule_refs(
+        selection_check_rule,
+        selection_config,
+        root=effective_root,
+        file_digests=file_digests,
+    )
+
+
 def _parse_profile_obligations(
     effective_profile,
     *,
     hygiene_rule=None,
     sources_rule=None,
     selection_rule=None,
+    selection_check_rule=None,
+    workflow_rule_by_check=None,
     weaver_rule=None,
     target_ref=None,
     ref_action=None,
@@ -868,6 +901,7 @@ def _parse_profile_obligations(
     all_names = (
         set(explicit_rules)
         | _HYGIENE_MANAGED
+        | _WORKFLOW_SCRIPT_MANAGED
         | {"source"}
         | set(required_by_check)
         | set(advisory_by_check)
@@ -882,6 +916,12 @@ def _parse_profile_obligations(
             if name in _HYGIENE_MANAGED
             else sources_rule
             if name == "source"
+            else (
+                workflow_rule_by_check.get(name)
+                if workflow_rule_by_check is not None
+                else selection_check_rule
+            )
+            if name in _WORKFLOW_SCRIPT_MANAGED
             else None
         )
         if len(distinct) > 1:
@@ -1036,6 +1076,8 @@ def _recompute_ref_projection(
     ref_selection=None,
     sources_config=None,
     sources_identity=None,
+    selection_check_rule=None,
+    workflow_rule_by_check=None,
     authority_proven=True,
 ):
     from engineering_ci import selection as _selection
@@ -1077,6 +1119,8 @@ def _recompute_ref_projection(
             hygiene_rule=hygiene_rule,
             sources_rule=sources_rule,
             selection_rule=selection_rule,
+            selection_check_rule=selection_check_rule,
+            workflow_rule_by_check=workflow_rule_by_check,
             weaver_rule=selection_rule,
             target_ref=target_ref,
             ref_action=ref_action,
@@ -1414,6 +1458,8 @@ def _derive_per_ref_projections(
     per_ref_selections=None,
     sources_config=None,
     sources_identity=None,
+    selection_check_rule=None,
+    workflow_rule_by_check=None,
     authority_proven=True,
 ):
     if changeset.snapshot != "multi" or not changeset.references:
@@ -1448,6 +1494,8 @@ def _derive_per_ref_projections(
             ),
             sources_config=sources_config,
             sources_identity=sources_identity,
+            selection_check_rule=selection_check_rule,
+            workflow_rule_by_check=workflow_rule_by_check,
             authority_proven=authority_proven,
         )
         for idx, ref in enumerate(changeset.references)
@@ -1467,6 +1515,8 @@ def _derive_v2_from_profile(
     content_binding,
     per_ref,
     selection_config=None,
+    selection_check_rule=None,
+    workflow_rule_by_check=None,
     authority_proven=None,
 ):
     validate_effective_profile(effective_profile, git=_git_from_changeset(changeset))
@@ -1512,6 +1562,8 @@ def _derive_v2_from_profile(
         sources_rule=sources_rule,
         selection_rule=selection_rule,
         weaver_rule=selection_rule,
+        selection_check_rule=selection_check_rule,
+        workflow_rule_by_check=workflow_rule_by_check,
         target_ref=target_ref if not is_multi else None,
         ref_action=ref_action if not is_multi else None,
         ref_scopes=ref_scopes,
@@ -1798,14 +1850,59 @@ def derive_expected_checks(
     selection_config=None,
     per_ref_scopes=None,
     per_ref_selections=None,
+    root=None,
+    workflow_config_digests=None,
 ):
     """Derive Expected Checks projection (Schema v1 partial, or Schema v2 with EffectiveProfile)."""
     from engineering_ci import selection as _selection
 
     config_digest = _file_digest(config_path)
     selection_rule = _selection_rule_ref(config_digest)
+    selection_check_rule = None
+    if (
+        config_path is not None
+        and isinstance(config_digest, str)
+        and config_digest.startswith("sha256:")
+    ):
+        raw_cfg_path = Path(config_path)
+        stored_cfg_path = str(config_path)
+        try:
+            root_resolved = Path(changeset.root).resolve()
+            resolved_cfg = (
+                raw_cfg_path.resolve()
+                if raw_cfg_path.is_absolute()
+                else (root_resolved / raw_cfg_path).resolve()
+            )
+            if resolved_cfg.is_relative_to(root_resolved):
+                stored_cfg_path = resolved_cfg.relative_to(root_resolved).as_posix()
+        except OSError:
+            pass
+        selection_check_rule = check_contract.rule_ref(
+            "engineering-ci.selection",
+            getattr(selection_config, "schema_version", 1),
+            path=stored_cfg_path,
+            digest=config_digest.removeprefix("sha256:"),
+        )
     hygiene_rule = (hygiene_identity or {}).get("effective_check_config_ref")
     sources_rule = (sources_identity or {}).get("effective_check_config_ref")
+    effective_sel_cfg = selection_config
+    if (
+        effective_sel_cfg is None
+        and config_path is not None
+        and Path(config_path).is_file()
+    ):
+        try:
+            effective_sel_cfg = _selection.load_config(config_path)
+        except _selection.SelectionError:
+            effective_sel_cfg = None
+    workflow_rule_by_check = _resolve_workflow_rules(
+        selection_check_rule,
+        effective_sel_cfg,
+        root=root,
+        file_digests=workflow_config_digests,
+        changeset=changeset,
+        config_path=config_path,
+    )
     scope_by_name = {item.get("name"): item for item in check_scope}
     authority_proven = True
     if effective_profile is not None:
@@ -1871,6 +1968,8 @@ def derive_expected_checks(
         per_ref_selections=per_ref_selections,
         sources_config=sources_config,
         sources_identity=sources_identity,
+        selection_check_rule=selection_check_rule,
+        workflow_rule_by_check=workflow_rule_by_check,
         authority_proven=authority_proven,
     )
     if effective_profile is not None:
@@ -1886,6 +1985,8 @@ def derive_expected_checks(
             content_binding=content_binding,
             per_ref=per_ref,
             selection_config=selection_config,
+            selection_check_rule=selection_check_rule,
+            workflow_rule_by_check=workflow_rule_by_check,
             authority_proven=authority_proven,
         )
 
@@ -2640,6 +2741,29 @@ def _validate_per_ref(
                 )
             ):
                 raise ExpectedError("expected_per_ref_source_unverifiable")
+            ref_root = (
+                odb_root
+                if odb_root is not None
+                else (verified_mats[idx] if idx < len(verified_mats) else None)
+            )
+            cfg_input = (
+                inputs_block.get("config") if isinstance(inputs_block, dict) else None
+            )
+            ref_sel_rule = (
+                cfg_input.get("effective_check_config_ref")
+                if isinstance(cfg_input, dict)
+                else None
+            )
+            ref_wf_rules = _resolve_workflow_rules(
+                ref_sel_rule,
+                sel_cfg,
+                root=ref_root,
+                file_digests=(
+                    cfg_input.get("workflow_config_digests")
+                    if isinstance(cfg_input, dict)
+                    else None
+                ),
+            )
             recomputed = _recompute_ref_projection(
                 plan_ref,
                 scope_by_name=scope_by_name,
@@ -2654,11 +2778,7 @@ def _validate_per_ref(
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,
                 effective_profile=profile,
-                root=(
-                    odb_root
-                    if odb_root is not None
-                    else (verified_mats[idx] if idx < len(verified_mats) else None)
-                ),
+                root=ref_root,
                 ref_scope=(
                     recomputed_scopes[idx]
                     if recomputed_scopes is not None and idx < len(recomputed_scopes)
@@ -2667,6 +2787,8 @@ def _validate_per_ref(
                 ref_selection=ref_selections_by_idx.get(idx),
                 sources_config=sources_config,
                 sources_identity=sources_identity,
+                selection_check_rule=ref_sel_rule,
+                workflow_rule_by_check=ref_wf_rules,
                 authority_proven=authority_proven,
             )
             recomputed_by_name = {c["name"]: c for c in recomputed["checks"]}

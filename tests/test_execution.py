@@ -2854,25 +2854,165 @@ def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo)
     source_check = raw["checks"][0]
     assert source_check["name"] == "source"
     assert source_check["plan_authorized"] is True
+    assert source_check["check_contract"]["status"] == "valid"
     results, rejections = reconciliation._execution_report(raw, report_ref_for(raw))
     assert results
     assert all(r["result_id"] not in rejections for r in results)
 
-    # Mixed raw hygiene report: one Check flagged unauthorized by the Plan facts
-    # is rejected alone; the independent valid Checks stay admissible.
-    (path / "src/pkg/mod.py").write_text("VALUE = 8\n", encoding="utf-8")
-    hyg_plan = _hygiene_worktree_plan(path, base)
-    hyg_raw = execution.execute(hyg_plan, root=path, runner=FakeRunner())
-    flagged = [c for c in hyg_raw["checks"] if c.get("native_results")]
-    assert len(flagged) >= 2
-    assert all(c["plan_authorized"] is True for c in flagged)
-    _clean_results, clean_rej = reconciliation._execution_report(
-        hyg_raw, report_ref_for(hyg_raw)
+    # Full end-to-end reconciliation consuming an UNMODIFIED raw Report directly:
+    from test_reconciliation import (
+        ATTEMPT_QUALIFICATION_REF,
+        ATTEMPT_REF,
+        JOB_ISSUER_REF,
+        RUN_REF,
+        _attach_effective_profile_policy,
     )
-    assert not clean_rej
-    flagged[0]["plan_authorized"] = False
-    ids_bad = {r["result_id"] for r in flagged[0]["native_results"]}
-    ids_ok = {r["result_id"] for c in flagged[1:] for r in c["native_results"]}
-    _res, rej = reconciliation._execution_report(hyg_raw, report_ref_for(hyg_raw))
-    assert ids_bad <= set(rej)
-    assert not (ids_ok & set(rej))
+
+    from engineering_ci import expected_checks
+
+    (path / "src/pkg/mod.py").write_text("VALUE = 8\n", encoding="utf-8")
+    declared = ["whitespace", "forwarding"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    cfg_path = path / "ci-selection.toml"
+    rules = expected_checks.governed_domain_rules(path, config_path=cfg_path)
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-raw-e2e",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        governed_rules=rules,
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg = _attach_effective_profile_policy(cfg_path, profile)
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    hyg_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=cfg_path,
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        effective_profile=profile,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    exp = hyg_plan["expected_checks"]
+    hyg_raw = execution.execute(hyg_plan, root=path, runner=None)
+    raw_by = {c["name"]: c for c in hyg_raw["checks"]}
+    assert all(raw_by[n]["plan_authorized"] is True for n in declared)
+    raw_results = [
+        r for c in hyg_raw["checks"] for r in (c.get("native_results") or ())
+    ]
+    exp_by = {c["name"]: c for c in exp["checks"]}
+    primary_runner = raw_by["whitespace"]["native_result"]["runner_ref"]
+    routings = [
+        {
+            "expected_check_ref": exp_by[n]["expected_check_ref"],
+            "job_refs": ["job-raw"],
+            "job_instances": [
+                {
+                    "job_ref": "job-raw",
+                    "run_ref": RUN_REF,
+                    "attempt_ref": ATTEMPT_REF,
+                    "runner_ref": primary_runner,
+                    "attempt_eligibility": "eligible",
+                    "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                    "invocation_ref": "inv-raw",
+                }
+            ],
+            "mapping_status": "routed",
+        }
+        for n in declared
+    ] + [
+        {"expected_check_ref": c["expected_check_ref"], "mapping_status": "unrouted"}
+        for c in exp["checks"]
+        if c["name"] not in declared
+    ]
+    resolutions = [
+        execution.build_source_resolution(hyg_plan, n, root=path) for n in declared
+    ]
+    raw_ref = report_ref_for(hyg_raw)
+    obs = {
+        "job_ref": "job-raw",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": primary_runner,
+        "report": hyg_raw,
+        "report_ref": raw_ref,
+        "native_results": raw_results,
+        "job_receipt": {
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "job_ref": "job-raw",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": primary_runner,
+            "report_ref": raw_ref,
+            "issuer_ref": dict(JOB_ISSUER_REF),
+            "verification_status": "upstream_verified",
+            "invocation_ref": "inv-raw",
+            "event_ref": exp["event_ref"],
+            "scope_id": exp["scope_id"],
+            "expected_set_ref": exp["expected_set_ref"],
+        },
+    }
+    receipt = reconciliation.reconcile_expected_results(
+        exp,
+        routing=routings,
+        resolutions=resolutions,
+        observations=[obs],
+        invocation_ref="inv-raw",
+    )
+    reconciliation.validate_receipt(receipt)
+    rec_by = {item["name"]: item for item in receipt["entries"]}
+    assert rec_by["whitespace"]["binding_status"] == "matched"
+    assert rec_by["forwarding"]["binding_status"] == "matched"
+
+    # Mixed raw report: one Check unauthorized -> rejected alone; independent sibling stays matched:
+    mixed_raw = json.loads(json.dumps(hyg_raw))
+    for item in mixed_raw["checks"]:
+        if item["name"] == "forwarding":
+            item["plan_authorized"] = False
+    mixed_ref = report_ref_for(mixed_raw)
+    mixed_obs = {
+        **obs,
+        "report": mixed_raw,
+        "report_ref": mixed_ref,
+        "job_receipt": {**obs["job_receipt"], "report_ref": mixed_ref},
+    }
+    mixed_rec = reconciliation.reconcile_expected_results(
+        exp,
+        routing=routings,
+        resolutions=resolutions,
+        observations=[mixed_obs],
+        invocation_ref="inv-raw",
+    )
+    reconciliation.validate_receipt(mixed_rec)
+    mixed_by = {item["name"]: item for item in mixed_rec["entries"]}
+    assert mixed_by["whitespace"]["binding_status"] == "matched"
+    assert mixed_by["forwarding"]["binding_status"] == "insufficient"
+    assert mixed_by["forwarding"]["reason"] == "report_check_unauthorized"
+
+    # Also test unauthorized native source report directly:
+    unauth_raw = json.loads(json.dumps(raw))
+    unauth_raw["checks"][0]["plan_authorized"] = False
+    _ures, urej = reconciliation._execution_report(
+        unauth_raw, report_ref_for(unauth_raw)
+    )
+    assert unauth_raw["checks"][0]["native_results"][0]["result_id"] in urej
