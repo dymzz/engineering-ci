@@ -424,6 +424,7 @@ def _same_observed_scope(left, right):
 def _entry_admission_v2(
     entry,
     *,
+    scope_id,
     expected_entry,
     reports,
     job_receipts,
@@ -434,7 +435,7 @@ def _entry_admission_v2(
 ):
     if entry.get("binding_status") == "not_applicable":
         return {
-            "scope_id": entry.get("scope_id"),
+            "scope_id": scope_id,
             "expected_check_ref": entry["expected_check_ref"],
             "name": entry.get("name"),
             "check_id": entry.get("check_id"),
@@ -458,7 +459,7 @@ def _entry_admission_v2(
         resolution_reason = "resolution_authority_verifier_missing"
     else:
         context = {
-            "scope_id": entry.get("scope_id"),
+            "scope_id": scope_id,
             "expected_check_ref": entry["expected_check_ref"],
             "resolution": copy.deepcopy(resolution),
         }
@@ -467,20 +468,20 @@ def _entry_admission_v2(
         except (KeyError, RuntimeError, TypeError, ValueError):
             resolution_status = "rejected"
             resolution_reason = "resolution_authority_verifier_error"
-            authorized = False
-        if authorized is not True:
-            resolution_status = "unverified"
-            resolution_reason = "resolution_authority_unverified"
-        else:
-            recomputed, status, reason, _evidence = reconciliation._resolve_expected(
-                expected_entry, resolution
-            )
-            if recomputed is None or status != "matched":
+        if resolution_status != "rejected":
+            if authorized is not True:
                 resolution_status = "unverified"
-                resolution_reason = reason or "resolution_unresolved"
-            elif _digest(recomputed) != entry.get("resolved_expected_ref"):
-                resolution_status = "rejected"
-                resolution_reason = "resolved_expected_derivation_mismatch"
+                resolution_reason = "resolution_authority_unverified"
+            else:
+                recomputed, status, reason, _evidence = (
+                    reconciliation._resolve_expected(expected_entry, resolution)
+                )
+                if recomputed is None or status != "matched":
+                    resolution_status = "unverified"
+                    resolution_reason = reason or "resolution_unresolved"
+                elif _digest(recomputed) != entry.get("resolved_expected_ref"):
+                    resolution_status = "rejected"
+                    resolution_reason = "resolved_expected_derivation_mismatch"
     selected_ids = list(entry.get("selected_result_ids") or ())
     observed_ids = list(entry.get("observed_result_ids") or ())
     evidence_by_id = {}
@@ -738,12 +739,6 @@ def admit_evidence(
     independently sourced derivation inputs and ``resolution_authority`` is
     their verifier. Without these, no production coverage is admitted.
     """
-    if isinstance(receipt, dict):
-        raw_entries = receipt.get("entries")
-        if isinstance(raw_entries, list):
-            refs = [item.get("expected_check_ref") for item in raw_entries]
-            if len(set(refs)) != len(refs):
-                raise AdmissionError("admission_receipt_duplicate_entry")
     try:
         reconciliation.validate_receipt(receipt)
     except reconciliation.ReconciliationError as error:
@@ -787,6 +782,7 @@ def admit_evidence(
             raise AdmissionError("admission_expected_entry_missing")
         entry = _entry_admission_v2(
             raw_entry,
+            scope_id=scope.get("scope_id"),
             expected_entry=expected_entry,
             reports=reports,
             job_receipts=job_receipts,

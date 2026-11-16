@@ -22,7 +22,9 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - **独立来源的 Resolution 及其 `resolution_authority` verifier**：Admission 使用原始
   Expected entry 和该 Resolution 重新调用现有 `reconciliation._resolve_expected()`
   语义，检查 re-derived strict Expected 的摘要等于 Receipt 的
-  `resolved_expected_ref`。不能只相信 Receipt 内部自洽的 `resolved_expected`；Source/
+  `resolved_expected_ref`。verifier 上下文使用已由 Admission 验证的权威
+  `scope_id`（不是 Receipt Entry 上不存在的字段）、`expected_check_ref` 和
+  Resolution；不能只相信 Receipt 内部自洽的 `resolved_expected`；Source/
   Rule/Input/Baseline/Profile 约束必须来自当前 Expected 与受权 Resolution。
 - 重复 `expected_check_ref` 的 Receipt entries 在 Receipt/Admission 边界直接拒绝，不静默
   去重。

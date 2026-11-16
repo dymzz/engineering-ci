@@ -893,13 +893,31 @@ def test_t1a_schema_v2_same_name_refs_are_separate_instances():
         resolutions=[resolution_for(first)],
         observations=[observation_for(report, report_ref, job_receipt)],
     )
+    second_native = native(source=OTHER_SOURCE, profile_ref=PROFILE_REF)
+    second_report = report_for(second_native)
+    second_report_ref = report_ref_for(second_report)
+    second_job_receipt = job_receipt_for(second_report_ref)
+    second_resolution = {
+        "expected_check_ref": second["expected_check_ref"],
+        "rule_ref": copy.deepcopy(RULE_TACH),
+        "source_ref": copy.deepcopy(OTHER_SOURCE),
+        "rule_source_ref": {"name": "docs-rule", "version": "1", "sha256": "7" * 64},
+        "source_receipt_ref": {
+            "name": "docs-source",
+            "version": "1",
+            "sha256": "8" * 64,
+        },
+    }
     second_receipt = reconciliation.reconcile_expected_results(
         projection,
         ref_scope_id=second_ref["scope_id"],
-        routing=[],
-        resolutions=[],
-        observations=[],
+        routing=[routing_for(second)],
+        resolutions=[second_resolution],
+        observations=[
+            observation_for(second_report, second_report_ref, second_job_receipt)
+        ],
     )
+    ref_a_verifier = lambda context: context["scope_id"] == first_ref["scope_id"]
     first_result = admit_evidence(
         projection,
         first_receipt,
@@ -907,14 +925,17 @@ def test_t1a_schema_v2_same_name_refs_are_separate_instances():
         job_receipts=[job_receipt],
         policy=policy_for(),
         ref_scope_id=first_ref["scope_id"],
+        resolution_authority=ref_a_verifier,
     )
     second_result = admit_evidence(
         projection,
         second_receipt,
-        reports=[],
-        job_receipts=[],
+        reports=[second_report],
+        job_receipts=[second_job_receipt],
         policy=policy_for(),
+        resolutions=[second_resolution],
         ref_scope_id=second_ref["scope_id"],
+        resolution_authority=ref_a_verifier,
     )
     assert first_result["status"] == "admitted", (
         first_result["entries"][0]["reasons"],
@@ -924,6 +945,8 @@ def test_t1a_schema_v2_same_name_refs_are_separate_instances():
     )
     assert first_result["entries"][0]["admitted"] is True
     assert second_result["entries"][0]["admitted"] is False
+    assert "resolution_authority_unverified" in second_result["entries"][0]["reasons"]
+    assert second_result["remaining_work"]
     first_key = f"{first_ref['scope_id']}/{first['expected_check_ref']}"
     second_key = f"{second_ref['scope_id']}/{second['expected_check_ref']}"
     assert first_key in first_result["accepted_coverage_by_instance"]
@@ -980,8 +1003,8 @@ def test_t1a_duplicate_receipt_entry_is_rejected():
         {key: value for key, value in duplicate.items() if key != "receipt_ref"}
     )
     with pytest.raises(
-        admission.AdmissionError, match="admission_receipt_duplicate_entry"
-    ):
+        admission.AdmissionError, match="admission_receipt_invalid"
+    ) as raised:
         admit_evidence(
             projection,
             duplicate,
@@ -989,8 +1012,52 @@ def test_t1a_duplicate_receipt_entry_is_rejected():
             job_receipts=[job_receipt],
             policy=policy_for(),
         )
+    assert raised.value.native_code == "receipt_expected_check_ref_duplicate"
     with pytest.raises(
         reconciliation.ReconciliationError,
         match="receipt_expected_check_ref_duplicate",
     ):
         reconciliation.validate_receipt(duplicate)
+
+
+def test_t1a_malformed_receipt_entry_is_not_an_attribute_error():
+    projection, receipt, report, job_receipt = setup()
+    malformed = copy.deepcopy(receipt)
+    malformed["entries"].append("not-an-entry")
+    malformed["receipt_ref"] = reconciliation._digest(
+        {key: value for key, value in malformed.items() if key != "receipt_ref"}
+    )
+    with pytest.raises(
+        admission.AdmissionError, match="admission_receipt_invalid"
+    ) as raised:
+        admission.admit_evidence(
+            projection,
+            malformed,
+            reports=[report],
+            job_receipts=[job_receipt],
+            policy=policy_for(),
+            authority=authority_for(),
+            resolutions=[],
+            resolution_authority=resolution_authority_for(),
+        )
+    assert raised.value.native_code == "receipt_entries_invalid"
+
+
+def test_t1a_resolution_verifier_exception_keeps_diagnosis():
+    projection, receipt, report, job_receipt = setup()
+
+    def broken(context):
+        raise RuntimeError("verifier crashed")
+
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        resolution_authority=broken,
+    )
+    entry = result["entries"][0]
+    assert entry["resolution_status"] == "rejected"
+    assert "resolution_authority_verifier_error" in entry["reasons"]
+    assert entry["admitted"] is False
