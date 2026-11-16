@@ -811,6 +811,7 @@ def omitted_workflow_script_checks(
     )
     if reason is not None or config is None:
         return []
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(rule, config, root=root)
     configured = set(config.checks) & _WORKFLOW_SCRIPT_CHECKS
     if not configured:
         return []
@@ -838,6 +839,9 @@ def omitted_workflow_script_checks(
             and name not in selected_names
             and item.get("status") != "not_applicable"
         ):
+            eff_rule = (
+                rule_refs.get(name, rule) if isinstance(rule_refs, dict) else rule
+            )
             omitted.append(
                 {
                     "name": name,
@@ -848,7 +852,7 @@ def omitted_workflow_script_checks(
                     "routing_conflict": "configured_check_omitted_from_plan",
                     "execution_started": False,
                     "execution_kind": "not_started",
-                    "rule_ref": rule,
+                    "rule_ref": eff_rule,
                 }
             )
     return omitted
@@ -898,6 +902,7 @@ def _run_workflow_script_checks(
             for name, item in selected_by_name.items()
         ] + omitted_entries, True
 
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(rule, config, root=root)
     scope_cfg = (
         config.check_scope if config is not None else selection.CheckScopeConfig()
     )
@@ -934,6 +939,7 @@ def _run_workflow_script_checks(
         zizmor_offline=wf_cfg.zizmor_offline,
         shellcheck_inline=wf_cfg.shellcheck_inline,
         rule_ref=rule,
+        rule_refs=rule_refs,
         extra_paths=extra_paths,
         generated_input_refs=generated_input_refs,
         admission_fn=_build_workflow_admission_fn(
@@ -947,12 +953,13 @@ def _run_workflow_script_checks(
     any_failed = False
     for item in wanted:
         name = item.get("name")
+        item_rule = rule_refs.get(name, rule) if isinstance(rule_refs, dict) else rule
         entry = suite.get(name) or {
             "name": name,
             "selected": item.get("status"),
             "status": "not_executed",
             "reason": "workflow_script_check_missing",
-            **({"rule_ref": rule} if rule is not None else {}),
+            **({"rule_ref": item_rule} if item_rule is not None else {}),
         }
         entry = dict(entry)
         entry.setdefault("plan_authorized", True)

@@ -3735,6 +3735,7 @@ def plan(
     weaver_prefixes_map = {
         "weaver_semantic_conventions": list(config.check_scope.weaver_prefixes)
     }
+    wf_digests = workflow_analysis.workflow_config_digests(root, config.workflow_checks)
     expected = expected_checks.derive_expected_checks(
         selection.changeset,
         scope,
@@ -3751,14 +3752,19 @@ def plan(
         selection_config=config,
         per_ref_scopes=per_ref_scopes,
         per_ref_selections=per_ref_entries,
+        root=root,
+        workflow_config_digests=wf_digests,
     )
     tach_input = {"path": config.tach, "sha256": _digest(tach_path)}
     if tach_graph is not None:
         tach_input["modules"] = list(tach_graph[0])
         tach_input["reverse"] = {k: list(v) for k, v in sorted(tach_graph[1].items())}
     tach_input["all_tests"] = list(all_tests)
+    config_id = config_identity(config_path, config, root=root)
+    if wf_digests:
+        config_id["workflow_config_digests"] = wf_digests
     inputs_payload = {
-        "config": config_identity(config_path, config, root=root),
+        "config": config_id,
         "tach": tach_input,
     }
     if hygiene_identity is not None:

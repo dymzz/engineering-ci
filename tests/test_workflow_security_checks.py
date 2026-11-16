@@ -1515,7 +1515,97 @@ declared_checks = {json.dumps(declared)}
         },
     )
 
-    # Full #52 evaluate_expected_satisfaction + #104 reconcile_expected_results closure proof.
+    # Raw unmodified execution.execute() NativeResults already bind profile_ref,
+    # per-check effective rule_ref, and input_refs; passing them unmodified against
+    # a #66-P0 check_input_closure resolution stops ONLY at source_mismatch because
+    # host worktree execution emits scope_kind="changed_paths" until #66-P0 Closure
+    # lands upstream.
+    closure_source = {
+        **by_name["actionlint"]["native_result"]["source_ref"],
+        "scope_kind": "check_input_closure",
+    }
+    raw_results = [by_name[name]["native_result"] for name in declared]
+    raw_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [{"name": "raw", "native_results": raw_results}],
+    }
+    raw_report_ref = report_ref_for(raw_report)
+    raw_observations = [
+        {
+            "job_ref": "job-1",
+            "run_ref": RUN_REF,
+            "attempt_ref": ATTEMPT_REF,
+            "runner_ref": RUNNER_REF,
+            "report": raw_report,
+            "report_ref": raw_report_ref,
+            "native_results": raw_results,
+            "job_receipt": {
+                "kind": reconciliation.JOB_RECEIPT_KIND,
+                "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+                "job_ref": "job-1",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report_ref": raw_report_ref,
+                "issuer_ref": dict(JOB_ISSUER_REF),
+                "verification_status": "upstream_verified",
+            },
+        }
+    ]
+    closure_resolutions_for_raw = []
+    closure_routings_for_raw = []
+    for name in declared:
+        orig_nr = by_name[name]["native_result"]
+        entry = exp_by_name[name]
+        res_item = {
+            "expected_check_ref": entry["expected_check_ref"],
+            "rule_ref": orig_nr["check"]["rule_ref"],
+            "source_ref": closure_source,
+            "baseline_ref": orig_nr.get("baseline_ref"),
+            "input_refs": orig_nr["input_refs"],
+            "rule_source_ref": dict(RULE_SOURCE_REF),
+            "source_receipt_ref": dict(SOURCE_RECEIPT_REF),
+        }
+        if orig_nr.get("baseline_ref") is not None:
+            res_item["baseline_source_ref"] = dict(BASELINE_SOURCE_REF)
+        closure_resolutions_for_raw.append(res_item)
+        closure_routings_for_raw.append(
+            {
+                "expected_check_ref": entry["expected_check_ref"],
+                "job_refs": ["job-1"],
+                "job_instances": [
+                    {
+                        "job_ref": "job-1",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": RUNNER_REF,
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                    }
+                ],
+                "mapping_status": "routed",
+                "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
+                "effective_config_ref": {"name": "hook-job", "version": "1"},
+                "reason": None,
+            }
+        )
+    raw_vs_closure = reconciliation.reconcile_expected_results(
+        exp_v2,
+        routing=closure_routings_for_raw,
+        resolutions=closure_resolutions_for_raw,
+        observations=raw_observations,
+    )
+    raw_by_name = {item["name"]: item for item in raw_vs_closure["entries"]}
+    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
+        assert raw_by_name[wf_check]["binding_status"] == "insufficient"
+        assert raw_by_name[wf_check]["reason"] == "execution_object_mismatch"
+        assert (
+            raw_by_name[wf_check]["rejected_results"][0]["reason"] == "source_mismatch"
+        )
+
+    # Simulated #66-P0 Source Closure handoff: upgrading only source_ref to
+    # scope_kind="check_input_closure" proves full #52 satisfaction + #104 matched.
     closure_results_by_name = {}
     resolutions = []
     routings = []
@@ -1864,3 +1954,206 @@ declared_checks = {json.dumps(declared)}
     )
     narrowed_valid["inputs"]["config"]["normalized"]["effective_profile"] = None
     assert execution._profile_reference(narrowed_valid, profile_ref=prof_ref_v1) is None
+
+
+def test_tool_config_change_updates_effective_rule_ref_without_selection_edit(tmp_path):
+    repo, _ = _init_repo(
+        tmp_path / "rule_digest",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/ok.sh": '#!/bin/sh\necho "clean"\n'},
+    )
+    declared = [
+        "whitespace",
+        "actionlint",
+        "shellcheck",
+        "workflow_shellcheck",
+        "zizmor",
+    ]
+    (repo / ".shellcheckrc").write_text("enable=all\n", encoding="utf-8", newline="\n")
+    (repo / ".zizmor.yml").write_text("rules: {}\n", encoding="utf-8", newline="\n")
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-1",
+        approval_source="governance-signed",
+        effective_at="2026-11-15T00:00:00Z",
+        evaluated_at="2026-11-15T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    binding = profile["approval_binding"]
+    cfg_path = repo / "ci-selection.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8", newline="\n")
+        + f"""
+[workflow_checks]
+shellcheck_config = ".shellcheckrc"
+zizmor_config = ".zizmor.yml"
+
+[[non_code_rules]]
+exact = ".shellcheckrc"
+tests = []
+reason = "shellcheck rule config"
+
+[[non_code_rules]]
+exact = ".zizmor.yml"
+tests = []
+reason = "zizmor rule config"
+
+[effective_profile]
+profile_ref = {{ name = "{prof_ref["name"]}", version = "{prof_ref["version"]}" }}
+profile_revision = "{profile["profile_revision"]}"
+approval_source = "{binding["approval_source"]}"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "{profile["effective_at"]}"
+declared_checks = {json.dumps(declared)}
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo, "add", ".shellcheckrc", ".zizmor.yml", "ci-selection.toml")
+    _git(repo, "commit", "-q", "-m", "configure tool rules and effective profile")
+
+    plan1, exp1 = _build_plan_and_expected(
+        repo,
+        [".github/workflows/ci.yml", "scripts/ok.sh"],
+        effective_profile=profile,
+    )
+    rep1 = execution.execute(plan1, root=repo)
+    assert rep1["status"] == "passed", rep1
+    exp1_by = {c["name"]: c for c in exp1["checks"]}
+    nr1_by = {c["name"]: c["native_result"] for c in rep1["checks"]}
+    for name in ("actionlint", "workflow_shellcheck", "shellcheck", "zizmor"):
+        assert exp1_by[name]["rule_ref"] == nr1_by[name]["check"]["rule_ref"]
+    assert exp1_by["shellcheck"]["rule_ref"] != exp1["selection_rule_ref"]
+    assert exp1_by["zizmor"]["rule_ref"] != exp1["selection_rule_ref"]
+
+    # Edit ONLY .shellcheckrc while ci-selection.toml remains byte-for-byte unchanged.
+    (repo / ".shellcheckrc").write_text(
+        "disable=SC2086\n", encoding="utf-8", newline="\n"
+    )
+    plan2, exp2 = _build_plan_and_expected(
+        repo,
+        [".shellcheckrc"],
+        effective_profile=profile,
+    )
+    rep2 = execution.execute(plan2, root=repo)
+    assert rep2["status"] == "passed", rep2
+    exp2_by = {c["name"]: c for c in exp2["checks"]}
+    nr2_by = {c["name"]: c["native_result"] for c in rep2["checks"]}
+
+    assert exp2["selection_rule_ref"] == exp1["selection_rule_ref"]
+    assert (
+        exp2_by["shellcheck"]["rule_ref"] == nr2_by["shellcheck"]["check"]["rule_ref"]
+    )
+    assert (
+        exp2_by["shellcheck"]["rule_ref"]["sha256"]
+        != exp1_by["shellcheck"]["rule_ref"]["sha256"]
+    )
+    for unchanged in ("actionlint", "workflow_shellcheck", "zizmor"):
+        assert (
+            exp2_by[unchanged]["rule_ref"]["sha256"]
+            == exp1_by[unchanged]["rule_ref"]["sha256"]
+        )
+        assert unchanged not in nr2_by
+
+    plan3, exp3 = _build_plan_and_expected(
+        repo,
+        [".shellcheckrc", ".github/workflows/ci.yml", "scripts/ok.sh"],
+        effective_profile=profile,
+    )
+    rep3 = execution.execute(plan3, root=repo)
+    assert rep3["status"] == "passed", rep3
+    exp3_by = {c["name"]: c for c in exp3["checks"]}
+    nr3_by = {c["name"]: c["native_result"] for c in rep3["checks"]}
+    for name in ("actionlint", "workflow_shellcheck", "shellcheck", "zizmor"):
+        assert exp3_by[name]["rule_ref"] == nr3_by[name]["check"]["rule_ref"]
+    assert (
+        exp3_by["shellcheck"]["rule_ref"]["sha256"]
+        == exp2_by["shellcheck"]["rule_ref"]["sha256"]
+    )
+    for unchanged in ("actionlint", "workflow_shellcheck", "zizmor"):
+        assert (
+            exp3_by[unchanged]["rule_ref"]["sha256"]
+            == exp1_by[unchanged]["rule_ref"]["sha256"]
+        )
+
+    # Editing .shellcheckrc on disk AFTER plan2 was created causes execution to reject
+    # the stale plan at the worktree content binding boundary.
+    (repo / ".shellcheckrc").write_text("enable=all\n", encoding="utf-8", newline="\n")
+    rep_drift = execution.execute(plan2, root=repo)
+    assert rep_drift["status"] == "not_executed", rep_drift
+
+    # Editing ONLY .zizmor.yml updates ONLY zizmor's rule_ref in both Expected and NativeResult.
+    (repo / ".zizmor.yml").write_text(
+        "rules:\n  unpinned-uses:\n    disable: false\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    plan4, exp4 = _build_plan_and_expected(
+        repo,
+        [".zizmor.yml", ".github/workflows/ci.yml", "scripts/ok.sh"],
+        effective_profile=profile,
+    )
+    rep4 = execution.execute(plan4, root=repo)
+    assert rep4["status"] == "passed", rep4
+    exp4_by = {c["name"]: c for c in exp4["checks"]}
+    nr4_by = {c["name"]: c["native_result"] for c in rep4["checks"]}
+    assert exp4_by["zizmor"]["rule_ref"] == nr4_by["zizmor"]["check"]["rule_ref"]
+    assert (
+        exp4_by["zizmor"]["rule_ref"]["sha256"]
+        != exp3_by["zizmor"]["rule_ref"]["sha256"]
+    )
+    for unchanged in ("actionlint", "workflow_shellcheck"):
+        assert (
+            exp4_by[unchanged]["rule_ref"]["sha256"]
+            == exp3_by[unchanged]["rule_ref"]["sha256"]
+        )
+
+
+def test_shellcheck_opts_env_does_not_bypass_standalone_or_inline_shellcheck(
+    tmp_path, monkeypatch
+):
+    repo, _ = _init_repo(
+        tmp_path / "env_bypass",
+        workflows={
+            ".github/workflows/inline_bad.yml": (
+                "name: CI\n"
+                "on: [push]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: echo $UNQUOTED\n"
+            )
+        },
+        shells={"scripts/bad.sh": "#!/bin/sh\necho $UNQUOTED\n"},
+    )
+    plan, _ = _build_plan_and_expected(
+        repo, [".github/workflows/inline_bad.yml", "scripts/bad.sh"]
+    )
+    monkeypatch.setenv("SHELLCHECK_OPTS", "-e SC2086")
+    report = execution.execute(plan, root=repo)
+    by_name = {entry["name"]: entry for entry in report["checks"]}
+
+    assert by_name["shellcheck"]["status"] == "failed"
+    assert by_name["shellcheck"]["exit_code"] == 1
+    assert any(
+        f.get("rule") == "SC2086" or f.get("code") == 2086
+        for f in by_name["shellcheck"].get("findings", [])
+    )
+
+    assert by_name["workflow_shellcheck"]["status"] == "failed"
+    assert by_name["workflow_shellcheck"]["exit_code"] == 1
+    assert any(
+        "SC2086" in str(f.get("message") or f.get("code") or "")
+        for f in by_name["workflow_shellcheck"].get("findings", [])
+    )

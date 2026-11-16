@@ -687,6 +687,7 @@ class EngineeringCi:
             )
             .with_env_variable("UV_LINK_MODE", "copy")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
+            .without_env_variable("SHELLCHECK_OPTS")
             .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
             .with_workdir("/workspace")
         )

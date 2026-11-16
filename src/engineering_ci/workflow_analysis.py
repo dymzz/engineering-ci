@@ -8,6 +8,7 @@ receipts or bypassing Check identities.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -810,10 +811,12 @@ def findings_summary(report: dict) -> str:
 
 
 def default_run(argv: list[str], root: Path, data: str | None = None):
+    clean_env = {k: v for k, v in os.environ.items() if k != "SHELLCHECK_OPTS"}
     try:
         return subprocess.run(
             [str(item) for item in argv],
             cwd=root,
+            env=clean_env,
             input=data,
             text=True,
             encoding="utf-8",
@@ -914,6 +917,162 @@ def _parse_actionlint_shellcheck_debug(raw_stderr: str) -> dict:
     }
 
 
+WORKFLOW_MANAGED_CHECKS = frozenset(
+    {"actionlint", "workflow_shellcheck", "shellcheck", "zizmor"}
+)
+
+
+def _hash_relative_file(root: Path | None, rel_path: str) -> str:
+    if root is None:
+        return "unknown"
+    resolved_root = Path(root).resolve()
+    target = (resolved_root / rel_path).resolve()
+    try:
+        in_root = target.is_relative_to(resolved_root)
+    except OSError:
+        return "unknown"
+    if not in_root:
+        return "outside_root"
+    if not target.is_file():
+        return "missing"
+    try:
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError:
+        return "unreadable"
+
+
+def workflow_config_digests(
+    root: Path | None,
+    workflow_checks=None,
+    *,
+    actionlint_config: str = "",
+    shellcheck_config: str = "",
+    zizmor_config: str = "",
+) -> dict[str, str]:
+    """Compute SHA-256 digests for active workflow/shell/zizmor config files."""
+    if root is None:
+        return {}
+    if workflow_checks is not None:
+        actionlint_config = str(getattr(workflow_checks, "actionlint_config", "") or "")
+        shellcheck_config = str(getattr(workflow_checks, "shellcheck_config", "") or "")
+        zizmor_config = str(getattr(workflow_checks, "zizmor_config", "") or "")
+    resolved_root = Path(root).resolve()
+    candidates: set[str] = set()
+    if actionlint_config:
+        candidates.add(actionlint_config)
+    else:
+        for rel_path in sorted(WORKFLOW_CONFIG_FILES):
+            if (resolved_root / rel_path).is_file():
+                candidates.add(rel_path)
+    if shellcheck_config:
+        candidates.add(shellcheck_config)
+    if zizmor_config:
+        candidates.add(zizmor_config)
+    return {
+        rel_path: _hash_relative_file(resolved_root, rel_path)
+        for rel_path in sorted(candidates)
+    }
+
+
+def effective_check_rule_ref(
+    name: str,
+    *,
+    selection_rule_ref: dict | None,
+    selection_config=None,
+    root: Path | None = None,
+    file_digests: dict[str, str] | None = None,
+) -> dict | None:
+    """Bind per-check effective rule_ref to selection rules, options, and tool configs."""
+    if (
+        name not in WORKFLOW_MANAGED_CHECKS
+        or not isinstance(selection_rule_ref, dict)
+        or selection_config is None
+    ):
+        return selection_rule_ref
+    wf_cfg = getattr(selection_config, "workflow_checks", None)
+    if wf_cfg is None:
+        return selection_rule_ref
+    if wf_cfg.actionlint_config:
+        actionlint_cfg_paths = [wf_cfg.actionlint_config]
+    elif root is not None:
+        actionlint_cfg_paths = [
+            p for p in sorted(WORKFLOW_CONFIG_FILES) if (Path(root) / p).is_file()
+        ]
+    elif isinstance(file_digests, dict):
+        actionlint_cfg_paths = [
+            p for p in sorted(WORKFLOW_CONFIG_FILES) if p in file_digests
+        ]
+    else:
+        actionlint_cfg_paths = []
+    if name == "actionlint":
+        options: dict[str, object] = {"actionlint_config": wf_cfg.actionlint_config}
+        cfg_paths = actionlint_cfg_paths
+    elif name == "workflow_shellcheck":
+        options = {
+            "actionlint_config": wf_cfg.actionlint_config,
+            "shellcheck_inline": bool(wf_cfg.shellcheck_inline),
+        }
+        cfg_paths = actionlint_cfg_paths
+    elif name == "shellcheck":
+        options = {"shellcheck_config": wf_cfg.shellcheck_config}
+        cfg_paths = [wf_cfg.shellcheck_config] if wf_cfg.shellcheck_config else []
+    else:
+        options = {
+            "zizmor_config": wf_cfg.zizmor_config,
+            "zizmor_persona": wf_cfg.zizmor_persona,
+            "zizmor_offline": bool(wf_cfg.zizmor_offline),
+        }
+        cfg_paths = [wf_cfg.zizmor_config] if wf_cfg.zizmor_config else []
+    config_entries = []
+    for rel_path in sorted(set(cfg_paths)):
+        if isinstance(file_digests, dict) and rel_path in file_digests:
+            file_sha = file_digests[rel_path]
+        else:
+            file_sha = _hash_relative_file(root, rel_path)
+        config_entries.append({"path": rel_path, "sha256": file_sha})
+    payload = {
+        "check": name,
+        "selection_rule_sha256": str(selection_rule_ref.get("sha256") or ""),
+        "options": options,
+        "config_files": config_entries,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    from engineering_ci import check_contract
+
+    return check_contract.rule_ref(
+        selection_rule_ref["name"],
+        selection_rule_ref["version"],
+        path=selection_rule_ref.get("path"),
+        digest=digest,
+    )
+
+
+def effective_workflow_rule_refs(
+    selection_rule_ref: dict | None,
+    selection_config=None,
+    *,
+    root: Path | None = None,
+    file_digests: dict[str, str] | None = None,
+) -> dict[str, dict]:
+    """Compute per-check effective rule_ref map for all workflow/script checks."""
+    if not isinstance(selection_rule_ref, dict) or selection_config is None:
+        return {}
+    resolved: dict[str, dict] = {}
+    for check_name in sorted(WORKFLOW_MANAGED_CHECKS):
+        rule = effective_check_rule_ref(
+            check_name,
+            selection_rule_ref=selection_rule_ref,
+            selection_config=selection_config,
+            root=root,
+            file_digests=file_digests,
+        )
+        if rule is not None:
+            resolved[check_name] = rule
+    return resolved
+
+
 def run_workflow_script_suite(
     selected_by_name: dict[str, dict],
     *,
@@ -928,6 +1087,7 @@ def run_workflow_script_suite(
     zizmor_offline: bool = True,
     shellcheck_inline: bool = True,
     rule_ref: dict | None = None,
+    rule_refs: dict[str, dict | None] | None = None,
     extra_paths: tuple[str, ...] = (),
     generated_input_refs: tuple[dict, ...] = (),
     admission_fn=None,
@@ -1632,4 +1792,14 @@ def run_workflow_script_suite(
                     ),
                 }
 
+    for check_name, entry in out.items():
+        resolved_rule = (
+            rule_refs[check_name]
+            if isinstance(rule_refs, dict) and check_name in rule_refs
+            else rule_ref
+        )
+        if resolved_rule is not None:
+            entry["rule_ref"] = resolved_rule
+        else:
+            entry.pop("rule_ref", None)
     return out
