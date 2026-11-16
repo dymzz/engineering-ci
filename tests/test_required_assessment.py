@@ -203,6 +203,7 @@ def make_per_ref_container(
     *,
     ref_action="update",
     local_ref="refs/heads/main",
+    remote_ref=None,
     event=None,
     source=None,
     non_check=(),
@@ -218,10 +219,11 @@ def make_per_ref_container(
         event=event,
         source=source,
     )
+    target_remote = local_ref if remote_ref is None else remote_ref
     child = {
-        "source_ref": local_ref,
+        "source_ref": target_remote or local_ref,
         "local_ref": local_ref,
-        "remote_ref": "origin",
+        "remote_ref": target_remote,
         "ref_action": ref_action,
         "force_push": False,
         "baseline_status": "ok",
@@ -1223,10 +1225,11 @@ def test_phase_bearing_scope_with_unverified_phase_blocks():
     assert check_row(assessment, entry)["status"] == "satisfied"
 
 
-def test_future_trusted_phase_contract_sample_can_pass():
-    # Contract sample for a future trusted lifecycle Phase Producer: #112's
-    # current producer emits phase_status="unverified", so this is not a claim
-    # that real lifecycle Phase authorization is already delivered.
+def test_self_reported_verified_phase_without_trusted_producer_blocks():
+    # #112's current producer emits phase_status="unverified" because no
+    # trusted lifecycle Phase Producer contract exists yet. R1 retains "verified"
+    # as an evolutionary interface field only and refuses to authorize the
+    # Check Domain from an unauthenticated phase_status="verified" string alone.
     profile = make_profile(phase="pre_publish")
     entry = make_entry()
     projection = make_projection(profile, [entry], phase_status="verified")
@@ -1237,7 +1240,15 @@ def test_future_trusted_phase_contract_sample_can_pass():
     )
 
     matching = make_universe(profile, projection, [obligation], phase="pre_publish")
-    assert assess(matching, projection, admission=admission)["status"] == "passed"
+    matched = assess(matching, projection, admission=admission)
+    assert matched["status"] == "blocked"
+    assert matched["verification"]["check_domain"]["status"] == "unverified"
+    assert (
+        "expected_phase_proof_unverified"
+        in matched["verification"]["check_domain"]["reasons"]
+    )
+    assert matched["verification"]["obligations_universe"]["status"] == "verified"
+    assert check_row(matched, entry)["status"] == "satisfied"
 
     mismatched = make_universe(profile, projection, [obligation], phase="post_publish")
     mismatched_admission = make_admission(
@@ -1252,6 +1263,10 @@ def test_future_trusted_phase_contract_sample_can_pass():
     assessment = assess(mismatched, projection, admission=mismatched_admission)
 
     assert assessment["status"] == "blocked"
+    assert (
+        "expected_phase_proof_unverified"
+        in assessment["verification"]["check_domain"]["reasons"]
+    )
     assert (
         "evaluation_phase_mismatch"
         in assessment["verification"]["obligations_universe"]["reasons"]
@@ -2094,43 +2109,176 @@ def test_phase_order_incomplete_blocks_the_universe_fact():
     assert check_row(assessment, entry)["status"] == "satisfied"
 
 
-def test_future_only_check_obligation_is_membership_not_omitted():
-    profile = make_profile()
+def test_future_only_check_obligation_requires_explicit_profile_phase_scope():
+    # 1. Negative: Profile has NO phases[] restriction on o/tach (so it applies
+    #    to current pre_publish per _obligation_matches_scope). A future-only
+    #    post_publish universe instance must NEVER waive current Required.
+    unscoped_profile = make_profile()
     entry = make_entry()
-    projection = make_projection(profile, [entry])
-    obligation = check_obligation(
+    unscoped_proj = make_projection(unscoped_profile, [entry])
+    post_only = check_obligation(
         "o/tach", [entry["expected_check_ref"]], phase="post_publish"
     )
-    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
-    admission = make_admission(projection)
+    unscoped_universe = make_universe(
+        unscoped_profile, unscoped_proj, [post_only], phase="pre_publish"
+    )
+    blocked = assess(
+        unscoped_universe, unscoped_proj, admission=make_admission(unscoped_proj)
+    )
+    assert blocked["status"] == "blocked"
+    assert "required_check_omitted_by_universe" in blocked["cross_check_reasons"]
+    assert required_assessment.validate_assessment(blocked) is blocked
 
-    assessment = assess(universe, projection, admission=admission)
+    # 2. Dual instances (current + future for same obligation_ref) must NOT
+    #    cancel each other out: missing current evidence blocks, admitted PASSES.
+    pre_instance = check_obligation(
+        "o/tach", [entry["expected_check_ref"]], phase="pre_publish"
+    )
+    dual_universe = make_universe(
+        unscoped_profile,
+        unscoped_proj,
+        [pre_instance, copy.deepcopy(post_only)],
+        phase="pre_publish",
+    )
+    dual_missing = assess(
+        dual_universe, unscoped_proj, admission=make_admission(unscoped_proj)
+    )
+    assert dual_missing["status"] == "blocked"
+    assert check_row(dual_missing, entry)["status"] == "unverified"
+    assert obligation_row(dual_missing, pre_instance)["status"] == "unverified"
+    assert obligation_row(dual_missing, post_only)["status"] == "not_yet_due"
 
-    assert assessment["status"] == "passed"
-    assert "required_check_omitted_by_universe" not in assessment["cross_check_reasons"]
-    assert check_row(assessment, entry)["status"] == "not_yet_due"
-    assert obligation_row(assessment, obligation)["status"] == "not_yet_due"
-    assert required_assessment.validate_assessment(assessment) is assessment
+    dual_admitted = make_admission(
+        unscoped_proj,
+        coverage_entries=[(entry, historical_coverage(unscoped_proj, entry))],
+    )
+    dual_ok = assess(dual_universe, unscoped_proj, admission=dual_admitted)
+    assert dual_ok["status"] == "passed"
+    assert check_row(dual_ok, entry)["status"] == "satisfied"
+    assert obligation_row(dual_ok, pre_instance)["status"] == "satisfied"
+    assert obligation_row(dual_ok, post_only)["status"] == "not_yet_due"
+    assert required_assessment.validate_assessment(dual_ok) is dual_ok
+
+    # 3. Positive future-only scoping: Profile explicitly restricts o/future to
+    #    post_publish (#112 _obligation_matches_scope -> excluded from current
+    #    Expected required_by_obligations). Obligations universe & evidence pass;
+    #    Check Domain stays blocked solely on expected_phase_unverified until a
+    #    trusted lifecycle Phase Producer exists.
+    scoped_profile = make_profile(
+        phase="pre_publish",
+        obligations=[
+            {"obligation_ref": "o/tach", "check_names": ["tach"]},
+            {
+                "obligation_ref": "o/future",
+                "check_names": ["vulture"],
+                "phases": ["post_publish"],
+            },
+        ],
+        declared_checks=["tach", "vulture"],
+    )
+    current_entry = make_entry("tach", required_by=("o/tach",))
+    future_entry = make_entry(
+        "vulture",
+        required_by=(),
+        rule_ref=check_contract.rule_ref("vulture", 1, digest="d" * 64),
+    )
+    scoped_proj = make_projection(scoped_profile, [current_entry, future_entry])
+    current_ob = check_obligation(
+        "o/tach", [current_entry["expected_check_ref"]], phase="pre_publish"
+    )
+    future_ob = check_obligation(
+        "o/future", [future_entry["expected_check_ref"]], phase="post_publish"
+    )
+    scoped_universe = make_universe(
+        scoped_profile,
+        scoped_proj,
+        [current_ob, future_ob],
+        phase="pre_publish",
+    )
+    scoped_admission = make_admission(
+        scoped_proj,
+        coverage_entries=[
+            (current_entry, historical_coverage(scoped_proj, current_entry))
+        ],
+    )
+    scoped_assessment = assess(scoped_universe, scoped_proj, admission=scoped_admission)
+    assert scoped_assessment["cross_check_reasons"] == []
+    assert (
+        scoped_assessment["verification"]["obligations_universe"]["status"]
+        == "verified"
+    )
+    assert (
+        scoped_assessment["verification"]["evidence_satisfaction"]["status"]
+        == "satisfied"
+    )
+    assert check_row(scoped_assessment, future_entry)["status"] == "not_yet_due"
+    assert obligation_row(scoped_assessment, future_ob)["status"] == "not_yet_due"
+    assert scoped_assessment["verification"]["check_domain"]["reasons"] == [
+        "expected_phase_unverified"
+    ]
+    assert required_assessment.validate_assessment(scoped_assessment) is (
+        scoped_assessment
+    )
 
 
-def test_future_only_non_check_obligation_is_membership_not_omitted():
-    profile = make_profile(
+def test_future_only_non_check_obligation_requires_explicit_profile_phase_scope():
+    unscoped_profile = make_profile(
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
         declared_checks=[],
     )
-    projection = make_projection(profile, [], non_check=[non_check_expected()])
-    obligation = non_check_obligation("o/sbom", phase="post_publish")
-    universe = make_universe(profile, projection, [obligation], phase="pre_publish")
-
-    assessment = assess(universe, projection, admission=make_admission(projection))
-
-    assert assessment["status"] == "passed"
-    assert (
-        "non_check_obligation_omitted_by_universe"
-        not in assessment["cross_check_reasons"]
+    unscoped_proj = make_projection(
+        unscoped_profile, [], non_check=[non_check_expected()]
     )
-    assert obligation_row(assessment, obligation)["status"] == "not_yet_due"
-    assert required_assessment.validate_assessment(assessment) is assessment
+    post_only = non_check_obligation("o/sbom", phase="post_publish")
+    unscoped_universe = make_universe(
+        unscoped_profile, unscoped_proj, [post_only], phase="pre_publish"
+    )
+
+    blocked = assess(
+        unscoped_universe, unscoped_proj, admission=make_admission(unscoped_proj)
+    )
+
+    assert blocked["status"] == "blocked"
+    assert "non_check_obligation_omitted_by_universe" in blocked["cross_check_reasons"]
+    assert required_assessment.validate_assessment(blocked) is blocked
+
+    # Explicit future-only scope in Profile passes universe membership and
+    # evidence satisfaction while leaving Check Domain blocked solely on
+    # expected_phase_unverified.
+    scoped_profile = make_profile(
+        phase="pre_publish",
+        obligations=[
+            {
+                "obligation_ref": "o/sbom",
+                "kind": "non_check",
+                "phases": ["post_publish"],
+            }
+        ],
+        declared_checks=[],
+    )
+    scoped_proj = make_projection(scoped_profile, [], non_check=[])
+    scoped_universe = make_universe(
+        scoped_profile, scoped_proj, [post_only], phase="pre_publish"
+    )
+    scoped_assessment = assess(
+        scoped_universe, scoped_proj, admission=make_admission(scoped_proj)
+    )
+    assert scoped_assessment["cross_check_reasons"] == []
+    assert (
+        scoped_assessment["verification"]["obligations_universe"]["status"]
+        == "verified"
+    )
+    assert (
+        scoped_assessment["verification"]["evidence_satisfaction"]["status"]
+        == "satisfied"
+    )
+    assert obligation_row(scoped_assessment, post_only)["status"] == "not_yet_due"
+    assert scoped_assessment["verification"]["check_domain"]["reasons"] == [
+        "expected_phase_unverified"
+    ]
+    assert required_assessment.validate_assessment(scoped_assessment) is (
+        scoped_assessment
+    )
 
 
 def test_future_only_membership_does_not_waive_a_truly_omitted_check():
@@ -2713,7 +2861,7 @@ def test_multi_ref_container_requires_one_explicit_ref_scope():
     child = {
         "source_ref": "refs/heads/main",
         "local_ref": "refs/heads/main",
-        "remote_ref": "origin",
+        "remote_ref": "refs/heads/main",
         "ref_action": "update",
         "force_push": False,
         "baseline_status": "ok",
@@ -2846,6 +2994,129 @@ def test_per_ref_ref_action_update_and_delete_are_legal(ref_action):
 
     assert assessment["status"] == "passed"
     assert assessment["verification"]["obligations_universe"]["status"] == "verified"
+
+
+def test_per_ref_prefers_remote_ref_over_local_ref_like_upstream():
+    profile = make_profile()
+    push_event = {
+        **EVENT,
+        "base_ref": "refs/heads/main",
+        "head_ref": "refs/heads/main",
+        "local_ref": "refs/heads/feature",
+        "remote_ref": "refs/heads/main",
+        "ref_action": "update",
+        "references": [
+            {
+                "local_ref": "refs/heads/feature",
+                "remote_ref": "refs/heads/main",
+                "ref_action": "update",
+            }
+        ],
+    }
+    entry = make_entry(event=push_event)
+    container, child = make_per_ref_container(
+        profile,
+        [entry],
+        ref_action="update",
+        local_ref="refs/heads/feature",
+        remote_ref="refs/heads/main",
+        event=push_event,
+    )
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    admission = make_admission(
+        child,
+        coverage_entries=[(entry, historical_coverage(child, entry))],
+    )
+
+    ok_universe = make_universe(
+        profile,
+        child,
+        [obligation],
+        refs=[{"target_ref": "refs/heads/main", "ref_action": "update"}],
+    )
+    ok_assessment = assess(
+        ok_universe, container, ref_scope_id=child["scope_id"], admission=admission
+    )
+    assert ok_assessment["status"] == "passed"
+    assert ok_assessment["refs"] == [
+        {"target_ref": "refs/heads/main", "ref_action": "update"}
+    ]
+
+    local_only_universe = make_universe(
+        profile,
+        child,
+        [obligation],
+        refs=[{"target_ref": "refs/heads/feature", "ref_action": "update"}],
+    )
+    wrong_target = assess(
+        local_only_universe,
+        container,
+        ref_scope_id=child["scope_id"],
+        admission=admission,
+    )
+    assert wrong_target["status"] == "blocked"
+    assert (
+        "evaluation_ref_scope_mismatch"
+        in wrong_target["verification"]["obligations_universe"]["reasons"]
+    )
+    wrong_target_row = check_row(wrong_target, entry)
+    assert wrong_target_row["status"] == "unverified"
+    assert "admission_target_out_of_scope" in wrong_target_row["reasons"]
+
+    wrong_action_universe = make_universe(
+        profile,
+        child,
+        [obligation],
+        refs=[{"target_ref": "refs/heads/main", "ref_action": "delete"}],
+    )
+    wrong_action = assess(
+        wrong_action_universe,
+        container,
+        ref_scope_id=child["scope_id"],
+        admission=admission,
+    )
+    assert wrong_action["status"] == "blocked"
+    assert (
+        "evaluation_ref_action_mismatch"
+        in wrong_action["verification"]["obligations_universe"]["reasons"]
+    )
+    assert check_row(wrong_action, entry)["status"] == "satisfied"
+
+    # Legal fallback when remote_ref is absent: uses local_ref like _multi_ref_scopes.
+    fallback_event = {
+        **EVENT,
+        "local_ref": "refs/heads/main",
+        "remote_ref": None,
+        "ref_action": "update",
+        "references": [{"local_ref": "refs/heads/main", "ref_action": "update"}],
+    }
+    fb_entry = make_entry(event=fallback_event)
+    fb_container, fb_child = make_per_ref_container(
+        profile,
+        [fb_entry],
+        ref_action="update",
+        local_ref="refs/heads/main",
+        event=fallback_event,
+    )
+    fb_child["remote_ref"] = None
+    fb_ob = check_obligation("o/tach", [fb_entry["expected_check_ref"]])
+    fb_universe = make_universe(
+        profile,
+        fb_child,
+        [fb_ob],
+        refs=[{"target_ref": "refs/heads/main", "ref_action": "update"}],
+    )
+    fb_admission = make_admission(
+        fb_child,
+        coverage_entries=[(fb_entry, historical_coverage(fb_child, fb_entry))],
+    )
+    fb_assessment = assess(
+        fb_universe,
+        fb_container,
+        ref_scope_id=fb_child["scope_id"],
+        admission=fb_admission,
+    )
+    assert fb_assessment["status"] == "passed"
 
 
 def test_v1_projection_is_not_accepted():

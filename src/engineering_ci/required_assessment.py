@@ -801,7 +801,7 @@ def _normalized_source_digest(value):
 
 def _expected_event_refs(event_ref):
     refs = set()
-    for key in ("base_ref", "head_ref"):
+    for key in ("base_ref", "head_ref", "remote_ref", "local_ref"):
         value = event_ref.get(key)
         if isinstance(value, str) and value:
             refs.add(value)
@@ -900,8 +900,8 @@ def _cross_check_universe(universe, scope, checks):
     if scope.get("per_ref"):
         ref_meta = scope.get("ref") or {}
         child_ref = (
-            ref_meta.get("local_ref")
-            or ref_meta.get("remote_ref")
+            ref_meta.get("remote_ref")
+            or ref_meta.get("local_ref")
             or ref_meta.get("source_ref")
         )
         child_action = ref_meta.get("ref_action")
@@ -919,21 +919,71 @@ def _cross_check_universe(universe, scope, checks):
                 if target_matches and not exact
                 else "evaluation_ref_scope_mismatch"
             )
+        scope_target_ref = child_ref
+        scope_ref_action = child_action
+    else:
+        event = scope["event_ref"]
+        scope_target_ref = event.get("base_ref") or event.get("head_ref")
+        scope_ref_action = event.get("ref_action")
     expected_source_digest = _normalized_source_digest(
         scope["source_ref"].get("content_digest")
     )
 
-    # Membership/closure is independent of due applicability: an authorized
-    # future-phase obligation is already enumerated and must not be reported as
-    # omitted just because it is not currently due. Membership is checked on the
-    # actual (obligation_ref, expected_check_ref) association, not on the Check
-    # ref alone.
+    # Membership/closure is reconciled against the authorized Profile's
+    # Action x Target x Phase applicable scope (_obligation_matches_scope):
+    # only obligations explicitly scoped by Profile to a provably future phase
+    # may appear as future-only in the universe without a current-phase
+    # instance. An obligation covering the current phase (including one with no
+    # phases[] restriction) cannot be satisfied solely by a future instance.
+    phase_order = evaluation.get("phase_order")
+    profile_current_check_keys = set()
+    profile_current_non_check_keys = set()
+    profile_other_phase_check_keys = set()
+    profile_other_phase_non_check_keys = set()
+    for raw_ob in profile.get("required_obligations", ()):
+        if not isinstance(raw_ob, dict) or raw_ob.get("obligation_ref") is None:
+            continue
+        ob_key = _canonical(raw_ob["obligation_ref"])
+        ob_kind = raw_ob.get("kind", "check")
+        if expected_checks._obligation_matches_scope(
+            raw_ob,
+            target_ref=scope_target_ref,
+            ref_action=scope_ref_action,
+            phase=current_phase,
+        ):
+            if ob_kind == "non_check":
+                profile_current_non_check_keys.add(ob_key)
+            else:
+                profile_current_check_keys.add(ob_key)
+        elif isinstance(raw_ob.get("phases"), list) and any(
+            expected_checks._obligation_matches_scope(
+                raw_ob,
+                target_ref=scope_target_ref,
+                ref_action=scope_ref_action,
+                phase=declared_phase,
+            )
+            and _phase_position(declared_phase, current_phase, phase_order) == "future"
+            for declared_phase in raw_ob["phases"]
+        ):
+            if ob_kind == "non_check":
+                profile_other_phase_non_check_keys.add(ob_key)
+            else:
+                profile_other_phase_check_keys.add(ob_key)
+    profile_future_only_check_keys = (
+        profile_other_phase_check_keys - profile_current_check_keys
+    )
+    profile_future_only_non_check_keys = (
+        profile_other_phase_non_check_keys - profile_current_non_check_keys
+    )
+
     required_by_ref = {
         ref: {_canonical(value) for value in entry.get("required_by_obligations") or ()}
         for ref, entry in expected_refs.items()
     }
     universe_associations = {}
+    current_universe_associations = {}
     universe_non_check_keys = set()
+    current_universe_non_check_keys = set()
     non_check_expected_keys = {
         _canonical(item.get("obligation_ref"))
         for item in scope["non_check_obligations"]
@@ -971,16 +1021,19 @@ def _cross_check_universe(universe, scope, checks):
                         reasons.append("universe_check_instance_unknown")
                     continue
                 universe_associations.setdefault(ref, set()).add(key)
-                if (
-                    current
-                    and obligation["applicability"] == "required"
-                    and key not in required_by_ref[ref]
-                ):
-                    reasons.append("universe_obligation_mapping_mismatch")
+                if current:
+                    current_universe_associations.setdefault(ref, set()).add(key)
+                    if (
+                        obligation["applicability"] == "required"
+                        and key not in required_by_ref[ref]
+                    ):
+                        reasons.append("universe_obligation_mapping_mismatch")
         else:
             key = _canonical(obligation["obligation_ref"])
             universe_non_check_keys.add(key)
-            if not current:
+            if current:
+                current_universe_non_check_keys.add(key)
+            else:
                 continue
             if (
                 obligation["applicability"] == "required"
@@ -996,7 +1049,31 @@ def _cross_check_universe(universe, scope, checks):
             continue
         if expected_keys - present:
             reasons.append("required_check_association_unresolved")
+            continue
+        present_current = current_universe_associations.get(ref, set())
+        missing_current = {
+            key
+            for key in expected_keys
+            if key not in profile_future_only_check_keys and key not in present_current
+        }
+        if missing_current:
+            reasons.append("required_check_omitted_by_universe")
+    current_check_keys_in_universe = {
+        key for keys in current_universe_associations.values() for key in keys
+    }
+    if profile_current_check_keys - current_check_keys_in_universe:
+        reasons.append("required_check_omitted_by_universe")
     for _key in non_check_expected_keys - universe_non_check_keys:
+        reasons.append("non_check_obligation_omitted_by_universe")
+    missing_current_non_check = (
+        {
+            key
+            for key in non_check_expected_keys
+            if key not in profile_future_only_non_check_keys
+        }
+        | profile_current_non_check_keys
+    ) - current_universe_non_check_keys
+    if missing_current_non_check:
         reasons.append("non_check_obligation_omitted_by_universe")
     return _dedupe(reasons)
 
@@ -1399,8 +1476,16 @@ def _check_domain_fact(scope, checks):
         reasons.append("expected_check_conflicts")
     if scope.get("authority_status") != "verified":
         reasons.append("expected_authority_unverified")
-    if scope.get("phase_status") == "unverified":
-        reasons.append("expected_phase_unverified")
+    if scope.get("phase") is not None:
+        # #66-B2 currently produces only phase_status="unverified" because no
+        # trusted lifecycle Phase Producer exists yet. Self-reported "verified"
+        # strings without an authenticated Phase Producer proof contract must
+        # fail closed rather than granting phase authorization.
+        reasons.append(
+            "expected_phase_unverified"
+            if scope.get("phase_status") == "unverified"
+            else "expected_phase_proof_unverified"
+        )
     if scope["status"] == "complete":
         expected_label = (
             "per_ref" if scope.get("per_ref") else "expected_domain_complete"

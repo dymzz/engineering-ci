@@ -101,41 +101,39 @@ the Profile phase) and `phase_status`. R1 consumes that status:
 - The current #66-B2 producer marks a phase-bearing projection
   `phase_status="unverified"` because the actual CI/Release lifecycle Phase is
   not yet independently proven; the parent cannot be `complete`. R1's Check
-  Domain fact therefore requires `phase_status` not to be `unverified`.
+  Domain fact blocks with `expected_phase_unverified`.
 - A multi-Ref child may keep a local `status="complete"`, but that is local
   Check-structure completeness only. When the parent `phase_status` is
   `unverified`, R1 blocks the staged Check Domain authorization while retaining
   every already-proven child Check row.
-- A future authorized producer may emit `phase_status="verified"`; R1 accepts
-  that as the forward-compatible completion path (contract sample only until a
-  real lifecycle Phase Producer exists). R1 never issues Phase evidence itself.
+- No trusted lifecycle Phase Producer contract exists in this repository yet.
+  While `"verified"` is retained as a schema evolution shape on `phase_status`,
+  R1 never trusts a bare self-reported `phase_status="verified"` string without
+  an authenticated #66-B2 / lifecycle Phase Producer proof contract, and fails
+  the Check Domain closed with `expected_phase_proof_unverified`.
 - A no-Phase Profile uses `phase_status="not_applicable"` (or omits the field);
   its complete Check Domain remains legal.
 
 ### Membership vs due applicability
 
 Universe completeness and current due applicability are separate judgements.
-An authorized future-phase obligation is already enumerated in the complete
-universe and therefore satisfies the Expected association check (membership /
-closure) even though no current Native Result or non-check evidence is required.
-The Expected v2 projection may retain that same obligation association; R1 must
-not misreport it as `required_check_omitted_by_universe` or
-`non_check_obligation_omitted_by_universe`.
+Membership completeness is reconciled against the authorized Profile's
+applicable `Action × Target × Phase` scope (`expected_checks._obligation_matches_scope`):
 
-The separating rules are:
-
-- Membership: every Expected Required Check/Non-Check association must appear
-  in the current universe (any phase/applicability). For Check obligations the
-  actual `(obligation_ref, expected_check_ref)` pair is checked, not the Check
-  Ref alone: a different `obligation_ref` referencing the same Check Ref cannot
-  substitute for the Expected association (`required_check_association_unresolved`).
-  A truly absent obligation still blocks.
-- Due applicability: only the current-phase `required` instance needs current
-  evidence; future instances remain `not_yet_due`, past instances are
-  `unverified`, and an unproven phase position blocks.
-- A future-only obligation therefore permits a legal current-phase PASS without
-  waiving any currently-due Required. A current Required with missing evidence
+- Future-only deferral is allowed only when the authorized Profile explicitly
+  constrains that obligation to a provably future phase (`phases[]` excluding
+  the current phase, with a complete `phase_order`).
+- Obligations whose Profile declaration covers the current phase (including
+  obligations without `phases[]`) must appear in the universe with a
+  current-phase instance; a future-phase instance (`phase="post_publish"`)
+  with the same `obligation_ref` never substitutes for the missing current
+  instance (`required_check_omitted_by_universe` /
+  `non_check_obligation_omitted_by_universe`), and dual current/future instances
+  for one `obligation_ref` remain independent so missing current evidence
   still blocks.
+- For Check obligations the actual `(obligation_ref, expected_check_ref)` pair
+  is checked, not the Check Ref alone: a different `obligation_ref` referencing
+  the same Check Ref cannot substitute (`required_check_association_unresolved`).
 
 ## Evaluation scope and subject binding
 
@@ -187,8 +185,8 @@ because they have different owners:
 | Fact | Owner | Verified only when |
 | --- | --- | --- |
 | `verification.authority` | authorized Profile/policy source | authority status is `verified`, the assessment time is inside the effective window, the profile is not revoked, and the approval source is authoritative. |
-| `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, declares `authority_status="verified"`, uses the completeness label for its scope kind (single-Ref `expected_domain_complete`, per-Ref child `per_ref`), its `phase_status` is not `unverified` (a phase-bearing parent with unproven lifecycle Phase blocks even when a child is locally complete), and its required Check definitions/rules are resolved. |
-| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile/Check-domain and evaluation scope identities match the Expected scope, every Expected Required Check/Non-Check association is enumerated with the same obligation identity (membership, independent of phase/applicability), and declared candidate/source identities are real and equal to the evaluated and Expected identities. |
+| `verification.check_domain` | #66-B Expected projection | the Expected scope is `complete`, has no conflicts, declares `authority_status="verified"`, uses the completeness label for its scope kind (single-Ref `expected_domain_complete`, per-Ref child `per_ref`), has no unverified or unauthenticated phase (`phase` must be `None` until an authenticated upstream lifecycle Phase Producer proof contract exists; `phase_status="unverified"` and bare self-reported `phase_status="verified"` both block), and its required Check definitions/rules are resolved. |
+| `verification.obligations_universe` | #66-B2 governed evaluation | the universe is `complete`, its governance domain closes (all delegated domains included and closed), its Profile/Check-domain and evaluation scope identities match the Expected scope (for multi-Ref children matching upstream `remote_ref or local_ref` paired with `ref_action`), every Expected Required Check/Non-Check and current-phase Profile obligation has a matching current-phase instance (only Profile-restricted `phases[]` strictly in the future allow future-only enumeration), and declared candidate/source identities match the evaluated and Expected identities. |
 | `verification.evidence_satisfaction` | #63 / domain verifiers / #66-C | every current-due obligation is `satisfied` or `not_applicable`, and no in-scope Check or obligation row is `unmet`/`unverified`. |
 
 `status` is `passed` only when all four facts hold. Otherwise it is `blocked`
@@ -402,12 +400,15 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   `not_yet_due`/`not_applicable` basis enforcement; a past phase, a missing or
   incomplete authorized phase order and an unproven position are all blocked
   instead of being deferred;
-- future-only Check and future-only Non-Check obligations that are already
-  enumerated satisfy membership without current evidence (legal Pre-publish
-  PASS), while a truly omitted obligation and an unreliable phase order still
-  BLOCK, as does a due obligation with missing evidence; a different
-  `obligation_ref` referencing the same Check Ref does not close the Expected
-  association;
+- Profile-restricted future-only Check and Non-Check obligations (`phases[]`
+  strictly after current phase) satisfy universe membership and evidence
+  satisfaction (`not_yet_due`) without waiving any current-phase obligation,
+  while unscoped current obligations cannot be substituted by a future-only
+  instance (`required_check_omitted_by_universe` /
+  `non_check_obligation_omitted_by_universe`), dual current/future instances of
+  one `obligation_ref` stay independent, an unreliable phase order still
+  BLOCKS, and a different `obligation_ref` referencing the same Check Ref does
+  not close the Expected association;
 - missing `authority_status`, `status=complete` with a non-matching
   completeness label, an evaluation context/action/target/phase/ref outside the
   authorized Profile/Expected Event, a declared candidate digest with no real
@@ -415,13 +416,15 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   candidate or Expected Source all leave Check Domain / Universe unverified;
   correctly bound scopes (including per-Ref child labels and candidate/source
   identities) still PASS;
-- a phase-bearing parent with `phase_status="unverified"` blocks the staged
-  Check Domain even when a multi-Ref child is locally `complete`, while the
-  child's proven Check witness is retained; a no-Phase complete scope and a
-  forward-compatible `phase_status="verified"` sample still PASS;
-- a multi-Ref child is associated one-to-one with its real
-  `(target_ref, ref_action)`: an `update` child cannot consume a `delete`
-  evaluation ref; legal `update`/`delete` child samples PASS;
+- a phase-bearing parent with `phase_status="unverified"` (`expected_phase_unverified`)
+  or bare self-reported `phase_status="verified"` without a trusted lifecycle
+  Phase Producer (`expected_phase_proof_unverified`) both block the staged
+  Check Domain while keeping already-proven local Check witnesses; no-Phase
+  complete scopes still PASS;
+- a multi-Ref child prefers `remote_ref` with fallback to `local_ref` matching
+  upstream `_multi_ref_scopes`, paired with its real `(target_ref, ref_action)`:
+  `local != remote` pre-push passes on `remote_ref`, fails on `local_ref`-only
+  target or mismatched `ref_action`, and legal `update`/`delete` samples PASS;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
   artifact-level subject fields, commit-only evidence rejected for an
   artifact-level obligation, a legitimate commit-level obligation, missing
@@ -441,9 +444,11 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   `Expected.phase`/`phase_status` and never issues Phase evidence or infers it
   from Event/Job names. The current #66-B2 producer marks phase-bearing
   projections `phase_status="unverified"`; R1 therefore blocks the Check Domain
-  for them even when a per-Ref child is locally complete. A future trusted
-  lifecycle Phase Producer may emit `phase_status="verified"`; the verified
-  fixture in this repository is a contract sample, not a production claim.
+  for them even when a per-Ref child is locally complete. Because no trusted
+  lifecycle Phase Producer proof contract exists yet, self-reported
+  `phase_status="verified"` strings also fail closed
+  (`expected_phase_proof_unverified`) until #66-B2 supplies an authenticated
+  versioned Phase proof contract.
 - **Evaluation identity is upstream owned.** Context/action/target are bound to
   the authorized Profile and evaluation refs to the Expected Event, including
   the selected child's `ref_action`. Phase is bound when the authorized Profile
