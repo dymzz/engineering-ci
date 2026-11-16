@@ -2706,3 +2706,173 @@ def test_a2_negative_index_b_worktree_c_divergence_and_resolution_refusals(
         execution.ExecutionError, match="source_resolution_profile_unverified"
     ):
         execution.build_source_resolution(idx_plan, "tach", root=path)
+
+
+def _hygiene_worktree_plan(path, base):
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(
+        selection.changeset(path, base=base, mode="worktree"), cfg, root=path
+    )
+    return selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+
+
+def _whitespace_result(report):
+    return next(c for c in report["checks"] if c["name"] == "whitespace")
+
+
+def test_whitespace_native_scope_equals_plan_paths_and_source_closure(repo):
+    path, base = repo
+    (path / "src/pkg/mod.py").write_text("VALUE = 5\n", encoding="utf-8")
+    p = _hygiene_worktree_plan(path, base)
+    assert p["git"]["changed_paths"] == ["src/pkg/mod.py"]
+
+    # A tracked file outside the Plan gains a whitespace error after Plan creation:
+    (path / "src/pkg/sub.py").write_text("VALUE = 1   \n", encoding="utf-8")
+    seen = []
+    real = execution.hygiene._run
+
+    def spy(argv, root, data=None):
+        seen.append(list(argv))
+        return real(argv, root, data)
+
+    report = execution.execute(p, root=path, runner=spy)
+    ws = _whitespace_result(report)
+    diff_calls = [a for a in seen if a[:3] == ["git", "diff", "--check"]]
+    assert diff_calls and all(a[-2:] == ["--", "src/pkg/mod.py"] for a in diff_calls)
+    # The out-of-Plan file was not read, so it cannot affect the verdict:
+    assert ws["status"] == "passed"
+    sr = ws["native_result"]["source_ref"]
+    assert sr["scope_kind"] == "check_input_closure"
+    assert "src/pkg/sub.py" not in sr["verified_input_scope"]
+
+
+def test_whitespace_error_in_plan_path_fails_and_plan_path_drift_is_refused(repo):
+    path, base = repo
+    (path / "src/pkg/mod.py").write_text("VALUE = 6\n", encoding="utf-8")
+    p = _hygiene_worktree_plan(path, base)
+
+    # Unstaged then staged whitespace error in a Plan path stays failed:
+    (path / "src/pkg/mod.py").write_text("VALUE = 6\n", encoding="utf-8")
+    # Plan path content drift is a stale snapshot, not a silent pass:
+    (path / "src/pkg/mod.py").write_text("VALUE = 7   \n", encoding="utf-8")
+    drifted = execution.execute(p, root=path)
+    assert drifted["status"] == "not_executed"
+    assert drifted["reason"] == "worktree_snapshot_stale"
+
+    # A Plan created with the error present is checked natively and fails:
+    p2 = _hygiene_worktree_plan(path, base)
+    run(path, "add", "src/pkg/mod.py")
+    report = execution.execute(p2, root=path)
+    ws = _whitespace_result(report)
+    assert ws["status"] == "failed"
+    assert ws["reason"] == "whitespace_errors"
+
+
+def test_whitespace_deleted_and_added_plan_paths_are_scoped(repo):
+    path, base = repo
+    (path / "src/pkg/other.py").unlink()
+    (path / "src/pkg/new.py").write_text("VALUE = 9\n", encoding="utf-8")
+    run(path, "add", "-N", "src/pkg/new.py")
+    p = _hygiene_worktree_plan(path, base)
+    assert set(p["git"]["changed_paths"]) == {"src/pkg/other.py", "src/pkg/new.py"}
+    report = execution.execute(p, root=path)
+    ws = _whitespace_result(report)
+    assert ws["status"] == "passed", ws
+    sr = ws["native_result"]["source_ref"]
+    assert "src/pkg/other.py" not in sr["verified_input_scope"]
+    assert "src/pkg/new.py" in sr["verified_input_scope"]
+
+
+def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo):
+    from test_reconciliation import report_ref_for
+
+    from engineering_ci import reconciliation
+
+    path, base = repo
+    # Raw Source Check report, never rebuilt by hand:
+    content = b"source-bytes"
+    (path / "data/acquired").mkdir(parents=True)
+    (path / "data/acquired/a.bin").write_bytes(content)
+    (path / "data/catalog").mkdir(parents=True)
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (path / "ci-sources.toml").write_text(
+        'schema_version = 1\nmanifest = "data/catalog/manifest.json"\n'
+        'acquired_roots = ["data/acquired"]\nexempt_paths = []\n'
+        "environment_prefixes = []\nrequire_text_unset = false\n",
+        encoding="utf-8",
+    )
+    source_plan = plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": base,
+            "snapshot": "worktree",
+            "execution_tree": None,
+            "changed_paths": ["data/acquired/a.bin"],
+        },
+        check_scope=[
+            {
+                "name": "source",
+                "status": "selected",
+                "inputs": ["data/acquired/a.bin"],
+                "reason": "source inputs changed",
+            }
+        ],
+    )
+    raw = execution.execute(
+        source_plan,
+        root=path,
+        sources_config=path / "ci-sources.toml",
+        runner=FakeRunner(),
+    )
+    source_check = raw["checks"][0]
+    assert source_check["name"] == "source"
+    assert source_check["plan_authorized"] is True
+    results, rejections = reconciliation._execution_report(raw, report_ref_for(raw))
+    assert results
+    assert all(r["result_id"] not in rejections for r in results)
+
+    # Mixed raw hygiene report: one Check flagged unauthorized by the Plan facts
+    # is rejected alone; the independent valid Checks stay admissible.
+    (path / "src/pkg/mod.py").write_text("VALUE = 8\n", encoding="utf-8")
+    hyg_plan = _hygiene_worktree_plan(path, base)
+    hyg_raw = execution.execute(hyg_plan, root=path, runner=FakeRunner())
+    flagged = [c for c in hyg_raw["checks"] if c.get("native_results")]
+    assert len(flagged) >= 2
+    assert all(c["plan_authorized"] is True for c in flagged)
+    _clean_results, clean_rej = reconciliation._execution_report(
+        hyg_raw, report_ref_for(hyg_raw)
+    )
+    assert not clean_rej
+    flagged[0]["plan_authorized"] = False
+    ids_bad = {r["result_id"] for r in flagged[0]["native_results"]}
+    ids_ok = {r["result_id"] for c in flagged[1:] for r in c["native_results"]}
+    _res, rej = reconciliation._execution_report(hyg_raw, report_ref_for(hyg_raw))
+    assert ids_bad <= set(rej)
+    assert not (ids_ok & set(rej))

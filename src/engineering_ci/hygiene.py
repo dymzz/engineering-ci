@@ -614,8 +614,19 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
     return scopes
 
 
-def _whitespace(changes, root, runner):
-    result = runner(["git", "diff", "--check", changes.base_commit], root)
+def _whitespace(changes, root, runner, paths=None):
+    """Run ``git diff --check`` over exactly the declared changed paths.
+
+    When ``paths`` is given the native read set is limited with a pathspec so it
+    equals the Plan's changed-path set that Source identity proves; an unscoped
+    diff would also read tracked files outside that set.
+    """
+    argv = ["git", "diff", "--check", changes.base_commit]
+    if paths is not None:
+        if not paths:
+            return _result("whitespace", "not_applicable", reason="no_changed_paths")
+        argv += ["--", *paths]
+    result = runner(argv, root)
     if result.returncode == 0:
         return _result("whitespace", "passed", exit_code=0, executable="git")
     return _result(
@@ -819,7 +830,7 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     for name in effective_checks(config):
         applicable = applicability.get(name, {}).get("status") == "selected"
         if name == "whitespace":
-            results.append(_whitespace(changes, root, runner))
+            results.append(_whitespace(changes, root, runner, None if full else paths))
         elif name == "forwarding":
             results.append(_forwarding(paths, changes, root, runner, config))
         elif name == "docs":

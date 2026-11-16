@@ -2335,12 +2335,39 @@ def test_b2_validate_receipt_entry_semantic_invariants():
     ):
         reconciliation.validate_receipt(rehash(overlap))
 
+    # Selected evidence diverging from the same-ID observed evidence is refused:
     bad_sel_status = copy.deepcopy(matched)
     bad_sel_status["entries"][0]["selected_results"][0]["status"] = "advisory"
     with pytest.raises(
-        reconciliation.ReconciliationError, match="receipt_selected_status_invalid"
+        reconciliation.ReconciliationError, match="receipt_result_evidence_mismatch"
     ):
         reconciliation.validate_receipt(rehash(bad_sel_status))
+
+    bad_sel_attempt = copy.deepcopy(matched)
+    bad_sel_attempt["entries"][0]["selected_results"][0]["attempt_ref"] = (
+        "attempt/other"
+    )
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_result_evidence_mismatch"
+    ):
+        reconciliation.validate_receipt(rehash(bad_sel_attempt))
+
+    # Consistently rewritten non-passed witness is refused on status:
+    both_status = copy.deepcopy(matched)
+    for key in ("selected_results", "observed_results"):
+        both_status["entries"][0][key][0]["status"] = "advisory"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_status_invalid"
+    ):
+        reconciliation.validate_receipt(rehash(both_status))
+
+    # With no activated job instances a matched witness has no eligible attempt:
+    no_instances = copy.deepcopy(matched)
+    no_instances["entries"][0]["job_instances"] = []
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_unqualified_attempt"
+    ):
+        reconciliation.validate_receipt(rehash(no_instances))
 
 
 def test_b3_job_receipt_requires_all_four_attribution_fields_and_frozen_l2_interface():

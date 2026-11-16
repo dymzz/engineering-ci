@@ -1870,6 +1870,19 @@ def validate_receipt(receipt):
             raise ReconciliationError("receipt_result_evidence_mismatch")
         if selected_evidence_ids != set(selected):
             raise ReconciliationError("receipt_result_evidence_mismatch")
+        observed_by_id = {
+            item["result_id"]: item
+            for item in observed_results
+            if isinstance(item, dict) and "result_id" in item
+        }
+        if len(observed_by_id) != len(observed_results):
+            raise ReconciliationError("receipt_result_evidence_mismatch")
+        for item in selected_results:
+            if (
+                not isinstance(item, dict)
+                or observed_by_id.get(item.get("result_id")) != item
+            ):
+                raise ReconciliationError("receipt_result_evidence_mismatch")
         job_instances = entry.get("job_instances")
         if not isinstance(job_instances, list) or any(
             not isinstance(item, dict)
@@ -1951,7 +1964,8 @@ def validate_receipt(receipt):
                 )
                 if attempt_key in inactive_attempts:
                     raise ReconciliationError("receipt_selected_inactive_attempt")
-                if job_instances and attempt_key not in eligible_attempts:
+                # A matched witness must come from an activated eligible attempt.
+                if attempt_key not in eligible_attempts:
                     raise ReconciliationError("receipt_selected_unqualified_attempt")
         elif (
             isinstance(satisfaction, dict) and satisfaction.get("status") == "satisfied"

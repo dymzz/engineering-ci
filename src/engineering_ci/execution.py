@@ -2219,9 +2219,15 @@ def _decorate_checks(
         execution_context=execution_context,
         profile_ref=profile_ref,
     )
+    authorized_names = {
+        entry.get("name") for entry in _selected_checks(plan) if isinstance(entry, dict)
+    }
     for index, item in enumerate(checks):
         name = item.get("name")
         item["execution_context"] = execution_context
+        if "plan_authorized" not in item:
+            # Authorization is a Plan fact: the Check was selected by the Plan.
+            item["plan_authorized"] = name in authorized_names
         if parent_ctx is not None:
             item["parent_execution_context"] = parent_ctx
         definition = check_contract.definition_for(name)
