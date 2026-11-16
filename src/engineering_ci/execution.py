@@ -1933,8 +1933,9 @@ def _verified_check_source_ref(
     hygiene_config=None,
     sources_config=None,
     artifact_paths=(),
+    require_execution_started=True,
 ):
-    if item.get("execution_started") is False or source_snapshots is None:
+    if (require_execution_started and item.get("execution_started") is False) or source_snapshots is None:
         return None
     resolved_root = Path(root).resolve()
     loaded_hyg = (
@@ -2028,6 +2029,77 @@ def _verified_check_source_ref(
         binding_status="content_digest",
         scope_kind="check_input_closure",
     )
+
+
+
+def build_pre_execution_source_proof(
+    plan,
+    check_name,
+    *,
+    root,
+    hygiene_config=None,
+    sources_config=None,
+    artifact_paths=(),
+):
+    """Resolve a candidate Host Check input closure *before* native execution.
+
+    This is a content proof for the proposed target inputs, not a witness that
+    the tool executed or actually read them.  An unsupported/dynamic closure
+    returns an explicit unverified record.  The caller must independently
+    compare the historical execution's real inputs and all relevant
+    Rule/Tool/Baseline/Environment constraints before accepting reuse.
+    """
+    matches = [
+        item for item in _selected_checks(plan) if item.get("name") == check_name
+    ]
+    if len(matches) != 1:
+        raise ExecutionError("pre_execution_check_scope_ambiguous_or_missing")
+    item = matches[0]
+    snapshots = _prepare_source_snapshots(
+        plan,
+        [item],
+        root=root,
+        execution_context="host",
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+        artifact_paths=artifact_paths,
+    )
+    source = _verified_check_source_ref(
+        plan,
+        check_name,
+        item,
+        root=root,
+        execution_context="host",
+        source_snapshots=snapshots,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+        artifact_paths=artifact_paths,
+        require_execution_started=False,
+    )
+    if source is None:
+        return {
+            "phase": "pre_execution",
+            "check_name": check_name,
+            "execution_started": False,
+            "status": "unverified",
+            "reason": "pre_execution_input_closure_unproven",
+            "source_ref": None,
+        }
+    source = dict(source)
+    # byte_tree denotes a materialized execution view. A planned source
+    # snapshot can prove the relevant bytes without pretending a tool ran.
+    source["actual_execution_source"] = "planned_host_worktree"
+    if source["binding_status"] == "byte_tree":
+        source["binding_status"] = "content_digest"
+        source.pop("materialization_ref", None)
+    check_contract.validate_source_ref(source)
+    return {
+        "phase": "pre_execution",
+        "check_name": check_name,
+        "execution_started": False,
+        "status": "verified_candidate_inputs",
+        "source_ref": source,
+    }
 
 
 def _locate_expected_entry(
