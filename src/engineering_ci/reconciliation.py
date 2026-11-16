@@ -46,6 +46,24 @@ RECEIPT_STATUSES = frozenset({"matched", "partial", "unrouted", "unknown"})
 ROUTING_STATUSES = frozenset(
     {"routed", "unrouted", "filtered", "not_configured", "skipped", "unknown"}
 )
+CURRENT_EXECUTION_ATTRIBUTION_FIELDS = (
+    "invocation_ref",
+    "event_ref",
+    "scope_id",
+    "expected_set_ref",
+)
+EVIDENCE_ADMISSION_HANDOFF_FIELDS = (
+    "invocation_ref",
+    "event_ref",
+    "scope_id",
+    "expected_set_ref",
+    "receipt_ref",
+)
+EXECUTION_PHASE_ORDER = (
+    "pre_run_history_to_remaining_work",
+    "current_execution_to_reconciliation",
+    "post_run_evidence_to_gate_projection",
+)
 _NOT_APPLICABLE_STATUSES = frozenset({"not_applicable", "no_changes", "no_tests"})
 _RECONCILABLE_APPLICABILITY = frozenset({"selected", "targeted", "full", "escalated"})
 _ENTRY_FIELDS = (
@@ -148,13 +166,19 @@ def _report_ref(value, code):
     return value
 
 
+def _optional_scope_id(value, code):
+    if value is None:
+        return None
+    return _sha256_ref(value, code)
+
+
 def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref):
     """Upstream Job/Attempt receipt binding one Report to one Job attempt.
 
     The receipt status is consumed as an upstream proof state. This module does
     not authenticate the issuer; that admission remains #63's responsibility.
     """
-    if not isinstance(value, dict) or set(value) != {
+    allowed = {
         "kind",
         "schema_version",
         "job_ref",
@@ -164,7 +188,23 @@ def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref
         "report_ref",
         "issuer_ref",
         "verification_status",
-    }:
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
+        "expected_set_ref",
+    }
+    required = {
+        "kind",
+        "schema_version",
+        "job_ref",
+        "run_ref",
+        "attempt_ref",
+        "runner_ref",
+        "report_ref",
+        "issuer_ref",
+        "verification_status",
+    }
+    if not isinstance(value, dict) or not (required <= set(value) <= allowed):
         raise ReconciliationError("observation_job_receipt_invalid")
     if (
         value.get("kind") != JOB_RECEIPT_KIND
@@ -183,7 +223,88 @@ def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref
     _evidence_ref(value.get("issuer_ref"), "observation_job_receipt_invalid")
     if not isinstance(value.get("verification_status"), str):
         raise ReconciliationError("observation_job_receipt_invalid")
+    _optional_text(value.get("invocation_ref"), "observation_job_receipt_invalid")
+    if value.get("event_ref") is not None and not isinstance(value["event_ref"], dict):
+        raise ReconciliationError("observation_job_receipt_invalid")
+    _optional_scope_id(value.get("scope_id"), "observation_job_receipt_invalid")
+    _optional_scope_id(value.get("expected_set_ref"), "observation_job_receipt_invalid")
     return value
+
+
+def _check_report_rejection(
+    check,
+    native_list,
+    primary,
+    check_results,
+    *,
+    is_eci_report=False,
+    report_reason=None,
+    failed_checks=(),
+):
+    """Return a Check-level admissibility rejection reason, or None if valid."""
+    if report_reason is not None:
+        return report_reason
+    if check.get("plan_authorized") is False:
+        return "report_check_unauthorized"
+    if is_eci_report and check.get("plan_authorized") is not True:
+        return "report_check_unauthorized"
+    if "check_contract" in check or is_eci_report:
+        contract = check.get("check_contract")
+        if not isinstance(contract, dict) or contract.get("status") != "valid":
+            return "report_check_contract_invalid"
+    blocked_by = check.get("blocked_by")
+    deps = (
+        [blocked_by]
+        if isinstance(blocked_by, str)
+        else list(blocked_by)
+        if isinstance(blocked_by, list)
+        else []
+    )
+
+    def _dep_name(dep):
+        if isinstance(dep, str):
+            return dep
+        if isinstance(dep, dict):
+            ref = dep.get("producer_ref")
+            if isinstance(ref, dict) and isinstance(ref.get("name"), str):
+                return ref["name"]
+            if isinstance(dep.get("name"), str):
+                return dep["name"]
+        return None
+
+    if check.get("reason") == "pre_execution_prerequisite_failed" or any(
+        _dep_name(dep) in failed_checks
+        or (
+            isinstance(dep, dict)
+            and dep.get("reason") == "pre_execution_prerequisite_failed"
+        )
+        for dep in deps
+    ):
+        return "report_prerequisite_failed"
+    if primary is not None and native_list is not None:
+        try:
+            check_contract.validate_result(primary)
+        except check_contract.CheckContractError:
+            return "report_primary_result_mismatch"
+        canonical_items = [_canonical(item) for item in native_list]
+        primary_canon = _canonical(primary)
+        if primary_canon not in canonical_items or (
+            len(native_list) == 1 and primary_canon != canonical_items[0]
+        ):
+            return "report_primary_result_mismatch"
+    declared_check_id = check.get("check_id")
+    if declared_check_id is not None and any(
+        result["check"]["check_id"] != declared_check_id for result in check_results
+    ):
+        return "report_check_id_mismatch"
+    declared_status = check.get("status")
+    if (
+        declared_status is not None
+        and primary is not None
+        and declared_status != primary["status"]
+    ):
+        return "report_check_status_mismatch"
+    return None
 
 
 def _execution_report(value, report_ref):
@@ -199,19 +320,74 @@ def _execution_report(value, report_ref):
     checks = value.get("checks")
     if not isinstance(checks, list):
         raise ReconciliationError("observation_report_invalid")
+    is_eci_report = (
+        any(
+            key in value
+            for key in (
+                "check_contract",
+                "execution_context",
+                "plan",
+                "plan_declaration_consistent",
+            )
+        )
+        or any(
+            isinstance(item, dict)
+            and any(
+                field in item
+                for field in ("plan_authorized", "check_contract", "blocked_by")
+            )
+            for item in checks
+        )
+        or value.get("schema_version", 1) >= 2
+    )
+    report_reason = None
+    if value.get("plan_declaration_consistent") is False:
+        report_reason = "report_plan_declaration_inconsistent"
+    elif isinstance(value.get("check_contract"), dict) and (
+        value["check_contract"].get("kind") != check_contract.CHECK_CONTRACT_KIND
+    ):
+        report_reason = "report_contract_invalid"
+    elif value.get("status") == "not_executed":
+        report_reason = "report_not_executed"
+    failed_checks = {
+        item.get("name")
+        for item in checks
+        if isinstance(item, dict)
+        and item.get("status") in {"failed", "not_executed"}
+        and item.get("name")
+    }
     results = []
+    rejections = {}
     seen = set()
     for check in checks:
         if not isinstance(check, dict):
             raise ReconciliationError("observation_report_invalid")
-        native = check.get("native_results")
-        if native is None and isinstance(check.get("native_result"), dict):
-            native = [check["native_result"]]
-        if native is None:
-            continue
-        if not isinstance(native, list):
+        native_list = check.get("native_results")
+        primary = check.get("native_result")
+        if native_list is not None and not isinstance(native_list, list):
             raise ReconciliationError("observation_report_invalid")
-        for result in native:
+        if primary is not None and not isinstance(primary, dict):
+            raise ReconciliationError("observation_report_invalid")
+        if native_list is None and primary is None:
+            continue
+        check_results = list(native_list) if native_list is not None else [primary]
+        if primary is not None and native_list == []:
+            # Contradiction: non-empty primary native_result alongside empty native_results.
+            try:
+                check_contract.validate_result(primary)
+            except check_contract.CheckContractError as error:
+                raise ReconciliationError(
+                    "native_result_invalid", native_code=error.code
+                ) from None
+            if primary["result_id"] in seen:
+                raise ReconciliationError("observation_report_result_duplicate")
+            seen.add(primary["result_id"])
+            results.append(primary)
+            rejections[primary["result_id"]] = (
+                report_reason or "report_primary_result_mismatch"
+            )
+            continue
+        for result in check_results:
             try:
                 check_contract.validate_result(result)
             except check_contract.CheckContractError as error:
@@ -222,7 +398,19 @@ def _execution_report(value, report_ref):
                 raise ReconciliationError("observation_report_result_duplicate")
             seen.add(result["result_id"])
             results.append(result)
-    return results
+        rejection = _check_report_rejection(
+            check,
+            native_list,
+            primary,
+            check_results,
+            is_eci_report=is_eci_report,
+            report_reason=report_reason,
+            failed_checks=failed_checks,
+        )
+        if rejection is not None:
+            for result in check_results:
+                rejections[result["result_id"]] = rejection
+    return results, rejections
 
 
 def _select_scope(expected, ref_scope_id):
@@ -406,6 +594,9 @@ def _job_instance(value):
         "report_ref",
         "attempt_eligibility",
         "qualification_ref",
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
     }:
         raise ReconciliationError("routing_job_instance_invalid")
     eligibility = value.get("attempt_eligibility", "unknown")
@@ -416,6 +607,8 @@ def _job_instance(value):
         raise ReconciliationError("routing_attempt_qualification_missing")
     if qualification_ref is not None:
         _evidence_ref(qualification_ref, "routing_attempt_qualification_invalid")
+    if value.get("event_ref") is not None and not isinstance(value["event_ref"], dict):
+        raise ReconciliationError("routing_job_instance_invalid")
     instance = {
         "job_ref": _text(value.get("job_ref"), "routing_job_instance_invalid"),
         "run_ref": _text(value.get("run_ref"), "routing_job_instance_invalid"),
@@ -427,6 +620,16 @@ def _job_instance(value):
         "attempt_eligibility": eligibility,
         "qualification_ref": qualification_ref,
     }
+    if value.get("invocation_ref") is not None:
+        instance["invocation_ref"] = _text(
+            value["invocation_ref"], "routing_job_instance_invalid"
+        )
+    if value.get("event_ref") is not None:
+        instance["event_ref"] = value["event_ref"]
+    if value.get("scope_id") is not None:
+        instance["scope_id"] = _sha256_ref(
+            value["scope_id"], "routing_job_instance_invalid"
+        )
     if value.get("report_ref") is not None:
         instance["report_ref"] = _report_ref(
             value["report_ref"], "routing_report_ref_invalid"
@@ -546,10 +749,16 @@ def _normalize_observations(observations):
         if item.get("report_ref") is not None:
             report_ref = _report_ref(item["report_ref"], "observation_report_invalid")
         report_results = None
+        report_rejections = {}
+        report_invocation_ref = None
         if item.get("report") is not None:
             if report_ref is None:
                 raise ReconciliationError("observation_report_ref_missing")
-            report_results = _execution_report(item["report"], report_ref)
+            report_results, report_rejections = _execution_report(
+                item["report"], report_ref
+            )
+            if isinstance(item["report"].get("invocation_ref"), str):
+                report_invocation_ref = item["report"]["invocation_ref"]
         provided = item.get("native_results")
         if provided is not None and not isinstance(provided, (list, tuple)):
             raise ReconciliationError("observation_results_invalid")
@@ -612,6 +821,8 @@ def _normalize_observations(observations):
                 "report_ref": report_ref,
                 "job_receipt": receipt,
                 "report_verified": report_results is not None,
+                "report_rejections": report_rejections,
+                "report_invocation_ref": report_invocation_ref,
                 "attribution_verified": attribution_verified,
                 "native_results": job_results,
                 "identity_complete": identity_complete,
@@ -661,7 +872,13 @@ def _unknown_fields(reason):
             "attempt_ref",
             "runner_ref",
             "report_ref",
+            "invocation_ref",
         ],
+        "job_invocation_mismatch": ["invocation_ref"],
+        "job_invocation_unproven": ["invocation_ref"],
+        "job_event_mismatch": ["event_ref"],
+        "job_scope_mismatch": ["scope_id"],
+        "job_expected_set_mismatch": ["expected_set_ref"],
         "job_attribution_unproven": ["job_receipt"],
         "effective_attempt_unqualified": ["attempt_eligibility"],
         "multiple_eligible_attempts": ["attempt_eligibility"],
@@ -713,15 +930,34 @@ def _resolve_expected(entry, resolution):
         return None, "unknown", "expected_source_unproven", evidence
     if expected_source.get("snapshot") != resolved_source.get("snapshot"):
         return None, "insufficient", "expected_source_snapshot_mismatch", evidence
-    for key in ("declared_target_tree", "content_digest", "head_commit", "index_tree"):
+    for key in ("declared_target_tree", "head_commit", "index_tree"):
         if expected_source.get(key) is not None and expected_source.get(
             key
         ) != resolved_source.get(key):
             return None, "insufficient", f"expected_source_{key}_mismatch", evidence
-    if set(expected_source.get("verified_input_scope") or ()) - set(
-        resolved_source.get("verified_input_scope") or ()
-    ):
+    exp_scope_set = set(expected_source.get("verified_input_scope") or ())
+    res_scope_set = set(resolved_source.get("verified_input_scope") or ())
+    if exp_scope_set - res_scope_set:
         return None, "insufficient", "expected_input_scope_uncovered", evidence
+    if expected_source.get("content_digest") is not None:
+        exp_digest = expected_source["content_digest"]
+        res_digest = resolved_source.get("content_digest")
+        expanded_closure = (
+            expected_source.get("scope_kind") == "changed_paths"
+            and resolved_source.get("scope_kind")
+            in {"check_input_closure", "full_input_closure"}
+            and exp_scope_set < res_scope_set
+        )
+        if exp_digest != res_digest and not (
+            expanded_closure
+            and resolution.get("changed_paths_content_digest") == exp_digest
+        ):
+            return (
+                None,
+                "insufficient",
+                "expected_source_content_digest_mismatch",
+                evidence,
+            )
 
     # The immutable Expected input constraints are a floor. Resolution may add
     # native input evidence, but it may never drop or shrink an expected input.
@@ -782,15 +1018,80 @@ def _resolve_expected(entry, resolution):
     return strict, "matched", None, evidence
 
 
+def _attribution_problem(instance, observation, *, scope=None, invocation_ref=None):
+    expected_inv = (
+        invocation_ref if invocation_ref is not None else instance.get("invocation_ref")
+    )
+    if (
+        invocation_ref is not None
+        and instance.get("invocation_ref") is not None
+        and instance["invocation_ref"] != invocation_ref
+    ):
+        return "job_invocation_mismatch"
+    receipt = observation.get("job_receipt")
+    if receipt is not None:
+        if expected_inv is not None:
+            rec_inv = receipt.get("invocation_ref")
+            if rec_inv is None:
+                return "job_invocation_unproven"
+            if rec_inv != expected_inv:
+                return "job_invocation_mismatch"
+            if scope is not None:
+                if receipt.get("event_ref") is None:
+                    return "job_event_unproven"
+                if receipt.get("scope_id") is None:
+                    return "job_scope_unproven"
+                if receipt.get("expected_set_ref") is None:
+                    return "job_expected_set_unproven"
+        if scope is not None:
+            if (
+                receipt.get("event_ref") is not None
+                and receipt["event_ref"] != scope["event_ref"]
+            ):
+                return "job_event_mismatch"
+            if (
+                receipt.get("scope_id") is not None
+                and receipt["scope_id"] != scope["scope_id"]
+            ):
+                return "job_scope_mismatch"
+            if (
+                receipt.get("expected_set_ref") is not None
+                and receipt["expected_set_ref"] != scope["expected_set_ref"]
+            ):
+                return "job_expected_set_mismatch"
+    if scope is not None:
+        if (
+            instance.get("event_ref") is not None
+            and instance["event_ref"] != scope["event_ref"]
+        ):
+            return "job_event_mismatch"
+        if (
+            instance.get("scope_id") is not None
+            and instance["scope_id"] != scope["scope_id"]
+        ):
+            return "job_scope_mismatch"
+    if (
+        observation.get("report_invocation_ref") is not None
+        and expected_inv is not None
+        and observation["report_invocation_ref"] != expected_inv
+    ):
+        return "job_invocation_mismatch"
+    return None
+
+
 def _candidate_results(
     entry,
     instances,
     observations_by_identity,
     job_refs,
     inactive_identities=(),
+    *,
+    scope=None,
+    invocation_ref=None,
 ):
     candidates = []
     version_mismatch = []
+    report_rejected = []
     problems = []
     observed_identities = set()
     seen = set()
@@ -842,6 +1143,20 @@ def _candidate_results(
                 }
             )
             continue
+        attr_problem = _attribution_problem(
+            instance, observation, scope=scope, invocation_ref=invocation_ref
+        )
+        if attr_problem is not None:
+            problems.append(
+                {
+                    "reason": attr_problem,
+                    "job_ref": instance["job_ref"],
+                    "run_ref": instance["run_ref"],
+                    "attempt_ref": instance["attempt_ref"],
+                }
+            )
+            continue
+        rejections = observation.get("report_rejections") or {}
         for result in observation["native_results"]:
             check = result["check"]
             if check["check_id"] != entry["check_id"]:
@@ -852,6 +1167,10 @@ def _candidate_results(
             if result["result_id"] in seen:
                 continue
             seen.add(result["result_id"])
+            rejection_reason = rejections.get(result["result_id"])
+            if rejection_reason is not None:
+                report_rejected.append((result, observation, rejection_reason))
+                continue
             candidates.append((result, observation))
 
     for observation in observations_by_identity.values():
@@ -874,7 +1193,7 @@ def _candidate_results(
                     "attempt_ref": observation.get("attempt_ref"),
                 }
             )
-    return candidates, version_mismatch, problems
+    return candidates, version_mismatch, report_rejected, problems
 
 
 def _object_mismatch(result, strict):
@@ -959,7 +1278,15 @@ def _unsatisfied_status(reasons):
     return "insufficient"
 
 
-def _reconcile_entry(entry, binding, resolution, observations_by_identity):
+def _reconcile_entry(
+    entry,
+    binding,
+    resolution,
+    observations_by_identity,
+    *,
+    scope=None,
+    invocation_ref=None,
+):
     output = {
         "expected_check_ref": entry["expected_check_ref"],
         "name": entry.get("name"),
@@ -1094,34 +1421,73 @@ def _reconcile_entry(entry, binding, resolution, observations_by_identity):
             }
         )
 
-    candidates, version_mismatch, problems = _candidate_results(
+    candidates, version_mismatch, report_rejected, problems = _candidate_results(
         entry,
         eligible_instances,
         observations_by_identity,
         set(job_refs),
         inactive_identities,
+        scope=scope,
+        invocation_ref=invocation_ref,
     )
-    observed = [*candidates, *version_mismatch]
+    observed = [
+        *candidates,
+        *version_mismatch,
+        *((res, obs) for res, obs, _ in report_rejected),
+    ]
     output["observed_result_ids"] = [result["result_id"] for result, _ in observed]
     output["observed_results"] = [
         _result_evidence(result, observation) for result, observation in observed
     ]
+    for result, observation, rej_reason in report_rejected:
+        output["rejected_results"].append(
+            {
+                "result_id": result["result_id"],
+                "reason": rej_reason,
+                "job_ref": observation["job_ref"],
+                "run_ref": observation["run_ref"],
+                "attempt_ref": observation["attempt_ref"],
+            }
+        )
     output["rejected_observations"] = list(problems)
     output["native_status"] = _native_status([result for result, _ in observed])
     if not candidates:
         if problems:
-            reason = (
-                "job_execution_identity_mismatch"
-                if any(
-                    item["reason"] in {"job_runner_mismatch", "job_report_mismatch"}
-                    for item in problems
+            first_reason = problems[0]["reason"]
+            if any(
+                item["reason"]
+                in {
+                    "job_runner_mismatch",
+                    "job_report_mismatch",
+                    "job_invocation_mismatch",
+                    "job_event_mismatch",
+                    "job_scope_mismatch",
+                    "job_expected_set_mismatch",
+                }
+                for item in problems
+            ):
+                reason = (
+                    first_reason
+                    if first_reason
+                    in {
+                        "job_invocation_mismatch",
+                        "job_event_mismatch",
+                        "job_scope_mismatch",
+                        "job_expected_set_mismatch",
+                    }
+                    else "job_execution_identity_mismatch"
                 )
-                else problems[0]["reason"]
-            )
+            else:
+                reason = first_reason
             output.update(
                 binding_status="unknown",
                 reason=reason,
                 unknown_fields=_unknown_fields(reason),
+            )
+        elif report_rejected:
+            output.update(
+                binding_status="insufficient",
+                reason=report_rejected[0][2],
             )
         elif version_mismatch:
             output.update(
@@ -1328,6 +1694,37 @@ def _receipt_status(expected_status, entries, unexpected, unreconciled):
     return "partial"
 
 
+def _receipt_aggregates(expected_status, entries, unexpected, duplicates):
+    rejected_results = sum(len(item["rejected_results"]) for item in entries)
+    rejected_observations = sum(len(item["rejected_observations"]) for item in entries)
+    inactive_attempts = sum(len(item["inactive_attempts"]) for item in entries)
+    unreconciled = len(unexpected) + rejected_results + rejected_observations
+    summary = {
+        "expected": len(entries),
+        "matched": sum(item["binding_status"] == "matched" for item in entries),
+        "missing": sum(item["binding_status"] == "missing" for item in entries),
+        "insufficient": sum(
+            item["binding_status"] == "insufficient" for item in entries
+        ),
+        "unknown": sum(item["binding_status"] == "unknown" for item in entries),
+        "unrouted": sum(item["binding_status"] == "unrouted" for item in entries),
+        "not_applicable": sum(
+            item["binding_status"] == "not_applicable" for item in entries
+        ),
+        "unexpected": len(unexpected),
+        "duplicate": len(duplicates),
+        "rejected_results": rejected_results,
+        "rejected_observations": rejected_observations,
+        "inactive_attempts": inactive_attempts,
+        "selected_results": len(
+            {result_id for item in entries for result_id in item["selected_result_ids"]}
+        ),
+    }
+    status = _receipt_status(expected_status, entries, unexpected, unreconciled)
+    all_reconciled = unreconciled == 0
+    return summary, unreconciled, all_reconciled, status
+
+
 def reconcile_expected_results(
     expected,
     *,
@@ -1335,6 +1732,7 @@ def reconcile_expected_results(
     routing=(),
     resolutions=(),
     observations=(),
+    invocation_ref=None,
 ):
     """Reconcile one immutable Expected scope with activated Jobs and results.
 
@@ -1363,6 +1761,8 @@ def reconcile_expected_results(
             bindings.get(entry["expected_check_ref"]),
             resolutions_by_ref.get(entry["expected_check_ref"]),
             observations_by_identity,
+            scope=scope,
+            invocation_ref=invocation_ref,
         )
         for entry in checks
     ]
@@ -1370,31 +1770,9 @@ def reconcile_expected_results(
     unexpected = _unexpected_observations(
         normalized_observations, bindings, entries_by_ref
     )
-    rejected_results = sum(len(item["rejected_results"]) for item in entries)
-    rejected_observations = sum(len(item["rejected_observations"]) for item in entries)
-    inactive_attempts = sum(len(item["inactive_attempts"]) for item in entries)
-    unreconciled = len(unexpected) + rejected_results + rejected_observations
-    summary = {
-        "expected": len(entries),
-        "matched": sum(item["binding_status"] == "matched" for item in entries),
-        "missing": sum(item["binding_status"] == "missing" for item in entries),
-        "insufficient": sum(
-            item["binding_status"] == "insufficient" for item in entries
-        ),
-        "unknown": sum(item["binding_status"] == "unknown" for item in entries),
-        "unrouted": sum(item["binding_status"] == "unrouted" for item in entries),
-        "not_applicable": sum(
-            item["binding_status"] == "not_applicable" for item in entries
-        ),
-        "unexpected": len(unexpected),
-        "duplicate": len(duplicates),
-        "rejected_results": rejected_results,
-        "rejected_observations": rejected_observations,
-        "inactive_attempts": inactive_attempts,
-        "selected_results": len(
-            {result_id for item in entries for result_id in item["selected_result_ids"]}
-        ),
-    }
+    summary, _unreconciled, all_reconciled, status = _receipt_aggregates(
+        scope["status"], entries, unexpected, duplicates
+    )
     limitations = [
         "trusted_evidence_not_admitted",
         "required_gate_not_evaluated",
@@ -1416,8 +1794,8 @@ def reconcile_expected_results(
         "expected_source_ref": scope["source_ref"],
         "ref": scope.get("ref") or None,
         "reconciled_scope": "declared_expected_instances",
-        "all_observations_reconciled": unreconciled == 0,
-        "status": _receipt_status(scope["status"], entries, unexpected, unreconciled),
+        "all_observations_reconciled": all_reconciled,
+        "status": status,
         "entries": entries,
         "unexpected": unexpected,
         "duplicate": duplicates,
@@ -1428,6 +1806,10 @@ def reconcile_expected_results(
         "required_gate": "not_evaluated",
         "limitations": limitations,
     }
+    if invocation_ref is not None:
+        payload["expected_invocation_ref"] = _text(
+            invocation_ref, "expected_invocation_ref_invalid"
+        )
     payload["receipt_ref"] = _digest(payload)
     return payload
 
@@ -1487,6 +1869,19 @@ def validate_receipt(receipt):
             raise ReconciliationError("receipt_result_evidence_mismatch")
         if selected_evidence_ids != set(selected):
             raise ReconciliationError("receipt_result_evidence_mismatch")
+        observed_by_id = {
+            item["result_id"]: item
+            for item in observed_results
+            if isinstance(item, dict) and "result_id" in item
+        }
+        if len(observed_by_id) != len(observed_results):
+            raise ReconciliationError("receipt_result_evidence_mismatch")
+        for item in selected_results:
+            if (
+                not isinstance(item, dict)
+                or observed_by_id.get(item.get("result_id")) != item
+            ):
+                raise ReconciliationError("receipt_result_evidence_mismatch")
         job_instances = entry.get("job_instances")
         if not isinstance(job_instances, list) or any(
             not isinstance(item, dict)
@@ -1504,9 +1899,100 @@ def validate_receipt(receipt):
         ):
             if not isinstance(entry.get(key), list):
                 raise ReconciliationError("receipt_rejected_evidence_invalid")
+        if entry["binding_status"] == "matched" and not selected:
+            raise ReconciliationError("receipt_entry_status_inconsistent")
+        if entry["binding_status"] != "matched" and selected:
+            raise ReconciliationError("receipt_entry_status_inconsistent")
+        resolved_expected = entry.get("resolved_expected")
+        resolved_ref = entry.get("resolved_expected_ref")
+        if resolved_expected is not None:
+            if (
+                not isinstance(resolved_expected, dict)
+                or _digest(resolved_expected) != resolved_ref
+                or resolved_expected.get("check_id") != entry.get("check_id")
+                or resolved_expected.get("definition_version")
+                != entry.get("definition_version")
+            ):
+                raise ReconciliationError("receipt_resolved_expected_mismatch")
+            try:
+                check_contract.validate_expected_instance(resolved_expected)
+            except check_contract.CheckContractError:
+                raise ReconciliationError(
+                    "receipt_resolved_expected_mismatch"
+                ) from None
+        elif resolved_ref is not None:
+            raise ReconciliationError("receipt_resolved_expected_mismatch")
+        satisfaction = entry.get("native_satisfaction")
+        if entry["binding_status"] == "matched":
+            if resolved_expected is None or not resolved_ref:
+                raise ReconciliationError("receipt_resolved_expected_missing")
+            if (
+                not isinstance(satisfaction, dict)
+                or satisfaction.get("status") != "satisfied"
+                or satisfaction.get("check_id") != entry.get("check_id")
+                or satisfaction.get("definition_version")
+                != entry.get("definition_version")
+            ):
+                raise ReconciliationError("receipt_satisfaction_invalid")
+            if list(satisfaction.get("selected_result_ids") or ()) != selected:
+                raise ReconciliationError("receipt_witness_mismatch")
+            rejected_ids = {
+                item.get("result_id")
+                for item in entry["rejected_results"]
+                if isinstance(item, dict)
+            }
+            if set(selected) & rejected_ids:
+                raise ReconciliationError("receipt_selected_rejected_conflict")
+            inactive_attempts = {
+                (item.get("job_ref"), item.get("run_ref"), item.get("attempt_ref"))
+                for item in entry["inactive_attempts"]
+                if isinstance(item, dict)
+            }
+            eligible_attempts = {
+                (item.get("job_ref"), item.get("run_ref"), item.get("attempt_ref"))
+                for item in job_instances
+                if item.get("attempt_eligibility") == "eligible"
+            }
+            for item in selected_results:
+                if item.get("status") != "passed":
+                    raise ReconciliationError("receipt_selected_status_invalid")
+                attempt_key = (
+                    item.get("job_ref"),
+                    item.get("run_ref"),
+                    item.get("attempt_ref"),
+                )
+                if attempt_key in inactive_attempts:
+                    raise ReconciliationError("receipt_selected_inactive_attempt")
+                # A matched witness must come from an activated eligible attempt.
+                if attempt_key not in eligible_attempts:
+                    raise ReconciliationError("receipt_selected_unqualified_attempt")
+        elif (
+            isinstance(satisfaction, dict) and satisfaction.get("status") == "satisfied"
+        ):
+            raise ReconciliationError("receipt_entry_status_inconsistent")
     for key in ("unexpected", "duplicate"):
         if not isinstance(receipt.get(key), list):
             raise ReconciliationError("receipt_observations_invalid")
+    expected_status = receipt.get("expected_status")
+    if expected_status not in expected_checks.STATUSES:
+        raise ReconciliationError("receipt_expected_status_invalid")
+    (
+        expected_summary,
+        _unreconciled,
+        expected_all_reconciled,
+        expected_receipt_status,
+    ) = _receipt_aggregates(
+        expected_status,
+        entries,
+        receipt["unexpected"],
+        receipt["duplicate"],
+    )
+    if receipt.get("summary") != expected_summary:
+        raise ReconciliationError("receipt_summary_mismatch")
+    if receipt.get("all_observations_reconciled") != expected_all_reconciled:
+        raise ReconciliationError("receipt_reconciliation_flag_mismatch")
+    if receipt.get("status") != expected_receipt_status:
+        raise ReconciliationError("receipt_status_mismatch")
     receipt_ref = receipt.get("receipt_ref")
     payload = {key: value for key, value in receipt.items() if key != "receipt_ref"}
     if _digest(payload) != _sha256_ref(receipt_ref, "receipt_ref_invalid"):

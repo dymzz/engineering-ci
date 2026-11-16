@@ -1885,3 +1885,772 @@ def test_real_v2_effective_profile_expected_is_accepted(tmp_path):
         for item in receipt["entries"]
     )
     reconciliation.validate_receipt(receipt)
+
+
+def test_b1_report_check_level_admissibility_isolates_invalid_checks():
+    tach_entry = make_entry("tach")
+    docs_entry = make_entry("docs")
+    ws_entry = make_entry("whitespace")
+    projection = make_projection([tach_entry, docs_entry, ws_entry])
+
+    tach_ok = native(tool_access="tach/check", instance="tach-ok")
+    docs_inv = native("docs", tool_access="git/ls-files", instance="docs-inv")
+    docs_links = native(
+        "docs",
+        tool_access="lychee/docs",
+        instance="docs-links",
+        input_refs=[
+            {
+                "kind": "check_result",
+                "result_id": docs_inv["result_id"],
+                "path": "git/ls-files",
+            },
+            FILE_A,
+        ],
+    )
+    ws_ok = native(
+        "whitespace",
+        tool_access="git/diff-check",
+        baseline={"base_commit": "1" * 40},
+        instance="ws-ok",
+    )
+    unauth_result = native(tool_access="tach/check", instance="unauth")
+    other_ok = native(tool_access="tach/check", instance="other-ok")
+
+    # 1. Mixed valid + unauthorized + contract-invalid + primary-contradicted in one Report:
+    mixed_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "tach",
+                "check_id": tach_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "native_result": tach_ok,
+                "native_results": [tach_ok],
+            },
+            {
+                "name": "docs",
+                "check_id": docs_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": False,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "native_result": docs_links,
+                "native_results": [docs_inv, docs_links],
+            },
+            {
+                "name": "whitespace",
+                "check_id": ws_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "identity_missing",
+                },
+                "native_result": ws_ok,
+                "native_results": [ws_ok],
+            },
+        ],
+    }
+    rref = report_ref_for(mixed_report)
+    obs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": rref,
+        "report": mixed_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, rref),
+        "native_results": [tach_ok, docs_inv, docs_links, ws_ok],
+    }
+    routing = [
+        make_routing(tach_entry),
+        make_routing(docs_entry),
+        make_routing(ws_entry),
+    ]
+    resolutions = [
+        make_resolution(tach_entry, rule=RULE_TACH),
+        make_resolution(docs_entry, rule=RULE_DOCS),
+        make_resolution(ws_entry, rule=RULE_WS, baseline={"base_commit": "1" * 40}),
+    ]
+    receipt = reconcile(
+        projection, routing=routing, resolutions=resolutions, observations=[obs]
+    )
+    reconciliation.validate_receipt(receipt)
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["tach"]["binding_status"] == "matched"
+    assert by_name["docs"]["binding_status"] == "insufficient"
+    assert by_name["docs"]["reason"] == "report_check_unauthorized"
+    assert docs_links["result_id"] in by_name["docs"]["observed_result_ids"]
+    assert by_name["docs"]["native_status"] == "passed"
+    assert (
+        by_name["docs"]["rejected_results"][0]["reason"] == "report_check_unauthorized"
+    )
+    assert by_name["whitespace"]["binding_status"] == "insufficient"
+    assert by_name["whitespace"]["reason"] == "report_check_contract_invalid"
+    assert ws_ok["result_id"] in by_name["whitespace"]["observed_result_ids"]
+
+    # 2. Primary native_result contradicting native_results:
+    contra_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "tach",
+                "check_id": tach_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "native_result": other_ok,
+                "native_results": [unauth_result],
+            }
+        ],
+    }
+    cref = report_ref_for(contra_report)
+    c_obs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": cref,
+        "report": contra_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, cref),
+        "native_results": [unauth_result],
+    }
+    p_single = make_projection([tach_entry])
+    contra_receipt = reconcile(
+        p_single,
+        routing=[make_routing(tach_entry)],
+        resolutions=[make_resolution(tach_entry, rule=RULE_TACH)],
+        observations=[c_obs],
+    )
+    reconciliation.validate_receipt(contra_receipt)
+    assert contra_receipt["entries"][0]["binding_status"] == "insufficient"
+    assert contra_receipt["entries"][0]["reason"] == "report_primary_result_mismatch"
+
+
+def test_b2_validate_receipt_rejects_rehashed_logical_contradictions():
+    entry = make_entry("tach")
+    projection = make_projection([entry])
+    partial = reconcile(projection)
+    assert partial["status"] == "unrouted"
+
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    forged_status = rehash({**copy.deepcopy(partial), "status": "matched"})
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_status_mismatch"
+    ):
+        reconciliation.validate_receipt(forged_status)
+
+    bad_summary = copy.deepcopy(partial)
+    bad_summary["summary"]["matched"] = 1
+    bad_summary = rehash(bad_summary)
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_summary_mismatch"
+    ):
+        reconciliation.validate_receipt(bad_summary)
+
+    _e, matched_proj, routing, resolution, obs, _res = matched_setup()
+    matched = reconcile(
+        matched_proj,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[obs],
+    )
+    # Mark entry unexecuted/missing? Wait: simulate unrouted with forged all_observations_reconciled=False
+    bad_flag = rehash({**copy.deepcopy(partial), "all_observations_reconciled": False})
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_reconciliation_flag_mismatch"
+    ):
+        reconciliation.validate_receipt(bad_flag)
+
+    bad_entry = copy.deepcopy(matched)
+    bad_entry["entries"][0]["selected_result_ids"] = []
+    bad_entry["entries"][0]["selected_results"] = []
+    bad_entry = rehash(bad_entry)
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_entry_status_inconsistent"
+    ):
+        reconciliation.validate_receipt(bad_entry)
+
+
+def test_b3_invocation_and_event_attribution_refuse_old_run_replay():
+    _entry, projection, routing, resolution, obs, _res = matched_setup()
+    # Same Source, Rule, Profile, and valid Execution Report from an older Invocation ("inv/old"):
+    old_obs = copy.deepcopy(obs)
+    old_obs["job_receipt"]["invocation_ref"] = "inv/old"
+    old_obs["job_receipt"]["event_ref"] = dict(EVENT)
+    old_obs["job_receipt"]["scope_id"] = projection["scope_id"]
+    old_obs["job_receipt"]["expected_set_ref"] = projection["expected_set_ref"]
+
+    # Replaying inv/old receipt against current invocation_ref="inv/current" refuses matched:
+    replayed = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[old_obs],
+        invocation_ref="inv/current",
+    )
+    reconciliation.validate_receipt(replayed)
+    e = replayed["entries"][0]
+    assert e["binding_status"] == "unknown"
+    assert e["reason"] == "job_invocation_mismatch"
+    assert e["rejected_observations"][0]["reason"] == "job_invocation_mismatch"
+    assert e["selected_result_ids"] == []
+    assert "cross_run_reuse_requires_upstream_admission" in replayed["limitations"]
+
+    # Missing invocation_ref in receipt when Expected invocation_ref is bound stays unproven:
+    unproven = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[obs],
+        invocation_ref="inv/current",
+    )
+    assert unproven["entries"][0]["binding_status"] == "unknown"
+    assert unproven["entries"][0]["reason"] == "job_invocation_unproven"
+
+    # Mismatched Event on job_receipt is rejected even without explicit invocation_ref:
+    other_event_obs = copy.deepcopy(obs)
+    other_event_obs["job_receipt"]["event_ref"] = {**EVENT, "head_commit": "f" * 40}
+    other_event_rec = reconcile(
+        projection,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[other_event_obs],
+    )
+    assert other_event_rec["entries"][0]["binding_status"] == "unknown"
+    assert other_event_rec["entries"][0]["reason"] == "job_event_mismatch"
+
+    # Matching invocation_ref + event_ref + scope_id + expected_set_ref yields matched:
+    curr_routing = copy.deepcopy(routing)
+    curr_routing["job_instances"][0]["invocation_ref"] = "inv/current"
+    curr_obs = copy.deepcopy(obs)
+    curr_obs["job_receipt"]["invocation_ref"] = "inv/current"
+    curr_obs["job_receipt"]["event_ref"] = dict(EVENT)
+    curr_obs["job_receipt"]["scope_id"] = projection["scope_id"]
+    curr_obs["job_receipt"]["expected_set_ref"] = projection["expected_set_ref"]
+    matched_curr = reconcile(
+        projection,
+        routing=[curr_routing],
+        resolutions=[resolution],
+        observations=[curr_obs],
+        invocation_ref="inv/current",
+    )
+    reconciliation.validate_receipt(matched_curr)
+    assert matched_curr["entries"][0]["binding_status"] == "matched"
+    assert matched_curr["expected_invocation_ref"] == "inv/current"
+
+
+def test_b3_l2_handoff_preserves_compact_refs_partial_coverage_and_untrusted_boundary():
+    tach_entry = make_entry("tach", rule=RULE_TACH)
+    ws_entry = make_entry(
+        "whitespace", rule=RULE_WS, baseline_ref={"base_commit": "1" * 40}
+    )
+    partial_proj = make_projection(
+        [tach_entry, ws_entry], consumer_completeness="not_claimed"
+    )
+    tach_res = native("tach", tool_access="tach/check", instance="tach-ok")
+    obs = make_observation("job-1", [tach_res])
+    receipt = reconcile(
+        partial_proj,
+        routing=[
+            make_routing(tach_entry),
+            make_routing(ws_entry, jobs=(), status="unrouted"),
+        ],
+        resolutions=[make_resolution(tach_entry, rule=RULE_TACH)],
+        observations=[obs],
+    )
+    reconciliation.validate_receipt(receipt)
+
+    # 1. Structural Receipt always keeps trusted=False / evidence_admission=not_evaluated
+    # (signaling #66-C has not authenticated external issuers, NOT a permanent veto):
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
+    assert receipt["status"] == "partial"
+
+    # 2. Partial scope keeps matched per-check entries intact alongside unrouted/missing ones:
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["tach"]["binding_status"] == "matched"
+    assert by_name["whitespace"]["binding_status"] == "unrouted"
+
+    # 3. Selected witness evidence in Receipt is a compact index referencing the raw Report,
+    # NOT a full NativeResult copy (#63 must fetch & verify raw NativeResult via report_ref):
+    compact = by_name["tach"]["selected_results"][0]
+    for required_pointer in (
+        "result_id",
+        "job_ref",
+        "run_ref",
+        "attempt_ref",
+        "runner_ref",
+        "report_ref",
+        "job_receipt_ref",
+        "result_origin",
+    ):
+        assert compact.get(required_pointer) is not None
+    for full_only_field in ("source_ref", "rule_ref", "input_refs", "evidence"):
+        assert full_only_field not in compact
+
+    # 4. Different Event ref is refused only for current-run #66-C attribution, while
+    # explicitly pointing callers to upstream #63 cross-run equivalence admission:
+    diff_event_obs = copy.deepcopy(obs)
+    diff_event_obs["job_receipt"]["event_ref"] = {**EVENT, "head_commit": "e" * 40}
+    diff_rec = reconcile(
+        make_projection([tach_entry]),
+        routing=[make_routing(tach_entry)],
+        resolutions=[make_resolution(tach_entry, rule=RULE_TACH)],
+        observations=[diff_event_obs],
+    )
+    assert diff_rec["entries"][0]["binding_status"] == "unknown"
+    assert diff_rec["entries"][0]["reason"] == "job_event_mismatch"
+    assert "cross_run_reuse_requires_upstream_admission" in diff_rec["limitations"]
+
+
+def test_b3_multi_ref_same_check_name_distinct_instances_and_canonical_receipt_ref():
+    # Two distinct Refs (Ref A vs Ref B) both declare Check name "tach":
+    event_a = {
+        **EVENT,
+        "head_ref": "refs/heads/ref-a",
+        "head_commit": "a" * 40,
+    }
+    event_b = {
+        **EVENT,
+        "head_ref": "refs/heads/ref-b",
+        "head_commit": "b" * 40,
+    }
+    entry_a = make_entry("tach", rule=RULE_TACH, event=event_a, profile_ref=PROFILE_REF)
+    entry_b = make_entry("tach", rule=RULE_TACH, event=event_b, profile_ref=PROFILE_REF)
+    assert entry_a["name"] == entry_b["name"] == "tach"
+    assert entry_a["expected_check_ref"] != entry_b["expected_check_ref"]
+
+    scope_id_a = expected_checks.scope_identity(
+        None,
+        PROFILE_REF,
+        PROFILE_SOURCE,
+        event_a,
+        WEAK_SOURCE,
+        SELECTION_RULE,
+        HYGIENE_RULE,
+        SOURCES_RULE,
+        profile_sha256=PROFILE["profile_sha256"],
+        evaluated_at=PROFILE["evaluated_at"],
+    )
+    scope_id_b = expected_checks.scope_identity(
+        None,
+        PROFILE_REF,
+        PROFILE_SOURCE,
+        event_b,
+        WEAK_SOURCE,
+        SELECTION_RULE,
+        HYGIENE_RULE,
+        SOURCES_RULE,
+        profile_sha256=PROFILE["profile_sha256"],
+        evaluated_at=PROFILE["evaluated_at"],
+    )
+    assert scope_id_a != scope_id_b
+
+    multi_proj = {
+        "kind": expected_checks.EXPECTED_KIND,
+        "schema_version": 2,
+        "projection_source": "effective_profile",
+        "effective_profile": PROFILE,
+        "authority_status": "verified",
+        "trusted_admission_status": "not_evaluated",
+        "hygiene_rule_ref": HYGIENE_RULE,
+        "sources_rule_ref": SOURCES_RULE,
+        "status": "partial",
+        "reason": "test",
+        "scope_id": expected_checks.scope_identity(
+            None,
+            PROFILE_REF,
+            PROFILE_SOURCE,
+            EVENT,
+            WEAK_SOURCE,
+            SELECTION_RULE,
+            HYGIENE_RULE,
+            SOURCES_RULE,
+            profile_sha256=PROFILE["profile_sha256"],
+            evaluated_at=PROFILE["evaluated_at"],
+        ),
+        "selection_rule_ref": copy.deepcopy(SELECTION_RULE),
+        "expected_set_ref": expected_checks.set_identity((), (), schema_version=2),
+        "definitions_status": "requested_names_complete",
+        "applicability_status": "requested_scope",
+        "consumer": None,
+        "profile_ref": copy.deepcopy(PROFILE_REF),
+        "profile_source": PROFILE_SOURCE,
+        "consumer_completeness": "per_ref_container_only",
+        "observed_input_closure_status": "not_observed",
+        "event_ref": copy.deepcopy(EVENT),
+        "source_ref": copy.deepcopy(WEAK_SOURCE),
+        "checks": [],
+        "non_check_obligations": [],
+        "missing": [],
+        "conflicts": [],
+        "per_ref": [
+            {
+                "source_ref": "refs/heads/ref-a",
+                "local_ref": "refs/heads/ref-a",
+                "remote_ref": "origin",
+                "ref_action": "update",
+                "force_push": False,
+                "baseline_status": "ok",
+                "event_ref": copy.deepcopy(event_a),
+                "source": copy.deepcopy(WEAK_SOURCE),
+                "scope_id": scope_id_a,
+                "expected_set_ref": expected_checks.set_identity(
+                    [entry_a], (), schema_version=2
+                ),
+                "checks": [entry_a],
+                "non_check_obligations": [],
+                "status": "partial",
+            },
+            {
+                "source_ref": "refs/heads/ref-b",
+                "local_ref": "refs/heads/ref-b",
+                "remote_ref": "origin",
+                "ref_action": "update",
+                "force_push": False,
+                "baseline_status": "ok",
+                "event_ref": copy.deepcopy(event_b),
+                "source": copy.deepcopy(WEAK_SOURCE),
+                "scope_id": scope_id_b,
+                "expected_set_ref": expected_checks.set_identity(
+                    [entry_b], (), schema_version=2
+                ),
+                "checks": [entry_b],
+                "non_check_obligations": [],
+                "status": "partial",
+            },
+        ],
+    }
+
+    tach_res_a = native(
+        "tach", tool_access="tach/check", instance="tach-ref-a", profile_ref=PROFILE_REF
+    )
+    obs_a = make_observation("job-a", [tach_res_a])
+    obs_a["job_receipt"]["invocation_ref"] = "inv/multi"
+    obs_a["job_receipt"]["event_ref"] = copy.deepcopy(event_a)
+    obs_a["job_receipt"]["scope_id"] = scope_id_a
+    obs_a["job_receipt"]["expected_set_ref"] = multi_proj["per_ref"][0][
+        "expected_set_ref"
+    ]
+    routing_a = make_routing(entry_a, jobs=("job-a",))
+    routing_a["job_instances"][0]["invocation_ref"] = "inv/multi"
+
+    rec_a = reconcile(
+        multi_proj,
+        ref_scope_id=scope_id_a,
+        routing=[routing_a],
+        resolutions=[make_resolution(entry_a, rule=RULE_TACH)],
+        observations=[obs_a],
+        invocation_ref="inv/multi",
+    )
+    reconciliation.validate_receipt(rec_a)
+    assert rec_a["scope_id"] == scope_id_a
+    assert rec_a["entries"][0]["expected_check_ref"] == entry_a["expected_check_ref"]
+    assert rec_a["entries"][0]["binding_status"] == "matched"
+
+    # Reconciling Ref B without its own witness, or attempting to reuse Ref A's
+    # witness/observation under Ref B, must NEVER satisfy Ref B:
+    routing_b = make_routing(entry_b, jobs=("job-b",))
+    routing_b["job_instances"][0]["invocation_ref"] = "inv/multi"
+    obs_a_as_b = copy.deepcopy(obs_a)
+    obs_a_as_b["job_ref"] = "job-b"
+    obs_a_as_b["job_receipt"]["job_ref"] = "job-b"
+    rec_b = reconcile(
+        multi_proj,
+        ref_scope_id=scope_id_b,
+        routing=[routing_b],
+        resolutions=[make_resolution(entry_b, rule=RULE_TACH)],
+        observations=[obs_a_as_b],
+        invocation_ref="inv/multi",
+    )
+    reconciliation.validate_receipt(rec_b)
+    assert rec_b["scope_id"] == scope_id_b
+    assert rec_b["entries"][0]["expected_check_ref"] == entry_b["expected_check_ref"]
+    assert rec_b["entries"][0]["binding_status"] == "unknown"
+    assert rec_b["entries"][0]["reason"] in {"job_event_mismatch", "job_scope_mismatch"}
+
+    # Canonical receipt_ref deterministically commits full payload and rejects forgery:
+    payload_a = {k: v for k, v in rec_a.items() if k != "receipt_ref"}
+    assert rec_a["receipt_ref"] == reconciliation._digest(payload_a)
+    tampered_ref = {**copy.deepcopy(rec_a), "receipt_ref": "sha256:" + ("0" * 64)}
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_ref_mismatch"
+    ):
+        reconciliation.validate_receipt(tampered_ref)
+
+
+def test_b1_eci_producer_report_contract_and_dependency_propagation():
+    ws_entry = make_entry("whitespace", rule=RULE_WS)
+    docs_entry = make_entry("docs", rule=RULE_DOCS)
+    tach_entry = make_entry("tach", rule=RULE_TACH)
+    projection = make_projection([ws_entry, docs_entry, tach_entry])
+
+    ws_res = native(
+        "whitespace",
+        rule=RULE_WS,
+        tool_access="git/diff-check",
+        baseline={"base_commit": "1" * 40},
+        instance="ws-ok",
+    )
+    docs_res = native(
+        "docs",
+        rule=RULE_DOCS,
+        tool_access="lychee/docs",
+        instance="docs-links",
+        input_refs=[FILE_A],
+    )
+    tach_res = native(tool_access="tach/check", instance="tach-ok")
+
+    # ECI Producer Report: valid whitespace, missing check_contract on docs,
+    # missing plan_authorized on tach, PLUS blocked_by:
+    mixed_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "whitespace",
+                "check_id": ws_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "native_result": ws_res,
+                "native_results": [ws_res],
+            },
+            {
+                "name": "docs",
+                "check_id": docs_entry["check_id"],
+                "status": "passed",
+                "plan_authorized": True,
+                "native_result": docs_res,
+                "native_results": [docs_res],
+            },
+            {
+                "name": "tach",
+                "check_id": tach_entry["check_id"],
+                "status": "passed",
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": 2,
+                    "status": "valid",
+                },
+                "blocked_by": [
+                    {
+                        "producer_ref": {"kind": "check", "name": "docs"},
+                        "reason": "pre_execution_prerequisite_failed",
+                    }
+                ],
+                "native_result": tach_res,
+                "native_results": [tach_res],
+            },
+        ],
+    }
+    rref = report_ref_for(mixed_report)
+    obs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": rref,
+        "report": mixed_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, rref),
+        "native_results": [ws_res, docs_res, tach_res],
+    }
+    receipt = reconcile(
+        projection,
+        routing=[
+            make_routing(ws_entry),
+            make_routing(docs_entry),
+            make_routing(tach_entry),
+        ],
+        resolutions=[
+            make_resolution(ws_entry, rule=RULE_WS, baseline={"base_commit": "1" * 40}),
+            make_resolution(docs_entry, rule=RULE_DOCS),
+            make_resolution(tach_entry, rule=RULE_TACH),
+        ],
+        observations=[obs],
+    )
+    reconciliation.validate_receipt(receipt)
+    by_name = {item["name"]: item for item in receipt["entries"]}
+    assert by_name["whitespace"]["binding_status"] == "matched"
+    assert by_name["docs"]["binding_status"] == "insufficient"
+    assert by_name["docs"]["reason"] == "report_check_contract_invalid"
+    assert by_name["tach"]["binding_status"] == "insufficient"
+    assert by_name["tach"]["reason"] in {
+        "report_check_unauthorized",
+        "report_prerequisite_failed",
+    }
+
+    # Report-wide plan_declaration_consistent=False rejects every Check in the report:
+    inconsistent_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "plan_declaration_consistent": False,
+        "checks": [mixed_report["checks"][0]],
+    }
+    iref = report_ref_for(inconsistent_report)
+    iobs = {
+        "job_ref": "job-1",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": iref,
+        "report": inconsistent_report,
+        "job_receipt": job_receipt_for("job-1", RUN_REF, ATTEMPT_REF, RUNNER_REF, iref),
+        "native_results": [ws_res],
+    }
+    p_single = make_projection([ws_entry])
+    inc_rec = reconcile(
+        p_single,
+        routing=[make_routing(ws_entry)],
+        resolutions=[
+            make_resolution(ws_entry, rule=RULE_WS, baseline={"base_commit": "1" * 40})
+        ],
+        observations=[iobs],
+    )
+    reconciliation.validate_receipt(inc_rec)
+    assert inc_rec["entries"][0]["binding_status"] == "insufficient"
+    assert inc_rec["entries"][0]["reason"] == "report_plan_declaration_inconsistent"
+
+
+def test_b2_validate_receipt_entry_semantic_invariants():
+    def rehash(doc):
+        payload = {k: v for k, v in doc.items() if k != "receipt_ref"}
+        doc["receipt_ref"] = reconciliation._digest(payload)
+        return doc
+
+    _e, matched_proj, routing, resolution, obs, _res = matched_setup()
+    matched = reconcile(
+        matched_proj,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[obs],
+    )
+
+    bad_satisfaction = copy.deepcopy(matched)
+    bad_satisfaction["entries"][0]["native_satisfaction"]["status"] = "unsatisfied"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_satisfaction_invalid"
+    ):
+        reconciliation.validate_receipt(rehash(bad_satisfaction))
+
+    forged_ref = copy.deepcopy(matched)
+    forged_ref["entries"][0]["resolved_expected_ref"] = "sha256:" + ("0" * 64)
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_resolved_expected_mismatch"
+    ):
+        reconciliation.validate_receipt(rehash(forged_ref))
+
+    overlap = copy.deepcopy(matched)
+    overlap["entries"][0]["rejected_results"].append(
+        {"result_id": overlap["entries"][0]["selected_result_ids"][0], "reason": "bad"}
+    )
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_rejected_conflict"
+    ):
+        reconciliation.validate_receipt(rehash(overlap))
+
+    # Selected evidence diverging from the same-ID observed evidence is refused:
+    bad_sel_status = copy.deepcopy(matched)
+    bad_sel_status["entries"][0]["selected_results"][0]["status"] = "advisory"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_result_evidence_mismatch"
+    ):
+        reconciliation.validate_receipt(rehash(bad_sel_status))
+
+    bad_sel_attempt = copy.deepcopy(matched)
+    bad_sel_attempt["entries"][0]["selected_results"][0]["attempt_ref"] = (
+        "attempt/other"
+    )
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_result_evidence_mismatch"
+    ):
+        reconciliation.validate_receipt(rehash(bad_sel_attempt))
+
+    # Consistently rewritten non-passed witness is refused on status:
+    both_status = copy.deepcopy(matched)
+    for key in ("selected_results", "observed_results"):
+        both_status["entries"][0][key][0]["status"] = "advisory"
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_status_invalid"
+    ):
+        reconciliation.validate_receipt(rehash(both_status))
+
+    # With no activated job instances a matched witness has no eligible attempt:
+    no_instances = copy.deepcopy(matched)
+    no_instances["entries"][0]["job_instances"] = []
+    with pytest.raises(
+        reconciliation.ReconciliationError, match="receipt_selected_unqualified_attempt"
+    ):
+        reconciliation.validate_receipt(rehash(no_instances))
+
+
+def test_b3_job_receipt_requires_all_four_attribution_fields_and_frozen_l2_interface():
+    assert reconciliation.CURRENT_EXECUTION_ATTRIBUTION_FIELDS == (
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
+        "expected_set_ref",
+    )
+    assert reconciliation.EVIDENCE_ADMISSION_HANDOFF_FIELDS == (
+        "invocation_ref",
+        "event_ref",
+        "scope_id",
+        "expected_set_ref",
+        "receipt_ref",
+    )
+    assert len(reconciliation.EXECUTION_PHASE_ORDER) == 3
+
+    _entry, projection, routing, resolution, obs, _res = matched_setup()
+    curr_routing = copy.deepcopy(routing)
+    curr_routing["job_instances"][0]["invocation_ref"] = "inv/curr"
+    base_obs = copy.deepcopy(obs)
+    base_obs["job_receipt"]["invocation_ref"] = "inv/curr"
+    base_obs["job_receipt"]["event_ref"] = dict(EVENT)
+    base_obs["job_receipt"]["scope_id"] = projection["scope_id"]
+    base_obs["job_receipt"]["expected_set_ref"] = projection["expected_set_ref"]
+
+    for drop_field, expected_reason in (
+        ("event_ref", "job_event_unproven"),
+        ("scope_id", "job_scope_unproven"),
+        ("expected_set_ref", "job_expected_set_unproven"),
+    ):
+        bad_obs = copy.deepcopy(base_obs)
+        bad_obs["job_receipt"].pop(drop_field)
+        rec = reconcile(
+            projection,
+            routing=[curr_routing],
+            resolutions=[resolution],
+            observations=[bad_obs],
+            invocation_ref="inv/curr",
+        )
+        reconciliation.validate_receipt(rec)
+        assert rec["entries"][0]["binding_status"] == "unknown"
+        assert rec["entries"][0]["reason"] == expected_reason

@@ -483,6 +483,35 @@ def _tag_command_prerequisites(entries):
             entry.setdefault("engine_cached", False)
 
 
+def _plan_with_repo_relative_configs(value):
+    """Rewrite repo-internal config paths relative to the exported directory root."""
+    normalized = dict(value)
+    repo_root = (normalized.get("git") or {}).get("repo_root")
+    inputs = normalized.get("inputs")
+    if isinstance(repo_root, str) and repo_root and isinstance(inputs, dict):
+        base_root = Path(repo_root).resolve()
+        updated_inputs = dict(inputs)
+        for key in ("config", "hygiene", "sources"):
+            decl = inputs.get(key)
+            if (
+                isinstance(decl, dict)
+                and decl.get("policy_scope") == "repo_target_tree"
+                and isinstance(decl.get("path"), str)
+                and decl["path"]
+            ):
+                cand = Path(decl["path"])
+                if cand.is_absolute():
+                    resolved_cand = cand.resolve()
+                    if resolved_cand.is_relative_to(base_root):
+                        updated_decl = dict(decl)
+                        updated_decl["path"] = resolved_cand.relative_to(
+                            base_root
+                        ).as_posix()
+                        updated_inputs[key] = updated_decl
+        normalized["inputs"] = updated_inputs
+    return normalized
+
+
 def _host_adapter_plan(value, selected_host_checks):
     import copy
 
@@ -506,29 +535,7 @@ def _host_adapter_plan(value, selected_host_checks):
     host_plan["selection"]["checks"] = [
         item["name"] for item in selected_host_checks if item.get("name")
     ]
-    repo_root = (host_plan.get("git") or {}).get("repo_root")
-    inputs = host_plan.get("inputs")
-    if isinstance(repo_root, str) and repo_root and isinstance(inputs, dict):
-        base_root = Path(repo_root).resolve()
-        host_plan["inputs"] = dict(inputs)
-        for key in ("config", "hygiene", "sources"):
-            decl = inputs.get(key)
-            if (
-                isinstance(decl, dict)
-                and decl.get("policy_scope") == "repo_target_tree"
-                and isinstance(decl.get("path"), str)
-                and decl["path"]
-            ):
-                cand = Path(decl["path"])
-                if cand.is_absolute():
-                    resolved_cand = cand.resolve()
-                    if resolved_cand.is_relative_to(base_root):
-                        updated_decl = dict(decl)
-                        updated_decl["path"] = resolved_cand.relative_to(
-                            base_root
-                        ).as_posix()
-                        host_plan["inputs"][key] = updated_decl
-    return host_plan
+    return _plan_with_repo_relative_configs(host_plan)
 
 
 async def _execute_dag(
@@ -561,7 +568,11 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
-    verified_profile = execution._profile_reference(value)
+    verified_profile = execution._profile_reference(
+        _plan_with_repo_relative_configs(value),
+        root=directory,
+        execution_context="dagger_export",
+    )
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
@@ -1275,8 +1286,12 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 if item.get("name") not in weaver_checks
             ]
             check_plan = _host_adapter_plan(value, host_checks)
-            verified_profile = execution._profile_reference(value)
             loop = asyncio.get_running_loop()
+            verified_profile = execution._profile_reference(
+                _plan_with_repo_relative_configs(value),
+                root=directory,
+                execution_context="dagger_export",
+            )
             host = (
                 await asyncio.to_thread(
                     execution.execute,

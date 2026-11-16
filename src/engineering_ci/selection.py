@@ -723,19 +723,38 @@ def config_identity(path, config, *, root=None):
     return result
 
 
-def verify_config_identity_matches_file(identity, *, root=None):
-    """Verify inputs.config normalized fields match disk TOML when matching file exists."""
+def verify_config_identity_matches_file(identity, *, root=None, require_file=False):
+    """Verify inputs.config normalized fields match disk TOML; fail closed on drift or missing required file."""
     config = config_from_identity(identity)
     raw_path = identity.get("path")
     if not isinstance(raw_path, str) or not raw_path:
+        if require_file:
+            raise SelectionError("config_identity_file_missing")
         return config
     candidate = Path(raw_path)
     if not candidate.is_absolute() and root is not None:
         candidate = (Path(root) / candidate).resolve()
-    if candidate.is_file() and _digest(candidate) == identity.get("sha256"):
-        file_config = load_config(candidate)
-        if _normalize_config(file_config) != identity["normalized"]:
-            raise SelectionError("config_identity_file_mismatch")
+    elif require_file and not candidate.is_absolute():
+        raise SelectionError("config_identity_file_missing")
+    if not candidate.is_file():
+        if require_file:
+            raise SelectionError("config_identity_file_missing")
+        return config
+    if identity.get("policy_scope") == "repo_target_tree" and root is not None:
+        resolved_root = Path(root).resolve()
+        try:
+            in_root = candidate.resolve().is_relative_to(resolved_root)
+        except OSError:
+            in_root = False
+        if not in_root:
+            if require_file:
+                raise SelectionError("config_identity_file_outside_root")
+            return config
+    if _digest(candidate) != identity.get("sha256"):
+        raise SelectionError("config_identity_file_mismatch")
+    file_config = load_config(candidate)
+    if _normalize_config(file_config) != identity["normalized"]:
+        raise SelectionError("config_identity_file_mismatch")
     return config
 
 

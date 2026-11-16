@@ -326,14 +326,20 @@ mistaking them for a full observation ledger.
 - The resolved source must cover the Expected snapshot, declared Tree, content
   digest, commit/index identities, and the Expected changed-path scope.
 - Native Results enter the candidate group only from an `eligible` activated
-  Job attempt whose Run/Attempt (and declared runner/report) match the
-  observation, whose Execution Report digest and result membership are
-  verified, whose upstream Job receipt binds that report to the attempt, and
-  whose Check/Rule/Source/Baseline/Phase/Profile identity matches the resolved
-  Expected instance.
+  Job attempt whose Run/Attempt (and declared runner/report, plus any bound
+  `invocation_ref`/`event_ref`/`scope_id`/`expected_set_ref` attribution) match
+  the observation, whose Execution Report digest, per-Check admissibility
+  (`plan_authorized`, `check_contract.status == "valid"`, `check_id`, `status`,
+  primary `native_result` consistency) and result membership are verified,
+  whose upstream Job receipt binds that report to the attempt, and whose
+  Check/Rule/Source/Baseline/Phase/Profile identity matches the resolved
+  Expected instance (including `changed_paths_content_digest` when expanding a
+  `changed_paths` Expected scope to `check_input_closure`/`full_input_closure`).
 - `evaluate_expected_satisfaction()` is called exactly once for that qualified
   candidate group. A failed, rejected, inactive-attempt or unselected result
-  cannot complete an expected input or coverage reference.
+  cannot complete an expected input or coverage reference. `validate_receipt()`
+  recomputes and enforces internal consistency across `status`, `summary`,
+  `all_observations_reconciled`, and `matched` <-> `selected_result_ids`.
 - The Expected projection, its identities, and its completeness claims are
   never rewritten or upgraded.
 - `trusted` / `required` are always `false` and
@@ -344,23 +350,184 @@ mistaking them for a full observation ledger.
 - The caller must pass a Plan-validated Expected projection. This module
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
-- Scheduler routing evidence is not produced by this slice; #72 owns Hook Job
-  activation and lifecycle. A routed Expected without activated Job instances
-  stays `unknown`.
+- Scheduler routing, Hook Dispatch/Collect, and Qualification evidence remain
+  upstream in #72/#102 (`engineering-ci.hook.dispatch.v1`); this module verifies
+  supplied routing and `job_receipt` / `invocation_ref` / `event_ref`
+  attribution without generating Hook receipts itself. A routed Expected without
+  activated Job instances stays `unknown`.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
-  the Report digest, Report→Result membership and receipt consistency, but does
-  not authenticate the issuer; #63 remains responsible for admission.
+  the Report digest, Report->Result membership, attribution fields, and receipt
+  logical consistency, but does not authenticate the issuer; #63 remains
+  responsible for admission.
 - Cross-Run/Attempt historical reuse is not accepted as current execution
-  evidence here (`cross_run_reuse_requires_upstream_admission`). It must be
-  represented through the existing #63 admission path upstream; reattaching an
-  old result to a new Job remains `job_instance_not_activated`/`unexpected`.
+  evidence here (`cross_run_reuse_requires_upstream_admission`). Replaying a
+  report from another `invocation_ref`, `event_ref`, `scope_id`, or
+  `expected_set_ref` is rejected; legitimate reuse must go through the existing
+  #63 admission path upstream.
 - Resolution evidence is separately sourced (controlled rule/config, #66-P0
-  Source materialization, comparison baseline). The module verifies presence,
-  shape, digest pins and consistency with the immutable Expected instance, not
-  the external truth of those sources; #63 remains responsible for admission.
-- Full byte/input closure remains a #66-P0 proof. This slice checks the
+  Source materialization via `execution.build_source_resolution()`, which reads
+  only Plan + disk configs + Git ODB + `expected_check_ref`/`scope_id` and never
+  reads `native_result`, comparison baseline). The module verifies presence,
+  shape, digest pins, `profile_ref` authority, and consistency with the immutable
+  Expected instance, not the external truth of those sources; #63 remains
+  responsible for admission.
+- **Frozen `#63` L2 Consumer Interface & Acyclic Execution Phases**:
+  - `CURRENT_EXECUTION_ATTRIBUTION_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref")` — when `invocation_ref` is bound on `reconcile_expected_results()`, all four must appear and match on `job_receipt` (`job_*_unproven` / `job_*_mismatch` otherwise).
+  - `EVIDENCE_ADMISSION_HANDOFF_FIELDS`: `("invocation_ref", "event_ref", "scope_id", "expected_set_ref", "receipt_ref")` — reuses the canonical Receipt digest `receipt_ref` (`sha256:<64-hex>` computed over the full payload by `reconcile_expected_results()` and verified by `validate_receipt()`, rejecting forged/mismatched digests with `receipt_ref_invalid` / `receipt_ref_mismatch`); no second unverified hash field is emitted.
+  - `EXECUTION_PHASE_ORDER` (acyclic): `pre_run_history_to_remaining_work` (`#63` pre-run history -> Remaining Work) -> `current_execution_to_reconciliation` (`#66-C`) -> `post_run_evidence_to_gate_projection` (`#63` post-run admission -> `#61`).
+- Full byte/input closure remains a #66-P0 proof (`whitespace`, `forwarding`,
+  offline `docs` with succeeded `inventory`, local non-external `tach` on Host;
+  open-world/external checks remain `changed_paths`/`identity_only`). This slice checks the
   Expected changed-path scope against the resolved verified scope, preserves
   the Expected input floor, and delegates native input/coverage equality to
   #52's Expected instance.
 - No CLI, Hook or Report wiring is added in this slice. The receipt is consumed
   by #61/#63 producers and the eventual Hook final-reconciliation path.
+
+## `#63` L2 消费与 Accepted Coverage 合同样例（非 `#63` 已实装代码）
+
+> 本节为基于当前代码真实 Schema（`engineering-ci-expected-result-reconciliation` v1、`check-contract` v2、`expected_checks` v2）的**合同样例与消费映射说明**，用于冻结 `#66-C -> #63 -> #61` L2 交接语义；**不代表 `#63` 历史跨 Run 复用引擎或 `#61` 最终 Gate 已在本仓库实装。**
+
+### 1. 三层状态职责分离与实例唯一键（`(scope_id, expected_check_ref)`）
+
+| 层级与模块 | 负责输出字段 / 状态 | 精确语义与消费边界 |
+| --- | --- | --- |
+| `#66-C` Structural Receipt (`engineering_ci.reconciliation`) | `status` (`matched`/`partial`/`unrouted`/`unknown`)、`scope_id`、`entries[i].expected_check_ref`、`entries[i].binding_status`、`receipt_ref`、`trusted: false`、`required: false`、`evidence_admission: "not_evaluated"`、`required_gate: "not_evaluated"` | **`trusted=false` 与 `evidence_admission="not_evaluated"` 仅表示 `#66-C` 未执行外部来源签发认证**，**不是**对证据可信性的永久否决；`receipt_ref` 是唯一规范摘要。 |
+| `#63` Independent Admission (上游消费端) | `accepted_coverage_by_instance["<scope_id>/<expected_check_ref>"]`（`admitted` / `rejected` / `unverified`）、`remaining_work[]`（每项含 `scope_id` + `expected_check_ref`） | **必须以 Expected 实例身份 `(scope_id, expected_check_ref)` 为唯一键**（`check_name`/`name` 仅用于展示），严禁以 Check 名称聚合，确保多 Ref（`Ref A` vs `Ref B`）同名 `tach` 实例互不串扰；不回写原 Receipt 字段。 |
+| `#61` Required / Release Gate (下游决策端) | Final Gate Assessment（`passed` / `blocked`） | 汇总完整 Required Obligations、`expected_completeness` 与按实例独立的 `#63` Admission 结论决定最终放行；单实例 `matched` 或局部 `admitted` 不直接等于 Required Release PASS。 |
+
+### 2. Receipt 压缩索引与原始完整 Result / Issuer 的取回验证路径
+
+`reconciliation._result_evidence()`（`src/engineering_ci/reconciliation.py:1234–1250`）仅生成**压缩证据索引**（`result_id`、`result_instance`、`status`、`result_origin`、`native_exit_code`、`tool`、`job_ref`、`run_ref`、`attempt_ref`、`runner_ref`、`report_ref`、`job_receipt_ref`），**有意不包含**原始 `NativeResult` 的 `source_ref`、`check.rule_ref`、`check.profile_ref`、`input_refs`、`baseline_ref`、`coverage`、`evidence`；同时 `entries[i].resolved_expected` 是 `#66-B` 的预期对象，**不得**将预期对象当作实际执行证据形成循环证明。
+
+`#63` 消费端的独立取回与验证步骤：
+
+1. **定位原始载荷**：通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从 Run Artifact / 归档存储（或本仓库现有 `gh` Run/Artifact 下载通道与 `#72/#102` 调度产物）获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。
+2. **摘要与签发者独立验真**：
+   - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
+   - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；
+   - 独立认证 `job_receipt.issuer_ref` 与 Run/Attempt 调度来源权威（外部签名/OIDC/信任链，不采信自声明）。
+3. **提取并校验完整 Raw `NativeResult`**：
+   - 从已验真 Raw Report 按 `result_id` 提取完整 `engineering-ci-native-check-result` (v2)，调用 `check_contract.validate_result(raw_result)` 验证其 `content_id`/`result_id`；
+   - **直接读取** `raw_result["source_ref"]`、`raw_result["check"]["rule_ref"]`、`raw_result["check"]["profile_ref"]`、`raw_result["input_refs"]`、`raw_result["baseline_ref"]`、`raw_result["tool"]`、`raw_result["coverage"]`、`raw_result["evidence"]`，与当前 Check 需求比对语义等价性（可用 `entries[i].evidence_refs` 辅助核查规则/来源收据指纹）。
+4. **缺失或不可验证的处理**：若 Raw Report、原始 `NativeResult` 或 `job_receipt` 任一缺失、SHA-256 不匹配或 `issuer_ref` 不可验真，**严禁**凭 Receipt 压缩记录或 `resolved_expected` 降级放行；消费端必须维持 `admission_status: "unverified"`（或 `"rejected"`），并将该 Check 保留在 `remaining_work`。
+
+### 3. 逐 Check Accepted Coverage、完整性上限与同/跨 Run 等价规则
+
+1. **逐实例覆盖 vs 整体完整性/Gate 解耦**：
+   - 在 N 个适用 Expected 实例中（包含同一 Ref 下部分 Check 认证成功、或跨多 Ref 存在同名 Check 如 `Ref A: tach` 与 `Ref B: tach`），`#63` 以 `(scope_id, expected_check_ref)` 为唯一键在 `accepted_coverage_by_instance` 中记录已核实项并**仅将该实例**从 `remaining_work` 移除；`Ref B` 下尚未认证的同名实例 `tach` 必须保留在 `remaining_work` 中，`Ref A` 的接纳绝对不得消解 `Ref B`。
+   - 上游 `expected_completeness != "complete"` 或 `all_observations_reconciled == false` 限制整体证明上限及 `#61` Required Gate 放行，**不得无条件抹消**无冲突实例已核实的逐项覆盖。
+   - **共享前提/污染收敛**：仅当异常结果/rejected observation/失败 prerequisite 与某些 Expected 实例**共享**同一受污染 `job_ref`/`run_ref`/`attempt_ref`、`source_ref`、报告级 `plan_declaration_consistent == false` 或 `blocked_by` / `pre_execution_prerequisite_failed` 依赖边时，按实际传播范围使受影响实例的覆盖失效。
+2. **同次执行归因 (`#66-C`) vs 跨次历史复用 (`#63`)**：
+   - **同次执行 (`#66-C`)**：严格校验当前 `invocation_ref`、`expected_event_ref`、`scope_id`、`expected_set_ref`（不一致即在同次对账拒绝，并写入 `limitations: ["cross_run_reuse_requires_upstream_admission"]`）。
+   - **跨次历史复用 (`#63`)**：历史 Run 具有不同的 `event_ref`（如不同的 `head_ref`/`head_commit`/`base_ref`）或不同 `invocation_ref` 属于**正常跨 Run 前提**，不得仅因 `expected_event_ref` 不同就否决复用；`#63` 保留历史原始 `(run_ref, attempt_ref, runner_ref, result_origin, event_ref)` 溯源，独立验证以下 **语义等价要件**：
+     - 同一 `check_id`、`definition_version` 与受批准的 `rule_ref` / `profile_ref`（含当前生效窗与策略许可）；
+     - 静态闭合的 `source_ref`（`scope_kind` 为 `check_input_closure` / `full_input_closure`，实际被检输入闭包摘要/材质一致性且满足当前 Target 实例语义）；开放范围（`changed_paths`/`identity_only`，如 `vulture`/`source`）不得冒充全闭包等价复用；
+     - 若 Check 依赖对比基线或输入清单：实际消耗的 `baseline_ref.base_commit`、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
+
+### 4. `#63` L2 消费投影合同样例
+
+#### 样例 A — 多 Ref 同名实例隔离 + 部分逐实例独立认证（`receipt_ref` 规范摘要）
+
+```json
+{
+  "contract_sample": "63_accepted_coverage_projection",
+  "phase": "post_run_evidence_to_gate_projection",
+  "immutable_receipt_ref": "sha256:receipt_a_digest",
+  "immutable_receipt_trusted_flag": false,
+  "expected_set_ref": "sha256:expected_set",
+  "expected_completeness": "per_ref_container_only",
+  "all_observations_reconciled": true,
+  "accepted_coverage_by_instance": {
+    "sha256:scope_ref_a/sha256:exp_tach_ref_a": {
+      "scope_id": "sha256:scope_ref_a",
+      "expected_check_ref": "sha256:exp_tach_ref_a",
+      "check_name": "tach",
+      "admission_status": "admitted",
+      "source_kind": "current_run",
+      "witness_result_id": "sha256:raw_tach_a_result_id",
+      "raw_report_ref": {"kind": "engineering-ci-execution-report", "schema_version": 1, "sha256": "..."},
+      "raw_result_verified": true,
+      "issuer_verified": true,
+      "origin_trace": {"run_ref": "run/123", "attempt_ref": "attempt/2", "runner_ref": "execution:host", "result_origin": "host"}
+    },
+    "sha256:scope_ref_b/sha256:exp_tach_ref_b": {
+      "scope_id": "sha256:scope_ref_b",
+      "expected_check_ref": "sha256:exp_tach_ref_b",
+      "check_name": "tach",
+      "admission_status": "unverified",
+      "reason": "raw_report_missing_or_issuer_unverified",
+      "receipt_binding_status": "matched"
+    },
+    "sha256:scope_ref_a/sha256:exp_vulture_ref_a": {
+      "scope_id": "sha256:scope_ref_a",
+      "expected_check_ref": "sha256:exp_vulture_ref_a",
+      "check_name": "vulture",
+      "admission_status": "unverified",
+      "reason": "source_scope_not_closed",
+      "receipt_binding_status": "unknown"
+    }
+  },
+  "remaining_work": [
+    {"scope_id": "sha256:scope_ref_b", "expected_check_ref": "sha256:exp_tach_ref_b", "check_name": "tach"},
+    {"scope_id": "sha256:scope_ref_a", "expected_check_ref": "sha256:exp_vulture_ref_a", "check_name": "vulture"}
+  ],
+  "required_gate_ready": false,
+  "required_gate_block_reason": "remaining_work_non_empty_and_completeness_unproven"
+}
+```
+> 注：`Ref A` 的 `tach` (`sha256:scope_ref_a/sha256:exp_tach_ref_a`) 已完成独立认证并移出 `remaining_work`；`Ref B` 同名 `tach` (`sha256:scope_ref_b/sha256:exp_tach_ref_b`) 在 Receipt 中即使呈现 `matched`，但因 `#63` 尚缺原始 Report/签发者认证而保持 `unverified` 并留在 `remaining_work`（`check_name` 仅作展示，`Ref A` 的接纳不消除 `Ref B`）；原始 Receipt 的 `trusted=false` 与 `receipt_ref` 摘要均保持不变。
+
+#### 样例 B — 跨 Run 历史复用正反例（Event Ref 不同时的实例等价判断）
+
+```json
+{
+  "contract_sample": "63_cross_run_reuse_decisions",
+  "phase": "pre_run_history_to_remaining_work",
+  "decisions": [
+    {
+      "scope_id": "sha256:scope_ref_a",
+      "expected_check_ref": "sha256:exp_tach_ref_a",
+      "check_name": "tach",
+      "historical_event_ref": {"base_commit": "aaa...", "head_commit": "111...", "head_ref": "refs/heads/pr-old"},
+      "current_event_ref": {"base_commit": "bbb...", "head_commit": "222...", "head_ref": "refs/heads/pr-new"},
+      "admission_status": "admitted",
+      "source_kind": "historical_reuse",
+      "equivalence_basis": {
+        "requires_baseline": false,
+        "closed_source_scope_kind": "check_input_closure",
+        "raw_native_source_digest_equal": true,
+        "raw_native_rule_and_profile_equal": true,
+        "issuer_verified": true
+      },
+      "origin_trace": {"run_ref": "run/099", "attempt_ref": "attempt/1", "result_origin": "dagger_export"},
+      "remove_from_remaining_work": true
+    },
+    {
+      "scope_id": "sha256:scope_ref_a",
+      "expected_check_ref": "sha256:exp_ws_ref_a",
+      "check_name": "whitespace",
+      "historical_event_ref": {"base_commit": "aaa...", "head_commit": "111..."},
+      "current_event_ref": {"base_commit": "bbb...", "head_commit": "222..."},
+      "admission_status": "rejected",
+      "reason": "baseline_mismatch",
+      "equivalence_basis": {
+        "requires_baseline": true,
+        "target_tree_equal": true,
+        "raw_native_baseline_commit": "aaa...",
+        "current_expected_baseline_commit": "bbb..."
+      },
+      "remove_from_remaining_work": false
+    },
+    {
+      "scope_id": "sha256:scope_ref_a",
+      "expected_check_ref": "sha256:exp_dep_ref_a",
+      "check_name": "tach",
+      "admission_status": "rejected",
+      "reason": "shared_prerequisite_or_source_conflict",
+      "remove_from_remaining_work": false
+    }
+  ]
+}
+```
+> 注：样例 B 每条决策均绑定到 `(scope_id, expected_check_ref)`；第一项说明不同 `event_ref` / `invocation_ref` 下，只要不依赖旧比较基线且 `#63` 基于完整原始 `NativeResult` 与签发链证明闭环等价，仍可合法复用；第二项说明差分型 Check 即使目标 Tree 相同但实际比较 `base_commit` 不同，必须拒绝复用；第三项说明存在共享前提或污染冲突的实例须连带保留在 `remaining_work`。

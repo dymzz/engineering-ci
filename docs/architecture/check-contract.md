@@ -99,15 +99,19 @@ reinterpreted):
 - `validate_result()` rejects mutated content, a mismatched `content_id` or
   `result_id`, unknown Check IDs, invalid source binding, invalid execution
   phases, and status/exit contradictions (`passed` with nonzero exit, `failed`
-  with zero exit).
+  with zero exit); `validate_definition()` enforces the registered
+  `requires_baseline`, `requires_post_completion`, and `tool_requirements`
+  properties for known built-ins instead of accepting weakened definitions.
 - `not_executed` never carries a native process exit. `not_applicable` may
   report no exit, or a successful process exit with diagnostic evidence; it
   cannot hide a nonzero native failure. `unknown` is never accepted as PASS.
 - Execution kinds are explicit: process Checks (`docs`, `tach`, `tach_external`,
   `vulture`, `whitespace`, `unittest`, `pytest`, `weaver_registry`,
   `weaver_live`, `weaver_terminal`) require a real native exit and evidence for
-  passed/failed; internal Checks (`forwarding`, `source`) carry structured
-  evidence without a process exit. Every registered Check must declare exactly
+  `passed`, `failed`, and `advisory`; internal Checks (`forwarding`, `source`)
+  forbid any non-None `native_exit_code` (`result_internal_exit_forbidden`) and
+  require structured evidence for `passed`, `failed`, and `advisory`. Every
+  registered Check must declare exactly
   one of these kinds; a Check in neither table, or in both, is refused with
   `check_execution_kind_unknown` / `check_execution_kind_ambiguous` at
   registration, definition validation and Native Result construction/acceptance
@@ -115,6 +119,14 @@ reinterpreted):
   definition version), so historical definition versions keep it and stored
   Results are not rewritten. Configuration failures are `not_started`,
   carry no Native Result, and cannot be reported as native failures.
+- Native `advisory` vs policy `advisory_checks`: `advisory` on a Native Result is
+  an **executed native verdict** (process Checks record actual
+  `native_exit_code` and `evidence`, e.g. `vulture` `advisory_exit_codes = [3]`;
+  internal Checks forbid `native_exit_code` and require `evidence`), distinct from
+  Expected/Profile policy `advisory_checks`. Native `advisory` does not satisfy
+  strict `satisfy_expected_instance()` (`result_not_passed` -> `insufficient`).
+  `#59` Trivy (`engineering_ci.trivy`) reports native gate statuses only and does
+  not emit `advisory`.
 - `baseline_ref` is part of the result digest when a comparison baseline exists;
   equal new Trees with different baselines produce different `content_id`s.
 
@@ -510,9 +522,10 @@ exits and the resulting Report) is recorded in
 
 ## Limits / next slices
 
-- Execution does not emit `byte_tree`: immutable/Index snapshots are
-  `identity_only`, and worktree content digests cover only changed paths. Exact
-  full-input materialization remains #66 Source work.
+- **Per-Producer Source closure matrix (`execution.execute()` / `build_source_resolution()`)**:
+  - **Verified (`check_input_closure` on Host `worktree`, `full_input_closure`/`byte_tree` on verified Host `index`/`commit`/`push`/`pr_merge`)**: only Checks whose tool-relevant inputs form a closed static set — `whitespace`, `forwarding`, `--offline` `docs` (with succeeded `inventory`), and local `tach` (`tach.external == false` with `tach.toml` on disk).
+  - **Limited (`changed_paths` / `identity_only`)**: `vulture` (open-world dead-code scan), `tach_external` (external module inspection), online `docs` (without `--offline`), `source`, test runners (`unittest`/`pytest` in `execution.execute()`), and `dagger_export` without full verified closure; these never claim `check_input_closure` or `full_input_closure`.
+  - **Undelivered / N/A**: Native Result producers for `unittest`/`pytest`/`weaver_registry`/`weaver_live`/`weaver_terminal` live outside `execution.execute()` (synthetic contract fixtures only for weaver), `#63` issuer/admission trust, `#61` required gate, `#72/#102` hook dispatch/collect.
 - No verified Runtime ToolAsset identity exists for the Host `git`/Lychee/
   Vulture/Tach tools, so their results keep `authority=eci_local_entry`,
   `tool_id=null` and `tool_id_source=null`. The `runtime_tool_access` authority
@@ -523,11 +536,13 @@ exits and the resulting Report) is recorded in
   Checks. Consumers must select the version they intend: a version 1 result or
   expectation never satisfies a version 2 Check. No second version catalogue is
   created; the controlled table lives in `check_contract`.
-- Dagger `execute-plan` reuses the Host function and therefore emits this
-  contract, but `dagger_export` maps to `result_origin=unknown` and the Dagger
-  tool pins (`tach`, `lychee`, `weaver`) are not recorded as observations. The
-  separate Dagger `tach-check`/`lychee-check` functions still return their own
-  ad-hoc JSON. Three-entry-point parity is not claimed.
+- Dagger `execute-plan` forwards verified `profile_ref` only when `Plan`
+  carries a verified `EffectiveProfile` (`expected_checks`, `inputs.effective_profile`,
+  `generator.effective_profile_sha256`), `git.source_tree_id` matches
+  `directory_content_id(root)`, and `repo_target_tree` config matches disk;
+  `dagger_export` still does not claim Host index parity (`identity_only`/narrowed)
+  and Dagger `tach-check`/`lychee-check` keep their ad-hoc JSON. Three-entry-point
+  parity is not claimed.
 - The `all-required` relation is real only for `docs` (`git` + Lychee). No
   production `allowed-alternative` instance exists yet; the alternative path is
   covered by controlled contract tests, and `after` edges are declared only
