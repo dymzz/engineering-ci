@@ -183,6 +183,68 @@ def test_trivy_misconfiguration_statuses_are_separated():
     )
 
 
+def test_trivy_rejects_wrong_binary_before_execution(tmp_path):
+    if os.name != "nt":
+        pytest.skip("cmd shim fixture is Windows-specific")
+    marker = tmp_path / "called.txt"
+    fake = tmp_path / "fake-trivy.cmd"
+    fake.write_text(f"@echo called> {marker}\n", encoding="utf-8")
+    root = tmp_path / "target"
+    root.mkdir()
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.scan_filesystem(
+            root,
+            target=".",
+            scanners=("secret",),
+            environ={"TRIVY_BIN": str(fake)},
+        )
+    assert raised.value.code == "trivy_asset_mismatch"
+    assert not marker.exists()
+
+
+def test_find_binary_uses_explicit_empty_environment(tmp_path):
+    with pytest.raises(trivy.TrivyError) as raised:
+        trivy.find_binary({})
+    assert raised.value.code == "trivy_binary_missing"
+
+
+@requires_trivy
+def test_trivy_configured_exit_code_with_findings(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "a.txt").write_text(
+        'token = "glpat-abcdefghijklmnopqrst"\n', encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("secret",),
+        exit_code=1,
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 1
+    assert result["coverage"]["scan_completed"] is True
+
+
+@requires_trivy
+def test_trivy_misconfig_full_scan_separates_status(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "Dockerfile").write_text(
+        "FROM ubuntu:latest\nUSER root\n", encoding="utf-8"
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("misconfig",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["misconfig_summary"]["fail"] >= 1
+    assert result["coverage"]["artifact_type"] == "filesystem"
+
+
 def test_trivy_missing_binary_is_not_clean(tmp_path):
     root = tmp_path / "target"
     root.mkdir()

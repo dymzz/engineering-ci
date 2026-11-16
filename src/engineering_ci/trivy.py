@@ -13,7 +13,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,17 +34,21 @@ class TrivyError(ValueError):
 
 
 def find_binary(environ=None):
-    environ = os.environ if environ is None else environ
-    configured = environ.get("TRIVY_BIN")
+    base = os.environ if environ is None else environ
+    configured = base.get("TRIVY_BIN")
     if configured:
         path = Path(configured)
         if path.is_file():
             return path
         raise TrivyError("trivy_binary_missing")
-    found = shutil.which("trivy")
-    if not found:
-        raise TrivyError("trivy_binary_missing")
-    return Path(found)
+    path_value = base.get("PATH", "")
+    for directory in path_value.split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / ("trivy.exe" if os.name == "nt" else "trivy")
+        if candidate.is_file():
+            return candidate
+    raise TrivyError("trivy_binary_missing")
 
 
 def _sha256(path):
@@ -57,6 +60,12 @@ def _sha256(path):
 
 
 def _verify_binary(binary):
+    machine = platform.machine().lower()
+    if not (os.name == "nt" and machine in {"amd64", "x86_64"}):
+        raise TrivyError("trivy_asset_unverified")
+    digest = _sha256(binary)
+    if digest != "sha256:" + TRIVY_WINDOWS_X64_SHA256:
+        raise TrivyError("trivy_asset_mismatch")
     result = subprocess.run(
         [str(binary), "--version"],
         capture_output=True,
@@ -72,12 +81,6 @@ def _verify_binary(binary):
             break
     if result.returncode != 0 or version != TRIVY_VERSION:
         raise TrivyError("trivy_binary_version_mismatch")
-    machine = platform.machine().lower()
-    if not (os.name == "nt" and machine in {"amd64", "x86_64"}):
-        raise TrivyError("trivy_asset_unverified")
-    digest = _sha256(binary)
-    if digest != "sha256:" + TRIVY_WINDOWS_X64_SHA256:
-        raise TrivyError("trivy_asset_mismatch")
     return {
         "access_id": "trivy/scan",
         "version": TRIVY_VERSION,
@@ -123,7 +126,7 @@ def _sanitize(report):
         report.get("SchemaVersion") != 2
         or not isinstance(report.get("Trivy"), dict)
         or report["Trivy"].get("Version") != TRIVY_VERSION
-        or not isinstance(report.get("ArtifactType"), str)
+        or report.get("ArtifactType") != "filesystem"
     ):
         raise TrivyError("trivy_report_invalid")
     results = report.get("Results", [])
@@ -220,6 +223,7 @@ def scan_filesystem(
     target=".",
     scanners=("secret",),
     config_path=None,
+    exit_code=None,
     environ=None,
     timeout=180,
 ):
@@ -246,13 +250,10 @@ def scan_filesystem(
         if not config.is_file():
             raise TrivyError("trivy_config_missing")
     config_before = _sha256(config) if config is not None else None
-    ignored_env = sorted(
-        key for key in (environ or os.environ) if key.startswith("TRIVY_")
-    )
+    base_env = os.environ if environ is None else environ
+    ignored_env = sorted(key for key in base_env if key.startswith("TRIVY_"))
     child_env = {
-        key: value
-        for key, value in (environ or os.environ).items()
-        if not key.startswith("TRIVY_")
+        key: value for key, value in base_env.items() if not key.startswith("TRIVY_")
     }
     with tempfile.TemporaryDirectory(
         prefix="eci-trivy-", dir=_git_dir(root)
@@ -277,6 +278,10 @@ def scan_filesystem(
             "--secret-config",
             "",
         ]
+        if exit_code is not None:
+            if type(exit_code) is not int or exit_code < 1:
+                raise TrivyError("trivy_exit_code_invalid")
+            command.extend(["--exit-code", str(exit_code)])
         try:
             completed = subprocess.run(
                 command,
@@ -306,12 +311,13 @@ def scan_filesystem(
     config_after = _sha256(config) if config is not None else None
     if completed.returncode == 0:
         status = "findings" if findings else "passed"
-        reason = None
+        reason = "security_findings" if findings else None
+    elif findings and exit_code is not None and completed.returncode == exit_code:
+        status = "findings"
+        reason = "security_findings"
     else:
         status = "error"
         reason = "trivy_scan_failed"
-    if completed.returncode == 0 and findings:
-        reason = "security_findings"
     if before_digest != after_digest:
         status = "error"
         reason = "trivy_target_changed"
@@ -331,10 +337,19 @@ def scan_filesystem(
         },
         "tool": tool,
         "scanners": list(selected),
+        "coverage": {
+            "artifact_type": report.get("ArtifactType"),
+            "results_present": "Results" in report,
+            "scan_completed": completed.returncode
+            in ({0} | ({exit_code} if exit_code is not None else set())),
+            "rule_closure_verified": False,
+        },
         "misconfig_summary": misconfig_summary,
         "policy": {
             "config_sha256": config_before,
             "config_after_sha256": config_after,
+            "config_scope": "explicit-file-only",
+            "rule_closure_verified": False,
             "implicit_config": False,
             "implicit_ignore": False,
             "implicit_secret_config": False,
@@ -356,6 +371,7 @@ def main(argv=None):
     scan.add_argument("--target", default=".")
     scan.add_argument("--scanners", default="secret")
     scan.add_argument("--config")
+    scan.add_argument("--exit-code", type=int)
     scan.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -364,6 +380,7 @@ def main(argv=None):
             target=args.target,
             scanners=tuple(item for item in args.scanners.split(",") if item),
             config_path=args.config,
+            exit_code=args.exit_code,
         )
     except TrivyError as error:
         print(error.code, file=sys.stderr)
