@@ -1986,12 +1986,16 @@ def validate_receipt(receipt):
     entries = receipt.get("entries")
     if not isinstance(entries, list):
         raise ReconciliationError("receipt_entries_invalid")
+    seen_expected_refs = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise ReconciliationError("receipt_entries_invalid")
-        _sha256_ref(
+        expected_ref = _sha256_ref(
             entry.get("expected_check_ref"), "receipt_expected_check_ref_invalid"
         )
+        if expected_ref in seen_expected_refs:
+            raise ReconciliationError("receipt_expected_check_ref_duplicate")
+        seen_expected_refs.add(expected_ref)
         if entry.get("binding_status") not in ENTRY_STATUSES:
             raise ReconciliationError("receipt_entry_status_invalid")
         observed = entry.get("observed_result_ids")
