@@ -780,7 +780,7 @@ def _resolve_workflow_rules(
     config_path=None,
 ):
     if selection_check_rule is None or selection_config is None:
-        return {}
+        return None
     from engineering_ci import workflow_analysis
 
     effective_root = root
@@ -916,7 +916,11 @@ def _parse_profile_obligations(
             if name in _HYGIENE_MANAGED
             else sources_rule
             if name == "source"
-            else ((workflow_rule_by_check or {}).get(name) or selection_check_rule)
+            else (
+                workflow_rule_by_check.get(name)
+                if workflow_rule_by_check is not None
+                else selection_check_rule
+            )
             if name in _WORKFLOW_SCRIPT_MANAGED
             else None
         )

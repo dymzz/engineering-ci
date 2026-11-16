@@ -2621,6 +2621,7 @@ def workflow_script_check_scopes(
     al_cfg_changed = None
     sc_cfg_changed = None
     zz_cfg_changed = None
+    cfg_problems = None
     for name in config.checks:
         if name not in _WORKFLOW_SCRIPT_CHECK_NAMES:
             continue
@@ -2645,6 +2646,9 @@ def workflow_script_check_scopes(
             )
             continue
         if repo_workflows is None:
+            cfg_problems = workflow_analysis.workflow_config_problems(
+                config, root=repo_root
+            )
             repo_workflows = workflow_analysis.discover_workflow_files(
                 repo_root, wf_prefixes
             )
@@ -2681,6 +2685,16 @@ def workflow_script_check_scopes(
                 workflow_analysis.is_zizmor_config(p, wf_cfg.zizmor_config)
                 for p in paths
             )
+        if name in cfg_problems:
+            scopes.append(
+                {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": cfg_problems[name],
+                }
+            )
+            continue
         if name == "actionlint":
             scan_all = bool(full or al_cfg_changed or triggers["actionlint"])
             wf_inputs = sorted(
@@ -3761,7 +3775,7 @@ def plan(
         tach_input["reverse"] = {k: list(v) for k, v in sorted(tach_graph[1].items())}
     tach_input["all_tests"] = list(all_tests)
     config_id = config_identity(config_path, config, root=root)
-    if wf_digests:
+    if wf_digests or any(c in _WORKFLOW_SCRIPT_CHECK_NAMES for c in config.checks):
         config_id["workflow_config_digests"] = wf_digests
     inputs_payload = {
         "config": config_id,

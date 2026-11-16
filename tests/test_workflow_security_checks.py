@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -2157,3 +2159,365 @@ def test_shellcheck_opts_env_does_not_bypass_standalone_or_inline_shellcheck(
         "SC2086" in str(f.get("message") or f.get("code") or "")
         for f in by_name["workflow_shellcheck"].get("findings", [])
     )
+
+
+def test_plan_tool_config_drift_before_execution_fails_closed_without_running_tools(
+    tmp_path,
+):
+    repo, _ = _init_repo(
+        tmp_path / "drift",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/ok.sh": '#!/bin/sh\necho "clean"\n'},
+    )
+    (repo / ".shellcheckrc").write_text("enable=all\n", encoding="utf-8", newline="\n")
+    declared = ["whitespace", "actionlint", "shellcheck", "workflow_shellcheck"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-drift",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    binding = profile["approval_binding"]
+    cfg_path = repo / "ci-selection.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8", newline="\n")
+        + f"""
+[workflow_checks]
+shellcheck_config = ".shellcheckrc"
+
+[effective_profile]
+profile_ref = {{ name = "{prof_ref["name"]}", version = "{prof_ref["version"]}" }}
+profile_revision = "{profile["profile_revision"]}"
+approval_source = "{binding["approval_source"]}"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "{profile["effective_at"]}"
+declared_checks = {json.dumps(declared)}
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo, "add", ".shellcheckrc", "ci-selection.toml")
+    _git(repo, "commit", "-q", "-m", "add shellcheck config and profile")
+
+    # T1: build Plan with ShellCheck config A; only scripts/ok.sh is in ChangeSet.
+    plan1, exp1 = _build_plan_and_expected(
+        repo,
+        ["scripts/ok.sh"],
+        effective_profile=profile,
+    )
+    exp1_sc = next(c for c in exp1["checks"] if c["name"] == "shellcheck")
+    rep_ok = execution.execute(plan1, root=repo)
+    assert rep_ok["status"] == "passed", rep_ok
+    sc_ok = next(c for c in rep_ok["checks"] if c["name"] == "shellcheck")
+    assert sc_ok["native_result"]["check"]["rule_ref"] == exp1_sc["rule_ref"]
+
+    # T2: mutate ONLY .shellcheckrc (not in plan1.git.changed_paths).
+    (repo / ".shellcheckrc").write_text(
+        "disable=SC2086\n", encoding="utf-8", newline="\n"
+    )
+
+    # T3: executing old Plan must fail closed BEFORE starting any tools.
+    invoked = []
+
+    def spy_runner(argv, root, data=None):
+        invoked.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    rep_stale = execution.execute(plan1, root=repo, runner=spy_runner)
+    assert rep_stale["status"] == "not_executed"
+    assert rep_stale["reason"] == "workflow_config_snapshot_stale"
+    assert invoked == []
+
+    host_stale = execution.run_host_check(
+        plan1,
+        {"name": "shellcheck", "status": "selected", "inputs": ["scripts/ok.sh"]},
+        root=repo,
+        runner=spy_runner,
+    )
+    assert host_stale["status"] == "not_executed"
+    assert host_stale["reason"] == "workflow_config_snapshot_stale"
+    assert invoked == []
+
+    # Also verify adding a brand-new .github/actionlint.yml after Plan fails closed.
+    (repo / ".shellcheckrc").write_text("enable=all\n", encoding="utf-8", newline="\n")
+    (repo / ".github/actionlint.yml").write_text(
+        "self-hosted-runner:\n  labels: [ubuntu-latest]\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    rep_added = execution.execute(plan1, root=repo, runner=spy_runner)
+    assert rep_added["status"] == "not_executed"
+    assert rep_added["reason"] == "workflow_config_snapshot_stale"
+    assert invoked == []
+
+
+def test_unverifiable_workflow_configs_refuse_sentinel_rule_identity_and_block_execution(
+    tmp_path, monkeypatch
+):
+    # 1. Outside-root config (symlink if OS permits, plus ../ escaping path) & external content change
+    ext_dir = tmp_path / "external"
+    ext_dir.mkdir(parents=True)
+    ext_rc = ext_dir / "ext.shellcheckrc"
+    ext_rc.write_text("disable=SC2086\n", encoding="utf-8", newline="\n")
+
+    repo_out, _ = _init_repo(
+        tmp_path / "outside",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/bad.sh": "#!/bin/sh\necho $UNQUOTED\n"},
+    )
+    try:
+        (repo_out / ".shellcheckrc").symlink_to(ext_rc)
+        sc_cfg_rel = ".shellcheckrc"
+    except OSError:
+        sc_cfg_rel = "../../external/ext.shellcheckrc"
+
+    cfg_path = repo_out / "ci-selection.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8", newline="\n")
+        + f'\n[workflow_checks]\nshellcheck_config = "{sc_cfg_rel}"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo_out, "add", "ci-selection.toml")
+    _git(repo_out, "commit", "-q", "-m", "add escaping shellcheck config")
+
+    sel_cfg = selection.load_config(cfg_path)
+    digests_v1 = workflow_analysis.workflow_config_digests(
+        repo_out, sel_cfg.workflow_checks
+    )
+    assert digests_v1[sc_cfg_rel]["status"] == "outside_root"
+    assert digests_v1[sc_cfg_rel]["sha256"] is None
+    assert digests_v1[sc_cfg_rel]["reason"] == "workflow_config_outside_root"
+
+    sel_rule = check_contract.rule_ref("engineering-ci.selection", 1, digest="a" * 64)
+    assert (
+        workflow_analysis.effective_check_rule_ref(
+            "shellcheck",
+            selection_rule_ref=sel_rule,
+            selection_config=sel_cfg,
+            root=repo_out,
+        )
+        is None
+    )
+    # Changing external target contents must still refuse verified rule identity.
+    ext_rc.write_text("enable=all\n", encoding="utf-8", newline="\n")
+    assert (
+        workflow_analysis.effective_check_rule_ref(
+            "shellcheck",
+            selection_rule_ref=sel_rule,
+            selection_config=sel_cfg,
+            root=repo_out,
+        )
+        is None
+    )
+
+    declared = ["shellcheck", "actionlint"]
+    prof_ref = check_contract.profile_ref("eci/default", "1.0.0")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-out",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in declared
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    plan_out, exp_out = _build_plan_and_expected(
+        repo_out,
+        ["scripts/bad.sh"],
+        effective_profile=profile,
+    )
+    scope_out = {
+        c["name"]: c for c in plan_out["check_scope"] if c["name"] == "shellcheck"
+    }
+    assert scope_out["shellcheck"]["status"] == "unknown"
+    assert scope_out["shellcheck"]["reason"] == "workflow_config_outside_root"
+
+    exp_out_sc = next(c for c in exp_out["checks"] if c["name"] == "shellcheck")
+    assert exp_out_sc["rule_ref"] is None
+    assert exp_out_sc["rule_status"] == "unknown"
+    assert exp_out_sc["applicability"]["status"] == "unknown"
+
+    called_out = []
+
+    def spy_out(argv, root, data=None):
+        called_out.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    rep_out = execution.execute(plan_out, root=repo_out, runner=spy_out)
+    assert rep_out["status"] != "passed"
+    rep_out_sc = next(c for c in rep_out["checks"] if c["name"] == "shellcheck")
+    assert rep_out_sc["status"] == "not_executed"
+    assert rep_out_sc["reason"] == "workflow_config_outside_root"
+    assert "native_result" not in rep_out_sc
+    assert not any("shellcheck" in " ".join(cmd) for cmd in called_out)
+
+    # Admitted external config with matching proof & live bytes IS accepted:
+    ext_sha = hashlib.sha256(ext_rc.read_bytes()).hexdigest()
+    admitted = {
+        sc_cfg_rel: {
+            "policy_scope": "event_external",
+            "path": str(ext_rc.resolve()),
+            "sha256": ext_sha,
+        }
+    }
+    adm_digests = workflow_analysis.workflow_config_digests(
+        repo_out, sel_cfg.workflow_checks, admitted_external_configs=admitted
+    )
+    assert adm_digests[sc_cfg_rel]["status"] == "verified_external"
+    assert adm_digests[sc_cfg_rel]["sha256"] == ext_sha
+    adm_rule = workflow_analysis.effective_check_rule_ref(
+        "shellcheck",
+        selection_rule_ref=sel_rule,
+        selection_config=sel_cfg,
+        root=repo_out,
+        admitted_external_configs=admitted,
+    )
+    assert adm_rule is not None
+    assert re.fullmatch(r"[0-9a-f]{64}", adm_rule["sha256"])
+
+    # 2. Missing configured rule file
+    repo_miss, _ = _init_repo(
+        tmp_path / "missing_cfg",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/bad.sh": "#!/bin/sh\necho $UNQUOTED\n"},
+    )
+    miss_cfg_path = repo_miss / "ci-selection.toml"
+    miss_cfg_path.write_text(
+        miss_cfg_path.read_text(encoding="utf-8", newline="\n")
+        + '\n[workflow_checks]\nshellcheck_config = "missing.shellcheckrc"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo_miss, "add", "ci-selection.toml")
+    _git(repo_miss, "commit", "-q", "-m", "missing shellcheck config")
+    plan_miss, exp_miss = _build_plan_and_expected(repo_miss, ["scripts/bad.sh"])
+    miss_scope = next(c for c in plan_miss["check_scope"] if c["name"] == "shellcheck")
+    assert miss_scope["status"] == "unknown"
+    assert miss_scope["reason"] == "workflow_config_missing"
+    exp_miss_sc = next(c for c in exp_miss["checks"] if c["name"] == "shellcheck")
+    assert exp_miss_sc["rule_ref"] is None
+    assert exp_miss_sc["rule_status"] == "unknown"
+    rep_miss = execution.execute(plan_miss, root=repo_miss, runner=spy_out)
+    rep_miss_sc = next(c for c in rep_miss["checks"] if c["name"] == "shellcheck")
+    assert rep_miss_sc["status"] == "not_executed"
+    assert rep_miss_sc["reason"] == "workflow_config_missing"
+    assert "native_result" not in rep_miss_sc
+
+    # 3. Unreadable configured rule file
+    repo_unr, _ = _init_repo(
+        tmp_path / "unreadable_cfg",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/ok.sh": '#!/bin/sh\necho "clean"\n'},
+    )
+    unr_file = repo_unr / ".zizmor.yml"
+    unr_file.write_text("rules: {}\n", encoding="utf-8", newline="\n")
+    unr_cfg_path = repo_unr / "ci-selection.toml"
+    unr_cfg_path.write_text(
+        unr_cfg_path.read_text(encoding="utf-8", newline="\n")
+        + '\n[workflow_checks]\nzizmor_config = ".zizmor.yml"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo_unr, "add", ".zizmor.yml", "ci-selection.toml")
+    _git(repo_unr, "commit", "-q", "-m", "add zizmor config")
+
+    orig_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(self):
+        if self.resolve() == unr_file.resolve():
+            raise PermissionError("unreadable config")
+        return orig_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    plan_unr, exp_unr = _build_plan_and_expected(repo_unr, [".github/workflows/ci.yml"])
+    unr_scope = next(c for c in plan_unr["check_scope"] if c["name"] == "zizmor")
+    assert unr_scope["status"] == "unknown"
+    assert unr_scope["reason"] == "workflow_config_unreadable"
+    exp_unr_zz = next(c for c in exp_unr["checks"] if c["name"] == "zizmor")
+    assert exp_unr_zz["rule_ref"] is None
+    assert exp_unr_zz["rule_status"] == "unknown"
+    rep_unr = execution.execute(plan_unr, root=repo_unr, runner=spy_out)
+    rep_unr_zz = next(c for c in rep_unr["checks"] if c["name"] == "zizmor")
+    assert rep_unr_zz["status"] == "not_executed"
+    assert rep_unr_zz["reason"] == "workflow_config_unreadable"
+    assert "native_result" not in rep_unr_zz
+
+    # 4. Positive in-repo config: actually read by shellcheck CLI & emits valid SHA-256 rule_ref
+    monkeypatch.undo()
+    repo_pos, _ = _init_repo(
+        tmp_path / "positive_cfg",
+        workflows={".github/workflows/ci.yml": CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/bad.sh": "#!/bin/sh\necho $UNQUOTED\n"},
+    )
+    (repo_pos / ".shellcheckrc").write_text(
+        "disable=SC2086\n", encoding="utf-8", newline="\n"
+    )
+    pos_profile = expected_checks.build_effective_profile(
+        profile_ref=prof_ref,
+        profile_revision="rev-pos",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        declared_checks=["shellcheck"],
+        required_obligations=[
+            {"obligation_ref": "req-shellcheck", "check_names": ["shellcheck"]}
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    pos_binding = pos_profile["approval_binding"]
+    pos_cfg_path = repo_pos / "ci-selection.toml"
+    pos_cfg_path.write_text(
+        pos_cfg_path.read_text(encoding="utf-8", newline="\n")
+        + f"""
+[workflow_checks]
+shellcheck_config = ".shellcheckrc"
+
+[effective_profile]
+profile_ref = {{ name = "{prof_ref["name"]}", version = "{prof_ref["version"]}" }}
+profile_revision = "{pos_profile["profile_revision"]}"
+approval_source = "{pos_binding["approval_source"]}"
+approval_digest = "{pos_binding["approval_digest"]}"
+effective_at = "{pos_profile["effective_at"]}"
+declared_checks = ["shellcheck"]
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo_pos, "add", ".shellcheckrc", "ci-selection.toml")
+    _git(repo_pos, "commit", "-q", "-m", "enable in-repo shellcheckrc")
+    plan_pos, exp_pos = _build_plan_and_expected(
+        repo_pos,
+        ["scripts/bad.sh"],
+        effective_profile=pos_profile,
+    )
+    rep_pos = execution.execute(plan_pos, root=repo_pos)
+    rep_pos_sc = next(c for c in rep_pos["checks"] if c["name"] == "shellcheck")
+    exp_pos_sc = next(c for c in exp_pos["checks"] if c["name"] == "shellcheck")
+    assert rep_pos_sc["status"] == "passed"
+    assert exp_pos_sc["rule_status"] == "resolved"
+    assert rep_pos_sc["native_result"]["check"]["rule_ref"] == exp_pos_sc["rule_ref"]

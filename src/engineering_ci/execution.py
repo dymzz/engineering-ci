@@ -118,8 +118,72 @@ def _sources_config_path(plan, root, sources_config):
     )
 
 
+def _normalized_workflow_config_snapshot(digests):
+    if not isinstance(digests, dict):
+        return None
+    normalized = {}
+    for rel_path, entry in sorted(digests.items()):
+        if isinstance(entry, dict):
+            normalized[str(rel_path)] = (
+                entry.get("status"),
+                entry.get("sha256"),
+                entry.get("reason"),
+            )
+        elif isinstance(entry, str):
+            normalized[str(rel_path)] = ("legacy", entry, None)
+        else:
+            normalized[str(rel_path)] = ("invalid", None, None)
+    return normalized
+
+
+def _workflow_config_drift_reason(plan, root, selection_config=None):
+    """Fail closed if tracked workflow/script tool configs changed after Plan creation."""
+    inputs = plan.get("inputs") or {}
+    declared_cfg = inputs.get("config") if isinstance(inputs, dict) else None
+    if (
+        not isinstance(declared_cfg, dict)
+        or "workflow_config_digests" not in declared_cfg
+    ):
+        return None
+    declared_norm = _normalized_workflow_config_snapshot(
+        declared_cfg.get("workflow_config_digests")
+    )
+    if declared_norm is None:
+        return "workflow_config_snapshot_invalid"
+    wf_obj = (
+        getattr(selection_config, "workflow_checks", None)
+        if selection_config is not None
+        else None
+    )
+    norm_cfg = (declared_cfg.get("normalized") or {}).get("workflow_checks") or {}
+    admitted = declared_cfg.get("workflow_external_configs")
+    current = workflow_analysis.workflow_config_digests(
+        root,
+        wf_obj,
+        actionlint_config=str(norm_cfg.get("actionlint_config") or ""),
+        shellcheck_config=str(norm_cfg.get("shellcheck_config") or ""),
+        zizmor_config=str(norm_cfg.get("zizmor_config") or ""),
+        admitted_external_configs=admitted,
+    )
+    if _normalized_workflow_config_snapshot(current) != declared_norm:
+        return "workflow_config_snapshot_stale"
+    return None
+
+
 def _verify_execution_binding(plan, root, *, execution_context="host"):
     """Return (ok, reason, expected_tree). ok False means refuse execution."""
+    ok, reason, expected_tree = _verify_git_execution_binding(
+        plan, root, execution_context=execution_context
+    )
+    if not ok:
+        return False, reason, expected_tree
+    wf_reason = _workflow_config_drift_reason(plan, root)
+    if wf_reason is not None:
+        return False, wf_reason, expected_tree
+    return True, None, expected_tree
+
+
+def _verify_git_execution_binding(plan, root, *, execution_context="host"):
     git = plan["git"]
     expected_tree = git.get("execution_tree")
     explicit_snapshot = git.get("snapshot")
@@ -709,6 +773,9 @@ def _load_optional_selection_config(plan, root, selection_config=None):
     )
     if reason is not None:
         return None, None, reason
+    wf_drift = _workflow_config_drift_reason(plan, root, selection_config=config)
+    if wf_drift is not None:
+        return None, None, wf_drift
     stored_path = str(config_path)
     try:
         resolved_root = Path(root).resolve()
@@ -811,13 +878,20 @@ def omitted_workflow_script_checks(
     )
     if reason is not None or config is None:
         return []
-    rule_refs = workflow_analysis.effective_workflow_rule_refs(rule, config, root=root)
+    cfg_input = (plan.get("inputs") or {}).get("config")
+    admitted_ext = (
+        cfg_input.get("workflow_external_configs")
+        if isinstance(cfg_input, dict)
+        else None
+    )
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(
+        rule, config, root=root, admitted_external_configs=admitted_ext
+    )
     configured = set(config.checks) & _WORKFLOW_SCRIPT_CHECKS
     if not configured:
         return []
     changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
-    config_input = (plan.get("inputs") or {}).get("config")
-    config_path = config_input.get("path") if isinstance(config_input, dict) else None
+    config_path = cfg_input.get("path") if isinstance(cfg_input, dict) else None
     full = bool((plan.get("selection") or {}).get("full_tests"))
     scoped = selection.workflow_script_check_scopes(
         changes,
@@ -839,22 +913,20 @@ def omitted_workflow_script_checks(
             and name not in selected_names
             and item.get("status") != "not_applicable"
         ):
-            eff_rule = (
-                rule_refs.get(name, rule) if isinstance(rule_refs, dict) else rule
-            )
-            omitted.append(
-                {
-                    "name": name,
-                    "selected": "omitted",
-                    "status": "not_executed",
-                    "reason": "workflow_script_check_omitted_from_plan",
-                    "plan_authorized": False,
-                    "routing_conflict": "configured_check_omitted_from_plan",
-                    "execution_started": False,
-                    "execution_kind": "not_started",
-                    "rule_ref": eff_rule,
-                }
-            )
+            eff_rule = rule_refs.get(name) if isinstance(rule_refs, dict) else rule
+            entry = {
+                "name": name,
+                "selected": "omitted",
+                "status": "not_executed",
+                "reason": "workflow_script_check_omitted_from_plan",
+                "plan_authorized": False,
+                "routing_conflict": "configured_check_omitted_from_plan",
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
+            if eff_rule is not None:
+                entry["rule_ref"] = eff_rule
+            omitted.append(entry)
     return omitted
 
 
@@ -902,7 +974,15 @@ def _run_workflow_script_checks(
             for name, item in selected_by_name.items()
         ] + omitted_entries, True
 
-    rule_refs = workflow_analysis.effective_workflow_rule_refs(rule, config, root=root)
+    cfg_input = (plan.get("inputs") or {}).get("config")
+    admitted_ext = (
+        cfg_input.get("workflow_external_configs")
+        if isinstance(cfg_input, dict)
+        else None
+    )
+    rule_refs = workflow_analysis.effective_workflow_rule_refs(
+        rule, config, root=root, admitted_external_configs=admitted_ext
+    )
     scope_cfg = (
         config.check_scope if config is not None else selection.CheckScopeConfig()
     )
@@ -948,12 +1028,13 @@ def _run_workflow_script_checks(
         shared_cache=shared_cache,
         inline_shellcheck_requested=("workflow_shellcheck" in all_selected_names),
         inline_shellcheck_inputs=inline_shellcheck_inputs,
+        admitted_external_configs=admitted_ext,
     )
     results = []
     any_failed = False
     for item in wanted:
         name = item.get("name")
-        item_rule = rule_refs.get(name, rule) if isinstance(rule_refs, dict) else rule
+        item_rule = rule_refs.get(name) if isinstance(rule_refs, dict) else rule
         entry = suite.get(name) or {
             "name": name,
             "selected": item.get("status"),
@@ -963,7 +1044,10 @@ def _run_workflow_script_checks(
         }
         entry = dict(entry)
         entry.setdefault("plan_authorized", True)
-        if entry.get("status") == "failed":
+        if entry.get("status") == "failed" or (
+            entry.get("status") == "not_executed"
+            and str(entry.get("reason") or "").startswith("workflow_config_")
+        ):
             any_failed = True
         results.append(entry)
     results.extend(omitted_entries)

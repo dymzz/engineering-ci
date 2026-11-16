@@ -922,23 +922,238 @@ WORKFLOW_MANAGED_CHECKS = frozenset(
 )
 
 
-def _hash_relative_file(root: Path | None, rel_path: str) -> str:
+def _is_hex64(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def _admitted_external_config_entry(
+    admitted_external_configs: dict | None,
+    rel_path: str,
+    resolved_target: Path,
+) -> dict | None:
+    if not isinstance(admitted_external_configs, dict):
+        return None
+    declared = admitted_external_configs.get(rel_path)
+    if (
+        not isinstance(declared, dict)
+        or declared.get("policy_scope") != "event_external"
+    ):
+        return None
+    raw_path = declared.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    declared_path = Path(raw_path)
+    if not declared_path.is_absolute():
+        return None
+    try:
+        if declared_path.resolve() != resolved_target:
+            return None
+    except OSError:
+        return None
+    if not _is_hex64(declared.get("sha256")):
+        return None
+    return declared
+
+
+def _inspect_config_file(
+    root: Path | None,
+    rel_path: str,
+    *,
+    admitted_external_configs: dict | None = None,
+) -> dict:
+    """Return structured verification state for one rule config file; never fabricate hashes."""
     if root is None:
-        return "unknown"
+        return {
+            "path": rel_path,
+            "status": "unknown",
+            "sha256": None,
+            "reason": "workflow_config_root_missing",
+        }
     resolved_root = Path(root).resolve()
-    target = (resolved_root / rel_path).resolve()
+    raw = Path(rel_path)
+    candidate = raw if raw.is_absolute() else (resolved_root / raw)
+    if candidate.is_symlink() and not candidate.exists():
+        # Distinguish a broken symlink inside repo from outside_root: check parent/link target if resolvable.
+        try:
+            raw_target = Path(os.readlink(candidate))
+            target_resolved = (
+                raw_target.resolve()
+                if raw_target.is_absolute()
+                else (candidate.parent / raw_target).resolve()
+            )
+            if not target_resolved.is_relative_to(resolved_root):
+                return {
+                    "path": rel_path,
+                    "status": "outside_root",
+                    "sha256": None,
+                    "reason": "workflow_config_outside_root",
+                }
+        except OSError:
+            pass
+        return {
+            "path": rel_path,
+            "status": "missing",
+            "sha256": None,
+            "reason": "workflow_config_missing",
+        }
+    try:
+        target = candidate.resolve()
+    except OSError:
+        return {
+            "path": rel_path,
+            "status": "unreadable",
+            "sha256": None,
+            "reason": "workflow_config_unreadable",
+        }
     try:
         in_root = target.is_relative_to(resolved_root)
     except OSError:
-        return "unknown"
-    if not in_root:
-        return "outside_root"
+        return {
+            "path": rel_path,
+            "status": "unknown",
+            "sha256": None,
+            "reason": "workflow_config_unverified",
+        }
+    if not in_root or raw.is_absolute():
+        admitted = _admitted_external_config_entry(
+            admitted_external_configs, rel_path, target
+        )
+        if admitted is None or not target.is_file():
+            return {
+                "path": rel_path,
+                "status": "outside_root",
+                "sha256": None,
+                "reason": "workflow_config_outside_root",
+            }
+        try:
+            digest_a = hashlib.sha256(target.read_bytes()).hexdigest()
+            digest_b = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError:
+            return {
+                "path": rel_path,
+                "status": "unreadable",
+                "sha256": None,
+                "reason": "workflow_config_unreadable",
+            }
+        if digest_a != digest_b or digest_a != admitted["sha256"]:
+            return {
+                "path": rel_path,
+                "status": "digest_mismatch",
+                "sha256": None,
+                "reason": "workflow_config_digest_mismatch",
+            }
+        return {
+            "path": rel_path,
+            "status": "verified_external",
+            "policy_scope": "event_external",
+            "sha256": digest_a,
+        }
     if not target.is_file():
-        return "missing"
+        return {
+            "path": rel_path,
+            "status": "missing",
+            "sha256": None,
+            "reason": "workflow_config_missing",
+        }
     try:
-        return hashlib.sha256(target.read_bytes()).hexdigest()
+        digest_a = hashlib.sha256(target.read_bytes()).hexdigest()
+        digest_b = hashlib.sha256(target.read_bytes()).hexdigest()
     except OSError:
-        return "unreadable"
+        return {
+            "path": rel_path,
+            "status": "unreadable",
+            "sha256": None,
+            "reason": "workflow_config_unreadable",
+        }
+    if digest_a != digest_b:
+        return {
+            "path": rel_path,
+            "status": "changed_during_read",
+            "sha256": None,
+            "reason": "workflow_config_changed_during_read",
+        }
+    return {
+        "path": rel_path,
+        "status": "verified",
+        "policy_scope": "repo_target_tree",
+        "sha256": digest_a,
+    }
+
+
+def _verified_digest_from_record(entry: object) -> str | None:
+    if isinstance(entry, str):
+        return entry if _is_hex64(entry) else None
+    if (
+        isinstance(entry, dict)
+        and entry.get("status") in {"verified", "verified_external"}
+        and _is_hex64(entry.get("sha256"))
+    ):
+        return str(entry["sha256"])
+    return None
+
+
+def _problem_reason_from_record(entry: object) -> str:
+    if isinstance(entry, dict) and entry.get("reason"):
+        return str(entry["reason"])
+    mapping = {
+        "outside_root": "workflow_config_outside_root",
+        "missing": "workflow_config_missing",
+        "unreadable": "workflow_config_unreadable",
+        "unknown": "workflow_config_unverified",
+    }
+    if isinstance(entry, str) and entry in mapping:
+        return mapping[entry]
+    return "workflow_config_unverified"
+
+
+def _actionlint_config_paths(
+    root: Path | None,
+    actionlint_config: str = "",
+    *,
+    file_digests: dict | None = None,
+) -> list[str]:
+    if actionlint_config:
+        return [actionlint_config]
+    if root is not None:
+        resolved_root = Path(root).resolve()
+        found = []
+        for p in sorted(WORKFLOW_CONFIG_FILES):
+            candidate = resolved_root / p
+            if candidate.is_file() or candidate.is_symlink():
+                found.append(p)
+        return found
+    if isinstance(file_digests, dict):
+        return [p for p in sorted(WORKFLOW_CONFIG_FILES) if p in file_digests]
+    return []
+
+
+def _check_config_paths(
+    name: str,
+    wf_cfg=None,
+    *,
+    root: Path | None = None,
+    file_digests: dict | None = None,
+    actionlint_config: str = "",
+    shellcheck_config: str = "",
+    zizmor_config: str = "",
+) -> list[str]:
+    if wf_cfg is not None:
+        actionlint_config = str(getattr(wf_cfg, "actionlint_config", "") or "")
+        shellcheck_config = str(getattr(wf_cfg, "shellcheck_config", "") or "")
+        zizmor_config = str(getattr(wf_cfg, "zizmor_config", "") or "")
+    if name in {"actionlint", "workflow_shellcheck"}:
+        return _actionlint_config_paths(
+            root, actionlint_config, file_digests=file_digests
+        )
+    if name == "shellcheck":
+        return [shellcheck_config] if shellcheck_config else []
+    if name == "zizmor":
+        return [zizmor_config] if zizmor_config else []
+    return []
 
 
 def workflow_config_digests(
@@ -948,8 +1163,9 @@ def workflow_config_digests(
     actionlint_config: str = "",
     shellcheck_config: str = "",
     zizmor_config: str = "",
-) -> dict[str, str]:
-    """Compute SHA-256 digests for active workflow/shell/zizmor config files."""
+    admitted_external_configs: dict | None = None,
+) -> dict[str, dict]:
+    """Inspect active workflow/shell/zizmor config files with explicit verification status."""
     if root is None:
         return {}
     if workflow_checks is not None:
@@ -957,21 +1173,71 @@ def workflow_config_digests(
         shellcheck_config = str(getattr(workflow_checks, "shellcheck_config", "") or "")
         zizmor_config = str(getattr(workflow_checks, "zizmor_config", "") or "")
     resolved_root = Path(root).resolve()
-    candidates: set[str] = set()
-    if actionlint_config:
-        candidates.add(actionlint_config)
-    else:
-        for rel_path in sorted(WORKFLOW_CONFIG_FILES):
-            if (resolved_root / rel_path).is_file():
-                candidates.add(rel_path)
+    candidates: set[str] = set(
+        _actionlint_config_paths(resolved_root, actionlint_config)
+    )
     if shellcheck_config:
         candidates.add(shellcheck_config)
     if zizmor_config:
         candidates.add(zizmor_config)
     return {
-        rel_path: _hash_relative_file(resolved_root, rel_path)
+        rel_path: _inspect_config_file(
+            resolved_root,
+            rel_path,
+            admitted_external_configs=admitted_external_configs,
+        )
         for rel_path in sorted(candidates)
     }
+
+
+def workflow_config_problems(
+    selection_config=None,
+    *,
+    root: Path | None = None,
+    file_digests: dict | None = None,
+    check_names=None,
+    actionlint_config: str = "",
+    shellcheck_config: str = "",
+    zizmor_config: str = "",
+    admitted_external_configs: dict | None = None,
+) -> dict[str, str]:
+    """Return {check_name: reason} for any workflow/script check whose config is unverified."""
+    wf_cfg = (
+        getattr(selection_config, "workflow_checks", None)
+        if selection_config is not None
+        else None
+    )
+    names = (
+        tuple(check_names)
+        if check_names is not None
+        else sorted(WORKFLOW_MANAGED_CHECKS)
+    )
+    problems: dict[str, str] = {}
+    for name in names:
+        if name not in WORKFLOW_MANAGED_CHECKS:
+            continue
+        cfg_paths = _check_config_paths(
+            name,
+            wf_cfg,
+            root=root,
+            file_digests=file_digests,
+            actionlint_config=actionlint_config,
+            shellcheck_config=shellcheck_config,
+            zizmor_config=zizmor_config,
+        )
+        for rel_path in sorted(set(cfg_paths)):
+            if isinstance(file_digests, dict) and rel_path in file_digests:
+                record = file_digests[rel_path]
+            else:
+                record = _inspect_config_file(
+                    root,
+                    rel_path,
+                    admitted_external_configs=admitted_external_configs,
+                )
+            if _verified_digest_from_record(record) is None:
+                problems[name] = _problem_reason_from_record(record)
+                break
+    return problems
 
 
 def effective_check_rule_ref(
@@ -980,9 +1246,10 @@ def effective_check_rule_ref(
     selection_rule_ref: dict | None,
     selection_config=None,
     root: Path | None = None,
-    file_digests: dict[str, str] | None = None,
+    file_digests: dict | None = None,
+    admitted_external_configs: dict | None = None,
 ) -> dict | None:
-    """Bind per-check effective rule_ref to selection rules, options, and tool configs."""
+    """Bind per-check effective rule_ref to verified config bytes; return None if unverified."""
     if (
         name not in WORKFLOW_MANAGED_CHECKS
         or not isinstance(selection_rule_ref, dict)
@@ -992,43 +1259,35 @@ def effective_check_rule_ref(
     wf_cfg = getattr(selection_config, "workflow_checks", None)
     if wf_cfg is None:
         return selection_rule_ref
-    if wf_cfg.actionlint_config:
-        actionlint_cfg_paths = [wf_cfg.actionlint_config]
-    elif root is not None:
-        actionlint_cfg_paths = [
-            p for p in sorted(WORKFLOW_CONFIG_FILES) if (Path(root) / p).is_file()
-        ]
-    elif isinstance(file_digests, dict):
-        actionlint_cfg_paths = [
-            p for p in sorted(WORKFLOW_CONFIG_FILES) if p in file_digests
-        ]
-    else:
-        actionlint_cfg_paths = []
     if name == "actionlint":
         options: dict[str, object] = {"actionlint_config": wf_cfg.actionlint_config}
-        cfg_paths = actionlint_cfg_paths
     elif name == "workflow_shellcheck":
         options = {
             "actionlint_config": wf_cfg.actionlint_config,
             "shellcheck_inline": bool(wf_cfg.shellcheck_inline),
         }
-        cfg_paths = actionlint_cfg_paths
     elif name == "shellcheck":
         options = {"shellcheck_config": wf_cfg.shellcheck_config}
-        cfg_paths = [wf_cfg.shellcheck_config] if wf_cfg.shellcheck_config else []
     else:
         options = {
             "zizmor_config": wf_cfg.zizmor_config,
             "zizmor_persona": wf_cfg.zizmor_persona,
             "zizmor_offline": bool(wf_cfg.zizmor_offline),
         }
-        cfg_paths = [wf_cfg.zizmor_config] if wf_cfg.zizmor_config else []
+    cfg_paths = _check_config_paths(name, wf_cfg, root=root, file_digests=file_digests)
     config_entries = []
     for rel_path in sorted(set(cfg_paths)):
         if isinstance(file_digests, dict) and rel_path in file_digests:
-            file_sha = file_digests[rel_path]
+            record = file_digests[rel_path]
         else:
-            file_sha = _hash_relative_file(root, rel_path)
+            record = _inspect_config_file(
+                root,
+                rel_path,
+                admitted_external_configs=admitted_external_configs,
+            )
+        file_sha = _verified_digest_from_record(record)
+        if file_sha is None:
+            return None
         config_entries.append({"path": rel_path, "sha256": file_sha})
     payload = {
         "check": name,
@@ -1054,7 +1313,8 @@ def effective_workflow_rule_refs(
     selection_config=None,
     *,
     root: Path | None = None,
-    file_digests: dict[str, str] | None = None,
+    file_digests: dict | None = None,
+    admitted_external_configs: dict | None = None,
 ) -> dict[str, dict]:
     """Compute per-check effective rule_ref map for all workflow/script checks."""
     if not isinstance(selection_rule_ref, dict) or selection_config is None:
@@ -1067,6 +1327,7 @@ def effective_workflow_rule_refs(
             selection_config=selection_config,
             root=root,
             file_digests=file_digests,
+            admitted_external_configs=admitted_external_configs,
         )
         if rule is not None:
             resolved[check_name] = rule
@@ -1094,9 +1355,17 @@ def run_workflow_script_suite(
     shared_cache: dict | None = None,
     inline_shellcheck_requested: bool = False,
     inline_shellcheck_inputs: tuple[str, ...] | None = None,
+    admitted_external_configs: dict | None = None,
 ) -> dict[str, dict]:
     """Run selected actionlint, shellcheck and zizmor checks once with shared facts."""
     root = Path(root)
+    config_problems = workflow_config_problems(
+        root=root,
+        actionlint_config=actionlint_config,
+        shellcheck_config=shellcheck_config,
+        zizmor_config=zizmor_config,
+        admitted_external_configs=admitted_external_configs,
+    )
     cache = shared_cache if shared_cache is not None else {}
     extra_workflows = sorted(
         {
@@ -1376,7 +1645,19 @@ def run_workflow_script_suite(
     if "actionlint" in selected_by_name:
         sel = selected_by_name["actionlint"]
         blocked, _ = admissions["actionlint"]
-        if blocked is not None:
+        cfg_problem = config_problems.get("actionlint")
+        if cfg_problem is not None:
+            out["actionlint"] = {
+                "name": "actionlint",
+                "selected": sel.get("status"),
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": cfg_problem,
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "access_id": "actionlint/check",
+            }
+        elif blocked is not None:
             out["actionlint"] = blocked
         elif not al_workflows:
             out["actionlint"] = {
@@ -1480,7 +1761,19 @@ def run_workflow_script_suite(
     if "workflow_shellcheck" in selected_by_name:
         sel = selected_by_name["workflow_shellcheck"]
         blocked, _ = admissions["workflow_shellcheck"]
-        if blocked is not None:
+        cfg_problem = config_problems.get("workflow_shellcheck")
+        if cfg_problem is not None:
+            out["workflow_shellcheck"] = {
+                "name": "workflow_shellcheck",
+                "selected": sel.get("status"),
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": cfg_problem,
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "access_id": "actionlint/shellcheck-inline",
+            }
+        elif blocked is not None:
             out["workflow_shellcheck"] = blocked
         elif not shellcheck_inline:
             out["workflow_shellcheck"] = {
@@ -1623,7 +1916,19 @@ def run_workflow_script_suite(
     if "shellcheck" in selected_by_name:
         sel = selected_by_name["shellcheck"]
         blocked, _ = admissions["shellcheck"]
-        if blocked is not None:
+        cfg_problem = config_problems.get("shellcheck")
+        if cfg_problem is not None:
+            out["shellcheck"] = {
+                "name": "shellcheck",
+                "selected": sel.get("status"),
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": cfg_problem,
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "access_id": "shellcheck/check",
+            }
+        elif blocked is not None:
             out["shellcheck"] = blocked
         elif not sc_shells:
             out["shellcheck"] = {
@@ -1710,7 +2015,19 @@ def run_workflow_script_suite(
     if "zizmor" in selected_by_name:
         sel = selected_by_name["zizmor"]
         blocked, _ = admissions["zizmor"]
-        if blocked is not None:
+        cfg_problem = config_problems.get("zizmor")
+        if cfg_problem is not None:
+            out["zizmor"] = {
+                "name": "zizmor",
+                "selected": sel.get("status"),
+                "status": "not_executed",
+                "exit_code": None,
+                "reason": cfg_problem,
+                "execution_started": False,
+                "execution_kind": "not_started",
+                "access_id": "zizmor/check",
+            }
+        elif blocked is not None:
             out["zizmor"] = blocked
         elif not zz_workflows:
             out["zizmor"] = {
@@ -1793,10 +2110,11 @@ def run_workflow_script_suite(
                 }
 
     for check_name, entry in out.items():
+        if check_name in config_problems:
+            entry.pop("rule_ref", None)
+            continue
         resolved_rule = (
-            rule_refs[check_name]
-            if isinstance(rule_refs, dict) and check_name in rule_refs
-            else rule_ref
+            rule_refs.get(check_name) if isinstance(rule_refs, dict) else rule_ref
         )
         if resolved_rule is not None:
             entry["rule_ref"] = resolved_rule
