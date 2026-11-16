@@ -106,6 +106,39 @@ def _config_path(plan, root, override, *, key, default_name):
     return root / default_name
 
 
+def _rebased_consumer_plan(plan, source_root):
+    """Rebase repo-local absolute config paths to repo-relative for consumer views."""
+    inputs = plan.get("inputs")
+    if not isinstance(inputs, dict):
+        return plan
+    resolved_src = Path(source_root).resolve()
+    new_inputs = None
+    for key in ("config", "hygiene", "hygiene_config", "sources", "sources_config"):
+        entry = inputs.get(key)
+        if not isinstance(entry, dict) or entry.get("policy_scope") == "event_external":
+            continue
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        cand = Path(raw_path)
+        if not cand.is_absolute():
+            continue
+        try:
+            resolved = cand.resolve()
+        except OSError:
+            continue
+        if resolved.is_relative_to(resolved_src):
+            if new_inputs is None:
+                new_inputs = dict(inputs)
+            new_inputs[key] = {
+                **entry,
+                "path": resolved.relative_to(resolved_src).as_posix(),
+            }
+    if new_inputs is None:
+        return plan
+    return {**plan, "inputs": new_inputs}
+
+
 def _stored_rule_path(config_path, root):
     resolved = Path(config_path).resolve()
     resolved_root = Path(root).resolve()
@@ -747,11 +780,19 @@ def _run_hygiene_checks(
     run_kwargs = {"root": root, "runner": runner or hygiene._run}
     if code_prefixes is not None:
         run_kwargs["code_prefixes"] = code_prefixes
+    ws_before = None
+    ws_err_before = None
+    if "whitespace" in checks:
+        ws_before, ws_err_before = _effective_git_whitespace_config(root, changes.paths)
     report = hygiene.run(
         changes,
         run_config,
         **run_kwargs,
     )
+    ws_after = None
+    ws_err_after = None
+    if "whitespace" in checks:
+        ws_after, ws_err_after = _effective_git_whitespace_config(root, changes.paths)
     results = []
     seen = set()
     any_failed = report["status"] == "failed"
@@ -769,6 +810,16 @@ def _run_hygiene_checks(
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
+        if name == "whitespace":
+            if (
+                ws_err_before is None
+                and ws_err_after is None
+                and ws_before is not None
+                and ws_before == ws_after
+            ):
+                payload["git_whitespace_config"] = dict(ws_before)
+            else:
+                payload["git_whitespace_config_drifted"] = True
         origin = selected_by_name.get(name)
         payload["selected"] = origin.get("status") if origin else "not_selected"
         if origin and isinstance(origin.get("inputs"), list):
@@ -1818,13 +1869,32 @@ def _closure_paths_for_check(
 
     if name in _HYGIENE_CHECKS:
         add_rel_file(_hygiene_config_path(plan, resolved_root, hygiene_config))
-        if name == "docs":
+        if name == "whitespace":
+            add_rel_file(resolved_root / ".gitattributes")
+            for p in list(paths):
+                cur = (resolved_root / p).parent
+                while cur != resolved_root and cur.is_relative_to(resolved_root):
+                    add_rel_file(cur / ".gitattributes")
+                    cur = cur.parent
+        elif name == "docs":
             inv = (item or {}).get("inventory") or {}
             for p in inv.get("files") or ():
                 if isinstance(p, str) and (resolved_root / p).is_file():
                     paths.add(p.replace("\\", "/"))
+            suffixes = (
+                tuple(s.lower() for s in loaded_hyg.docs.suffixes)
+                if loaded_hyg is not None
+                else (".md", ".html")
+            )
+            excluded = (
+                tuple(loaded_hyg.docs.excluded_prefixes)
+                if loaded_hyg is not None
+                else ()
+            )
             for p in _relative_existing_files(resolved_root, "."):
-                if p.endswith((".md", ".html")):
+                if p.lower().endswith(suffixes) and not any(
+                    p.startswith(prefix) for prefix in excluded
+                ):
                     paths.add(p)
         elif name == "tach":
             tach_rel = loaded_hyg.tach.path if loaded_hyg is not None else "tach.toml"
@@ -1899,6 +1969,7 @@ def _prepare_source_snapshots(
                 "files": tree_files,
                 "binding": binding,
             }
+        return {"kind": "unproven"}
     per_check = {}
     for item in selected or ():
         name = item.get("name")
@@ -1933,8 +2004,11 @@ def _verified_check_source_ref(
     hygiene_config=None,
     sources_config=None,
     artifact_paths=(),
+    require_execution_started=True,
 ):
-    if item.get("execution_started") is False or source_snapshots is None:
+    if (
+        require_execution_started and item.get("execution_started") is False
+    ) or source_snapshots is None:
         return None
     resolved_root = Path(root).resolve()
     loaded_hyg = (
@@ -1952,8 +2026,17 @@ def _verified_check_source_ref(
         return None
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
-    declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    declared = (
+        git.get("execution_tree")
+        or git.get("tree")
+        or git.get("index_tree")
+        or git.get("merge_tree")
+    )
     actual = "worktree" if execution_context == "host" else "dagger_directory"
+    if snapshot in {"index", "commit", "push", "pr_merge"} and (
+        source_snapshots.get("kind") != "full"
+    ):
+        return None
     if source_snapshots.get("kind") == "full":
         files = source_snapshots["files"]
         before = source_snapshots["binding"]
@@ -1966,6 +2049,16 @@ def _verified_check_source_ref(
             actual = "index_verified_worktree"
         elif snapshot in {"commit", "push", "pr_merge"} and execution_context == "host":
             if selection.worktree_tree_refusal(root, declared):
+                return None
+            head_commit = git.get("head_commit")
+            if (
+                snapshot in {"commit", "push"}
+                and head_commit
+                and selection._resolve(root, "HEAD") != head_commit
+            ):
+                return None
+        elif execution_context == "dagger_export" and git.get("source_tree_id"):
+            if selection.directory_content_id(root) != git["source_tree_id"]:
                 return None
         after = selection.worktree_content_binding(root, files)
         if after != before:
@@ -2028,6 +2121,990 @@ def _verified_check_source_ref(
         binding_status="content_digest",
         scope_kind="check_input_closure",
     )
+
+
+def _canonical_sha256(value):
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
+
+
+def _scope_plan_for_pre_execution(
+    plan,
+    check_name,
+    *,
+    expected_check_ref=None,
+    scope_id=None,
+):
+    git = plan.get("git") or {}
+    expected_block = plan.get("expected_checks")
+    sel = plan.get("selection") or {}
+    is_multi = (
+        git.get("snapshot") == "multi"
+        or isinstance(sel.get("per_ref"), list)
+        and bool(sel.get("per_ref"))
+        or isinstance(expected_block, dict)
+        and isinstance(expected_block.get("per_ref"), list)
+        and bool(expected_block.get("per_ref"))
+    )
+    if not is_multi:
+        matched_expected = None
+        expected_scope = None
+        if isinstance(expected_block, dict):
+            try:
+                matched_expected, expected_scope = _locate_expected_entry(
+                    expected_block,
+                    check_name,
+                    expected_check_ref=expected_check_ref,
+                    scope_id=scope_id,
+                )
+            except ExecutionError as error:
+                if error.code == "source_resolution_scope_required":
+                    raise ExecutionError("pre_execution_scope_required") from None
+                raise ExecutionError(
+                    "pre_execution_check_scope_ambiguous_or_missing"
+                ) from None
+        return plan, matched_expected, expected_scope
+
+    matched_expected = None
+    expected_scope = None
+    if isinstance(expected_block, dict):
+        try:
+            matched_expected, expected_scope = _locate_expected_entry(
+                expected_block,
+                check_name,
+                expected_check_ref=expected_check_ref,
+                scope_id=scope_id,
+            )
+        except ExecutionError as error:
+            if error.code == "source_resolution_scope_required":
+                raise ExecutionError("pre_execution_scope_required") from None
+            raise ExecutionError(
+                "pre_execution_check_scope_ambiguous_or_missing"
+            ) from None
+
+    sel_per_ref = list(sel.get("per_ref") or ())
+    ref_entry = None
+    if sel_per_ref:
+        if expected_scope is not None:
+            exp_src = expected_scope.get("source") or {}
+            exp_ev = expected_scope.get("event_ref") or {}
+            exp_tree = exp_src.get("declared_target_tree")
+            exp_head = exp_src.get("head_commit") or exp_ev.get("head_commit")
+            exp_ref_label = expected_scope.get("source_ref")
+            exp_base = exp_ev.get("base_commit")
+            matches = [
+                cand
+                for cand in sel_per_ref
+                if isinstance(cand, dict)
+                and (exp_tree is None or cand.get("tree") == exp_tree)
+                and (exp_head is None or cand.get("after") == exp_head)
+                and (
+                    not exp_ref_label
+                    or cand.get("source_ref") == exp_ref_label
+                    or cand.get("remote_ref") == exp_ref_label
+                )
+                and (
+                    not exp_base
+                    or not cand.get("before")
+                    or cand.get("before") == exp_base
+                    or cand.get("baseline_ref") == exp_base
+                )
+            ]
+            if len(matches) == 1:
+                ref_entry = matches[0]
+            elif len(matches) > 1:
+                raise ExecutionError("pre_execution_scope_required")
+        elif len(sel_per_ref) == 1:
+            ref_entry = sel_per_ref[0]
+        else:
+            raise ExecutionError("pre_execution_scope_required")
+
+    scoped_git = dict(git)
+    if expected_scope is not None:
+        exp_src = expected_scope.get("source") or {}
+        exp_ev = expected_scope.get("event_ref") or {}
+        exp_base_ref = (
+            (matched_expected or {}).get("baseline_ref")
+            if isinstance(matched_expected, dict)
+            else None
+        ) or {}
+        scoped_git["snapshot"] = exp_src.get("snapshot") or "push"
+        scoped_git["tree"] = (
+            ref_entry.get("tree") if isinstance(ref_entry, dict) else None
+        ) or exp_src.get("declared_target_tree")
+        scoped_git["execution_tree"] = scoped_git["tree"]
+        scoped_git["head_commit"] = (
+            (ref_entry.get("after") if isinstance(ref_entry, dict) else None)
+            or exp_src.get("head_commit")
+            or exp_ev.get("head_commit")
+        )
+        base_commit = (
+            exp_base_ref.get("base_commit") if isinstance(exp_base_ref, dict) else None
+        ) or exp_ev.get("base_commit")
+        if base_commit:
+            scoped_git["base_commit"] = base_commit
+        else:
+            scoped_git.pop("base_commit", None)
+        ref_action = (
+            ref_entry.get("ref_action") if isinstance(ref_entry, dict) else None
+        ) or expected_scope.get("ref_action")
+        if ref_action is not None:
+            scoped_git["ref_action"] = ref_action
+        baseline_status = (
+            (ref_entry.get("baseline_status") if isinstance(ref_entry, dict) else None)
+            or (
+                exp_base_ref.get("baseline_status")
+                if isinstance(exp_base_ref, dict)
+                else None
+            )
+            or expected_scope.get("baseline_status")
+        )
+        if baseline_status is not None:
+            scoped_git["baseline_status"] = baseline_status
+        scoped_git.pop("content_binding", None)
+    elif isinstance(ref_entry, dict):
+        scoped_git["snapshot"] = "push"
+        scoped_git["tree"] = ref_entry.get("tree")
+        scoped_git["execution_tree"] = ref_entry.get("tree")
+        if ref_entry.get("after"):
+            scoped_git["head_commit"] = ref_entry["after"]
+        if ref_entry.get("before"):
+            scoped_git["base_commit"] = ref_entry["before"]
+        if ref_entry.get("ref_action") is not None:
+            scoped_git["ref_action"] = ref_entry["ref_action"]
+        if ref_entry.get("baseline_status") is not None:
+            scoped_git["baseline_status"] = ref_entry["baseline_status"]
+        scoped_git.pop("content_binding", None)
+
+    scoped_check_scope = (
+        ref_entry.get("check_scope")
+        if isinstance(ref_entry, dict) and ref_entry.get("check_scope") is not None
+        else list((expected_scope or {}).get("checks") or ())
+    )
+    scoped_sel = {**sel, "check_scope": scoped_check_scope}
+    scoped_sel.pop("per_ref", None)
+    scoped_plan = {
+        **plan,
+        "git": scoped_git,
+        "selection": scoped_sel,
+        "check_scope": scoped_check_scope,
+    }
+    if expected_scope is not None:
+        scoped_expected = {
+            **(expected_block if isinstance(expected_block, dict) else {}),
+            "scope_id": expected_scope.get("scope_id"),
+            "checks": list(expected_scope.get("checks") or ()),
+        }
+        scoped_expected.pop("per_ref", None)
+        scoped_plan["expected_checks"] = scoped_expected
+    return scoped_plan, matched_expected, expected_scope
+
+
+def _pre_execution_check_item(scoped_plan, check_name):
+    selected = _selected_checks(scoped_plan)
+    matches = [item for item in selected if item.get("name") == check_name]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        raise ExecutionError("pre_execution_check_scope_ambiguous_or_missing")
+    sel = scoped_plan.get("selection") or {}
+    all_scope = sel.get("check_scope") or scoped_plan.get("check_scope") or ()
+    non_sel = [
+        item
+        for item in all_scope
+        if isinstance(item, dict) and item.get("name") == check_name
+    ]
+    if len(non_sel) == 1:
+        status = str(non_sel[0].get("status") or "unknown")
+        return non_sel[0], f"pre_execution_check_{status}"
+    raise ExecutionError("pre_execution_check_scope_ambiguous_or_missing")
+
+
+def _resolve_pre_execution_baseline(
+    scoped_plan,
+    matched_expected,
+    definition,
+    *,
+    resolved_root,
+):
+    git = scoped_plan.get("git") or {}
+    exp_base = (
+        matched_expected.get("baseline_ref")
+        if isinstance(matched_expected, dict)
+        else None
+    )
+    plan_base = _baseline_reference(scoped_plan)
+    baseline = plan_base if isinstance(plan_base, dict) else exp_base
+    ref_baseline_status = git.get("baseline_status") or (
+        exp_base.get("baseline_status") if isinstance(exp_base, dict) else None
+    )
+    needs_baseline = bool(definition is not None and definition.requires_baseline)
+    if ref_baseline_status in {"unknown", "old_object_unavailable"} and (
+        needs_baseline or baseline is not None
+    ):
+        return baseline, None, f"pre_execution_baseline_{ref_baseline_status}"
+    if needs_baseline and (
+        not isinstance(baseline, dict) or not baseline.get("base_commit")
+    ):
+        return None, None, "pre_execution_baseline_missing"
+    if baseline is None:
+        return None, None, None
+    base_commit = str(baseline.get("base_commit") or "")
+    if not base_commit:
+        return (
+            baseline,
+            None,
+            "pre_execution_baseline_missing" if needs_baseline else None,
+        )
+    odb_tree = selection._git(
+        resolved_root, "rev-parse", "--verify", f"{base_commit}^{{tree}}"
+    )
+    tree_oid = odb_tree.stdout.strip()
+    if odb_tree.returncode != 0 or not _is_git_oid(tree_oid):
+        return baseline, None, "baseline_object_unavailable"
+    baseline_digest = hashlib.sha256(f"{base_commit}:{tree_oid}".encode()).hexdigest()
+    baseline_source_ref = {
+        "name": "git-odb-commit",
+        "version": "1",
+        "sha256": baseline_digest,
+    }
+    return baseline, baseline_source_ref, None
+
+
+def _resolve_pre_execution_rule(
+    scoped_plan,
+    check_name,
+    matched_expected,
+    *,
+    root,
+    hygiene_config=None,
+    sources_config=None,
+    selection_config=None,
+):
+    inputs = scoped_plan.get("inputs")
+    has_bound_input = isinstance(inputs, dict) and (
+        (check_name in _HYGIENE_CHECKS and "hygiene" in inputs)
+        or (check_name == "source" and "sources" in inputs)
+        or (
+            check_name not in _HYGIENE_CHECKS
+            and check_name != "source"
+            and "config" in inputs
+        )
+    )
+    if has_bound_input:
+        try:
+            rule_ref, rule_source_ref, _ = _independent_rule_for_check(
+                scoped_plan,
+                check_name,
+                root=root,
+                hygiene_config=hygiene_config,
+                sources_config=sources_config,
+                selection_config=selection_config,
+            )
+        except ExecutionError as error:
+            return None, None, error.code
+        exp_rule = (matched_expected or {}).get("rule_ref")
+        if exp_rule is not None and rule_ref != exp_rule:
+            return None, None, "pre_execution_rule_mismatch"
+        return rule_ref, rule_source_ref, None
+    if check_name in _HYGIENE_CHECKS:
+        cfg_path = _hygiene_config_path(
+            scoped_plan, Path(root).resolve(), hygiene_config
+        )
+        if Path(cfg_path).is_file():
+            try:
+                loaded = _load_hygiene_for_closure(
+                    scoped_plan, Path(root).resolve(), hygiene_config
+                )
+                ident = hygiene.config_identity(cfg_path, loaded, root=root)
+                rule_ref = dict(ident["effective_check_config_ref"])
+                exp_rule = (matched_expected or {}).get("rule_ref")
+                if exp_rule is not None and rule_ref != exp_rule:
+                    return None, None, "pre_execution_rule_mismatch"
+                return rule_ref, None, None
+            except (OSError, hygiene.HygieneError, check_contract.CheckContractError):
+                return None, None, "hygiene_config_invalid"
+    return None, None, None
+
+
+def _pre_execution_unproven_reason(
+    scoped_plan,
+    check_name,
+    item,
+    *,
+    root,
+    execution_context,
+    hygiene_config=None,
+):
+    if execution_context != "host":
+        return f"{execution_context}_pre_execution_unverified"
+    git = scoped_plan.get("git") or {}
+    snapshot = str(git.get("snapshot") or "worktree")
+    declared = (
+        git.get("execution_tree")
+        or git.get("tree")
+        or git.get("index_tree")
+        or git.get("merge_tree")
+    )
+    if snapshot == "index":
+        refusal = selection.index_source_refusal(
+            root, declared, index_file=git.get("index_file")
+        )
+        if refusal:
+            return refusal
+    elif snapshot in {"commit", "push", "pr_merge"}:
+        refusal = selection.worktree_tree_refusal(root, declared)
+        if refusal:
+            return refusal
+        head_commit = git.get("head_commit")
+        if (
+            snapshot in {"commit", "push"}
+            and head_commit
+            and selection._resolve(root, "HEAD") != head_commit
+        ):
+            return "head_commit_mismatch"
+    loaded_hyg = (
+        _load_hygiene_for_closure(scoped_plan, Path(root).resolve(), hygiene_config)
+        if check_name in _HYGIENE_CHECKS
+        else None
+    )
+    if not _closure_supported(
+        check_name,
+        root=root,
+        execution_context=execution_context,
+        hygiene_config=loaded_hyg,
+        item=item,
+    ):
+        return "pre_execution_input_closure_unproven"
+    return "pre_execution_input_closure_unproven"
+
+
+def _active_tool_identities(definition, rule_ref):
+    if definition is None or not definition.tool_requirements:
+        return []
+    if check_contract._unresolved_conditions(definition, rule=rule_ref):
+        return None
+    active = check_contract._requirement_order(
+        check_contract._active_requirements(definition, rule=rule_ref)
+    )
+    return [
+        {
+            "requirement_id": req.requirement_id,
+            "after": list(req.after),
+            "alternatives": [
+                {
+                    "access_id": alt.access_id,
+                    "tool_id": alt.tool_id,
+                    "tool_id_source": alt.tool_id_source,
+                    "version": alt.version,
+                    "artifact_sha256": alt.artifact_sha256,
+                    "authority": alt.authority,
+                }
+                for alt in req.alternatives
+            ],
+        }
+        for req in active
+    ]
+
+
+def _effective_whitespace_attributes(root_path, paths):
+    """All final Git attributes per checked path via `git check-attr -a`.
+
+    Uses Git itself so every attribute source (info/attributes, explicit or
+    default user-level attributes, in-tree .gitattributes) is resolved with
+    Git's own precedence under the same environment as the native check. All\r\n    attributes are bound because git diff --check is also affected by e.g.\r\n    conflict-marker-size and diff, not only whitespace.
+    """
+    unique = sorted({str(p).replace("\\", "/") for p in paths or () if p})
+    if not unique:
+        return _canonical_sha256([]), None
+    payload = b"".join(p.encode("utf-8") + b"\0" for p in unique)
+    try:
+        res = subprocess.run(
+            ["git", "check-attr", "-a", "-z", "--stdin"],
+            cwd=root_path,
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None, "whitespace_config_unreadable"
+    if res.returncode != 0:
+        return None, "whitespace_config_unreadable"
+    fields = res.stdout.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) % 3 != 0:
+        return None, "whitespace_config_unreadable"
+    known = set(unique)
+    effective = []
+    for index in range(0, len(fields), 3):
+        path = fields[index].decode("utf-8", errors="replace")
+        if path not in known:
+            return None, "whitespace_config_unreadable"
+        effective.append(
+            [
+                path,
+                fields[index + 1].decode("utf-8", errors="replace"),
+                fields[index + 2].decode("utf-8", errors="replace"),
+            ]
+        )
+    return _canonical_sha256(sorted(effective)), None
+
+
+def _effective_git_whitespace_config(root, paths=()):
+    if root is None:
+        return None, "whitespace_config_unreadable"
+    root_path = Path(root)
+    git_dir = selection._resolve_git_dir(root_path)
+    if git_dir is None:
+        return None, "whitespace_config_unreadable"
+    res = selection._git(root_path, "config", "--get", "core.whitespace")
+    if res.returncode == 1:
+        core_ws = None
+    elif res.returncode == 0:
+        core_ws = res.stdout.strip()
+    else:
+        return None, "whitespace_config_unreadable"
+
+    info_res = selection._git(root_path, "rev-parse", "--git-path", "info/attributes")
+    if info_res.returncode != 0 or not info_res.stdout.strip():
+        return None, "whitespace_config_unreadable"
+    info_raw = Path(info_res.stdout.strip())
+    info_attrs = info_raw if info_raw.is_absolute() else (root_path / info_raw)
+    try:
+        if info_attrs.is_file():
+            info_attrs_sha = hashlib.sha256(info_attrs.read_bytes()).hexdigest()
+        elif info_attrs.exists():
+            return None, "whitespace_config_unreadable"
+        else:
+            info_attrs_sha = None
+    except OSError:
+        return None, "whitespace_config_unreadable"
+
+    attr_res = selection._git(
+        root_path, "config", "--path", "--get", "core.attributesfile"
+    )
+    if attr_res.returncode == 1:
+        core_attrs = None
+    elif attr_res.returncode == 0:
+        raw_attr = attr_res.stdout.strip()
+        if not raw_attr:
+            core_attrs = None
+        else:
+            attr_raw = Path(raw_attr)
+            attr_path = attr_raw if attr_raw.is_absolute() else (root_path / attr_raw)
+            try:
+                if attr_path.is_file():
+                    core_attrs = (
+                        "sha256:" + hashlib.sha256(attr_path.read_bytes()).hexdigest()
+                    )
+                elif attr_path.exists():
+                    return None, "whitespace_config_unreadable"
+                else:
+                    core_attrs = f"missing:{attr_path.as_posix()}"
+            except OSError:
+                return None, "whitespace_config_unreadable"
+    else:
+        return None, "whitespace_config_unreadable"
+
+    effective_attrs, attrs_err = _effective_whitespace_attributes(root_path, paths)
+    if attrs_err is not None:
+        return None, attrs_err
+
+    return {
+        "core.whitespace": core_ws,
+        "info_attributes_sha256": info_attrs_sha,
+        "core_attributes_file_sha256": core_attrs,
+        "effective_git_attributes_sha256": effective_attrs,
+    }, None
+
+
+def _verify_pre_execution_prerequisites(
+    incoming,
+    check_name,
+    *,
+    artifact_root=None,
+    prerequisite_results=None,
+):
+    prereq_inputs = []
+    verified_files = []
+    seen_paths = {}
+    consumer_ref = {"kind": "check", "name": check_name}
+    for edge in incoming:
+        p_ref = edge.get("producer_ref") or {}
+        p_kind, p_name = p_ref.get("kind"), p_ref.get("name")
+        if edge.get("dependency_kind") == "data":
+            if p_kind != "prerequisite_action":
+                return None, None, "data_check_producer_unsupported"
+            if artifact_root is None or not isinstance(prerequisite_results, dict):
+                return None, None, "pre_execution_prerequisite_unproven"
+            producer_res = prerequisite_results.get((p_kind, p_name))
+            if producer_res is None:
+                producer_res = prerequisite_results.get(p_name)
+            if not isinstance(producer_res, dict):
+                return None, None, "pre_execution_prerequisite_unproven"
+            try:
+                p_root = producer_artifact_root(artifact_root, p_ref)
+            except ValueError:
+                return None, None, "pre_execution_prerequisite_unproven"
+            ok, reason, closure = evaluate_edge(
+                edge, producer_res, artifact_root=p_root
+            )
+            if not ok or closure is None or not closure.get("verified"):
+                return None, None, reason or "pre_execution_prerequisite_unproven"
+            for obj in closure.get("materialized_objects") or ():
+                rel = obj["path"]
+                if (rel in seen_paths and seen_paths[rel] != str(p_root)) or any(
+                    _artifact_paths_overlap(rel, existing) and owner != str(p_root)
+                    for existing, owner in seen_paths.items()
+                ):
+                    return None, None, "data_artifact_conflict"
+                seen_paths[rel] = str(p_root)
+                verified_files.append((p_root, rel, obj["kind"]))
+            gen_refs = generated_input_refs([closure], consumer_ref)
+            prereq_inputs.append(
+                {
+                    "producer_ref": p_ref,
+                    "dependency_kind": edge.get("dependency_kind"),
+                    "output_ref": edge.get("output_ref"),
+                    "generated_input_refs": gen_refs,
+                }
+            )
+        else:
+            prereq_inputs.append(
+                {
+                    "producer_ref": p_ref,
+                    "dependency_kind": edge.get("dependency_kind"),
+                    "output_ref": edge.get("output_ref"),
+                }
+            )
+    return prereq_inputs, verified_files, None
+
+
+def build_pre_execution_source_proof(
+    plan,
+    check_name,
+    *,
+    root,
+    expected_check_ref=None,
+    scope_id=None,
+    hygiene_config=None,
+    sources_config=None,
+    selection_config=None,
+    execution_context="host",
+    artifact_paths=(),
+    prerequisite_results=None,
+    artifact_root=None,
+):
+    """Resolve a candidate Host Check input closure *before* native execution.
+
+    This is a content proof for the proposed target inputs, not a witness that
+    the tool executed or actually read them. An unsupported/dynamic closure,
+    drifted config/snapshot, or missing/unreadable Git ODB baseline returns an
+    explicit unverified record. Reuse consumers (#63 T2) must independently
+    verify issuer trust and compare these inputs against historical execution.
+    """
+    if not isinstance(plan, dict) or not isinstance(check_name, str) or not check_name:
+        raise ExecutionError("pre_execution_check_scope_ambiguous_or_missing")
+    resolved_root = Path(root).resolve()
+    scoped_plan, matched_expected, expected_scope = _scope_plan_for_pre_execution(
+        plan,
+        check_name,
+        expected_check_ref=expected_check_ref,
+        scope_id=scope_id,
+    )
+    item, item_reason = _pre_execution_check_item(scoped_plan, check_name)
+    definition = check_contract.definition_for(check_name)
+    bound_scope_id = (expected_scope or {}).get("scope_id") or scope_id
+    bound_expected_ref = (matched_expected or {}).get(
+        "expected_check_ref"
+    ) or expected_check_ref
+
+    def unverified(reason):
+        return {
+            "phase": "pre_execution",
+            "check_name": check_name,
+            "check_id": definition.check_id if definition is not None else None,
+            "definition_version": (
+                definition.definition_version if definition is not None else None
+            ),
+            "scope_id": bound_scope_id,
+            "expected_check_ref": bound_expected_ref,
+            "execution_context": execution_context,
+            "execution_started": False,
+            "trusted": False,
+            "required": False,
+            "status": "unverified",
+            "reason": reason,
+            "source_ref": None,
+        }
+
+    if item_reason is not None:
+        return unverified(item_reason)
+
+    if execution_context != "host":
+        return unverified(f"{execution_context}_pre_execution_unverified")
+
+    bound_ok, bind_reason, _ = _verify_execution_binding(
+        scoped_plan, resolved_root, execution_context=execution_context
+    )
+    if not bound_ok:
+        return unverified(bind_reason or "pre_execution_binding_failed")
+
+    rule_ref, rule_source_ref, rule_reason = _resolve_pre_execution_rule(
+        scoped_plan,
+        check_name,
+        matched_expected,
+        root=resolved_root,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+        selection_config=selection_config,
+    )
+    if rule_reason is not None:
+        return unverified(rule_reason)
+
+    profile_ref = _profile_reference(
+        scoped_plan, root=resolved_root, execution_context=execution_context
+    )
+    if (
+        isinstance(matched_expected, dict)
+        and matched_expected.get("profile_ref") is not None
+        and profile_ref != matched_expected.get("profile_ref")
+    ):
+        return unverified("pre_execution_profile_unverified")
+
+    baseline_ref, baseline_source_ref, baseline_reason = (
+        _resolve_pre_execution_baseline(
+            scoped_plan,
+            matched_expected,
+            definition,
+            resolved_root=resolved_root,
+        )
+    )
+    if baseline_reason is not None:
+        return unverified(baseline_reason)
+
+    incoming = pre_execution_edges(scoped_plan).get(("check", check_name), ())
+    prereq_inputs, verified_files, prereq_reason = _verify_pre_execution_prerequisites(
+        incoming,
+        check_name,
+        artifact_root=artifact_root,
+        prerequisite_results=prerequisite_results,
+    )
+    if prereq_reason is not None:
+        return unverified(prereq_reason)
+
+    env_inputs = None
+    if check_name == "whitespace":
+        env_inputs, ws_err = _effective_git_whitespace_config(
+            resolved_root,
+            _changeset_from_plan(
+                scoped_plan,
+                resolved_root,
+                extra_paths=artifact_target_paths(verified_files),
+            ).paths,
+        )
+        if ws_err is not None:
+            return unverified(ws_err)
+
+    tool_identities = _active_tool_identities(definition, rule_ref)
+    if tool_identities is None:
+        return unverified("pre_execution_rule_conditions_unresolved")
+
+    # Never fold unverified caller-supplied artifact_paths into file closure
+    # when incoming data edges require producer artifact verification.
+    # When verified producer artifacts exist, mirror _execute_with_dependencies()
+    # via build_consumer_view() so overlaid files match host execution views.
+    has_data_edge = any(edge.get("dependency_kind") == "data" for edge in incoming)
+    temporary = None
+    unproven_reason = None
+    try:
+        if verified_files:
+            temporary, effective_root = build_consumer_view(
+                resolved_root, verified_files
+            )
+            effective_plan = _rebased_consumer_plan(scoped_plan, resolved_root)
+            effective_artifact_paths = artifact_target_paths(verified_files)
+        else:
+            effective_root = resolved_root
+            effective_plan = scoped_plan
+            effective_artifact_paths = () if has_data_edge else artifact_paths
+        snapshots = _prepare_source_snapshots(
+            effective_plan,
+            [item],
+            root=effective_root,
+            execution_context=execution_context,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=effective_artifact_paths,
+        )
+        source = _verified_check_source_ref(
+            effective_plan,
+            check_name,
+            item,
+            root=effective_root,
+            execution_context=execution_context,
+            source_snapshots=snapshots,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            artifact_paths=effective_artifact_paths,
+            require_execution_started=False,
+        )
+        if source is None:
+            unproven_reason = _pre_execution_unproven_reason(
+                effective_plan,
+                check_name,
+                item,
+                root=effective_root,
+                execution_context=execution_context,
+                hygiene_config=hygiene_config,
+            )
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+    if source is None:
+        return unverified(unproven_reason)
+    source = dict(source)
+    # byte_tree denotes a materialized execution view. A planned source
+    # snapshot can prove the relevant bytes without pretending a tool ran.
+    source["actual_execution_source"] = "planned_host_worktree"
+    if source["binding_status"] == "byte_tree":
+        source["binding_status"] = "content_digest"
+        source.pop("materialization_ref", None)
+    check_contract.validate_source_ref(source)
+
+    closure_payload = {
+        "check_id": definition.check_id if definition is not None else None,
+        "definition_version": (
+            definition.definition_version if definition is not None else None
+        ),
+        "execution_context": execution_context,
+        "scope_kind": source["scope_kind"],
+        "snapshot": source["snapshot"],
+        "content_digest": source["content_digest"],
+        "verified_input_scope": source["verified_input_scope"],
+        "declared_target_tree": source.get("declared_target_tree"),
+        "rule_ref": rule_ref,
+        "profile_ref": profile_ref,
+        "baseline_ref": baseline_ref,
+        "baseline_source_ref": baseline_source_ref,
+        "environment_inputs": env_inputs,
+        "tool_identities": tool_identities,
+        "prerequisite_inputs": prereq_inputs,
+    }
+    return {
+        "phase": "pre_execution",
+        "check_name": check_name,
+        "check_id": definition.check_id if definition is not None else None,
+        "definition_version": (
+            definition.definition_version if definition is not None else None
+        ),
+        "scope_id": bound_scope_id,
+        "expected_check_ref": bound_expected_ref,
+        "execution_context": execution_context,
+        "execution_started": False,
+        "trusted": False,
+        "required": False,
+        "status": "verified_candidate_inputs",
+        "reason": None,
+        "source_ref": source,
+        "rule_ref": rule_ref,
+        "rule_source_ref": rule_source_ref,
+        "profile_ref": profile_ref,
+        "baseline_ref": baseline_ref,
+        "baseline_source_ref": baseline_source_ref,
+        "environment_inputs": env_inputs,
+        "tool_identities": tool_identities,
+        "prerequisite_inputs": prereq_inputs,
+        "closure_digest": _canonical_sha256(closure_payload),
+    }
+
+
+def compare_pre_execution_to_historical_result(pre_proof, historical_result):
+    """Compare a P0 pre-execution proof to one historical Native Result's inputs.
+
+    Evaluates **only single-Result factual input equivalence**
+    (``comparison_scope="single_native_result"``). It never checks multi-requirement
+    completeness (all-required / after / alternatives), Witness composition,
+    issuer trust, PASS/FAIL policy, or whole-Check skip/reuse eligibility.
+    Callers evaluating Check satisfaction or cross-run reuse must combine
+    per-Result facts with ``check_contract.evaluate_expected_satisfaction()`` and
+    #63 T2 admission.
+    """
+
+    def mismatch(reason):
+        return {
+            "comparison_scope": "single_native_result",
+            "equivalent": False,
+            "single_result_inputs_equivalent": False,
+            "matched_requirement_id": None,
+            "whole_check_reuse_admitted": False,
+            "check_satisfaction_evaluated": False,
+            "reason": reason,
+            "closure_digest": (
+                pre_proof.get("closure_digest") if isinstance(pre_proof, dict) else None
+            ),
+            "trusted": False,
+            "admission_status": "not_evaluated",
+        }
+
+    if (
+        not isinstance(pre_proof, dict)
+        or pre_proof.get("phase") != "pre_execution"
+        or pre_proof.get("execution_started") is not False
+        or pre_proof.get("status") != "verified_candidate_inputs"
+    ):
+        return mismatch("pre_execution_source_unverified")
+    pre_src = pre_proof.get("source_ref")
+    try:
+        check_contract.validate_source_ref(pre_src)
+    except check_contract.CheckContractError:
+        return mismatch("pre_execution_source_unverified")
+    if (
+        pre_src["scope_kind"]
+        not in {
+            "check_input_closure",
+            "full_input_closure",
+        }
+        or pre_src["binding_status"] != "content_digest"
+    ):
+        return mismatch("pre_execution_source_unverified")
+
+    try:
+        check_contract.validate_result(historical_result)
+    except check_contract.CheckContractError:
+        return mismatch("historical_result_invalid")
+
+    hist_check = historical_result["check"]
+    if hist_check.get("check_id") != pre_proof.get("check_id") or hist_check.get(
+        "definition_version"
+    ) != pre_proof.get("definition_version"):
+        return mismatch("check_identity_mismatch")
+
+    hist_src = historical_result["source_ref"]
+    if hist_src.get("scope_kind") not in {
+        "check_input_closure",
+        "full_input_closure",
+    } or hist_src.get("binding_status") not in {"content_digest", "byte_tree"}:
+        return mismatch("historical_source_scope_insufficient")
+    if hist_src.get("content_digest") != pre_src.get("content_digest") or hist_src.get(
+        "verified_input_scope"
+    ) != pre_src.get("verified_input_scope"):
+        return mismatch("source_content_mismatch")
+    if (
+        pre_src.get("declared_target_tree") is not None
+        and hist_src.get("declared_target_tree") is not None
+        and hist_src["declared_target_tree"] != pre_src["declared_target_tree"]
+    ):
+        return mismatch("target_tree_mismatch")
+
+    pre_base = pre_proof.get("baseline_ref")
+    hist_base = historical_result.get("baseline_ref")
+    if pre_base is not None or hist_base is not None:
+        if not isinstance(pre_base, dict) or not isinstance(hist_base, dict):
+            return mismatch("baseline_mismatch")
+        for key in ("base_commit", "baseline_status", "ref_action", "head_commit"):
+            if hist_base.get(key) != pre_base.get(key):
+                return mismatch("baseline_mismatch")
+
+    if (
+        pre_proof.get("rule_ref") is None
+        or hist_check.get("rule_ref") != pre_proof["rule_ref"]
+    ):
+        return mismatch("rule_mismatch")
+
+    if (
+        pre_proof.get("profile_ref") is not None
+        and hist_check.get("profile_ref") != pre_proof["profile_ref"]
+    ):
+        return mismatch("profile_mismatch")
+
+    if pre_proof.get("check_name") == "whitespace":
+        pre_env = pre_proof.get("environment_inputs")
+        hist_env = (historical_result.get("evidence") or {}).get(
+            "git_whitespace_config"
+        )
+        if (
+            not isinstance(pre_env, dict)
+            or not isinstance(hist_env, dict)
+            or (hist_env != pre_env)
+        ):
+            return mismatch("whitespace_config_mismatch")
+
+    pre_gen = [
+        ref
+        for entry in (pre_proof.get("prerequisite_inputs") or ())
+        for ref in (entry.get("generated_input_refs") or ())
+    ]
+    hist_gen = [
+        ref
+        for ref in (historical_result.get("input_refs") or ())
+        if isinstance(ref, dict) and ref.get("kind") == "generated_input"
+    ]
+    if sorted(
+        pre_gen, key=lambda x: json.dumps(x, sort_keys=True, separators=(",", ":"))
+    ) != sorted(
+        hist_gen, key=lambda x: json.dumps(x, sort_keys=True, separators=(",", ":"))
+    ):
+        return mismatch("prerequisite_artifact_mismatch")
+
+    definition = check_contract.definition_for(pre_proof.get("check_name"))
+    tool_reqs = pre_proof.get("tool_identities")
+    if isinstance(tool_reqs, list) and tool_reqs:
+        result_tool = historical_result.get("tool")
+        if not isinstance(result_tool, dict):
+            return mismatch("tool_mismatch")
+        matched_pre = False
+        for req_dict in tool_reqs:
+            for alt in req_dict.get("alternatives") or ():
+                if (
+                    result_tool.get("access_id") == alt.get("access_id")
+                    and result_tool.get("authority") == alt.get("authority")
+                    and result_tool.get("tool_id") == alt.get("tool_id")
+                    and result_tool.get("tool_id_source") == alt.get("tool_id_source")
+                    and not any(
+                        alt.get(k) is not None and result_tool.get(k) != alt.get(k)
+                        for k in ("version", "artifact_sha256")
+                    )
+                ):
+                    matched_pre = True
+                    break
+            if matched_pre:
+                break
+        if not matched_pre:
+            return mismatch("tool_mismatch")
+    matched_req_id = None
+    if definition is not None and definition.tool_requirements:
+        active_reqs = check_contract._active_requirements(
+            definition, rule=pre_proof.get("rule_ref")
+        )
+        matched_req_id = next(
+            (
+                req.requirement_id
+                for req in active_reqs
+                if check_contract._result_matches_requirement(req, historical_result)
+            ),
+            None,
+        )
+        if matched_req_id is None:
+            return mismatch("tool_mismatch")
+
+    return {
+        "comparison_scope": "single_native_result",
+        "equivalent": True,
+        "single_result_inputs_equivalent": True,
+        "matched_requirement_id": matched_req_id,
+        "whole_check_reuse_admitted": False,
+        "check_satisfaction_evaluated": False,
+        "reason": None,
+        "closure_digest": pre_proof.get("closure_digest"),
+        "trusted": False,
+        "admission_status": "not_evaluated",
+    }
 
 
 def _locate_expected_entry(
@@ -2376,6 +3453,8 @@ def _check_evidence(item, name):
         ):
             if key in item and item[key] is not None:
                 evidence[key] = item[key]
+    if name == "whitespace" and isinstance(item.get("git_whitespace_config"), dict):
+        evidence["git_whitespace_config"] = item["git_whitespace_config"]
     if not evidence and name == "forwarding":
         evidence = {
             "analysis": "forwarding",
@@ -2716,10 +3795,23 @@ def _decorate_checks(
             }
             continue
         rule = item.get("rule_ref")
+        result_item = item
+        if (
+            name == "whitespace"
+            and execution_context == "host"
+            and root is not None
+            and item.get("git_whitespace_config") is None
+            and not item.get("git_whitespace_config_drifted")
+        ):
+            ws_cfg, ws_err = _effective_git_whitespace_config(
+                root, _changeset_from_plan(plan, root).paths
+            )
+            if ws_err is None and ws_cfg is not None:
+                result_item = {**item, "git_whitespace_config": ws_cfg}
         try:
             native_results = _native_results(
                 definition,
-                item,
+                result_item,
                 name=name,
                 source=source,
                 rule=rule,
@@ -3068,7 +4160,7 @@ def _execute_with_dependencies(
                 temporary, consumer_root = build_consumer_view(root, files)
                 try:
                     entry = run_host_check(
-                        plan,
+                        _rebased_consumer_plan(plan, root),
                         item,
                         root=consumer_root,
                         hygiene_config=hygiene_config,
