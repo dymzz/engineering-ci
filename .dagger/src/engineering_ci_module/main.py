@@ -678,9 +678,8 @@ class EngineeringCi:
             .stdout()
         )
 
-    async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned Workflow checker once and classify its result."""
-        container = (
+    def _uv_tool_container(self, source: dagger.Directory) -> dagger.Container:
+        return (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
             .with_mounted_cache(
@@ -688,18 +687,62 @@ class EngineeringCi:
             )
             .with_env_variable("UV_LINK_MODE", "copy")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
+            .without_env_variable("SHELLCHECK_OPTS")
             .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
             .with_workdir("/workspace")
         )
+
+    async def _exec_uv_tool(self, source: dagger.Directory, argv: list[str]) -> dict:
+        container = self._uv_tool_container(source)
+        return await _exec_capture(container, argv)
+
+    async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
+        """Execute the pinned Workflow checker once and classify its result."""
+        container = self._uv_tool_container(source)
+        tool_key = "actionlint+shellcheck" if policy.get("shellcheck") else "actionlint"
         result = container.with_exec(
-            script.runner_prefix("actionlint") + script.actionlint_arguments(policy),
+            script.runner_prefix(tool_key) + script.actionlint_arguments(policy),
             expect=dagger.ReturnType.ANY,
         )
+        stdout = await result.stdout()
         return script.script_report(
             policy,
             await result.exit_code(),
-            await result.stdout(),
+            stdout,
             await result.stderr(),
+            native_raw=stdout if stdout.lstrip().startswith("[") else "",
+        )
+
+    async def _run_shellcheck(self, source: dagger.Directory, policy: dict) -> dict:
+        """Execute the pinned ShellCheck checker once and classify its result."""
+        container = self._uv_tool_container(source)
+        result = container.with_exec(
+            script.runner_prefix("shellcheck") + script.shellcheck_arguments(policy),
+            expect=dagger.ReturnType.ANY,
+        )
+        stdout = await result.stdout()
+        return script.script_report(
+            policy,
+            await result.exit_code(),
+            stdout,
+            await result.stderr(),
+            native_raw=stdout,
+        )
+
+    async def _run_zizmor(self, source: dagger.Directory, policy: dict) -> dict:
+        """Execute the pinned zizmor checker once and classify its result."""
+        container = self._uv_tool_container(source)
+        result = container.with_exec(
+            script.runner_prefix("zizmor") + script.zizmor_arguments(policy),
+            expect=dagger.ReturnType.ANY,
+        )
+        stdout = await result.stdout()
+        return script.script_report(
+            policy,
+            await result.exit_code(),
+            stdout,
+            await result.stderr(),
+            native_raw=stdout,
         )
 
     @function
@@ -708,15 +751,56 @@ class EngineeringCi:
         source: dagger.Directory,
         scan_paths: list[str] | None = None,
         config: str = "",
+        shellcheck: bool = False,
+        json_format: bool = False,
     ) -> str:
-        """Check GitHub Actions Workflows with the pinned actionlint.
+        """Check GitHub Actions Workflows with pinned actionlint (opt-in ShellCheck).
 
-        ShellCheck and pyflakes stay explicitly disabled so the checked scope
-        never depends on what happens to be installed. Unchecked inline scripts
-        are never reported as passing. Returns a JSON report without gating.
+        ShellCheck and pyflakes stay explicitly disabled by default so checked
+        scope never depends on implicit PATH tools. Set ``shellcheck=True`` to
+        pair pinned actionlint with pinned shellcheck cleanly.
         """
         report = await self._run_actionlint(
-            source, script.actionlint_policy(scan_paths, config)
+            source,
+            script.actionlint_policy(
+                scan_paths,
+                config,
+                shellcheck=shellcheck,
+                json_format=json_format,
+            ),
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def shellcheck_scripts(
+        self,
+        source: dagger.Directory,
+        scan_paths: list[str] | None = None,
+    ) -> str:
+        """Check standalone POSIX shell scripts with pinned ShellCheck."""
+        report = await self._run_shellcheck(
+            source, script.shellcheck_policy(scan_paths)
+        )
+        return json.dumps(report, ensure_ascii=False, sort_keys=True)
+
+    @function
+    async def zizmor_workflows(
+        self,
+        source: dagger.Directory,
+        scan_paths: list[str] | None = None,
+        config: str = "",
+        persona: str = "",
+        offline: bool = True,
+    ) -> str:
+        """Check GitHub Actions Workflows for security issues with pinned zizmor."""
+        report = await self._run_zizmor(
+            source,
+            script.zizmor_policy(
+                scan_paths,
+                config=config,
+                persona=persona,
+                offline=offline,
+            ),
         )
         return json.dumps(report, ensure_ascii=False, sort_keys=True)
 
@@ -740,6 +824,10 @@ class EngineeringCi:
                 report = await self._run_actionlint(
                     source, script.actionlint_policy([scan_path])
                 )
+            elif kind == "shellcheck":
+                report = await self._run_shellcheck(
+                    source, script.shellcheck_policy([scan_path])
+                )
             elif kind == "psscriptanalyzer":
                 report = script.deferred_report(
                     scan_path,
@@ -749,8 +837,8 @@ class EngineeringCi:
             else:
                 report = script.unsupported_report(
                     scan_path,
-                    "Shell and other script types are out of scope for this check; "
-                    "only Workflow files and PowerShell modules are analysed",
+                    "Other script types are out of scope for this check; "
+                    "only Workflow files, POSIX shell scripts and PowerShell modules are analysed",
                 )
             reports.append(report)
         return json.dumps(

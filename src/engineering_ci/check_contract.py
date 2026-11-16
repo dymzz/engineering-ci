@@ -57,6 +57,10 @@ PROCESS_CHECK_IDS = frozenset(
         "eci/weaver/registry",
         "eci/weaver/live",
         "eci/weaver/terminal",
+        "eci/workflow/actionlint",
+        "eci/shell/shellcheck",
+        "eci/workflow/shellcheck",
+        "eci/workflow/zizmor",
     }
 )
 INTERNAL_CHECK_IDS = frozenset({"eci/hygiene/forwarding", "eci/sources/reconcile"})
@@ -86,6 +90,10 @@ CHECK_IDS = MappingProxyType(
         "weaver_registry": "eci/weaver/registry",
         "weaver_live": "eci/weaver/live",
         "weaver_terminal": "eci/weaver/terminal",
+        "actionlint": "eci/workflow/actionlint",
+        "shellcheck": "eci/shell/shellcheck",
+        "workflow_shellcheck": "eci/workflow/shellcheck",
+        "zizmor": "eci/workflow/zizmor",
     }
 )
 
@@ -159,9 +167,10 @@ def _text(value, name):
     return value
 
 
-def _sha256(value, name):
+def _sha256(value, name, *, allow_prefix=False):
+    pattern = r"(?:sha256:)?[0-9a-f]{64}" if allow_prefix else r"[0-9a-f]{64}"
     if value is not None and (
-        not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+        not isinstance(value, str) or not re.fullmatch(pattern, value)
     ):
         raise CheckContractError(f"{name}_invalid")
     return value
@@ -472,6 +481,16 @@ _TOOL_REQUIREMENTS = {
             after=("registry-local-check",),
         ),
     ),
+    "actionlint": (
+        ToolRequirement("workflow-lint", (ToolIdentity("actionlint/check"),)),
+    ),
+    "shellcheck": (ToolRequirement("shell-lint", (ToolIdentity("shellcheck/check"),)),),
+    "workflow_shellcheck": (
+        ToolRequirement(
+            "workflow-inline-shell", (ToolIdentity("actionlint/shellcheck-inline"),)
+        ),
+    ),
+    "zizmor": (ToolRequirement("actions-security", (ToolIdentity("zizmor/check"),)),),
 }
 # Declaring tool requirements changes when a Check can be satisfied, so it is a
 # definition-version change, not only a Result schema change. Version 1 remains
@@ -495,13 +514,21 @@ _CURRENT_DEFINITION_VERSION = {
     "weaver_registry": 1,
     "weaver_live": 1,
     "weaver_terminal": 1,
+    "actionlint": 1,
+    "shellcheck": 1,
+    "workflow_shellcheck": 1,
+    "zizmor": 1,
 }
 
 
 def _builtin_definitions():
+    if PROCESS_CHECK_IDS & INTERNAL_CHECK_IDS:
+        raise CheckContractError("check_execution_kind_conflict")
     by_version = {}
     current = {}
     for name, check_id in CHECK_IDS.items():
+        if check_id not in PROCESS_CHECK_IDS and check_id not in INTERNAL_CHECK_IDS:
+            raise CheckContractError("check_execution_kind_unknown")
         latest = _CURRENT_DEFINITION_VERSION[name]
         for version in range(1, latest + 1):
             requirements = (
@@ -549,7 +576,7 @@ def rule_ref(name, version, *, path=None, digest=None, baseline_required=None):
     if path is not None:
         ref["path"] = _text(path, "rule_path")
     if digest is not None:
-        ref["sha256"] = _sha256(digest, "rule_sha256")
+        ref["sha256"] = _sha256(digest, "rule_sha256", allow_prefix=True)
     if baseline_required is not None:
         if type(baseline_required) is not bool:
             raise CheckContractError("rule_baseline_required_invalid")
@@ -592,13 +619,23 @@ def validate_definition(definition):
     # Use the same reference validation as validate_result(), including digest.
     _validate_reference(definition.rule_ref, "rule_ref")
     _validate_reference(definition.profile_ref, "profile_ref")
-    _registered_definition(definition.check_id, definition.definition_version)
+    registered = _registered_definition(
+        definition.check_id, definition.definition_version
+    )
     # A definition is accepted only when its Check declares one execution
     # category; otherwise its results could skip native exit/evidence checks.
     _execution_kind(definition.check_id)
+    requirements = validate_tool_requirements(definition.tool_requirements)
+    if (
+        definition.requires_baseline != registered.requires_baseline
+        or definition.requires_post_completion != registered.requires_post_completion
+    ):
+        raise CheckContractError("result_check_semantics_mismatch")
+    if requirements != registered.tool_requirements:
+        raise CheckContractError("result_tool_requirements_mismatch")
     return replace(
         definition,
-        tool_requirements=validate_tool_requirements(definition.tool_requirements),
+        tool_requirements=requirements,
     )
 
 
@@ -735,7 +772,7 @@ def _validate_reference(ref, name):
     _text(ref.get("name"), f"{name}_name")
     _version(ref.get("version"), f"{name}_version")
     if ref.get("sha256") is not None:
-        _sha256(ref["sha256"], f"{name}_sha256")
+        _sha256(ref["sha256"], f"{name}_sha256", allow_prefix=(name == "rule_ref"))
     if "baseline_required" in ref:
         if name != "rule_ref":
             raise CheckContractError(f"{name}_invalid")
@@ -936,13 +973,6 @@ def native_result(
     registered = _registered_definition(
         definition.check_id, definition.definition_version
     )
-    if (
-        definition.requires_baseline != registered.requires_baseline
-        or definition.requires_post_completion != registered.requires_post_completion
-    ):
-        raise CheckContractError("result_check_semantics_mismatch")
-    if definition.tool_requirements != registered.tool_requirements:
-        raise CheckContractError("result_tool_requirements_mismatch")
     if status not in STATUSES:
         raise CheckContractError("result_status_invalid")
     if result_origin not in ORIGINS:
@@ -992,7 +1022,9 @@ def native_result(
     ):
         raise CheckContractError("result_post_completion_phase_required")
     kind = _execution_kind(definition.check_id)
-    if status in {"passed", "failed"}:
+    if kind == "internal" and native_exit_code is not None:
+        raise CheckContractError("result_internal_exit_forbidden")
+    if status in {"passed", "failed", "advisory"}:
         if kind == "process":
             if native_exit_code is None:
                 raise CheckContractError("result_native_exit_missing")
@@ -1077,6 +1109,9 @@ def validate_result(result):
     exit_code = result.get("native_exit_code")
     if exit_code is not None and type(exit_code) is not int:
         raise CheckContractError("native_exit_code_invalid")
+    kind = _execution_kind(check_id)
+    if kind == "internal" and exit_code is not None:
+        raise CheckContractError("result_internal_exit_forbidden")
     if status == "passed" and exit_code not in (None, 0):
         raise CheckContractError("result_exit_inconsistent")
     if status == "failed" and exit_code == 0:
@@ -1103,8 +1138,7 @@ def validate_result(result):
         and phase != POST_COMPLETION_PHASE
     ):
         raise CheckContractError("result_post_completion_phase_required")
-    kind = _execution_kind(check_id)
-    if status in {"passed", "failed"}:
+    if status in {"passed", "failed", "advisory"}:
         if kind == "process":
             if exit_code is None:
                 raise CheckContractError("result_native_exit_missing")
