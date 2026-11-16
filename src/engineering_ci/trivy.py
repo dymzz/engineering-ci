@@ -379,8 +379,9 @@ def scan_filesystem(
             "ignored_env_keys": ignored_env,
         },
         "db": {
-            "updated_at": (report.get("Metadata") or {}).get("DBUpdatedAt"),
-            "version": (report.get("Metadata") or {}).get("DBVersion"),
+            "authority": "unknown",
+            "updated_at": None,
+            "version": None,
         },
     }
 

@@ -253,6 +253,36 @@ def test_trivy_cli_zero_overrides_config_exit_code(tmp_path):
 
 
 @requires_trivy
+def test_trivy_real_vulnerability_scan(tmp_path):
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "name": "fixture",
+                "lockfileVersion": 3,
+                "packages": {"node_modules/lodash": {"version": "4.17.15"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = trivy.scan_filesystem(
+        root,
+        target=".",
+        scanners=("vuln",),
+        environ={**os.environ, "TRIVY_BIN": BINARY},
+    )
+    assert result["status"] == "findings"
+    assert result["native_exit_code"] == 0
+    assert result["findings"]
+    assert all(finding["kind"] == "vulnerability" for finding in result["findings"])
+    assert result["db"]["authority"] == "unknown"
+    for finding in result["findings"]:
+        assert "vulnerability_id" not in finding
+        assert finding["vulnerability_sha256"].startswith("sha256:")
+
+
+@requires_trivy
 def test_trivy_misconfig_full_scan_separates_status(tmp_path):
     root = tmp_path / "target"
     root.mkdir()
