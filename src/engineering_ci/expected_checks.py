@@ -660,18 +660,22 @@ def validate_effective_profile(profile, *, git=None):
         for opt_list in ("target_refs", "actions", "phases"):
             if opt_list in item:
                 vals = item[opt_list]
-                if (not isinstance(vals, list) or (opt_list == "phases" and not vals) or any(
-                    not isinstance(v, str) or not v for v in vals
-                )):
+                if (
+                    not isinstance(vals, list)
+                    or (opt_list == "phases" and not vals)
+                    or any(not isinstance(v, str) or not v for v in vals)
+                ):
                     raise ExpectedError("effective_profile_obligations_invalid")
     for item in advisory:
         if isinstance(item, dict):
             for opt_list in ("target_refs", "actions", "phases"):
                 if opt_list in item:
                     vals = item[opt_list]
-                    if (not isinstance(vals, list) or (opt_list == "phases" and not vals) or any(
-                        not isinstance(v, str) or not v for v in vals
-                    )):
+                    if (
+                        not isinstance(vals, list)
+                        or (opt_list == "phases" and not vals)
+                        or any(not isinstance(v, str) or not v for v in vals)
+                    ):
                         raise ExpectedError("effective_profile_obligations_invalid")
     if git is not None:
         _match_profile_event(profile, git)
