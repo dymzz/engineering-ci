@@ -1,0 +1,139 @@
+"""One-off integrity check of Issue #125 A/B records; no semantic acceptance."""
+
+import ast
+import gzip
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path('docs/verification/authorization-closure')
+EVIDENCE = ROOT / 'evidence'
+mechanical = json.loads(gzip.decompress((EVIDENCE / 'mechanical-discovery.json.gz').read_bytes()))
+source_bytes = gzip.decompress((EVIDENCE / 'github-source-snapshots.json.gz').read_bytes())
+sources = json.loads(source_bytes)
+baseline = json.loads((ROOT / 'baseline-snapshot.json').read_text(encoding='utf-8'))
+inventory = json.loads((ROOT / 'discovery-inventory.json').read_text(encoding='utf-8'))
+graph = json.loads((ROOT / 'dependency-map.json').read_text(encoding='utf-8'))
+assert hashlib.sha256(source_bytes).hexdigest() == baseline['source_archive']['decompressed_sha256']
+issues = {i['issue_number']: i for i in sources['issues']}
+for i in baseline['issues']:
+    assert hashlib.sha256(issues[i['number']]['body'].encode('utf-8')).hexdigest() == i['body_sha256']
+
+git_refs = {}
+checked_symbols = 0
+checked_calls = 0
+for sn, data in mechanical['snapshots'].items():
+    commit = data['commit']
+    assert commit == inventory['snapshots'][sn]['commit']
+    nodes = data['nodes']
+    paths = {n['path'] for n in nodes.values()}
+    paths.update(p['path'] for p in inventory['snapshots'][sn]['searched_files'])
+    paths = sorted(paths)
+    payload = subprocess.run(['git', '-c', 'core.hooksPath=NUL', 'cat-file', '--batch'],
+                             input=''.join(f'{commit}:{p}\n' for p in paths).encode(),
+                             check=True, capture_output=True).stdout
+    cursor, blobs = 0, {}
+    for path in paths:
+        end = payload.index(b'\n', cursor)
+        oid, kind, size = payload[cursor:end].decode().split()
+        assert kind == 'blob', (commit, path)
+        cursor = end + 1
+        raw = payload[cursor:cursor+int(size)]
+        cursor += int(size) + 1
+        assert hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == oid
+        blobs[path] = (raw, oid)
+        git_refs[(commit, path)] = raw
+    for p in inventory['snapshots'][sn]['searched_files']:
+        assert hashlib.sha256(blobs[p['path']][0]).hexdigest() == p['sha256']
+    for symbol, n in nodes.items():
+        raw, oid = blobs[n['path']]
+        assert oid == n['blob']
+        assert hashlib.sha256(raw).hexdigest() == n['sha256']
+        line = raw.decode('utf-8-sig').splitlines()[n['line']-1].lstrip()
+        assert re.match(r'(async )?def ' + re.escape(symbol.rsplit('.',1)[1]) + r'\(', line), (symbol, line)
+        checked_symbols += 1
+        for c in n['calls']:
+            if c.get('resolution') == 'static':
+                assert c['target'] in nodes
+                assert {'caller': symbol, 'line': c['line']} in nodes[c['target']]['callers']
+                checked_calls += 1
+        for caller in n['callers']:
+            assert any(c.get('target') == symbol and c['line'] == caller['line']
+                       for c in nodes[caller['caller']]['calls'])
+    rows = inventory['snapshots'][sn]['expanded_candidates']
+    assert set(data['authorization_candidates']) <= {r['symbol'] for r in rows}
+    assert all(r['route'] != 'manual review required' for r in rows)
+    for r in rows:
+        n = nodes[r['symbol']]
+        assert all(r[k] == n[k] for k in ['path','line','end_line','blob','sha256'])
+        assert r['resolved_runtime_callers'] == n['callers']
+    for hit in inventory['snapshots'][sn]['test_workflow_entrypoint_hits']:
+        assert blobs[hit['path']][0].decode('utf-8-sig').splitlines()[hit['line']-1].strip() == hit['text']
+    for entry in inventory['snapshots'][sn]['dagger_decorated_entrypoints']:
+        tree=ast.parse(blobs[entry['path']][0].decode('utf-8-sig'))
+        assert any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==entry['name'] and n.lineno==entry['line']
+                   and [ast.unparse(d) for d in n.decorator_list]==entry['decorators'] for n in ast.walk(tree))
+
+edges = {e['id']: e for e in graph['edges']}
+assert len(edges) == len(graph['edges'])
+for key, n in graph['nodes'].items():
+    assert n['incoming_edges'] == [e['id'] for e in graph['edges'] if e['to'] == key]
+    assert n['outgoing_edges'] == [e['id'] for e in graph['edges'] if e['from'] == key]
+    if 'symbol' in n:
+        original = mechanical['snapshots'][n['snapshot']]['nodes'][n['symbol']]
+        assert all(n[k] == original[k] for k in ['commit','path','line','end_line','blob','sha256'])
+        assert n['resolved_runtime_callers'] == original['callers']
+    else:
+        assert n['resolution'] == 'unresolved' and n['needed_observation']
+for e in graph['edges']:
+    a,b=graph['nodes'][e['from']],graph['nodes'][e['to']]
+    assert a['snapshot'] == b['snapshot'], e
+    assert e['kind'] in graph['edge_kinds']
+    if e['kind']=='static_call':
+        assert any(c.get('target')==b['symbol'] for c in mechanical['snapshots'][a['snapshot']]['nodes'][a['symbol']]['calls']), e
+
+checked_links = 0
+(EVIDENCE / 'validate-audit-artifacts.txt').write_bytes(Path(__file__).read_bytes())
+generated_later = {(EVIDENCE / 'validation.json').resolve(), (EVIDENCE / 'SHA256SUMS').resolve()}
+for path in ROOT.rglob('*.md'):
+    for target in re.findall(r'\]\(([^\s)]+)\)', path.read_text(encoding='utf-8')):
+        if target.startswith(('http:', 'https:', '#')): continue
+        local = (path.parent / target.split('#')[0]).resolve()
+        assert local.is_relative_to(Path.cwd().resolve()), (path,target)
+        assert local.exists() or local in generated_later, (path,target)
+        checked_links += 1
+source_index = (ROOT / 'source-index.md').read_text(encoding='utf-8')
+source_links = re.findall(r'https://github.com/dymzz/engineering-ci/blob/([0-9a-f]{40})/([^\s)#]+)#L(\d+)',source_index)
+assert len(source_links) == sum('symbol' in n for n in graph['nodes'].values())
+for commit,path,line in source_links:
+    assert 1 <= int(line) <= len(git_refs[(commit,path)].decode('utf-8-sig').splitlines())
+
+# The retained checker is an artifact, not an installed tool or CI gate.
+(EVIDENCE / 'validate-audit-artifacts.txt').write_bytes(Path(__file__).read_bytes())
+result={'scope':'Issue #125 A/B artifact integrity only; not semantic or production authorization acceptance',
+        'status':'passed','snapshots':{s:{'commit':d['commit'],'runtime_files':d['runtime_files_parsed'],
+                                      'symbols':d['symbols_parsed'],
+                                      'searched_files':len(inventory['snapshots'][s]['searched_files'])}
+                                  for s,d in mechanical['snapshots'].items()},
+        'checked_symbols':checked_symbols,'resolved_calls_with_reverse_index':checked_calls,
+        'manual_nodes':len(graph['nodes']),'manual_edges':len(graph['edges']),
+        'source_links':len(source_links),'relative_links':checked_links,
+        'checks':['archive and Issue body hashes','immutable Git blob/content/function lines',
+                  'AST caller/callee reciprocity','candidate and decorated entrypoint/source reconciliation',
+                  'manual graph reciprocity and version partition','direct-call evidence',
+                  'local navigation and fixed source references'],
+        'not_run':['semantic/adversarial acceptance','Dagger/Weaver/OTLP','full engineering matrix','Git/Agent hooks']}
+(EVIDENCE / 'validation.json').write_bytes((json.dumps(result,ensure_ascii=False,indent=2)+'\n').encode('utf-8'))
+sum_path=EVIDENCE / 'SHA256SUMS'
+records=[]
+for path in sorted(ROOT.rglob('*')):
+    if path.is_file() and path != sum_path:
+        records.append(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.relative_to(ROOT).as_posix())
+sum_path.write_bytes(('\n'.join(records)+'\n').encode('utf-8'))
+for record in sum_path.read_text(encoding='utf-8').splitlines():
+    digest,path=record.split('  ',1)
+    assert hashlib.sha256((ROOT/path).read_bytes()).hexdigest()==digest
+print(json.dumps(result,ensure_ascii=False))
+print('SHA256SUMS:',len(records),'files matched')

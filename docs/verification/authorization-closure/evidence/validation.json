@@ -1,0 +1,39 @@
+{
+  "scope": "Issue #125 A/B artifact integrity only; not semantic or production authorization acceptance",
+  "status": "passed",
+  "snapshots": {
+    "main": {
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "runtime_files": 70,
+      "symbols": 1259,
+      "searched_files": 420
+    },
+    "pr124": {
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "runtime_files": 66,
+      "symbols": 1259,
+      "searched_files": 415
+    }
+  },
+  "checked_symbols": 2518,
+  "resolved_calls_with_reverse_index": 5674,
+  "manual_nodes": 93,
+  "manual_edges": 86,
+  "source_links": 71,
+  "relative_links": 40,
+  "checks": [
+    "archive and Issue body hashes",
+    "immutable Git blob/content/function lines",
+    "AST caller/callee reciprocity",
+    "candidate and decorated entrypoint/source reconciliation",
+    "manual graph reciprocity and version partition",
+    "direct-call evidence",
+    "local navigation and fixed source references"
+  ],
+  "not_run": [
+    "semantic/adversarial acceptance",
+    "Dagger/Weaver/OTLP",
+    "full engineering matrix",
+    "Git/Agent hooks"
+  ]
+}

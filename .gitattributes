@@ -7,3 +7,8 @@ docs/verification/native-tool-contract/process-results/** -text
 docs/verification/native-tool-contract/process-results/*-plan.json whitespace=cr-at-eol
 docs/verification/workflow-security/** -text
 docs/verification/dagger-input-cache/** -text
+# Versioned authorization audit snapshots and their hashes retain exact bytes.
+docs/verification/authorization-closure/** -text
+# Original Windows decoded responses retain CRLF; spaces remain errors.
+docs/verification/authorization-closure/evidence/github-visibility.json whitespace=cr-at-eol
+docs/verification/authorization-closure/evidence/protection-observation.json whitespace=cr-at-eol

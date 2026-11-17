@@ -1,0 +1,47 @@
+"""Use existing GET-only repository observation; never publish or change rules."""
+
+import datetime
+import json
+from pathlib import Path
+
+from engineering_ci.github_cli import ApiError, GitHub
+from engineering_ci.required_assessment_protection import inspect_server_protection
+
+target = Path(".artifacts/authorization-closure")
+target.mkdir(parents=True, exist_ok=True)
+records = []
+client = GitHub("dymzz/engineering-ci")
+
+def get(path, method="GET", data=None):
+    if method != "GET" or data is not None:
+        raise RuntimeError("read-only capture refuses mutation")
+    at = datetime.datetime.now(datetime.UTC).isoformat()
+    try:
+        result = client(path, method="GET")
+    except ApiError as error:
+        records.append({"path": path, "method": "GET", "observed_at": at,
+                        "status": "error", "http_status": error.status,
+                        "native_exit_code": error.exit_code, "diagnostic": str(error)})
+        raise
+    records.append({"path": path, "method": "GET", "observed_at": at,
+                    "status": "decoded_response", "native_exit_code": 0, "response": result})
+    return result
+
+protection = inspect_server_protection("dymzz/engineering-ci", branch="main", github=get)
+(target / "protection-observation.json").write_text(json.dumps(protection, indent=2) + "\n", encoding="utf-8")
+for sha in ["4bb346c57f99e4767eea78082639f0b367745140", "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5", "2057463e4d1ff628d7cffdf63178dc38e69742bb"]:
+    for page in range(1, 11):
+        try:
+            result = get(f"commits/{sha}/check-runs?per_page=100&page={page}")
+        except ApiError:
+            break
+        if not isinstance(result, dict) or not isinstance(result.get("check_runs"), list):
+            break
+        if len(result["check_runs"]) < 100:
+            break
+payload = {"repository": "dymzz/engineering-ci", "scope": "decoded_GET_metadata_not_publisher_authentication",
+           "records": records}
+(target / "github-visibility.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+print(json.dumps({"protection": {k: protection.get(k) for k in ["visibility", "enforcement", "limitations"]},
+                  "GETs": [{"path":r["path"], "status":r["status"], "http_status":r.get("http_status"),
+                            "check_count":len(r.get("response",{}).get("check_runs",[])) if isinstance(r.get("response"),dict) else None} for r in records]}, indent=2))

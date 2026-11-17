@@ -1,0 +1,1660 @@
+{
+  "repository": "dymzz/engineering-ci",
+  "compiled_at": "2026-11-17 14:14:44 UTC",
+  "description": "Normalized connected GitHub responses; independent observations, no authority granted",
+  "pull_requests": [
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/111",
+      "number": 111,
+      "title": "feat(#66-P0): pre-execution Host Source input proof for reuse admission",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "eb235828fda3c13693eef1e529223ef4d12537df",
+      "head": "codex/eci-066-p0-preexec-source-20261116",
+      "head_sha": "b617264504b213f0a5d6870061f11100386f074a",
+      "merge_commit_sha": "a82d11ed45c0ecf3d235dbe6b23b7e14ffa1ee69",
+      "created_at": "2026-11-16T15:40:59Z",
+      "updated_at": "2026-11-16T18:05:04Z",
+      "merged_at": "2026-11-16T18:05:01Z",
+      "changed_files": 3
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/112",
+      "number": 112,
+      "title": "feat(#66-B2): approved Phase applicability in EffectiveProfile projections",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "eb235828fda3c13693eef1e529223ef4d12537df",
+      "head": "codex/eci-066-b2-phase-universe-20261116",
+      "head_sha": "32431fa29774bdfd57fb7c1b4e9d12a0b7a2880c",
+      "merge_commit_sha": "58d40ee0b390e0e90aa5fa9be7689a2f921a574d",
+      "created_at": "2026-11-16T15:43:53Z",
+      "updated_at": "2026-11-16T18:44:58Z",
+      "merged_at": "2026-11-16T18:44:56Z",
+      "changed_files": 5
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/113",
+      "number": 113,
+      "title": "feat(#63): add T1-a evidence admission contract slice",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "eb235828fda3c13693eef1e529223ef4d12537df",
+      "head": "codex/eci-063-t1a-evidence-admission-20261116",
+      "head_sha": "1ec75f5e421ac1d17646d210f2d58eb20b321639",
+      "merge_commit_sha": "80c86a1a8228db1cf7615e84e3f6ec01607c682c",
+      "created_at": "2026-11-16T16:43:13Z",
+      "updated_at": "2026-11-16T19:02:32Z",
+      "merged_at": "2026-11-16T19:02:29Z",
+      "changed_files": 5
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/116",
+      "number": 116,
+      "title": "feat(#63): add T2 historical reuse admission contract slice",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "80c86a1a8228db1cf7615e84e3f6ec01607c682c",
+      "head": "codex/eci-063-t2-historical-reuse-20261117",
+      "head_sha": "3da2eea7d6aed650a22207b5f2561d0b92c36dd1",
+      "merge_commit_sha": "910515c279f6d8df0677aa4f1972fb30ce20d636",
+      "created_at": "2026-11-17T03:04:31Z",
+      "updated_at": "2026-11-17T04:14:21Z",
+      "merged_at": "2026-11-17T04:14:19Z",
+      "changed_files": 8
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/120",
+      "number": 120,
+      "title": "feat(#63): add T1-b local→Actions handoff contract slice",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "9af9001d6a6c26964771134700097b281cc4b3a0",
+      "head": "codex/eci-063-t1b-local-actions-handoff-20261117",
+      "head_sha": "ace315f0cd4681ff38ab3474e3bc0d6f430913c4",
+      "merge_commit_sha": "b8bb89930e13f8bb9139552fc6dc8534f9d03d10",
+      "created_at": "2026-11-17T05:45:29Z",
+      "updated_at": "2026-11-17T06:50:39Z",
+      "merged_at": "2026-11-17T06:50:37Z",
+      "changed_files": 6
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/114",
+      "number": 114,
+      "title": "feat(#61-R1): complete staged Required Assessment",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "910515c279f6d8df0677aa4f1972fb30ce20d636",
+      "head": "codex/eci-061-r1-required-assessment-20261116",
+      "head_sha": "e3d82353ba3c526bec782fbe861a319f09395f4e",
+      "merge_commit_sha": "a149edc2bf3dc9a240853facf6a5d1a2beabd4b7",
+      "created_at": "2026-11-16T16:57:59Z",
+      "updated_at": "2026-11-17T04:25:55Z",
+      "merged_at": "2026-11-17T04:25:53Z",
+      "changed_files": 6
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/118",
+      "number": 118,
+      "title": "feat(#61-R2): add Required Assessment GitHub Check publication contract",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "dd18b6a720c29b62c92f6b1dc4038f80fbd5fc20",
+      "head": "codex/eci-061-r2-github-check-20261117",
+      "head_sha": "251205c280c7dda9282d5b0ee8c6371c002b7921",
+      "merge_commit_sha": "9af9001d6a6c26964771134700097b281cc4b3a0",
+      "created_at": "2026-11-17T04:52:46Z",
+      "updated_at": "2026-11-17T05:32:27Z",
+      "merged_at": "2026-11-17T05:32:25Z",
+      "changed_files": 5
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/122",
+      "number": 122,
+      "title": "feat(#61-G2/G3): trusted publish authority and protection observation",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "b8bb89930e13f8bb9139552fc6dc8534f9d03d10",
+      "head": "codex/eci-061-g2-g3-github-context-20261117",
+      "head_sha": "209640b73d56b0295096d4706ad3fb6b3e9552e6",
+      "merge_commit_sha": "512d3ab6373080b15a8681144697a2c8b7431116",
+      "created_at": "2026-11-17T07:19:15Z",
+      "updated_at": "2026-11-17T08:08:50Z",
+      "merged_at": "2026-11-17T08:08:48Z",
+      "changed_files": 9
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/123",
+      "number": 123,
+      "title": "feat(#61-R5): add post-stage Required Assessment contract",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "f3f5a7c806c7fcf7e20a6b6dd257c9b5318a0e25",
+      "head": "codex/eci-061-r5-post-assessment-20261117",
+      "head_sha": "2057463e4d1ff628d7cffdf63178dc38e69742bb",
+      "merge_commit_sha": "4bb346c57f99e4767eea78082639f0b367745140",
+      "created_at": "2026-11-17T09:07:08Z",
+      "updated_at": "2026-11-17T10:55:07Z",
+      "merged_at": "2026-11-17T10:53:19Z",
+      "changed_files": 6
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/124",
+      "number": 124,
+      "title": "feat(#52-D4): bind Terminal Expected into post_completion plan",
+      "state": "open",
+      "merged": false,
+      "draft": true,
+      "base": "main",
+      "base_sha": "f3f5a7c806c7fcf7e20a6b6dd257c9b5318a0e25",
+      "head": "codex/eci-052-d4-terminal-expected-20261117",
+      "head_sha": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "merge_commit_sha": "30b11ce432c9c59d855ef7d723bfb86e6c8b9a14",
+      "created_at": "2026-11-17T09:08:08Z",
+      "updated_at": "2026-11-17T12:43:27Z",
+      "merged_at": null,
+      "changed_files": 5
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/119",
+      "number": 119,
+      "title": "fix(dagger): refresh online inputs and cache source-bound prerequisites (#86 D.1)",
+      "state": "closed",
+      "merged": true,
+      "draft": false,
+      "base": "main",
+      "base_sha": "dd18b6a720c29b62c92f6b1dc4038f80fbd5fc20",
+      "head": "codex/eci-086-dynamic-input-cache",
+      "head_sha": "0752f1ea619d44b28fe35152403662f0b574dc9d",
+      "merge_commit_sha": "f3f5a7c806c7fcf7e20a6b6dd257c9b5318a0e25",
+      "created_at": "2026-11-17T05:21:24Z",
+      "updated_at": "2026-11-17T09:01:35Z",
+      "merged_at": "2026-11-17T09:01:33Z",
+      "changed_files": 72
+    }
+  ],
+  "ci": [
+    {
+      "run_id": 44068954853,
+      "snapshot": "main",
+      "jobs": {
+        "jobs": [
+          {
+            "id": 133989905705,
+            "name": "sync-tool-tests",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44068954853,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Run all core unit and process tests",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Export the original core execution evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 5
+              },
+              {
+                "name": "Upload core release evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 12
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 13
+              }
+            ]
+          },
+          {
+            "id": 133989906059,
+            "name": "version-metadata",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44068954853,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Validate release metadata and root lock consistency",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              }
+            ]
+          },
+          {
+            "id": 133989906062,
+            "name": "python-ci / checks",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44068954853,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Ruff Lint",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Ruff Format Check",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Record release Ruff tool versions",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Run actions/upload-artifact@v7.0.2",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 7
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 14
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 15
+              }
+            ]
+          },
+          {
+            "id": 133989906235,
+            "name": "dagger-native-telemetry / a1-gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44068954853,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Sync host Python dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Determine A.1 live capture scope",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Run offline A.1 contract regression when live inputs are unchanged",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6
+              },
+              {
+                "name": "Upload offline A.1 contract report",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 7
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 8
+              },
+              {
+                "name": "Capture isolated OTLP traces and enforce A.1 gate",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 9
+              },
+              {
+                "name": "Upload A.1 native telemetry evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 10
+              },
+              {
+                "name": "Post Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "artifacts": [
+          {
+            "id": 14322365336,
+            "name": "dagger-native-telemetry-a1-offline",
+            "size_in_bytes": 516,
+            "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14322365336",
+            "archive_download_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14322365336/zip",
+            "expired": false,
+            "created_at": "2026-11-17T10:53:34Z",
+            "expires_at": "2026-11-24T10:53:34Z",
+            "updated_at": "2026-11-17T10:53:34Z",
+            "digest": "sha256:f9d1f902fdf7f378d86b296ce8e4302dc67877e6528865b6532ce1a710efb389",
+            "workflow_run": {
+              "id": 44068954853,
+              "repository_id": 1410193197,
+              "head_repository_id": 1410193197,
+              "head_branch": "main",
+              "head_sha": "4bb346c57f99e4767eea78082639f0b367745140"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "run_id": 44066114637,
+      "snapshot": "pr123_head",
+      "jobs": {
+        "jobs": [
+          {
+            "id": 133980109754,
+            "name": "python-ci / checks",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44066114637,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Ruff Lint",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Ruff Format Check",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Record release Ruff tool versions",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Run actions/upload-artifact@v7.0.2",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 7
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 14
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 15
+              }
+            ]
+          },
+          {
+            "id": 133980110175,
+            "name": "sync-tool-tests",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44066114637,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Run all core unit and process tests",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Export the original core execution evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 5
+              },
+              {
+                "name": "Upload core release evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 12
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 13
+              }
+            ]
+          },
+          {
+            "id": 133980110196,
+            "name": "dagger-native-telemetry / a1-gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44066114637,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Sync host Python dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Determine A.1 live capture scope",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Run offline A.1 contract regression when live inputs are unchanged",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6
+              },
+              {
+                "name": "Upload offline A.1 contract report",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 7
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 8
+              },
+              {
+                "name": "Capture isolated OTLP traces and enforce A.1 gate",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 9
+              },
+              {
+                "name": "Upload A.1 native telemetry evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 10
+              },
+              {
+                "name": "Post Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21
+              }
+            ]
+          },
+          {
+            "id": 133980110239,
+            "name": "version-metadata",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44066114637,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Validate release metadata and root lock consistency",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "artifacts": [
+          {
+            "id": 14320458265,
+            "name": "dagger-native-telemetry-a1-offline",
+            "size_in_bytes": 515,
+            "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14320458265",
+            "archive_download_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14320458265/zip",
+            "expired": false,
+            "created_at": "2026-11-17T10:35:00Z",
+            "expires_at": "2026-11-24T10:34:59Z",
+            "updated_at": "2026-11-17T10:35:00Z",
+            "digest": "sha256:33a52f1594718466758ab6876a7b1f2e442457ee8a818b22ce430634f44abc2c",
+            "workflow_run": {
+              "id": 44066114637,
+              "repository_id": 1410193197,
+              "head_repository_id": 1410193197,
+              "head_branch": "codex/eci-061-r5-post-assessment-20261117",
+              "head_sha": "2057463e4d1ff628d7cffdf63178dc38e69742bb"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "run_id": 44085810641,
+      "snapshot": "pr124",
+      "jobs": {
+        "jobs": [
+          {
+            "id": 134047810112,
+            "name": "sync-tool-tests",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44085810641,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Run all core unit and process tests",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Export the original core execution evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 5
+              },
+              {
+                "name": "Upload core release evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 12
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 13
+              }
+            ]
+          },
+          {
+            "id": 134047810491,
+            "name": "version-metadata",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44085810641,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Validate release metadata and root lock consistency",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              }
+            ]
+          },
+          {
+            "id": 134047810496,
+            "name": "python-ci / checks",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44085810641,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Ruff Lint",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Ruff Format Check",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Record release Ruff tool versions",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Run actions/upload-artifact@v7.0.2",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 7
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 14
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 15
+              }
+            ]
+          },
+          {
+            "id": 134047810588,
+            "name": "dagger-native-telemetry / a1-gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44085810641,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Sync host Python dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Determine A.1 live capture scope",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Run offline A.1 contract regression when live inputs are unchanged",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6
+              },
+              {
+                "name": "Upload offline A.1 contract report",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 7
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 8
+              },
+              {
+                "name": "Capture isolated OTLP traces and enforce A.1 gate",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 9
+              },
+              {
+                "name": "Upload A.1 native telemetry evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 10
+              },
+              {
+                "name": "Post Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "artifacts": [
+          {
+            "id": 14329571284,
+            "name": "dagger-native-telemetry-a1-offline",
+            "size_in_bytes": 548,
+            "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14329571284",
+            "archive_download_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14329571284/zip",
+            "expired": false,
+            "created_at": "2026-11-17T12:43:50Z",
+            "expires_at": "2026-11-24T12:43:49Z",
+            "updated_at": "2026-11-17T12:43:50Z",
+            "digest": "sha256:9f9fe65696ddaada60a6da60f51c7cdb3e3d5453cb1d39407e75e5e481e6d370",
+            "workflow_run": {
+              "id": 44085810641,
+              "repository_id": 1410193197,
+              "head_repository_id": 1410193197,
+              "head_branch": "codex/eci-052-d4-terminal-expected-20261117",
+              "head_sha": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "run_id": 44048556796,
+      "snapshot": "pr119_head",
+      "jobs": {
+        "jobs": [
+          {
+            "id": 133920269990,
+            "name": "sync-tool-tests",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44048556796,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Run all core unit and process tests",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Export the original core execution evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 5
+              },
+              {
+                "name": "Upload core release evidence",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 12
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 13
+              }
+            ]
+          },
+          {
+            "id": 133920270385,
+            "name": "version-metadata",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44048556796,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Validate release metadata and root lock consistency",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              }
+            ]
+          },
+          {
+            "id": 133920270442,
+            "name": "python-ci / checks",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44048556796,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Ruff Lint",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Ruff Format Check",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Record release Ruff tool versions",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Run actions/upload-artifact@v7.0.2",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 7
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 14
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 15
+              }
+            ]
+          },
+          {
+            "id": 133920270455,
+            "name": "dagger-native-telemetry / a1-gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_id": 44048556796,
+            "logs_url": null,
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Sync host Python dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Determine A.1 live capture scope",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Run offline A.1 contract regression when live inputs are unchanged",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 6
+              },
+              {
+                "name": "Upload offline A.1 contract report",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 7
+              },
+              {
+                "name": "Install pinned Dagger CLI",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Capture isolated OTLP traces and enforce A.1 gate",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              },
+              {
+                "name": "Upload A.1 native telemetry evidence",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 10
+              },
+              {
+                "name": "Post Run astral-sh/setup-uv@v7",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19
+              },
+              {
+                "name": "Post Run actions/checkout@v7.0.1",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "artifacts": [
+          {
+            "id": 14313340313,
+            "name": "dagger-native-telemetry-a1",
+            "size_in_bytes": 313974,
+            "url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14313340313",
+            "archive_download_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/artifacts/14313340313/zip",
+            "expired": false,
+            "created_at": "2026-11-17T08:41:12Z",
+            "expires_at": "2026-11-24T08:41:10Z",
+            "updated_at": "2026-11-17T08:41:12Z",
+            "digest": "sha256:2f15952944bd8d754f25f70d5875a416a8639b05c5d36a4dc1c2fad4b646c9df",
+            "workflow_run": {
+              "id": 44048556796,
+              "repository_id": 1410193197,
+              "head_repository_id": 1410193197,
+              "head_branch": "codex/eci-086-dynamic-input-cache",
+              "head_sha": "0752f1ea619d44b28fe35152403662f0b574dc9d"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "run_query_limitation": {
+    "main_pr_triggered_filtered_result": {
+      "workflow_runs": []
+    },
+    "note": "fetch_commit_workflow_runs wrapper filters PR-triggered runs, first page; main check-runs separately expose Run 44068954853."
+  },
+  "source_archive": {
+    "path": "evidence/github-source-snapshots.json.gz",
+    "decompressed_sha256": "b03a84d5e8a76760d08de6982cf6f3c14f24a02e8143a82843abebff1791783f"
+  },
+  "issues": [
+    {
+      "number": 125,
+      "url": "https://github.com/dymzz/engineering-ci/issues/125",
+      "title": "[ECI][Cross-chain] 权威事实→验证→消费→授权：双向依赖闭包与统一验收",
+      "updated_at": "2026-11-17T13:46:07Z",
+      "body_sha256": "d641cc4d529e57f38910361078211d0275085cbd1b8a0dccbdc25fefabae966c",
+      "section_headings": [
+        "## 0. 目标、地位及现行边界",
+        "## 1. 固定的跨链系统不变量",
+        "## 2. 审阅方式：机械发现 + 双向闭包 + 三种相互独立的核验",
+        "### A. 确定版本化审阅快照（**不冻结代码修改权限**）",
+        "### B. 从实际代码/入口枚举授权出口，再双向追踪",
+        "### C. 生成**派生** Coverage/Gap 索引（不是新授权注册表）",
+        "### D. 同一基线的三种独立视角，**先汇总缺陷，后定修订**",
+        "## 3. 修订/集成验收的组织",
+        "## 4. 完成标准（总控验收；生产欠账继续留原 Issue）"
+      ]
+    },
+    {
+      "number": 52,
+      "url": "https://github.com/dymzz/engineering-ci/issues/52",
+      "title": "[P1][ECI-ASSET-01B][48-B] 检查选择、门禁与 Actions 报告集成",
+      "updated_at": "2026-11-17T12:10:16Z",
+      "body_sha256": "df8b577c0b9330e124288d3b79d0fd617ade50b905964609a02236bd7a2073af",
+      "section_headings": [
+        "## 当前交付结算与 #52/#66/#63/#61 交接（2026-11-16；现行，以当前源码与合并记录为准）",
+        "## 2026-11-14 · PR #98 已验收合并；#52 后续受控定义与消费者交接",
+        "### #52 下一轮合同扩域与生产者接线：独立验收要求（2026-11-14）",
+        "## 2026-11-14 · #83/#84 误提前合并后的真实交接与修订落点",
+        "## 已交付切片及仍在实施的集成（历史命令已归档）",
+        "# P1 · ECI-ASSET-01B / 48-B：检查选择、门禁与 Actions 报告",
+        "## #12 审查后的消费者与平台交接",
+        "## Runtime 身份迁移的唯一消费入口",
+        "## 2026-11-13 与 [ECI #66 S1-A](https://github.com/dymzz/engineering-ci/issues/66) 的 Check 身份/Result 契约实施切片（先交付接口；不等待本 Issue 其他工作整体结束）",
+        "### 2026-11-13 · 责任再裁决：#52-A 是 CheckDefinition/Native Result 的生产者，不是 Expected 全集生产者（与已合并设计保持一致）",
+        "### 首个已合并 PR #93 的验收留档与后续公共合同扩展",
+        "### 设计补充：#52-A Check 定义完整性与 Native Result 实例覆盖（2026-11-13）",
+        "## 单一目标与先处理的实际缺口",
+        "## 行为与责任",
+        "## 定向验收",
+        "## OTel/Weaver 专题交接（Knowledge PR #79；2026-11-10）",
+        "## #52 OTel 跨组件真实端到端集成 PR：设计、接口和强制验收（2026-11-11）",
+        "### 目标、现状和交付归属",
+        "### 实现阶段与实际接口（按能力切片验收，不设整 Issue 串行前置）",
+        "### 信号范围与分层结果",
+        "### 可执行验收与必须观察到的拒绝",
+        "### PR 交付要求与验收记录",
+        "## #52 OTel E2E 集成实施 PR（2026-11-11）",
+        "## #74 官方原始 Registry 恢复后的 #52 消费与 Task-only 联调交接（2026-11-11）",
+        "## 交付台账与修改归属（2026-11-11 审阅修订）"
+      ]
+    },
+    {
+      "number": 66,
+      "url": "https://github.com/dymzz/engineering-ci/issues/66",
+      "title": "[ECI] 统一工程 Hygiene、Tach 与增量验证能力",
+      "updated_at": "2026-11-17T12:11:20Z",
+      "body_sha256": "ca4b22120d03946934ede65b101cb745dc2256844c6eb03dbffd0f74f0cb70e4",
+      "section_headings": [
+        "## 2026-11-16 · 已合并公共合同与 Hook 运行时生产缺口（现行）",
+        "## 2026-11-16 · 四 Issue 联合接口收敛：#66-B2 权威阶段投影与 P0 输入证据（现行）",
+        "### B2 增量交付：完整 Obligations Universe 的有权闭包与 Phase 投影",
+        "### P0 → #52 Native Result → #63 Admission：Source 双维证明与执行前/后交接（现行）",
+        "## 2026-11-14 · #98 已验收合并；#66-P0/B1/B2/C 剩余交付",
+        "### 2026-11-14 #66-B1/P0 历史接线验收（已合并 #100 的对应范围不再重做；新增变化才差分验证）",
+        "## 2026-11-14 · 未完成能力与 Issue 状态恢复",
+        "## 目标",
+        "## 2026-11-12 再审：当前剩余生产方合同、修复顺序与验收（本节优先于下方历史实施描述）",
+        "### 0. 已交付 / 未完成事实矩阵",
+        "### P0 — 受检 Source 与实际读取字节的统一契约",
+        "### P0-补充 — 从 Selection 到 Check 的真实 Source 一致性（本次代码复审新增明确验收）",
+        "### P1 — Host/Dagger/Actions 必须消费同一执行许可与原生结果",
+        "### P1 — Git 事件/Hook 真正消费 Source，而非第二套影响算法",
+        "### P1-补充 — Check 的 Trigger / Analysis / Invalidation 取自真实输入（与 PR #72 对齐）",
+        "### P1-补充 — Push 新建/删除远端 Ref 与逐 Ref 验收",
+        "### P1 — 一个真实公共 Source/Prerequisite 生产方 → #86 消费方交接",
+        "### 2026-11-12 PR #72 架构设计恢复：Hook 生命周期、多工具调度与每 Ref Source/Result",
+        "### S1 实施交接：[#52 Check/Result 身份](https://github.com/dymzz/engineering-ci/issues/52) → #66 独立 Expected Check（2026-11-13）",
+        "### 2026-11-13 · Expected Checks 的派生与作用域完整性、Result 对账（遵循已合并 Profile 交接设计）",
+        "#### #66 消费接口与生产函数（第一个 Expected 实施 PR）",
+        "#### 对接验收与 PR 分工",
+        "### 设计补充：#66-B/C 对 #52-A 定义完整性与 Expected/Result 覆盖的消费（2026-11-13）",
+        "### S1 机制接口与冻结验收基线（设计要求；尚未实现）",
+        "### 后续实施和独立验收顺序",
+        "## 当前实现基线（2026-11-12；保留此前已核实的迁移依据）",
+        "## 已核实的 ECI 现状与复用边界",
+        "## 1. Hygiene 公共能力：对照基线核实，只补缺口",
+        "### 公共实现、领域规则与 Hygiene 输入的交接",
+        "## 2. 增量选择与原生测试执行：对照基线核实，只补缺口",
+        "### Tach 图可信性与测试前置步骤",
+        "## 3. 同源本地、Dagger、Actions 入口",
+        "### Git 变更上下文与执行端交接契约（本 Issue 交付）",
+        "### Git 输入快照与执行一致性（本 Issue 的生产方契约）",
+        "## 4. 并行启动、能力交接与跨仓验收",
+        "## 验收标准",
+        "## 不属于本 Issue 的工作",
+        "## Review 修订：可执行契约与定向验收（2026-11-08 复审）",
+        "### §1 来源文件集合对账（P1-2）",
+        "### §2 按检查类型独立影响集合（P1-1）与 pytest 多目标（P1-4）",
+        "### §3 同一公共实现、Dagger 导入与工具装配（P1-3）",
+        "### P2 随实现落实",
+        "### 补充验收",
+        "## 已合并阶段设计与剩余交付校准（2026-11-09）"
+      ]
+    },
+    {
+      "number": 63,
+      "url": "https://github.com/dymzz/engineering-ci/issues/63",
+      "title": "[ECI-CHECK-01] Required Engineering Checks, Evidence Integrity and Change Propagation",
+      "updated_at": "2026-11-16T15:08:37Z",
+      "body_sha256": "83aaabdffb4191d8cce5f422c3d332333dc537529da5ebd683b8fd8a9ee889fd",
+      "section_headings": [
+        "## Background",
+        "### 当前职责交接与已合并基线（2026-11-16；本节优先于历史描述）",
+        "## 1. Required Engineering Checks",
+        "### 实际 PR/main 执行合同（不把注册、报告或成功上传当作执行）",
+        "### PR/main 适用与执行矩阵（每行须给出实际 Profile/Scope 判定和证据）",
+        "### 设计问题与验收",
+        "## 2. CI Results and Gate Semantics",
+        "### Functional requirements",
+        "### 观测/门禁状态矩阵",
+        "### 设计与定向验收",
+        "## 3. Release Evidence Integrity（具体消费与实施交接；#61 负责最终放行）",
+        "### 当前可核验的 Release 基线（2026-11-16）",
+        "### #63 必须交付的 Release 证据输入（不代行 #61）",
+        "### 具体代码/配置交接（按真实 Required 变化定向修改）",
+        "### 定向验收",
+        "## 4. Change Propagation and Verification Reuse",
+        "### Functional requirements",
+        "### Design questions requiring resolution",
+        "## 4A. Local/CI Check Evidence Admission and Reuse（固定 #108/#110 L2 交接；分 T1-a/T1-b/T2）",
+        "### 唯一实例身份与三方接口（源自已合并合同，不宣称 #63 已实现）",
+        "#### T2 历史 Expected → 当前 Expected 的受信映射合同（不重写原始事实）",
+        "#### T1-a / T2：Source 双维证明与当前预执行输入闭包的接纳边界（2026-11-16）",
+        "### T1-a：单执行上下文真实来源接纳与逐 Check Coverage（首先交付）",
+        "### T1-b：本地原生证据 → Actions/ECI 受控交接与真正消费（可与 T1-a 接口并行）",
+        "### T2：跨 Run / PR→main 语义等价复用与实际减小 Remaining Work（依赖已验证 T1-a；按场景使用 T1-b）",
+        "### 阶段依赖、职责与失败处理",
+        "## 5. Scope and Architectural Constraints",
+        "## 6. Acceptance Criteria",
+        "### Execution",
+        "### Evidence",
+        "### Change and regression",
+        "## 7. Delivery",
+        "## OTel/Weaver 专题交接（Knowledge PR #79；2026-11-10）"
+      ]
+    },
+    {
+      "number": 61,
+      "url": "https://github.com/dymzz/engineering-ci/issues/61",
+      "title": "[P1][ECI-CICD-CORE-01C] Required 门禁、权限与 Release 证据连接",
+      "updated_at": "2026-11-17T10:54:02Z",
+      "body_sha256": "3d0a589bbca1d8c2ce057aa522c4139326ae820d16587b019aa26c6e17fcf575",
+      "section_headings": [
+        "# P1 · ECI-CICD-CORE-01C：完整 Required Assessment、GitHub 门禁与 Release 证据连接",
+        "## 0. 当前基线、事实与职责",
+        "### 0.1 当前已合并的公共合同",
+        "### 0.2 当前真实 CI / Release 生产基线",
+        "### 0.3 GitHub 服务端保护：已知与未知",
+        "### 0.4 历史背景（不可作为当前实施基线）",
+        "## 1. 单一目标：完整 Obligations 的阶段性 Assessment",
+        "### 1.1 必须绑定的输入身份",
+        "### 1.1A 完整性证明与定向验收",
+        "### 1.1B 非 Check 义务的 Evidence Satisfaction 交接",
+        "### 1.2 阶段性授权与时序",
+        "### 1.3 消费边界",
+        "## 2. GitHub 门禁：G1/G2/G3 三层独立验证",
+        "### G1 — 内部完整 Required Assessment",
+        "### G2 — 真实、稳定、可消费的最终 GitHub Check",
+        "### G3 — 服务端 Ruleset、来源 App 与权限可见性",
+        "## 3. Release：沿用现有 Manifest/Run/Artifact 进行完整 Required 对账",
+        "### 3.1 当前候选完整性",
+        "### 3.1A 真实发行制品的 Producer → 验证 → 发布闭包",
+        "### 3.2 现有代码与原生证据的准确映射",
+        "### 3.2A Manifest v1 与完整 Required 的合同演进裁决",
+        "### 3.3 发行物与非 Check Obligations",
+        "### 3.4 Release 验收",
+        "### R5 后置 Assessment 的触发、到期与缺失判定合同",
+        "## 4. 权限、策略与证据边界",
+        "## 5. 实施分段、依赖和独立验收",
+        "## 6. Issue #61 的最终验收要求"
+      ]
+    }
+  ],
+  "open_pull_requests": [
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/124",
+      "title": "feat(#52-D4): bind Terminal Expected into post_completion plan",
+      "issue_number": 124,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/124",
+      "display_title": "feat(#52-D4): bind Terminal Expected into post_completion plan"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/105",
+      "title": "feat(#60): add sanitized Gitleaks Git-history execution",
+      "issue_number": 105,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/105",
+      "display_title": "feat(#60): add sanitized Gitleaks Git-history execution"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/106",
+      "title": "feat(#59): add sanitized Trivy filesystem scan",
+      "issue_number": 106,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/106",
+      "display_title": "feat(#59): add sanitized Trivy filesystem scan"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/68",
+      "title": "feat(cli,execution): separate selection applicability, fix tests=[] early return, and add unified run entry point (#66)",
+      "issue_number": 68,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/68",
+      "display_title": "feat(cli,execution): separate selection applicability, fix tests=[] early return, and add unified run entry point (#66)"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/82",
+      "title": "test(#52): accept real Task-only producer and checker contracts",
+      "issue_number": 82,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/82",
+      "display_title": "test(#52): accept real Task-only producer and checker contracts"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/91",
+      "title": "docs(design,#66): S0 review Hook tool-routing authority and staged cross-repo corrections",
+      "issue_number": 91,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/91",
+      "display_title": "docs(design,#66): S0 review Hook tool-routing authority and staged cross-repo corrections"
+    },
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/65",
+      "title": "ECI-CHECK-01 implementation 2 validation",
+      "issue_number": 65,
+      "state": null,
+      "user": null,
+      "assignees": null,
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": null,
+      "created_at": null,
+      "updated_at": null,
+      "closed_at": null,
+      "display_url": "https://github.com/dymzz/engineering-ci/pull/65",
+      "display_title": "ECI-CHECK-01 implementation 2 validation"
+    }
+  ]
+}

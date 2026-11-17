@@ -1,0 +1,123 @@
+"""One-off A/B static discovery from immutable Git blobs; not a CI gate."""
+
+import ast
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+OUT = Path(".artifacts/authorization-closure")
+OUT.mkdir(parents=True, exist_ok=True)
+SNAPSHOTS = {"main": "4bb346c57f99e4767eea78082639f0b367745140",
+             "pr124": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5"}
+AUTH = re.compile(r"accepted_coverage|remaining_work|authorized|authorization|\bbound\b|conclusion|disposition|release_authorized|verified_materials|proof_status|execution_started|assessment_basis")
+
+def git(*args, data=None):
+    return subprocess.run(["git", "-c", "core.hooksPath=NUL", *args], input=data,
+                          capture_output=True, check=True).stdout
+
+def sources(ref):
+    paths = git("ls-tree", "-r", "--name-only", ref).decode().splitlines()
+    paths = [p for p in paths if p.endswith(".py") and p.startswith(("src/engineering_ci/", ".dagger/src/engineering_ci_module/", "scripts/"))]
+    payload = git("cat-file", "--batch", data="".join(f"{ref}:{p}\n" for p in paths).encode())
+    cursor = 0
+    result = {}
+    for path in paths:
+        end = payload.index(b"\n", cursor)
+        oid, kind, length = payload[cursor:end].decode().split()
+        assert kind == "blob"
+        cursor = end + 1
+        raw = payload[cursor:cursor+int(length)]
+        cursor += int(length) + 1
+        result[path] = (raw, oid)
+    return result
+
+def module_name(path):
+    text = path.removeprefix(".dagger/src/") if path.startswith(".dagger/src/") else path.removeprefix("src/")
+    return text.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+
+def name(node):
+    if isinstance(node, ast.Name): return node.id
+    if isinstance(node, ast.Attribute): return name(node.value) + "." + node.attr
+    return "<dynamic>"
+
+output = {"scope": "static runtime roots only; not semantic/authority coverage", "snapshots": {}}
+for snapshot, ref in SNAPSHOTS.items():
+    files = sources(ref)
+    modules = {module_name(p): p for p in files}
+    nodes, module_imports = {}, {}
+    for path, (raw, oid) in files.items():
+        module = module_name(path)
+        tree = ast.parse(raw.decode("utf-8-sig"), filename=path)
+        imports = {}
+        for item in tree.body:
+            if isinstance(item, ast.Import):
+                for alias in item.names: imports[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+            elif isinstance(item, ast.ImportFrom):
+                base = item.module or ""
+                if item.level:
+                    package = module.split(".") if path.endswith("/__init__.py") else module.split(".")[:-1]
+                    base = ".".join(package[:len(package)-item.level+1] + ([base] if base else []))
+                for alias in item.names: imports[alias.asname or alias.name] = base + "." + alias.name
+        module_imports[module] = imports
+
+        def definitions(items, prefix=""):
+            for item in items:
+                if isinstance(item, ast.ClassDef):
+                    definitions(item.body, prefix + item.name + ".")
+                elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    symbol = module + "." + prefix + item.name
+                    parameters = [a.arg for a in [*item.args.posonlyargs, *item.args.args, *item.args.kwonlyargs]]
+                    calls, literals = [], []
+                    class Body(ast.NodeVisitor):
+                        def visit_FunctionDef(self, node): pass
+                        def visit_AsyncFunctionDef(self, node): pass
+                        def visit_ClassDef(self, node): pass
+                        def visit_Call(self, call):
+                            calls.append({"expression": name(call.func), "line": call.lineno})
+                            self.generic_visit(call)
+                        def visit_Constant(self, constant):
+                            if isinstance(constant.value, str) and len(constant.value) < 160 and AUTH.search(constant.value):
+                                literals.append({"value": constant.value, "line": constant.lineno})
+                    visitor = Body()
+                    for statement in item.body: visitor.visit(statement)
+                    nodes[symbol] = {
+                        "path": path, "line": item.lineno, "end_line": item.end_lineno,
+                        "commit": ref, "blob": oid, "sha256": hashlib.sha256(raw).hexdigest(),
+                        "parameters": parameters, "calls": calls, "authorization_literals": literals,
+                        "public": not item.name.startswith("_"), "module": module,
+                    }
+        definitions(tree.body)
+    callers = {key: [] for key in nodes}
+    for symbol, node in nodes.items():
+        imports = module_imports[node["module"]]
+        for call in node["calls"]:
+            expr = call["expression"]
+            first, *rest = expr.split(".")
+            candidates = [node["module"] + "." + expr, expr]
+            if first in imports: candidates.insert(0, imports[first] + ("." + ".".join(rest) if rest else ""))
+            if expr.startswith("self.") and symbol.count(".") > node["module"].count(".") + 1:
+                candidates.insert(0, symbol.rsplit(".", 1)[0] + expr[4:])
+            target = next((c for c in candidates if c in nodes), None)
+            if target:
+                call.update(target=target, resolution="static")
+                callers[target].append({"caller": symbol, "line": call["line"]})
+            elif first in node["parameters"] and "." not in expr:
+                call["resolution"] = "callback_parameter_unresolved"
+            else:
+                call["resolution"] = "external_or_method_unresolved"
+    for symbol, node in nodes.items(): node["callers"] = callers[symbol]
+    candidates = {key: value for key, value in nodes.items() if value["authorization_literals"] or
+                  re.search(r"\.(admit|authorize|assess_required|reconcile_post|reconcile_release|publish_check|verify_local|bind_terminal|prepare_execution)", key)}
+    output["snapshots"][snapshot] = {
+        "commit": ref, "runtime_files_parsed": len(files), "symbols_parsed": len(nodes),
+        "authorization_candidates": list(candidates), "nodes": nodes,
+        "module_imports": module_imports,
+    }
+(OUT / "mechanical-discovery.json").write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+for snapshot, data in output["snapshots"].items():
+    print(snapshot, "files", data["runtime_files_parsed"], "symbols", data["symbols_parsed"], "candidates", len(data["authorization_candidates"]))
+    for symbol in data["authorization_candidates"]:
+        n = data["nodes"][symbol]
+        if n["public"]: print(symbol, f"{n['path']}:{n['line']}", "direct_callers=",len(n["callers"]))

@@ -1,0 +1,43 @@
+{
+  "kind": "engineering-ci-required-assessment-protection",
+  "schema_version": 1,
+  "repository": "dymzz/engineering-ci",
+  "branch": "main",
+  "check_name": "engineering-ci / required-assessment",
+  "visibility": {
+    "branch_rules": "readable",
+    "rulesets": "readable",
+    "branch_protection": "forbidden"
+  },
+  "configuration": {
+    "branch_rules": [],
+    "branch_rule_contexts": [],
+    "rulesets": [],
+    "ruleset_contexts": [],
+    "branch_protection_contexts": [],
+    "required_assessment_in_branch_rules": false,
+    "required_assessment_in_rulesets": false,
+    "required_assessment_in_branch_protection": null,
+    "branch_rules_complete": true,
+    "supplemental_rulesets_complete": true,
+    "supplemental_ruleset_diagnostics": []
+  },
+  "enforcement": {
+    "status": "not_verified",
+    "probe": "not_performed",
+    "reasons": [
+      "branch_protection_not_readable",
+      "incomplete_protection_observation"
+    ]
+  },
+  "limitations": [
+    "observation_does_not_mutate_protection",
+    "configuration_presence_is_not_push_rejection_proof",
+    "enforcement_probe_not_performed",
+    "native_required_contexts_remain_independent",
+    "does_not_authorize_release",
+    "does_not_publish_required_assessment_check",
+    "branch_rules_are_applicability_authority"
+  ],
+  "observation_ref": "sha256:25260516fa3d878300859da99ed124ab2db93aae5563053ba346302f7098c1f8"
+}
