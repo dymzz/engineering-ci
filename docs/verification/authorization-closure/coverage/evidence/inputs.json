@@ -1,0 +1,71 @@
+{
+  "purpose": "Issue #125 C derivation inputs; normalized observations, not new authorization facts",
+  "recorded_at": "2026-11-17 15:38:37 UTC",
+  "implementation_base": "990cd59f83153a1ad3978dc933f89af5ca4829e3",
+  "ab_reviewed_head": "363bb19d381146890b57341f686b03f311fd0d0a",
+  "ab_merge": "990cd59f83153a1ad3978dc933f89af5ca4829e3",
+  "ab_merged_at": "2026-11-17T15:27:39Z",
+  "ab_pr_url": "https://github.com/dymzz/engineering-ci/pull/126",
+  "issue": {
+    "url": "https://github.com/dymzz/engineering-ci/issues/125",
+    "title": "[ECI][Cross-chain] 权威事实→验证→消费→授权：双向依赖闭包与统一验收",
+    "issue_number": 125,
+    "body": "## 0. 目标、地位及现行边界\n\n建立一份 **ECI 授权关键路径的双向依赖与证据闭包**，解决分片 Review 各自正确、却遗漏跨模块上游权威事实、误传局部成功、依赖语义漂移以及反复局部修补的问题。\n\n**这是跨 Issue 审阅/裁决/验收入口，不是新 Profile/Policy/ExpectedSet、Source Store、Receipt、Admission、Required Gate、调度器或第二套权威系统。** 具体 Producer、Validator、Consumer 仍按原有代码及 Issue 归属实施。全局不等于“读完整个 ECI 一遍”，范围限定为**真实执行、证据接纳、Required/Release/GitHub 授权出口及其必要上游**；仅当真实依赖到达 #74/#75/#86/#87/其他模块时延伸相应路径。\n\n**已核实的基线（2026-11-17，实施前须记录实际 `main` SHA 与在途 PR HEAD）：**\n- #66-P0 [PR #111](https://github.com/dymzz/engineering-ci/pull/111) 已合并执行前 Source Proof；#66-B2 [PR #112](https://github.com/dymzz/engineering-ci/pull/112) 已合并 Phase/身份初步投影，**尚未**交付完整治理/委托域、有权 Obligations Universe 与真实生命周期 Phase Producer。当前 `expected_checks.py` 聚合 `status/reason` 可能遮蔽并存的不完整条件，需沿原 Producer/Validator 核实。\n- #63 T1-a [PR #113](https://github.com/dymzz/engineering-ci/pull/113)、T2 [PR #116](https://github.com/dymzz/engineering-ci/pull/116)、T1-b [PR #120](https://github.com/dymzz/engineering-ci/pull/120) 已合并**各自的合同切片**，不等于真实受信 Issuer、运行/传输或跨 Run 复用生产验收。\n- #61-R1 [PR #114](https://github.com/dymzz/engineering-ci/pull/114)，以及 G2/G3/R5 的 [PR #118](https://github.com/dymzz/engineering-ci/pull/118)、[#122](https://github.com/dymzz/engineering-ci/pull/122)、[#123](https://github.com/dymzz/engineering-ci/pull/123) 有可复用的 Assessment/发布/后置合同，真实 Universe/Admission/服务端 Gate/Release 生产事实仍须分别验收；当前 R1 对无受信 Phase Proof 的场景存在阻断，不预设整批实现失效。\n- #52-D4 [PR #124](https://github.com/dymzz/engineering-ci/pull/124) 是在途后置 Terminal Expected Binder；对 `unknown/partial` 原因归属的反复修改说明必须核对**上游生产事实是否足以支持消费方解除缺口**。\n- 原有 [#48](https://github.com/dymzz/engineering-ci/issues/48)、[#55](https://github.com/dymzz/engineering-ci/issues/55) 为其他总任务，[#107](https://github.com/dymzz/engineering-ci/issues/107) 为已关闭的 Native Producer/Expected/Result 专项纠错，本 Issue 不复制其职责。\n\n## 1. 固定的跨链系统不变量\n\n1. **权威真实性：** 区分结构自洽、哈希/Ref 匹配、来源/签发者认证、适用授权及已执行事实。`authorized/verified/admitted/passed/release_authorized` 不能由调用者自报或仅凭对象自签摘要得出。Mock 的 True 只能证明合同路径可达。\n2. **治理域、义务与多原因完整性：** 受管/委托/继承/排除域闭包、Check Domain、适用 Check+Non-Check Obligations 全集、单项执行/覆盖是不同性质。一个 `status/reason` 不得掩盖其他未解决条件；合法单一闭合 Profile、合法空阶段和 Phase-only Partial 必须有正确可达路径，不得只做无依据的 fail-closed 收缩。\n3. **类型化身份/来源：** `scope_id + expected_check_ref`、ExpectedSet、Profile Revision、Action×Target×Phase×Ref/必要 Candidate、Git Tree OID、目录 Content SHA、Source/Input/Rule/Tool/Baseline、Run/Attempt/Artifact 均按自身语义关联；不同算法或语义的摘要不可直接相等，跨源映射必须有来源。执行后 Native Result/Capture 不倒写执行前 Expected。\n4. **时间有效性：** Profile 批准/生效/失效/撤销、运行/评价时间、Phase Trigger、Due Window、Post-stage 及历史复用分别核对。不能将旧阶段 Required/Not-applicable 或历史 PASS 无条件提升为当前放行；同一运行中的后置 Terminal 不成为当前未终结 Workflow 的自等待前置。\n5. **证据职责：** 原生 Exit/Result、#66-C Receipt、#63 Admission/Reuse、#61 Required/Release、G2 GitHub Check 与 G3 服务端保护是不同关口，互不代签；Task-only A 的无 Root 合法性与 Terminal B 的 Root/终态义务分别保留。\n6. **失败和增量复用：** 关键事实 missing/unknown/conflict/expired/revoked/wrong subject 或 skipped/failed/cancelled 时，所有**受影响**的最终允许性出口应保留正确阻断；真实 Native FAIL 不得抹除。只有相同有效输入、范围、来源和时效的既有证据可复用，无关事实不因邻接缺口一律作废。\n\n## 2. 审阅方式：机械发现 + 双向闭包 + 三种相互独立的核验\n\n### A. 确定版本化审阅快照（**不冻结代码修改权限**）\n记录 `main` SHA、在途 PR（至少 #124）HEAD、已有 CI/Native Run/Artifact、真实 GitHub Check/服务端可见性，以及所依据 Issue 的现行段落。已合并有效证据只在其原适用范围使用；本次扫描本身不签发任何权威结论。\n\n### B. 从实际代码/入口枚举授权出口，再双向追踪\n- 用已有 `rg`、AST/调用关系、代码、测试和 Actions/Dagger/Release 配置，枚举所有实际可产生或消费 `accepted_coverage/remaining_work`、`authorized/bound`、Required PASS、Release Authorization、Check Conclusion、Post-stage Disposition 的路径。\n- 起始检查点包括 `admit_evidence()`、`admit_historical_reuse()`、`bind_terminal_expected()`、`assess_required_obligations()`、`reconcile_post_stage()`、`reconcile_release_assessment()` 和真正 G2/G3/Release 入口，**但该清单只是种子，不冒充最终全部出口**。\n- 对每个出口**反向追到原始有权 Producer 与验证器**；从每个 Producer/Validator **正向追到实际消费者**。核实身份、证明范围、评价时间、输入闭包、失败传播、动态派发/外部回调及环境差异，发现循环自证、遗漏和相互矛盾的解释。\n- 对静态不能解析的动态调用、回调、Provider、GitHub 服务端边明确留下 `unresolved` 与需补的实际观察；不能把“未搜索到”判为“不存在”，也不声称静态调用图能证明业务语义。\n\n### C. 生成**派生** Coverage/Gap 索引（不是新授权注册表）\n每个关键依赖边记录：\n`sink/允许性条件`、`不变量`、`实际调用路径@commit`、`producer+authority source`、`validator+trust boundary`、`consumer`、`scope/typed identity/phase/time`、`failure behavior`、`raw evidence/test ref`、`coverage status`、`gap/contradiction`、`original issue/PR`。\n\n明确区分 **已验证真实生产 / 已验证合同但真实权威未接通 / 已知缺口 / 证据矛盾 / 尚未调查**。索引应支持简单脚本校核路径、链接、SHA 和关键边覆盖；仅是既有实现/证据派生的可追溯视图，**不新增 Policy、ExpectedSet、授权决策器或强制每次全仓扫描的工具**。可使用现有验证文档位置随修订 PR 保存证据，原始来源不被覆盖。\n\n### D. 同一基线的三种独立视角，**先汇总缺陷，后定修订**\n1. **机械覆盖视角**：枚举出口/消费者/Producer，区分静态已找到与动态未解析边，校核标识、路径和调用关系。\n2. **语义/对抗视角**：沿每个允许性出口构造缺来源、复合 `unknown/partial`、失效撤销、相同字段不同 Subject、错 Phase/Ref/Candidate/Source/Attempt/Rule/Time、单项 Native PASS 冒充 Required 等最有区分力的反例，也验证合法单域/空域/有效复用不被误拒。\n3. **来源/证据视角**：独立核对原始 Producer、验签/Issuer/治理范围、实际 Runner/Artifact/服务端证据及当前代码 SHA，明确 Mock vs 实际事实、合同验收 vs 生产验收。\n\n三视角合并后输出**一份去重的缺陷与公共接口变更清单**：每项对应可复现条件、真实代码/证据、根因、全部受影响消费端、归属模块、验收正反例。再决定原子 PR 划分，而不是每发现一个 if 就让某个 Agent 局部修复并宣布已收敛。\n\n## 3. 修订/集成验收的组织\n\n- 共享上游根因先解决一次：#66-B2 的有权来源、完整治理域/Phase/义务枚举及多原因事实按原 Producer/Validator 演进，#52/#63/#61 使用同一个经验证的输出；不得靠多个消费者各自重算/猜测治理域原因。\n- 复用 #66-P0、#52 Native Producer、#66-C、#63 T1/T2、#61 R1/G2/R5、#74/#75/#86/#87 已成立的接口/真实证据。原有模块有实际合同缺陷时，允许在正确归属直接修改，不将旧 Review 结论或“避免返工”的措辞变成修改禁区。\n- 一个不可分割的跨模块合同变更**允许单 PR 一并修订**，独立变更可并行；不预设一个巨型 PR，也不为每个子缺口新建 Issue。跨 PR 接口使用同一集成基线/身份验证，不因各自 CI 绿就推导系统完整。\n- 定向综合验收至少覆盖：**受信且真正域闭合的合法 PASS**；缺真实权威/多项不完整/撤销过期必须阻断；各局部对象分别合法但身份/时间冲突不得 PASS； Native FAIL/未执行、证据复用冲突、合法/未到期 Post-stage 与到期无证据的正确传播。真实外部 Producer/服务器权限不可得时保留明确 `unverified` 和实施归属，不用测试替身冒充生产验收。\n- 每轮只对本次事实/代码变化所影响的依赖子图和不变量再核验。Review 建议必须标明违反的已核实合同及证据，不凭自然语言限制实施方法，不按既有 Review 的“不要再改某模块”扩大限制。\n\n## 4. 完成标准（总控验收；生产欠账继续留原 Issue）\n\n- [ ] 真实授权出口及其外部入口完成边界清单；未知动态调用和未查的范围**可见且可继续核查**，不宣称虚假的 100% 自动覆盖。\n- [ ] 每个范围内允许性出口都有可追溯的来源→验证→消费链及反向消费者对账；类型身份/阶段/时间/失败语义可核验。\n- [ ] 存在一份去重的全链缺陷、统一接口裁决、PR 变更和原始证据索引；能指出上游缺少哪些**实际权威事实**，而不是根据下游字符串推断。\n- [ ] 本次确认的合同错误已在正确原模块修复；跨模块正反例与受影响代码的必要检查通过；有效历史证据直接复用，不机械全仓重跑。\n- [ ] 所有已发现且实际可调用的授权出口，在缺必要真实来源时**保持未验证/阻断**；只有完成真实证据链的路径才允许宣称生产授权。合同切片可以独立验收，但不得冒称真实全链 PASS。\n- [ ] #52/#66/#63/#61 的未交付生产接线、#74/#75/#86/#87 等确有关系的欠账均以其原 Issue/PR 引用结算；当前 #124 与已合并 PR 的验收范围分明，不新增平行职责。\n- [ ] 未来受影响出口变化时可用同一派生索引增量复核；总控 Issue 仅维护跨链关系与最终裁决，不成为第二份随意漂移的工程设计。\n\n**权限与边界：** 创建本 Issue 不授权合并 PR、关闭任何 Issue、修改 Branch Protection/Ruleset、部署、发布或运行无关 CI；具体代码 PR 的修复、审阅、验收仍独立进行，既有 Issue 状态保持不变。本 Issue 不强制其他无关领域开发等待整条链路生产验收，也不将未交付服务端事实写成已完成。\n",
+    "state": "open",
+    "user": {
+      "login": "dymzz",
+      "name": "dymzz",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+      "id": 6121707
+    },
+    "assignees": null,
+    "labels": null,
+    "milestone": null,
+    "state_reason": null,
+    "comments": 0,
+    "created_at": "2026-11-17T13:46:07Z",
+    "updated_at": "2026-11-17T13:46:07Z",
+    "closed_at": null,
+    "display_url": "https://github.com/dymzz/engineering-ci/issues/125",
+    "display_title": "[ECI][Cross-chain] 权威事实→验证→消费→授权：双向依赖闭包与统一验收"
+  },
+  "ab_review_receipts": [
+    {
+      "url": "https://github.com/dymzz/engineering-ci/pull/126#pullrequestreview-5941215045",
+      "body": "## Issue #125 A/B — PR #126 定向 Review（HEAD `a4364faf0c1308a46c4c9cbf6a022fd1436fbb58`）\n\n**裁决：A 基线与证据保存基本成立；B 存在一项 P1，修复后进行 A/B 独立合并验收。** 本 Review 仅核对 A/B 的版本化发现与可追溯性，不将 C 的 Coverage/Gap 语义裁决、D 的对抗测试或实际生产授权作为本 PR 前置。现有 CI [#44104133652](https://github.com/dymzz/engineering-ci/actions/runs/44104133652) 四项成功，Branch Protection GET 401 已正确保留为 `not_verified`，没有误声明生产 G3。\n\n### P1 — 发现清单中的候选未逐项与依赖图建立可验证的覆盖关系\n\n`docs/verification/authorization-closure/discovery-inventory.json` 的 `expanded_candidates` 在 main 与 pr124 各 127 个；`dependency-map.json` 的图总共 93 个节点（main 63 个函数节点、pr124 8 个函数节点，另有外部边界节点）。直接按同一版本函数符号比对，main 127 个中只有 55 个在图中有同名显式节点，剩下 72 个仅有粗略 `route` 分类；pr124 的候选多数是 main 中未改变的函数，也必须显式说明复用何处与版本/代码身份证据。**这些计数不是 72 项遗漏的证明**：允许 helper 被上层出口覆盖，但当前脚本只能检验人工图的双向索引、引用和静态边，不能核对每个候选最终属于哪个可追溯出口或为何不需要独立建图。\n\n**请在本 PR 内定向修复（不新建 Issue、无需新增授权框架）：**\n1. 建立候选逐项 disposition：`candidate@snapshot -> graph node | covered by enclosing decision | explicitly excluded | unresolved`；每项给出明确理由、所关联的图节点/不变量（如适用）、及实际固定源码/调用链依据。若 pr124 的函数复用 main 节点，须校验符号 + 文件内容身份相同，不能跨不同实现 SHA 静默合并。对动态边保留 unresolved，不因 AST 没找到调用者就排除。\n2. 更新现有一次性推导与验证脚本，检查两个快照的候选**全部有 disposition**、引用的节点/版本存在、重用映射有身份依据，且人工图的 `static_call` 仍由 AST 证明；不要把 `route` 分组或“文档里提过”自动视为覆盖。\n3. 在 A/B 导航/发现说明加入 disposition 结果及实际未知范围，清楚区分 A/B 的机械覆盖与 C/D 的语义/实际来源验证。新增或更新审阅证据须与本 PR 的 SHA256SUMS/字节保护一致；只需核验受影响文件与依赖关系，不重跑原生 Dagger/Weaver/OTLP 或全部 Actions。\n\n**通过条件：** 候选覆盖映射可重复计算、能够暴露而非隐藏遗漏；原 main 与 PR #124 分区不混淆；现有 24 条实际未闭合边继续保留。之后独立验收 A/B，再决定是否合并；不因这份 A/B 审阅图宣称完整生产权限或关闭 #125。",
+      "user": {
+        "login": "dymzz",
+        "name": "dymzz",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/6121707?v=4",
+        "id": 6121707
+      },
+      "id": 5941215045,
+      "pull_request_review_id": null,
+      "in_reply_to_id": null,
+      "created_at": "2026-11-17T15:19:58Z",
+      "updated_at": null,
+      "review": "COMMENTED",
+      "side": null,
+      "line": null,
+      "start_line": null,
+      "path": null
+    }
+  ],
+  "candidate_pr": {
+    "number": 124,
+    "url": "https://github.com/dymzz/engineering-ci/pull/124",
+    "head_sha": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+    "base_sha": "f3f5a7c806c7fcf7e20a6b6dd257c9b5318a0e25",
+    "state": "open",
+    "draft": true,
+    "updated_at": "2026-11-17T12:43:27Z"
+  },
+  "runtime_change_observation": {
+    "command": "git -c core.hooksPath=NUL diff --name-only 4bb346c57f99e4767eea78082639f0b367745140..990cd59f83153a1ad3978dc933f89af5ca4829e3 -- src .dagger .github/workflows tests pyproject.toml uv.lock",
+    "native_exit": 0,
+    "changed_paths": [],
+    "scope": "tracked code/tests/workflows/dependency files only; no semantic/provenance inference"
+  }
+}

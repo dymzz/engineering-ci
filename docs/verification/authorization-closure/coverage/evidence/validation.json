@@ -1,0 +1,63 @@
+{
+  "scope": "Issue #125 C index integrity only; no D semantic/adversarial/production acceptance",
+  "status": "passed",
+  "implementation_base": "990cd59f83153a1ad3978dc933f89af5ca4829e3",
+  "ab_reviewed_head": "363bb19d381146890b57341f686b03f311fd0d0a",
+  "checked_edges": 86,
+  "checked_candidates": 254,
+  "checked_source_refs": 364,
+  "git_blobs_checked": 99,
+  "status_counts": {
+    "verified_production": 0,
+    "verified_contract_authority_unconnected": 64,
+    "known_gap": 5,
+    "evidence_contradiction": 0,
+    "not_investigated": 17
+  },
+  "candidate_relation_counts": {
+    "main": {
+      "same_snapshot_static_path": 111,
+      "uninvestigated": 13,
+      "explicitly_excluded": 3
+    },
+    "pr124": {
+      "uninvestigated": 45,
+      "implementation_only_consumer_uninvestigated": 65,
+      "explicitly_excluded": 3,
+      "same_snapshot_static_path": 14
+    }
+  },
+  "ab_listed_files_checked": 19,
+  "ab_original_non_navigation_hashes_preserved": 17,
+  "c_files_hashed": 9,
+  "relative_links_checked": 15,
+  "checks": [
+    "all required edge fields and A/B edge reconciliation",
+    "exact code/test/blob/SHA/line references",
+    "recorded CI suite identities and dispatch sources",
+    "static-call and candidate helper-chain evidence",
+    "same-snapshot consumers vs implementation-only reuse",
+    "A/B source preservation and independent C hashes",
+    "native scoped runtime diff has no changed paths",
+    "local navigation"
+  ],
+  "not_run": [
+    "D independent semantic/adversarial/source views",
+    "manual Dagger/Weaver/OTLP",
+    "full local engineering matrix",
+    "Agent/Git hooks"
+  ],
+  "native_exit_code": 0,
+  "reproduction": {
+    "native_exit_code": 0,
+    "input": "evidence/inputs.json",
+    "outputs_checked": {
+      "index.json": "26599d3493c363e0ab9d5e6ac8ed49c4bb9d20cc186966bb6203cfc0ee49396c",
+      "candidate-relations.json": "8113180a008528f4ca97b12c81bb414b01b9b8228c9d96d36ad213fab711952b",
+      "assessment.md": "dcf52869a17b9241fd1440e23df3546dabd259b6d3e891df6e9c0ab98e5947b5",
+      "evidence/inputs.json": "0a1dafaa3df273a892ade777f8e8d6356e5dd01343688f819c3748881fd4f682",
+      "evidence/derive-index.txt": "9c6cb3a8d093f442a0cba290bcf321bc54b4631be87e8a5d11be2b0e385bbe95"
+    },
+    "changed_outputs": []
+  }
+}
