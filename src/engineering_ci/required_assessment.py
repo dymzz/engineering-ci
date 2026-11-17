@@ -636,6 +636,14 @@ def _normalize_check_domain(check_domain):
 
 
 def _normalize_applicability_authorization(value):
+    """Normalize a controlled Non-Check inapplicability authorization.
+
+    Target/Action/Phase alone never authorize reuse across Obligation or
+    Candidate instances. The fact must bind either the canonical
+    ``obligation_instance_ref`` or an explicit ``obligation_ref`` (and, when
+    the obligation declares Candidate/Source digests, those digests too).
+    Missing instance identity is not a wildcard.
+    """
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -643,6 +651,9 @@ def _normalize_applicability_authorization(value):
     scope = value.get("scope")
     if not isinstance(scope, dict):
         raise RequiredAssessmentError("universe_obligation_invalid")
+    obligation_ref = scope.get("obligation_ref")
+    if obligation_ref is not None:
+        obligation_ref = _obligation_ref(obligation_ref, "universe_obligation_invalid")
     record = {
         "authority_ref": _evidence_ref(
             value.get("authority_ref"), "universe_obligation_invalid"
@@ -652,7 +663,17 @@ def _normalize_applicability_authorization(value):
             "target_ref": _text(scope.get("target_ref"), "universe_obligation_invalid"),
             "action": _text(scope.get("action"), "universe_obligation_invalid"),
             "phase": _optional_text(scope.get("phase"), "universe_obligation_invalid"),
+            "obligation_ref": obligation_ref,
+            "candidate_digest": _optional_internal_ref(
+                scope.get("candidate_digest"), "universe_obligation_invalid"
+            ),
+            "source_digest": _optional_internal_ref(
+                scope.get("source_digest"), "universe_obligation_invalid"
+            ),
         },
+        "obligation_instance_ref": _optional_internal_ref(
+            value.get("obligation_instance_ref"), "universe_obligation_invalid"
+        ),
         "valid_from": _optional_datetime(
             value.get("valid_from"), "universe_obligation_invalid"
         ),
@@ -1612,7 +1633,13 @@ def _check_inapplicability_status(obligation, *, check_waivers, expected_checks_
 
 
 def _non_check_inapplicability_status(obligation, evaluated_at):
-    """A Non-Check waiver requires a controlled, scoped authorization fact."""
+    """A Non-Check waiver requires a controlled, instance-bound authorization.
+
+    Shared Rule/Authority/Target/Action/Phase never authorize a different
+    ``obligation_ref`` or Candidate/Source. Bind either
+    ``obligation_instance_ref`` or an explicit ``obligation_ref`` (plus any
+    Candidate/Source digests the obligation declares).
+    """
     authorization = obligation["applicability_authorization"]
     if authorization is None:
         return "unverified", ["applicability_authorization_missing"]
@@ -1632,6 +1659,44 @@ def _non_check_inapplicability_status(obligation, evaluated_at):
         or scope["phase"] != obligation["phase"]
     ):
         return "unverified", ["applicability_scope_mismatch"]
+    auth_instance_ref = authorization.get("obligation_instance_ref")
+    auth_obligation_ref = scope.get("obligation_ref")
+    if auth_instance_ref is None and auth_obligation_ref is None:
+        return "unverified", ["applicability_authorization_instance_unbound"]
+    expected_instance_ref = obligation_instance_ref(obligation)
+    if auth_instance_ref is not None and auth_instance_ref != expected_instance_ref:
+        return "unverified", ["applicability_authorization_instance_mismatch"]
+    if auth_obligation_ref is not None and (
+        _canonical(auth_obligation_ref) != _canonical(obligation["obligation_ref"])
+    ):
+        return "unverified", ["applicability_authorization_obligation_mismatch"]
+    auth_candidate = scope.get("candidate_digest")
+    auth_source = scope.get("source_digest")
+    if auth_instance_ref is None:
+        # obligation_ref coverage still must bind Candidate/Source when the
+        # obligation instance declares them; omission is not a wildcard.
+        if obligation["candidate_digest"] is not None:
+            if auth_candidate is None:
+                return "unverified", ["applicability_authorization_candidate_unbound"]
+            if auth_candidate != obligation["candidate_digest"]:
+                return "unverified", ["applicability_authorization_candidate_mismatch"]
+        elif auth_candidate is not None:
+            return "unverified", ["applicability_authorization_candidate_mismatch"]
+        if obligation["source_digest"] is not None:
+            if auth_source is None:
+                return "unverified", ["applicability_authorization_source_unbound"]
+            if auth_source != obligation["source_digest"]:
+                return "unverified", ["applicability_authorization_source_mismatch"]
+        elif auth_source is not None:
+            return "unverified", ["applicability_authorization_source_mismatch"]
+    else:
+        if (
+            auth_candidate is not None
+            and auth_candidate != obligation["candidate_digest"]
+        ):
+            return "unverified", ["applicability_authorization_candidate_mismatch"]
+        if auth_source is not None and auth_source != obligation["source_digest"]:
+            return "unverified", ["applicability_authorization_source_mismatch"]
     if authorization["revoked_at"] is not None:
         return "unverified", ["applicability_authorization_revoked"]
     if (

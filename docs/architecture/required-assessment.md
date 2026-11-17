@@ -95,10 +95,15 @@ A phase before the assessed phase is an expired Required and stays
   - For a Non-Check obligation the universe must carry a controlled
     `applicability_authorization` (authority ref equal to the basis ref, rule
     ref equal to `verification_rule_ref`, scope equal to the obligation's
-    Target/Action/Phase, plus validity/revocation). Missing, mismatched,
-    wrong-scope, expired/not-yet-valid or revoked authorization keeps the
-    instance `unverified`. R1 adds no domain Policy/Verifier/Authorization
-    registry; the fact must come from the authorized #66-B2/domain contract.
+    Target/Action/Phase, plus validity/revocation). The authorization must also
+    bind the concrete instance: either `obligation_instance_ref` equal to
+    `obligation_instance_ref(obligation)`, or an explicit `scope.obligation_ref`
+    (and, when the obligation declares Candidate/Source digests, matching
+    digests). Shared Rule/Authority/Target alone never authorizes a different
+    `obligation_ref` or Candidate. Missing, mismatched, unbound, wrong-scope,
+    expired/not-yet-valid or revoked authorization keeps the instance
+    `unverified`. R1 adds no domain Policy/Verifier/Authorization registry; the
+    fact must come from the authorized #66-B2/domain contract.
 - `not_yet_due` requires an `applicability_basis_ref` and either a provably
   future phase in `phase`/`due_phase` or a future `due_at`. A current/past
   phase, an elapsed due time, or no authorized order is `unverified`.
@@ -118,14 +123,24 @@ universe obligation:
 "applicability_authorization": {
   "authority_ref": {"name": "…", "version": "…", "sha256": "…"},
   "rule_ref": {"name": "…", "version": "…", "sha256": "…"},
-  "scope": {"target_ref": "refs/heads/main", "action": "publish", "phase": null},
+  "obligation_instance_ref": "sha256:…",
+  "scope": {
+    "target_ref": "refs/heads/main",
+    "action": "publish",
+    "phase": null,
+    "obligation_ref": "o/sbom",
+    "candidate_digest": null,
+    "source_digest": null
+  },
   "valid_from": null, "valid_until": null, "revoked_at": null
 }
 ```
 
 `authority_ref` must equal `applicability_basis_ref`; `rule_ref` must equal the
-obligation `verification_rule_ref`; `scope` must equal the obligation's
-Target/Action/Phase. The fact is consumed, not issued, by R1.
+obligation `verification_rule_ref`; `scope` Target/Action/Phase must equal the
+obligation's. Bind the instance with `obligation_instance_ref` and/or
+`scope.obligation_ref` (plus Candidate/Source digests when the obligation
+declares them). The fact is consumed, not issued, by R1.
 
 ### Phase authorization
 
@@ -465,8 +480,10 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   for another obligation or target does not; an unauthorized inapplicability
   keeps an independently satisfied Check witness;
 - a Non-Check `not_applicable` without `applicability_authorization` BLOCKs; a
-  valid, scoped, current authorization PASSes; wrong authority/rule/target/
-  phase, expired, not-yet-valid and revoked authorizations BLOCK;
+  valid, instance-bound, current authorization PASSes; wrong authority/rule/
+  target/phase/`obligation_ref`/Candidate, missing instance binding, expired,
+  not-yet-valid and revoked authorizations BLOCK; reusing another obligation's
+  authorization under the same Rule/Target BLOCKs;
 - non-check missing/unmet/conflict evidence, PR-modified verifier/proof refs,
   artifact-level subject fields, commit-only evidence rejected for an
   artifact-level obligation, a legitimate commit-level obligation, missing
@@ -487,9 +504,11 @@ Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
   waiver semantics for the actual Target/Action/Phase; a basis reference alone
   is never authorization. A Non-Check waiver requires the controlled
   `applicability_authorization` fact from the authorized #66-B2/domain
-  contract. R1 creates no parallel waiver Policy, Verifier registry or
-  authorization store; if the upstream fact is absent or unverifiable, the
-  instance stays `unverified`.
+  contract, bound to the concrete obligation/instance (and Candidate/Source
+  digests when declared). Shared Rule/Authority/Target alone never authorizes
+  a different `obligation_ref` or Candidate. R1 creates no parallel waiver
+  Policy, Verifier registry or authorization store; if the upstream fact is
+  absent or unverifiable, the instance stays `unverified`.
 - **Lifecycle Phase authorization is upstream owned.** R1 consumes
   `Expected.phase`/`phase_status` and never issues Phase evidence or infers it
   from Event/Job names. The current #66-B2 producer marks phase-bearing

@@ -337,22 +337,32 @@ def inapplicability_authorization(
     target_ref="refs/heads/main",
     action="publish",
     phase=None,
+    obligation_ref="o/sbom",
+    obligation_instance_ref=None,
+    candidate_digest=None,
+    source_digest=None,
     valid_from=None,
     valid_until=None,
     revoked_at=None,
 ):
-    return {
+    authorization = {
         "authority_ref": copy.deepcopy(authority_ref),
         "rule_ref": copy.deepcopy(rule_ref),
         "scope": {
             "target_ref": target_ref,
             "action": action,
             "phase": phase,
+            "obligation_ref": obligation_ref,
+            "candidate_digest": candidate_digest,
+            "source_digest": source_digest,
         },
         "valid_from": valid_from,
         "valid_until": valid_until,
         "revoked_at": revoked_at,
     }
+    if obligation_instance_ref is not None:
+        authorization["obligation_instance_ref"] = obligation_instance_ref
+    return authorization
 
 
 def make_universe(
@@ -1068,6 +1078,14 @@ def test_check_inapplicability_waiver_must_match_obligation_scope(obligations):
             {"valid_from": "2026-11-16T02:00:00Z"},
             "applicability_authorization_not_yet_valid",
         ),
+        (
+            {"obligation_ref": None},
+            "applicability_authorization_instance_unbound",
+        ),
+        (
+            {"obligation_ref": "o/other"},
+            "applicability_authorization_obligation_mismatch",
+        ),
     ],
 )
 def test_non_check_inapplicability_requires_a_valid_scoped_authorization(
@@ -1097,6 +1115,136 @@ def test_non_check_inapplicability_requires_a_valid_scoped_authorization(
     row = obligation_row(assessment, obligation)
     assert row["status"] == "unverified"
     assert row["reasons"] == [reason]
+
+
+def test_non_check_authorization_cannot_be_reused_across_obligation_refs():
+    profile = make_profile(
+        obligations=[
+            {"obligation_ref": "o/sbom", "kind": "non_check"},
+            {"obligation_ref": "o/license", "kind": "non_check"},
+        ],
+        declared_checks=[],
+    )
+    projection = make_projection(
+        profile,
+        [],
+        non_check=[non_check_expected("o/sbom"), non_check_expected("o/license")],
+    )
+    sbom = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref="o/sbom"
+        ),
+    )
+    # Same Rule/Authority/Target/Action/Phase, but authorization names o/sbom.
+    license_obligation = non_check_obligation(
+        "o/license",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref="o/sbom"
+        ),
+    )
+    universe = make_universe(profile, projection, [sbom, license_obligation])
+
+    assessment = assess(universe, projection, admission=make_admission(projection))
+
+    assert assessment["status"] == "blocked"
+    assert obligation_row(assessment, sbom)["status"] == "not_applicable"
+    license_row = obligation_row(assessment, license_obligation)
+    assert license_row["status"] == "unverified"
+    assert license_row["reasons"] == ["applicability_authorization_obligation_mismatch"]
+
+
+def test_non_check_authorization_binds_candidate_and_instance_identity():
+    candidate_a = "sha256:" + "a" * 64
+    candidate_b = "sha256:" + "b" * 64
+    profile = make_profile(
+        obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
+        declared_checks=[],
+    )
+    projection = make_projection(profile, [], non_check=[non_check_expected()])
+
+    unbound = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        candidate_digest=candidate_a,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref="o/sbom"
+        ),
+    )
+    mismatched = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        candidate_digest=candidate_a,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref="o/sbom",
+            candidate_digest=candidate_b,
+        ),
+    )
+    matched = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        candidate_digest=candidate_a,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref="o/sbom",
+            candidate_digest=candidate_a,
+        ),
+    )
+    instance_ref = required_assessment.obligation_instance_ref(
+        {
+            "obligation_ref": "o/sbom",
+            "kind": "non_check",
+            "target_ref": "refs/heads/main",
+            "action": "publish",
+            "phase": None,
+            "candidate_digest": candidate_a,
+            "source_digest": None,
+        }
+    )
+    by_instance = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        candidate_digest=candidate_a,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref=None,
+            obligation_instance_ref=instance_ref,
+        ),
+    )
+    wrong_instance = non_check_obligation(
+        "o/sbom",
+        applicability="not_applicable",
+        basis_ref=BASIS_REF,
+        candidate_digest=candidate_a,
+        applicability_authorization=inapplicability_authorization(
+            obligation_ref=None,
+            obligation_instance_ref="sha256:" + "0" * 64,
+        ),
+    )
+
+    candidate = {"commit": "2" * 40, "artifact_digest": candidate_a}
+    for obligation, expected_status, reason in (
+        (unbound, "unverified", "applicability_authorization_candidate_unbound"),
+        (mismatched, "unverified", "applicability_authorization_candidate_mismatch"),
+        (matched, "not_applicable", None),
+        (by_instance, "not_applicable", None),
+        (wrong_instance, "unverified", "applicability_authorization_instance_mismatch"),
+    ):
+        universe = make_universe(profile, projection, [obligation], candidate=candidate)
+        assessment = assess(universe, projection, admission=make_admission(projection))
+        row = obligation_row(assessment, obligation)
+        assert row["status"] == expected_status
+        if reason is None:
+            assert assessment["status"] == "passed"
+        else:
+            assert assessment["status"] == "blocked"
+            assert row["reasons"] == [reason]
 
 
 def test_unauthorized_inapplicability_keeps_proven_check_witness():
