@@ -62,6 +62,19 @@ def producer_authorization(**changes):
     return value
 
 
+def consumer_scope(**changes):
+    value = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "event_ref": "evt/actions-1",
+        "scope_id": "scope/main-pre",
+    }
+    value.update(changes)
+    return value
+
+
 def handoff_policy(**changes):
     value = {
         "allowed_issuers": [copy.deepcopy(ISSUER)],
@@ -74,11 +87,34 @@ def handoff_policy(**changes):
     return value
 
 
-def accept(_package):
+def accept_issuer(_package):
     return True
 
 
-def reject(_package):
+def reject_issuer(_package):
+    return False
+
+
+def accept_execution(package, *, executed_at=None):
+    return {
+        "accepted": True,
+        "executed_at": executed_at or package["produced_at"],
+    }
+
+
+def accept_execution_bare_true(_package):
+    return True
+
+
+def reject_execution(_package):
+    return False
+
+
+def accept_authorization(_context):
+    return True
+
+
+def reject_authorization(_context):
     return False
 
 
@@ -96,42 +132,42 @@ def build_package(**changes):
     return handoff.build_local_handoff_package(**kwargs)
 
 
+def verify(package, **changes):
+    kwargs = {
+        "handoff_policy": handoff_policy(),
+        "consumer_scope": consumer_scope(),
+        "issuer_authority": accept_issuer,
+        "execution_authority": accept_execution,
+        "authorization_authority": accept_authorization,
+        "evaluated_at": EVALUATED_AT,
+    }
+    kwargs.update(changes)
+    return handoff.verify_local_handoff(package, **kwargs)
+
+
 def test_controlled_local_handoff_verifies_and_exposes_t1a_materials():
     package = build_package()
     assert package["status"] == "candidate"
     assert package["declared_trusted"] is False
     assert handoff.validate_local_handoff_package(package) is package
 
-    verified = handoff.verify_local_handoff(
-        package,
-        handoff_policy=handoff_policy(),
-        issuer_authority=accept,
-        execution_authority=accept,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
-        required_check_ids=["eci/hygiene/tach"],
-    )
+    verified = verify(package)
     assert verified["status"] == "verified"
     assert verified["admitted_for_t1a"] is True
+    assert verified["executed_at"] == PRODUCED_AT
+    assert verified["authorized_check_ids"] == ["eci/hygiene/tach"]
+    assert verified["remaining_work"] == []
     assert verified["materials"]["result_ids"] == ["sha256:" + "4" * 64]
+    assert verified["materials"]["authorized_check_ids"] == ["eci/hygiene/tach"]
     assert verified["payload_digest"] == package["payload"]["payload_digest"]
+    assert verified["consumer_scope"]["target_ref"] == "refs/heads/main"
 
 
 def test_declared_trusted_local_pass_is_not_authority():
     package = build_package(declared_trusted=True)
     assert "local_declared_trusted_ignored" in package["reasons"]
 
-    verified = handoff.verify_local_handoff(
-        package,
-        handoff_policy=handoff_policy(),
-        issuer_authority=accept,
-        execution_authority=accept,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
-        required_check_ids=["eci/hygiene/tach"],
-    )
-    # Declared trust alone does not reject when authorities accept, but it is
-    # never treated as authority; the reason is retained.
+    verified = verify(package)
     assert verified["status"] == "verified"
     assert "local_declared_trusted_ignored" in verified["reasons"]
 
@@ -145,15 +181,11 @@ def test_uncontrolled_or_self_reported_execution_is_rejected():
             proof_ref=None,
         )
     )
-    verified = handoff.verify_local_handoff(
+    verified = verify(
         uncontrolled,
         handoff_policy=handoff_policy(
             allowed_execution_boundaries=["uncontrolled_developer_workstation"]
         ),
-        issuer_authority=accept,
-        execution_authority=accept,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
     )
     assert verified["status"] == "rejected"
     assert verified["admitted_for_t1a"] is False
@@ -164,18 +196,11 @@ def test_uncontrolled_or_self_reported_execution_is_rejected():
 
 def test_signed_identity_with_rejected_execution_authority_stays_untrusted():
     package = build_package()
-    verified = handoff.verify_local_handoff(
-        package,
-        handoff_policy=handoff_policy(),
-        issuer_authority=accept,
-        execution_authority=reject,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
-        required_check_ids=["eci/hygiene/tach"],
-    )
+    verified = verify(package, execution_authority=reject_execution)
     assert verified["status"] == "rejected"
     assert "execution_authority_rejected" in verified["reasons"]
     assert verified["materials"] is None
+    assert verified["executed_at"] is None
 
 
 def test_expired_or_revoked_producer_authorization_is_rejected():
@@ -191,43 +216,178 @@ def test_expired_or_revoked_producer_authorization_is_rejected():
     )
     for package, reason in (
         (expired, "producer_authorization_expired"),
-        (revoked, "producer_authorization_revoked"),
+        (revoked, "producer_authorization_revoked_at_execution"),
     ):
-        verified = handoff.verify_local_handoff(
-            package,
-            handoff_policy=handoff_policy(),
-            issuer_authority=accept,
-            execution_authority=accept,
-            authorization_authority=accept,
-            evaluated_at=EVALUATED_AT,
-            required_check_ids=["eci/hygiene/tach"],
-        )
+        verified = verify(package)
         assert verified["status"] == "rejected"
         assert reason in verified["reasons"]
+        assert verified["materials"] is None
 
 
-def test_unauthorized_check_scope_is_rejected():
+def test_main_grant_rejected_for_different_pr_target():
     package = build_package()
-    verified = handoff.verify_local_handoff(
+    verified = verify(
         package,
-        handoff_policy=handoff_policy(),
-        issuer_authority=accept,
-        execution_authority=accept,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
-        required_check_ids=["eci/hygiene/tach", "eci/hygiene/vulture"],
+        consumer_scope=consumer_scope(target_ref="refs/pull/9/merge"),
     )
     assert verified["status"] == "rejected"
-    assert "producer_authorization_scope_incomplete" in verified["reasons"]
+    assert "producer_authorization_target_mismatch" in verified["reasons"]
+    assert verified["materials"] is None
+    assert verified["admitted_for_t1a"] is False
+
+
+def test_mismatched_phase_or_action_is_rejected():
+    package = build_package()
+    phase = verify(package, consumer_scope=consumer_scope(phase="post_publish"))
+    action = verify(package, consumer_scope=consumer_scope(action="release"))
+    assert phase["status"] == "rejected"
+    assert "producer_authorization_phase_mismatch" in phase["reasons"]
+    assert phase["materials"] is None
+    assert action["status"] == "rejected"
+    assert "producer_authorization_action_mismatch" in action["reasons"]
+    assert action["materials"] is None
+
+
+def test_empty_consumer_check_set_is_rejected_without_materials():
+    package = build_package()
+    with pytest.raises(
+        handoff.LocalActionsHandoffError, match="handoff_consumer_check_set_missing"
+    ):
+        verify(package, consumer_scope=consumer_scope(check_ids=[]))
+
+
+def test_omitted_consumer_scope_is_rejected():
+    package = build_package()
+    with pytest.raises(TypeError):
+        handoff.verify_local_handoff(
+            package,
+            handoff_policy=handoff_policy(),
+            issuer_authority=accept_issuer,
+            execution_authority=accept_execution,
+            authorization_authority=accept_authorization,
+            evaluated_at=EVALUATED_AT,
+        )
+
+
+def test_mixed_authorized_and_unauthorized_checks_withhold_raw_materials():
+    package = build_package(
+        producer_authorization=producer_authorization(
+            scope={
+                "action": "validate",
+                "target_ref": "refs/heads/main",
+                "phase": "pre_publish",
+                "check_ids": ["eci/hygiene/tach"],
+            }
+        )
+    )
+    verified = verify(
+        package,
+        consumer_scope=consumer_scope(
+            check_ids=["eci/hygiene/tach", "eci/hygiene/vulture"]
+        ),
+    )
+    assert verified["status"] == "verified"
+    assert verified["authorized_check_ids"] == ["eci/hygiene/tach"]
+    assert verified["remaining_work"] == [
+        {
+            "check_id": "eci/hygiene/vulture",
+            "reason": "producer_authorization_check_not_granted",
+        }
+    ]
+    assert "producer_authorization_scope_partial" in verified["reasons"]
+    assert verified["materials"] == {"authorized_check_ids": ["eci/hygiene/tach"]}
+    assert "reports" not in verified["materials"]
+    assert verified["admitted_for_t1a"] is True
+
+
+def test_none_of_consumer_checks_granted_is_rejected():
+    package = build_package()
+    verified = verify(
+        package,
+        consumer_scope=consumer_scope(check_ids=["eci/hygiene/vulture"]),
+    )
+    assert verified["status"] == "rejected"
+    assert "producer_authorization_checks_none_granted" in verified["reasons"]
+    assert verified["materials"] is None
+
+
+def test_execution_before_valid_from_is_rejected():
+    package = build_package(
+        produced_at="2026-10-30T12:00:00+00:00",
+        producer_authorization=producer_authorization(
+            valid_from="2026-11-01T00:00:00+00:00"
+        ),
+    )
+    verified = verify(package)
+    assert verified["status"] == "rejected"
+    assert "producer_authorization_not_yet_valid_at_execution" in verified["reasons"]
+    assert verified["materials"] is None
+
+
+def test_future_execution_after_evaluation_is_rejected():
+    package = build_package(produced_at="2026-11-17T06:00:00+00:00")
+    verified = verify(package)
+    assert verified["status"] == "rejected"
+    assert "execution_time_after_evaluation" in verified["reasons"]
+    assert verified["materials"] is None
+
+
+def test_authorized_execution_inside_valid_window_verifies():
+    package = build_package(
+        produced_at="2026-11-10T12:00:00+00:00",
+        producer_authorization=producer_authorization(
+            valid_from="2026-11-01T00:00:00+00:00",
+            valid_until="2026-12-01T00:00:00+00:00",
+        ),
+    )
+    verified = verify(package, evaluated_at="2026-11-17T05:00:00+00:00")
+    assert verified["status"] == "verified"
+    assert verified["executed_at"] == "2026-11-10T12:00:00+00:00"
+    assert verified["materials"]["authorized_check_ids"] == ["eci/hygiene/tach"]
+
+
+def test_expiry_before_current_consumption_is_rejected():
+    package = build_package(
+        produced_at="2026-11-10T12:00:00+00:00",
+        producer_authorization=producer_authorization(
+            valid_from="2026-11-01T00:00:00+00:00",
+            valid_until="2026-11-15T00:00:00+00:00",
+        ),
+    )
+    verified = verify(package, evaluated_at="2026-11-17T05:00:00+00:00")
+    assert verified["status"] == "rejected"
+    assert "producer_authorization_expired" in verified["reasons"]
+    assert verified["materials"] is None
+
+
+def test_bare_true_execution_authority_leaves_time_unverified():
+    package = build_package()
+    verified = verify(package, execution_authority=accept_execution_bare_true)
+    assert verified["status"] == "unverified"
+    assert "execution_time_unverified" in verified["reasons"]
+    assert verified["executed_at"] is None
+    assert verified["materials"] is None
+    assert verified["admitted_for_t1a"] is False
+
+
+def test_execution_time_mismatch_with_produced_at_is_rejected():
+    def mismatched(_package):
+        return {"accepted": True, "executed_at": "2026-11-17T03:00:00+00:00"}
+
+    package = build_package()
+    verified = verify(package, execution_authority=mismatched)
+    assert verified["status"] == "rejected"
+    assert "execution_time_mismatch_produced_at" in verified["reasons"]
+    assert verified["materials"] is None
 
 
 def test_missing_authorities_are_unverified_not_admitted():
     package = build_package()
-    verified = handoff.verify_local_handoff(
+    verified = verify(
         package,
-        handoff_policy=handoff_policy(),
-        evaluated_at=EVALUATED_AT,
-        required_check_ids=["eci/hygiene/tach"],
+        issuer_authority=None,
+        execution_authority=None,
+        authorization_authority=None,
     )
     assert verified["status"] == "unverified"
     assert verified["admitted_for_t1a"] is False
@@ -238,14 +398,7 @@ def test_missing_authorities_are_unverified_not_admitted():
 
 def test_disallowed_issuer_is_rejected():
     package = build_package(issuer_ref=OTHER_ISSUER)
-    verified = handoff.verify_local_handoff(
-        package,
-        handoff_policy=handoff_policy(),
-        issuer_authority=accept,
-        execution_authority=accept,
-        authorization_authority=accept,
-        evaluated_at=EVALUATED_AT,
-    )
+    verified = verify(package)
     assert verified["status"] == "rejected"
     assert "handoff_issuer_not_allowed" in verified["reasons"]
 

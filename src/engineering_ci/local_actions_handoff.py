@@ -36,6 +36,10 @@ EXECUTION_BOUNDARY_KINDS = frozenset(
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _EVIDENCE_REF_FIELDS = frozenset({"name", "version", "path", "sha256"})
+_CONSUMER_SCOPE_REQUIRED = frozenset({"action", "target_ref", "phase", "check_ids"})
+_CONSUMER_SCOPE_OPTIONAL = frozenset(
+    {"candidate_digest", "scope_id", "event_ref", "expected_set_ref"}
+)
 
 
 class LocalActionsHandoffError(ValueError):
@@ -390,37 +394,157 @@ def validate_local_handoff_package(package):
     return package
 
 
-def _authorization_active(authorization, *, evaluated_at):
-    if authorization["revoked_at"] is not None:
-        return False, "producer_authorization_revoked"
+def _authorization_active_at(authorization, *, instant, expired_code, not_yet_code):
+    """Return whether the grant covers ``instant`` (revocation checked separately)."""
     if (
         authorization["valid_from"] is not None
-        and evaluated_at < authorization["valid_from"]
+        and instant < authorization["valid_from"]
     ):
-        return False, "producer_authorization_not_yet_valid"
+        return False, not_yet_code
     if (
         authorization["valid_until"] is not None
-        and evaluated_at > authorization["valid_until"]
+        and instant > authorization["valid_until"]
     ):
-        return False, "producer_authorization_expired"
+        return False, expired_code
     return True, None
+
+
+def _normalize_consumer_scope(value):
+    """Independent Actions/#66 consumer Action×Target×Phase×Check set.
+
+    This is never taken from the producer-claimed grant. Empty ``check_ids``
+    is invalid: unrestricted materials must not be released without a concrete
+    consumer Check set.
+    """
+    if not isinstance(value, dict):
+        raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+    unknown = set(value) - _CONSUMER_SCOPE_REQUIRED - _CONSUMER_SCOPE_OPTIONAL
+    if unknown:
+        raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+    missing = _CONSUMER_SCOPE_REQUIRED - set(value)
+    if missing:
+        raise LocalActionsHandoffError("handoff_consumer_scope_incomplete")
+    check_ids = value.get("check_ids")
+    if not isinstance(check_ids, (list, tuple)) or not check_ids:
+        raise LocalActionsHandoffError("handoff_consumer_check_set_missing")
+    normalized_checks = []
+    for item in check_ids:
+        text = _text(item, "handoff_consumer_check_id_invalid")
+        if text not in normalized_checks:
+            normalized_checks.append(text)
+    record = {
+        "action": _text(value.get("action"), "handoff_consumer_scope_invalid"),
+        "target_ref": _text(value.get("target_ref"), "handoff_consumer_scope_invalid"),
+        "phase": _text(value.get("phase"), "handoff_consumer_scope_invalid"),
+        "check_ids": normalized_checks,
+    }
+    for key in _CONSUMER_SCOPE_OPTIONAL:
+        if value.get(key) is not None:
+            record[key] = _text(value.get(key), "handoff_consumer_scope_invalid")
+    return record
+
+
+def _resolve_authenticated_execution_time(authority_result, package):
+    """Extract authenticated execution time from ``execution_authority``.
+
+    Bare ``True`` proves boundary acceptance only — not an authoritative clock.
+    Package ``produced_at`` is never used alone as the authorization instant.
+    """
+    if authority_result is True:
+        return None, "execution_time_unverified"
+    if authority_result is False or authority_result is None:
+        return None, "execution_authority_rejected"
+    if not isinstance(authority_result, dict):
+        raise LocalActionsHandoffError("handoff_execution_authority_result_invalid")
+    if authority_result.get("accepted") is not True:
+        return None, "execution_authority_rejected"
+    executed_at = authority_result.get("executed_at")
+    if executed_at is None:
+        return None, "execution_time_unverified"
+    executed = _datetime(executed_at, "handoff_executed_at_invalid")
+    claimed = _datetime(package["produced_at"], "handoff_produced_at_invalid")
+    if executed != claimed:
+        return None, "execution_time_mismatch_produced_at"
+    return executed, None
+
+
+def _match_consumer_authorization(authorization, consumer_scope):
+    """Compare producer grant to the independent consumer scope.
+
+    Returns ``(authorized_check_ids, remaining_work, blocking_reasons)``.
+    """
+    grant = authorization["scope"]
+    blocking = []
+    if grant["action"] != consumer_scope["action"]:
+        blocking.append("producer_authorization_action_mismatch")
+    if grant["target_ref"] != consumer_scope["target_ref"]:
+        blocking.append("producer_authorization_target_mismatch")
+    grant_phase = grant.get("phase")
+    if grant_phase is None or grant_phase != consumer_scope["phase"]:
+        blocking.append("producer_authorization_phase_mismatch")
+
+    grant_checks = set(grant["check_ids"])
+    authorized = [
+        check_id for check_id in consumer_scope["check_ids"] if check_id in grant_checks
+    ]
+    remaining_work = [
+        {
+            "check_id": check_id,
+            "reason": "producer_authorization_check_not_granted",
+        }
+        for check_id in consumer_scope["check_ids"]
+        if check_id not in grant_checks
+    ]
+    if not authorized and not blocking:
+        blocking.append("producer_authorization_checks_none_granted")
+    return authorized, remaining_work, blocking
+
+
+def _authorization_record(authorization):
+    return {
+        "authority_ref": authorization["authority_ref"],
+        "producer_ref": authorization["producer_ref"],
+        "scope": copy.deepcopy(authorization["scope"]),
+        "valid_from": (
+            authorization["valid_from"].isoformat()
+            if authorization["valid_from"] is not None
+            else None
+        ),
+        "valid_until": (
+            authorization["valid_until"].isoformat()
+            if authorization["valid_until"] is not None
+            else None
+        ),
+        "revoked_at": (
+            authorization["revoked_at"].isoformat()
+            if authorization["revoked_at"] is not None
+            else None
+        ),
+    }
 
 
 def verify_local_handoff(
     package,
     *,
     handoff_policy,
+    consumer_scope,
     issuer_authority=None,
     execution_authority=None,
     authorization_authority=None,
     evaluated_at,
-    required_check_ids=(),
 ):
     """Verify a local handoff package at the Actions/ECI boundary.
 
-    All three authority callbacks must accept the package before status becomes
-    ``verified``. Uncontrolled or self-reported execution boundaries never
-    verify. Declared local trust is ignored as authority.
+    ``consumer_scope`` is the independently established Actions/#66
+    Action×Target×Phase×Check set. The producer grant is compared to that
+    consumer scope; the grant is never treated as the current scope.
+
+    ``execution_authority`` must return ``{"accepted": True, "executed_at": ...}``
+    to authenticate execution/collection time. Bare ``True`` leaves execution
+    time unverified; package ``produced_at`` alone is not an authorization proof.
+
+    Declared local trust is ignored as authority. Uncontrolled or self-reported
+    execution boundaries never verify.
     """
     validate_local_handoff_package(package)
     if not isinstance(handoff_policy, dict):
@@ -431,6 +555,7 @@ def verify_local_handoff(
         raise LocalActionsHandoffError("handoff_policy_issuers_missing")
     if not isinstance(allowed_boundaries, list) or not allowed_boundaries:
         raise LocalActionsHandoffError("handoff_policy_boundaries_missing")
+    consumer = _normalize_consumer_scope(consumer_scope)
     evaluated = _datetime(evaluated_at, "handoff_evaluated_at_invalid")
     issuer_authority = _callable_or_none(
         issuer_authority, "handoff_issuer_authority_invalid"
@@ -450,7 +575,6 @@ def verify_local_handoff(
         informational.append("local_declared_trusted_ignored")
 
     issuer = package["issuer_ref"]
-    # Compare by value; policy may hold deep copies.
     if not any(
         json.dumps(item, sort_keys=True) == json.dumps(issuer, sort_keys=True)
         for item in allowed_issuers
@@ -468,18 +592,12 @@ def verify_local_handoff(
         blocking.append("execution_boundary_uncontrolled")
 
     authorization = _normalize_producer_authorization(package["producer_authorization"])
-    active, auth_reason = _authorization_active(authorization, evaluated_at=evaluated)
-    if not active:
-        blocking.append(auth_reason)
+    authorized_checks, remaining_work, scope_blocking = _match_consumer_authorization(
+        authorization, consumer
+    )
+    blocking.extend(scope_blocking)
 
-    required = list(required_check_ids or ())
-    for check_id in required:
-        _text(check_id, "handoff_required_check_id_invalid")
-    authorized_checks = set(authorization["scope"]["check_ids"])
-    missing_scope = [item for item in required if item not in authorized_checks]
-    if missing_scope:
-        blocking.append("producer_authorization_scope_incomplete")
-
+    executed_at = None
     if issuer_authority is None:
         blocking.append("issuer_authority_missing")
     elif issuer_authority(package) is not True:
@@ -487,23 +605,102 @@ def verify_local_handoff(
 
     if execution_authority is None:
         blocking.append("execution_authority_missing")
-    elif execution_authority(package) is not True:
-        blocking.append("execution_authority_rejected")
+    else:
+        executed_at, exec_reason = _resolve_authenticated_execution_time(
+            execution_authority(package), package
+        )
+        if exec_reason is not None:
+            blocking.append(exec_reason)
 
     if authorization_authority is None:
         blocking.append("authorization_authority_missing")
-    elif authorization_authority(package) is not True:
-        blocking.append("authorization_authority_rejected")
+    else:
+        auth_context = {
+            "package": package,
+            "consumer_scope": copy.deepcopy(consumer),
+            "producer_authorization": _authorization_record(authorization),
+            "evaluated_at": evaluated.isoformat(),
+            "executed_at": executed_at.isoformat() if executed_at is not None else None,
+        }
+        if authorization_authority(auth_context) is not True:
+            blocking.append("authorization_authority_rejected")
+
+    if executed_at is not None:
+        if executed_at > evaluated:
+            blocking.append("execution_time_after_evaluation")
+        active_at_execution, exec_auth_reason = _authorization_active_at(
+            authorization,
+            instant=executed_at,
+            expired_code="producer_authorization_expired_at_execution",
+            not_yet_code="producer_authorization_not_yet_valid_at_execution",
+        )
+        if not active_at_execution:
+            blocking.append(exec_auth_reason)
+        if (
+            authorization["revoked_at"] is not None
+            and executed_at >= authorization["revoked_at"]
+        ):
+            blocking.append("producer_authorization_revoked_at_execution")
+
+    active_at_evaluation, eval_auth_reason = _authorization_active_at(
+        authorization,
+        instant=evaluated,
+        expired_code="producer_authorization_expired",
+        not_yet_code="producer_authorization_not_yet_valid",
+    )
+    if not active_at_evaluation and eval_auth_reason not in blocking:
+        blocking.append(eval_auth_reason)
+    if (
+        authorization["revoked_at"] is not None
+        and evaluated >= authorization["revoked_at"]
+        and "producer_authorization_revoked_at_execution" not in blocking
+    ):
+        blocking.append("producer_authorization_revoked")
 
     reasons = informational + blocking
-    verified = not blocking
-    status = "verified" if verified else "rejected"
-    if not verified and (
+    # Full verify only when every consumer check is granted and no blockers.
+    full_coverage = bool(authorized_checks) and not remaining_work
+    verified = not blocking and full_coverage
+    # Partial: Action×Target×Phase matched and some checks granted, but out-of-
+    # scope checks remain. Do not release unrestricted payload materials.
+    partial = (
+        not blocking
+        and bool(authorized_checks)
+        and bool(remaining_work)
+        and "producer_authorization_action_mismatch" not in blocking
+        and "producer_authorization_target_mismatch" not in blocking
+        and "producer_authorization_phase_mismatch" not in blocking
+    )
+    if verified or partial:
+        status = "verified"
+    elif (
         "issuer_authority_missing" in blocking
         or "execution_authority_missing" in blocking
         or "authorization_authority_missing" in blocking
+        or "execution_time_unverified" in blocking
     ):
         status = "unverified"
+    else:
+        status = "rejected"
+
+    materials = None
+    admitted_for_t1a = False
+    if verified:
+        admitted_for_t1a = True
+        materials = {
+            "authorized_check_ids": list(authorized_checks),
+            "reports": copy.deepcopy(package["payload"]["reports"]),
+            "job_receipts": copy.deepcopy(package["payload"]["job_receipts"]),
+            "result_ids": list(package["payload"]["result_ids"]),
+            "source_digests": list(package["payload"]["source_digests"]),
+        }
+    elif partial:
+        # Authorized subset only: withhold unrestricted raw bags so out-of-scope
+        # checks cannot consume the full payload as verified materials.
+        admitted_for_t1a = True
+        materials = {"authorized_check_ids": list(authorized_checks)}
+        if "producer_authorization_scope_partial" not in reasons:
+            reasons.append("producer_authorization_scope_partial")
 
     result = {
         "kind": HANDOFF_KIND,
@@ -513,49 +710,31 @@ def verify_local_handoff(
         "payload_digest": package["payload"]["payload_digest"],
         "issuer_ref": copy.deepcopy(package["issuer_ref"]),
         "execution_boundary": copy.deepcopy(package["execution_boundary"]),
-        "producer_authorization": {
-            "authority_ref": authorization["authority_ref"],
-            "producer_ref": authorization["producer_ref"],
-            "scope": copy.deepcopy(authorization["scope"]),
-            "valid_from": (
-                authorization["valid_from"].isoformat()
-                if authorization["valid_from"] is not None
-                else None
-            ),
-            "valid_until": (
-                authorization["valid_until"].isoformat()
-                if authorization["valid_until"] is not None
-                else None
-            ),
-            "revoked_at": (
-                authorization["revoked_at"].isoformat()
-                if authorization["revoked_at"] is not None
-                else None
-            ),
-        },
+        "producer_authorization": _authorization_record(authorization),
+        "consumer_scope": copy.deepcopy(consumer),
         "evaluated_at": evaluated.isoformat(),
-        "admitted_for_t1a": verified,
-        "materials": (
-            {
-                "reports": copy.deepcopy(package["payload"]["reports"]),
-                "job_receipts": copy.deepcopy(package["payload"]["job_receipts"]),
-                "result_ids": list(package["payload"]["result_ids"]),
-                "source_digests": list(package["payload"]["source_digests"]),
-            }
-            if verified
-            else None
-        ),
+        "executed_at": executed_at.isoformat() if executed_at is not None else None,
+        "authorized_check_ids": list(authorized_checks) if not blocking else [],
+        "remaining_work": remaining_work
+        if (verified or partial or remaining_work)
+        else [],
+        "admitted_for_t1a": admitted_for_t1a,
+        "materials": materials,
         "reasons": reasons,
         "limitations": [
             "handoff_verification_is_not_t1a_admission",
             "handoff_does_not_decide_required_gate",
             "fixture_verifiers_are_not_production_trust_roots",
             "local_and_actions_identities_remain_distinct",
+            "produced_at_is_not_authorization_proof",
+            "consumer_scope_is_independent_of_producer_grant",
         ],
         "verification_ref": None,
     }
     if not verified:
         result["limitations"].append("unverified_handoff_must_run_actions_checks")
+    if partial:
+        result["limitations"].append("partial_authorization_withholds_raw_materials")
     result["verification_ref"] = _digest(
         {key: value for key, value in result.items() if key != "verification_ref"}
     )
