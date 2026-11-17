@@ -5,7 +5,9 @@ This module owns one Hook Invocation's outer control path. It:
 - loads and verifies a #102 ``invocation_ref → event_payload_ref → Event``;
 - binds Expected Event/Ref/Baseline identity to that Invocation Event;
 - allocates this Invocation's ``run_ref`` / ``attempt_ref``;
-- collects Execution Reports only when they attribute to this Job/Attempt;
+- mints a Dispatch ``production_ref`` per eligible Job and builds Reports
+  only at that production boundary (no rebrand of historical Reports);
+- collects Execution Reports only when they embed that production identity;
 - issues Job Receipts only for collected Reports;
 - calls #104 ``reconcile_expected_results()`` per Expected scope after
   dispatch returns (including filtered/failed Jobs);
@@ -38,8 +40,11 @@ DEFAULT_RUNNER_REF = "execution:host"
 DEFAULT_SCHEDULER_REF = {"name": "lefthook", "version": "2.2.2"}
 DEFAULT_CONFIG_REF = {"name": "hook-job", "version": "1"}
 DEFAULT_QUALIFICATION_NAME = "engineering-ci.hook.attempt-qualification"
-_CLOSED_CONSUMER_COMPLETENESS = frozenset(
+_CLOSED_SINGLE_COMPLETENESS = frozenset(
     {"expected_domain_complete", "domain_complete_empty"}
+)
+_CLOSED_PER_REF_COMPLETENESS = frozenset(
+    {"per_ref", "expected_domain_complete", "domain_complete_empty"}
 )
 
 HOOK_EXIT_OK = 0
@@ -149,6 +154,19 @@ class RunBinding:
                 attempt_ref=self.attempt_ref,
                 invocation_ref=self.invocation_ref,
             )
+        if eligibility == "eligible":
+            # Minted at Dispatch activation; Collect accepts only Reports that
+            # embed this production_ref via build_execution_report().
+            entry["production_ref"] = _digest(
+                {
+                    "kind": "engineering-ci-hook-job-production",
+                    "invocation_ref": self.invocation_ref,
+                    "run_ref": self.run_ref,
+                    "attempt_ref": self.attempt_ref,
+                    "job_ref": job_ref,
+                    "nonce": uuid.uuid4().hex,
+                }
+            )
         if report_ref is not None:
             entry["report_ref"] = copy.deepcopy(report_ref)
         if reason is not None:
@@ -224,126 +242,159 @@ def open_attempt(
     )
 
 
-def _invocation_baselines(event):
-    """Return comparable (before, after, local_ref, remote_ref) tuples."""
-    if not isinstance(event, dict):
-        raise HookCoordinatorError("invocation_event_invalid")
-    hook = event.get("hook")
-    if hook == "pre-push":
-        refs = event.get("refs")
-        if not isinstance(refs, list) or not refs:
-            raise HookCoordinatorError("invocation_refs_missing")
-        baselines = []
-        for ref in refs:
-            if not isinstance(ref, dict):
-                raise HookCoordinatorError("invocation_refs_invalid")
-            baselines.append(
-                (
-                    ref.get("before"),
-                    ref.get("after"),
-                    ref.get("local_ref"),
-                    ref.get("remote_ref"),
-                )
-            )
-        return hook, baselines
-    if hook == "pre-commit":
-        index = event.get("index")
-        if not isinstance(index, dict) or not index.get("tree"):
-            raise HookCoordinatorError("invocation_index_missing")
-        return hook, [(None, index.get("tree"), None, None)]
-    raise HookCoordinatorError("invocation_hook_unsupported")
-
-
-def _event_ref_baselines(event_ref):
-    """Extract Expected Event baseline pairs from one scope event_ref."""
-    if not isinstance(event_ref, dict):
-        raise HookCoordinatorError("expected_event_ref_invalid")
-    references = event_ref.get("references") or []
-    if references:
-        if not isinstance(references, list):
-            raise HookCoordinatorError("expected_event_ref_invalid")
-        baselines = []
-        for ref in references:
-            if not isinstance(ref, dict):
-                raise HookCoordinatorError("expected_event_ref_invalid")
-            baselines.append(
-                (
-                    ref.get("before") or event_ref.get("base_commit"),
-                    ref.get("after") or event_ref.get("head_commit"),
-                    ref.get("local_ref"),
-                    ref.get("remote_ref") or ref.get("source_ref"),
-                )
-            )
-        return baselines
-    return [
-        (
-            event_ref.get("base_commit"),
-            event_ref.get("head_commit"),
-            event_ref.get("head_ref"),
-            event_ref.get("base_ref"),
+def _invocation_push_refs(event):
+    """Return ordered exact pre-push ref identities from a verified Event."""
+    refs = event.get("refs")
+    if not isinstance(refs, list) or not refs:
+        raise HookCoordinatorError("invocation_refs_missing")
+    identities = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            raise HookCoordinatorError("invocation_refs_invalid")
+        identity = (
+            ref.get("local_ref"),
+            ref.get("remote_ref"),
+            ref.get("before"),
+            ref.get("after"),
+            ref.get("ref_action"),
         )
-    ]
+        if any(value is None or value == "" for value in identity[:4]):
+            raise HookCoordinatorError("invocation_refs_invalid")
+        identities.append(identity)
+    return identities
 
 
-def _baseline_matches(expected_baseline, invocation_baselines, *, hook):
-    """Match on OID/Tree identity; ref names are optional corroboration."""
-    before, after, local_ref, remote_ref = expected_baseline
-    for inv_before, inv_after, inv_local, inv_remote in invocation_baselines:
-        if hook == "pre-commit":
-            if after and after == inv_after:
-                return True
-            continue
-        if before != inv_before or after != inv_after:
-            continue
-        named = {value for value in (local_ref, remote_ref) if value}
-        invoked = {value for value in (inv_local, inv_remote) if value}
-        if named and invoked and named.isdisjoint(invoked):
-            continue
-        return True
-    return False
+def _scope_push_identity(scope, expected):
+    """Exact Expected push identity for one scope (local/remote/before/after)."""
+    event_ref = scope.get("event_ref")
+    if event_ref is None and scope is expected:
+        event_ref = expected.get("event_ref")
+    if not isinstance(event_ref, dict):
+        raise HookCoordinatorError("expected_event_ref_missing")
+    ref_meta = scope.get("ref") if isinstance(scope.get("ref"), dict) else None
+    references = event_ref.get("references") or []
+    ref_item = None
+    if isinstance(references, list) and references:
+        if not isinstance(references[0], dict):
+            raise HookCoordinatorError("expected_event_ref_invalid")
+        ref_item = references[0]
+
+    # Prefer explicit per-ref fields, then nested ref, then event_ref.
+    local_ref = scope.get("local_ref")
+    remote_ref = scope.get("remote_ref")
+    action = scope.get("ref_action")
+    before = None
+    after = None
+    if isinstance(remote_ref, dict):
+        remote_ref = None
+    source_label = scope.get("source_ref")
+    if remote_ref is None and isinstance(source_label, str) and source_label:
+        remote_ref = source_label
+    if ref_meta is not None:
+        local_ref = local_ref or ref_meta.get("local_ref")
+        remote_candidate = (
+            ref_meta.get("remote_ref") or ref_meta.get("source_ref")
+        )
+        if isinstance(remote_candidate, str) and remote_candidate:
+            remote_ref = remote_ref or remote_candidate
+        before = ref_meta.get("before")
+        after = ref_meta.get("after")
+        action = action or ref_meta.get("ref_action")
+    if ref_item is not None:
+        local_ref = local_ref or ref_item.get("local_ref") or event_ref.get("head_ref")
+        remote_ref = (
+            remote_ref
+            or ref_item.get("remote_ref")
+            or ref_item.get("source_ref")
+            or event_ref.get("base_ref")
+        )
+        before = before or ref_item.get("before") or event_ref.get("base_commit")
+        after = after or ref_item.get("after") or event_ref.get("head_commit")
+        action = action or ref_item.get("ref_action") or event_ref.get("ref_action")
+    else:
+        local_ref = local_ref or event_ref.get("head_ref")
+        remote_ref = remote_ref or event_ref.get("base_ref")
+        before = before or event_ref.get("base_commit")
+        after = after or event_ref.get("head_commit")
+        action = action or event_ref.get("ref_action")
+    if any(value is None or value == "" for value in (local_ref, remote_ref, before, after)):
+        raise HookCoordinatorError("expected_ref_identity_incomplete")
+    return (local_ref, remote_ref, before, after, action)
+
+
+def _scope_index_tree(scope, expected):
+    """Index Tree OID from Expected Source — never the HEAD Commit OID."""
+    source = scope.get("source_ref")
+    if not isinstance(source, dict):
+        source = scope.get("source")
+    if not isinstance(source, dict) and scope is expected:
+        source = expected.get("source_ref")
+    if not isinstance(source, dict):
+        raise HookCoordinatorError("expected_index_tree_missing")
+    tree = source.get("index_tree")
+    if tree:
+        return tree
+    if source.get("snapshot") == "index":
+        tree = source.get("declared_target_tree")
+        if tree:
+            return tree
+    raise HookCoordinatorError("expected_index_tree_missing")
 
 
 def verify_expected_matches_invocation(binding, expected):
     """Refuse Expected projections that do not bind this Invocation Event.
 
-    Compares Expected ``event_ref`` / per-Ref baselines with the verified Hook
-    Event refs (pre-push old→new) or Index Tree (pre-commit). Does not rebuild
-    Selection or Expected production.
+    Pre-push: exact ``(local_ref, remote_ref, before, after)`` membership both
+    ways when Expected is multi-ref. Pre-commit: Expected Source Index Tree
+    versus #102 ``index.tree`` (Commit OID is never compared to Tree OID).
     """
     if not isinstance(binding, InvocationBinding):
         raise HookCoordinatorError("invocation_binding_invalid")
-    hook, invocation_baselines = _invocation_baselines(binding.event)
-    for _scope_id, scope in _iter_scopes(expected):
-        event_ref = scope.get("event_ref")
-        if event_ref is None and scope is not expected:
-            raise HookCoordinatorError("expected_event_ref_missing")
-        if event_ref is None:
-            event_ref = expected.get("event_ref")
-        if not isinstance(event_ref, dict):
-            raise HookCoordinatorError("expected_event_ref_missing")
-        for baseline in _event_ref_baselines(event_ref):
-            if not _baseline_matches(baseline, invocation_baselines, hook=hook):
+    event = binding.event
+    hook = event.get("hook")
+    scopes = list(_iter_scopes(expected))
+    if hook == "pre-commit":
+        index = event.get("index")
+        if not isinstance(index, dict) or not index.get("tree"):
+            raise HookCoordinatorError("invocation_index_missing")
+        captured_tree = index["tree"]
+        for _scope_id, scope in scopes:
+            if _scope_index_tree(scope, expected) != captured_tree:
                 raise HookCoordinatorError("expected_event_mismatch")
-        if hook == "pre-push" and scope.get("ref"):
-            ref_meta = scope["ref"]
-            if isinstance(ref_meta, dict):
-                target = (
-                    ref_meta.get("remote_ref")
-                    or ref_meta.get("local_ref")
-                    or ref_meta.get("source_ref")
-                )
-                before = ref_meta.get("before")
-                after = ref_meta.get("after")
+        return True
+    if hook != "pre-push":
+        raise HookCoordinatorError("invocation_hook_unsupported")
+    invocation_refs = _invocation_push_refs(event)
+    covered = set()
+    for _scope_id, scope in scopes:
+        identity = _scope_push_identity(scope, expected)
+        local_ref, remote_ref, before, after, action = identity
+        matched = False
+        for index, inv in enumerate(invocation_refs):
+            inv_local, inv_remote, inv_before, inv_after, inv_action = inv
+            if (
+                local_ref == inv_local
+                and remote_ref == inv_remote
+                and before == inv_before
+                and after == inv_after
+            ):
                 if (
-                    before is not None
-                    and after is not None
-                    and not _baseline_matches(
-                        (before, after, ref_meta.get("local_ref"), target),
-                        invocation_baselines,
-                        hook=hook,
-                    )
+                    action is not None
+                    and inv_action is not None
+                    and action != inv_action
                 ):
-                    raise HookCoordinatorError("expected_ref_mismatch")
+                    raise HookCoordinatorError("expected_ref_action_mismatch")
+                covered.add(index)
+                matched = True
+                break
+        if not matched:
+            raise HookCoordinatorError("expected_event_mismatch")
+    multi_expected = any(scope_id is not None for scope_id, _scope in scopes)
+    multi_invocation = len(invocation_refs) > 1
+    if (multi_expected or multi_invocation) and covered != set(
+        range(len(invocation_refs))
+    ):
+        raise HookCoordinatorError("invocation_ref_uncovered")
     return True
 
 
@@ -385,33 +436,16 @@ def _report_execution_attribution(report):
         "run_ref": report.get("run_ref"),
         "attempt_ref": report.get("attempt_ref"),
         "job_ref": report.get("job_ref"),
+        "production_ref": report.get("production_ref"),
     }
 
 
-def attribute_report(run_binding, job_ref, report):
-    """Stamp Report bytes with this Invocation/Job/Attempt execution identity."""
-    if not isinstance(run_binding, RunBinding):
-        raise HookCoordinatorError("run_binding_invalid")
-    if job_ref not in run_binding.jobs:
-        raise HookCoordinatorError("job_not_activated")
-    if not isinstance(report, dict):
-        raise HookCoordinatorError("execution_report_invalid")
-    stamped = copy.deepcopy(report)
-    stamped["invocation_ref"] = run_binding.invocation_ref
-    stamped["run_ref"] = run_binding.run_ref
-    stamped["attempt_ref"] = run_binding.attempt_ref
-    stamped["job_ref"] = job_ref
-    return stamped
+def build_execution_report(run_binding, job_ref, *, native_results):
+    """Create a Report at this Job's Dispatch production boundary.
 
-
-def collect_job_report(run_binding, job_ref, report):
-    """Register a Report as produced by this Job/Attempt on this Invocation.
-
-    Content digest integrity is necessary but not sufficient: the Report must
-    attribute to this ``invocation_ref`` / ``run_ref`` / ``attempt_ref`` /
-    ``job_ref``. A historical Report from another Attempt cannot be collected
-    here without failing attribution, so it cannot receive a new
-    ``upstream_verified`` Receipt.
+    Embeds the Job's minted ``production_ref``. Does not accept an existing
+    Report body to rebrand; callers supply Native Results produced for this
+    Attempt. Each eligible Job may build at most one Report.
     """
     if not isinstance(run_binding, RunBinding):
         raise HookCoordinatorError("run_binding_invalid")
@@ -420,18 +454,62 @@ def collect_job_report(run_binding, job_ref, report):
     job = run_binding.jobs[job_ref]
     if job.get("attempt_eligibility") != "eligible":
         raise HookCoordinatorError("attempt_not_eligible")
+    production_ref = job.get("production_ref")
+    if not isinstance(production_ref, str) or not production_ref.startswith("sha256:"):
+        raise HookCoordinatorError("job_production_ref_missing")
+    if job.get("issued_report_ref") is not None:
+        raise HookCoordinatorError("job_report_already_built")
+    if not isinstance(native_results, (list, tuple)) or not native_results:
+        raise HookCoordinatorError("native_results_required")
+    report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [{"name": "reconciled", "native_results": list(native_results)}],
+        "invocation_ref": run_binding.invocation_ref,
+        "run_ref": run_binding.run_ref,
+        "attempt_ref": run_binding.attempt_ref,
+        "job_ref": job_ref,
+        "production_ref": production_ref,
+    }
+    report_ref = report_ref_for(report)
+    job["issued_report_ref"] = copy.deepcopy(report_ref)
+    job["report_ref"] = copy.deepcopy(report_ref)
+    return report
+
+
+def collect_job_report(run_binding, job_ref, report):
+    """Register a Report produced for this Job/Attempt on this Invocation.
+
+    Requires the Report to embed the Job's minted ``production_ref`` and to
+    equal the Report previously issued by ``build_execution_report``. Stamping
+    attribution fields onto a historical Report cannot satisfy Collect.
+    """
+    if not isinstance(run_binding, RunBinding):
+        raise HookCoordinatorError("run_binding_invalid")
+    if job_ref not in run_binding.jobs:
+        raise HookCoordinatorError("job_not_activated")
+    job = run_binding.jobs[job_ref]
+    if job.get("attempt_eligibility") != "eligible":
+        raise HookCoordinatorError("attempt_not_eligible")
+    production_ref = job.get("production_ref")
+    issued = job.get("issued_report_ref")
+    if not isinstance(production_ref, str) or issued is None:
+        raise HookCoordinatorError("job_production_boundary_unproven")
     attribution = _report_execution_attribution(report)
     expected = {
         "invocation_ref": run_binding.invocation_ref,
         "run_ref": run_binding.run_ref,
         "attempt_ref": run_binding.attempt_ref,
         "job_ref": job_ref,
+        "production_ref": production_ref,
     }
     if any(attribution.get(key) is None for key in expected):
         raise HookCoordinatorError("execution_report_attribution_missing")
     if attribution != expected:
         raise HookCoordinatorError("execution_report_attribution_mismatch")
     results, rejections, report_ref = verify_execution_report(report)
+    if report_ref != issued:
+        raise HookCoordinatorError("execution_report_production_mismatch")
     run_binding.collected_reports[job_ref] = copy.deepcopy(report_ref)
     job["report_ref"] = copy.deepcopy(report_ref)
     return results, rejections, report_ref
@@ -462,6 +540,8 @@ def issue_job_receipt(
         raise HookCoordinatorError("execution_report_not_collected")
     if collected != report_ref:
         raise HookCoordinatorError("execution_report_not_collected")
+    if job.get("issued_report_ref") != report_ref:
+        raise HookCoordinatorError("execution_report_production_mismatch")
     _results, _rejections, verified_ref = verify_execution_report(report, report_ref)
     if verified_ref != report_ref:
         raise HookCoordinatorError("execution_report_digest_mismatch")
@@ -471,6 +551,7 @@ def issue_job_receipt(
         "run_ref": run_binding.run_ref,
         "attempt_ref": run_binding.attempt_ref,
         "job_ref": job_ref,
+        "production_ref": job.get("production_ref"),
     }
     if attribution != expected_attr:
         raise HookCoordinatorError("execution_report_attribution_mismatch")
@@ -624,11 +705,14 @@ def hook_exit_code(receipts):
         if receipt.get("status") != "matched":
             return HOOK_EXIT_RECONCILED_FAILURE
         completeness = receipt.get("expected_completeness")
-        if (
-            completeness is not None
-            and completeness not in _CLOSED_CONSUMER_COMPLETENESS
-            and receipt.get("expected_status") != "complete"
-        ):
+        # Independent of receipt.status: complete+not_claimed must not exit 0.
+        per_ref_scope = receipt.get("ref") is not None
+        allowed = (
+            _CLOSED_PER_REF_COMPLETENESS
+            if per_ref_scope
+            else _CLOSED_SINGLE_COMPLETENESS
+        )
+        if completeness not in allowed:
             return HOOK_EXIT_RECONCILED_FAILURE
         for entry in receipt.get("entries") or ():
             status = entry.get("binding_status")
