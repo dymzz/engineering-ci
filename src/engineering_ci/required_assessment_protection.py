@@ -149,8 +149,37 @@ def _context_names_from_branch_protection(payload):
     return names
 
 
-def _load_supplemental_rulesets(github):
-    """Optional Ruleset list/detail for disabled/evaluate signals only."""
+def _branch_ref_applicability(conditions, branch):
+    """Classify Ruleset ref conditions against ``branch`` without a full engine.
+
+    Returns ``applicable``, ``not_applicable``, or ``unknown``. Only exact
+    ``refs/heads/{branch}`` includes (no wildcards / tilde aliases) prove
+    applicability. Patterned includes stay ``unknown`` so they never drive
+    branch ``misconfigured`` alone.
+    """
+    if not isinstance(conditions, dict):
+        return "unknown"
+    ref_name = conditions.get("ref_name")
+    if not isinstance(ref_name, dict):
+        return "unknown"
+    include = _as_list(ref_name.get("include"))
+    exclude = _as_list(ref_name.get("exclude"))
+    if not include:
+        return "unknown"
+    target = f"refs/heads/{branch}"
+    if any(not isinstance(item, str) for item in include + exclude):
+        return "unknown"
+    if any(("*" in item) or item.startswith("~") for item in include + exclude):
+        return "unknown"
+    if target in exclude:
+        return "not_applicable"
+    if target in include:
+        return "applicable"
+    return "not_applicable"
+
+
+def _load_supplemental_rulesets(github, *, branch):
+    """Optional Ruleset list/detail for scoped supplemental diagnostics."""
     status, entries, complete = _paginate(github, "rulesets")
     records = []
     errors = []
@@ -176,6 +205,8 @@ def _load_supplemental_rulesets(github):
             ),
             "enforcement": None,
             "contexts": [],
+            "conditions": None,
+            "branch_applicability": "unknown",
         }
         if detail_visibility == "ok":
             if not isinstance(detail, dict):
@@ -185,6 +216,15 @@ def _load_supplemental_rulesets(github):
                 enforcement = detail.get("enforcement")
                 record["enforcement"] = enforcement
                 record["contexts"] = _context_names_from_ruleset_detail(detail)
+                conditions = detail.get("conditions")
+                record["conditions"] = (
+                    copy_conditions(conditions)
+                    if isinstance(conditions, dict)
+                    else None
+                )
+                record["branch_applicability"] = _branch_ref_applicability(
+                    conditions, branch
+                )
                 if enforcement is None:
                     # Unknown enforcement is not treated as active applicability.
                     errors.append(f"ruleset_{ruleset_id}_enforcement_unknown")
@@ -200,6 +240,18 @@ def _load_supplemental_rulesets(github):
             detail_complete = False
         records.append(record)
     return "readable", records, errors, detail_complete and complete
+
+
+def copy_conditions(conditions):
+    ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+    if not isinstance(ref_name, dict):
+        return {"ref_name": None}
+    return {
+        "ref_name": {
+            "include": list(_as_list(ref_name.get("include"))),
+            "exclude": list(_as_list(ref_name.get("exclude"))),
+        }
+    }
 
 
 def inspect_server_protection(
@@ -251,7 +303,7 @@ def inspect_server_protection(
         ruleset_records,
         ruleset_errors,
         supplemental_complete,
-    ) = _load_supplemental_rulesets(client)
+    ) = _load_supplemental_rulesets(client, branch=branch)
     reasons.extend(ruleset_errors)
 
     bp_visibility_raw, bp_payload = _get(client, f"branches/{branch}/protection")
@@ -307,17 +359,31 @@ def inspect_server_protection(
         or (in_branch_rules is None and branch_rules_visibility == "readable")
     )
 
-    disabled_hits = []
-    evaluate_hits = []
+    # Branch-scoped misconfiguration only. Repository-wide disabled/evaluate
+    # Rulesets that are not proven applicable to this branch stay diagnostic.
+    branch_disabled_hits = []
+    branch_evaluate_hits = []
+    supplemental_diagnostics = []
     for record in ruleset_records:
         enforcement = record.get("enforcement")
         contexts = record.get("contexts") or ()
         if check_name not in contexts:
             continue
+        if enforcement not in {"disabled", "evaluate"}:
+            continue
+        applicability = record.get("branch_applicability") or "unknown"
+        entry = {
+            "id": record["id"],
+            "enforcement": enforcement,
+            "branch_applicability": applicability,
+        }
+        supplemental_diagnostics.append(entry)
+        if applicability != "applicable":
+            continue
         if enforcement == "disabled":
-            disabled_hits.append(record["id"])
-        elif enforcement == "evaluate":
-            evaluate_hits.append(record["id"])
+            branch_disabled_hits.append(record["id"])
+        else:
+            branch_evaluate_hits.append(record["id"])
 
     if readable_hits:
         enforcement_status = "configured"
@@ -332,18 +398,20 @@ def inspect_server_protection(
         else:
             reasons.append("incomplete_protection_observation")
     elif readable_misses and not readable_hits:
-        # Applicable sources fully deny the context for this branch. Disabled /
-        # evaluate Rulesets are not applicable (branch-rules omits them) but
-        # still surface misconfiguration when supplemental detail is available.
-        if disabled_hits or evaluate_hits:
+        # Applicable authoritative sources fully deny the Context. Only
+        # disabled/evaluate Rulesets proven applicable to this branch may
+        # elevate to misconfigured; other-branch supplemental stays diagnostic.
+        if branch_disabled_hits or branch_evaluate_hits:
             enforcement_status = "misconfigured"
-            if disabled_hits:
+            if branch_disabled_hits:
                 reasons.append("required_assessment_context_only_in_disabled_ruleset")
-            if evaluate_hits:
+            if branch_evaluate_hits:
                 reasons.append("required_assessment_context_only_in_evaluate_ruleset")
         else:
             enforcement_status = "absent"
             reasons.append("required_assessment_context_absent")
+            if supplemental_diagnostics:
+                reasons.append("supplemental_non_applicable_ruleset_diagnostics")
             if supplemental_visibility in {"forbidden", "error"} or (
                 supplemental_visibility == "readable" and not supplemental_complete
             ):
@@ -352,7 +420,7 @@ def inspect_server_protection(
         enforcement_status = "not_verified"
         reasons.append("protection_observation_inconclusive")
 
-    if disabled_hits and enforcement_status == "configured":
+    if branch_disabled_hits and enforcement_status == "configured":
         reasons.append("additional_disabled_ruleset_lists_context")
 
     observation = {
@@ -379,6 +447,7 @@ def inspect_server_protection(
             "required_assessment_in_branch_protection": in_branch_protection,
             "branch_rules_complete": branch_rules_complete,
             "supplemental_rulesets_complete": supplemental_complete,
+            "supplemental_ruleset_diagnostics": supplemental_diagnostics,
         },
         "enforcement": {
             "status": enforcement_status,

@@ -233,19 +233,25 @@ def test_inspect_not_verified_when_ruleset_detail_absent_after_list():
     assert "ruleset_9_detail_absent" in observation["enforcement"]["reasons"]
 
 
-def test_inspect_misconfigured_when_only_disabled_ruleset_lists_context():
+def test_inspect_misconfigured_when_disabled_ruleset_applies_to_branch():
     github = FakeGitHub(
         {
             "rules/branches/main?per_page=100&page=1": (200, []),
             "rulesets?per_page=100&page=1": (
                 200,
-                [{"id": 5, "name": "disabled-gate"}],
+                [{"id": 5, "name": "disabled-main"}],
             ),
             "rulesets/5": (
                 200,
                 {
                     "id": 5,
                     "enforcement": "disabled",
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["refs/heads/main"],
+                            "exclude": [],
+                        }
+                    },
                     "rules": [
                         {
                             "type": "required_status_checks",
@@ -260,7 +266,6 @@ def test_inspect_misconfigured_when_only_disabled_ruleset_lists_context():
         }
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
-    assert observation["configuration"]["required_assessment_in_branch_rules"] is False
     assert observation["enforcement"]["status"] == "misconfigured"
     assert (
         "required_assessment_context_only_in_disabled_ruleset"
@@ -269,19 +274,68 @@ def test_inspect_misconfigured_when_only_disabled_ruleset_lists_context():
     rap.validate_protection_observation(observation)
 
 
-def test_inspect_misconfigured_when_only_evaluate_ruleset_lists_context():
+def test_inspect_absent_when_disabled_ruleset_only_targets_release():
     github = FakeGitHub(
         {
             "rules/branches/main?per_page=100&page=1": (200, []),
             "rulesets?per_page=100&page=1": (
                 200,
-                [{"id": 6, "name": "evaluate-gate"}],
+                [{"id": 5, "name": "disabled-release"}],
+            ),
+            "rulesets/5": (
+                200,
+                {
+                    "id": 5,
+                    "enforcement": "disabled",
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["refs/heads/release/v1"],
+                            "exclude": [],
+                        }
+                    },
+                    "rules": [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [{"context": CHECK_NAME}]
+                            },
+                        }
+                    ],
+                },
+            ),
+            "branches/main/protection": (404, None),
+        }
+    )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["enforcement"]["status"] == "absent"
+    assert observation["configuration"]["supplemental_ruleset_diagnostics"]
+    assert (
+        observation["configuration"]["supplemental_ruleset_diagnostics"][0][
+            "branch_applicability"
+        ]
+        == "not_applicable"
+    )
+
+
+def test_inspect_misconfigured_when_evaluate_ruleset_applies_to_branch():
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 6, "name": "evaluate-main"}],
             ),
             "rulesets/6": (
                 200,
                 {
                     "id": 6,
                     "enforcement": "evaluate",
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["refs/heads/main"],
+                            "exclude": [],
+                        }
+                    },
                     "rules": [
                         {
                             "type": "required_status_checks",

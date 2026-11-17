@@ -2,10 +2,11 @@
 
 Implements the production Provider/Workflow boundary that R2
 ``publish_check_run`` requires via ``publish_authority``. Live Actions
-identity is bound to an **independently supplied** publisher approval that
-names approved workflow / evaluator / policy revisions. A caller-asserted
-``trust_basis`` or self-consistent ``authority_ref`` alone cannot POST
-``success``.
+identity is bound to a publisher-approval *claim* that an independent
+``approval_authority`` verifier must accept, plus an ``execution_identity``
+for the revisions that actually ran. A caller-asserted ``trust_basis``,
+self-consistent ``authority_ref``, or caller-minted approval dict alone
+cannot POST ``success``.
 
 This module does **not**:
 
@@ -15,7 +16,7 @@ This module does **not**:
   Actions identity helpers;
 - inspect or mutate Rulesets / Branch Protection (#61 G3/R3);
 - authorize Release (#61 R4/R5);
-- mint publisher approvals from the evaluated PR.
+- mint or store publisher approvals (integration owns the trusted source).
 """
 
 from __future__ import annotations
@@ -170,13 +171,58 @@ def actions_runtime_identity(environ=None):
     }
 
 
-def normalize_publisher_approval(value, *, now=None):
-    """Normalize an independently issued publisher approval.
+def _approval_authority(value):
+    if value is None:
+        raise RequiredAssessmentPublishError("approval_authority_required")
+    if not callable(value):
+        raise RequiredAssessmentPublishError("approval_authority_invalid")
+    return value
 
-    The approval must come from a source not controlled by the evaluated PR.
-    It binds approved workflow identity, evaluator/policy revisions, repository
-    scope, events, and temporal/revocation status. Callers must not mint this
-    from the publication under review.
+
+def normalize_execution_identity(value):
+    """Normalize the *actually executed* workflow / evaluator / policy identity.
+
+    Distinct from publication-declared refs: a PR may declare an approved
+    evaluator while executing a different revision.
+    """
+    if not isinstance(value, dict):
+        raise RequiredAssessmentPublishError("execution_identity_invalid")
+    record = {
+        "workflow_sha": _sha1(
+            value.get("workflow_sha"), "execution_identity_workflow_sha_invalid"
+        ),
+        "evaluator_ref": _evidence_ref(
+            value.get("evaluator_ref"), "execution_identity_evaluator_invalid"
+        ),
+        "policy_ref": None,
+    }
+    if value.get("policy_ref") is not None:
+        record["policy_ref"] = _evidence_ref(
+            value.get("policy_ref"), "execution_identity_policy_invalid"
+        )
+    return record
+
+
+def _verify_approval_authority(approval_authority, context):
+    verifier = _approval_authority(approval_authority)
+    try:
+        accepted = verifier(context)
+    except RequiredAssessmentPublishError:
+        raise
+    except Exception as error:
+        raise RequiredAssessmentPublishError(
+            "approval_authority_verifier_error"
+        ) from error
+    if accepted is not True:
+        raise RequiredAssessmentPublishError("approval_authority_rejected")
+
+
+def normalize_publisher_approval(value, *, now=None):
+    """Normalize a publisher-approval *claim*.
+
+    Structural/temporal checks only. Production trust requires a separate
+    ``approval_authority`` verifier that independently confirms the claim was
+    issued by an authorized source outside the evaluated PR.
     """
     if not isinstance(value, dict):
         raise RequiredAssessmentPublishError("publisher_approval_invalid")
@@ -306,11 +352,41 @@ def _require_workflow_allowed(identity, *, allowed_workflow_paths, approval=None
             raise RequiredAssessmentPublishError("publisher_approval_event_not_allowed")
 
 
+def _require_execution_matches_approval(execution, approval, identity):
+    if execution["workflow_sha"] != identity["workflow_sha"]:
+        raise RequiredAssessmentPublishError(
+            "execution_identity_workflow_sha_runtime_mismatch"
+        )
+    if execution["workflow_sha"] != approval["workflow_sha"]:
+        raise RequiredAssessmentPublishError(
+            "execution_identity_workflow_sha_not_approved"
+        )
+    if not any(
+        _canonical_evidence(item) == _canonical_evidence(execution["evaluator_ref"])
+        for item in approval["approved_evaluator_refs"]
+    ):
+        raise RequiredAssessmentPublishError(
+            "execution_identity_evaluator_not_approved"
+        )
+    if execution["policy_ref"] is None:
+        if approval["approved_policy_refs"]:
+            raise RequiredAssessmentPublishError(
+                "execution_identity_policy_required_by_approval"
+            )
+    elif not any(
+        _canonical_evidence(item) == _canonical_evidence(execution["policy_ref"])
+        for item in approval["approved_policy_refs"]
+    ):
+        raise RequiredAssessmentPublishError("execution_identity_policy_not_approved")
+
+
 def publication_context_from_actions(
     *,
     evaluator_ref,
     job_name,
     publisher_approval,
+    approval_authority,
+    execution_identity,
     environ=None,
     policy_ref=None,
     trust_basis="protected_workflow",
@@ -320,30 +396,38 @@ def publication_context_from_actions(
     allowed_workflow_paths=None,
     now=None,
 ):
-    """Build an R2 publication context bound to live Actions + approval."""
+    """Build an R2 publication context bound to live Actions + verified approval."""
     approval = normalize_publisher_approval(publisher_approval, now=now)
     identity = actions_runtime_identity(environ)
+    execution = normalize_execution_identity(execution_identity)
     _require_workflow_allowed(
         identity, allowed_workflow_paths=allowed_workflow_paths, approval=approval
     )
+    _verify_approval_authority(
+        approval_authority,
+        {
+            "approval": approval,
+            "runtime_identity": identity,
+            "execution_identity": execution,
+        },
+    )
+    _require_execution_matches_approval(execution, approval, identity)
     if trust_basis not in rac.PRODUCTION_TRUST_BASES:
         raise RequiredAssessmentPublishError("actions_trust_basis_not_production")
     evaluator = _evidence_ref(evaluator_ref, "actions_evaluator_invalid")
-    if not any(
-        _canonical_evidence(item) == _canonical_evidence(evaluator)
-        for item in approval["approved_evaluator_refs"]
+    if _canonical_evidence(evaluator) != _canonical_evidence(
+        execution["evaluator_ref"]
     ):
-        raise RequiredAssessmentPublishError("actions_evaluator_not_approved")
+        raise RequiredAssessmentPublishError("actions_evaluator_execution_mismatch")
     normalized_policy = None
     if policy_ref is not None:
         normalized_policy = _evidence_ref(policy_ref, "actions_policy_invalid")
-        if not any(
-            _canonical_evidence(item) == _canonical_evidence(normalized_policy)
-            for item in approval["approved_policy_refs"]
+        if _canonical_evidence(normalized_policy) != _canonical_evidence(
+            execution["policy_ref"]
         ):
-            raise RequiredAssessmentPublishError("actions_policy_not_approved")
-    elif approval["approved_policy_refs"]:
-        raise RequiredAssessmentPublishError("actions_policy_required_by_approval")
+            raise RequiredAssessmentPublishError("actions_policy_execution_mismatch")
+    elif execution["policy_ref"] is not None:
+        raise RequiredAssessmentPublishError("actions_policy_execution_mismatch")
     server_url = (environ or os.environ).get("GITHUB_SERVER_URL", "https://github.com")
     if details_url is None:
         details_url = (
@@ -380,6 +464,7 @@ def verify_publisher_identity(
     publication,
     *,
     publisher_approval,
+    approval_authority,
     environ=None,
     allowed_workflow_paths=None,
     now=None,
@@ -387,7 +472,8 @@ def verify_publisher_identity(
     """Prove the live publisher may emit the official Check name.
 
     Required for both ``success`` and ``failure`` production publications.
-    Does not by itself authorize a ``success`` conclusion.
+    Requires an independent ``approval_authority``; does not by itself authorize
+    a ``success`` conclusion (that needs execution identity too).
     """
     approval = normalize_publisher_approval(publisher_approval, now=now)
     identity = actions_runtime_identity(environ)
@@ -415,32 +501,52 @@ def verify_publisher_identity(
             raise RequiredAssessmentPublishError(
                 f"publisher_identity_publication_{key}_mismatch"
             )
+    _verify_approval_authority(
+        approval_authority,
+        {
+            "approval": approval,
+            "runtime_identity": identity,
+            "publication": publication,
+        },
+    )
     return {"identity": identity, "approval": approval}
 
 
 def workflow_publish_authority(
     *,
     publisher_approval,
+    approval_authority,
+    execution_identity,
     environ=None,
     allowed_workflow_paths=None,
     allowed_events=None,
     now=None,
 ):
-    """Return a ``publish_authority`` callable bound to approval + Actions.
+    """Return a ``publish_authority`` callable for production ``success``.
 
     ``True`` requires:
 
-    1. live Actions identity matches the independent publisher approval;
-    2. authorization / publication runtime fields match that identity;
-    3. publication evaluator/policy are listed on the approval;
-    4. authorization ``authority_ref`` equals the approval's authority ref
-       (not a caller-invented twin of itself without approval).
+    1. ``approval_authority`` independently accepts the approval claim;
+    2. live Actions identity matches the verified approval;
+    3. ``execution_identity`` (actual executed revisions) matches the approval
+       and the publication's declared evaluator/policy;
+    4. authorization runtime fields match the live identity.
     """
     approval = normalize_publisher_approval(publisher_approval, now=now)
     identity = actions_runtime_identity(environ)
+    execution = normalize_execution_identity(execution_identity)
     _require_workflow_allowed(
         identity, allowed_workflow_paths=allowed_workflow_paths, approval=approval
     )
+    _verify_approval_authority(
+        approval_authority,
+        {
+            "approval": approval,
+            "runtime_identity": identity,
+            "execution_identity": execution,
+        },
+    )
+    _require_execution_matches_approval(execution, approval, identity)
     allowed_event_names = (
         frozenset(approval["allowed_events"])
         if allowed_events is None
@@ -483,26 +589,23 @@ def workflow_publish_authority(
             raise RequiredAssessmentPublishError(
                 "publish_authority_contract_sample_refused"
             )
-        evaluator = publication.get("evaluator_ref")
-        if not any(
-            _canonical_evidence(item) == _canonical_evidence(evaluator)
-            for item in approval["approved_evaluator_refs"]
+        if _canonical_evidence(publication.get("evaluator_ref")) != _canonical_evidence(
+            execution["evaluator_ref"]
         ):
             raise RequiredAssessmentPublishError(
-                "publish_authority_evaluator_not_approved"
+                "publish_authority_evaluator_execution_mismatch"
             )
-        policy = publication.get("policy_ref")
-        if policy is None:
-            if approval["approved_policy_refs"]:
+        pub_policy = publication.get("policy_ref")
+        if execution["policy_ref"] is None:
+            if pub_policy is not None:
                 raise RequiredAssessmentPublishError(
-                    "publish_authority_policy_required_by_approval"
+                    "publish_authority_policy_execution_mismatch"
                 )
-        elif not any(
-            _canonical_evidence(item) == _canonical_evidence(policy)
-            for item in approval["approved_policy_refs"]
+        elif _canonical_evidence(pub_policy) != _canonical_evidence(
+            execution["policy_ref"]
         ):
             raise RequiredAssessmentPublishError(
-                "publish_authority_policy_not_approved"
+                "publish_authority_policy_execution_mismatch"
             )
         return True
 
@@ -513,7 +616,9 @@ def authorize_and_publish(
     publication,
     *,
     publisher_approval,
+    approval_authority,
     environ=None,
+    execution_identity=None,
     allowed_workflow_paths=None,
     allowed_events=None,
     github=None,
@@ -522,14 +627,15 @@ def authorize_and_publish(
 ):
     """Authorize a production publication and POST it.
 
-    Both ``success`` and ``failure`` require a controlled publisher identity
-    (Actions runtime + independent approval). Only ``success`` additionally
-    requires approved evaluator/policy via ``workflow_publish_authority``.
+    Both conclusions require Actions runtime + ``approval_authority``-verified
+    publisher approval. ``success`` additionally requires ``execution_identity``
+    matching the verified approval and publication declarations.
     """
     client = github or GitHub(publication["repository"])
     verified = verify_publisher_identity(
         publication,
         publisher_approval=publisher_approval,
+        approval_authority=approval_authority,
         environ=environ,
         allowed_workflow_paths=allowed_workflow_paths,
         now=now,
@@ -540,8 +646,12 @@ def authorize_and_publish(
             repository=repository,
             github=client,
         )
+    if execution_identity is None:
+        raise RequiredAssessmentPublishError("execution_identity_required")
     authority = workflow_publish_authority(
         publisher_approval=verified["approval"],
+        approval_authority=approval_authority,
+        execution_identity=execution_identity,
         environ=environ,
         allowed_workflow_paths=allowed_workflow_paths,
         allowed_events=allowed_events,

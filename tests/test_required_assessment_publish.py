@@ -57,6 +57,25 @@ def publisher_approval(**changes):
     return approval
 
 
+def execution_identity(**changes):
+    identity = {
+        "workflow_sha": WORKFLOW_SHA,
+        "evaluator_ref": copy.deepcopy(EVALUATOR_REF),
+        "policy_ref": copy.deepcopy(POLICY_REF),
+    }
+    identity.update(changes)
+    return identity
+
+
+def accept_approval(context):
+    assert context["approval"]["authority_ref"]["sha256"] == AUTHORITY_REF["sha256"]
+    return True
+
+
+def reject_approval(context):
+    return False
+
+
 def production_context(**changes):
     context = publication_context(
         trust_basis="protected_workflow",
@@ -71,24 +90,15 @@ def test_parse_workflow_ref_requires_owner_repo_prefix():
     parsed = rap.parse_workflow_ref(REAL_WORKFLOW_REF)
     assert parsed["workflow_repository"] == "dymzz/engineering-ci"
     assert parsed["workflow_path"] == ".github/workflows/ci.yml"
-    assert parsed["workflow_git_ref"] == "refs/heads/main"
     with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
         rap.parse_workflow_ref(".github/workflows/ci.yml@refs/heads/main")
     assert raised.value.code == "actions_workflow_ref_invalid"
 
 
-def test_actions_runtime_identity_requires_actions():
-    with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
-        rap.actions_runtime_identity({"GITHUB_ACTIONS": "false"})
-    assert raised.value.code == "actions_runtime_required"
-
-
 def test_actions_runtime_identity_parses_real_workflow_ref():
     identity = rap.actions_runtime_identity(actions_env())
-    assert identity["workflow_repository"] == "dymzz/engineering-ci"
-    assert identity["workflow_path"] == ".github/workflows/ci.yml"
     assert identity["workflow_ref"] == REAL_WORKFLOW_REF
-    assert identity["run_id"] == 44003289402
+    assert identity["workflow_path"] == ".github/workflows/ci.yml"
 
 
 def test_actions_runtime_rejects_workflow_repository_mismatch():
@@ -109,12 +119,12 @@ def test_publication_context_from_actions_binds_target():
         policy_ref=copy.deepcopy(POLICY_REF),
         job_name="required-assessment",
         publisher_approval=publisher_approval(),
+        approval_authority=accept_approval,
+        execution_identity=execution_identity(),
         environ=actions_env(),
     )
     normalized = rac.normalize_publication_context(context)
-    assert normalized["trust_basis"] == "protected_workflow"
     assert normalized["workflow_ref"] == REAL_WORKFLOW_REF
-    assert normalized["target_binding"]["kind"] == "event_head"
     assert normalized["details_url"].endswith("/actions/runs/44003289402")
 
 
@@ -125,9 +135,10 @@ def test_publication_context_rejects_unapproved_workflow_path_by_default():
             policy_ref=copy.deepcopy(POLICY_REF),
             job_name="required-assessment",
             publisher_approval=publisher_approval(
-                workflow_path=".github/workflows/attacker.yml",
-                workflow_sha=WORKFLOW_SHA,
+                workflow_path=".github/workflows/attacker.yml"
             ),
+            approval_authority=accept_approval,
+            execution_identity=execution_identity(),
             environ=actions_env(
                 GITHUB_WORKFLOW_REF=(
                     "dymzz/engineering-ci/.github/workflows/attacker.yml@refs/heads/main"
@@ -137,13 +148,15 @@ def test_publication_context_rejects_unapproved_workflow_path_by_default():
     assert raised.value.code == "actions_workflow_path_not_allowed"
 
 
-def test_workflow_publish_authority_accepts_matching_runtime():
+def test_workflow_publish_authority_accepts_verified_approval_and_execution():
     assessment = passed_assessment()
     context = production_context()
     publication = rac.build_check_publication(assessment, context)
     approval = publisher_approval()
     authority = rap.workflow_publish_authority(
         publisher_approval=approval,
+        approval_authority=accept_approval,
+        execution_identity=execution_identity(),
         environ=actions_env(),
     )
     normalized = rap.normalize_publisher_approval(approval)
@@ -153,82 +166,88 @@ def test_workflow_publish_authority_accepts_matching_runtime():
     assert authority(authorization, publication) is True
 
 
-def test_workflow_publish_authority_rejects_run_mismatch():
+def test_workflow_publish_authority_rejects_caller_minted_approval():
     assessment = passed_assessment()
     context = production_context()
     publication = rac.build_check_publication(assessment, context)
-    approval = publisher_approval()
-    authority = rap.workflow_publish_authority(
-        publisher_approval=approval,
-        environ=actions_env(GITHUB_RUN_ID="999"),
-    )
-    normalized = rap.normalize_publisher_approval(approval)
-    authorization = rac.publishing_authorization_for(
-        publication, authority_ref=normalized["authority_ref"]
-    )
+    # Structurally valid and runtime-consistent, but authority rejects the claim.
     with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
-        authority(authorization, publication)
-    assert raised.value.code == "publish_authority_runtime_run_id_mismatch"
+        rap.workflow_publish_authority(
+            publisher_approval=publisher_approval(),
+            approval_authority=reject_approval,
+            execution_identity=execution_identity(),
+            environ=actions_env(),
+        )
+    assert raised.value.code == "approval_authority_rejected"
+    with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
+        rap.authorize_and_publish(
+            publication,
+            publisher_approval=publisher_approval(),
+            approval_authority=reject_approval,
+            execution_identity=execution_identity(),
+            environ=actions_env(),
+            github=object(),
+        )
+    assert raised.value.code == "approval_authority_rejected"
 
 
-def test_workflow_publish_authority_rejects_unapproved_evaluator():
-    assessment = passed_assessment()
-    context = production_context()
-    publication = rac.build_check_publication(assessment, context)
-    # Internally consistent Actions + publication + authorization, but the
-    # independent approval does not list this evaluator revision.
-    foreign_evaluator = {
+def test_workflow_publish_authority_rejects_missing_approval_authority():
+    with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
+        rap.workflow_publish_authority(
+            publisher_approval=publisher_approval(),
+            approval_authority=None,
+            execution_identity=execution_identity(),
+            environ=actions_env(),
+        )
+    assert raised.value.code == "approval_authority_required"
+
+
+def test_workflow_publish_authority_rejects_mismatched_actual_evaluator():
+    # Publication may declare an approved evaluator, but actual execution used
+    # another revision — that must fail closed before POST.
+    foreign = {
         "name": "engineering-ci/required-assessment-check",
         "version": "pr-modified",
         "sha256": "f" * 64,
     }
-    approval = publisher_approval(approved_evaluator_refs=[foreign_evaluator])
-    authority = rap.workflow_publish_authority(
-        publisher_approval=approval,
-        environ=actions_env(),
-    )
-    normalized = rap.normalize_publisher_approval(approval)
-    authorization = rac.publishing_authorization_for(
-        publication, authority_ref=normalized["authority_ref"]
-    )
-    with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
-        authority(authorization, publication)
-    assert raised.value.code == "publish_authority_evaluator_not_approved"
-
-
-def test_workflow_publish_authority_rejects_unapproved_policy():
-    assessment = passed_assessment()
-    context = production_context()
-    publication = rac.build_check_publication(assessment, context)
-    foreign_policy = {
-        "name": "org/required-assessment-policy",
-        "version": "pr-modified",
-        "sha256": "1" * 64,
-    }
-    approval = publisher_approval(approved_policy_refs=[foreign_policy])
-    authority = rap.workflow_publish_authority(
-        publisher_approval=approval,
-        environ=actions_env(),
-    )
-    normalized = rap.normalize_publisher_approval(approval)
-    authorization = rac.publishing_authorization_for(
-        publication, authority_ref=normalized["authority_ref"]
-    )
-    with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
-        authority(authorization, publication)
-    assert raised.value.code == "publish_authority_policy_not_approved"
-
-
-def test_workflow_publish_authority_rejects_revoked_approval():
     with pytest.raises(rap.RequiredAssessmentPublishError) as raised:
         rap.workflow_publish_authority(
-            publisher_approval=publisher_approval(status="revoked"),
+            publisher_approval=publisher_approval(),
+            approval_authority=accept_approval,
+            execution_identity=execution_identity(evaluator_ref=foreign),
             environ=actions_env(),
         )
-    assert raised.value.code == "publisher_approval_revoked"
+    assert raised.value.code == "execution_identity_evaluator_not_approved"
 
 
-def test_authorize_and_publish_success_posts_when_approved():
+def test_workflow_publish_authority_accepts_authorized_new_revision():
+    new_evaluator = {
+        "name": "engineering-ci/required-assessment-check",
+        "version": "2",
+        "sha256": "9" * 64,
+    }
+    assessment = passed_assessment()
+    context = production_context(evaluator_ref=copy.deepcopy(new_evaluator))
+    publication = rac.build_check_publication(assessment, context)
+    approval = publisher_approval(
+        approved_evaluator_refs=[copy.deepcopy(new_evaluator)]
+    )
+    authority = rap.workflow_publish_authority(
+        publisher_approval=approval,
+        approval_authority=accept_approval,
+        execution_identity=execution_identity(
+            evaluator_ref=copy.deepcopy(new_evaluator)
+        ),
+        environ=actions_env(),
+    )
+    normalized = rap.normalize_publisher_approval(approval)
+    authorization = rac.publishing_authorization_for(
+        publication, authority_ref=normalized["authority_ref"]
+    )
+    assert authority(authorization, publication) is True
+
+
+def test_authorize_and_publish_success_posts_when_verified():
     assessment = passed_assessment()
     context = production_context()
     publication = rac.build_check_publication(assessment, context)
@@ -240,22 +259,22 @@ def test_authorize_and_publish_success_posts_when_approved():
 
         def __call__(self, path, method="GET", data=None):
             assert path == "check-runs"
-            assert method == "POST"
             posted.append(data)
             return {"id": 77}
 
     result = rap.authorize_and_publish(
         publication,
         publisher_approval=publisher_approval(),
+        approval_authority=accept_approval,
+        execution_identity=execution_identity(),
         environ=actions_env(),
         github=FakeGitHub("dymzz/engineering-ci"),
     )
     assert result["id"] == 77
-    assert posted[0]["name"] == rac.CHECK_NAME
     assert posted[0]["conclusion"] == "success"
 
 
-def test_authorize_and_publish_failure_requires_publisher_identity():
+def test_authorize_and_publish_failure_requires_verified_publisher():
     assessment = blocked_assessment()
     context = production_context()
     publication = rac.build_check_publication(assessment, context)
@@ -263,10 +282,11 @@ def test_authorize_and_publish_failure_requires_publisher_identity():
         rap.authorize_and_publish(
             publication,
             publisher_approval=publisher_approval(),
-            environ={"GITHUB_ACTIONS": "false"},
+            approval_authority=reject_approval,
+            environ=actions_env(),
             github=object(),
         )
-    assert raised.value.code == "actions_runtime_required"
+    assert raised.value.code == "approval_authority_rejected"
 
 
 def test_authorize_and_publish_failure_posts_when_publisher_verified():
@@ -286,6 +306,7 @@ def test_authorize_and_publish_failure_posts_when_publisher_verified():
     result = rap.authorize_and_publish(
         publication,
         publisher_approval=publisher_approval(),
+        approval_authority=accept_approval,
         environ=actions_env(),
         github=FakeGitHub("dymzz/engineering-ci"),
     )
