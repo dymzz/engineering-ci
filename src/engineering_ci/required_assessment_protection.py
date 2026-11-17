@@ -1,17 +1,20 @@
 """#61 G3/R3 server-side Required Assessment Context observation.
 
-Read-only inspection of repository Rulesets and Branch Protection for the
-stable Required Assessment Check name published by #61 R2/G2. Separates
-**visibility** (can the current credential read the setting), **configuration**
-(is the Check named among required contexts), and **enforcement probe**
-(controlled push/merge rejection — never claimed by this module).
+Read-only inspection of **branch-applicable** Rules and Branch Protection for
+the stable Required Assessment Check name published by #61 R2/G2. Separates
+**visibility**, **configuration**, and **enforcement probe** (always
+``not_performed`` here).
+
+Primary source: ``GET .../rules/branches/{branch}`` (effective active rules for
+the queried branch, paginated). Repository Ruleset list/detail is supplemental
+evidence for disabled/evaluate misconfiguration signals only.
 
 This module does **not**:
 
 - mutate Rulesets, Branch Protection, Apps, bypasses or permissions;
 - publish the Required Assessment Check (#61 R2/G2);
 - re-run Assessment (#61 R1) or authorize Release (#61 R4/R5);
-- treat Workflow PASS as proof that server protection is enforced.
+- treat Workflow PASS or configuration presence as push-rejection proof.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ ENFORCEMENT_STATUSES = frozenset(
 )
 PROBE_STATUSES = frozenset({"not_performed"})
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_MAX_PAGES = 20
+_PER_PAGE = 100
 
 
 class RequiredAssessmentProtectionError(ValueError):
@@ -73,29 +78,62 @@ def _as_list(value):
     return []
 
 
-def _context_names_from_ruleset(detail):
-    """Extract required status-check context names from one Ruleset detail."""
+def _paginate(github, base_path, *, per_page=_PER_PAGE, max_pages=_MAX_PAGES):
+    """Fetch all pages for a list endpoint.
+
+    Returns ``(visibility, items, complete)``. Incomplete pagination or a
+    mid-stream read failure never claims a negative configuration proof.
+    """
+    items = []
+    for page in range(1, max_pages + 1):
+        path = f"{base_path}?per_page={per_page}&page={page}"
+        status, payload = _get(github, path)
+        if page == 1 and status != "ok":
+            return status, [], False
+        if status != "ok":
+            return "error", items, False
+        if not isinstance(payload, list):
+            return "error", items, False
+        items.extend(payload)
+        if len(payload) < per_page:
+            return "ok", items, True
+    return "ok", items, False
+
+
+def _contexts_from_status_check_rule(rule):
+    names = []
+    if not isinstance(rule, dict):
+        return names
+    if rule.get("type") != "required_status_checks":
+        return names
+    parameters = rule.get("parameters") or {}
+    if not isinstance(parameters, dict):
+        return names
+    for item in _as_list(parameters.get("required_status_checks")):
+        if isinstance(item, dict) and isinstance(item.get("context"), str):
+            names.append(item["context"])
+        elif isinstance(item, str):
+            names.append(item)
+    return names
+
+
+def _context_names_from_branch_rules(rules):
+    names = []
+    for rule in _as_list(rules):
+        names.extend(_contexts_from_status_check_rule(rule))
+    return names
+
+
+def _context_names_from_ruleset_detail(detail):
     names = []
     if not isinstance(detail, dict):
         return names
     for rule in _as_list(detail.get("rules")):
-        if not isinstance(rule, dict):
-            continue
-        if rule.get("type") != "required_status_checks":
-            continue
-        parameters = rule.get("parameters") or {}
-        if not isinstance(parameters, dict):
-            continue
-        for item in _as_list(parameters.get("required_status_checks")):
-            if isinstance(item, dict) and isinstance(item.get("context"), str):
-                names.append(item["context"])
-            elif isinstance(item, str):
-                names.append(item)
+        names.extend(_contexts_from_status_check_rule(rule))
     return names
 
 
 def _context_names_from_branch_protection(payload):
-    """Extract required status-check context names from Branch Protection."""
     names = []
     if not isinstance(payload, dict):
         return names
@@ -111,13 +149,57 @@ def _context_names_from_branch_protection(payload):
     return names
 
 
-def _ruleset_enabled(detail):
-    if not isinstance(detail, dict):
-        return False
-    enforcement = detail.get("enforcement")
-    if enforcement is None:
-        return True
-    return enforcement == "active"
+def _load_supplemental_rulesets(github):
+    """Optional Ruleset list/detail for disabled/evaluate signals only."""
+    status, entries, complete = _paginate(github, "rulesets")
+    records = []
+    errors = []
+    if status == "forbidden":
+        return "forbidden", records, errors, False
+    if status == "absent":
+        return "error", records, ["rulesets_endpoint_absent"], False
+    if status != "ok":
+        return "error", records, ["rulesets_read_error"], False
+    detail_complete = complete
+    for item in entries:
+        if not isinstance(item, dict) or type(item.get("id")) is not int:
+            errors.append("ruleset_list_entry_invalid")
+            detail_complete = False
+            continue
+        ruleset_id = item["id"]
+        detail_visibility, detail = _get(github, f"rulesets/{ruleset_id}")
+        record = {
+            "id": ruleset_id,
+            "name": item.get("name") if isinstance(item.get("name"), str) else None,
+            "detail_visibility": (
+                "readable" if detail_visibility == "ok" else detail_visibility
+            ),
+            "enforcement": None,
+            "contexts": [],
+        }
+        if detail_visibility == "ok":
+            if not isinstance(detail, dict):
+                errors.append(f"ruleset_{ruleset_id}_detail_invalid")
+                detail_complete = False
+            else:
+                enforcement = detail.get("enforcement")
+                record["enforcement"] = enforcement
+                record["contexts"] = _context_names_from_ruleset_detail(detail)
+                if enforcement is None:
+                    # Unknown enforcement is not treated as active applicability.
+                    errors.append(f"ruleset_{ruleset_id}_enforcement_unknown")
+                    detail_complete = False
+        elif detail_visibility == "absent":
+            errors.append(f"ruleset_{ruleset_id}_detail_absent")
+            detail_complete = False
+        elif detail_visibility == "forbidden":
+            errors.append(f"ruleset_{ruleset_id}_forbidden")
+            detail_complete = False
+        else:
+            errors.append(f"ruleset_{ruleset_id}_error")
+            detail_complete = False
+        records.append(record)
+    return "readable", records, errors, detail_complete and complete
 
 
 def inspect_server_protection(
@@ -127,10 +209,11 @@ def inspect_server_protection(
     check_name=CHECK_NAME,
     github=None,
 ):
-    """Observe Ruleset / Branch Protection configuration for ``check_name``.
+    """Observe branch-applicable Rules / Branch Protection for ``check_name``.
 
     Returns a self-digesting observation. Configuration presence is not push
-    rejection proof; ``enforcement.probe`` stays ``not_performed``.
+    rejection proof; ``enforcement.probe`` stays ``not_performed``. Incomplete
+    reads never yield ``absent``.
     """
     repository = _text(repository, "protection_repository_invalid")
     if not _REPO_RE.fullmatch(repository):
@@ -139,56 +222,37 @@ def inspect_server_protection(
     check_name = _text(check_name, "protection_check_name_invalid")
     client = github or GitHub(repository)
 
-    rulesets_visibility, rulesets_payload = _get(client, "rulesets")
-    ruleset_records = []
-    ruleset_contexts = []
-    ruleset_errors = []
-    if rulesets_visibility == "ok":
-        if not isinstance(rulesets_payload, list):
-            rulesets_visibility = "error"
-            ruleset_errors.append("rulesets_payload_invalid")
-        else:
-            for item in rulesets_payload:
-                if not isinstance(item, dict) or type(item.get("id")) is not int:
-                    ruleset_errors.append("ruleset_list_entry_invalid")
-                    continue
-                ruleset_id = item["id"]
-                detail_visibility, detail = _get(client, f"rulesets/{ruleset_id}")
-                record = {
-                    "id": ruleset_id,
-                    "name": item.get("name")
-                    if isinstance(item.get("name"), str)
-                    else None,
-                    "detail_visibility": (
-                        "readable" if detail_visibility == "ok" else detail_visibility
-                    ),
-                    "enforcement": None,
-                    "contexts": [],
-                }
-                if detail_visibility == "ok":
-                    record["enforcement"] = (
-                        detail.get("enforcement") if isinstance(detail, dict) else None
-                    )
-                    contexts = _context_names_from_ruleset(detail)
-                    record["contexts"] = contexts
-                    if _ruleset_enabled(detail):
-                        ruleset_contexts.extend(contexts)
-                    else:
-                        record["detail_visibility"] = "readable"
-                elif detail_visibility == "forbidden":
-                    ruleset_errors.append(f"ruleset_{ruleset_id}_forbidden")
-                elif detail_visibility == "error":
-                    ruleset_errors.append(f"ruleset_{ruleset_id}_error")
-                ruleset_records.append(record)
-            rulesets_visibility = "readable"
-    elif rulesets_visibility == "absent":
-        # Empty list is readable; a true 404 on the collection is unexpected.
-        rulesets_visibility = "error"
-        ruleset_errors.append("rulesets_endpoint_absent")
-    elif rulesets_visibility == "forbidden":
-        pass
+    reasons = []
+    branch_rules_status, branch_rules, branch_rules_complete = _paginate(
+        client, f"rules/branches/{branch}"
+    )
+    branch_rule_contexts = []
+    if branch_rules_status == "ok":
+        branch_rules_visibility = "readable"
+        branch_rule_contexts = _context_names_from_branch_rules(branch_rules)
+        if not branch_rules_complete:
+            reasons.append("branch_rules_pagination_incomplete")
+    elif branch_rules_status == "forbidden":
+        branch_rules_visibility = "forbidden"
+        reasons.append("branch_rules_not_readable")
+        branch_rules_complete = False
+    elif branch_rules_status == "absent":
+        # Endpoint should exist; treat as error rather than "no rules".
+        branch_rules_visibility = "error"
+        reasons.append("branch_rules_endpoint_absent")
+        branch_rules_complete = False
     else:
-        rulesets_visibility = "error"
+        branch_rules_visibility = "error"
+        reasons.append("branch_rules_read_error")
+        branch_rules_complete = False
+
+    (
+        supplemental_visibility,
+        ruleset_records,
+        ruleset_errors,
+        supplemental_complete,
+    ) = _load_supplemental_rulesets(client)
+    reasons.extend(ruleset_errors)
 
     bp_visibility_raw, bp_payload = _get(client, f"branches/{branch}/protection")
     branch_protection_contexts = []
@@ -199,76 +263,96 @@ def inspect_server_protection(
         bp_visibility = "absent"
     elif bp_visibility_raw == "forbidden":
         bp_visibility = "forbidden"
+        reasons.append("branch_protection_not_readable")
     else:
         bp_visibility = "error"
+        reasons.append("branch_protection_read_error")
 
-    in_rulesets = None
-    if rulesets_visibility == "readable":
-        in_rulesets = check_name in ruleset_contexts
+    in_branch_rules = None
+    if branch_rules_visibility == "readable" and branch_rules_complete:
+        in_branch_rules = check_name in branch_rule_contexts
+    elif branch_rules_visibility == "readable" and not branch_rules_complete:
+        # Partial page may already show a hit; absence cannot be proven.
+        if check_name in branch_rule_contexts:
+            in_branch_rules = True
+        else:
+            in_branch_rules = None
+            reasons.append("branch_rules_incomplete_negative_unproven")
+
     in_branch_protection = None
     if bp_visibility == "readable":
         in_branch_protection = check_name in branch_protection_contexts
     elif bp_visibility == "absent":
         in_branch_protection = False
 
-    reasons = []
-    if rulesets_visibility == "forbidden":
-        reasons.append("rulesets_not_readable")
-    if rulesets_visibility == "error":
-        reasons.append("rulesets_read_error")
-    if bp_visibility == "forbidden":
-        reasons.append("branch_protection_not_readable")
-    if bp_visibility == "error":
-        reasons.append("branch_protection_read_error")
-    reasons.extend(ruleset_errors)
+    # Legacy field name kept for consumers: "rulesets" now means branch-applicable
+    # required contexts from rules/branches/{branch}.
+    in_rulesets = in_branch_rules
 
     readable_hits = []
-    if in_rulesets is True:
-        readable_hits.append("rulesets")
+    if in_branch_rules is True:
+        readable_hits.append("branch_rules")
     if in_branch_protection is True:
         readable_hits.append("branch_protection")
     readable_misses = []
-    if in_rulesets is False:
-        readable_misses.append("rulesets")
+    if in_branch_rules is False:
+        readable_misses.append("branch_rules")
     if in_branch_protection is False:
         readable_misses.append("branch_protection")
+
+    applicable_incomplete = (
+        (branch_rules_visibility == "readable" and not branch_rules_complete)
+        or branch_rules_visibility in {"forbidden", "error"}
+        or bp_visibility in {"forbidden", "error"}
+        or (in_branch_rules is None and branch_rules_visibility == "readable")
+    )
+
+    disabled_hits = []
+    evaluate_hits = []
+    for record in ruleset_records:
+        enforcement = record.get("enforcement")
+        contexts = record.get("contexts") or ()
+        if check_name not in contexts:
+            continue
+        if enforcement == "disabled":
+            disabled_hits.append(record["id"])
+        elif enforcement == "evaluate":
+            evaluate_hits.append(record["id"])
 
     if readable_hits:
         enforcement_status = "configured"
         reasons.append("required_assessment_context_configured")
-    elif rulesets_visibility in {"forbidden", "error"} and bp_visibility in {
-        "forbidden",
-        "error",
-    }:
+    elif applicable_incomplete and not readable_hits:
         enforcement_status = "not_verified"
-        reasons.append("no_readable_protection_source")
-    elif readable_misses and not readable_hits:
-        # At least one source was readable and lacked the context.
-        if rulesets_visibility in {"forbidden", "error"} or bp_visibility in {
+        if branch_rules_visibility in {"forbidden", "error"} and bp_visibility in {
             "forbidden",
             "error",
         }:
-            enforcement_status = "not_verified"
-            reasons.append("partial_visibility_without_configured_context")
+            reasons.append("no_readable_protection_source")
+        else:
+            reasons.append("incomplete_protection_observation")
+    elif readable_misses and not readable_hits:
+        # Applicable sources fully deny the context for this branch. Disabled /
+        # evaluate Rulesets are not applicable (branch-rules omits them) but
+        # still surface misconfiguration when supplemental detail is available.
+        if disabled_hits or evaluate_hits:
+            enforcement_status = "misconfigured"
+            if disabled_hits:
+                reasons.append("required_assessment_context_only_in_disabled_ruleset")
+            if evaluate_hits:
+                reasons.append("required_assessment_context_only_in_evaluate_ruleset")
         else:
             enforcement_status = "absent"
             reasons.append("required_assessment_context_absent")
+            if supplemental_visibility in {"forbidden", "error"} or (
+                supplemental_visibility == "readable" and not supplemental_complete
+            ):
+                reasons.append("supplemental_rulesets_incomplete_for_misconfig_scan")
     else:
         enforcement_status = "not_verified"
         reasons.append("protection_observation_inconclusive")
 
-    # Disabled Rulesets that still list the context are misconfigured signal.
-    disabled_hits = []
-    for record in ruleset_records:
-        if record.get("enforcement") not in {
-            None,
-            "active",
-        } and check_name in record.get("contexts", ()):
-            disabled_hits.append(record["id"])
-    if disabled_hits and enforcement_status == "absent":
-        enforcement_status = "misconfigured"
-        reasons.append("required_assessment_context_only_in_disabled_ruleset")
-    elif disabled_hits and enforcement_status == "configured":
+    if disabled_hits and enforcement_status == "configured":
         reasons.append("additional_disabled_ruleset_lists_context")
 
     observation = {
@@ -278,15 +362,23 @@ def inspect_server_protection(
         "branch": branch,
         "check_name": check_name,
         "visibility": {
-            "rulesets": rulesets_visibility,
+            "branch_rules": branch_rules_visibility,
+            "rulesets": supplemental_visibility,
             "branch_protection": bp_visibility,
         },
         "configuration": {
+            "branch_rules": branch_rules
+            if branch_rules_visibility == "readable"
+            else [],
+            "branch_rule_contexts": sorted(set(branch_rule_contexts)),
             "rulesets": ruleset_records,
-            "ruleset_contexts": sorted(set(ruleset_contexts)),
+            "ruleset_contexts": sorted(set(branch_rule_contexts)),
             "branch_protection_contexts": sorted(set(branch_protection_contexts)),
+            "required_assessment_in_branch_rules": in_branch_rules,
             "required_assessment_in_rulesets": in_rulesets,
             "required_assessment_in_branch_protection": in_branch_protection,
+            "branch_rules_complete": branch_rules_complete,
+            "supplemental_rulesets_complete": supplemental_complete,
         },
         "enforcement": {
             "status": enforcement_status,
@@ -300,6 +392,7 @@ def inspect_server_protection(
             "native_required_contexts_remain_independent",
             "does_not_authorize_release",
             "does_not_publish_required_assessment_check",
+            "branch_rules_are_applicability_authority",
         ],
         "observation_ref": None,
     }
@@ -332,7 +425,7 @@ def validate_protection_observation(observation):
     visibility = observation.get("visibility")
     if not isinstance(visibility, dict):
         raise RequiredAssessmentProtectionError("protection_visibility_invalid")
-    for key in ("rulesets", "branch_protection"):
+    for key in ("branch_rules", "rulesets", "branch_protection"):
         if visibility.get(key) not in VISIBILITY_STATUSES:
             raise RequiredAssessmentProtectionError("protection_visibility_invalid")
     enforcement = observation.get("enforcement")

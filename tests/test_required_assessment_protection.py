@@ -27,17 +27,22 @@ class FakeGitHub:
         return copy.deepcopy(payload)
 
 
-def test_inspect_absent_when_no_rulesets_and_no_branch_protection():
-    github = FakeGitHub(
-        {
-            "rulesets": (200, []),
-            "branches/main/protection": (404, None),
-        }
-    )
+def empty_protection_routes(**extra):
+    routes = {
+        "rules/branches/main?per_page=100&page=1": (200, []),
+        "rulesets?per_page=100&page=1": (200, []),
+        "branches/main/protection": (404, None),
+    }
+    routes.update(extra)
+    return routes
+
+
+def test_inspect_absent_when_no_branch_rules_and_no_branch_protection():
+    github = FakeGitHub(empty_protection_routes())
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
-    assert observation["visibility"]["rulesets"] == "readable"
+    assert observation["visibility"]["branch_rules"] == "readable"
     assert observation["visibility"]["branch_protection"] == "absent"
-    assert observation["configuration"]["required_assessment_in_rulesets"] is False
+    assert observation["configuration"]["required_assessment_in_branch_rules"] is False
     assert (
         observation["configuration"]["required_assessment_in_branch_protection"]
         is False
@@ -47,16 +52,13 @@ def test_inspect_absent_when_no_rulesets_and_no_branch_protection():
     rap.validate_protection_observation(observation)
 
 
-def test_inspect_configured_via_active_ruleset():
+def test_inspect_configured_via_branch_applicable_rules():
     github = FakeGitHub(
-        {
-            "rulesets": (200, [{"id": 11, "name": "main-gate"}]),
-            "rulesets/11": (
-                200,
-                {
-                    "id": 11,
-                    "enforcement": "active",
-                    "rules": [
+        empty_protection_routes(
+            **{
+                "rules/branches/main?per_page=100&page=1": (
+                    200,
+                    [
                         {
                             "type": "required_status_checks",
                             "parameters": {
@@ -67,33 +69,66 @@ def test_inspect_configured_via_active_ruleset():
                             },
                         }
                     ],
+                )
+            }
+        )
+    )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["enforcement"]["status"] == "configured"
+    assert observation["configuration"]["required_assessment_in_branch_rules"] is True
+    assert CHECK_NAME in observation["configuration"]["branch_rule_contexts"]
+    rap.validate_protection_observation(observation)
+
+
+def test_inspect_ignores_ruleset_that_does_not_apply_to_branch():
+    # Supplemental Ruleset lists the Check for release/*, but effective branch
+    # rules for main do not include it.
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 11, "name": "release-gate"}],
+            ),
+            "rulesets/11": (
+                200,
+                {
+                    "id": 11,
+                    "enforcement": "active",
+                    "rules": [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [{"context": CHECK_NAME}]
+                            },
+                        }
+                    ],
                 },
             ),
             "branches/main/protection": (404, None),
         }
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
-    assert observation["enforcement"]["status"] == "configured"
-    assert observation["configuration"]["required_assessment_in_rulesets"] is True
-    assert CHECK_NAME in observation["configuration"]["ruleset_contexts"]
-    rap.validate_protection_observation(observation)
+    assert observation["configuration"]["required_assessment_in_branch_rules"] is False
+    assert observation["enforcement"]["status"] == "absent"
 
 
 def test_inspect_configured_via_branch_protection_contexts():
     github = FakeGitHub(
-        {
-            "rulesets": (200, []),
-            "branches/main/protection": (
-                200,
-                {
-                    "required_status_checks": {
-                        "strict": True,
-                        "contexts": [CHECK_NAME],
-                        "checks": [{"context": CHECK_NAME, "app_id": -1}],
-                    }
-                },
-            ),
-        }
+        empty_protection_routes(
+            **{
+                "branches/main/protection": (
+                    200,
+                    {
+                        "required_status_checks": {
+                            "strict": True,
+                            "contexts": [CHECK_NAME],
+                            "checks": [{"context": CHECK_NAME, "app_id": -1}],
+                        }
+                    },
+                )
+            }
+        )
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
     assert observation["visibility"]["branch_protection"] == "readable"
@@ -104,44 +139,108 @@ def test_inspect_configured_via_branch_protection_contexts():
     rap.validate_protection_observation(observation)
 
 
-def test_inspect_not_verified_when_rulesets_forbidden():
+def test_inspect_not_verified_when_branch_rules_and_protection_forbidden():
     github = FakeGitHub(
         {
-            "rulesets": (403, None),
+            "rules/branches/main?per_page=100&page=1": (403, None),
+            "rulesets?per_page=100&page=1": (403, None),
             "branches/main/protection": (403, None),
         }
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
-    assert observation["visibility"]["rulesets"] == "forbidden"
+    assert observation["visibility"]["branch_rules"] == "forbidden"
     assert observation["visibility"]["branch_protection"] == "forbidden"
-    assert observation["configuration"]["required_assessment_in_rulesets"] is None
-    assert (
-        observation["configuration"]["required_assessment_in_branch_protection"] is None
-    )
+    assert observation["configuration"]["required_assessment_in_branch_rules"] is None
     assert observation["enforcement"]["status"] == "not_verified"
-    assert "rulesets_not_readable" in observation["enforcement"]["reasons"]
+    assert "no_readable_protection_source" in observation["enforcement"]["reasons"]
     rap.validate_protection_observation(observation)
 
 
 def test_inspect_not_verified_when_only_partial_visibility():
     github = FakeGitHub(
         {
-            "rulesets": (403, None),
+            "rules/branches/main?per_page=100&page=1": (403, None),
+            "rulesets?per_page=100&page=1": (200, []),
             "branches/main/protection": (404, None),
         }
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
     assert observation["enforcement"]["status"] == "not_verified"
-    assert (
-        "partial_visibility_without_configured_context"
-        in (observation["enforcement"]["reasons"])
+    assert "incomplete_protection_observation" in observation["enforcement"]["reasons"]
+
+
+def test_inspect_not_verified_when_later_page_unread():
+    page1 = [{"type": "deletion"} for _ in range(100)]
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, page1),
+            # Missing page 2 fails closed; Check may live on a later page.
+            "rulesets?per_page=100&page=1": (200, []),
+            "branches/main/protection": (404, None),
+        }
     )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["configuration"]["branch_rules_complete"] is False
+    assert observation["enforcement"]["status"] == "not_verified"
+    assert observation["enforcement"]["status"] != "absent"
+    assert any(
+        reason in observation["enforcement"]["reasons"]
+        for reason in (
+            "branch_rules_pagination_incomplete",
+            "branch_rules_read_error",
+            "incomplete_protection_observation",
+        )
+    )
+
+
+def test_inspect_configured_when_check_appears_on_later_page():
+    page1 = [{"type": "deletion"} for _ in range(100)]
+    page2 = [
+        {
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": CHECK_NAME}]},
+        }
+    ]
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, page1),
+            "rules/branches/main?per_page=100&page=2": (200, page2),
+            "rulesets?per_page=100&page=1": (200, []),
+            "branches/main/protection": (404, None),
+        }
+    )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["configuration"]["branch_rules_complete"] is True
+    assert observation["enforcement"]["status"] == "configured"
+
+
+def test_inspect_not_verified_when_ruleset_detail_absent_after_list():
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 9, "name": "stale"}],
+            ),
+            "rulesets/9": (404, None),
+            "branches/main/protection": (404, None),
+        }
+    )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    # Applicable sources complete without the Check => absent; detail race is
+    # recorded but does not invent configuration.
+    assert observation["enforcement"]["status"] == "absent"
+    assert "ruleset_9_detail_absent" in observation["enforcement"]["reasons"]
 
 
 def test_inspect_misconfigured_when_only_disabled_ruleset_lists_context():
     github = FakeGitHub(
         {
-            "rulesets": (200, [{"id": 5, "name": "disabled-gate"}]),
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 5, "name": "disabled-gate"}],
+            ),
             "rulesets/5": (
                 200,
                 {
@@ -161,22 +260,82 @@ def test_inspect_misconfigured_when_only_disabled_ruleset_lists_context():
         }
     )
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
-    assert observation["configuration"]["required_assessment_in_rulesets"] is False
+    assert observation["configuration"]["required_assessment_in_branch_rules"] is False
     assert observation["enforcement"]["status"] == "misconfigured"
     assert (
         "required_assessment_context_only_in_disabled_ruleset"
-        in (observation["enforcement"]["reasons"])
+        in observation["enforcement"]["reasons"]
     )
     rap.validate_protection_observation(observation)
 
 
-def test_validate_rejects_tampered_observation_ref():
+def test_inspect_misconfigured_when_only_evaluate_ruleset_lists_context():
     github = FakeGitHub(
         {
-            "rulesets": (200, []),
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 6, "name": "evaluate-gate"}],
+            ),
+            "rulesets/6": (
+                200,
+                {
+                    "id": 6,
+                    "enforcement": "evaluate",
+                    "rules": [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [{"context": CHECK_NAME}]
+                            },
+                        }
+                    ],
+                },
+            ),
             "branches/main/protection": (404, None),
         }
     )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["enforcement"]["status"] == "misconfigured"
+    assert (
+        "required_assessment_context_only_in_evaluate_ruleset"
+        in observation["enforcement"]["reasons"]
+    )
+
+
+def test_unknown_enforcement_does_not_count_as_active_applicable():
+    github = FakeGitHub(
+        {
+            "rules/branches/main?per_page=100&page=1": (200, []),
+            "rulesets?per_page=100&page=1": (
+                200,
+                [{"id": 7, "name": "unknown"}],
+            ),
+            "rulesets/7": (
+                200,
+                {
+                    "id": 7,
+                    "enforcement": None,
+                    "rules": [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [{"context": CHECK_NAME}]
+                            },
+                        }
+                    ],
+                },
+            ),
+            "branches/main/protection": (404, None),
+        }
+    )
+    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    assert observation["enforcement"]["status"] == "absent"
+    assert "ruleset_7_enforcement_unknown" in observation["enforcement"]["reasons"]
+
+
+def test_validate_rejects_tampered_observation_ref():
+    github = FakeGitHub(empty_protection_routes())
     observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
     observation["observation_ref"] = "sha256:" + ("0" * 64)
     with pytest.raises(rap.RequiredAssessmentProtectionError) as raised:
@@ -185,12 +344,6 @@ def test_validate_rejects_tampered_observation_ref():
 
 
 def test_inspect_never_mutates_protection():
-    github = FakeGitHub(
-        {
-            "rulesets": (200, []),
-            "branches/main/protection": (404, None),
-        }
-    )
+    github = FakeGitHub(empty_protection_routes())
     rap.inspect_server_protection("dymzz/engineering-ci", github=github)
     assert all(method == "GET" for method, _path in github.calls)
-    assert not any(method != "GET" for method, _path in github.calls)

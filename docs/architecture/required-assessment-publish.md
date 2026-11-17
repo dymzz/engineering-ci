@@ -3,58 +3,72 @@
 Status: additive #61 G2 **trusted Workflow publish-authority contract**
 (`engineering_ci.required_assessment_publish`). It supplies the production
 Provider/Workflow boundary that R2 `publish_check_run` requires before POSTing
-a `success` Required Assessment Check.
+a Required Assessment Check, bound to an **independently issued** publisher
+approval.
 
 It does **not** produce live Universe/Admission/Receipt inputs, verify
-Rulesets/Branch Protection (#61 G3/R3), or authorize Release (#61 R4/R5).
+Rulesets/Branch Protection (#61 G3/R3), authorize Release (#61 R4/R5), or mint
+approvals from the evaluated PR.
 
 ## Construction vs authorization
 
 ```text
-publication_context_from_actions(GITHUB_*)
+normalize_publisher_approval(independent approval)
         |
-        +--> R2 publication_context bound to live Actions identity
+actions_runtime_identity(GITHUB_* real OWNER/REPO/...@ref)
         |
-workflow_publish_authority(authority_ref, GITHUB_*)
+        +--> verify_publisher_identity  (success and failure)
         |
-        +--> publish_authority(authorization, publication) is True
-             only when authorization ≡ publication ≡ live runtime
+workflow_publish_authority(...)          (success only)
+        |
+        +--> publish_authority is True only when
+             approval ≡ runtime ≡ publication evaluator/policy
         |
 authorize_and_publish(...)
         |
-        +--> success: authorize then R2 publish_check_run
-             failure: POST without Actions runtime authority
+        +--> failure: verified publisher, then R2 POST
+             success: verified publisher + approved evaluator/policy POST
 ```
 
-## Trusted runtime binding
+## Real Workflow Ref
 
-`actions_runtime_identity()` requires `GITHUB_ACTIONS=true` and a well-formed
-repository / event / SHA / Workflow Ref / Workflow SHA / Run / Attempt. The
-Workflow path extracted from `GITHUB_WORKFLOW_REF` must be in the allowlist
-(default: `.github/workflows/ci.yml`, `.github/workflows/required-assessment.yml`).
+`GITHUB_WORKFLOW_REF` must be the real Actions form
+`OWNER/REPO/.github/workflows/name.yml@ref`. Relative
+`.github/workflows/...@ref` fixtures are rejected. The parsed workflow
+repository must equal `GITHUB_REPOSITORY`.
 
-`workflow_publish_authority` returns a callable suitable for R2
-`publish_authority`. It returns exactly `True` only when:
+## Independent publisher approval
 
-1. `authorization.authority_ref` matches the configured authority evidence ref;
-2. authorization and publication both equal the live Actions identity fields;
-3. publication uses a production trust basis and the production Check name;
-4. contract-sample publications are refused.
+`normalize_publisher_approval` requires a source not controlled by the
+evaluated PR. It binds:
 
-A caller-asserted `trust_basis="protected_workflow"` string alone never
-authorizes the POST.
+- repository + workflow repository/path/sha;
+- allowed events;
+- approved evaluator and policy evidence refs;
+- authority evidence ref;
+- status (`active` / `revoked` / `expired`) and optional validity window.
+
+A caller-supplied `authority_ref` that merely matches itself is not approval.
+PR-modified evaluator/policy digests that are absent from the approval cannot
+POST `success`.
+
+## Failure vs success
+
+Both conclusions require a controlled publisher identity (Actions runtime +
+approval). Only `success` additionally requires the publication's
+evaluator/policy to be listed on that approval.
 
 ## Limits
 
 - Does not wire a CI Job that materializes live Assessment inputs.
 - Does not enable or mutate Branch Protection / Rulesets (see G3).
 - Does not replace Native Required Contexts.
-- Failure publications may POST without Actions runtime authority; success may
-  not.
+- `GITHUB_SHA` under `pull_request` may be a merge SHA; live wiring must bind
+  the evaluated Git object via event/#66 source identity (follow-up).
 
 ## Directed acceptance
 
-`tests/test_required_assessment_publish.py` covers Actions identity parsing,
-unlisted Workflow path refusal, matching runtime acceptance, Run/authority-ref
-mismatches, contract-sample refusal, success POST with FakeGitHub, and failure
-POST without Actions.
+`tests/test_required_assessment_publish.py` covers real workflow refs,
+wrong-repository refs, independent approved/unapproved evaluator/policy,
+revoked approval, success POST, and failure POST that still requires publisher
+identity.
