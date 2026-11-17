@@ -97,8 +97,10 @@ identity-only binding. #66-P0 owns stronger Source/closure production. The Host
 adapter's existing per-Check Source proofs remain at their proven scope.
 `source_binding_verified=unknown`, `trusted=false` and
 `origin_execution_attributed=false` retain their separate meanings. Terminal
-Expected/Phase authorization is #52-D4/#66-B2; this Producer mapping does not
-construct Expected obligations or change #63 Admission / #61 Required policy.
+Expected → post_completion Plan binding is the #52-D4 contract slice
+(`terminal-expected.md`); #66-B2 remains the authorized Expected producer.
+This Producer mapping does not construct Expected obligations or change #63
+Admission / #61 Required policy.
 
 ## Stable identities
 
@@ -623,10 +625,11 @@ exits and the resulting Report) is recorded in
   definitions makes them resolvable via `definition_for()` /
   `resolve_definitions()`; wiring actual Native Result producers in
   `execution.execute()`, `selection.run_tests()`, and Weaver Dagger/Host
-  outputs, plus `dagger_export` -> `host` Source Handoff and post-completion
-  `expected_checks` binding, remain subsequent D2–D4 slices. External native
-  tools and Runtime Check/Profile interfaces still require the later contract
-  work.
+  outputs, plus `dagger_export` -> `host` Source Handoff, are covered by D2/D3.
+  Post-completion Check Expected binding is the #52-D4 contract slice
+  (`terminal-expected.md`); production execute-plan injection and #63/#61
+  remain subsequent work. External native tools and Runtime Check/Profile
+  interfaces still require the later contract work.
 - `profile_ref` is pass-through metadata; it cannot grant Required/trusted.
 - `resolve_definitions` resolves only the built-in scope; Expected Check
   enumeration, Job routing and Required aggregation remain #66/#63/#61 work.
