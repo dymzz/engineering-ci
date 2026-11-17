@@ -1,0 +1,4132 @@
+{
+  "kind": "eci-125-candidate-disposition",
+  "schema_version": 1,
+  "purpose": "A/B traceability of all expanded discovered candidates, not semantic or production authorization assurance",
+  "snapshots": {
+    "main": "4bb346c57f99e4767eea78082639f0b367745140",
+    "pr124": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5"
+  },
+  "classification_semantics": {
+    "graph_node": "candidate is explicit same-snapshot review graph node",
+    "covered_by_graph": "candidate has retained same-snapshot resolved caller chain to a graph node",
+    "shared_implementation": "same pinned file bytes as main, reuse code representation only; pr124 consumer path not attested",
+    "excluded": "candidate route is observation/display, not a deciding authorization exit",
+    "unresolved": "not proven covered or excluded; remains visible for C/D"
+  },
+  "counts": {
+    "main": {
+      "unresolved": 24,
+      "covered_by_graph": 45,
+      "graph_node": 55,
+      "excluded": 3
+    },
+    "pr124": {
+      "unresolved": 47,
+      "shared_implementation": 65,
+      "excluded": 3,
+      "covered_by_graph": 4,
+      "graph_node": 8
+    }
+  },
+  "candidates": [
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission._authenticate_evidence",
+      "path": "src/engineering_ci/admission.py",
+      "line": 337,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission._authenticate_pre_execution_proof",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1224,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [
+        "engineering_ci.admission._authenticate_pre_execution_proof",
+        "engineering_ci.admission.admit_historical_reuse"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission._current_authorization",
+      "path": "src/engineering_ci/admission.py",
+      "line": 991,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [
+        "engineering_ci.admission._current_authorization",
+        "engineering_ci.admission.admit_historical_reuse"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission._evaluate_historical_candidate",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1321,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [
+        "engineering_ci.admission._evaluate_historical_candidate",
+        "engineering_ci.admission.admit_historical_reuse"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission._index_pre_execution_proofs",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1017,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [
+        "engineering_ci.admission._index_pre_execution_proofs",
+        "engineering_ci.admission.admit_historical_reuse"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission.admit_evidence",
+      "path": "src/engineering_ci/admission.py",
+      "line": 779,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.admission.admit_evidence",
+      "caller_chain": [
+        "engineering_ci.admission.admit_evidence"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission.admit_historical_reuse",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1527,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [
+        "engineering_ci.admission.admit_historical_reuse"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1451,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "caller_chain": [
+        "engineering_ci.check_contract.evaluate_expected_satisfaction"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.native_result",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 927,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.check_contract.native_result",
+      "caller_chain": [
+        "engineering_ci.check_contract.native_result"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.validate_result",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1053,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.check_contract.validate_result",
+      "caller_chain": [
+        "engineering_ci.check_contract.validate_result"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.GitHubRunFacts.job_bounds_state",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 172,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.GitHubRunFacts.run_bounds_state",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 163,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry._task_omit_reason",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 841,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.cicd_telemetry.produce",
+      "caller_chain": [
+        "engineering_ci.cicd_telemetry._task_omit_reason",
+        "engineering_ci.cicd_telemetry.produce"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.build_job_terminal_log_records",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 1980,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.facts_from_github_api_objects",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2428,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "caller_chain": [
+        "engineering_ci.cicd_telemetry.facts_from_github_api_objects",
+        "engineering_ci.cicd_telemetry.fetch_github_run_job"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.facts_from_mapping",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 295,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2646,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "caller_chain": [
+        "engineering_ci.cicd_telemetry.fetch_github_run_job"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.main",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2801,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.produce",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 857,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.cicd_telemetry.produce",
+      "caller_chain": [
+        "engineering_ci.cicd_telemetry.produce"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cli.download.interactive",
+      "path": "src/engineering_ci/cli/download.py",
+      "line": 53,
+      "source_sha256": "3b9ea1ddb58a95838c88f2a8e508cf45a4e46391abecfffb2d96f5cad666b137",
+      "route": "display/download conclusion only; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cli.download.main",
+      "path": "src/engineering_ci/cli/download.py",
+      "line": 71,
+      "source_sha256": "3b9ea1ddb58a95838c88f2a8e508cf45a4e46391abecfffb2d96f5cad666b137",
+      "route": "display/download conclusion only; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cli.release.main",
+      "path": "src/engineering_ci/cli/release.py",
+      "line": 48,
+      "source_sha256": "514eb5c9629e0c4da38fba931b73a9e17ef366c7bba2a133274deda4e2abea00",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry._assemble_receipt",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 1813,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [
+        "engineering_ci.dagger_telemetry._assemble_receipt",
+        "engineering_ci.dagger_telemetry.correlate_capture"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry._reconcile_receipt_with_capture",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 2415,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "caller_chain": [
+        "engineering_ci.dagger_telemetry._reconcile_receipt_with_capture",
+        "engineering_ci.dagger_telemetry.verify_a1_suite"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry._resolve_isolation_evidence",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 970,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [
+        "engineering_ci.dagger_telemetry._resolve_isolation_evidence",
+        "engineering_ci.dagger_telemetry.correlate_capture"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry.correlate_capture",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 1649,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [
+        "engineering_ci.dagger_telemetry.correlate_capture"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry.verify_a1_suite",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 2517,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "caller_chain": [
+        "engineering_ci.dagger_telemetry.verify_a1_suite"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._blocked_consumer_entry",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4070,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._decorate_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3805,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._decorate_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._finalize_report",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4488,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._finalize_report",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._find_omitted_hygiene_entries",
+      "path": "src/engineering_ci/execution.py",
+      "line": 603,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._find_omitted_hygiene_entries",
+        "engineering_ci.execution._run_hygiene_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._hygiene_failure_results",
+      "path": "src/engineering_ci/execution.py",
+      "line": 520,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._hygiene_failure_results",
+        "engineering_ci.execution._run_hygiene_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._profile_reference",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1669,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "caller_chain": [
+        "engineering_ci.execution._profile_reference",
+        "engineering_ci.execution.build_pre_execution_source_proof"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._run_hygiene_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 704,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._run_hygiene_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._run_source_check",
+      "path": "src/engineering_ci/execution.py",
+      "line": 853,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._run_source_check",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._run_workflow_script_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1077,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution._run_workflow_script_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._verified_check_source_ref",
+      "path": "src/engineering_ci/execution.py",
+      "line": 2007,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "caller_chain": [
+        "engineering_ci.execution._verified_check_source_ref",
+        "engineering_ci.execution.build_pre_execution_source_proof"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.build_pre_execution_source_proof",
+      "path": "src/engineering_ci/execution.py",
+      "line": 2754,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "caller_chain": [
+        "engineering_ci.execution.build_pre_execution_source_proof"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.build_source_resolution",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3362,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.execution.build_source_resolution",
+      "caller_chain": [
+        "engineering_ci.execution.build_source_resolution"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3030,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "caller_chain": [
+        "engineering_ci.execution.compare_pre_execution_to_historical_result"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.execute",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4682,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.omitted_workflow_script_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1008,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.execution.omitted_workflow_script_checks",
+        "engineering_ci.execution._run_workflow_script_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.source_resolution_receipt",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3498,
+      "source_sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "route": "native-execution-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.execution.source_resolution_receipt",
+      "caller_chain": [
+        "engineering_ci.execution.source_resolution_receipt"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks._verify_profile_authority",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 687,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "caller_chain": [
+        "engineering_ci.expected_checks._verify_profile_authority"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.build_effective_profile",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 264,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.derive_expected_checks",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 1885,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "caller_chain": [
+        "engineering_ci.expected_checks.derive_expected_checks"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.validate_projection",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2874,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.expected_checks.validate_projection",
+      "caller_chain": [
+        "engineering_ci.expected_checks.validate_projection"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.verify_per_ref_source_handoff",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2318,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hook_coordinator._require_runner_produced_report",
+      "path": "src/engineering_ci/hook_coordinator.py",
+      "line": 575,
+      "source_sha256": "e09b4a6e1c2fb6b1a6401a42980c347f254e6f58a422d4972aeb9411243bda3c",
+      "route": "activated-job-report-boundary (read only; never invoked)",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.hook_coordinator._require_runner_produced_report",
+      "caller_chain": [
+        "engineering_ci.hook_coordinator._require_runner_produced_report"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hygiene._docs",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 697,
+      "source_sha256": "70d01afe49ce7455274a1e32b3e02653515033a81acefe1c0849faffede9ec8a",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hygiene._tach",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 746,
+      "source_sha256": "70d01afe49ce7455274a1e32b3e02653515033a81acefe1c0849faffede9ec8a",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hygiene._tach_external",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 766,
+      "source_sha256": "70d01afe49ce7455274a1e32b3e02653515033a81acefe1c0849faffede9ec8a",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hygiene.config_from_identity",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 423,
+      "source_sha256": "70d01afe49ce7455274a1e32b3e02653515033a81acefe1c0849faffede9ec8a",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff._match_consumer_authorization",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 471,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "caller_chain": [
+        "engineering_ci.local_actions_handoff._match_consumer_authorization",
+        "engineering_ci.local_actions_handoff.verify_local_handoff"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff._normalize_producer_authorization",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 205,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "caller_chain": [
+        "engineering_ci.local_actions_handoff._normalize_producer_authorization",
+        "engineering_ci.local_actions_handoff.build_local_handoff_package"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 254,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "caller_chain": [
+        "engineering_ci.local_actions_handoff.build_local_handoff_package"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 326,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "caller_chain": [
+        "engineering_ci.local_actions_handoff.validate_local_handoff_package"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 526,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "caller_chain": [
+        "engineering_ci.local_actions_handoff.verify_local_handoff"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation._check_report_rejection",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 234,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation._execution_report",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 310,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation.reconcile_expected_results",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1748,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "caller_chain": [
+        "engineering_ci.reconciliation.reconcile_expected_results"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation.validate_receipt",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1984,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.reconciliation.validate_receipt",
+      "caller_chain": [
+        "engineering_ci.reconciliation.validate_receipt"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.manifest.check_record",
+      "path": "src/engineering_ci/release/manifest.py",
+      "line": 239,
+      "source_sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.manifest.validate",
+      "path": "src/engineering_ci/release/manifest.py",
+      "line": 340,
+      "source_sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4",
+      "route": "real-release-workflow",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.release.manifest.validate",
+      "caller_chain": [
+        "engineering_ci.release.manifest.validate"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.main",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 336,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.release.publishing.main",
+      "caller_chain": [
+        "engineering_ci.release.publishing.main"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.publish_release",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 213,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.release.publishing.publish_release",
+      "caller_chain": [
+        "engineering_ci.release.publishing.publish_release"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.published_evidence",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 114,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.release.publishing.published_evidence",
+      "caller_chain": [
+        "engineering_ci.release.publishing.published_evidence"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.request.dispatch",
+      "path": "src/engineering_ci/release/request.py",
+      "line": 55,
+      "source_sha256": "25e41acf2eef99f905ed4b6993fcbe5be6607a5401fd83cd47a7371e1bd63548",
+      "route": "real-release-workflow",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.release.request.dispatch",
+      "caller_chain": [
+        "engineering_ci.release.request.dispatch"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.verification.completed_run",
+      "path": "src/engineering_ci/release/verification.py",
+      "line": 153,
+      "source_sha256": "19fcb9d56c3cce339a300178a9412e3b2048e673fac0f5ed081a78cde88fdeb1",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.verification.validation_state",
+      "path": "src/engineering_ci/release/verification.py",
+      "line": 257,
+      "source_sha256": "19fcb9d56c3cce339a300178a9412e3b2048e673fac0f5ed081a78cde88fdeb1",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._adjudication_entry",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1304,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment._validate_admission",
+      "caller_chain": [
+        "engineering_ci.required_assessment._adjudication_entry",
+        "engineering_ci.required_assessment._validate_admission"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._check_inapplicability_status",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1621,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._check_instance_row",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1907,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment._check_instance_row",
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._effective_adjudication",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1779,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment._effective_adjudication",
+        "engineering_ci.required_assessment._in_scope_failures",
+        "engineering_ci.required_assessment._check_instance_row",
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._in_scope_failures",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1798,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment._in_scope_failures",
+        "engineering_ci.required_assessment._check_instance_row",
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._non_check_evidence_usable",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2095,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment._non_check_evidence_usable",
+        "engineering_ci.required_assessment._non_check_obligation_row",
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._non_check_inapplicability_status",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1635,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._non_check_obligation_row",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2158,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment._non_check_obligation_row",
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._normalize_obligation",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 696,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment._validate_universe",
+      "caller_chain": [
+        "engineering_ci.required_assessment._normalize_obligation",
+        "engineering_ci.required_assessment._validate_universe"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._validate_admission",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1341,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment._validate_admission",
+      "caller_chain": [
+        "engineering_ci.required_assessment._validate_admission"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._validate_non_check_entry",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1486,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._validate_universe",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 791,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment._validate_universe",
+      "caller_chain": [
+        "engineering_ci.required_assessment._validate_universe"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2449,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [
+        "engineering_ci.required_assessment.assess_required_obligations"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment.validate_assessment",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2637,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment.validate_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment.validate_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.build_check_publication",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 306,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.build_check_publication"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.normalize_publishing_authorization",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 540,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.normalize_publishing_authorization",
+        "engineering_ci.required_assessment_check.publish_check_run"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 388,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.publication_for_missing_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 696,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.publish_check_run"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.publishing_authorization_for",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 660,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.publishing_authorization_for",
+        "engineering_ci.required_assessment_publish.authorize_and_publish"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.resolve_conclusion",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 278,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.resolve_conclusion",
+        "engineering_ci.required_assessment_check.build_check_publication"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.validate_publication",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 452,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [
+        "engineering_ci.required_assessment_check.validate_publication",
+        "engineering_ci.required_assessment_check.publish_check_run"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._authority_gate",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 431,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._authority_gate",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._bind_lifecycle",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 276,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._bind_lifecycle",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._bind_phase_order_to_assessments",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 158,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._bind_phase_order_to_assessments",
+        "engineering_ci.required_assessment_post._bind_lifecycle",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._bind_phase_relation",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 208,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._bind_phase_relation",
+        "engineering_ci.required_assessment_post._bind_lifecycle",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._bind_temporal",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 315,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._bind_temporal",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._consistency",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 506,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._consistency",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post._disposition_from_authority",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 450,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post._disposition_from_authority",
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post.reconcile_post_stage",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 582,
+      "source_sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "route": "post-stage",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "caller_chain": [
+        "engineering_ci.required_assessment_post.reconcile_post_stage"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_protection.inspect_server_protection",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 257,
+      "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "route": "server-observation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "caller_chain": [
+        "engineering_ci.required_assessment_protection.inspect_server_protection"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_protection.validate_protection_observation",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 481,
+      "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "route": "server-observation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_protection.validate_protection_observation",
+      "caller_chain": [
+        "engineering_ci.required_assessment_protection.validate_protection_observation"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 615,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "caller_chain": [
+        "engineering_ci.required_assessment_publish.authorize_and_publish"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.publication_context_from_actions",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 383,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 463,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "caller_chain": [
+        "engineering_ci.required_assessment_publish.verify_publisher_identity"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 515,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "caller_chain": [
+        "engineering_ci.required_assessment_publish.workflow_publish_authority"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release._artifact_set_authorized",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 383,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release._artifact_set_authorized",
+        "engineering_ci.required_assessment_release.reconcile_release_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release._authorization_consistent",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 552,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release._authorization_consistent",
+        "engineering_ci.required_assessment_release.reconcile_release_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release._policy_still_authorized",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 359,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release._policy_still_authorized",
+        "engineering_ci.required_assessment_release.reconcile_release_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 673,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release.reconcile_release_assessment"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 242,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release.require_reconciliation_manifest"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 981,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "caller_chain": [
+        "engineering_ci.required_assessment_release.validate_release_reconciliation"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.security_policy.decide",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 814,
+      "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "route": "tool-policy-admission",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.security_policy.decide",
+      "caller_chain": [
+        "engineering_ci.security_policy.decide"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.security_policy.receive",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 684,
+      "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "route": "tool-policy-admission",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.security_policy.receive",
+      "caller_chain": [
+        "engineering_ci.security_policy.receive"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection._ref_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3045,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.plan",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3651,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.selection.plan",
+      "caller_chain": [
+        "engineering_ci.selection.plan"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.post_completion_plan",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4048,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.selection.post_completion_plan",
+      "caller_chain": [
+        "engineering_ci.selection.post_completion_plan"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.validate_post_completion_binding",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4174,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.selection.validate_post_completion_binding",
+      "caller_chain": [
+        "engineering_ci.selection.validate_post_completion_binding"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.verify_materialized_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3233,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.selection.verify_materialized_source_snapshot",
+      "caller_chain": [
+        "engineering_ci.selection.verify_materialized_source_snapshot"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.verify_per_ref_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3102,
+      "source_sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.selection.verify_materialized_source_snapshot",
+      "caller_chain": [
+        "engineering_ci.selection.verify_per_ref_source_snapshot",
+        "engineering_ci.selection.verify_materialized_source_snapshot"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.tools.performance.summarize",
+      "path": "src/engineering_ci/tools/performance.py",
+      "line": 112,
+      "source_sha256": "6e1d2556d60f4d95e8e2157ca93da5423bf23b39458df8bb6f565097c23c6aaa",
+      "route": "performance report vocabulary; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.workflow_actions.main",
+      "path": "src/engineering_ci/workflow_actions.py",
+      "line": 10,
+      "source_sha256": "bd4e30703b2efcdc45b22874ed1ec1e23daf808dca5003c245aba1f2d5c8b570",
+      "route": "real-release-workflow / operation dispatch",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci.workflow_actions.main",
+      "caller_chain": [
+        "engineering_ci.workflow_actions.main"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci.workflow_analysis.run_workflow_script_suite",
+      "path": "src/engineering_ci/workflow_analysis.py",
+      "line": 1337,
+      "source_sha256": "0167277fed7f55325d79d72c36dccd1c2db42da66fc86a07f0637d1ebe6358d8",
+      "route": "native-tool-helper",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [
+        "engineering_ci.workflow_analysis.run_workflow_script_suite",
+        "engineering_ci.execution._run_workflow_script_checks",
+        "engineering_ci.execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.main.EngineeringCi.execute_plan",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 296,
+      "source_sha256": "bd1181e540ee0d116c64fbcde440925bd76bf7f58ab43bb7044673ec913cf1ae",
+      "route": "native-dagger-plan-result",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci_module.main.EngineeringCi.execute_plan",
+      "caller_chain": [
+        "engineering_ci_module.main.EngineeringCi.execute_plan"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.main.EngineeringCi.plan_execution",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 273,
+      "source_sha256": "bd1181e540ee0d116c64fbcde440925bd76bf7f58ab43bb7044673ec913cf1ae",
+      "route": "native-dagger-plan-result",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci_module.main.EngineeringCi.plan_execution",
+      "caller_chain": [
+        "engineering_ci_module.main.EngineeringCi.plan_execution"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_execution._aggregate",
+      "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+      "line": 37,
+      "source_sha256": "007602e9aadcb6319b6918a7f1babf67a425cfdabe0b7e3647afa75194848f7d",
+      "route": "native-dagger-plan-result",
+      "disposition": "covered_by_graph",
+      "graph_node": "main:engineering_ci_module.plan_execution.execute",
+      "caller_chain": [
+        "engineering_ci_module.plan_execution._aggregate",
+        "engineering_ci_module.plan_execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_execution.execute",
+      "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+      "line": 1225,
+      "source_sha256": "007602e9aadcb6319b6918a7f1babf67a425cfdabe0b7e3647afa75194848f7d",
+      "route": "native-dagger-plan-result",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci_module.plan_execution.execute",
+      "caller_chain": [
+        "engineering_ci_module.plan_execution.execute"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_result.PlanExecution.enforce",
+      "path": ".dagger/src/engineering_ci_module/plan_result.py",
+      "line": 19,
+      "source_sha256": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+      "route": "native-dagger-plan-result",
+      "disposition": "graph_node",
+      "graph_node": "main:engineering_ci_module.plan_result.PlanExecution.enforce",
+      "caller_chain": [
+        "engineering_ci_module.plan_result.PlanExecution.enforce"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission._authenticate_evidence",
+      "path": "src/engineering_ci/admission.py",
+      "line": 337,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission._authenticate_pre_execution_proof",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1224,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission._authenticate_pre_execution_proof",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission._current_authorization",
+      "path": "src/engineering_ci/admission.py",
+      "line": 991,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission._current_authorization",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission._evaluate_historical_candidate",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1321,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission._evaluate_historical_candidate",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission._index_pre_execution_proofs",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1017,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission._index_pre_execution_proofs",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission.admit_evidence",
+      "path": "src/engineering_ci/admission.py",
+      "line": 779,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_evidence",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission.admit_evidence",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.admission.admit_historical_reuse",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1527,
+      "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "route": "same-execution-admission / historical-reuse",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.admission.admit_historical_reuse",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.admission.admit_historical_reuse",
+        "source_sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1451,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.check_contract.evaluate_expected_satisfaction",
+        "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.check_contract.native_result",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 927,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.check_contract.native_result",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.check_contract.native_result",
+        "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.check_contract.validate_result",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1053,
+      "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "route": "native-result-validation / witness-selection",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.check_contract.validate_result",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.check_contract.validate_result",
+        "source_sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.GitHubRunFacts.job_bounds_state",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 172,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.GitHubRunFacts.run_bounds_state",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 163,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry._task_omit_reason",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 841,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.cicd_telemetry.produce",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.cicd_telemetry._task_omit_reason",
+        "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.build_job_terminal_log_records",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 1980,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.facts_from_github_api_objects",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2428,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.cicd_telemetry.facts_from_github_api_objects",
+        "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.facts_from_mapping",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 295,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2646,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.cicd_telemetry.fetch_github_run_job",
+        "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.main",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2801,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cicd_telemetry.produce",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 857,
+      "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "route": "run-job-facts (observation, no admission grant)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.cicd_telemetry.produce",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.cicd_telemetry.produce",
+        "source_sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cli.download.interactive",
+      "path": "src/engineering_ci/cli/download.py",
+      "line": 53,
+      "source_sha256": "3b9ea1ddb58a95838c88f2a8e508cf45a4e46391abecfffb2d96f5cad666b137",
+      "route": "display/download conclusion only; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cli.download.main",
+      "path": "src/engineering_ci/cli/download.py",
+      "line": 71,
+      "source_sha256": "3b9ea1ddb58a95838c88f2a8e508cf45a4e46391abecfffb2d96f5cad666b137",
+      "route": "display/download conclusion only; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.cli.release.main",
+      "path": "src/engineering_ci/cli/release.py",
+      "line": 48,
+      "source_sha256": "514eb5c9629e0c4da38fba931b73a9e17ef366c7bba2a133274deda4e2abea00",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.dagger_telemetry._assemble_receipt",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 1813,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.dagger_telemetry._assemble_receipt",
+        "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.dagger_telemetry._reconcile_receipt_with_capture",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 2415,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.dagger_telemetry._reconcile_receipt_with_capture",
+        "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.dagger_telemetry._resolve_isolation_evidence",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 970,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.dagger_telemetry._resolve_isolation_evidence",
+        "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.dagger_telemetry.correlate_capture",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 1649,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.dagger_telemetry.correlate_capture",
+        "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.dagger_telemetry.verify_a1_suite",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 2517,
+      "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "route": "capture-correlation / A.1 (no issuer authentication)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.dagger_telemetry.verify_a1_suite",
+        "source_sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._blocked_consumer_entry",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4048,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._decorate_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3783,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._finalize_report",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4466,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._find_omitted_hygiene_entries",
+      "path": "src/engineering_ci/execution.py",
+      "line": 603,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._hygiene_failure_results",
+      "path": "src/engineering_ci/execution.py",
+      "line": 520,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._profile_reference",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1659,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._run_hygiene_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 704,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._run_source_check",
+      "path": "src/engineering_ci/execution.py",
+      "line": 853,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._run_workflow_script_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1077,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution._verified_check_source_ref",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1997,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.build_pre_execution_source_proof",
+      "path": "src/engineering_ci/execution.py",
+      "line": 2744,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.build_source_resolution",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3352,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3020,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.execute",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4660,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.omitted_workflow_script_checks",
+      "path": "src/engineering_ci/execution.py",
+      "line": 1008,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.execution.source_resolution_receipt",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3488,
+      "source_sha256": "24bd22e0b7d267c70926990084c80a628fe846de0a811c9f3eefbda89fb79e85",
+      "route": "native-execution-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks._verify_profile_authority",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 687,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "covered_by_graph",
+      "graph_node": "pr124:engineering_ci.expected_checks.derive_expected_checks",
+      "caller_chain": [
+        "engineering_ci.expected_checks._verify_profile_authority",
+        "engineering_ci.expected_checks.derive_expected_checks"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.build_effective_profile",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 264,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.derive_expected_checks",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 1885,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.expected_checks.derive_expected_checks",
+      "caller_chain": [
+        "engineering_ci.expected_checks.derive_expected_checks"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.validate_projection",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2874,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.expected_checks.validate_projection",
+      "caller_chain": [
+        "engineering_ci.expected_checks.validate_projection"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.verify_per_ref_source_handoff",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2318,
+      "source_sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "route": "expected-profile-source",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.hook_coordinator._require_runner_produced_report",
+      "path": "src/engineering_ci/hook_coordinator.py",
+      "line": 575,
+      "source_sha256": "e09b4a6e1c2fb6b1a6401a42980c347f254e6f58a422d4972aeb9411243bda3c",
+      "route": "activated-job-report-boundary (read only; never invoked)",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.hook_coordinator._require_runner_produced_report",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.hook_coordinator._require_runner_produced_report",
+        "source_sha256": "e09b4a6e1c2fb6b1a6401a42980c347f254e6f58a422d4972aeb9411243bda3c"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.hygiene._docs",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 688,
+      "source_sha256": "862e21e9aa32bdf2fbeae1868b118092e672ddebf7f970ef19881b618db8e734",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.hygiene._tach",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 737,
+      "source_sha256": "862e21e9aa32bdf2fbeae1868b118092e672ddebf7f970ef19881b618db8e734",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.hygiene._tach_external",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 757,
+      "source_sha256": "862e21e9aa32bdf2fbeae1868b118092e672ddebf7f970ef19881b618db8e734",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.hygiene.config_from_identity",
+      "path": "src/engineering_ci/hygiene.py",
+      "line": 414,
+      "source_sha256": "862e21e9aa32bdf2fbeae1868b118092e672ddebf7f970ef19881b618db8e734",
+      "route": "native-tool-helper",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.local_actions_handoff._match_consumer_authorization",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 471,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.local_actions_handoff._match_consumer_authorization",
+        "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.local_actions_handoff._normalize_producer_authorization",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 205,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.local_actions_handoff._normalize_producer_authorization",
+        "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 254,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.local_actions_handoff.build_local_handoff_package",
+        "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 326,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.local_actions_handoff.validate_local_handoff_package",
+        "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 526,
+      "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "route": "local-actions-handoff",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+        "source_sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.reconciliation._check_report_rejection",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 234,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.reconciliation._execution_report",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 310,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.reconciliation.reconcile_expected_results",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1748,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.reconciliation.reconcile_expected_results",
+        "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.reconciliation.validate_receipt",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1984,
+      "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "route": "structural-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.reconciliation.validate_receipt",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.reconciliation.validate_receipt",
+        "source_sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.manifest.check_record",
+      "path": "src/engineering_ci/release/manifest.py",
+      "line": 239,
+      "source_sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.manifest.validate",
+      "path": "src/engineering_ci/release/manifest.py",
+      "line": 340,
+      "source_sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4",
+      "route": "real-release-workflow",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.release.manifest.validate",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.release.manifest.validate",
+        "source_sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.publishing.main",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 336,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.release.publishing.main",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.release.publishing.main",
+        "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.publishing.publish_release",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 213,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.release.publishing.publish_release",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.release.publishing.publish_release",
+        "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.publishing.published_evidence",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 114,
+      "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "route": "real-release-workflow",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.release.publishing.published_evidence",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.release.publishing.published_evidence",
+        "source_sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.request.dispatch",
+      "path": "src/engineering_ci/release/request.py",
+      "line": 55,
+      "source_sha256": "25e41acf2eef99f905ed4b6993fcbe5be6607a5401fd83cd47a7371e1bd63548",
+      "route": "real-release-workflow",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.release.request.dispatch",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.release.request.dispatch",
+        "source_sha256": "25e41acf2eef99f905ed4b6993fcbe5be6607a5401fd83cd47a7371e1bd63548"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.verification.completed_run",
+      "path": "src/engineering_ci/release/verification.py",
+      "line": 153,
+      "source_sha256": "19fcb9d56c3cce339a300178a9412e3b2048e673fac0f5ed081a78cde88fdeb1",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.release.verification.validation_state",
+      "path": "src/engineering_ci/release/verification.py",
+      "line": 257,
+      "source_sha256": "19fcb9d56c3cce339a300178a9412e3b2048e673fac0f5ed081a78cde88fdeb1",
+      "route": "real-release-workflow",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._adjudication_entry",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1304,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment._validate_admission",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._adjudication_entry",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._check_inapplicability_status",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1621,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._check_instance_row",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1907,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._check_instance_row",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._effective_adjudication",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1779,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._effective_adjudication",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._in_scope_failures",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1798,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._in_scope_failures",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._non_check_evidence_usable",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2095,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._non_check_evidence_usable",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._non_check_inapplicability_status",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1635,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._non_check_obligation_row",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2158,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._non_check_obligation_row",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._normalize_obligation",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 696,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment._validate_universe",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._normalize_obligation",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._validate_admission",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1341,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment._validate_admission",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._validate_admission",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._validate_non_check_entry",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1486,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment._validate_universe",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 791,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment._validate_universe",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment._validate_universe",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2449,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment.validate_assessment",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2637,
+      "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "route": "required-assessment",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment.validate_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment.validate_assessment",
+        "source_sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.build_check_publication",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 306,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.build_check_publication",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.normalize_publishing_authorization",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 540,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.normalize_publishing_authorization",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 388,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.publication_for_missing_assessment",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 696,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.publishing_authorization_for",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 660,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.publishing_authorization_for",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.resolve_conclusion",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 278,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.resolve_conclusion",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_check.validate_publication",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 452,
+      "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "route": "check-publication",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_check.validate_publication",
+        "source_sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_protection.inspect_server_protection",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 257,
+      "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "route": "server-observation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_protection.inspect_server_protection",
+        "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_protection.validate_protection_observation",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 481,
+      "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "route": "server-observation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_protection.validate_protection_observation",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_protection.validate_protection_observation",
+        "source_sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 615,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+        "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_publish.publication_context_from_actions",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 383,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 463,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_publish.verify_publisher_identity",
+        "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 515,
+      "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "route": "publisher-identity",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_publish.workflow_publish_authority",
+        "source_sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release._artifact_set_authorized",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 383,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release._artifact_set_authorized",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release._authorization_consistent",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 552,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release._authorization_consistent",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release._policy_still_authorized",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 359,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release._policy_still_authorized",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 673,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 242,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 981,
+      "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "route": "release-reconciliation",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.required_assessment_release.validate_release_reconciliation",
+        "source_sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.security_policy.decide",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 814,
+      "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "route": "tool-policy-admission",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.security_policy.decide",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.security_policy.decide",
+        "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.security_policy.receive",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 684,
+      "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "route": "tool-policy-admission",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.security_policy.receive",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.security_policy.receive",
+        "source_sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection._ref_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3039,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.plan",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3645,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.post_completion_plan",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4042,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.selection.post_completion_plan",
+      "caller_chain": [
+        "engineering_ci.selection.post_completion_plan"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.validate_post_completion_binding",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4168,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.selection.validate_post_completion_binding",
+      "caller_chain": [
+        "engineering_ci.selection.validate_post_completion_binding"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.verify_materialized_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3227,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.verify_per_ref_source_snapshot",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3096,
+      "source_sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "route": "expected-profile-source / terminal-inputs",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected._authority_accepted",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 996,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "covered_by_graph",
+      "graph_node": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "caller_chain": [
+        "engineering_ci.terminal_expected._authority_accepted",
+        "engineering_ci.terminal_expected.bind_terminal_expected"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected._consistency",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1013,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "covered_by_graph",
+      "graph_node": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "caller_chain": [
+        "engineering_ci.terminal_expected._consistency",
+        "engineering_ci.terminal_expected.bind_terminal_expected"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected._phase_witness_structure",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 459,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected._verify_completed_run",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 692,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "covered_by_graph",
+      "graph_node": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "caller_chain": [
+        "engineering_ci.terminal_expected._verify_completed_run",
+        "engineering_ci.terminal_expected.bind_terminal_expected"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Verified same-snapshot candidate caller chain leads to an explicit review-graph decision node (candidate-only closure)."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1121,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "caller_chain": [
+        "engineering_ci.terminal_expected.bind_terminal_expected"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.post_completion_with_expected",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1457,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "caller_chain": [
+        "engineering_ci.terminal_expected.post_completion_with_expected"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.seal_phase_witness",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1086,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.terminal_expected.seal_phase_witness",
+      "caller_chain": [
+        "engineering_ci.terminal_expected.seal_phase_witness"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1518,
+      "source_sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "route": "terminal-candidate",
+      "disposition": "graph_node",
+      "graph_node": "pr124:engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "caller_chain": [
+        "engineering_ci.terminal_expected.validate_terminal_expected_binding"
+      ],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Exact pinned function has a node in this review graph."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.tools.performance.summarize",
+      "path": "src/engineering_ci/tools/performance.py",
+      "line": 112,
+      "source_sha256": "6e1d2556d60f4d95e8e2157ca93da5423bf23b39458df8bb6f565097c23c6aaa",
+      "route": "performance report vocabulary; not an authorization exit",
+      "disposition": "excluded",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "Non-authorizing display or measurement vocabulary per the discovered route; no allow/deny decision is produced by this symbol."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.workflow_actions.main",
+      "path": "src/engineering_ci/workflow_actions.py",
+      "line": 10,
+      "source_sha256": "bd4e30703b2efcdc45b22874ed1ec1e23daf808dca5003c245aba1f2d5c8b570",
+      "route": "real-release-workflow / operation dispatch",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.workflow_actions.main",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.workflow_actions.main",
+        "source_sha256": "bd4e30703b2efcdc45b22874ed1ec1e23daf808dca5003c245aba1f2d5c8b570"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.workflow_analysis.run_workflow_script_suite",
+      "path": "src/engineering_ci/workflow_analysis.py",
+      "line": 1337,
+      "source_sha256": "0167277fed7f55325d79d72c36dccd1c2db42da66fc86a07f0637d1ebe6358d8",
+      "route": "native-tool-helper",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci.execution.execute",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci.workflow_analysis.run_workflow_script_suite",
+        "source_sha256": "0167277fed7f55325d79d72c36dccd1c2db42da66fc86a07f0637d1ebe6358d8"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci_module.main.EngineeringCi.execute_plan",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 282,
+      "source_sha256": "f26b007d4f32f79decb3956c592db732b825c75dcb05410852bed7bcff6a2ea7",
+      "route": "native-dagger-plan-result",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci_module.main.EngineeringCi.plan_execution",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 259,
+      "source_sha256": "f26b007d4f32f79decb3956c592db732b825c75dcb05410852bed7bcff6a2ea7",
+      "route": "native-dagger-plan-result",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci_module.plan_execution._aggregate",
+      "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+      "line": 37,
+      "source_sha256": "b3a80376e013bcdf41ba6d36c5826a9a31f6d7b1b086cd3214a9b4d3de24272f",
+      "route": "native-dagger-plan-result",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci_module.plan_execution.execute",
+      "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+      "line": 1193,
+      "source_sha256": "b3a80376e013bcdf41ba6d36c5826a9a31f6d7b1b086cd3214a9b4d3de24272f",
+      "route": "native-dagger-plan-result",
+      "disposition": "unresolved",
+      "graph_node": null,
+      "caller_chain": [],
+      "reused_from": null,
+      "consumer_status": null,
+      "reason": "No verified candidate-to-graph path in the retained candidate caller index; external/dynamic/intermediate non-candidate paths must be inspected in C; not counted as covered or excluded."
+    },
+    {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci_module.plan_result.PlanExecution.enforce",
+      "path": ".dagger/src/engineering_ci_module/plan_result.py",
+      "line": 19,
+      "source_sha256": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+      "route": "native-dagger-plan-result",
+      "disposition": "shared_implementation",
+      "graph_node": "main:engineering_ci_module.plan_result.PlanExecution.enforce",
+      "caller_chain": [],
+      "reused_from": {
+        "snapshot": "main",
+        "symbol": "engineering_ci_module.plan_result.PlanExecution.enforce",
+        "source_sha256": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f"
+      },
+      "consumer_status": "requires_pr124_consumer_recheck",
+      "reason": "Pinned source bytes and symbol match main. This reuses only implementation classification, not pr124 caller or integration evidence."
+    }
+  ]
+}
