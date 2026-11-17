@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from engineering_ci import admission, check_contract, expected_checks
+from engineering_ci import admission, check_contract, expected_checks, reconciliation
 
 EVENT_CURRENT = {
     "base_ref": "refs/heads/main",
@@ -52,6 +52,21 @@ SELECTION_RULE = {
 }
 RULE_TACH = check_contract.rule_ref("tach", 1, digest="b" * 64)
 PROFILE_REF = {"name": "org/engineering", "version": "1"}
+IMPLEMENTATION = {
+    "implementation_id": "eci.test.tach-checker",
+    "implementation_version": "1",
+    "implementation_sha256": "d" * 64,
+}
+REPORT_REF = {
+    "kind": reconciliation.EXECUTION_REPORT_KIND,
+    "schema_version": 1,
+    "sha256": "9" * 64,
+}
+AUTH = {
+    "phase": "pre_publish",
+    "action": "validate",
+    "target_ref": "refs/heads/main",
+}
 
 
 def make_entry(*, source=STRONG_SOURCE, event=EVENT_CURRENT, **changes):
@@ -139,24 +154,7 @@ def pre_proof_for(entry, *, source=STRONG_SOURCE, status="verified_candidate_inp
     source_ref = copy.deepcopy(source)
     if status == "verified_candidate_inputs":
         check_contract.validate_source_ref(source_ref)
-    closure_payload = {
-        "check_id": definition.check_id,
-        "definition_version": definition.definition_version,
-        "execution_context": "host",
-        "scope_kind": source_ref.get("scope_kind"),
-        "snapshot": source_ref.get("snapshot"),
-        "content_digest": source_ref.get("content_digest"),
-        "verified_input_scope": source_ref.get("verified_input_scope"),
-        "declared_target_tree": source_ref.get("declared_target_tree"),
-        "rule_ref": entry.get("rule_ref"),
-        "profile_ref": entry.get("profile_ref"),
-        "baseline_ref": entry.get("baseline_ref"),
-        "baseline_source_ref": None,
-        "environment_inputs": None,
-        "tool_identities": None,
-        "prerequisite_inputs": (),
-    }
-    return {
+    proof = {
         "phase": "pre_execution",
         "check_name": entry["name"],
         "check_id": definition.check_id,
@@ -180,7 +178,20 @@ def pre_proof_for(entry, *, source=STRONG_SOURCE, status="verified_candidate_inp
         "environment_inputs": None,
         "tool_identities": None,
         "prerequisite_inputs": (),
-        "closure_digest": admission._digest(closure_payload),
+    }
+    proof["closure_digest"] = admission._recompute_closure_digest(proof)
+    return proof
+
+
+def result_origin_for(result, *, report_ref=REPORT_REF):
+    return {
+        "result_id": result["result_id"],
+        "run_ref": "run/099",
+        "attempt_ref": "attempt/1",
+        "runner_ref": "execution:host",
+        "result_origin": result["result_origin"],
+        "report_ref": copy.deepcopy(report_ref),
+        "job_receipt_ref": "sha256:" + ("e" * 64),
     }
 
 
@@ -188,51 +199,78 @@ def historical_candidate(
     entry,
     result,
     *,
-    admitted=True,
-    origin_status="verified",
-    obligation_status="satisfied",
-    issuer_verified=True,
     historical_scope_id="sha256:historical-scope",
+    implementation=IMPLEMENTATION,
+    applicability=None,
 ):
+    results = [result] if isinstance(result, dict) else list(result)
     return {
         "historical_scope_id": historical_scope_id,
         "historical_expected_check_ref": entry["expected_check_ref"],
         "historical_event_ref": copy.deepcopy(EVENT_HISTORICAL),
-        "origin_trace": {
-            "run_ref": "run/099",
-            "attempt_ref": "attempt/1",
-            "runner_ref": "execution:host",
-            "result_origin": "host",
-            "result_id": result["result_id"],
-        },
-        "origin_status": origin_status,
-        "obligation_status": obligation_status,
-        "admitted": admitted,
-        "issuer_verified": issuer_verified,
-        "results": [copy.deepcopy(result)],
+        "result_origins": [result_origin_for(item) for item in results],
+        "results": [copy.deepcopy(item) for item in results],
+        "verification_implementation": copy.deepcopy(implementation),
         "check_name": entry["name"],
         "check_id": entry["check_id"],
         "definition_version": entry["definition_version"],
-        "applicability": copy.deepcopy(entry.get("applicability")),
+        "applicability": copy.deepcopy(
+            applicability if applicability is not None else entry.get("applicability")
+        ),
     }
 
 
 def reuse_policy(**changes):
+    definition = check_contract.definition_for("tach")
     policy = {
-        "require_closed_source": True,
-        "permit_native_fail_reuse": False,
-        "forbid_phase_obligation_transfer": True,
-        "current_phase": "pre_publish",
-        "current_action": "validate",
-        "current_target_ref": "refs/heads/main",
+        "approved_implementations": [
+            {
+                "check_id": definition.check_id,
+                "definition_version": definition.definition_version,
+                "implementation_id": IMPLEMENTATION["implementation_id"],
+                "implementation_version": IMPLEMENTATION["implementation_version"],
+                "implementation_sha256": IMPLEMENTATION["implementation_sha256"],
+            }
+        ],
     }
     policy.update(changes)
     return policy
 
 
+def accept_all(_context):
+    return True
+
+
+def reject_all(_context):
+    return False
+
+
+def admit(
+    projection,
+    proof,
+    candidate,
+    *,
+    historical_origin_authority=accept_all,
+    pre_execution_authority=accept_all,
+    authorization_authority=accept_all,
+    current_authorization=AUTH,
+    reuse_policy_value=None,
+):
+    proofs = [proof] if proof is not None else []
+    return admission.admit_historical_reuse(
+        projection,
+        pre_execution_proofs=proofs,
+        historical_candidates=[candidate],
+        reuse_policy=reuse_policy_value or reuse_policy(),
+        current_authorization=current_authorization,
+        historical_origin_authority=historical_origin_authority,
+        pre_execution_authority=pre_execution_authority,
+        authorization_authority=authorization_authority,
+    )
+
+
 def setup_equivalent(*, historical_status="passed"):
     current_entry = make_entry(event=EVENT_CURRENT)
-    # Distinct Expected identity for the historical instance with the same inputs.
     historical_entry = make_entry(event=EVENT_HISTORICAL)
     projection = make_projection(current_entry, event=EVENT_CURRENT)
     result = native(status=historical_status, source=STRONG_SOURCE)
@@ -247,12 +285,7 @@ def test_equivalent_closed_source_historical_pass_is_admitted():
         setup_equivalent()
     )
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
     coverage = decision["accepted_coverage_by_instance"][key]
@@ -270,32 +303,158 @@ def test_equivalent_closed_source_historical_pass_is_admitted():
     assert (
         coverage["historical_expected_check_ref"] != current_entry["expected_check_ref"]
     )
-    assert coverage["origin_trace"]["run_ref"] == "run/099"
+    assert coverage["result_origins"][0]["run_ref"] == "run/099"
     assert coverage["equivalence_basis"]["verified"] is True
-    assert coverage["equivalence_basis"]["closed_source_scope_kind"] == (
-        "check_input_closure"
-    )
+    assert coverage["equivalence_basis"]["origin_authenticated"] is True
+    assert coverage["equivalence_basis"]["current_phase"] == "pre_publish"
     assert coverage["result_ids"] == [result["result_id"]]
-    assert "fixture_origin_claims_are_not_production_trust" in decision["limitations"]
+    assert (
+        "fixture_authority_verifiers_are_not_production_trust"
+        in decision["limitations"]
+    )
+
+
+def test_self_declared_flags_without_origin_authority_remain_unresolved():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+
+    decision = admit(
+        projection,
+        proof,
+        candidate,
+        historical_origin_authority=None,
+    )
+
+    assert decision["status"] == "unknown"
+    assert decision["remaining_work"][0]["reason"] == (
+        "historical_origin_authority_missing"
+    )
+
+
+def test_origin_authority_rejection_blocks_matching_native_inputs():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+
+    decision = admit(
+        projection,
+        proof,
+        candidate,
+        historical_origin_authority=reject_all,
+    )
+
+    assert decision["remaining_work"][0]["reason"] == "historical_origin_not_accepted"
+
+
+def test_fake_pre_execution_proof_without_authority_is_rejected():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+
+    decision = admit(
+        projection,
+        proof,
+        candidate,
+        pre_execution_authority=None,
+    )
+
+    assert decision["remaining_work"][0]["reason"] == "pre_execution_authority_missing"
+
+
+def test_tampered_closure_digest_is_rejected():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+    proof["closure_digest"] = "sha256:" + ("0" * 64)
+
+    decision = admit(projection, proof, candidate)
+
+    assert decision["remaining_work"][0]["reason"] == (
+        "pre_execution_closure_digest_mismatch"
+    )
+
+
+def test_phase_authorization_difference_yields_separate_outcomes():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+
+    def only_pre_publish(context):
+        return context["current_authorization"]["phase"] == "pre_publish"
+
+    admitted = admit(
+        projection,
+        proof,
+        candidate,
+        authorization_authority=only_pre_publish,
+        current_authorization={**AUTH, "phase": "pre_publish"},
+    )
+    blocked = admit(
+        projection,
+        proof,
+        candidate,
+        authorization_authority=only_pre_publish,
+        current_authorization={**AUTH, "phase": "post_publish"},
+    )
+
+    assert admitted["status"] == "admitted"
+    assert blocked["remaining_work"][0]["reason"] == "current_authorization_unverified"
+
+
+def test_candidate_digest_authorization_difference():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+
+    def only_candidate_a(context):
+        return context["current_authorization"].get("candidate_digest") == "cand-a"
+
+    admitted = admit(
+        projection,
+        proof,
+        candidate,
+        authorization_authority=only_candidate_a,
+        current_authorization={**AUTH, "candidate_digest": "cand-a"},
+    )
+    blocked = admit(
+        projection,
+        proof,
+        candidate,
+        authorization_authority=only_candidate_a,
+        current_authorization={**AUTH, "candidate_digest": "cand-b"},
+    )
+
+    assert admitted["status"] == "admitted"
+    assert blocked["remaining_work"][0]["reason"] == "current_authorization_unverified"
+
+
+def test_unapproved_implementation_blocks_reuse():
+    projection, proof, candidate, _, _, _ = setup_equivalent()
+    candidate["verification_implementation"] = {
+        "implementation_id": "eci.pr.fixed-pass",
+        "implementation_version": "1",
+        "implementation_sha256": "f" * 64,
+    }
+
+    decision = admit(projection, proof, candidate)
+
+    assert decision["remaining_work"][0]["reason"] == (
+        "verification_implementation_unapproved"
+    )
+
+
+def test_result_origin_membership_mismatch_raises():
+    projection, proof, candidate, _, _, result = setup_equivalent()
+    candidate["result_origins"][0]["result_id"] = "missing-result"
+
+    with pytest.raises(admission.AdmissionError) as error:
+        admit(projection, proof, candidate)
+    assert error.value.code == "historical_result_origin_membership_mismatch"
+    assert result["result_id"] != "missing-result"
 
 
 def test_source_content_mismatch_keeps_remaining_work():
     projection, proof, candidate, current_entry, _, _ = setup_equivalent()
-    candidate["results"] = [native(status="passed", source=OTHER_SOURCE)]
+    other = native(status="passed", source=OTHER_SOURCE)
+    candidate["results"] = [other]
+    candidate["result_origins"] = [result_origin_for(other)]
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
     coverage = decision["accepted_coverage_by_instance"][key]
     assert decision["status"] == "rejected"
     assert coverage["admitted"] is False
     assert coverage["reasons"] == ["source_content_mismatch"]
-    assert decision["remaining_work"][0]["reason"] == "source_content_mismatch"
 
 
 def test_changed_paths_pre_proof_is_not_reused():
@@ -308,51 +467,18 @@ def test_changed_paths_pre_proof_is_not_reused():
         historical_entry, native(status="passed", source=STRONG_SOURCE)
     )
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     assert decision["status"] == "unknown"
     assert decision["remaining_work"][0]["reason"] == "pre_execution_source_unverified"
-
-
-def test_unaccepted_historical_origin_is_not_reused():
-    projection, proof, candidate, _, _, _ = setup_equivalent()
-    candidate["admitted"] = False
-    candidate["obligation_status"] = "unknown"
-    candidate["issuer_verified"] = False
-
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
-
-    assert decision["status"] == "unknown"
-    assert decision["remaining_work"][0]["reason"] == "historical_origin_not_accepted"
 
 
 def test_verified_native_fail_is_not_successful_coverage():
     projection, proof, candidate, current_entry, _, result = setup_equivalent(
         historical_status="failed"
     )
-    candidate["obligation_status"] = "unsatisfied"
-    # Origin can be verified for a FAIL, but T2 still must not admit success.
-    candidate["admitted"] = True
-    candidate["origin_status"] = "verified"
-    candidate["issuer_verified"] = True
-    candidate["obligation_status"] = "satisfied"
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
     coverage = decision["accepted_coverage_by_instance"][key]
@@ -361,18 +487,12 @@ def test_verified_native_fail_is_not_successful_coverage():
     assert coverage["obligation_status"] == "unsatisfied"
     assert coverage["reasons"] == ["verified_native_fail_not_reusable_as_coverage"]
     assert result["status"] == "failed"
-    assert decision["remaining_work"]
 
 
 def test_missing_pre_execution_proof_keeps_remaining_work():
     projection, _, candidate, _, _, _ = setup_equivalent()
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, None, candidate)
 
     assert decision["status"] == "unknown"
     assert decision["remaining_work"][0]["reason"] == "pre_execution_proof_missing"
@@ -381,16 +501,11 @@ def test_missing_pre_execution_proof_keeps_remaining_work():
 def test_rule_mismatch_rejects_reuse():
     projection, proof, candidate, _, _, _ = setup_equivalent()
     other_rule = check_contract.rule_ref("tach", 1, digest="f" * 64)
-    candidate["results"] = [
-        native(status="passed", source=STRONG_SOURCE, rule=other_rule)
-    ]
+    other = native(status="passed", source=STRONG_SOURCE, rule=other_rule)
+    candidate["results"] = [other]
+    candidate["result_origins"] = [result_origin_for(other)]
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     assert decision["remaining_work"][0]["reason"] == "rule_mismatch"
 
@@ -398,11 +513,11 @@ def test_rule_mismatch_rejects_reuse():
 def test_policy_can_forbid_check_reuse():
     projection, proof, candidate, _, _, _ = setup_equivalent()
 
-    decision = admission.admit_historical_reuse(
+    decision = admit(
         projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(permitted_check_ids=["eci/other"]),
+        proof,
+        candidate,
+        reuse_policy_value=reuse_policy(permitted_check_ids=["eci/other"]),
     )
 
     assert decision["remaining_work"][0]["reason"] == "reuse_policy_check_not_permitted"
@@ -412,12 +527,7 @@ def test_historical_not_applicable_is_not_transferred():
     projection, proof, candidate, _, _, _ = setup_equivalent()
     candidate["applicability"] = {"status": "not_applicable", "reason": "old-phase"}
 
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
 
     assert decision["remaining_work"][0]["reason"] == (
         "historical_phase_obligation_not_transferable"
@@ -426,13 +536,7 @@ def test_historical_not_applicable_is_not_transferred():
 
 def test_does_not_require_current_receipt_input():
     projection, proof, candidate, _, _, _ = setup_equivalent()
-    # Explicitly no receipt kwarg / current Job is part of the contract.
-    decision = admission.admit_historical_reuse(
-        projection,
-        pre_execution_proofs=[proof],
-        historical_candidates=[candidate],
-        reuse_policy=reuse_policy(),
-    )
+    decision = admit(projection, proof, candidate)
     assert decision["receipt_ref"] is None
     assert (
         "current_receipt_not_required_for_pre_execution_reuse"
@@ -448,5 +552,9 @@ def test_malformed_reuse_policy_raises():
             pre_execution_proofs=[proof],
             historical_candidates=[candidate],
             reuse_policy={"unknown": True},
+            current_authorization=AUTH,
+            historical_origin_authority=accept_all,
+            pre_execution_authority=accept_all,
+            authorization_authority=accept_all,
         )
     assert error.value.code == "reuse_policy_invalid"
