@@ -100,7 +100,8 @@ provider_verified, manifest passed, no gaps/blocking reasons, Candidate alignmen
 
 - Does not mutate `release.yml` or replace Manifest v1 fixed check sets.
 - Fixture authorities are not production trust roots.
-- Post-publish / Terminal remain #61 R5.
+- Post-publish / Terminal remain #61 R5
+  (`required-assessment-post.md`).
 - Real Provider verification is required only when claiming production
   publication authorization.
 
