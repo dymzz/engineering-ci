@@ -44,7 +44,9 @@ async def directory_reference(source):
     return {"directory_id": str(await source.id()), "digest": await source.digest()}
 
 
-async def weaver_result(files, source, kind, *, context=None):
+async def weaver_result(
+    files, source, kind, *, context=None, plan=None, generated_inputs=()
+):
     raw = json.loads(await files.file("report.json").contents())
     if kind not in {"registry", "live", "terminal"}:
         return files
@@ -56,10 +58,11 @@ async def weaver_result(files, source, kind, *, context=None):
     try:
         enriched = native_producer.weaver_check(
             raw_for_adapter,
-            source=native_producer.source_reference(),
+            source=native_producer.source_reference(plan),
             context=child_context(context),
             impl=impl,
             source_directory=await directory_reference(source),
+            generated_inputs=generated_inputs,
         )
     except check_contract.CheckContractError as error:
         enriched = {**raw_for_adapter, "check_contract": {"status": error.code}}
@@ -71,7 +74,16 @@ async def weaver_result(files, source, kind, *, context=None):
 
 
 async def test_result(
-    item, container, source, framework, targets, *, artifacts, context=None
+    item,
+    container,
+    source,
+    framework,
+    targets,
+    *,
+    artifacts,
+    context=None,
+    plan=None,
+    generated_inputs=(),
 ):
     # This reads the environment of the retained result Container. It never
     # invokes pytest/unittest a second time.
@@ -109,9 +121,10 @@ async def test_result(
         framework=framework,
         targets=targets,
         observation=observation,
-        source=native_producer.source_reference(),
+        source=native_producer.source_reference(plan),
         context=child_context(context),
         impl=impl,
+        generated_inputs=generated_inputs,
     )
     enriched["implementation_sources"] = hashes
     return enriched

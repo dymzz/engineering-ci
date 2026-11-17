@@ -154,7 +154,17 @@ def _aggregate(report):
     return report
 
 
-async def _tests(module, source, targets, framework, python_version, *, context=None):
+async def _tests(
+    module,
+    source,
+    targets,
+    framework,
+    python_version,
+    *,
+    context=None,
+    plan=None,
+    generated_inputs=(),
+):
     """Use the existing pytest computation, or native unittest, exactly once."""
     if framework == "pytest":
         execution = await module._run_pytest(
@@ -196,6 +206,8 @@ async def _tests(module, source, targets, framework, python_version, *, context=
         targets,
         artifacts=files,
         context=context,
+        plan=plan,
+        generated_inputs=generated_inputs,
     )
     files = files.with_new_file(
         "check-result.json", json.dumps(payload["tests"], sort_keys=True)
@@ -204,7 +216,16 @@ async def _tests(module, source, targets, framework, python_version, *, context=
 
 
 async def _weaver(
-    module, source, value, directory, item, config_path, tree_state, *, context=None
+    module,
+    source,
+    value,
+    directory,
+    item,
+    config_path,
+    tree_state,
+    *,
+    context=None,
+    generated_inputs=(),
 ):
     """Read one original /out Directory; do not rescan for Report or Enforce."""
     from engineering_ci import selection
@@ -242,13 +263,22 @@ async def _weaver(
         config_path = value["post_completion"]["weaver_config"]["path"]
     if hasattr(module, "_weaver_execution"):
         files = await module._weaver_execution(
-            source, kind, config_path, context=context
+            source,
+            kind,
+            config_path,
+            context=context,
+            plan=value,
+            generated_inputs=generated_inputs,
         )
         native = json.loads(await files.file("check-result.json").contents())
     else:
         files = await module.weaver_artifacts(source, kind, config_path)
         native = json.loads(await files.file("report.json").contents())
     native["selected"] = item.get("status")
+    if generated_inputs:
+        # Keep the report view too; the adapter already bound these inputs
+        # into each immutable Native Result before calculating its identity.
+        native["generated_input_refs"] = list(generated_inputs)
     native["artifact_root"] = "checks/" + item["name"]
     native["source_tree_verified"] = metadata.get("source_tree_verified", tree_state)
     if kind == "terminal":
@@ -293,6 +323,7 @@ async def _native_results(
                     report["framework"],
                     python_version,
                     context=report.get("execution_identity"),
+                    plan=value,
                 ),
             )
         )
@@ -877,9 +908,8 @@ async def _execute_dag(
                         weaver_config,
                         report["source_tree_verified"],
                         context=report.get("execution_identity"),
+                        generated_inputs=generated_refs,
                     )
-                    if generated_refs and isinstance(native, dict):
-                        native["generated_input_refs"] = generated_refs
                     return native, check_files, metadata
                 fs_files = [
                     (p_root, rel, obj_kind) for p_root, rel, obj_kind, _ in delivered
@@ -961,11 +991,9 @@ async def _execute_dag(
                     framework,
                     python_version,
                     context=report.get("execution_identity"),
+                    plan=value,
+                    generated_inputs=generated_refs,
                 )
-                if generated_refs and isinstance(payload, dict):
-                    payload.setdefault("tests", {})["generated_input_refs"] = (
-                        generated_refs
-                    )
                 return payload, test_files
             if kind == "report_artifacts":
                 await resolve_incoming(("execution_report", "artifacts"))

@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from engineering_ci import check_contract, plan_contract, weaver_tool
 from engineering_ci import execution as host_execution
-from engineering_ci import plan_contract
 
 MODULE = Path(__file__).resolve().parents[1] / ".dagger/src/engineering_ci_module"
 
@@ -2088,3 +2088,249 @@ def test_pr103_pr108_converged_dagger_profile_chain(modules, tmp_path):
         )
         is None
     )
+
+
+class _ContractTestContainer:
+    """A labelled double; only the real adapter/contract runs in these tests."""
+
+    def __init__(self, owner, *, metadata=False):
+        self.owner = owner
+        self.metadata = metadata
+
+    def with_exec(self, command, **kwargs):
+        if "unittest" in command:
+            self.owner.test_invocations += 1
+        return _ContractTestContainer(self.owner, metadata="-c" in command)
+
+    async def exit_code(self):
+        return 0
+
+    async def stdout(self):
+        if self.metadata:
+            return json.dumps({"executable": "python", "tool_version": "3.14"})
+        return "controlled test output"
+
+    async def stderr(self):
+        return ""
+
+
+class _ContractNativeDouble:
+    def __init__(self, collector):
+        self.adapter = __import__(
+            collector.__package__ + ".native_results", fromlist=["weaver_result"]
+        )
+        self.test_invocations = 0
+        self.weaver_invocations = 0
+        self.consumer_sources = {}
+
+    def _uv_container(self, source, version):
+        self.consumer_sources["tests"] = source
+        return _ContractTestContainer(self)
+
+    async def _run_pytest(self, source, version, target, *, _targets):
+        self.test_invocations += 1
+        self.consumer_sources["tests"] = source
+        return types.SimpleNamespace(
+            exit_code=0,
+            output="controlled pytest output",
+            xml="<testsuite/>",
+            container=_ContractTestContainer(self),
+        )
+
+    def _pytest_bundle(self, execution):
+        return MemoryDirectory({"junit.xml": execution.xml, "exit-code.txt": "0\n"})
+
+    async def _weaver_execution(self, source, kind, config, **kwargs):
+        self.weaver_invocations += 1
+        self.consumer_sources["weaver"] = source
+        stages = ("registry-check", "registry-package", "registry-local-check")
+        raw = {
+            "name": "weaver_" + kind,
+            "status": "passed",
+            "exit_code": 0,
+            "gate_exit_code": 0,
+            "baseline_required": False,
+            "version": weaver_tool.VERSION,
+            "tool_asset_sha256": weaver_tool.LINUX_SHA256,
+            "source_digest": await source.digest(),
+            "inputs": {"config_sha256": "c" * 64},
+            "commands": [
+                {
+                    "argv": ["weaver", "registry", "check"],
+                    "exit_code": 0,
+                    "stdout": stage + ".stdout",
+                    "stderr": stage + ".stderr",
+                }
+                for stage in stages
+            ],
+        }
+        files = MemoryDirectory(
+            {
+                "report.json": json.dumps(raw),
+                **{
+                    stage + suffix: "controlled native output"
+                    for stage in stages
+                    for suffix in (".stdout", ".stderr")
+                },
+            }
+        )
+        return await self.adapter.weaver_result(files, source, kind, **kwargs)
+
+
+def _plan_git_identity(snapshot):
+    return {
+        "snapshot": snapshot,
+        **(
+            {
+                "execution_tree": "a" * 40,
+                "head_commit": "b" * 40,
+                "index_tree": "a" * 40,
+            }
+            if snapshot != "worktree"
+            else {}
+        ),
+    }
+
+
+def _assert_native_source_identity(report, git):
+    for check in report["checks"]:
+        for result in check.get("native_results") or ():
+            check_contract.validate_result(result)
+            source = result["source_ref"]
+            assert source["snapshot"] == git["snapshot"]
+            assert source.get("declared_target_tree") == git.get("execution_tree")
+            assert source.get("head_commit") == git.get("head_commit")
+            assert source.get("index_tree") == git.get("index_tree")
+            assert source["actual_execution_source"] == "dagger_directory"
+            assert source["binding_status"] == (
+                "identity_only" if git.get("execution_tree") else "unknown"
+            )
+            assert source["scope_kind"] == "changed_paths"
+            assert source["verified_input_scope"] == []
+            assert "content_digest" not in source
+            assert result["result_origin"] == "dagger"
+    assert report["source_binding_verified"] == "unknown"
+    assert report["trusted"] is False
+
+
+@pytest.mark.parametrize("snapshot", ["worktree", "index", "commit"])
+@pytest.mark.parametrize("framework", ["unittest", "pytest"])
+def test_policy_only_native_results_keep_plan_git_identity(
+    modules, snapshot, framework
+):
+    _, collector = modules
+    plan = _v2_dagger_plan(edges=[], prerequisites=[], actions={})
+    plan["git"] = _plan_git_identity(snapshot)
+    plan["selection"]["framework"] = framework
+    native = _ContractNativeDouble(collector)
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    _assert_native_source_identity(report, plan["git"])
+    assert native.test_invocations == native.weaver_invocations == 1
+    asyncio.run(saved.enforce())
+    assert native.test_invocations == native.weaver_invocations == 1
+
+
+@pytest.mark.parametrize(
+    "snapshot,bad_consumer",
+    [
+        ("worktree", None),
+        ("index", None),
+        ("commit", None),
+        ("index", "tests"),
+        ("index", "weaver"),
+    ],
+)
+@pytest.mark.parametrize("framework", ["unittest", "pytest"])
+def test_dag_generated_refs_are_bound_before_native_result_identity(
+    modules, snapshot, bad_consumer, framework
+):
+    _, collector = modules
+    data = b"controlled generated input"
+    paths = {
+        "tests": "generated/test-input.txt",
+        "weaver": "generated/registry-input.txt",
+    }
+    writer = (
+        "import os; from pathlib import Path; r=Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(r/'generated').mkdir(); "
+        + "; ".join(f"(r/{path!r}).write_bytes({data!r})" for path in paths.values())
+    )
+    actions = {"generate": {"type": "command", "argv": [sys.executable, "-c", writer]}}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "generate"},
+            "consumer_ref": {"kind": "tests"}
+            if consumer == "tests"
+            else {"kind": "check", "name": "weaver_registry"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": path,
+                "sha256": "f" * 64
+                if consumer == bad_consumer
+                else hashlib.sha256(data).hexdigest(),
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("generate"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        for consumer, path in paths.items()
+    ]
+    plan = _v2_dagger_plan(edges=edges, prerequisites=["generate"], actions=actions)
+    plan["git"] = _plan_git_identity(snapshot)
+    plan["selection"]["framework"] = framework
+    native = _ContractNativeDouble(collector)
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    _assert_native_source_identity(report, plan["git"])
+    consumers = {"tests": report["tests"], "weaver": report["checks"][0]}
+    for consumer, item in consumers.items():
+        if consumer == bad_consumer:
+            assert item["status"] == "not_executed"
+            assert item["reason"] == "data_artifact_digest_mismatch"
+            assert not item.get("native_results")
+            continue
+        expected = {
+            "kind": "generated_input",
+            "input_kind": "file",
+            "producer_ref": {"kind": "prerequisite_action", "name": "generate"},
+            "path": paths[consumer],
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        assert native.consumer_sources[consumer].files[paths[consumer]] == data
+        assert item["generated_input_refs"] == [expected]
+        for result in item["native_results"]:
+            assert [
+                ref for ref in result["input_refs"] if ref["kind"] == "generated_input"
+            ] == [expected]
+            check_contract.validate_result(result)
+    assert native.test_invocations == int(bad_consumer != "tests")
+    assert native.weaver_invocations == int(bad_consumer != "weaver")
+    if bad_consumer is None:
+        assert report["status"] == "passed", report
+        asyncio.run(saved.enforce())
+    else:
+        assert report["status"] == "blocked", report
+        with pytest.raises(RuntimeError):
+            asyncio.run(saved.enforce())

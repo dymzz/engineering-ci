@@ -281,3 +281,48 @@ def test_real_host_framework_runs_once_even_when_its_definition_is_selected(
     assert result["result_origin"] == "host"
     assert result == report["tests"]["native_result"]
     check_contract.validate_result(json.loads(json.dumps(result)))
+
+
+@pytest.mark.parametrize("producer", ["weaver", "unittest", "pytest"])
+@pytest.mark.parametrize("field", ["producer_ref", "path", "sha256"])
+def test_generated_input_identity_participates_in_native_result_digest(producer, field):
+    original = {
+        "kind": "generated_input",
+        "input_kind": "file",
+        "producer_ref": {"kind": "prerequisite_action", "name": "generate"},
+        "path": "generated/input.txt",
+        "sha256": "a" * 64,
+    }
+    changed = {
+        **original,
+        field: {
+            "producer_ref": {"kind": "prerequisite_action", "name": "other"},
+            "path": "generated/other.txt",
+            "sha256": "b" * 64,
+        }[field],
+    }
+
+    def result(ref):
+        if producer == "weaver":
+            return adapt(weaver_observation(), generated_inputs=[ref])
+        return native_producer.test_check(
+            {"status": "passed", "exit_code": 0},
+            framework=producer,
+            targets=["tests.test_controlled"],
+            observation={"stdout": "same output"},
+            source=SOURCE,
+            context=CONTEXT,
+            impl=IMPL,
+            generated_inputs=[ref],
+        )
+
+    first, second = result(original), result(changed)
+    for item, expected in [(first, original), (second, changed)]:
+        assert item["generated_input_refs"] == [expected]
+        for native in item["native_results"]:
+            assert expected in native["input_refs"]
+            check_contract.validate_result(native)
+    assert all(
+        a["result_id"] != b["result_id"]
+        for a, b in zip(first["native_results"], second["native_results"], strict=True)
+    )

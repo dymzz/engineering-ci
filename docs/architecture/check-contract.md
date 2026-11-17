@@ -45,6 +45,20 @@ attestation format.
   tests read environment metadata from the retained Container, not a second
   test invocation. A failed metadata read cannot erase a completed native
   PASS/FAIL. Missing metadata is explicitly unavailable.
+- Both Plan execution paths pass the validated Plan's Git identity into the
+  framework/Weaver adapters before Native Result construction. The Source
+  snapshot, declared execution Tree, Head and Index identities are retained
+  independently from proof strength: a declaration alone remains
+  `identity_only` (or `unknown` without an identity), with no invented content
+  digest, verified scope or `byte_tree` claim. Standalone calls without a Plan
+  keep their earlier unbound Source description.
+- Data consumers use the existing verified `generated_input_refs()` closure
+  projection before constructing Native Results. Producer ref, output kind,
+  path and measured digest enter each consumer's immutable `input_refs` and
+  existing Result identity, alongside native stage predecessor references.
+  The outer `generated_input_refs` field mirrors these facts for inspection;
+  it is not their only record. An invalid/missing data closure prevents the
+  affected consumer from starting and creates no proved input or native exit.
 - Weaver Registry/Live/Terminal map only command records that actually have
   an integer native exit. Each declared stage receives its actual access,
   verified ECI-pinned asset, rule/config digest, original stdio artifact refs

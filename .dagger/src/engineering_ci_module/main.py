@@ -159,7 +159,9 @@ class EngineeringCi:
         """Export one Weaver execution, its native logs, package and report."""
         return await self._weaver_execution(source, kind, config_path)
 
-    async def _weaver_execution(self, source, kind, config_path, *, context=None):
+    async def _weaver_execution(
+        self, source, kind, config_path, *, context=None, plan=None, generated_inputs=()
+    ):
         from . import native_results
 
         if kind not in {"registry", "sample", "live", "terminal"}:
@@ -179,7 +181,12 @@ class EngineeringCi:
             .with_exec(["python", "/check/runtime.py", kind, "--config", config_path])
         )
         return await native_results.weaver_result(
-            result.directory("/out"), bound, kind, context=context
+            result.directory("/out"),
+            bound,
+            kind,
+            context=context,
+            plan=plan,
+            generated_inputs=generated_inputs,
         )
 
     @function

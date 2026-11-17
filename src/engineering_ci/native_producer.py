@@ -107,6 +107,8 @@ def test_check(
 ):
     """Describe the one framework invocation which already produced item."""
     definition = check_contract.definition_for(framework)
+    if generated_inputs:
+        item["generated_input_refs"] = list(generated_inputs)
     results = []
     if type(item.get("exit_code")) is int and item.get("status") in {
         "passed",
@@ -152,9 +154,13 @@ def test_check(
     return _attach(item, definition, results, impl)
 
 
-def weaver_check(raw, *, source, context, impl, source_directory=None):
+def weaver_check(
+    raw, *, source, context, impl, source_directory=None, generated_inputs=()
+):
     """Map actual stage records, never synthesizing a native gate exit."""
     item = dict(raw)
+    if generated_inputs:
+        item["generated_input_refs"] = list(generated_inputs)
     definition = check_contract.definition_for(raw["name"])
     inputs = raw.get("inputs") or {}
     rule = None
@@ -206,7 +212,11 @@ def weaver_check(raw, *, source, context, impl, source_directory=None):
             rule_ref=rule,
             tool=tool,
             phase=raw.get("phase"),
-            input_refs=[*consumed, {"kind": "native_inputs", "value": inputs}],
+            input_refs=[
+                *consumed,
+                {"kind": "native_inputs", "value": inputs},
+                *generated_inputs,
+            ],
             artifact_refs=[command[k] for k in ("stdout", "stderr") if command.get(k)],
             evidence={
                 "execution": context,
