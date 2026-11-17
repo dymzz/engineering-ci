@@ -366,11 +366,17 @@ def _parse_config_bytes(raw):
                 "type": kind,
                 "commit": _text(spec.get("commit", ""), "prerequisite_commit"),
             }
-        elif kind == "command":
+        elif kind in {"command", "dagger_command"}:
             argv = _string_list(spec.get("argv", []), "prerequisite_argv")
             if not argv:
                 raise SelectionError("prerequisite_actions_invalid")
             prerequisite_actions[key] = {"type": kind, "argv": list(argv)}
+            if kind == "dagger_command":
+                try:
+                    plan_contract.validate_dagger_command(spec)
+                except plan_contract.PlanError as error:
+                    raise SelectionError(error.code) from error
+                prerequisite_actions[key] = dict(spec)
         else:
             raise SelectionError("prerequisite_type_invalid")
     dependency_edges = _parse_dependency_edges(value.get("dependency_edges", []))

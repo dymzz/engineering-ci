@@ -53,10 +53,12 @@ with urllib.request.urlopen(request, timeout=10) as response:
 """
 
 
-async def observe(module, plan, source):
+async def observe(module, plan, source, *, audit=None, capture=None):
     from engineering_ci import execution, hygiene, native_producer
 
     from .main import _exec_capture
+
+    _exec_capture = capture or _exec_capture
 
     installed, error = await module._lychee_container()
     if error is not None:
@@ -91,11 +93,22 @@ async def observe(module, plan, source):
 
         async def _run_lychee(self, consumer_source, argv_tail):
             return await module._run_lychee(
-                consumer_source, argv_tail, installed=bound_tool
+                consumer_source, argv_tail, installed=bound_tool, capture=_exec_capture
+            )
+
+        async def _run_git(self, consumer_source, argv_tail):
+            return await module._run_git(
+                consumer_source, argv_tail, capture=_exec_capture
+            )
+
+        async def _run_dagger_prerequisite(self, consumer_source, name, spec):
+            return await module._run_dagger_prerequisite(
+                consumer_source, name, spec, capture=_exec_capture
             )
 
     async def read_result(saved):
         original_id = await saved.artifacts.id()
+        audit_before = await audit() if audit is not None else None
         before = await control()
         report = await saved.report()
         try:
@@ -104,6 +117,7 @@ async def observe(module, plan, source):
         except RuntimeError as error:
             strict = {"status": "failed", "diagnostic": str(error)}
         after = await control()
+        audit_after = await audit() if audit is not None else None
         return {
             "report_equals_artifact": report
             == await saved.artifacts.file("report.json").contents(),
@@ -111,6 +125,8 @@ async def observe(module, plan, source):
             "strict": strict,
             "before": before,
             "after": after,
+            "audit_before": audit_before,
+            "audit_after": audit_after,
         }
 
     reset = await control("/reset", "POST")
@@ -137,16 +153,18 @@ async def observe(module, plan, source):
 
     offline_before = await control()
     offline_args = ["--offline", "--no-progress", "docs/link.md"]
-    offline_first = await module._run_lychee(source, offline_args, installed=bound_tool)
+    offline_first = await module._run_lychee(
+        source, offline_args, installed=bound_tool, capture=_exec_capture
+    )
     offline_repeated = await module._run_lychee(
-        source, offline_args, installed=bound_tool
+        source, offline_args, installed=bound_tool, capture=_exec_capture
     )
     missing_local_source = source.without_file("docs/local.md")
     missing_local = await module._run_lychee(
-        missing_local_source, offline_args, installed=bound_tool
+        missing_local_source, offline_args, installed=bound_tool, capture=_exec_capture
     )
     missing_local_repeated = await module._run_lychee(
-        missing_local_source, offline_args, installed=bound_tool
+        missing_local_source, offline_args, installed=bound_tool, capture=_exec_capture
     )
     offline_after = await control()
     identity = await _exec_capture(

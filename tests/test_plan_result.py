@@ -1171,6 +1171,104 @@ def test_v2_data_dependency_delivers_isolated_derived_outputs_to_consumer(
     asyncio.run(saved.enforce())
 
 
+@pytest.mark.parametrize("native_exit", [0, 23])
+def test_native_prerequisite_uses_existing_v2_closure_and_preserves_failure(
+    modules, monkeypatch, native_exit
+):
+    _, collector = modules
+    payload = b"native-derived\x00\xff"
+    action = {
+        "type": "dagger_command",
+        "argv": ["python", "build.py"],
+        "image": "example.invalid/python@sha256:" + "a" * 64,
+        "platform": "linux/amd64",
+        "cache": "source",
+    }
+    edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+        "consumer_ref": {"kind": "execution_report", "name": "artifacts"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": {
+            "kind": "file",
+            "path": "generated/data.bin",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": _v2_decl("gen"),
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    plan = _v2_dagger_plan(
+        edges=[edge],
+        prerequisites=["gen"],
+        actions={"gen": action},
+        tests=[],
+        checks=[],
+    )
+    # An unselected declaration must not become a producer or path operation.
+    plan["prerequisite_actions"]["unselected/action"] = {
+        "type": "command",
+        "argv": ["never-executed"],
+    }
+
+    class Native:
+        calls = 0
+
+        async def _run_dagger_prerequisite(self, source, name, spec):
+            self.calls += 1
+            assert spec == action
+            return (
+                {
+                    "name": name,
+                    "type": "dagger_command",
+                    "status": "passed" if native_exit == 0 else "failed",
+                    "exit_code": native_exit,
+                    "stdout": "original out",
+                    "stderr": "original diagnostic",
+                    "execution_location": "dagger_container",
+                    "result_origin": "dagger",
+                },
+                MemoryDirectory({"generated/data.bin": payload}),
+            )
+
+    def no_scratch_import():
+        pytest.fail("native output was replaced with a Module scratch import")
+
+    monkeypatch.setattr(collector.dag, "current_module", no_scratch_import)
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({"ci-selection.toml": "# stable\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["prerequisites"][0]["exit_code"] == native_exit
+    assert report["prerequisites"][0]["stderr"] == "original diagnostic"
+    assert saved.artifacts.file("prerequisites/gen/generated/data.bin").data == payload
+    if native_exit == 0:
+        assert report["status"] == "passed", report
+        assert report["artifact_closure"][0]["verified"]
+        assert (
+            saved.artifacts.file(
+                "produced/prerequisite_action/gen/generated/data.bin"
+            ).data
+            == payload
+        )
+        asyncio.run(saved.enforce())
+    else:
+        assert report["status"] != "passed"
+        assert not any(item["verified"] for item in report.get("artifact_closure", ()))
+        with pytest.raises(RuntimeError):
+            asyncio.run(saved.enforce())
+    assert native.calls == 1
+
+
 def test_v2_data_dependency_passed_verdict_without_materialized_file_blocks(modules):
     _, collector = modules
     actions = {"gen": {"type": "command", "argv": [sys.executable, "-c", "pass"]}}

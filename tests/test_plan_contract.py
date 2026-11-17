@@ -33,6 +33,96 @@ def policy_plan():
     }
 
 
+def native_action():
+    return {
+        "type": "dagger_command",
+        "argv": ["python", "tools/build.py"],
+        "image": "example.invalid/python@sha256:" + "a" * 64,
+        "platform": "linux/amd64",
+        "cache": "source",
+    }
+
+
+def native_plan():
+    plan = policy_plan()
+    plan["prerequisite_actions"]["probe"] = native_action()
+    edge = plan["dependency_contract"]["edges"][0]
+    edge.update(
+        consumer_ref={"kind": "execution_report", "name": "artifacts"},
+        dependency_kind="data",
+        requires_pass=True,
+        output_ref={"kind": "file", "path": "generated/data.bin"},
+        execution_phase="pre_execution",
+    )
+    plan["dependency_contract"] = plan_contract.graph_contract([edge])
+    return plan
+
+
+def test_source_native_prerequisite_is_an_explicit_valid_v2_producer():
+    plan = native_plan()
+    assert execution.validate_plan(plan) is plan
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("image", "python:latest"),
+        ("image", None),
+        ("image", "example.invalid/python@sha256:" + "a" * 65),
+        ("platform", "windows/amd64"),
+        ("cache", "never"),
+        ("cache", True),
+        ("unknown", "ignored"),
+    ],
+)
+def test_native_prerequisite_refuses_unclosed_or_unknown_policy(field, value):
+    plan = native_plan()
+    plan["prerequisite_actions"]["probe"][field] = value
+    with pytest.raises(
+        execution.ExecutionError, match="dagger_command_parameters_invalid"
+    ):
+        execution.validate_plan(plan)
+
+
+def test_native_prerequisite_cannot_silently_use_legacy_post_check_execution():
+    plan = policy_plan()
+    plan["prerequisite_actions"]["probe"] = native_action()
+    with pytest.raises(
+        execution.ExecutionError, match="dagger_command_requires_pre_execution"
+    ):
+        execution.validate_plan(plan)
+
+
+def test_host_never_runs_a_native_prerequisite_with_the_host_environment(tmp_path):
+    def forbidden_runner(*args, **kwargs):
+        pytest.fail("native-only prerequisite ran on Host")
+
+    result = execution.run_prerequisite_action(
+        "probe", native_action(), root=tmp_path, runner=forbidden_runner
+    )
+    assert result["status"] == "not_executed"
+    assert result["reason"] == "prerequisite_requires_dagger"
+    assert result["exit_code"] is None
+
+
+def test_successful_module_local_command_retains_its_native_diagnostics(tmp_path):
+    result = execution.run_prerequisite_action(
+        "probe",
+        {
+            "type": "command",
+            "argv": [
+                sys.executable,
+                "-c",
+                "import sys;print('native out');print('native err',file=sys.stderr)",
+            ],
+        },
+        root=tmp_path,
+    )
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "native out\n"
+    assert result["stderr"] == "native err\n"
+
+
 def invalid_cases():
     return [
         (lambda p: p.update(generator=[]), "dependency_binding_invalid"),

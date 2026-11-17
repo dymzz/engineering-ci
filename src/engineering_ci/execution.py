@@ -1488,6 +1488,14 @@ def run_prerequisite_action(
             "reason": "prerequisite_parameters_missing",
         }
     kind = spec.get("type")
+    if kind == "dagger_command":
+        return {
+            "name": name,
+            "type": kind,
+            "status": "not_executed",
+            "reason": "prerequisite_requires_dagger",
+            "exit_code": None,
+        }
     if kind == "git_commit_present":
         commit = spec.get("commit")
         if not isinstance(commit, str) or not commit:
@@ -1574,6 +1582,8 @@ def run_prerequisite_action(
                 "status": "passed",
                 "exit_code": 0,
                 "argv": list(rendered),
+                "stdout": getattr(completed, "stdout", "") or "",
+                "stderr": getattr(completed, "stderr", "") or "",
             }
         return {
             "name": name,

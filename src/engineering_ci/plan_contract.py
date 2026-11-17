@@ -50,8 +50,24 @@ def _supported_action(spec):
     return (
         isinstance(spec, dict)
         and isinstance(spec.get("type"), str)
-        and spec["type"] in {"command", "git_commit_present"}
+        and spec["type"] in {"command", "dagger_command", "git_commit_present"}
     )
+
+
+def validate_dagger_command(spec):
+    """An explicit source-only, digest-pinned native producer declaration."""
+    if (
+        not isinstance(spec, dict)
+        or set(spec) != {"type", "argv", "image", "platform", "cache"}
+        or spec.get("type") != "dagger_command"
+        or not _string_list(spec.get("argv"))
+        or not spec["argv"]
+        or spec.get("cache") != "source"
+        or spec.get("platform") != "linux/amd64"
+        or not isinstance(spec.get("image"), str)
+        or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", spec["image"])
+    ):
+        raise PlanError("dagger_command_parameters_invalid")
 
 
 def _string_list(value):
@@ -447,7 +463,7 @@ def _validate_action(actions, name, edge):
     if spec is not None and not resolved:
         raise PlanError("dependency_action_unsupported")
     if resolved:
-        if spec["type"] == "command":
+        if spec["type"] in {"command", "dagger_command"}:
             argv = spec.get("argv")
             if (
                 not isinstance(argv, list)
@@ -455,6 +471,10 @@ def _validate_action(actions, name, edge):
                 or any(not isinstance(a, str) or not a for a in argv)
             ):
                 raise PlanError("dependency_action_parameters_invalid")
+            if spec["type"] == "dagger_command":
+                validate_dagger_command(spec)
+                if edge.get("dependency_kind") == "policy_only":
+                    raise PlanError("dagger_command_requires_pre_execution")
         elif not isinstance(spec.get("commit"), str) or not spec["commit"]:
             raise PlanError("dependency_action_parameters_invalid")
     if edge.get("resolution") != ("resolved" if resolved else "unresolved") or edge.get(
