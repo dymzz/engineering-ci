@@ -175,13 +175,17 @@ def _validate_terminal_entry(entry, *, proven_phase):
     return entry, declared
 
 
-def _prove_phase(parent_meta, entry):
-    """Phase from parent projection; verified only via Phase Producer facts."""
+# Current #66-B2 validate_projection accepts only these phase_status values.
+_B2_PHASE_STATUSES = frozenset({None, "not_applicable", "unverified"})
+
+
+def _freeze_parent_phase(parent_meta, entry):
+    """Read phase from frozen B2 parent — never upgrade phase_status here."""
     entry_phase = entry.get("phase")
     if parent_meta is None:
         if entry_phase != check_contract.POST_COMPLETION_PHASE:
             raise TerminalExpectedError("terminal_expected_phase_unproven")
-        return entry_phase, "unverified", False
+        return entry_phase, "unverified"
 
     parent_phase = parent_meta.get("phase")
     if parent_phase is None:
@@ -190,16 +194,20 @@ def _prove_phase(parent_meta, entry):
         raise TerminalExpectedError("terminal_expected_phase_invalid")
     if entry_phase is not None and entry_phase != parent_phase:
         raise TerminalExpectedError("terminal_expected_phase_mismatch")
-    phase_status = parent_meta.get("phase_status") or "unverified"
+    phase_status = parent_meta.get("phase_status")
+    if phase_status is None:
+        phase_status = "unverified"
+    # Current validate_projection rejects phase_status=verified on the parent.
+    if phase_status not in _B2_PHASE_STATUSES:
+        raise TerminalExpectedError("terminal_expected_parent_phase_status_unsupported")
     parent_status = parent_meta.get("status")
-    # Mirror expected_checks.validate_projection: complete + unverified is illegal.
     if parent_status == "complete" and phase_status == "unverified":
         raise TerminalExpectedError("terminal_expected_phase_complete_unproven")
-    phase_verified = phase_status == "verified"
-    return parent_phase, phase_status, phase_verified
+    return parent_phase, phase_status
 
 
 def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
+    """Deterministic parent identity — does not treat phase as domain-complete."""
     reasons = []
     gaps = []
     if parent_meta is None:
@@ -216,6 +224,7 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
         )
         return (
             _text(scope_id, "terminal_expected_scope_id_invalid"),
+            None,
             "unverified",
             reasons,
             gaps,
@@ -234,8 +243,7 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
         )
     status = parent_meta.get("status")
     phase_status = parent_meta.get("phase_status") or "unverified"
-    # Real #66-B2 with a declared phase is partial until a Phase Producer verifies.
-    if status == "complete" and phase_status != "verified":
+    if status == "complete" and phase_status == "unverified":
         raise TerminalExpectedError("terminal_expected_phase_complete_unproven")
     if status not in {"complete", "partial"}:
         reasons.append("terminal_expected_scope_incomplete")
@@ -246,13 +254,14 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
                 "reason": f"scope_status_{status}",
             }
         )
-    elif status == "partial" and phase_status != "verified":
+    # Declared phase without a separate Phase Witness stays unverified on parent.
+    if phase_status == "unverified":
         reasons.append("terminal_expected_phase_unverified")
         gaps.append(
             {
                 "kind": "expected_phase",
                 "ref": scope_id,
-                "reason": "phase_producer_unverified",
+                "reason": "phase_witness_required",
             }
         )
     schema_version = parent_meta.get("schema_version")
@@ -269,16 +278,9 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
                 "reason": "schema_unsupported",
             }
         )
-    expected_set_ref = (parent_meta.get("parent") or {}).get("expected_set_ref")
-    projection_identity = "unverified"
-    if (
-        status == "complete"
-        and phase_status == "verified"
-        and expected_set_ref is not None
-        and parent_meta.get("projection_source") == "effective_profile"
-    ):
-        projection_identity = "structural"
-    elif expected_set_ref is None and status == "complete":
+    parent = parent_meta.get("parent") or {}
+    expected_set_ref = parent.get("expected_set_ref")
+    if expected_set_ref is None:
         reasons.append("terminal_expected_set_ref_missing")
         gaps.append(
             {
@@ -287,7 +289,61 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
                 "reason": "expected_set_ref_missing",
             }
         )
-    return scope_id, projection_identity, reasons, gaps
+    return scope_id, expected_set_ref, "frozen", reasons, gaps
+
+
+def _bind_phase_witness(witness, *, scope_id, expected_set_ref, phase):
+    """External Phase/domain witness — parallel to frozen parent, never mutates it."""
+    if witness is None:
+        return False, "missing", ["terminal_phase_witness_missing"]
+    if not isinstance(witness, dict):
+        raise TerminalExpectedError("terminal_phase_witness_invalid")
+    if witness.get("accepted") is not True or witness.get("status") != "authorized":
+        return False, "rejected", ["terminal_phase_witness_rejected"]
+    if witness.get("phase") != phase:
+        return False, "rejected", ["terminal_phase_witness_phase_mismatch"]
+    if witness.get("scope_id") != scope_id:
+        return False, "rejected", ["terminal_phase_witness_scope_mismatch"]
+    if (
+        expected_set_ref is not None
+        and witness.get("expected_set_ref") != expected_set_ref
+    ):
+        return False, "rejected", ["terminal_phase_witness_expected_set_mismatch"]
+    # Domain completeness must be attested separately from phase acceptance.
+    if witness.get("domain_complete") is not True:
+        return False, "incomplete", ["terminal_phase_witness_domain_incomplete"]
+    return True, "authorized", []
+
+
+def _bind_projection_proof(
+    proof, *, scope_id, expected_set_ref, parent, git=None, plan=None
+):
+    """Prove parent projection via live validate_projection or a bound receipt."""
+    if git is not None:
+        try:
+            expected_checks.validate_projection(
+                parent, git, check_scope=None, plan=plan, root=None
+            )
+        except expected_checks.ExpectedError as error:
+            code = getattr(error, "code", None) or str(error)
+            return False, "failed", [f"terminal_projection_validation_{code}"]
+        return True, "validate_projection", []
+    if proof is None:
+        return False, "unverified", ["terminal_projection_proof_missing"]
+    if not isinstance(proof, dict):
+        raise TerminalExpectedError("terminal_projection_proof_invalid")
+    if proof.get("accepted") is not True or proof.get("status") != "authorized":
+        return False, "rejected", ["terminal_projection_proof_rejected"]
+    if proof.get("validator") != "expected_checks.validate_projection":
+        return False, "rejected", ["terminal_projection_proof_validator_invalid"]
+    if proof.get("scope_id") != scope_id:
+        return False, "rejected", ["terminal_projection_proof_scope_mismatch"]
+    if (
+        expected_set_ref is not None
+        and proof.get("expected_set_ref") != expected_set_ref
+    ):
+        return False, "rejected", ["terminal_projection_proof_expected_set_mismatch"]
+    return True, "external_receipt", []
 
 
 def _normalize_completed_run(value):
@@ -467,8 +523,10 @@ def _consistency(envelope):
             errors.append("terminal_authorized_requires_authority_verified")
         if input_closure != "verified":
             errors.append("terminal_authorized_requires_input_closure_verified")
-        if envelope.get("phase_verified") is not True:
-            errors.append("terminal_authorized_requires_phase_verified")
+        if envelope.get("phase_witness_verified") is not True:
+            errors.append("terminal_authorized_requires_phase_witness")
+        if envelope.get("projection_verified") is not True:
+            errors.append("terminal_authorized_requires_projection_proof")
         if envelope.get("completed_run_verified") is not True:
             errors.append("terminal_authorized_requires_completed_run_verified")
         if envelope.get("gaps"):
@@ -515,18 +573,19 @@ def bind_terminal_expected(
     root=None,
     expected_authority=None,
     completed_run_authority=None,
+    phase_witness=None,
+    projection_proof=None,
+    projection_git=None,
     contract_sample=False,
 ):
-    """Bind an authorized Terminal Check Expected onto a post_completion Plan.
+    """Bind a frozen #66-B2 Expected onto a post_completion Plan.
 
-    ``expected`` should be the #66-B2 parent Expected v2 projection containing
-    the ``weaver_terminal`` entry (preferred). Real B2 parents with a declared
-    phase are ``partial`` / ``phase_status=unverified`` until a Phase Producer
-    verifies them — that shape binds structurally but cannot authorize.
-
-    ``completed_run`` is a **separate** Run/Attempt/Terminal claim correlated
-    with ``plan``. Self-reported Plan builder params alone cannot authorize;
-    ``completed_run_authority`` (or a future Provider proof) must accept it.
+    Parent Expected must remain a validate_projection-compatible shape
+    (declared phase ⇒ ``partial`` / ``phase_status=unverified``). Phase and
+    domain completeness are proven by a **separate** ``phase_witness`` and
+    ``projection_proof`` (or live ``validate_projection`` via ``projection_git``),
+    never by rewriting the parent Schema. Plan builder params alone never prove
+    a Provider terminal — ``completed_run_authority`` is required to authorize.
     """
     contract_sample = _flag(contract_sample, "terminal_contract_sample_flag_invalid")
     expected_authority = _callable_or_none(
@@ -536,7 +595,7 @@ def bind_terminal_expected(
         completed_run_authority, "terminal_completed_run_authority_invalid"
     )
     entry, parent_meta = _extract_entry(expected)
-    proven_phase, phase_basis, phase_verified = _prove_phase(parent_meta, entry)
+    proven_phase, phase_basis = _freeze_parent_phase(parent_meta, entry)
     entry, expected_check_ref = _validate_terminal_entry(
         entry, proven_phase=proven_phase
     )
@@ -548,11 +607,56 @@ def bind_terminal_expected(
     if contract_sample:
         reasons.append("contract_sample_inputs_not_production_terminal")
 
-    scope_id, projection_identity, scope_reasons, scope_gaps = _require_parent_scope(
-        parent_meta, entry
-    )
+    (
+        scope_id,
+        expected_set_ref,
+        projection_identity,
+        scope_reasons,
+        scope_gaps,
+    ) = _require_parent_scope(parent_meta, entry)
     reasons.extend(scope_reasons)
     gaps.extend(scope_gaps)
+
+    parent_obj = None if parent_meta is None else parent_meta.get("parent")
+    proj_ok, proj_basis, proj_reasons = _bind_projection_proof(
+        projection_proof,
+        scope_id=scope_id,
+        expected_set_ref=expected_set_ref,
+        parent=parent_obj,
+        git=projection_git,
+        plan=plan,
+    )
+    reasons.extend(proj_reasons)
+    if not proj_ok:
+        gaps.append(
+            {
+                "kind": "projection_proof",
+                "ref": scope_id,
+                "reason": proj_basis,
+            }
+        )
+
+    phase_ok, phase_witness_status, phase_reasons = _bind_phase_witness(
+        phase_witness,
+        scope_id=scope_id,
+        expected_set_ref=expected_set_ref,
+        phase=proven_phase,
+    )
+    reasons.extend(phase_reasons)
+    if not phase_ok:
+        gaps.append(
+            {
+                "kind": "phase_witness",
+                "ref": scope_id,
+                "reason": phase_witness_status,
+            }
+        )
+    else:
+        # Phase witness covers the parent phase_unverified gap when domain is complete.
+        reasons = [
+            item for item in reasons if item != "terminal_expected_phase_unverified"
+        ]
+        gaps = [item for item in gaps if item.get("kind") != "expected_phase"]
 
     run_reasons, run_gaps = _match_completed_run_to_plan(completed, plan_identity)
     reasons.extend(run_reasons)
@@ -588,9 +692,9 @@ def bind_terminal_expected(
         "expected": copy.deepcopy(entry),
         "scope_id": scope_id,
         "expected_check_ref": expected_check_ref,
+        "expected_set_ref": expected_set_ref,
         "phase": proven_phase,
         "phase_basis": phase_basis,
-        "phase_verified": phase_verified,
         "parent_status": None if parent_meta is None else parent_meta.get("status"),
         "completed_run": copy.deepcopy(completed),
         "plan_identity": copy.deepcopy(plan_identity),
@@ -619,6 +723,9 @@ def bind_terminal_expected(
         "terminal_input_closure_root_missing",
         "terminal_expected_parent_missing",
         "terminal_expected_phase_unverified",
+        "terminal_phase_witness_missing",
+        "terminal_phase_witness_domain_incomplete",
+        "terminal_projection_proof_missing",
         "terminal_completed_run_source_unproven",
         "terminal_completed_run_proof_unverified",
     }
@@ -632,9 +739,11 @@ def bind_terminal_expected(
         and not contract_sample
         and authorization_basis == "authority_verified"
         and input_closure == "verified"
-        and phase_verified
+        and phase_ok
+        and proj_ok
         and run_ok
         and parent_meta is not None
+        and expected_set_ref is not None
         and not gaps
         and not blocking
     )
@@ -651,9 +760,13 @@ def bind_terminal_expected(
         "check_id": TERMINAL_CHECK_ID,
         "phase": proven_phase,
         "phase_basis": phase_basis,
-        "phase_verified": phase_verified,
+        "phase_witness_verified": phase_ok,
+        "phase_witness_status": phase_witness_status,
+        "projection_verified": proj_ok,
+        "projection_verification": proj_basis,
         "projection_identity": projection_identity,
         "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
         "expected_check_ref": expected_check_ref,
         "expected": entry,
         "completed_run": completed,
@@ -670,10 +783,12 @@ def bind_terminal_expected(
             "terminal_binding_does_not_admit_or_require",
             "terminal_root_missing_cannot_fake_pass",
             "expected_authority_is_not_input_closure_proof",
-            "expected_authority_is_not_phase_producer_proof",
+            "expected_authority_is_not_phase_or_domain_proof",
+            "phase_witness_is_external_to_parent_schema",
             "completed_run_is_not_written_into_expected",
             "plan_builder_params_are_not_terminal_proof",
             "does_not_implement_phase_producer",
+            "does_not_rewrite_b2_projection_schema",
             "binding_digest_is_not_authorization_proof",
         ],
         "binding_ref": None,
@@ -711,14 +826,15 @@ def post_completion_with_expected(
     expected_authority=None,
     completed_run=None,
     completed_run_authority=None,
+    phase_witness=None,
+    projection_proof=None,
+    projection_git=None,
     source_tree_id=None,
     contract_sample=False,
 ):
     """Build ``post_completion_plan`` then bind the Terminal Check Expected.
 
     Helper Plan builder params are never treated as Provider terminal proof.
-    Callers must supply ``completed_run`` / ``completed_run_authority`` from a
-    real Actions/CI Producer when authorization is required.
     """
     plan = selection.post_completion_plan(
         root=root,
@@ -743,6 +859,9 @@ def post_completion_with_expected(
         root=root,
         expected_authority=expected_authority,
         completed_run_authority=completed_run_authority,
+        phase_witness=phase_witness,
+        projection_proof=projection_proof,
+        projection_git=projection_git,
         contract_sample=contract_sample,
     )
 
