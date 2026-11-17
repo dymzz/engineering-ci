@@ -430,3 +430,10 @@ Admission/Required decisions remain separate; remaining applicable producers
 and Native DAG edges belong to follow-up `#86 B`, while `#86 D` refines input
 closure, cache hit/invalidation, and external URL/side-effect policy. See also
 [native result-sharing verification](../verification/plan-result-sharing/README.md).
+
+The delivered online-Lychee slice of #86 D.1 refreshes the external-read Exec
+while retaining deterministic native layers. Plan entrypoints reevaluate each
+request; readers of the saved result do not rerun tools. Cache policy and
+observation fields are defined in the [Dagger integration](integrations/dagger.md#plan-and-link-observation-cache-boundaries).
+The broader per-Check input audit, Module Include measurements and remaining
+applicable production DAG edges stay open under #86 B/D.

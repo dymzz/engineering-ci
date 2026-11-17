@@ -7,6 +7,7 @@
 - [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
 - [Plan 依赖盘点](plan-dependencies/README.md) — #86 A 实例矩阵、版本拒绝与 Host/Dagger 上下文证据。
 - [Plan 原生结果共享](plan-result-sharing/README.md) — #86 B 首批同一结果对象、原生失败、产物与 Enforce 定向验证。
+- [Dagger 输入与缓存](dagger-input-cache/README.md) — #86 D.1 在线链接刷新、离线缓存和同次结果读取的原生验证。
 - [原生工具合同](native-tool-contract/README.md) — #52 多工具满足关系与 Host `git`+Lychee 真实执行证据。
 - [变更影响选择](selection.md) — Git 对象、Tach 闭包、plan 身份与原生 unittest 的本地验证。
 - [Python 包合并](python-package.md) — 单一命名空间、隔离 wheel 安装及 Dagger 共享包接线的验证。

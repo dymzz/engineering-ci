@@ -1,0 +1,88 @@
+{
+  "scope": "Tool-return chunks; no full Trace or fresh Origin attribution",
+  "records": [
+    {
+      "command": "dagger api call fixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/first --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "cc0577",
+          "wall_time_seconds": 10.0030361,
+          "session_id": 51330,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 13:07:05 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "724371",
+          "wall_time_seconds": 5.0049024,
+          "session_id": 51330,
+          "original_token_count": 11,
+          "output": "[dagger] 30.0s elapsed · 3 steps running\r\n"
+        },
+        {
+          "chunk_id": "688c5a",
+          "wall_time_seconds": 5.0117976,
+          "session_id": 51330,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "d50aaf",
+          "wall_time_seconds": 5.0019242,
+          "session_id": 51330,
+          "original_token_count": 11,
+          "output": "[dagger] 1m0s elapsed · 3 steps running\r\n"
+        },
+        {
+          "chunk_id": "927675",
+          "wall_time_seconds": 0.0000161,
+          "exit_code": 0,
+          "original_token_count": 286,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/first --progress dots  1m16s\u001b[9;1H✔ connect 0.7s\r\n✔ load workspace: . 12.5s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.4s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[16;1H✔ engineeringCi: EngineeringCi! 2.4s\r\n✔ .fixtureLinkCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 1m1s\r\n  ✔ 2 downloads 0.0s\r\n✔ .export(path: \".artifacts/link-cache/first\"): String! 0.0s\r\n  ✔ downloading .artifacts/link-cache/first 0.0s ████████████ 80 kB\r\n\u001b[?25h\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.n877p6coh2msc.dagger.local exec python /service.py 8.5s EXITED s\r\n\u001b[23;80Hspan=ca39800a7d70c936\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/li\r\n\u001b[23;80Hink-cache/first\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "implementation": "5254bfccae80b9ebbd9233fb43342d7befe550ee",
+      "command": "dagger api call fixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/current --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "c74864",
+          "wall_time_seconds": 10.0138523,
+          "session_id": 21312,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 13:12:56 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "b111f8",
+          "wall_time_seconds": 0.0000136,
+          "exit_code": 0,
+          "original_token_count": 290,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/current --progress dots  16.4s\u001b[8;1H✔ connect 0.8s\r\n✔ load workspace: . 6.4s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H✔ engineeringCi: EngineeringCi! 1.9s\r\n✔ .fixtureLinkCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ): Directory! 7.3s\r\n  ✔ 2 downloads 0.0s\r\n✔ .export(path: \".artifacts/link-cache/current\"): String! 0.0s\r\n  ✔ downloading .artifacts/link-cache/current 0.0s ████████████ 82 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.r3f1qmjhtrmsg.dagger.local exec python /service.py 5.6s EXITED s\r\n\u001b[23;80Hspan=b2b1f2e3cefdadeb\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/li\r\n\u001b[23;80Hink-cache/current\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "implementation": "5254bfccae80b9ebbd9233fb43342d7befe550ee",
+      "command": "dagger api call fixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/repeated --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "d0c9b7",
+          "wall_time_seconds": 10.0113723,
+          "session_id": 30017,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 13:14:02 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "924a03",
+          "wall_time_seconds": 0.0001303,
+          "exit_code": 0,
+          "original_token_count": 292,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-link-cache --plan .artifacts/link-cache/plan.json --source .artifacts/link-cache/source export --path .artifacts/link-cache/repeated --progress dots  9.7s\u001b[8;1H✔ connect 1.3s\r\n✔ load workspace: . 1.1s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureLinkCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ): Directory! 7.1s\r\n  ✔ 2 downloads 0.0s\r\n✔ .export(path: \".artifacts/link-cache/repeated\"): String! 0.0s\r\n  ✔ downloading .artifacts/link-cache/repeated 0.0s ████████████ 82 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.sjqm9845fkcvi.dagger.local exec python /service.py 5.3s EXITED s\r\n\u001b[23;80Hspan=921bd010cb91296e\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/li\r\n\u001b[23;80Hink-cache/repeated\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    }
+  ]
+}
