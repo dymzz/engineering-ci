@@ -196,6 +196,7 @@ def pre_proof_for(
         "tool_identities": None,
         "prerequisite_inputs": (),
         "changed_paths_content_digest": changed_paths_content_digest,
+        "overlay_subset_paths": [],
     }
     proof["closure_digest"] = admission._recompute_closure_digest(proof)
     return proof

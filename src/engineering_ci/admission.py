@@ -1054,6 +1054,7 @@ def _recompute_closure_digest(proof):
         "tool_identities": proof.get("tool_identities"),
         "prerequisite_inputs": proof.get("prerequisite_inputs"),
         "changed_paths_content_digest": proof.get("changed_paths_content_digest"),
+        "overlay_subset_paths": list(proof.get("overlay_subset_paths") or ()),
     }
     return _digest(payload)
 

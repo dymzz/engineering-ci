@@ -44,8 +44,12 @@ Result、不判定 #61 Required/Release，也不完成 T1-b 本地→Actions 交
   `#52 evaluate_expected_satisfaction()`。受信 Native FAIL 保留为
   `verified + unsatisfied`，永不进入成功覆盖。弱 Expected（`changed_paths`，
   digest X）提升到闭合 P0（digest Y，X≠Y）时，要求 P0 在 `closure_digest` 内
-  绑定已验证的 `changed_paths_content_digest=X`；伪造/缺失子集 digest 或 P0
-  本身仍为 open/changed_paths 则 Remaining Work。
+  绑定已验证的 `changed_paths_content_digest=X`；该子集 digest 取自与闭合
+  SourceRef **同一**有效输入视图（含已验证 prerequisite overlay 的 consumer
+  view）的 snapshot binding，而非 overlay 前的独立 worktree 重读。overlay
+  若改写 Expected `changed_paths` 成员导致子集 digest ≠ X，则 P0 保持
+  unverified。伪造/缺失子集 digest 或 P0 本身仍为 open/changed_paths 则
+  Remaining Work。
 - **ScopeCovered**：执行前 Source 必须为闭合
   `check_input_closure`/`full_input_closure` 且 `binding_status=content_digest`；
   另须核对 `closure_digest` 可独立重算，并由 `pre_execution_authority` 绑定当前
