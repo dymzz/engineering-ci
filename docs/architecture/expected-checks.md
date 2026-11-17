@@ -161,6 +161,8 @@ rejects:
   projection and produces a separate receipt; see
   [Expected → Result reconciliation](reconciliation.md). #72 owns the scheduler
   lifecycle.
-- No Native Result coverage/reuse; #52/#63/#61 remain responsible.
+- No Native Result coverage/reuse; #52/#63/#61 remain responsible. The #61 R1
+  consumer contract and staged judgement are in
+  [Required Assessment](required-assessment.md).
 - Unknown Check definitions stay `definition_status=unknown` and `missing[]`;
   they are not silently dropped or converted to complete.
