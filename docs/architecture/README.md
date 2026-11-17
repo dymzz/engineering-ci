@@ -13,6 +13,7 @@
 - [Expected Checks](expected-checks.md) — 调度器无关的 Plan Expected 投影、完整性状态与 #66-C 边界。
 - [Expected → Result 对账](reconciliation.md) — #66-C 独立 Binding/Reconciliation Receipt、Job 路由与原生 Result 对账。
 - [证据接纳](evidence-admission.md) — #63 T1-a 逐实例来源/原生事实与 Accepted Coverage 合同切片。
+- [本地 → Actions 交接](local-actions-handoff.md) — #63 T1-b 本地 Hook/CLI 原生证据受控交接合同切片。
 - [历史复用接纳](historical-reuse.md) — #63 T2 跨 Run / PR→main 执行前语义等价复用合同切片。
 - [Required Assessment](required-assessment.md) — #61 R1 完整阶段性 Required 判定、四类独立事实、#63 准入与非 Check 证据消费。
 - [Required Assessment Check](required-assessment-check.md) — #61 R2 Assessment → 稳定 GitHub Check Run 发布合同。
