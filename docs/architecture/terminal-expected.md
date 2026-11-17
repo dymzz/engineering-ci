@@ -6,58 +6,34 @@ Status: additive #52-D4 **contract / binding slice**
 `selection.post_completion_plan` / `validate_post_completion_binding`
 consumption closure.
 
-It does **not** invent Expected, rewrite B2 Schema (`phase_status=verified` on
-the parent is rejected), implement a Phase Producer, confuse Span Expectations
-with Check Expected, produce Native Results, mint #66-C Receipts, perform #63
-Admission / #61 Required, or wire `release.yml`.
+It does **not** invent Expected, rewrite B2 Schema, implement a Phase
+Producer, confuse Span Expectations with Check Expected, produce Native
+Results, mint #66-C Receipts, perform #63 Admission / #61 Required, or wire
+`release.yml`.
 
-## Position
+## Trust boundary
 
-```text
-frozen #66-B2 Expected v2 (partial + phase_status=unverified when phase set)
-  └─ weaver_terminal Check Entry (no run_id / run_attempt)
-projection_proof  (validate_projection receipt or live call)
-phase_witness      (external Phase + domain attestation; does not mutate parent)
-completed_run + completed_run_authority
-post_completion_plan input closure
-        |
-        +--> bind_terminal_expected
-                |
-                authorized only when ALL independent proofs hold
-```
+| Fact | Trusted source for `authorized=true` |
+| --- | --- |
+| Projection | Live `expected_checks.validate_projection(parent, git, plan=expected_plan, root=expected_root)` only. Caller `projection_proof` dictionaries are **untrusted**. Terminal Plan must not be supplied as `expected_plan`. |
+| Phase + domain | Digest-sealed Phase Witness (`seal_phase_witness` / `witness_ref`) bound to Scope/Set/Profile revision/issuer/time. Bare `accepted=True` is untrusted. |
+| Expected entry | `expected_authority` (does not prove phase/domain/projection) |
+| Provider terminal | `completed_run_authority` (Plan builder params alone insufficient) |
+| Input closure | `validate_post_completion_binding(plan, root)` |
+
+`expected_set_ref` is recomputed via `expected_checks.set_identity` over the
+parent's actual `checks` / `non_check_obligations`; stale refs after tampering
+cannot authorize.
 
 ## Frozen upstream contract
 
-Declared phase projections from current `expected_checks` are
-`status=partial` / `phase_status=unverified`. `validate_projection` rejects
-`phase_status=verified` and `complete+unverified`. D4 consumes that shape
-unchanged. Phase/domain completeness is a **separate** witness bound to
-`scope_id` / `expected_set_ref` / phase — never by rewriting the parent.
-
-## Independent authorization facts
-
-| Fact | Source |
-| --- | --- |
-| Projection valid | live `validate_projection` or bound `projection_proof` |
-| Phase + domain complete | external `phase_witness` (`domain_complete=true`) |
-| Expected entry authority | `expected_authority` (does not prove phase/domain) |
-| Provider terminal | `completed_run_authority` (Plan params alone insufficient) |
-| Input closure | `validate_post_completion_binding(plan, root)` |
-
-Any missing fact ⇒ `authorized=false`. Callbacks cannot skip deterministic
-identity checks (`expected_set_ref`, scope, phase match).
-
-## Limits
-
-- Does not implement #66-B2 Phase Producer or change B2 Validator.
-- Controlled witnesses in tests are hypothetical external attestations, not
-  current production PASS claims.
-- Digest integrity is not authorization.
+Declared phase projections remain `status=partial` /
+`phase_status=unverified`. Parent `phase_status=verified` is rejected as
+unsupported by the current B2 Validator.
 
 ## Directed acceptance
 
-`tests/test_terminal_expected.py` covers frozen partial non-authorization,
-independent-witness authorization without rewriting parent, rejection of
-`phase_status=verified` / `complete+unverified`, domain-incomplete and wrong
-`expected_set_ref` witnesses, missing `expected_set_ref`, self-reported
-completed_run rejection, and helper Plan builder non-self-authorization.
+Tests cover untrusted self-attested proofs, sealed-vs-bare Phase Witness,
+`expected_set_ref` recompute tamper, live `validate_projection` against the
+original Expected Plan (positive) versus Terminal Plan as wrong context
+(negative), frozen parent negatives, and Plan closure / Run identity guards.
