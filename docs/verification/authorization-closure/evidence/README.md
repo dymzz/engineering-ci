@@ -14,6 +14,7 @@
 | [只读观察脚本原文](capture-github-visibility.txt) | 复用仓库 GitHub/Protection API 的临时脚本；强制 GET，保留 native HTTP 401；运行时读取当前凭证可见事实 |
 | [推导脚本原文](derive-audit-artifacts.txt) | 从已捕获输入推导候选清单、人工数据图/双向边、固定源码引用与元数据；不是运行时授权注册表 |
 | [完整性核验原文](validate-audit-artifacts.txt) | 只验证这批产物的摘要、固定 blob/行号、双向索引、版本分区、引用和已声明静态调用；不验证业务语义 |
+| [候选 disposition 校核脚本](check-candidate-dispositions.txt) | 检查全部候选、类型化去向、固定快照代码身份与声明的静态调用链；不验证权威来源，也不改写原 A/B 历史核验结果 |
 | [本轮核验结果](validation.json) | 本批文档/快照的完整性结果；不作为 Native、Required、Release 或生产权威验收 |
 
 ## 复核与重放
