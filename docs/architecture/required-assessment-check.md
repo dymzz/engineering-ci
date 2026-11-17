@@ -70,10 +70,14 @@ equal `assessment_ref` when an Assessment is present.
 
 ## Limits
 
-- Does not enable or mutate Branch Protection / Rulesets.
+- Does not enable or mutate Branch Protection / Rulesets (see
+  [Required Assessment Protection](required-assessment-protection.md) for the
+  #61 G3/R3 read-only observation contract).
 - Does not replace Native Required Contexts.
 - Does not wire a production CI Job that produces live universe/admission
-  inputs; that remains follow-up R2 wiring.
+  inputs; trusted Workflow `publish_authority` binding lives in
+  [Required Assessment Publish](required-assessment-publish.md) (#61 G2), while
+  live Universe/Admission materialization remains follow-up G2 wiring.
 - Declarative construction is not publish authorization.
 
 ## Directed acceptance

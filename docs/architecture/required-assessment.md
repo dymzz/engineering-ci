@@ -427,9 +427,12 @@ chain, a GitHub Check, server protection or a Release authorization exists.
 
 The `assessment_does_not_*` limitations record the remaining stage boundaries.
 R2 must bind the assessment to a real trusted PR/main entry point and publish a
-stable GitHub Check. R3 must verify the actual server-side Ruleset/Check source
-behavior. R4 must map the assessment into the existing Release
-Manifest/Run/Artifact chain. R5 must evaluate post-publish/terminal stages.
+stable GitHub Check. G2 adds the trusted Actions/Workflow `publish_authority`
+boundary ([Required Assessment Publish](required-assessment-publish.md)). R3/G3
+must observe the actual server-side Ruleset/Check source configuration
+([Required Assessment Protection](required-assessment-protection.md)). R4 must
+map the assessment into the existing Release Manifest/Run/Artifact chain. R5
+must evaluate post-publish/terminal stages.
 
 ## Directed acceptance
 
