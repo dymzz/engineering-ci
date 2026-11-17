@@ -192,9 +192,12 @@ def test_capture_pre_commit_uses_actual_index(repo, tmp_path):
     )
     event = hooks.capture_pre_commit(repo, environ=env)
     assert event["hook"] == "pre-commit"
+    assert event["schema_version"] == hooks.EVENT_SCHEMA_VERSION
     assert event["index"]["tree"] == git(repo, "write-tree", env={**os.environ, **env})
     assert event["index"]["sha256"].startswith("sha256:")
-    assert "alternate-index" in event["index"]["file"]
+    assert event["index"]["locator"]["kind"] == "absolute"
+    assert Path(event["index"]["locator"]["path"]).resolve() == index.resolve()
+    assert hooks.resolve_index_path(event, root=repo) == index.resolve()
 
 
 def test_pre_commit_index_change_during_capture_is_refused(repo, monkeypatch):

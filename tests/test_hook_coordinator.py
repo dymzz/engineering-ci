@@ -917,12 +917,14 @@ def test_precommit_execute_requires_captured_index_source(selection_repo, tmp_pa
     (path / "docs/guide.md").write_text("# staged-index-a\n", encoding="utf-8")
     git(path, "add", "docs/guide.md")
     index_a = git(path, "write-tree")
+    # Independent oracle: default Index lives under the absolute Git Directory.
+    index_file = Path(git(path, "rev-parse", "--absolute-git-dir")) / "index"
+    assert index_file.is_file()
     reference = capture_precommit(path)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     assert binding.event["index"]["tree"] == index_a
-    index_file = coordinator._resolve_invocation_index_path(
-        binding, path, coordinator._invocation_git_dir(binding)
-    )
+    assert binding.event["index"]["locator"] == {"kind": "git_dir", "path": "index"}
+    assert hooks.resolve_index_path(binding.event, root=path) == index_file.resolve()
     plan_a = whitespace_index_plan(
         base, head, index_a, index_file, paths=("docs/guide.md",)
     )
@@ -984,6 +986,91 @@ def test_precommit_execute_requires_captured_index_source(selection_repo, tmp_pa
         coordinator.HookCoordinatorError, match="execution_index_file_mismatch"
     ):
         coordinator.execute_activated_job(run_b, "job-1", plan=plan_foreign, root=path)
+
+
+def test_precommit_index_locator_distinguishes_git_dir_and_worktree(tmp_path):
+    """Producer locator keeps default Git Index distinct from Worktree ``index``."""
+    work = tmp_path / "work"
+    work.mkdir()
+    store = tmp_path / "store.git"
+    git(work, "init", "-q", "--separate-git-dir", str(store), "-b", "main")
+    git(work, "config", "user.email", "loc@example.invalid")
+    git(work, "config", "user.name", "Loc")
+    shutil.copytree(FIXTURE, work, dirs_exist_ok=True)
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "base")
+    base = git(work, "rev-parse", "HEAD")
+    head = base
+    (work / "docs/guide.md").write_text("# locator\n", encoding="utf-8")
+    git(work, "add", "docs/guide.md")
+
+    git_dir_index = Path(git(work, "rev-parse", "--absolute-git-dir")) / "index"
+    assert git_dir_index.resolve() == (store / "index").resolve()
+    # Conflicting same-basename file under the Worktree must not steal resolution.
+    worktree_index = work / "index"
+    worktree_index.write_bytes(git_dir_index.read_bytes())
+    assert worktree_index.is_file()
+
+    default_event = hooks.capture_pre_commit(work)
+    assert default_event["index"]["locator"] == {"kind": "git_dir", "path": "index"}
+    assert default_event["index"]["tree"] == git(work, "write-tree")
+    assert hooks.resolve_index_path(default_event, root=work) == git_dir_index.resolve()
+
+    env = {"GIT_INDEX_FILE": str(worktree_index)}
+    # Same bytes / tree / digest as the default Index, different physical file.
+    explicit_event = hooks.capture_pre_commit(work, environ=env)
+    assert explicit_event["index"]["locator"] == {"kind": "worktree", "path": "index"}
+    assert explicit_event["index"]["tree"] == default_event["index"]["tree"]
+    assert explicit_event["index"]["sha256"] == default_event["index"]["sha256"]
+    assert (
+        hooks.resolve_index_path(explicit_event, root=work) == worktree_index.resolve()
+    )
+    assert hooks.resolve_index_path(explicit_event, root=work) != (
+        hooks.resolve_index_path(default_event, root=work)
+    )
+
+    # Host execute refuses untracked Worktree decoys; remove only after locator oracle.
+    worktree_index.unlink()
+    default_ref = hooks.persist_event(work, default_event)
+    binding = coordinator.load_invocation_binding(default_ref.invocation_path)
+    plan = whitespace_index_plan(
+        base,
+        head,
+        default_event["index"]["tree"],
+        git_dir_index,
+        paths=("docs/guide.md",),
+    )
+    run = coordinator.open_attempt(binding, run_id="loc-default")
+    run.record_job("job-1")
+    report = coordinator.execute_activated_job(run, "job-1", plan=plan, root=work)
+    assert report["status"] == "passed", (report.get("status"), report.get("reason"))
+    _results, _rej, report_ref = coordinator.collect_job_report(run, "job-1", report)
+    receipt = coordinator.issue_job_receipt(
+        run,
+        "job-1",
+        report_ref,
+        event_ref={"base_ref": "HEAD", "head_ref": "INDEX"},
+        scope_id="sha256:" + ("c" * 64),
+        expected_set_ref="sha256:" + ("d" * 64),
+        report=report,
+    )
+    assert receipt["verification_status"] == "upstream_verified"
+
+    # Wrong physical Index source is refused even when tree/digest match.
+    worktree_index.write_bytes(git_dir_index.read_bytes())
+    run_bad = coordinator.open_attempt(binding, run_id="loc-bad")
+    run_bad.record_job("job-1")
+    wrong_plan = whitespace_index_plan(
+        base,
+        head,
+        default_event["index"]["tree"],
+        worktree_index,
+        paths=("docs/guide.md",),
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_index_file_mismatch"
+    ):
+        coordinator.execute_activated_job(run_bad, "job-1", plan=wrong_plan, root=work)
 
 
 def test_producer_new_ref_matches_raw_zero_not_analyzed_baseline(selection_repo):

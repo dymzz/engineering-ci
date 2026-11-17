@@ -627,25 +627,19 @@ def _seal_delivered_report(run_binding, job_ref, report):
     return sealed
 
 
-def _resolve_invocation_index_path(binding, root, git_dir):
-    """Absolute Index path recorded on the verified pre-commit Event."""
-    index = binding.event.get("index")
-    if not isinstance(index, dict):
-        raise HookCoordinatorError("invocation_index_missing")
-    file_ref = index.get("file")
-    if not isinstance(file_ref, str) or not file_ref:
-        raise HookCoordinatorError("invocation_index_file_missing")
-    candidate = Path(file_ref)
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-        if resolved.is_file():
-            return resolved
-        raise HookCoordinatorError("invocation_index_file_missing")
-    for base in (Path(root).resolve(), Path(git_dir).resolve()):
-        joined = (base / file_ref).resolve()
-        if joined.is_file():
-            return joined
-    raise HookCoordinatorError("invocation_index_file_missing")
+def _resolve_invocation_index_path(binding, root):
+    """Absolute Index path from the Producer's authoritative Event locator."""
+    if not isinstance(binding, InvocationBinding):
+        raise HookCoordinatorError("invocation_binding_invalid")
+    try:
+        return hooks.resolve_index_path(binding.event, root=root)
+    except hooks.HookEventError as error:
+        code = error.code
+        if code in {"index_locator_unavailable", "index_locator_invalid"}:
+            raise HookCoordinatorError(code) from error
+        if code == "index_file_unavailable":
+            raise HookCoordinatorError("invocation_index_file_missing") from error
+        raise HookCoordinatorError("invocation_index_missing") from error
 
 
 def _require_plan_matches_push_invocation(binding, plan, git_dir):
@@ -679,7 +673,7 @@ def _require_plan_matches_precommit_invocation(binding, plan, root, git_dir):
     if not isinstance(index, dict) or not index.get("tree"):
         raise HookCoordinatorError("invocation_index_missing")
     captured_tree = index["tree"]
-    captured_index = _resolve_invocation_index_path(binding, root, git_dir)
+    captured_index = _resolve_invocation_index_path(binding, root)
     if not isinstance(plan, dict):
         raise HookCoordinatorError("execution_plan_invalid")
     git = plan.get("git")
