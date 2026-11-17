@@ -672,6 +672,25 @@ def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
     forged = _recompute(forged)
     with pytest.raises(
         rar.RequiredAssessmentReleaseError,
+        match="release_validation_handoff_requires_publication_mode",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["publish_context"] = dict(forged["publish_context"])
+    forged["publish_context"]["mode"] = "validation"
+    forged["publish_context"]["manifest_binding"] = "same_run"
+    forged["publish_context"].pop("validation_identity", None)
+    forged["validation_identity"] = None
+    forged["manifest_identity"] = dict(forged["manifest_identity"])
+    forged["manifest_identity"]["mode"] = "validation"
+    forged["manifest_identity"]["run_id"] = forged["publish_context"]["run_id"]
+    forged["manifest_identity"]["run_attempt"] = forged["publish_context"][
+        "run_attempt"
+    ]
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
         match="release_authorized_requires_publication_mode",
     ):
         rar.validate_release_reconciliation(forged)
@@ -696,13 +715,137 @@ def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
 
     forged = copy.deepcopy(result)
     forged["validation_identity"] = dict(forged["validation_identity"])
-    forged["validation_identity"]["run_id"] = forged["publish_context"]["run_id"]
+    forged["publish_context"] = dict(forged["publish_context"])
+    forged["publish_context"]["validation_identity"] = dict(
+        forged["publish_context"]["validation_identity"]
+    )
+    publication_run = forged["publish_context"]["run_id"]
+    forged["validation_identity"]["run_id"] = publication_run
+    forged["publish_context"]["validation_identity"]["run_id"] = publication_run
     forged = _recompute(forged)
     with pytest.raises(
         rar.RequiredAssessmentReleaseError,
         match="release_authorized_requires_distinct_publication_run",
     ):
         rar.validate_release_reconciliation(forged)
+
+
+def test_manifest_identity_tracks_artifact_id_and_digest():
+    assessment, _ = passed_assessment(contract_sample=False)
+    base = make_v1_manifest(mode="validation")
+    authorized = authorize(assessment, manifest=base)
+    stable = authorize(assessment, manifest=copy.deepcopy(base))
+    assert authorized["manifest_identity"] == stable["manifest_identity"]
+    assert authorized["reconciliation_ref"] == stable["reconciliation_ref"]
+    assert authorized["manifest_identity"] == rar.bind_manifest_identity(
+        base, repository=REPO, tag=TAG, head=HEAD
+    )
+    assert (
+        rar.require_reconciliation_manifest(
+            authorized, base, repository=REPO, tag=TAG, head=HEAD
+        )
+        == authorized["manifest_identity"]
+    )
+
+    changed_id = copy.deepcopy(base)
+    new_id = changed_id["artifacts"][0]["id"] + 1000
+    changed_id["artifacts"][0]["id"] = new_id
+    changed_id["artifacts"][0]["url"] = (
+        f"https://api.github.com/repos/{REPO}/actions/artifacts/{new_id}"
+    )
+    release_manifest.validate(changed_id, REPO, TAG, HEAD)
+    id_result = authorize(assessment, manifest=changed_id)
+    assert (
+        id_result["manifest_identity"]["content_digest"]
+        != authorized["manifest_identity"]["content_digest"]
+    )
+    assert id_result["reconciliation_ref"] != authorized["reconciliation_ref"]
+    assert (
+        id_result["manifest_identity"]["artifacts"]
+        != authorized["manifest_identity"]["artifacts"]
+    )
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError, match="release_manifest_identity_mismatch"
+    ):
+        rar.require_reconciliation_manifest(
+            authorized, changed_id, repository=REPO, tag=TAG, head=HEAD
+        )
+
+    changed_digest = copy.deepcopy(base)
+    changed_digest["artifacts"][0]["digest"] = "sha256:" + ("a" * 64)
+    release_manifest.validate(changed_digest, REPO, TAG, HEAD)
+    digest_result = authorize(assessment, manifest=changed_digest)
+    assert (
+        digest_result["manifest_identity"]["content_digest"]
+        != authorized["manifest_identity"]["content_digest"]
+    )
+    assert digest_result["reconciliation_ref"] != authorized["reconciliation_ref"]
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError, match="release_manifest_identity_mismatch"
+    ):
+        rar.require_reconciliation_manifest(
+            authorized, changed_digest, repository=REPO, tag=TAG, head=HEAD
+        )
+
+
+def test_validate_rejects_inconsistent_validation_identity():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(assessment)
+    assert result["release_authorized"] is True
+
+    forged = copy.deepcopy(result)
+    forged["validation_identity"] = dict(forged["validation_identity"])
+    forged["validation_identity"]["run_id"] = 124
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_validation_identity_inconsistent",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["validation_identity"] = dict(forged["validation_identity"])
+    forged["validation_identity"]["run_attempt"] = 2
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_validation_identity_inconsistent",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["validation_identity"] = dict(forged["validation_identity"])
+    forged["validation_identity"]["mode"] = "publication"
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_validation_identity_inconsistent",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["publish_context"] = dict(forged["publish_context"])
+    forged["publish_context"]["manifest_binding"] = "same_run"
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_same_run_rejects_validation_identity",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    same_run = reconcile(
+        assessment,
+        make_v1_manifest(mode="publication"),
+        publish_context=publication_same_run_context(),
+    )
+    assert same_run["release_authorized"] is True
+    assert same_run["validation_identity"] is None
+    assert (
+        rar.validate_release_reconciliation(copy.deepcopy(same_run))[
+            "reconciliation_ref"
+        ]
+        == same_run["reconciliation_ref"]
+    )
 
 
 def test_validate_accepts_unchanged_valid_envelope():

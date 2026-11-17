@@ -205,6 +205,51 @@ def _bind_manifest_run(manifest, context):
     return reasons, identity
 
 
+def _manifest_identity(manifest):
+    """Immutable Manifest v1 content + Run/Artifact binding used by R4 output.
+
+    ``content_digest`` is the canonical ``_digest`` of the full Manifest that
+    already passed ``release.manifest.validate``. Consumers compare with the
+    same rule via ``bind_manifest_identity`` / ``require_reconciliation_manifest``.
+    """
+    workflow = manifest["workflow"]
+    artifacts = [
+        {
+            "name": item["name"],
+            "id": item["id"],
+            "digest": item.get("digest"),
+        }
+        for item in sorted(
+            manifest["artifacts"], key=lambda row: (row["name"], row["id"])
+        )
+    ]
+    return {
+        "content_digest": _digest(manifest),
+        "mode": manifest["mode"],
+        "run_id": workflow["run_id"],
+        "run_attempt": workflow["run_attempt"],
+        "artifacts": artifacts,
+    }
+
+
+def bind_manifest_identity(manifest, *, repository, tag, head):
+    """Public identity rule for a Manifest that passes the v1 gate."""
+    return _manifest_identity(
+        _load_manifest_v1(manifest, repository=repository, tag=tag, head=head)
+    )
+
+
+def require_reconciliation_manifest(envelope, manifest, *, repository, tag, head):
+    """Reject when a consumer Manifest is not the authorized R4 identity."""
+    validate_release_reconciliation(envelope)
+    actual = bind_manifest_identity(
+        manifest, repository=repository, tag=tag, head=head
+    )
+    if envelope.get("manifest_identity") != actual:
+        raise RequiredAssessmentReleaseError("release_manifest_identity_mismatch")
+    return actual
+
+
 def _normalize_bindings(value):
     if value is None:
         return []
@@ -453,6 +498,59 @@ def _derive_status(blocking, *, policy_status, artifact_status):
     return "rejected"
 
 
+def _manifest_identity_consistent(identity):
+    """Structural checks for the recorded Manifest binding — not a second ledger."""
+    errors = []
+    if not isinstance(identity, dict):
+        return ["release_manifest_identity_invalid"]
+    try:
+        _internal_ref(
+            identity.get("content_digest"), "release_manifest_identity_digest_invalid"
+        )
+    except RequiredAssessmentReleaseError as error:
+        errors.append(error.code)
+    if identity.get("mode") not in PUBLISH_MODES:
+        errors.append("release_manifest_identity_mode_invalid")
+    try:
+        _positive_int(identity.get("run_id"), "release_manifest_identity_run_invalid")
+        _positive_int(
+            identity.get("run_attempt"), "release_manifest_identity_attempt_invalid"
+        )
+    except RequiredAssessmentReleaseError as error:
+        errors.append(error.code)
+    artifacts = identity.get("artifacts")
+    if not isinstance(artifacts, list):
+        errors.append("release_manifest_identity_artifacts_invalid")
+        return errors
+    seen_names = set()
+    seen_ids = set()
+    for item in artifacts:
+        if not isinstance(item, dict):
+            errors.append("release_manifest_identity_artifacts_invalid")
+            continue
+        name = item.get("name")
+        artifact_id = item.get("id")
+        digest = item.get("digest")
+        if not isinstance(name, str) or not name.strip():
+            errors.append("release_manifest_identity_artifacts_invalid")
+            continue
+        if name in seen_names:
+            errors.append("release_manifest_identity_artifacts_duplicate")
+        seen_names.add(name)
+        if type(artifact_id) is not int or artifact_id <= 0:
+            errors.append("release_manifest_identity_artifacts_invalid")
+        elif artifact_id in seen_ids:
+            errors.append("release_manifest_identity_artifacts_duplicate")
+        else:
+            seen_ids.add(artifact_id)
+        if digest is not None:
+            try:
+                _internal_ref(digest, "release_manifest_identity_artifacts_invalid")
+            except RequiredAssessmentReleaseError as error:
+                errors.append(error.code)
+    return errors
+
+
 def _authorization_consistent(envelope):
     """Pure predicates for release authorization — digest is not authority."""
     errors = []
@@ -510,25 +608,55 @@ def _authorization_consistent(envelope):
     if not isinstance(candidate, dict) or not isinstance(context, dict):
         errors.append("release_candidate_context_invalid")
         return errors
-    mode = context.get("mode")
-    binding = context.get("manifest_binding")
-    if mode not in PUBLISH_MODES:
-        errors.append("release_publish_context_mode_invalid")
-    if binding not in MANIFEST_BINDINGS:
-        errors.append("release_publish_context_binding_invalid")
-    if authorized is True:
-        if mode != "publication":
-            errors.append("release_authorized_requires_publication_mode")
-        if binding == "validation_to_publication":
-            identity = envelope.get("validation_identity")
-            if not isinstance(identity, dict):
-                errors.append("release_authorized_requires_validation_identity")
-            elif identity.get("run_id") == context.get("run_id"):
-                errors.append("release_authorized_requires_distinct_publication_run")
-        elif binding == "same_run":
-            # Publication same-run must carry a publication-mode context.
+    identity = envelope.get("manifest_identity")
+    errors.extend(_manifest_identity_consistent(identity))
+    top_validation = envelope.get("validation_identity")
+    try:
+        normalized = _normalize_publish_context(context)
+    except RequiredAssessmentReleaseError as error:
+        errors.append(error.code)
+        normalized = None
+    if normalized is not None:
+        mode = normalized["mode"]
+        binding = normalized["manifest_binding"]
+        aligned = status == "verified" or authorized is True
+        if authorized is True:
             if mode != "publication":
+                errors.append("release_authorized_requires_publication_mode")
+            if binding == "same_run" and mode != "publication":
                 errors.append("release_authorized_same_run_requires_publication_mode")
+        if binding == "same_run":
+            if top_validation is not None:
+                errors.append("release_same_run_rejects_validation_identity")
+            # Rejected reconciliations may record a real Mode/Run mismatch; only
+            # verified/authorized envelopes must keep Manifest identity aligned.
+            if aligned and isinstance(identity, dict):
+                if identity.get("mode") != mode:
+                    errors.append("release_manifest_identity_mode_mismatch")
+                if identity.get("run_id") != normalized["run_id"]:
+                    errors.append("release_manifest_identity_run_mismatch")
+                if identity.get("run_attempt") != normalized["run_attempt"]:
+                    errors.append("release_manifest_identity_attempt_mismatch")
+        elif binding == "validation_to_publication":
+            context_validation = normalized.get("validation_identity")
+            if top_validation != context_validation:
+                errors.append("release_validation_identity_inconsistent")
+            if not isinstance(top_validation, dict):
+                if authorized is True:
+                    errors.append("release_authorized_requires_validation_identity")
+            elif aligned and top_validation.get("run_id") == normalized["run_id"]:
+                errors.append("release_authorized_requires_distinct_publication_run")
+            if (
+                aligned
+                and isinstance(identity, dict)
+                and isinstance(context_validation, dict)
+            ):
+                if identity.get("mode") != "validation":
+                    errors.append("release_manifest_identity_mode_mismatch")
+                if identity.get("run_id") != context_validation["run_id"]:
+                    errors.append("release_manifest_identity_run_mismatch")
+                if identity.get("run_attempt") != context_validation["run_attempt"]:
+                    errors.append("release_manifest_identity_attempt_mismatch")
     if candidate.get("commit") != context.get("head_sha") and (
         status == "verified" or authorized is True
     ):
@@ -794,6 +922,7 @@ def reconcile_release_assessment(
             "evaluated_at": evaluated.isoformat(),
         },
         "validation_identity": validation_identity,
+        "manifest_identity": _manifest_identity(normalized_manifest),
         "candidate": {
             "commit": assessment_commit,
             "manifest_commit": normalized_manifest["release"]["commit_sha"],

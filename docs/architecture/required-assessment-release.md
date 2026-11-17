@@ -51,6 +51,23 @@ A future publish boundary must still recheck policy authorization and exact
 current Run/Attempt/Artifact evidence; this module does not perform Tag/Release
 publication.
 
+## Manifest identity binding
+
+R4 output records `manifest_identity` for the Manifest that passed
+`release.manifest.validate`:
+
+- `content_digest` — canonical `_digest` of the full Manifest v1;
+- `mode` / `run_id` / `run_attempt` — Manifest workflow source identity;
+- `artifacts[{name,id,digest}]` — Artifact ID/digest binding (not a second ledger).
+
+Consumers compare with the same rule via `bind_manifest_identity` /
+`require_reconciliation_manifest`. Changing a valid Artifact ID or Digest
+changes both the Manifest identity and `reconciliation_ref`.
+
+`validate_release_reconciliation` also requires `publish_context.validation_identity`
+to equal top-level `validation_identity` for `validation_to_publication`, and
+rejects a top-level Validation identity under `same_run`.
+
 ## Artifact obligations
 
 Caller supplies an authorized Profile Artifact set:
@@ -94,4 +111,6 @@ invalid v1 Manifest refusal, blocked Assessment, failed fixed checks without
 trust rewrite, revoked/missing policy despite same SHA, same-run Mode/Run
 mismatches, validation→publication handoff, Profile Artifact complete/empty/
 missing sets, structural vs provider basis, contract-sample non-authorization,
-and recomputed-digest authorization-consistency rejection.
+Manifest identity binding / consumer mismatch, inconsistent serialized
+Validation identity rejection, and recomputed-digest authorization-consistency
+rejection.
