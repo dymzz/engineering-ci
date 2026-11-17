@@ -11,7 +11,8 @@ This module does **not**:
 - read Rulesets (#61 R3);
 - evaluate post-publish / terminal stages (#61 R5);
 - rewrite Manifest ``checks[].status`` into trusted/#63 admitted facts;
-- invent a second Release decisioner, scheduler or parallel Manifest schema.
+- invent a second Release decisioner, scheduler or parallel Manifest schema;
+- replace ``release.manifest.validate`` with a looser structural gate.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import re
 from datetime import datetime
 
 from . import required_assessment
+from .release import manifest as release_manifest
 from .release import registry as release_registry
 
 RECONCILIATION_KIND = "engineering-ci-required-assessment-release"
@@ -30,11 +32,13 @@ RECONCILIATION_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
 RELEASE_PHASES = frozenset({"pre_publish", "publish", "post_publish"})
 PUBLISH_MODES = frozenset({"validation", "publication"})
+MANIFEST_BINDINGS = frozenset({"same_run", "validation_to_publication"})
+AUTHORIZATION_BASES = frozenset({"structural_fixture", "provider_verified"})
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-_EVIDENCE_REF_FIELDS = frozenset({"name", "version", "path", "sha256"})
+_INFORMATIONAL_REASONS = frozenset({"contract_sample_inputs_not_production_release"})
 
 
 class RequiredAssessmentReleaseError(ValueError):
@@ -60,6 +64,12 @@ def _text(value, code):
 
 def _flag(value, code):
     if not isinstance(value, bool):
+        raise RequiredAssessmentReleaseError(code)
+    return value
+
+
+def _positive_int(value, code):
+    if type(value) is not int or value <= 0:
         raise RequiredAssessmentReleaseError(code)
     return value
 
@@ -94,19 +104,6 @@ def _internal_ref(value, code):
     return text
 
 
-def _evidence_ref(value, code):
-    if not isinstance(value, dict) or set(value) - _EVIDENCE_REF_FIELDS:
-        raise RequiredAssessmentReleaseError(code)
-    record = {
-        "name": _text(value.get("name"), code),
-        "version": _text(value.get("version"), code),
-        "sha256": _text(value.get("sha256"), code).lower(),
-    }
-    if value.get("path") is not None:
-        record["path"] = _text(value.get("path"), code)
-    return record
-
-
 def _callable_or_none(value, code):
     if value is None:
         return None
@@ -130,85 +127,85 @@ def _normalize_publish_context(value):
     phase = _text(value.get("phase"), "release_phase_invalid")
     if phase not in RELEASE_PHASES:
         raise RequiredAssessmentReleaseError("release_phase_invalid")
-    return {
+    binding = _text(value.get("manifest_binding"), "release_manifest_binding_invalid")
+    if binding not in MANIFEST_BINDINGS:
+        raise RequiredAssessmentReleaseError("release_manifest_binding_invalid")
+    context = {
         "repository": repository,
         "tag": tag,
         "head_sha": _sha1(value.get("head_sha"), "release_head_sha_invalid"),
         "mode": mode,
         "phase": phase,
+        "manifest_binding": binding,
         "evaluated_at": _datetime(
             value.get("evaluated_at"), "release_evaluated_at_invalid"
         ).isoformat(),
-        "run_id": value.get("run_id"),
-        "run_attempt": value.get("run_attempt"),
+        "run_id": _positive_int(value.get("run_id"), "release_run_id_invalid"),
+        "run_attempt": _positive_int(
+            value.get("run_attempt"), "release_run_attempt_invalid"
+        ),
     }
+    if binding == "validation_to_publication":
+        identity = value.get("validation_identity")
+        if not isinstance(identity, dict):
+            raise RequiredAssessmentReleaseError("release_validation_identity_invalid")
+        context["validation_identity"] = {
+            "mode": "validation",
+            "run_id": _positive_int(
+                identity.get("run_id"), "release_validation_run_id_invalid"
+            ),
+            "run_attempt": _positive_int(
+                identity.get("run_attempt"), "release_validation_run_attempt_invalid"
+            ),
+        }
+        if mode != "publication":
+            raise RequiredAssessmentReleaseError(
+                "release_validation_handoff_requires_publication_mode"
+            )
+    return context
 
 
-def _normalize_manifest(value, *, publish_context):
-    """Accept Manifest v1 identity fields without rewriting check statuses."""
+def _load_manifest_v1(value, *, repository, tag, head):
+    """Canonical Manifest v1 gate — never a looser parallel validator."""
     if not isinstance(value, dict):
         raise RequiredAssessmentReleaseError("release_manifest_invalid")
-    if value.get("schema_version") != MANIFEST_SCHEMA_VERSION:
-        raise RequiredAssessmentReleaseError("release_manifest_schema_unsupported")
-    if value.get("repository") != publish_context["repository"]:
-        raise RequiredAssessmentReleaseError("release_manifest_repository_mismatch")
-    release = value.get("release")
-    if not isinstance(release, dict):
-        raise RequiredAssessmentReleaseError("release_manifest_release_invalid")
-    if release.get("tag") != publish_context["tag"]:
-        raise RequiredAssessmentReleaseError("release_manifest_tag_mismatch")
-    if release.get("commit_sha") != publish_context["head_sha"]:
-        raise RequiredAssessmentReleaseError("release_manifest_commit_mismatch")
-    if value.get("mode") not in PUBLISH_MODES:
-        raise RequiredAssessmentReleaseError("release_manifest_mode_invalid")
-    if value.get("result") not in {"passed", "failed"}:
-        raise RequiredAssessmentReleaseError("release_manifest_result_invalid")
-    checks = value.get("checks")
-    if not isinstance(checks, dict) or not checks:
-        raise RequiredAssessmentReleaseError("release_manifest_checks_invalid")
-    required_keys = set(release_registry.CHECKS) | set(
-        release_registry.DAGGER_POLICY_CHECKS
-    )
-    missing = required_keys - set(checks)
-    if missing:
-        raise RequiredAssessmentReleaseError("release_manifest_checks_incomplete")
-    for record in checks.values():
-        if not isinstance(record, dict) or "status" not in record:
-            raise RequiredAssessmentReleaseError("release_manifest_check_invalid")
-        # Never upgrade or trust-rewrite original statuses here.
-        _text(record.get("status"), "release_manifest_check_status_invalid")
-    artifacts = value.get("artifacts")
-    if not isinstance(artifacts, list):
-        raise RequiredAssessmentReleaseError("release_manifest_artifacts_invalid")
-    workflow = value.get("workflow")
-    if not isinstance(workflow, dict):
-        raise RequiredAssessmentReleaseError("release_manifest_workflow_invalid")
-    return {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
-        "repository": value["repository"],
-        "release": {
-            "version": release.get("version"),
-            "tag": release["tag"],
-            "commit_sha": release["commit_sha"],
-            "release_url": release.get("release_url"),
-        },
-        "workflow": {
-            "run_id": workflow.get("run_id"),
-            "run_attempt": workflow.get("run_attempt"),
-            "run_url": workflow.get("run_url"),
-            "event": workflow.get("event"),
-            "path": workflow.get("path"),
-        },
-        "mode": value["mode"],
-        "checks": copy.deepcopy(checks),
-        "tools": copy.deepcopy(value.get("tools") or []),
-        "artifacts": copy.deepcopy(artifacts),
-        "result": value["result"],
-    }
+    try:
+        release_manifest.validate(value, repository, tag, head)
+    except ValueError as error:
+        raise RequiredAssessmentReleaseError("release_manifest_v1_invalid") from error
+    return copy.deepcopy(value)
+
+
+def _bind_manifest_run(manifest, context):
+    """Enforce same-run equality or explicit validation→publication handoff."""
+    reasons = []
+    workflow = manifest["workflow"]
+    binding = context["manifest_binding"]
+    if binding == "same_run":
+        if manifest["mode"] != context["mode"]:
+            reasons.append("release_manifest_mode_mismatch")
+        if workflow.get("run_id") != context["run_id"]:
+            reasons.append("release_manifest_run_mismatch")
+        if workflow.get("run_attempt") != context["run_attempt"]:
+            reasons.append("release_manifest_attempt_mismatch")
+        return reasons, None
+    # validation → publication across Runs
+    identity = context["validation_identity"]
+    if manifest["mode"] != "validation":
+        reasons.append("release_handoff_manifest_not_validation")
+    if workflow.get("run_id") != identity["run_id"]:
+        reasons.append("release_handoff_validation_run_mismatch")
+    if workflow.get("run_attempt") != identity["run_attempt"]:
+        reasons.append("release_handoff_validation_attempt_mismatch")
+    if (
+        context["run_id"] == identity["run_id"]
+        and context["run_attempt"] == identity["run_attempt"]
+    ):
+        reasons.append("release_handoff_requires_distinct_publication_run")
+    return reasons, identity
 
 
 def _normalize_bindings(value):
-    """Optional Manifest check key → Assessment expected_check_ref bindings."""
     if value is None:
         return []
     if not isinstance(value, (list, tuple)):
@@ -229,19 +226,53 @@ def _normalize_bindings(value):
     return bindings
 
 
-def _normalize_artifact_requirements(value):
+def _normalize_artifact_obligations(value):
+    """Authorized current Profile Artifact obligation set (complete or empty)."""
     if value is None:
-        return []
-    if not isinstance(value, (list, tuple)):
-        raise RequiredAssessmentReleaseError("release_artifact_requirements_invalid")
-    names = []
-    for item in value:
-        name = _text(item, "release_artifact_requirements_invalid")
+        raise RequiredAssessmentReleaseError("release_artifact_obligations_missing")
+    if not isinstance(value, dict):
+        raise RequiredAssessmentReleaseError("release_artifact_obligations_invalid")
+    completeness = _text(
+        value.get("completeness"), "release_artifact_obligations_invalid"
+    )
+    if completeness not in {"complete", "empty"}:
+        raise RequiredAssessmentReleaseError(
+            "release_artifact_obligations_completeness_invalid"
+        )
+    items = value.get("items")
+    if not isinstance(items, list):
+        raise RequiredAssessmentReleaseError("release_artifact_obligations_invalid")
+    if completeness == "empty" and items:
+        raise RequiredAssessmentReleaseError(
+            "release_artifact_obligations_empty_nonempty_items"
+        )
+    if completeness == "complete" and not items:
+        # Complete with zero items is represented as completeness=empty.
+        raise RequiredAssessmentReleaseError(
+            "release_artifact_obligations_complete_empty_items"
+        )
+    normalized = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise RequiredAssessmentReleaseError("release_artifact_obligations_invalid")
+        name = _text(item.get("name"), "release_artifact_obligations_invalid")
         if name not in release_registry.ARTIFACT_NAMES:
-            raise RequiredAssessmentReleaseError("release_artifact_requirement_unknown")
-        if name not in names:
-            names.append(name)
-    return names
+            raise RequiredAssessmentReleaseError("release_artifact_obligation_unknown")
+        if name in seen:
+            raise RequiredAssessmentReleaseError(
+                "release_artifact_obligations_duplicate"
+            )
+        seen.add(name)
+        normalized.append(
+            {
+                "name": name,
+                "obligation_ref": _text(
+                    item.get("obligation_ref"), "release_artifact_obligations_invalid"
+                ),
+            }
+        )
+    return {"completeness": completeness, "items": normalized}
 
 
 def _assessment_candidate_commit(assessment):
@@ -283,11 +314,6 @@ def _profile_snapshot(assessment):
 
 
 def _policy_still_authorized(snapshot, *, evaluated_at, authority):
-    """Decide whether the frozen Assessment Profile may still authorize publish.
-
-    The authorized policy source (via ``policy_snapshot_authority``) is the
-    trust boundary. Local window fields alone never grant publication.
-    """
     if authority is None:
         return False, "policy_snapshot_authority_missing", "unverified"
     context = {
@@ -311,31 +337,181 @@ def _policy_still_authorized(snapshot, *, evaluated_at, authority):
     raise RequiredAssessmentReleaseError("policy_snapshot_authority_result_invalid")
 
 
+def _artifact_set_authorized(obligations, *, authority, snapshot):
+    if authority is None:
+        return False, "artifact_obligation_authority_missing", "unverified"
+    context = {
+        "artifact_obligations": copy.deepcopy(obligations),
+        "snapshot": copy.deepcopy(snapshot),
+    }
+    result = authority(context)
+    if result is True:
+        return True, None, "authorized"
+    if result is False or result is None:
+        return False, "artifact_obligation_authority_rejected", "rejected"
+    if not isinstance(result, dict):
+        raise RequiredAssessmentReleaseError(
+            "artifact_obligation_authority_result_invalid"
+        )
+    status = result.get("status")
+    if status == "authorized" and result.get("accepted") is True:
+        return True, None, "authorized"
+    if status in {"rejected", "incomplete"}:
+        return False, f"artifact_obligation_{status}", "rejected"
+    if status == "unverified" or result.get("accepted") is not True:
+        return False, "artifact_obligation_unverified", "unverified"
+    raise RequiredAssessmentReleaseError("artifact_obligation_authority_result_invalid")
+
+
+def _provider_basis(manifest, context, *, provider_authority, handoff_authority):
+    """Structural fixtures never become production authorization by themselves."""
+    if provider_authority is None:
+        return "structural_fixture", ["release_provider_authority_missing"]
+    provider_context = {
+        "manifest": copy.deepcopy(manifest),
+        "publish_context": copy.deepcopy(context),
+    }
+    accepted = provider_authority(provider_context)
+    if accepted is not True:
+        return "structural_fixture", ["release_provider_authority_rejected"]
+    if context["manifest_binding"] == "validation_to_publication":
+        if handoff_authority is None:
+            return "structural_fixture", ["release_handoff_authority_missing"]
+        if handoff_authority(provider_context) is not True:
+            return "structural_fixture", ["release_handoff_authority_rejected"]
+    return "provider_verified", []
+
+
+def _blocking_reasons(reasons):
+    return [reason for reason in reasons if reason not in _INFORMATIONAL_REASONS]
+
+
+def _derive_status(blocking, *, policy_status, artifact_status):
+    if not blocking:
+        return "verified"
+    unverified_markers = {
+        "policy_snapshot_authority_missing",
+        "policy_snapshot_unverified",
+        "artifact_obligation_authority_missing",
+        "artifact_obligation_unverified",
+        "release_provider_authority_missing",
+        "release_handoff_authority_missing",
+    }
+    if (
+        policy_status == "unverified"
+        or artifact_status == "unverified"
+        or any(marker in blocking for marker in unverified_markers)
+    ):
+        return "unverified"
+    return "rejected"
+
+
+def _authorization_consistent(envelope):
+    """Pure predicates for release authorization — digest is not authority."""
+    errors = []
+    status = envelope.get("status")
+    authorized = envelope.get("release_authorized")
+    sample = envelope.get("contract_sample")
+    policy = envelope.get("policy_snapshot_status")
+    basis = envelope.get("authorization_basis")
+    manifest_result = envelope.get("manifest_result")
+    gaps = envelope.get("gaps")
+    reasons = envelope.get("reasons")
+    if status not in {"verified", "rejected", "unverified"}:
+        errors.append("release_reconciliation_status_invalid")
+    if not isinstance(authorized, bool):
+        errors.append("release_authorized_flag_invalid")
+    if not isinstance(sample, bool):
+        errors.append("release_contract_sample_flag_invalid")
+    if policy not in {"authorized", "rejected", "unverified"}:
+        errors.append("release_policy_snapshot_status_invalid")
+    if basis not in AUTHORIZATION_BASES:
+        errors.append("release_authorization_basis_invalid")
+    if manifest_result not in {"passed", "failed"}:
+        errors.append("release_manifest_result_invalid")
+    if not isinstance(gaps, list) or not isinstance(reasons, list):
+        errors.append("release_reconciliation_collections_invalid")
+        return errors
+    blocking = _blocking_reasons(reasons)
+    if authorized is True:
+        if status != "verified":
+            errors.append("release_authorized_requires_verified_status")
+        if sample is not False:
+            errors.append("release_authorized_rejects_contract_sample")
+        if policy != "authorized":
+            errors.append("release_authorized_requires_policy_authorized")
+        if basis != "provider_verified":
+            errors.append("release_authorized_requires_provider_verified")
+        if manifest_result != "passed":
+            errors.append("release_authorized_requires_manifest_passed")
+        if gaps:
+            errors.append("release_authorized_rejects_gaps")
+        if blocking:
+            errors.append("release_authorized_rejects_blocking_reasons")
+    candidate = envelope.get("candidate")
+    context = envelope.get("publish_context")
+    if not isinstance(candidate, dict) or not isinstance(context, dict):
+        errors.append("release_candidate_context_invalid")
+        return errors
+    if candidate.get("commit") != context.get("head_sha") and (
+        status == "verified" or authorized is True
+    ):
+        errors.append("release_verified_requires_commit_alignment")
+    if candidate.get("manifest_commit") != context.get("head_sha") and (
+        status == "verified" or authorized is True
+    ):
+        errors.append("release_verified_requires_manifest_commit_alignment")
+    if candidate.get("tag") != context.get("tag"):
+        errors.append("release_candidate_tag_mismatch")
+    if candidate.get("repository") != context.get("repository"):
+        errors.append("release_candidate_repository_mismatch")
+    return errors
+
+
 def reconcile_release_assessment(
     assessment,
     manifest,
     *,
     publish_context,
     policy_snapshot_authority=None,
+    artifact_obligations,
+    artifact_obligation_authority=None,
     check_bindings=None,
-    artifact_requirements=None,
+    manifest_provider_authority=None,
+    handoff_authority=None,
     contract_sample=False,
 ):
     """Reconcile an R1 Assessment with Manifest v1 for Release publication.
 
-    ``policy_snapshot_authority`` must prove the Assessment's frozen Profile
-    revision remains authorized at publish time. Same Candidate SHA alone never
-    preserves Required authorization across policy drift.
+    Manifest structure is gated by ``release.manifest.validate``. Production
+    ``release_authorized`` additionally requires provider-verified evidence
+    (and handoff proof for validation→publication). Structural fixtures may
+    reach ``status=verified`` only as a contract shape — they do not authorize
+    publication.
     """
     required_assessment.validate_assessment(assessment)
     context = _normalize_publish_context(publish_context)
     evaluated = _datetime(context["evaluated_at"], "release_evaluated_at_invalid")
-    normalized_manifest = _normalize_manifest(manifest, publish_context=context)
+    normalized_manifest = _load_manifest_v1(
+        manifest,
+        repository=context["repository"],
+        tag=context["tag"],
+        head=context["head_sha"],
+    )
     bindings = _normalize_bindings(check_bindings)
-    required_artifacts = _normalize_artifact_requirements(artifact_requirements)
+    artifacts = _normalize_artifact_obligations(artifact_obligations)
     contract_sample = _flag(contract_sample, "release_contract_sample_flag_invalid")
     policy_snapshot_authority = _callable_or_none(
         policy_snapshot_authority, "policy_snapshot_authority_invalid"
+    )
+    artifact_obligation_authority = _callable_or_none(
+        artifact_obligation_authority, "artifact_obligation_authority_invalid"
+    )
+    manifest_provider_authority = _callable_or_none(
+        manifest_provider_authority, "manifest_provider_authority_invalid"
+    )
+    handoff_authority = _callable_or_none(
+        handoff_authority, "handoff_authority_invalid"
     )
 
     reasons = []
@@ -344,16 +520,17 @@ def reconcile_release_assessment(
         reasons.append("contract_sample_inputs_not_production_release")
         contract_sample = True
 
-    # Candidate / identity binding
     assessment_commit = _assessment_candidate_commit(assessment)
     if assessment_commit is None:
         reasons.append("release_assessment_candidate_missing")
     elif assessment_commit != context["head_sha"]:
         reasons.append("release_assessment_commit_mismatch")
 
-    # Assessment phase must match the Release stage being authorized.
     if assessment.get("phase") != context["phase"]:
         reasons.append("release_assessment_phase_mismatch")
+
+    run_reasons, validation_identity = _bind_manifest_run(normalized_manifest, context)
+    reasons.extend(run_reasons)
 
     if assessment.get("status") != "passed":
         reasons.append("release_assessment_blocked")
@@ -368,7 +545,6 @@ def reconcile_release_assessment(
                 }
             )
 
-    # Manifest fixed checks remain original execution facts — never trusted rewrite.
     if normalized_manifest["result"] != "passed":
         reasons.append("release_manifest_result_failed")
     failed_fixed = [
@@ -388,7 +564,6 @@ def reconcile_release_assessment(
         if "release_manifest_fixed_checks_incomplete" not in reasons:
             reasons.append("release_manifest_fixed_checks_incomplete")
 
-    # Bind declared Manifest checks to Assessment instances without inventing coverage.
     assessment_checks = {
         row["expected_check_ref"]: row
         for row in assessment.get("check_instances") or ()
@@ -432,9 +607,7 @@ def reconcile_release_assessment(
                 }
             )
             reasons.append("release_check_binding_unsatisfied")
-        # Structural Manifest PASS never upgrades an unsatisfied Assessment row.
 
-    # Dynamic Required obligations with unmet/unverified remain Release gaps.
     for row in assessment.get("obligations") or ():
         if row.get("status") in {"unmet", "unverified"}:
             gaps.append(
@@ -447,25 +620,47 @@ def reconcile_release_assessment(
             if "release_required_obligations_unmet" not in reasons:
                 reasons.append("release_required_obligations_unmet")
 
+    snapshot = _profile_snapshot(assessment)
+    artifact_ok, artifact_reason, artifact_status = _artifact_set_authorized(
+        artifacts, authority=artifact_obligation_authority, snapshot=snapshot
+    )
+    if not artifact_ok:
+        reasons.append(artifact_reason)
+
     present_artifacts = {
-        item.get("name")
+        item["name"]: item
         for item in normalized_manifest["artifacts"]
         if isinstance(item, dict) and item.get("name")
     }
-    for name in required_artifacts:
-        if name not in present_artifacts:
+    for item in artifacts["items"]:
+        name = item["name"]
+        recorded = present_artifacts.get(name)
+        if recorded is None:
             gaps.append(
                 {
-                    "kind": "artifact_requirement",
+                    "kind": "artifact_obligation",
                     "ref": name,
+                    "obligation_ref": item["obligation_ref"],
                     "reason": "required_artifact_missing",
                 }
             )
             if "release_required_artifacts_missing" not in reasons:
                 reasons.append("release_required_artifacts_missing")
+            continue
+        # Structural ID/digest/URL already enforced by manifest.validate.
+        # Provider authority is required before treating them as publication proof.
+        if recorded.get("digest") is None and context["mode"] == "publication":
+            gaps.append(
+                {
+                    "kind": "artifact_obligation",
+                    "ref": name,
+                    "obligation_ref": item["obligation_ref"],
+                    "reason": "required_artifact_digest_missing",
+                }
+            )
+            if "release_required_artifact_digest_missing" not in reasons:
+                reasons.append("release_required_artifact_digest_missing")
 
-    snapshot = _profile_snapshot(assessment)
-    # Local revoked_at / valid_until are diagnostic only; authority decides.
     local_revoked = _optional_datetime(
         snapshot["authority"].get("revoked_at"),
         "release_assessment_authority_revoked_at_invalid",
@@ -481,33 +676,34 @@ def reconcile_release_assessment(
     if not policy_ok:
         reasons.append(policy_reason)
 
-    # Informational: same SHA does not imply policy continuity.
-    if assessment_commit == context["head_sha"]:
-        # retained as limitation, not a pass condition
-        pass
+    authorization_basis, provider_reasons = _provider_basis(
+        normalized_manifest,
+        context,
+        provider_authority=manifest_provider_authority,
+        handoff_authority=handoff_authority,
+    )
+    reasons.extend(provider_reasons)
 
-    blocking = [
-        reason
-        for reason in reasons
-        if reason != "contract_sample_inputs_not_production_release"
-    ]
-    if not blocking:
-        status = "verified"
-        release_authorized = not contract_sample
-    elif (
-        policy_status == "unverified" or "policy_snapshot_authority_missing" in blocking
-    ):
-        status = "unverified"
-        release_authorized = False
-    else:
-        status = "rejected"
-        release_authorized = False
+    blocking = _blocking_reasons(reasons)
+    status = _derive_status(
+        blocking, policy_status=policy_status, artifact_status=artifact_status
+    )
+    # Production authorization requires provider-verified basis; structural
+    # fixtures never mint release_authorized=true.
+    release_authorized = (
+        status == "verified"
+        and not contract_sample
+        and authorization_basis == "provider_verified"
+        and not gaps
+        and not blocking
+    )
 
     result = {
         "kind": RECONCILIATION_KIND,
         "schema_version": RECONCILIATION_VERSION,
         "status": status,
         "release_authorized": release_authorized,
+        "authorization_basis": authorization_basis,
         "contract_sample": contract_sample,
         "assessment_ref": assessment["assessment_ref"],
         "assessment_status": assessment["status"],
@@ -517,6 +713,7 @@ def reconcile_release_assessment(
             **{key: value for key, value in context.items() if key != "evaluated_at"},
             "evaluated_at": evaluated.isoformat(),
         },
+        "validation_identity": validation_identity,
         "candidate": {
             "commit": assessment_commit,
             "manifest_commit": normalized_manifest["release"]["commit_sha"],
@@ -525,6 +722,8 @@ def reconcile_release_assessment(
         },
         "profile_snapshot": snapshot,
         "policy_snapshot_status": policy_status,
+        "artifact_obligation_status": artifact_status,
+        "artifact_obligations": artifacts,
         "fixed_manifest_checks": {
             key: {
                 "required": normalized_manifest["checks"][key].get("required"),
@@ -538,7 +737,6 @@ def reconcile_release_assessment(
             )
         },
         "check_bindings": bindings,
-        "artifact_requirements": required_artifacts,
         "gaps": gaps,
         "reasons": reasons,
         "limitations": [
@@ -548,7 +746,9 @@ def reconcile_release_assessment(
             "release_reconciliation_does_not_evaluate_post_publish",
             "manifest_fixed_checks_are_not_trusted_admission",
             "same_candidate_sha_does_not_preserve_policy_authorization",
-            "fixture_policy_authority_is_not_production_trust_root",
+            "fixture_authorities_are_not_production_trust_roots",
+            "structural_fixture_is_not_provider_verification",
+            "reconciliation_digest_is_not_authorization_proof",
         ],
         "reconciliation_ref": None,
     }
@@ -556,9 +756,15 @@ def reconcile_release_assessment(
         result["limitations"].append(
             "contract_sample_cannot_authorize_production_release"
         )
-        result["release_authorized"] = False
-    if status != "verified":
+    if authorization_basis == "structural_fixture":
+        result["limitations"].append(
+            "structural_fixture_cannot_authorize_production_release"
+        )
+    if status != "verified" or not release_authorized:
         result["limitations"].append("unverified_release_must_not_publish")
+    consistency = _authorization_consistent(result)
+    if consistency:
+        raise RequiredAssessmentReleaseError(consistency[0])
     result["reconciliation_ref"] = _digest(
         {key: value for key, value in result.items() if key != "reconciliation_ref"}
     )
@@ -566,7 +772,7 @@ def reconcile_release_assessment(
 
 
 def validate_release_reconciliation(value):
-    """Recompute ``reconciliation_ref`` and enforce envelope invariants."""
+    """Recompute digest and re-establish authorization-consistency predicates."""
     if not isinstance(value, dict):
         raise RequiredAssessmentReleaseError("release_reconciliation_invalid")
     if value.get("kind") != RECONCILIATION_KIND:
@@ -581,8 +787,8 @@ def validate_release_reconciliation(value):
     payload = {key: item for key, item in value.items() if key != "reconciliation_ref"}
     if _digest(payload) != stored:
         raise RequiredAssessmentReleaseError("release_reconciliation_ref_mismatch")
-    if value.get("status") not in {"verified", "rejected", "unverified"}:
-        raise RequiredAssessmentReleaseError("release_reconciliation_status_invalid")
-    _flag(value.get("release_authorized"), "release_authorized_flag_invalid")
     _internal_ref(value.get("assessment_ref"), "release_assessment_ref_invalid")
+    consistency = _authorization_consistent(value)
+    if consistency:
+        raise RequiredAssessmentReleaseError(consistency[0])
     return value

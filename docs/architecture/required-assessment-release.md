@@ -9,75 +9,74 @@ checks whether a frozen Profile snapshot remains authorized for
 It does **not** re-run Assessment (#61 R1), publish a GitHub Check (#61 R2),
 read Rulesets (#61 R3), evaluate post-publish/terminal stages (#61 R5), rewrite
 Manifest `checks[].status` into trusted/#63 admitted facts, or invent a second
-Release decisioner.
+Release decisioner / looser Manifest validator.
 
 ## Position
 
 ```text
-#61 R1 Assessment (immutable)          existing Manifest v1 (fixed checks)
-        |                                         |
-        +------------------+----------------------+
-                           |
-              #61 R4 reconcile_release_assessment
-                           |
-         verified | rejected | unverified
-         release_authorized true only when verified and non-sample
+#61 R1 Assessment (immutable)
+existing Manifest v1  --release.manifest.validate-->  identity + fixed checks
+authorized Profile Artifact obligations + authorities
+        |
+        +--> reconcile_release_assessment
+                |
+                status: verified | rejected | unverified
+                release_authorized: only provider_verified + verified + non-sample
 ```
 
-## Inputs
+## Canonical Manifest gate
 
-- Validated R1 Assessment (`required_assessment.validate_assessment`);
-- Manifest v1 document (repository/tag/commit/mode/result/checks/artifacts);
-- `publish_context` — repository, tag, head SHA, mode, phase, `evaluated_at`;
-- `policy_snapshot_authority` callable — proves the Assessment's frozen
-  Profile revision is still authorized at publish time;
-- optional `check_bindings` — Manifest check key → Assessment
-  `expected_check_ref` (never invents coverage);
-- optional `artifact_requirements` — Profile-declared Artifact names that must
+`_load_manifest_v1()` **always** calls `release.manifest.validate()`. Invalid
+tools, `required=false` fixed Checks, wrong Job/Step identity, wrong aggregate
+`result`, or bad Artifact ID/digest/URL fail closed before any Release
+authorization can be minted. R4 does not reimplement a parallel v1 schema.
+
+## Manifest Mode / Run binding
+
+`publish_context.manifest_binding`:
+
+| Binding | Rule |
+| --- | --- |
+| `same_run` | Context `mode` / `run_id` / `run_attempt` equal Manifest |
+| `validation_to_publication` | Manifest is validation identity; context is a **distinct** publication Run; `handoff_authority` must accept the linkage |
+
+## Artifact obligations
+
+Caller supplies an authorized Profile Artifact set:
+
+- `completeness=empty` — no Profile-declared distribution artifacts (Manifest v1
+  fixed artifacts still apply via `manifest.validate`);
+- `completeness=complete` — nonempty `items[{name, obligation_ref}]` must all
   appear in the Manifest.
 
-## Decision rules
+`artifact_obligation_authority` proves the set is the current authorized
+Profile projection. A bare name list without that authority cannot authorize.
 
-1. **Identity** — Assessment candidate commit, Manifest commit and publish
-   `head_sha` must agree; Assessment `phase` must equal the Release stage.
-2. **Assessment** — `status=passed` required; blocked reasons become gaps.
-3. **Manifest fixed checks** — original `checks[].status` retained with
-   `trusted=false` / `evidence_admission=not_evaluated`. A failed Manifest
-   result or required fixed check blocks Release; Job success is never rewritten
-   as #63 admission.
-4. **Policy snapshot** — same Candidate SHA does **not** preserve Required
-   authorization. `policy_snapshot_authority` must accept the frozen Profile at
-   publish time; missing → `unverified`; revoked/expired/superseded →
-   `rejected`. Targeted re-assessment of changed obligations remains outside
-   this module.
-5. **Artifacts** — only Profile-declared requirements are enforced; absence of
-   undeclared wheel/Container obligations is not invented.
-6. **Contract samples** — may reach structural `verified` shape but
-   `release_authorized=false`.
+## Authorization basis
 
-## Outputs
+| `authorization_basis` | Meaning |
+| --- | --- |
+| `structural_fixture` | Contract shape only; **never** `release_authorized=true` |
+| `provider_verified` | `manifest_provider_authority` accepted (stands in for existing `verification.evidence` / `publishing.published_evidence` at the real publication boundary) |
 
-- `status`: `verified` / `rejected` / `unverified`
-- `release_authorized`: production publish gate (false for samples / gaps)
-- `policy_snapshot_status`: `authorized` / `rejected` / `unverified`
-- `fixed_manifest_checks`: original statuses, never trusted rewrite
-- `gaps[]` / `reasons[]`: assessment blocks, fixed-check failures, binding
-  misses, missing artifacts, policy rejection
-- `reconciliation_ref`: digest of the immutable envelope
+Digest integrity is **not** authorization. `validate_release_reconciliation()`
+recomputes `reconciliation_ref` **and** re-checks pure authorization-consistency
+predicates (`release_authorized` ⇒ verified, non-sample, policy authorized,
+provider_verified, manifest passed, no gaps/blocking reasons, Candidate alignment).
 
 ## Limits
 
-- Does not mutate `release.yml`, `registry.py` fixed check sets, or publish.
-- Does not claim production Release acceptance; fixture authorities are not
-  production trust roots.
-- Post-publish / Terminal obligations remain #61 R5.
-- Real Producer→digest→published-byte closure for newly declared distribution
-  artifacts remains a follow-up when the authorized Profile requires them.
+- Does not mutate `release.yml` or replace Manifest v1 fixed check sets.
+- Fixture authorities are not production trust roots.
+- Post-publish / Terminal remain #61 R5.
+- Real Provider verification is required only when claiming production
+  publication authorization.
 
 ## Directed acceptance
 
-`tests/test_required_assessment_release.py` covers passed Assessment+Manifest
-authorization, blocked Assessment, failed fixed Manifest checks without trust
-rewrite, revoked/missing/unverified policy snapshots despite same SHA, commit
-and phase mismatch, missing required artifacts, unsatisfied check bindings,
-and contract-sample non-authorization.
+`tests/test_required_assessment_release.py` covers genuine v1-valid success,
+invalid v1 Manifest refusal, blocked Assessment, failed fixed checks without
+trust rewrite, revoked/missing policy despite same SHA, same-run Mode/Run
+mismatches, validation→publication handoff, Profile Artifact complete/empty/
+missing sets, structural vs provider basis, contract-sample non-authorization,
+and recomputed-digest authorization-consistency rejection.
