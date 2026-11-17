@@ -13,6 +13,11 @@ digest. [Implementation sources](implementation-sources.tar.gz) match every
 hash observed inside the final Module, including the shared mapper/validator.
 These fingerprints are observations, not implementation approval.
 
+The [mixed-Plan review repair](mixed-plan/README.md) supplements this initial
+online/offline experiment with actual prerequisite/local-Check execution
+counts, explicit source-only native producers, and input/failure observations.
+The original raw evidence below retains its original scope and bytes.
+
 ## Actual native results
 
 Three real `dagger api call fixture-link-cache` requests used the pinned

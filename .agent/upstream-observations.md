@@ -155,3 +155,16 @@
   linked to `https://docs.dagger.io/extending/function-caching`, which returned
   404 during this review. The pinned SDK and native Engine observations were
   used to establish the supported behavior.
+
+## Dagger CLI@1.0.0-beta.16: Windows stable-client-ID rename warning
+
+- Status: observed integration warning; root cause unconfirmed.
+- Seen: 2026-11-17, #119 mixed-Plan review verification on Windows.
+- Evidence: native metadata queries emitted `failed to get stable ID,
+  defaulting to random value` with a temporary stable-client-ID rename error
+  saying the file was in use by another process. These queries still returned
+  CLI 0 and the actual image digest. Raw native chunks are retained under
+  `docs/verification/dagger-input-cache/mixed-plan/`.
+- Assessment: no attribution to a specific upstream bug or competing process.
+  This warning is not a tool result, cache-hit proof or fresh Origin identity.
+  No Dagger binary, user profile file or third-party source was modified.

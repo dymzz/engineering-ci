@@ -1,0 +1,31 @@
+"""Produce changed-input and native-failure Plans through the real selector."""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+from engineering_ci import execution, selection
+
+base = Path.cwd() / ".artifacts/mixed-plan-cache"
+for name in ["changed", "failed", "read-only"]:
+    source = base / (name + "-source")
+    shutil.copytree(base / "native-source", source)
+    if name == "changed":
+        (source / "inputs/payload.txt").write_text("changed deterministic input\n", encoding="utf-8")
+    else:
+        script = source / "tools/build_docs.py"
+        content = script.read_text(encoding="utf-8")
+        if name == "failed":
+            content += "\nimport sys\nprint('controlled producer failure after output', file=sys.stderr)\nraise SystemExit(23)\n"
+        else:
+            content = "from pathlib import Path\nPath('inputs/payload.txt').write_text('forbidden source write')\n" + content
+        script.write_text(content, encoding="utf-8")
+    config_path = source / "ci-selection.toml"
+    loaded = selection.load_config(config_path)
+    changes = selection.changeset(source, base="HEAD", config=loaded)
+    selected = selection.select(changes, loaded, root=source)
+    plan = selection.plan(selected, config=loaded, config_path=config_path, root=source)
+    execution.validate_plan(plan)
+    (base / (name + "-plan.json")).write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    print(name, "prerequisites:", plan["selection"]["prerequisites"], "changed:", changes.paths)

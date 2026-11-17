@@ -1,0 +1,1110 @@
+{
+  "review": "https://github.com/dymzz/engineering-ci/pull/119#pullrequestreview-5933955956",
+  "implementation_commit": "0391997d82e134331ef8bf2cb84f337ad1731098",
+  "engine_cli_sdk": "1.0.0-beta.16",
+  "origin_execution_attributed": false,
+  "source_binding_verified": "unknown",
+  "trusted": false,
+  "cases": {
+    "module-local": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "baseline-implementation.tar.gz",
+      "source_digest": "sha256:f6a7abfcc8b3231b4f9d3f73ed6568f7a65ff62d7b64d70b43f93a9ab0625eb9",
+      "source_archive": "local-check-source.tar.gz",
+      "plan": "local-check-plan.json",
+      "native_process_counts": {},
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 2,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "b10f6d4ff0a5ed11b56550fb4266af077663cb37731dbfa50bfee013818efc4a",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "engine_cached": false,
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_module_scratch",
+            "exit_code": 0,
+            "name": "build_docs",
+            "result_origin": "module_local_subprocess",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794901646668683439, \"finished_at_unix_ns\": 1794901647143794890, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:93b3cc54e470cee33a62e876e162850d511d563499943cc7abc55fbfaaab8e3e",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:1d638e37e7526c8129f89bc237058ec09027598adb9dc01877bf9bcc72f735a0",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "016cf8efe6fdcce18a055d2a2326362b5b136c019bd9f0315c6825fd60583311",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "engine_cached": false,
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_module_scratch",
+            "exit_code": 0,
+            "name": "build_docs",
+            "result_origin": "module_local_subprocess",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794901648861393291, \"finished_at_unix_ns\": 1794901649292197885, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:b22f1d0d071b59ed14032bc47b4012896b71defa439e0c19e8025256cfc413c4",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:0b7896da721bb36321914eed0d0203884c6b9fe73b6d87f91aee2f89681edae3",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    },
+    "native-first": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "native-implementation.tar.gz",
+      "source_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+      "source_archive": "native-source.tar.gz",
+      "plan": "native-plan.json",
+      "native_process_counts": {
+        "lychee/control": 1,
+        "git/ls-files": 2,
+        "git/show": 1,
+        "producer": 1,
+        "lychee/plan-online": 2,
+        "lychee/offline": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "c2528d1a9cad49a592169fbe22ca3d626d78e7c456f7b900f36849b9c5953c9e",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:49f784d4abe5aac722b7f7d28351dc65f7771abfeded5e8585faecaf099c3ce2",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:b17a7de7e8284c7c1356425a6b1b0368224e61408669b391d9c682316c2aa1ec",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "67231fe785527dc727418583509e3879d39cf14e0a644f48e436c44c82fb591b",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:563f302a70a473b8b1eef8cacada11eec629c4b33c2c3ed68834f4557892f45f",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:58e9ae670a951040c33eaf053ed3a63540c4f458eb58ad9d699dc1f2b1d346af",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    },
+    "native-repeated": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "native-implementation.tar.gz",
+      "source_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+      "source_archive": "native-source.tar.gz",
+      "plan": "native-plan.json",
+      "native_process_counts": {
+        "lychee/plan-online": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "b1790284be43ad2e22ec120a80602de5bf341a9f7ea232f33f64610cb4c9597e",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:98a1ed3ccdd6c5cd8d4235c17a164c40348442795f0a338e26390d489cde8486",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:dcb147201a3e441885c9509c70ea14635294b75b60109267a393dbfc055a7c05",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "5de8bda68283f2a370685d8e1ebd315347822141f761849ede6815b3d8bd7235",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:96103d41f68fd965ac439b880af36179dcd89b2de1de4139172acb725d490a41",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:b35a2063566c25522068a19d7e838b1958c9e736fd347d1de6acfaabf5577cb5",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    },
+    "changed": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "native-implementation.tar.gz",
+      "source_digest": "sha256:d19d4b8f3cd4faa84eecb94fd46c73f7b522e4fd20e0fa95a7945899cf73e9b9",
+      "source_archive": "changed-source.tar.gz",
+      "plan": "changed-plan.json",
+      "native_process_counts": {
+        "lychee/control": 1,
+        "git/ls-files": 2,
+        "git/show": 1,
+        "producer": 1,
+        "lychee/plan-online": 2,
+        "lychee/offline": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "c1ab85dde4893c50dd89cc7eda10b978015c7eaa58e56f20b98938918d2daf58",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:690540421b7d1b4b5900569e6d5604cb6f9e82f7f0a7f2af098eb3e338c17c0f",
+              "directory_id": "EhMI6oUPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:10:28.740819+00:00",
+              "process_started_at": "2026-11-17T08:10:28.178776+00:00",
+              "source_directory_digest": "sha256:d19d4b8f3cd4faa84eecb94fd46c73f7b522e4fd20e0fa95a7945899cf73e9b9",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794903028212458393, \"finished_at_unix_ns\": 1794903028735529720, \"output_sha256\": \"899879dbd7389df2e86fe677beb2553f0f5cefdd3ccc700792d8a8526a126ded\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:56e92354b93b45b461733341b54aca97ab77ceab3e4607a0c47eff4a088dcad3",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:0babfb9ef7bb017282004917e0edf50ca0c0b030ec220fe73fff5e25a4b1bacd",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "899879dbd7389df2e86fe677beb2553f0f5cefdd3ccc700792d8a8526a126ded"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "67023e6e604d194654ae5c7b64e80167297c8b79cadfb9281094983c3744778d",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:690540421b7d1b4b5900569e6d5604cb6f9e82f7f0a7f2af098eb3e338c17c0f",
+              "directory_id": "EhMI6oUPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:10:28.740819+00:00",
+              "process_started_at": "2026-11-17T08:10:28.178776+00:00",
+              "source_directory_digest": "sha256:d19d4b8f3cd4faa84eecb94fd46c73f7b522e4fd20e0fa95a7945899cf73e9b9",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794903028212458393, \"finished_at_unix_ns\": 1794903028735529720, \"output_sha256\": \"899879dbd7389df2e86fe677beb2553f0f5cefdd3ccc700792d8a8526a126ded\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:1ca6eeed777e501e87428077b2aac475b3a4266a78594ead4802a09b3583f6db",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:b2c966fbaefc81044abe3a05d4aad2928fb47c59b4b7b8416d37cf47cff41ea4",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "899879dbd7389df2e86fe677beb2553f0f5cefdd3ccc700792d8a8526a126ded"
+        }
+      }
+    },
+    "failed": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "native-implementation.tar.gz",
+      "source_digest": "sha256:b4bd3f5ec6f312df4aba1eab3668bc1de602f7a0e0c240a2c442ee1463b7bdda",
+      "source_archive": "failed-source.tar.gz",
+      "plan": "failed-plan.json",
+      "native_process_counts": {
+        "lychee/control": 1,
+        "git/ls-files": 1,
+        "git/show": 1,
+        "producer": 1,
+        "lychee/offline": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2
+      },
+      "HTTP_target_statuses": [
+        200
+      ],
+      "reports": {
+        "passed": {
+          "status": "failed",
+          "exit_code": 23,
+          "report_sha256": "f0c01699f052e90cff5ffab64b9a96da24d6d652570c7075dd45dc39b161860b",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIoKQPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 23,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:13:53.229250+00:00",
+              "process_started_at": "2026-11-17T08:13:52.622844+00:00",
+              "source_directory_digest": "sha256:b4bd3f5ec6f312df4aba1eab3668bc1de602f7a0e0c240a2c442ee1463b7bdda",
+              "source_read_only": true
+            },
+            "reason": "prerequisite_command_failed",
+            "result_origin": "dagger",
+            "status": "failed",
+            "stderr": "controlled producer failure after output\n",
+            "stdout": "{\"started_at_unix_ns\": 1794903232664400129, \"finished_at_unix_ns\": 1794903233222657264, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:fa04c2cef2159b802a1ef90632aab35621de5363f92cefcc7f2c4007644fb677",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "not_executed",
+              "reason": "pre_execution_prerequisite_failed",
+              "exit_code": null,
+              "result_id": null,
+              "execution_started": false
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: prerequisites_failed (exit 23)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 23,
+          "report_sha256": "868f3339f2a0ea1c2bb01c8fdf6e6ac31b053e58cf004cdbab543ebaf00249b9",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIoKQPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 23,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:13:53.229250+00:00",
+              "process_started_at": "2026-11-17T08:13:52.622844+00:00",
+              "source_directory_digest": "sha256:b4bd3f5ec6f312df4aba1eab3668bc1de602f7a0e0c240a2c442ee1463b7bdda",
+              "source_read_only": true
+            },
+            "reason": "prerequisite_command_failed",
+            "result_origin": "dagger",
+            "status": "failed",
+            "stderr": "controlled producer failure after output\n",
+            "stdout": "{\"started_at_unix_ns\": 1794903232664400129, \"finished_at_unix_ns\": 1794903233222657264, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:ba6244afc0a88d3bff5b3e3563082821fa1dcc733872b9d1585724f1b5ff7aa2",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "not_executed",
+              "reason": "pre_execution_prerequisite_failed",
+              "exit_code": null,
+              "result_id": null,
+              "execution_started": false
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: prerequisites_failed (exit 23)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    },
+    "read-only": {
+      "implementation": "working_snapshot_before_final_output_selection_repair",
+      "implementation_archive": "native-implementation.tar.gz",
+      "source_digest": "sha256:991a57ed56f5ed483fc78dc12902b338773a1bc59330aba4ec8cf2b0e2c2aa4b",
+      "source_archive": "read-only-source.tar.gz",
+      "plan": "read-only-plan.json",
+      "native_process_counts": {
+        "lychee/control": 1,
+        "git/ls-files": 1,
+        "producer": 1,
+        "git/show": 1,
+        "lychee/offline": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2
+      },
+      "HTTP_target_statuses": [
+        200
+      ],
+      "reports": {
+        "passed": {
+          "status": "failed",
+          "exit_code": 1,
+          "report_sha256": "43a832362ec5a298629f2efb09c61be6810402ed1a9171cb9920575c362e2b0c",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:0e5db88383bce812f795689f5318a2b2f4fde740ef31c2a2365a46368aafddd2",
+              "directory_id": "EhMIwMIPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 1,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:16:48.349015+00:00",
+              "process_started_at": "2026-11-17T08:16:48.207355+00:00",
+              "source_directory_digest": "sha256:991a57ed56f5ed483fc78dc12902b338773a1bc59330aba4ec8cf2b0e2c2aa4b",
+              "source_read_only": true
+            },
+            "reason": "prerequisite_command_failed",
+            "result_origin": "dagger",
+            "status": "failed",
+            "stderr": "Traceback (most recent call last):\n  File \"/workspace/tools/build_docs.py\", line 2, in <module>\n    Path('inputs/payload.txt').write_text('forbidden source write')\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.14/pathlib/__init__.py\", line 809, in write_text\n    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:\n         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.14/pathlib/__init__.py\", line 771, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nOSError: [Errno 30] Read-only file system: 'inputs/payload.txt'\n",
+            "stdout": "",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:472268ac731288af707ce568d1036544dc104eead4b0805d36be51d9be489dc8",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "not_executed",
+              "reason": "pre_execution_prerequisite_failed",
+              "exit_code": null,
+              "result_id": null,
+              "execution_started": false
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: prerequisites_failed (exit 1)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": null
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 1,
+          "report_sha256": "200124f6e600144d2a18c45d3d0f20288520c8521ff1d712c505af6ccf6c4da9",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:0e5db88383bce812f795689f5318a2b2f4fde740ef31c2a2365a46368aafddd2",
+              "directory_id": "EhMIwMIPEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 1,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T08:16:48.349015+00:00",
+              "process_started_at": "2026-11-17T08:16:48.207355+00:00",
+              "source_directory_digest": "sha256:991a57ed56f5ed483fc78dc12902b338773a1bc59330aba4ec8cf2b0e2c2aa4b",
+              "source_read_only": true
+            },
+            "reason": "prerequisite_command_failed",
+            "result_origin": "dagger",
+            "status": "failed",
+            "stderr": "Traceback (most recent call last):\n  File \"/workspace/tools/build_docs.py\", line 2, in <module>\n    Path('inputs/payload.txt').write_text('forbidden source write')\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.14/pathlib/__init__.py\", line 809, in write_text\n    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:\n         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.14/pathlib/__init__.py\", line 771, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nOSError: [Errno 30] Read-only file system: 'inputs/payload.txt'\n",
+            "stdout": "",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:387e566bfcdeb1775af06bfa6a5716fde72f24b196e677d0c144bec40851cf0e",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "not_executed",
+              "reason": "pre_execution_prerequisite_failed",
+              "exit_code": null,
+              "result_id": null,
+              "execution_started": false
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: prerequisites_failed (exit 1)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": null
+        }
+      }
+    },
+    "current-first": {
+      "implementation": "0391997d82e134331ef8bf2cb84f337ad1731098",
+      "implementation_archive": "current-implementation.tar.gz",
+      "source_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+      "source_archive": "native-source.tar.gz",
+      "plan": "native-plan.json",
+      "native_process_counts": {
+        "lychee/plan-online": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "4eb05ead3e864ea504ebab90680919f9484358f243fcc494648d786983e4943b",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:9205db1a28e6733f916e164520d88e65efd423992e8262f9260862c67455feda",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:c069f2825be0d03d98466d0c8457b9f422823026572c8ca1f74c0102b86863f8",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "b3dd6d836b2c17c8b700f7764defad81ad27bb59d91e524dac366066adc84a0b",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:1a38ac2775621ea31eba7f306ec7c0e2039d13dcd823074a9d399cd2717f9b0e",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:95bd142e68e06a32e6b808e95f54b37e7363a18a1a2d5838b25ee29572903591",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    },
+    "current-repeated": {
+      "implementation": "0391997d82e134331ef8bf2cb84f337ad1731098",
+      "implementation_archive": "current-implementation.tar.gz",
+      "source_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+      "source_archive": "native-source.tar.gz",
+      "plan": "native-plan.json",
+      "native_process_counts": {
+        "lychee/plan-online": 2
+      },
+      "module_local_process_count": 2,
+      "module_local_cpu_count": 0,
+      "local_check_invocations": {
+        "forwarding": 2,
+        "docs": 2
+      },
+      "HTTP_target_statuses": [
+        200,
+        404
+      ],
+      "reports": {
+        "passed": {
+          "status": "passed",
+          "exit_code": 0,
+          "report_sha256": "1c1a10873c055e45175086f087df41d69badc760c7bcf5dea91809aba2da6afb",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:5a057a7ac409f10d2f04412c48b8dc6301bc0f7f426d583603778234d8f6c31f",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": 0,
+              "result_id": "sha256:d34a3afe06bc7ec3bfe3af079114c0094bfa29b157b317b1ad84133e9a0c4342",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "status": "passed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        },
+        "failed": {
+          "status": "failed",
+          "exit_code": 2,
+          "report_sha256": "6e150d1c5adcc352465b3dc6a70b182363f3ac9f69fdb110be6f0d95b541dced",
+          "producer": {
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ],
+            "artifact_ref": {
+              "digest": "sha256:e7622b7aaab5b2858b36c436d2be7f119bae0669b0803688eecec6c356f2d705",
+              "directory_id": "EhMIrskOEg0KCURpcmVjdG9yeRgB"
+            },
+            "engine_cache_outcome": "unknown",
+            "engine_cache_policy": "native_exec",
+            "execution_context": "dagger_export",
+            "execution_location": "dagger_container",
+            "exit_code": 0,
+            "name": "build_docs",
+            "observation": {
+              "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+              "origin_execution_attributed": false,
+              "platform": "linux/amd64",
+              "process_finished_at": "2026-11-17T07:57:07.042823+00:00",
+              "process_started_at": "2026-11-17T07:57:06.534366+00:00",
+              "source_directory_digest": "sha256:b55fe5c391da38975716d47df0b9b43a59ed8ffb7c7b1973809109eba402d58a",
+              "source_read_only": true
+            },
+            "reason": null,
+            "result_origin": "dagger",
+            "status": "passed",
+            "stderr": "",
+            "stdout": "{\"started_at_unix_ns\": 1794902226568514003, \"finished_at_unix_ns\": 1794902227038040483, \"output_sha256\": \"20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf\"}\n",
+            "type": "dagger_command"
+          },
+          "checks": {
+            "forwarding": {
+              "status": "passed",
+              "reason": null,
+              "exit_code": null,
+              "result_id": "sha256:efc40628f8f3199d72e6e898990ed542831a969a65b196c86259bcb889e71ae1",
+              "execution_started": null
+            },
+            "docs": {
+              "status": "failed",
+              "reason": "lychee_findings",
+              "exit_code": 2,
+              "result_id": "sha256:ac208598b76c3d729dc7b2859f75dde4e684a075f1b855411740d78527a2bb2d",
+              "execution_started": null
+            }
+          },
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "readers_started_additional_work": false,
+          "output_sha256": "20aa3ac0b4fbd52da6dc89e99ad097ae30d552111a583278fb424e9e90d0fbcf"
+        }
+      }
+    }
+  },
+  "implementation_sources": {
+    "dagger/link_cache_fixture.py": "21949c5a154a71e7657efd1a75f8a348d12736111e20ea33bd4c74e2a8c12892",
+    "dagger/link_check.py": "633a89879dd330aa1e20b6c6950f9d0cf212f573742f9835a7d271db29152293",
+    "dagger/main.py": "3168417661f14f728f66278eee62421d18e9dd9549b3d1424e1a707f777d8826",
+    "dagger/plan_execution.py": "0ca41adb4ad3050a6c2537ad2b736992ba9818abf6f1c8a33722787f7fa8806e",
+    "dagger/plan_result.py": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+    "dagger/tooling.py": "af07b6b47650a8bffb129d8a40d60f4a653155c257c90c50d0645bd86b9703b8",
+    "engineering_ci/check_contract.py": "8b08266d3e2a3e3450f558662b0072ba75c7a63c306c422beab6a8f8a7ff63b8",
+    "engineering_ci/execution.py": "3b44574e73138a9c38a26f78236e3519eac5040bd2272679c286744fab783c65",
+    "engineering_ci/hygiene.py": "b251230c42a93294d0e995bb6b17f31b3d488d67b171e4ede5def9923bd684eb",
+    "engineering_ci/native_producer.py": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+    "engineering_ci/weaver_tool.py": "2d776ddebe2713c31623ef75d83f9c49263aad0b378c43a7c991475fae85e865",
+    "dagger/mixed_plan_fixture.py": "6c789cff5eb107f14f7f6b8076824c2db119fd160cd97bd0cfe9988e18f8a296",
+    "dagger/native_prerequisite.py": "6097c2b7cf558b4aea8ce2ad811160779502d87719341927bcd39ff578c4e1ba",
+    "engineering_ci/plan_contract.py": "0badedae74ff9ba3e5811ef170497133988a1c07adfca3de1c24d089535dd364",
+    "engineering_ci/selection.py": "d6f1a37634d7f1c8c455c72441881bdc3618463dd26ba1c881978d656730c8d6"
+  }
+}
