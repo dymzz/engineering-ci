@@ -5,8 +5,10 @@ Status: additive #61 R2 **contract / publication slice**
 Assessment onto a GitHub Check Run request and optionally posts it.
 
 It does **not** verify Rulesets/Branch Protection (#61 R3), authorize Release
-(#61 R4/R5), re-run Assessment (#61 R1), or treat a caller-asserted
-`trust_basis` string as a trusted issuer.
+(#61 R4/R5; see
+[Required Assessment → Release 对账](required-assessment-release.md)), re-run
+Assessment (#61 R1), or treat a caller-asserted `trust_basis` string as a
+trusted issuer.
 
 ## Construction vs production publication
 
