@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import socket
 import subprocess
 import time
@@ -706,6 +707,10 @@ def run(kind, config_path):
         "version": "0.28.0",
         "trusted": False,
         "commands": [],
+        "environment": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        },
         "inputs": {},
         # Official upstream Registry bytes and ECI-owned policy evaluation are
         # independent of the gate result: a run can evaluate ECI policies and
@@ -722,6 +727,7 @@ def run(kind, config_path):
         report["exit_code"] = None
         config_file = local_path(ROOT, config_path)
         config = tomllib.loads(config_file.read_text())
+        report["baseline_required"] = "baseline" in config
         if config.get("schema_version") != 1:
             raise ValueError("config_schema_invalid")
         report["inputs"]["config_sha256"] = digest(config_file)

@@ -61,6 +61,13 @@ def result(report: dict, artifacts: dagger.Directory) -> PlanExecution:
     report.setdefault("source_binding_verified", "unknown")
     report.setdefault("plan_declaration_consistent", None)
     report.setdefault("trusted", False)
+    tests = report["tests"]
+    if tests.get("native_results") and not any(
+        item.get("check_id") == tests.get("check_id") for item in report["checks"]
+    ):
+        # One observation of the existing tests producer, available to the
+        # same per-Check reconciliation consumers. No second execution.
+        report["checks"].append({"name": report.get("framework"), **tests})
     bundle = artifacts.with_new_file(
         "report.json", json.dumps(report, ensure_ascii=False, sort_keys=True)
     ).with_new_file("exit-code.txt", str(report["exit_code"]) + "\n")

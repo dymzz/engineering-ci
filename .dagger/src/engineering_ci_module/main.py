@@ -157,6 +157,13 @@ class EngineeringCi:
         config_path: str = "ci-weaver.toml",
     ) -> dagger.Directory:
         """Export one Weaver execution, its native logs, package and report."""
+        return await self._weaver_execution(source, kind, config_path)
+
+    async def _weaver_execution(
+        self, source, kind, config_path, *, context=None, plan=None, generated_inputs=()
+    ):
+        from . import native_results
+
         if kind not in {"registry", "sample", "live", "terminal"}:
             raise ValueError("Unknown Weaver check")
         bound = dag.directory().with_directory(
@@ -173,7 +180,14 @@ class EngineeringCi:
             )
             .with_exec(["python", "/check/runtime.py", kind, "--config", config_path])
         )
-        return result.directory("/out")
+        return await native_results.weaver_result(
+            result.directory("/out"),
+            bound,
+            kind,
+            context=context,
+            plan=plan,
+            generated_inputs=generated_inputs,
+        )
 
     @function
     async def weaver_report(
@@ -184,12 +198,18 @@ class EngineeringCi:
     ) -> str:
         """Read the same native execution used by the artifact and strict checks."""
         artifacts = await self.weaver_artifacts(source, kind, config_path)
-        return await artifacts.file("report.json").contents()
+        filename = "report.json" if kind == "sample" else "check-result.json"
+        return await artifacts.file(filename).contents()
 
     async def _require_weaver(self, source, kind, config_path):
         report = json.loads(await self.weaver_report(source, kind, config_path))
         if report["status"] != "passed":
             raise ValueError(f"{report['name']}: {report['reason']}")
+        if kind != "sample" and (
+            report.get("check_contract", {}).get("status") != "valid"
+            or report.get("native_satisfaction", {}).get("status") != "satisfied"
+        ):
+            raise ValueError(f"{report['name']}: native_contract_unsatisfied")
 
     @function
     async def weaver_enforce(
@@ -242,12 +262,20 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str = "3.14",
         weaver_config: str = "ci-weaver.toml",
+        run_ref: str = "",
+        attempt_ref: str = "",
     ) -> PlanExecution:
         """Build one result object for Report, Artifact and strict Enforce."""
         from . import plan_execution
 
         return await plan_execution.execute(
-            self, plan, source, python_version, weaver_config
+            self,
+            plan,
+            source,
+            python_version,
+            weaver_config,
+            run_ref=run_ref or None,
+            attempt_ref=attempt_ref or None,
         )
 
     @function
@@ -257,10 +285,12 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str = "3.14",
         weaver_config: str = "ci-weaver.toml",
+        run_ref: str = "",
+        attempt_ref: str = "",
     ) -> str:
         """Read the Report from one Plan result; API exit is not its verdict."""
         execution = await self.plan_execution(
-            plan, source, python_version, weaver_config
+            plan, source, python_version, weaver_config, run_ref, attempt_ref
         )
         return await execution.report()
 
@@ -270,9 +300,13 @@ class EngineeringCi:
         plan: dagger.File,
         source: dagger.Directory,
         python_version: str = "3.14",
+        run_ref: str = "",
+        attempt_ref: str = "",
     ) -> dagger.Directory:
         """Inspect all consumers of one result; strict production API is enforce."""
-        execution = await self.plan_execution(plan, source, python_version)
+        execution = await self.plan_execution(
+            plan, source, python_version, run_ref=run_ref, attempt_ref=attempt_ref
+        )
         bundle = execution.artifacts
         original_id = await bundle.id()
         report = await execution.report()

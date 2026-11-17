@@ -10,6 +10,10 @@ The contract itself is described in
 [Check identity and Native Result contract](../../architecture/check-contract.md).
 Raw output is in [host-docs.json](host-docs.json).
 
+The later [Process Producer and Source handoff evidence](process-results/README.md)
+records #52 D2/D3 for the existing Dagger Weaver/framework invocations and
+Export-to-Host association. The historical Host evidence here stays unchanged.
+
 ## Environment and command
 
 Recorded 2026-11-13 on Windows 11 (26200), Python 3.14.3, Git

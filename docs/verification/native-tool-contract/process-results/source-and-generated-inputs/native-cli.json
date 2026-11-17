@@ -1,0 +1,56 @@
+{
+  "scope": "Tool-return chunks; independent requests, not fresh Origin proof",
+  "records": [
+    {
+      "name": "passed",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/source-generated-inputs/passed-plan.json --source .artifacts/source-generated-inputs/source --run-ref run/review117 --attempt-ref attempt/1 export --path .artifacts/source-generated-inputs/passed-bundle",
+      "implementation_commit": "eff476abffe892d606cea3f5575e22e247869c9b",
+      "chunks": [
+        {
+          "chunk_id": "6dc0a7",
+          "wall_time_seconds": 10.0083481,
+          "session_id": 70842,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 12:01:32 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "72cd90",
+          "wall_time_seconds": 5.0055829,
+          "session_id": 70842,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "75c4f2",
+          "wall_time_seconds": 5.00443,
+          "session_id": 70842,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "b88032",
+          "wall_time_seconds": 2.4453238,
+          "exit_code": 0,
+          "original_token_count": 325,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/source-generated-inputs/passed-plan.json --source .artifacts/source-generated-inputs/source --run-ref run/review117 --attempt-ref attempt/1 export --path .artifacts/source-generated-inputs/passed-bundle  21.9s\u001b[9;1H✔ connect 2.0s\r\n✔ load workspace: . 12.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.5s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[16;1H✔ engineeringCi: EngineeringCi! 2.2s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"run/review117\"\r\n  ┆ attemptRef: \"attempt/1\"\r\n  ): Directory! 4.8s\r\n  ✔ 1 download, 2 uploads 0.0s\u001b[?25h\r\n✔ .export(path: \".artifacts/source-generated-inputs/passed-bundle\"): String! 0.1\r\n\u001b[23;80H1s\r\n  ✔ downloading .artifacts/source-generated-inputs/passed-bundle 0.0s ██████████\r\n\u001b[23;80H███ 96 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/so\r\n\u001b[23;80Hource-generated-inputs/passed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "wrong-digest",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/source-generated-inputs/wrong-digest-plan.json --source .artifacts/source-generated-inputs/source --run-ref run/review117 --attempt-ref attempt/1 export --path .artifacts/source-generated-inputs/wrong-digest-bundle",
+      "implementation_commit": "eff476abffe892d606cea3f5575e22e247869c9b",
+      "chunks": [
+        {
+          "chunk_id": "2fd992",
+          "wall_time_seconds": 4.5776292,
+          "exit_code": 0,
+          "original_token_count": 413,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 12:01:58 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/source-generated-inputs/wrong-digest-plan.json --source .artifacts/source-generated-inputs/source --run-ref run/review117 --attempt-ref attempt/1 export --path .artifacts/source-generated-inputs/wrong-digest-bundle  4.2s\u001b[9;1H✔ connect 0.6s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"run/review117\"\r\n  ┆ attemptRef: \"attempt/1\"\r\n  ): Directory! 2.7s\r\n  ✔ 1 download, 1 upload 0.0s\u001b[?25h\r\n✔ .export(path: \".artifacts/source-generated-inputs/wrong-digest-bundle\"): Strin\r\n\u001b[23;80Hng! 0.1s\r\n  ✔ downloading .artifacts/source-generated-inputs/wrong-digest-bundle 0.0s ████\r\n\u001b[23;80H█████████ 69 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/so\r\n\u001b[23;80Hource-generated-inputs/wrong-digest-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    }
+  ]
+}
