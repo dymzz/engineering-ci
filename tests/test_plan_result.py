@@ -1570,12 +1570,23 @@ def test_docs_check_bridges_lychee_and_git_containers_honestly(
                 "exit_code": 0,
                 "stdout": "README.md\0",
                 "stderr": "",
+                "observation": {"execution_location": "dagger_container"},
             }
 
         async def _run_lychee(self, source, argv_tail):
             self.lychee_calls.append((set(source.files), list(argv_tail)))
             assert "docs/generated.md" in source.files
-            return {"exit_code": 0, "stdout": "1 OK\n", "stderr": ""}
+            return {
+                "exit_code": 0,
+                "stdout": "1 OK\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "native_exec_cache",
+                    "process_started_at": "controlled-process-time",
+                    "origin_execution_attributed": False,
+                },
+            }
 
     native = DocsNative()
     saved = asyncio.run(
@@ -1600,6 +1611,21 @@ def test_docs_check_bridges_lychee_and_git_containers_honestly(
         ]
         assert report["status"] == "passed" and report["exit_code"] == 0
         assert docs_check["status"] == "passed"
+        assert docs_check["result_origin"] == "dagger"
+        assert all(
+            item["result_origin"] == "dagger" for item in docs_check["native_results"]
+        )
+        assert all(
+            item["runner_ref"] == "execution:dagger"
+            for item in docs_check["native_results"]
+        )
+        assert (
+            docs_check["observation"]["process_started_at"] == "controlled-process-time"
+        )
+        assert (
+            docs_check["native_results"][1]["evidence"]["observation"]
+            == docs_check["observation"]
+        )
         assert any(
             ref.get("kind") == "generated_input"
             and ref.get("path") == "docs/generated.md"

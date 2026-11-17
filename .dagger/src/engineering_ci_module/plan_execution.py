@@ -500,12 +500,15 @@ def _make_hygiene_runner(
             outcome = asyncio.run_coroutine_threadsafe(
                 module._run_lychee(consumer_source, argv_list[1:]), loop
             ).result()
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 argv_list,
                 outcome["exit_code"],
                 outcome["stdout"],
                 outcome["stderr"],
             )
+            if isinstance(outcome.get("observation"), dict):
+                completed.observation = outcome["observation"]
+            return completed
         if (
             tool_name == "git"
             and len(argv_list) > 1
@@ -516,12 +519,15 @@ def _make_hygiene_runner(
             outcome = asyncio.run_coroutine_threadsafe(
                 module._run_git(consumer_source, argv_list[1:]), loop
             ).result()
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 argv_list,
                 outcome["exit_code"],
                 outcome["stdout"],
                 outcome["stderr"],
             )
+            if isinstance(outcome.get("observation"), dict):
+                completed.observation = outcome["observation"]
+            return completed
         if (
             allow_container_workflow_tools
             and hasattr(module, "_exec_uv_tool")
