@@ -36,6 +36,11 @@ Run/Attempt. Candidate Commit is not mandated for every event, but absence of
 any verified binding fails closed. When Assessment `candidate.commit` is
 present it must equal that binding.
 
+`validate_publication()` re-runs the same `normalize_target_binding()`
+semantics against the serialized envelope (event / Run / Attempt / SHA /
+repository), not only commit+repository. Production success authorization
+also binds `event_name`, `target_binding` and optional `policy_ref`.
+
 ## Conclusion rules
 
 | Assessment / context | Conclusion |

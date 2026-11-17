@@ -503,13 +503,37 @@ def validate_publication(publication):
         _internal_ref(assessment_ref, "publication_assessment_ref_invalid")
         if request.get("external_id") != assessment_ref:
             raise RequiredAssessmentCheckError("publication_external_id_mismatch")
-    target = publication.get("target_binding")
-    if not isinstance(target, dict):
-        raise RequiredAssessmentCheckError("publication_target_binding_missing")
-    if target.get("commit") != publication.get("head_sha"):
-        raise RequiredAssessmentCheckError("publication_target_sha_mismatch")
-    if target.get("repository") != publication.get("repository"):
-        raise RequiredAssessmentCheckError("publication_target_repository_mismatch")
+    # Re-establish the full target identity invariants (event/Run/Attempt/SHA/
+    # repository), not only commit+repository. A recomputed digest alone is
+    # not a semantic check of a serialized envelope.
+    for key, code in (
+        ("head_sha", "publication_head_sha_invalid"),
+        ("repository", "publication_repository_invalid"),
+        ("event_name", "publication_event_invalid"),
+    ):
+        _text(publication.get(key), code)
+    if publication.get("event_name") not in ALLOWED_EVENTS:
+        raise RequiredAssessmentCheckError("publication_event_unsupported")
+    if type(publication.get("run_id")) is not int or publication["run_id"] < 1:
+        raise RequiredAssessmentCheckError("publication_run_id_invalid")
+    if (
+        type(publication.get("run_attempt")) is not int
+        or publication["run_attempt"] < 1
+    ):
+        raise RequiredAssessmentCheckError("publication_run_attempt_invalid")
+    normalized_target = normalize_target_binding(
+        publication.get("target_binding"),
+        {
+            "head_sha": publication["head_sha"],
+            "repository": publication["repository"],
+            "event_name": publication["event_name"],
+            "run_id": publication["run_id"],
+            "run_attempt": publication["run_attempt"],
+        },
+    )
+    if normalized_target != publication.get("target_binding"):
+        raise RequiredAssessmentCheckError("publication_target_binding_mismatch")
+    publication["target_binding"] = normalized_target
     return publication
 
 
@@ -517,8 +541,8 @@ def normalize_publishing_authorization(value, publication):
     """Normalize a Provider/Workflow publishing authorization for production POST.
 
     The authorization must bind the exact Assessment, Check name, conclusion,
-    repository, head SHA, Workflow identity, Run/Attempt and evaluator. A
-    caller-asserted ``trust_basis`` string is not sufficient.
+    repository, head SHA, event, target binding, Workflow identity, Run/Attempt
+    and evaluator. A caller-asserted ``trust_basis`` string is not sufficient.
     """
     if not isinstance(value, dict):
         raise RequiredAssessmentCheckError("publishing_authorization_invalid")
@@ -538,6 +562,9 @@ def normalize_publishing_authorization(value, publication):
         "repository": _text(
             value.get("repository"), "publishing_authorization_repository_invalid"
         ),
+        "event_name": _text(
+            value.get("event_name"), "publishing_authorization_event_invalid"
+        ),
         "workflow_ref": _text(
             value.get("workflow_ref"), "publishing_authorization_workflow_invalid"
         ),
@@ -551,6 +578,9 @@ def normalize_publishing_authorization(value, publication):
         ),
         "authority_ref": _evidence_ref(
             value.get("authority_ref"), "publishing_authorization_authority_invalid"
+        ),
+        "policy_ref": _optional_evidence_ref(
+            value.get("policy_ref"), "publishing_authorization_policy_invalid"
         ),
     }
     if type(record["run_id"]) is not int or record["run_id"] < 1:
@@ -583,6 +613,8 @@ def normalize_publishing_authorization(value, publication):
         raise RequiredAssessmentCheckError(
             "publishing_authorization_repository_mismatch"
         )
+    if record["event_name"] != publication.get("event_name"):
+        raise RequiredAssessmentCheckError("publishing_authorization_event_mismatch")
     if record["workflow_ref"] != publication.get("workflow_ref"):
         raise RequiredAssessmentCheckError("publishing_authorization_workflow_mismatch")
     if record["workflow_sha"] != publication.get("workflow_sha"):
@@ -599,6 +631,29 @@ def normalize_publishing_authorization(value, publication):
         raise RequiredAssessmentCheckError(
             "publishing_authorization_evaluator_mismatch"
         )
+    pub_policy = publication.get("policy_ref")
+    if record["policy_ref"] is None and pub_policy is not None:
+        raise RequiredAssessmentCheckError("publishing_authorization_policy_missing")
+    if record["policy_ref"] is not None and pub_policy is None:
+        raise RequiredAssessmentCheckError("publishing_authorization_policy_unexpected")
+    if record["policy_ref"] is not None and _canonical_evidence(
+        record["policy_ref"]
+    ) != _canonical_evidence(pub_policy):
+        raise RequiredAssessmentCheckError("publishing_authorization_policy_mismatch")
+    record["target_binding"] = normalize_target_binding(
+        value.get("target_binding"),
+        {
+            "head_sha": record["head_sha"],
+            "repository": record["repository"],
+            "event_name": record["event_name"],
+            "run_id": record["run_id"],
+            "run_attempt": record["run_attempt"],
+        },
+    )
+    if record["target_binding"] != publication.get("target_binding"):
+        raise RequiredAssessmentCheckError(
+            "publishing_authorization_target_binding_mismatch"
+        )
     return record
 
 
@@ -612,12 +667,29 @@ def publishing_authorization_for(publication, *, authority_ref):
         "conclusion": publication["conclusion"],
         "head_sha": publication["head_sha"],
         "repository": publication["repository"],
+        "event_name": publication["event_name"],
         "workflow_ref": publication["workflow_ref"],
         "workflow_sha": publication["workflow_sha"],
         "run_id": publication["run_id"],
         "run_attempt": publication["run_attempt"],
         "evaluator_ref": publication["evaluator_ref"],
+        "policy_ref": publication.get("policy_ref"),
+        "target_binding": copy_target_binding(publication["target_binding"]),
         "authority_ref": authority_ref,
+    }
+
+
+def copy_target_binding(value):
+    if not isinstance(value, dict):
+        raise RequiredAssessmentCheckError("publication_target_binding_invalid")
+    return {
+        "kind": value["kind"],
+        "commit": value["commit"],
+        "repository": value["repository"],
+        "event_name": value["event_name"],
+        "run_id": value["run_id"],
+        "run_attempt": value["run_attempt"],
+        "tree": value.get("tree"),
     }
 
 

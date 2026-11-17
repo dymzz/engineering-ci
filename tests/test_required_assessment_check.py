@@ -46,6 +46,7 @@ def target_binding(**changes):
         "event_name": "pull_request",
         "run_id": 44003289402,
         "run_attempt": 1,
+        "tree": None,
     }
     binding.update(changes)
     return binding
@@ -489,3 +490,50 @@ def test_complete_current_run_assessment_builds_under_production_trust():
     assert publication["conclusion"] == "success"
     assert publication["trust_basis"] == "protected_workflow"
     assert publication["check_name"] == rac.CHECK_NAME
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("event_name", "push", "publication_target_event_mismatch"),
+        ("run_id", 1, "publication_target_run_mismatch"),
+        ("run_attempt", 9, "publication_target_run_mismatch"),
+    ],
+)
+def test_validate_publication_rejects_tampered_target_identity(
+    field, value, reason, monkeypatch
+):
+    assessment = passed_assessment(contract_sample=False)
+    publication = rac.build_check_publication(assessment, publication_context())
+    tampered = copy.deepcopy(publication)
+    tampered["target_binding"] = {
+        **tampered["target_binding"],
+        field: value,
+    }
+    tampered["publication_ref"] = rac._digest(
+        {key: value for key, value in tampered.items() if key != "publication_ref"}
+    )
+
+    with pytest.raises(rac.RequiredAssessmentCheckError, match=reason):
+        rac.validate_publication(tampered)
+
+    posts = []
+
+    class FakeGitHub:
+        def __init__(self, repository):
+            posts.append(("init", repository))
+
+        def __call__(self, path, method="GET", data=None):
+            posts.append((path, method, data))
+            return {"id": 1}
+
+    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
+    with pytest.raises(rac.RequiredAssessmentCheckError, match=reason):
+        rac.publish_check_run(
+            tampered,
+            publishing_authorization=rac.publishing_authorization_for(
+                publication, authority_ref=AUTHORITY_REF
+            ),
+            publish_authority=accept_authority,
+        )
+    assert posts == []
