@@ -242,9 +242,7 @@ def bind_manifest_identity(manifest, *, repository, tag, head):
 def require_reconciliation_manifest(envelope, manifest, *, repository, tag, head):
     """Reject when a consumer Manifest is not the authorized R4 identity."""
     validate_release_reconciliation(envelope)
-    actual = bind_manifest_identity(
-        manifest, repository=repository, tag=tag, head=head
-    )
+    actual = bind_manifest_identity(manifest, repository=repository, tag=tag, head=head)
     if envelope.get("manifest_identity") != actual:
         raise RequiredAssessmentReleaseError("release_manifest_identity_mismatch")
     return actual
