@@ -278,10 +278,12 @@ class EngineeringCi:
         source: dagger.Directory,
         python_version: str = "3.14",
         weaver_config: str = "ci-weaver.toml",
+        run_ref: str = "",
+        attempt_ref: str = "",
     ) -> str:
         """Read the Report from one Plan result; API exit is not its verdict."""
         execution = await self.plan_execution(
-            plan, source, python_version, weaver_config
+            plan, source, python_version, weaver_config, run_ref, attempt_ref
         )
         return await execution.report()
 
@@ -291,9 +293,13 @@ class EngineeringCi:
         plan: dagger.File,
         source: dagger.Directory,
         python_version: str = "3.14",
+        run_ref: str = "",
+        attempt_ref: str = "",
     ) -> dagger.Directory:
         """Inspect all consumers of one result; strict production API is enforce."""
-        execution = await self.plan_execution(plan, source, python_version)
+        execution = await self.plan_execution(
+            plan, source, python_version, run_ref=run_ref, attempt_ref=attempt_ref
+        )
         bundle = execution.artifacts
         original_id = await bundle.id()
         report = await execution.report()

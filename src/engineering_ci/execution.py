@@ -4613,7 +4613,9 @@ def execute(
         "source_binding_verified": "unknown",
         "execution_context": execution_context,
         "execution_identity": {
-            "execution_ref": "execution:" + run_instance,
+            "execution_ref": run_instance
+            if run_instance.startswith("execution:")
+            else "execution:" + run_instance,
             "run_ref": None,
             "attempt_ref": None,
             "run_attempt_verification": "not_supplied",

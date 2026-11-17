@@ -268,7 +268,10 @@ def test_real_host_framework_runs_once_even_when_its_definition_is_selected(
         },
         "check_scope": [{"name": framework, "status": "selected"}],
     }
-    report = execution.execute(plan, root=tmp_path)
+    report = execution.execute(
+        plan, root=tmp_path, run_instance="execution:controlled-host"
+    )
+    assert report["execution_identity"]["execution_ref"] == "execution:controlled-host"
     assert (tmp_path / "invocations.txt").read_text() == "1"
     assert report["status"] == ("failed" if fails else "passed")
     checks = [item for item in report["checks"] if item["name"] == framework]
