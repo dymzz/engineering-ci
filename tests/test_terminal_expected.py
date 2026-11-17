@@ -24,23 +24,14 @@ SOURCE = check_contract.source_ref(
 )
 
 
-def make_terminal_expected(
-    *,
-    phase=check_contract.POST_COMPLETION_PHASE,
-    run_id="controlled-42/1",
-    run_attempt=1,
-    **changes,
-):
+def make_b2_terminal_entry(**changes):
+    """Real #66-B2 Check Entry shape: no run_id / run_attempt / phase / scope_id."""
     definition = check_contract.definition_for("weaver_terminal")
     entry = {
         "check_id": definition.check_id,
         "definition_version": definition.definition_version,
         "rule_ref": copy.deepcopy(RULE),
         "source_ref": copy.deepcopy(SOURCE),
-        "phase": phase,
-        "scope_id": SCOPE_ID,
-        "run_id": run_id,
-        "run_attempt": run_attempt,
         "name": "weaver_terminal",
         "event_ref": {
             "base_ref": "refs/heads/main",
@@ -61,12 +52,50 @@ def make_terminal_expected(
         "obligation_refs": [{"obligation_ref": "o/terminal", "role": "required"}],
         "required_by_obligations": ["o/terminal"],
         "advisory_for_obligations": [],
+        "definition_status": "resolved",
+        "rule_status": "resolved",
+        "policy_status": "resolved",
     }
     entry.update(changes)
+    # Identity is always over the pre-execution payload (no post-hoc Run fields).
     entry["expected_check_ref"] = expected_checks.entry_identity(
         {key: value for key, value in entry.items() if key != "expected_check_ref"}
     )
     return entry
+
+
+def make_parent_expected(
+    entry=None,
+    *,
+    phase=check_contract.POST_COMPLETION_PHASE,
+    phase_status="unverified",
+    status="complete",
+    scope_id=SCOPE_ID,
+):
+    """Authorized parent Expected v2 projection carrying phase / scope."""
+    if entry is None:
+        entry = make_b2_terminal_entry()
+    return {
+        "schema_version": expected_checks.EXPECTED_V2,
+        "projection_source": "effective_profile",
+        "status": status,
+        "scope_id": scope_id,
+        "phase": phase,
+        "phase_status": phase_status,
+        "checks": [entry],
+        "non_check_obligations": [],
+    }
+
+
+def completed_run(**changes):
+    value = {
+        "run_id": "controlled-42/1",
+        "attempt": 1,
+        "result": "success",
+        "status": "completed",
+    }
+    value.update(changes)
+    return value
 
 
 def accept(_context):
@@ -97,17 +126,26 @@ def make_plan(tmp_path):
 
 def test_authorized_terminal_expected_binds_post_completion_plan(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_terminal_expected()
+    expected = make_parent_expected()
     binding = te.bind_terminal_expected(
-        expected, plan=plan, root=root, expected_authority=accept
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
     )
     assert binding["status"] == "bound"
     assert binding["authorized"] is True
     assert binding["input_closure"] == "verified"
     assert binding["scope_id"] == SCOPE_ID
-    assert binding["expected_check_ref"] == expected["expected_check_ref"]
-    assert binding["plan_identity"]["run_id"] == "controlled-42/1"
-    assert binding["plan_identity"]["closure_sha256"] == plan["post_completion"]["sha256"]
+    assert binding["phase"] == check_contract.POST_COMPLETION_PHASE
+    assert "run_id" not in binding["expected"]
+    assert "run_attempt" not in binding["expected"]
+    assert binding["expected_check_ref"] == expected["checks"][0]["expected_check_ref"]
+    assert binding["completed_run"]["run_id"] == "controlled-42/1"
+    assert (
+        binding["plan_identity"]["closure_sha256"] == plan["post_completion"]["sha256"]
+    )
     validated = te.validate_terminal_expected_binding(copy.deepcopy(binding))
     assert validated["binding_ref"] == binding["binding_ref"]
 
@@ -115,7 +153,10 @@ def test_authorized_terminal_expected_binds_post_completion_plan(tmp_path):
 def test_missing_root_marks_input_closure_unverified(tmp_path):
     _root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(), plan=plan, expected_authority=accept
+        make_parent_expected(),
+        plan=plan,
+        completed_run=completed_run(),
+        expected_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["input_closure"] == "unverified"
@@ -130,7 +171,11 @@ def test_drifted_plan_inputs_fail_closure_validation(tmp_path):
         encoding="utf-8",
     )
     binding = te.bind_terminal_expected(
-        make_terminal_expected(), plan=plan, root=root, expected_authority=accept
+        make_parent_expected(),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["input_closure"] == "failed"
@@ -142,7 +187,10 @@ def test_drifted_plan_inputs_fail_closure_validation(tmp_path):
 def test_missing_authority_cannot_authorize_terminal(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(), plan=plan, root=root
+        make_parent_expected(),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
     )
     assert binding["authorized"] is False
     assert binding["status"] == "unverified"
@@ -152,8 +200,9 @@ def test_missing_authority_cannot_authorize_terminal(tmp_path):
 def test_rejected_authority_is_not_authorized(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(),
+        make_parent_expected(),
         plan=plan,
+        completed_run=completed_run(),
         root=root,
         expected_authority=reject,
     )
@@ -161,62 +210,148 @@ def test_rejected_authority_is_not_authorized(tmp_path):
     assert binding["status"] == "rejected"
 
 
-def test_wrong_phase_is_rejected(tmp_path):
+def test_wrong_parent_phase_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
     with pytest.raises(
-        te.TerminalExpectedError,
-        match="terminal_expected_phase_invalid|terminal_expected_instance_invalid",
+        te.TerminalExpectedError, match="terminal_expected_phase_invalid"
     ):
         te.bind_terminal_expected(
-            make_terminal_expected(phase=check_contract.EXECUTION_PHASE),
+            make_parent_expected(phase=check_contract.EXECUTION_PHASE),
             plan=plan,
+            completed_run=completed_run(),
             root=root,
             expected_authority=accept,
         )
 
 
-def test_wrong_attempt_is_rejected(tmp_path):
+def test_missing_parent_phase_is_rejected(tmp_path):
+    root, plan = make_plan(tmp_path)
+    parent = make_parent_expected()
+    parent["phase"] = None
+    with pytest.raises(
+        te.TerminalExpectedError, match="terminal_expected_parent_phase_missing"
+    ):
+        te.bind_terminal_expected(
+            parent,
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
+        )
+
+
+def test_wrong_completed_attempt_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(run_attempt=9),
+        make_parent_expected(),
         plan=plan,
+        completed_run=completed_run(attempt=9),
         root=root,
         expected_authority=accept,
     )
     assert binding["authorized"] is False
-    assert "terminal_expected_attempt_mismatch" in binding["reasons"]
+    assert "terminal_completed_attempt_mismatch" in binding["reasons"]
+
+
+def test_post_hoc_run_fields_on_expected_are_rejected(tmp_path):
+    root, plan = make_plan(tmp_path)
+    entry = make_b2_terminal_entry(run_id="controlled-42/1", run_attempt=1)
+    with pytest.raises(
+        te.TerminalExpectedError, match="terminal_expected_post_hoc_run_forbidden"
+    ):
+        te.bind_terminal_expected(
+            make_parent_expected(entry),
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
+        )
+
+
+def test_missing_expected_check_ref_is_rejected(tmp_path):
+    root, plan = make_plan(tmp_path)
+    entry = make_b2_terminal_entry()
+    del entry["expected_check_ref"]
+    with pytest.raises(
+        te.TerminalExpectedError, match="terminal_expected_check_ref_missing"
+    ):
+        te.bind_terminal_expected(
+            make_parent_expected(entry),
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
+        )
+
+
+def test_incomplete_parent_scope_cannot_authorize(tmp_path):
+    root, plan = make_plan(tmp_path)
+    binding = te.bind_terminal_expected(
+        make_parent_expected(status="partial"),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+    )
+    assert binding["authorized"] is False
+    assert "terminal_expected_scope_incomplete" in binding["reasons"]
 
 
 def test_wrong_check_id_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_terminal_expected()
-    expected["check_id"] = "eci/weaver/live"
-    expected["expected_check_ref"] = expected_checks.entry_identity(
-        {key: value for key, value in expected.items() if key != "expected_check_ref"}
+    entry = make_b2_terminal_entry()
+    entry["check_id"] = "eci/weaver/live"
+    entry["expected_check_ref"] = expected_checks.entry_identity(
+        {key: value for key, value in entry.items() if key != "expected_check_ref"}
     )
     with pytest.raises(te.TerminalExpectedError, match="terminal_expected_"):
         te.bind_terminal_expected(
-            expected, plan=plan, root=root, expected_authority=accept
+            make_parent_expected(entry),
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
         )
 
 
 def test_missing_scope_id_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_terminal_expected()
-    del expected["scope_id"]
+    parent = make_parent_expected()
+    del parent["scope_id"]
     with pytest.raises(
         te.TerminalExpectedError, match="terminal_expected_scope_id_missing"
     ):
         te.bind_terminal_expected(
-            expected, plan=plan, root=root, expected_authority=accept
+            parent,
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
+        )
+
+
+def test_bare_entry_without_parent_cannot_authorize(tmp_path):
+    root, plan = make_plan(tmp_path)
+    # B2 entry alone has no scope_id / phase — binder must not invent them.
+    with pytest.raises(
+        te.TerminalExpectedError,
+        match="terminal_expected_phase_unproven|terminal_expected_scope_id_missing",
+    ):
+        te.bind_terminal_expected(
+            make_b2_terminal_entry(),
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
         )
 
 
 def test_contract_sample_cannot_authorize(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(),
+        make_parent_expected(),
         plan=plan,
+        completed_run=completed_run(),
         root=root,
         expected_authority=accept,
         contract_sample=True,
@@ -229,7 +364,11 @@ def test_contract_sample_cannot_authorize(tmp_path):
 def test_validate_rejects_mutated_inner_expected_identity(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(), plan=plan, root=root, expected_authority=accept
+        make_parent_expected(),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
     )
     forged = copy.deepcopy(binding)
     forged["expected"] = dict(forged["expected"])
@@ -237,7 +376,6 @@ def test_validate_rejects_mutated_inner_expected_identity(tmp_path):
         {"kind": "otlp", "path": "capture.json"},
         {"kind": "extra", "path": "x"},
     ]
-    # Keep outer expected_check_ref / binding_ref recomputed after mutation.
     payload = {key: value for key, value in forged.items() if key != "binding_ref"}
     forged["binding_ref"] = te._digest(payload)
     with pytest.raises(
@@ -250,7 +388,11 @@ def test_validate_rejects_mutated_inner_expected_identity(tmp_path):
 def test_validate_rejects_plan_identity_drift(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_terminal_expected(), plan=plan, root=root, expected_authority=accept
+        make_parent_expected(),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
     )
     forged = copy.deepcopy(binding)
     forged["plan_identity"] = dict(forged["plan_identity"])
@@ -265,9 +407,13 @@ def test_validate_rejects_plan_identity_drift(tmp_path):
 
 def test_span_expectations_remain_independent_of_check_expected(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_terminal_expected()
+    expected = make_parent_expected()
     binding = te.bind_terminal_expected(
-        expected, plan=plan, root=root, expected_authority=accept
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
     )
     span_path = root / plan["post_completion"]["expectations"]["path"]
     original = span_path.read_text(encoding="utf-8")
@@ -288,7 +434,7 @@ def test_post_completion_with_expected_helper(tmp_path):
         run_id="controlled-42/1",
         attempt=1,
         result="success",
-        expected=make_terminal_expected(),
+        expected=make_parent_expected(),
         expected_authority=accept,
     )
     assert binding["authorized"] is True
