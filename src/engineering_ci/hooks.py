@@ -45,10 +45,11 @@ from urllib.parse import urlsplit
 from engineering_ci import selection
 
 HOOKS = ("pre-commit", "pre-push")
-EVENT_SCHEMA_VERSION = 1
+EVENT_SCHEMA_VERSION = 2
 INVOCATION_SCHEMA_VERSION = 1
 INVOCATION_KIND = "engineering-ci-hook-invocation"
 EVENT_RETENTION_SECONDS = 24 * 60 * 60
+INDEX_LOCATOR_KINDS = frozenset({"git_dir", "worktree", "absolute"})
 _SAFE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _SCP_LIKE = re.compile(r"^(?:(?P<user>[^/@:]+)@)?(?P<host>[^@/:]+):(?P<path>.*)$")
@@ -370,15 +371,91 @@ def capture_pre_commit(root, *, environ=None):
     if tree_id is None:
         raise HookEventError("index_changed_during_capture")
     git_dir = _git_dir(root)
+    locator = _index_locator(root, index_path, git_dir)
     return {
         "schema_version": EVENT_SCHEMA_VERSION,
         "hook": "pre-commit",
         "index": {
-            "file": _event_path(root, index_path, git_dir),
+            # Authoritative namespaced locator; consumers must not re-guess bases.
+            "locator": locator,
+            # Stable relative/absolute display string derived from the locator.
+            "file": locator["path"],
             "tree": tree_id,
             "sha256": index_digest,
         },
     }
+
+
+def _index_locator(root, index_path, git_dir):
+    """Encode Index path with an unambiguous namespace for Event consumers.
+
+    Preference order:
+    - ``git_dir`` when under the physical Git Directory (default Index);
+    - ``worktree`` when under the Worktree but outside the Git Directory;
+    - ``absolute`` for explicitly external Index files.
+    """
+    resolved = Path(index_path).resolve()
+    git_dir = Path(git_dir).resolve()
+    root = Path(root).resolve()
+    try:
+        rel = resolved.relative_to(git_dir).as_posix()
+        if not rel or rel.startswith(".."):
+            raise ValueError("outside git_dir")
+        return {"kind": "git_dir", "path": rel}
+    except ValueError:
+        pass
+    try:
+        rel = resolved.relative_to(root).as_posix()
+        if not rel or rel.startswith(".."):
+            raise ValueError("outside worktree")
+        return {"kind": "worktree", "path": rel}
+    except ValueError:
+        pass
+    return {"kind": "absolute", "path": str(resolved)}
+
+
+def resolve_index_path(event, *, root):
+    """Resolve the captured Index file from an Event's authoritative locator.
+
+    Fail closed when the Event lacks a namespaced locator or the path is missing.
+    Does not probe alternate bases when a relative path is absent.
+    """
+    if not isinstance(event, dict) or event.get("hook") != "pre-commit":
+        raise HookEventError("index_locator_unavailable")
+    if event.get("schema_version") != EVENT_SCHEMA_VERSION:
+        raise HookEventError("index_locator_unavailable")
+    index = event.get("index")
+    if not isinstance(index, dict):
+        raise HookEventError("index_locator_unavailable")
+    locator = index.get("locator")
+    if not isinstance(locator, dict):
+        raise HookEventError("index_locator_unavailable")
+    kind = locator.get("kind")
+    path = locator.get("path")
+    if kind not in INDEX_LOCATOR_KINDS or not isinstance(path, str) or not path:
+        raise HookEventError("index_locator_invalid")
+    root = Path(root).resolve()
+    if kind == "absolute":
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            raise HookEventError("index_locator_invalid")
+        resolved = candidate.resolve()
+    elif kind == "git_dir":
+        git_dir = _git_dir(root)
+        resolved = (Path(git_dir) / path).resolve()
+        try:
+            resolved.relative_to(Path(git_dir).resolve())
+        except ValueError as error:
+            raise HookEventError("index_locator_invalid") from error
+    else:  # worktree
+        resolved = (root / path).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise HookEventError("index_locator_invalid") from error
+    if not resolved.is_file():
+        raise HookEventError("index_file_unavailable")
+    return resolved
 
 
 def _event_path(root, path, git_dir):
