@@ -1,0 +1,160 @@
+{
+  "review": "https://github.com/dymzz/engineering-ci/pull/117#pullrequestreview-5932472685",
+  "implementation_commit": "eff476abffe892d606cea3f5575e22e247869c9b",
+  "scope": "Two P1 associations; no stronger Source/Origin/Admission claim",
+  "checks": {
+    "producer_and_plan_tests": 95,
+    "producer_and_plan_command": "pytest tests/test_plan_result.py tests/test_native_producer.py -q --tb=short",
+    "host_data_closure": {
+      "passed": 1,
+      "deselected": 124,
+      "command": "pytest tests/test_plan_contract.py -k v2_data_dependency_closure -q --tb=short"
+    },
+    "ruff": "check/format passed on six changed Python files",
+    "version": "PASS: all project version fields match v0.7.0"
+  },
+  "native_api_requests": 2,
+  "cases": {
+    "passed": {
+      "status": "passed",
+      "exit_code": 0,
+      "reason": null,
+      "bundle": "passed-bundle.tar.gz",
+      "file_sha256": {
+        "inspection.json": "024a0e3cad0369ed511dc747f4f427f3afdbc3b8c9df16bd6496ab200fa19053",
+        "result/checks/weaver_registry/check-result.json": "7cb1be71c90db2d71e3b589626565b91dca95a9daa6dab22cc1e1169733b1301",
+        "result/checks/weaver_registry/registry-check.stderr": "7160e0f8ce787ae633c6f622dcfb999ce09c5df4c858fe8b10ed0a742f2a0e15",
+        "result/checks/weaver_registry/registry-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-local-check.stderr": "239ca3dbc4cd984fa249d17947dd32a793938b24ca8248357fd36b83d2b43fcb",
+        "result/checks/weaver_registry/registry-local-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-package.stderr": "f1ac3792a69378a6a647ae1bde848162b1bc1b2270d532a0f89bc5d5a9e3b6a3",
+        "result/checks/weaver_registry/registry-package.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-package/manifest.yaml": "9c6905637660815ecf020047ad8a4f5e4afb1aa5725d8b99c921680f09b38218",
+        "result/checks/weaver_registry/registry-package/resolved.yaml": "c6d1d4f0c363b45048f0910eced9caabf23ca443c343829d93872bde5d19f9d4",
+        "result/checks/weaver_registry/report.json": "41749f78e2473d8e759bdba83f670da80f9681ce1aacd0906f6ecc678fecc00e",
+        "result/checks/weaver_registry/version.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/version.stdout": "6a7b39eb3e9659fa0a89c89e7231d8e1672af0bcffb394b7dbb57cb9ae934828",
+        "result/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "result/plan.json": "b95edc172b754fdfaa94bbd20580809a6c5ba5a3f6476bfcfa4888bcac012a9e",
+        "result/produced/prerequisite_action/generate/ci-weaver.toml": "e76d52bb6b53a7df92d01b55d1f27cde462a9b4f6bee3844084b6f37c1762ea3",
+        "result/produced/prerequisite_action/generate/tests/test_generated.py": "abe8bf9f3c0c736f4dc7bf4c8ca90ddf7647ed1a59d710129f80d88fd98f3bdc",
+        "result/report.json": "9cc62da53d6ad39fa5835a0c6313de19a8f4e4431a170019e78f601505aefc1a",
+        "result/tests/check-result.json": "fafa96d6973f2e79a013a2a93edcb54e721153169b708614fb187e1cd2dddcd1",
+        "result/tests/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "result/tests/stderr.txt": "fb184ea57734512b1f088f9181209901b9cd46df3eb7eaa2500ea9e48dde20b5",
+        "result/tests/stdout.txt": "2a241ac0bfbc41620397dd5be10b051b3e07aa7130f1c9cad49c2aa424bdf70f"
+      },
+      "strict": {
+        "status": "passed"
+      },
+      "native_result_ids": [
+        "sha256:6925dd2b3fea60518ab5a266b73bee1ad03484a3ee77c35681e0a9575140c462",
+        "sha256:8f02bb18c8c1e01a511f7b63b7773e0b0ebccc728bf35de4d06b8c69fb7708f5",
+        "sha256:048a2e5287e79aa592652f3ae67aaf09446a7802154304fd6f462e04dc213001",
+        "sha256:e181af70aa204f785b78b7ba056e9f498ef58b9c395f2ec4d54ab53ddfbb1324"
+      ]
+    },
+    "wrong-digest": {
+      "status": "blocked",
+      "exit_code": 5,
+      "reason": "data_artifact_digest_mismatch",
+      "bundle": "wrong-digest-bundle.tar.gz",
+      "file_sha256": {
+        "inspection.json": "7ef30a6dd2fa2a4a48219394997726028703e11d1c78883232fa45af0f98e55d",
+        "result/checks/weaver_registry/check-result.json": "1c08b2dbe10e23d387b26c33dc1d38700c5d6a0480b79d679415371d286947e7",
+        "result/checks/weaver_registry/registry-check.stderr": "7160e0f8ce787ae633c6f622dcfb999ce09c5df4c858fe8b10ed0a742f2a0e15",
+        "result/checks/weaver_registry/registry-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-local-check.stderr": "239ca3dbc4cd984fa249d17947dd32a793938b24ca8248357fd36b83d2b43fcb",
+        "result/checks/weaver_registry/registry-local-check.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-package.stderr": "f1ac3792a69378a6a647ae1bde848162b1bc1b2270d532a0f89bc5d5a9e3b6a3",
+        "result/checks/weaver_registry/registry-package.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/registry-package/manifest.yaml": "9c6905637660815ecf020047ad8a4f5e4afb1aa5725d8b99c921680f09b38218",
+        "result/checks/weaver_registry/registry-package/resolved.yaml": "c6d1d4f0c363b45048f0910eced9caabf23ca443c343829d93872bde5d19f9d4",
+        "result/checks/weaver_registry/report.json": "41749f78e2473d8e759bdba83f670da80f9681ce1aacd0906f6ecc678fecc00e",
+        "result/checks/weaver_registry/version.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result/checks/weaver_registry/version.stdout": "6a7b39eb3e9659fa0a89c89e7231d8e1672af0bcffb394b7dbb57cb9ae934828",
+        "result/exit-code.txt": "f0b5c2c2211c8d67ed15e75e656c7862d086e9245420892a7de62cd9ec582a06",
+        "result/plan.json": "3317691362cd88cf748c9193eacea5d2494e11645e330808d0c2c49792d30ff4",
+        "result/produced/prerequisite_action/generate/ci-weaver.toml": "e76d52bb6b53a7df92d01b55d1f27cde462a9b4f6bee3844084b6f37c1762ea3",
+        "result/report.json": "b36470ce130823545a04b084f8b35b67f5ebc4b7a94159140e73a31fc6981673"
+      },
+      "strict": {
+        "diagnostic": "Plan blocked: data_artifact_digest_mismatch (exit 5)",
+        "status": "failed"
+      },
+      "native_result_ids": [
+        "sha256:73395cb70b38899cfc05f5ca321cd90a65987debc401e3a018f60a243f267385",
+        "sha256:2664d9856c1df90ad697f958be88d444669263901046e9dca0d44907e4ef41c1",
+        "sha256:f7f1ef0a33b87d0a66e2fe6b1cd33dc0a3db07e655ff1b7124fdbb60f42048b9"
+      ]
+    }
+  },
+  "implementation_archives": {
+    "39f7c721e7fc41ba1112171416e066415c69c426660b1cd998dbe487d3a9aaf6": {
+      "identity": {
+        "implementation_id": "engineering-ci/dagger/weaver",
+        "implementation_sha256": "39f7c721e7fc41ba1112171416e066415c69c426660b1cd998dbe487d3a9aaf6",
+        "implementation_version": "1"
+      },
+      "archive": "implementation-39f7c721e7fc.tar.gz",
+      "file_sha256": {
+        "dagger/main.py": "e1ba3b5d27d9b263d61da3d9f374ca1625e531db2634b1a7b16b84ce9d908899",
+        "dagger/native_results.py": "b4b4cefab94c54f37fbb1866baefaee446ba45c53dcf07b042f4ec2e5b6e0cad",
+        "dagger/plan_execution.py": "a146dac4ea32ab6dd71b8d54dc81cb23e568dfd8fdf54659a239bd4691fe637d",
+        "dagger/plan_result.py": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+        "dagger/tooling.py": "af07b6b47650a8bffb129d8a40d60f4a653155c257c90c50d0645bd86b9703b8",
+        "dagger/weaver-requirements.txt": "73d22c46c350ada25c27dba599c6d77d93aa53f305bd312492419654d639e1a5",
+        "dagger/weaver.py": "a022329035bdf830644aa768cfb578212058ba7011b58e8f7451b665e4657010",
+        "dagger/weaver_runtime.py": "568adbe4ad5a4fa0c56f7f1fa98662927535f982ffd7658de4931b54eccbf379",
+        "engineering_ci/check_contract.py": "8b08266d3e2a3e3450f558662b0072ba75c7a63c306c422beab6a8f8a7ff63b8",
+        "engineering_ci/native_producer.py": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+        "engineering_ci/weaver_tool.py": "2d776ddebe2713c31623ef75d83f9c49263aad0b378c43a7c991475fae85e865"
+      }
+    },
+    "e69d56a91aa7c8fe3c0ba0a9525fe7ba8668133bda2c1ea4c1fe430eec9e1bd5": {
+      "identity": {
+        "implementation_id": "engineering-ci/dagger/tests",
+        "implementation_sha256": "e69d56a91aa7c8fe3c0ba0a9525fe7ba8668133bda2c1ea4c1fe430eec9e1bd5",
+        "implementation_version": "1"
+      },
+      "archive": "implementation-e69d56a91aa7.tar.gz",
+      "file_sha256": {
+        "dagger/main.py": "e1ba3b5d27d9b263d61da3d9f374ca1625e531db2634b1a7b16b84ce9d908899",
+        "dagger/native_results.py": "b4b4cefab94c54f37fbb1866baefaee446ba45c53dcf07b042f4ec2e5b6e0cad",
+        "dagger/plan_execution.py": "a146dac4ea32ab6dd71b8d54dc81cb23e568dfd8fdf54659a239bd4691fe637d",
+        "dagger/plan_result.py": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+        "dagger/pytest_ci.py": "1f3479ee2c02f739de839bb8d657a49861959701557dcf76e419dedf045d37fc",
+        "dagger/pytest_quality.py": "eaf2c0074886a46ad8323320d5d382146ddd079ba2307e3d2004f9d6ec6a5f1e",
+        "dagger/pytest_report.py": "54a0984dcdc324b67860a19e64dc106071adad363a36d726f3f428eca99fed22",
+        "dagger/python_dependency_auth.py": "cada35c6574ce24e5f458f990b779bdb3c02848166a413fd325ca776eefcc677",
+        "dagger/tooling.py": "af07b6b47650a8bffb129d8a40d60f4a653155c257c90c50d0645bd86b9703b8",
+        "engineering_ci/check_contract.py": "8b08266d3e2a3e3450f558662b0072ba75c7a63c306c422beab6a8f8a7ff63b8",
+        "engineering_ci/native_producer.py": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+        "engineering_ci/weaver_tool.py": "2d776ddebe2713c31623ef75d83f9c49263aad0b378c43a7c991475fae85e865"
+      }
+    }
+  },
+  "source_archive": "../locked-source.tar.gz",
+  "source_file_sha256": {
+    ".gitattributes": "b560ca9d21fcf0287e9a60a9df108fa3f2e8967355a5eb713f5d50c3632ec55a",
+    ".weaver.toml": "2ae72a20f0e2912ea7163d3f29ff0477bd74346b596ef5547fa033ee6599beab",
+    "LICENSE.weaver": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "README.md": "bd5e5c877351c3625701608549b3efbb86f5c095b5adc7abde62af5e988e89ef",
+    "capture.json": "3cef011120d1be4c5867a6481642179fa1a1e77a2fbc5f70334fdaa32f3f3a23",
+    "ci-sources.toml": "b4330ba9ff40c1f1f178fcc26b41413546b48b60b279d4e386e2e2cd7c6ea715",
+    "ci-weaver.toml": "e76d52bb6b53a7df92d01b55d1f27cde462a9b4f6bee3844084b6f37c1762ea3",
+    "data/acquired/input.bin": "370b1aa14a924a4cb9788be35ef9fa015733517cb61fac8cd4e447839d929c43",
+    "data/catalog/manifest.json": "1ebdf623e544ed444881558367cbb7b97c69724504d0da1b159ada9cec017ddf",
+    "expected.json": "a30fb9b9f5cd03420c9507089fcab310aeea3b9e24ee27032abe928a1ad1e9e2",
+    "pyproject.toml": "c3fbe031952cbb07e7f80579acb39420a5b325191da54b12a722124c74f426bb",
+    "registry-sha256.json": "de7e658d4cb5bdedf9d36acdc586a59b062b21f761d81d2cead9d41f44508560",
+    "registry/manifest.yaml": "d98e084d41524fda806c6c2c47dee72085f61af05812c080d3f71c74774f8bbe",
+    "registry/semconv.yaml": "1860a160e68287387e88e0eb43e55f053b3c0cb4051bf83041cd3d3caa5df391",
+    "sample.json": "573d68b5c67528af251a669b10992e74c43bc109918c6c0a0af8b7898caf4448",
+    "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/test_controlled.py": "ef8b38556c62836a34db6e4fa1490a2b2ac63969178588229e9b8da8686dd863",
+    "uv.lock": "1eebbadee196ffa5e4ff3a5e79b5beffa63b6e8e3683c239d5e2088cd21da9f6"
+  },
+  "origin_execution_attributed": false,
+  "run_attempt_references_authenticated": false
+}

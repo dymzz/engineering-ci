@@ -2,7 +2,7 @@
 config/security-policy.example.json -text
 
 # Native verification bundles and their published hashes retain exact bytes.
-docs/verification/native-tool-contract/process-results/* -text
+docs/verification/native-tool-contract/process-results/** -text
 # Captured Windows Plan inputs keep their original CRLF, without allowing spaces.
 docs/verification/native-tool-contract/process-results/*-plan.json whitespace=cr-at-eol
 docs/verification/workflow-security/** -text

@@ -1,0 +1,106 @@
+{
+  "kind": "engineering-ci-selection-plan",
+  "schema_version": 2,
+  "generator": {
+    "config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "git": {
+    "snapshot": "index",
+    "execution_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "index_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "selection": {
+    "tests": [
+      "tests.test_generated"
+    ],
+    "framework": "unittest",
+    "checks": [
+      "weaver_registry"
+    ],
+    "check_scope": [
+      {
+        "name": "weaver_registry",
+        "status": "selected"
+      }
+    ],
+    "prerequisites": [
+      "generate"
+    ]
+  },
+  "check_scope": [
+    {
+      "name": "weaver_registry",
+      "status": "selected"
+    }
+  ],
+  "prerequisite_actions": {
+    "generate": {
+      "type": "command",
+      "argv": [
+        "python",
+        "-c",
+        "import os; from pathlib import Path; r=Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); (r/'tests').mkdir(parents=True,exist_ok=True); (r/'ci-weaver.toml').write_bytes(b'schema_version = 1\\nregistry = \"registry\"\\nregistry_manifest = \"registry-sha256.json\"\\nmatcher_config = \".weaver.toml\"\\nsample = \"sample.json\"\\nexpected_matchers = [\"fixture.cart\"]\\notlp = \"capture.json\"\\nexpectations = \"expected.json\"\\n[origin]\\nrepository = \"https://github.com/open-telemetry/weaver\"\\ncommit = \"51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93\"\\npath = \"crates/weaver_live_check/data/model/matchers/semconv.yaml\"\\n'); (r/'tests/test_generated.py').write_bytes(b\"import unittest\\n\\nclass Generated(unittest.TestCase):\\n    def test_generated(self):\\n        print('GENERATED_NATIVE_INPUT_OK')\\n        self.assertTrue(True)\\n\")"
+      ]
+    }
+  },
+  "dependency_contract": {
+    "schema_version": 2,
+    "required_semantics": [
+      "data_dependency"
+    ],
+    "edges": [
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "generate"
+        },
+        "consumer_ref": {
+          "kind": "tests"
+        },
+        "dependency_kind": "data",
+        "requires_pass": true,
+        "output_ref": {
+          "kind": "file",
+          "path": "tests/test_generated.py",
+          "sha256": "abe8bf9f3c0c736f4dc7bf4c8ca90ddf7647ed1a59d710129f80d88fd98f3bdc"
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "ci-selection.toml",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "section": "prerequisite_actions.generate"
+        },
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      },
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "generate"
+        },
+        "consumer_ref": {
+          "kind": "check",
+          "name": "weaver_registry"
+        },
+        "dependency_kind": "data",
+        "requires_pass": true,
+        "output_ref": {
+          "kind": "file",
+          "path": "ci-weaver.toml",
+          "sha256": "e76d52bb6b53a7df92d01b55d1f27cde462a9b4f6bee3844084b6f37c1762ea3"
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "ci-selection.toml",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "section": "prerequisite_actions.generate"
+        },
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      }
+    ]
+  }
+}

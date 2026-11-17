@@ -5,10 +5,14 @@ The [public Check contract](../../../architecture/check-contract.md) owns the
 semantics. These are observed native facts, not Trusted/Required acceptance,
 Runtime registration, complete Source closure or #52-D4 Terminal authorization.
 
-Final implementation: `e337cbe1afcf4ebdb825e8a0b85e8e54d89006aa`.
+Initial implementation: `e337cbe1afcf4ebdb825e8a0b85e8e54d89006aa`.
 Earlier observations retain their actual `c096432` / `348f088` revisions in
 [receipt.json](receipt.json). No earlier raw result was rewritten to claim the
 final implementation ran it.
+
+The later [Source identity and generated-input repair](source-and-generated-inputs/README.md)
+records the two P1 fixes from review 5932472685. The raw evidence below remains
+at its original implementation revisions.
 
 ## Actual native observations
 
