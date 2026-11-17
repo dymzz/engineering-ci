@@ -21,6 +21,7 @@ dispositions = json.loads((AB/'candidate-disposition.json').read_text(encoding='
 baseline = json.loads((AB/'baseline-snapshot.json').read_text(encoding='utf-8'))
 mechanical = json.loads(gzip.decompress((AB/'evidence/mechanical-discovery.json.gz').read_bytes()))
 inputs = json.loads((EVIDENCE/'inputs.json').read_text(encoding='utf-8'))
+proof_input = json.loads((EVIDENCE/'edge-proof-claims.json').read_text(encoding='utf-8'))
 BASE = inputs['implementation_base']
 REFS = {s:d['commit'] for s,d in mechanical['snapshots'].items()}
 AB_HEAD = inputs['ab_reviewed_head']
@@ -249,11 +250,11 @@ uninvestigated={
  'E076':'未观察 R5 Disposition 的实际 retain/revoke 执行者；API 返回文档不代行执法。',
  'E086':'未观察 #124 wrapper/bound/authorized 的真实执行/Admission/R1 消费者。',
 }
-# Each listed contract assessment reuses recorded contract-test/CI scope. None
-# asserts real issuer/transport or independent D semantic/adversarial acceptance.
-contract=set(numbers('1-23 25-45 47-63 65 68-70 77-85'))-set(known)-set(uninvestigated)
-assert contract|set(known)|set(uninvestigated)==set(family_by_edge)
-assert not (contract & set(uninvestigated))
+# No complement/default "verified" class. A reviewed proof must name this edge,
+# the exact layer, its receiving condition, source path and direct assertions.
+proof_specs={c['id']:c for c in proof_input['claims']}
+assert len(proof_specs)==len(proof_input['claims'])
+assert all(c['edge'] in family_by_edge for c in proof_specs.values())
 
 catalog={}
 def function_ref(sn,symbol):
@@ -293,6 +294,52 @@ def test_ref(sn,file,name):
                   'case_result':'No new per-case execution or independent D replay in C; prior suite result referenced separately.'}
     return key
 
+
+def excerpt(ref,start,end):
+    source=catalog[ref]
+    lines=blob(source['commit'],source['path']).decode('utf-8-sig').splitlines()
+    assert 1<=start<=end<=len(lines)
+    text='\n'.join(lines[start-1:end])+'\n'
+    return {'source_ref':ref,'start':start,'end':end,'text':text,
+            'text_sha256':hashlib.sha256(text.encode('utf-8')).hexdigest(),
+            'normalization':'UTF-8/LF excerpt; file SHA remains the exact Git blob content'}
+
+
+def expand_proof(sn,spec,edge):
+    assert spec['edge']==edge['id'] and spec['proof_object'] and spec['scope_limit']
+    assert set(spec['layers'])<={'component_contract','handoff_contract'}
+    source_steps=[]
+    for step in spec['source_steps']:
+        ref=function_ref(sn,step['symbol']);source=catalog[ref]
+        assert source['line']<=step['start']<=step['end']<=source['end_line'],(spec['id'],step)
+        source_steps.append({**excerpt(ref,step['start'],step['end']),
+                             'roles':step['roles'],'proves':step['proves']})
+    test=spec['test'];file=Path(test['file']).stem
+    ref=test_ref(sn,file,test['name']);source=catalog[ref]
+    tree=ast.parse(blob(source['commit'],source['path']).decode('utf-8-sig'))
+    case=next(n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
+              and n.name==test['name'] and n.lineno==source['line'])
+    assertions=[]
+    for binding in test['assertions']:
+        statement=next(n for n in ast.walk(case) if isinstance(n,ast.Assert) and n.lineno==binding['line'])
+        assertions.append({**excerpt(ref,statement.lineno,statement.end_lineno),
+                           'assertion_expression':ast.unparse(statement.test),
+                           'roles':binding['roles'],'proves':binding['proves']})
+    invocations=[]
+    for line in test['act_lines']:
+        calls=[n for n in ast.walk(case) if isinstance(n,ast.Call) and n.lineno==line]
+        assert calls,(spec['id'],line)
+        call=max(calls,key=lambda n:(n.end_lineno-n.lineno,n.end_col_offset-n.col_offset))
+        invocations.append({**excerpt(ref,call.lineno,call.end_lineno),'expression':ast.unparse(call.func)})
+    contexts=[{**excerpt(ref,c['start'],c['end']),'proves':c['proves']} for c in test['fixture_context']]
+    return {'id':spec['id'],'layers':spec['layers'],'proof_object':spec['proof_object'],
+            'edge_binding':{'edge':edge['id'],'snapshot':sn,'from_node':edge['from'],'to_node':edge['to']},
+            'method':spec['method'],'source_steps':source_steps,'test_ref':ref,
+            'invocations':invocations,'assertion_bindings':assertions,'fixture_context':contexts,
+            'controlled_actor':spec['controlled_actor'],'scope_limit':spec['scope_limit'],
+            'recorded_suite_ref':ci_by_snapshot[sn],
+            'execution_scope':'Existing fixed test source and suite receipt; no new per-case execution, origin authentication or D replay.'}
+
 ci_by_snapshot={}
 for sn,run_id in [('main',44068954853),('pr124',44085810641)]:
     ci=next(x for x in baseline['ci'] if x['run_id']==run_id)
@@ -313,6 +360,7 @@ issue_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/git
 visibility_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/github-visibility.json','decoded_GET_observation')
 protection_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/protection-observation.json','protection_observation')
 rows=[]
+proof_claims={}
 for e in graph['edges']:
     group_key=family_by_edge[e['id']];g=families[group_key]
     a,b=[graph['nodes'][e[k]] for k in ['from','to']]
@@ -337,9 +385,17 @@ for e in graph['edges']:
         'E047':{'test_unified_cli':['test_actions_dispatcher_preserves_original_result']},
     }
     evidence.extend(test_ref(sn,f,n) for f,names in extra_tests.get(e['id'],{}).items() for n in names)
-    status='known_gap' if e['id'] in known else 'not_investigated' if e['id'] in uninvestigated else 'verified_contract_authority_unconnected'
-    basis=(known.get(e['id']) or uninvestigated.get(e['id']) or
-           '该边的固定实现、既有合同测试及对应 core CI 可复用；实际 issuer/transport/外部 consumer 权威没有由这些合同证据接通。')
+    own_proofs=[expand_proof(sn,spec,e) for spec in proof_specs.values() if spec['edge']==e['id']]
+    proof_claims.update({p['id']:p for p in own_proofs})
+    handoff_claims=[p['id'] for p in own_proofs if 'handoff_contract' in p['layers']]
+    component_claims=[p['id'] for p in own_proofs if 'component_contract' in p['layers']]
+    status=('known_gap' if e['id'] in known else
+            'verified_contract_authority_unconnected' if handoff_claims else 'not_investigated')
+    basis=(known[e['id']] if e['id'] in known else
+           '；'.join(proof_claims[p]['proof_object'] for p in handoff_claims) if handoff_claims else
+           uninvestigated.get(e['id'],'本边尚未登记直接交接断言/已核实数据路径；相关组件测试保留为上下文，局部已证层次单独列出。'))
+    for p in own_proofs:
+        evidence.extend([p['test_ref'],p['recorded_suite_ref'],*[s['source_ref'] for s in p['source_steps']]])
     if 'external' in a or 'external' in b:
         external_node=a if 'external' in a else b
         next_observation=external_node['needed_observation']
@@ -366,7 +422,22 @@ for e in graph['edges']:
                                         'scope_limit':'This pinned edge only; no authority transfer between snapshots or unrelated obligations.'},
       'failure_behavior':{'recorded_contract':g['failure_behavior'],'independent_semantic_adversarial_replay':'not performed in C'},
       'raw_evidence_and_tests':list(dict.fromkeys(evidence)),
+      'edge_proof':{'proof_object':{'edge':e['id'],'from_node':e['from'],'to_node':e['to'],
+                                    'declared_handoff':e['fact'],'snapshot':sn},
+                    'layers':{
+                      'component_contract':{'status':'verified' if component_claims else 'related_evidence_only',
+                                             'claim_ids':component_claims,'limit':'局部 API/分支证据不提升为本边交接。'},
+                      'handoff_contract':{'status':'verified' if handoff_claims else 'not_investigated',
+                                           'claim_ids':handoff_claims,'limit':'只在逐条 proof_object/scope_limit 内成立。'},
+                      'origin_authentication':{'status':'not_investigated','claim_ids':[],
+                                                'limit':'没有新增真实 issuer/source 认证证明；fixture True 不代签。'},
+                      'production_wiring':{'status':'known_gap' if e['id'] in known else 'not_investigated','claim_ids':[],
+                                           'limit':'保留原已知缺口/观察；没有新增真实端到端接线验收。'}},
+                    'contextual_test_refs':tests,
+                    'classification_rule':'仅本边显式 handoff_contract 证明可支持合同已验证分类；Family/CI/测试名存在不构成该证明。'},
       'coverage_status':{'value':status,'label':labels[status],'basis':basis,
+                          'verified_layer':'handoff_contract' if handoff_claims and status=='verified_contract_authority_unconnected' else None,
+                          'proof_claim_ids':handoff_claims if status=='verified_contract_authority_unconnected' else [],
                           'evidence_scope':'Contract/observation only as cited; not a new Required/Release/production decision.'},
       'gap_or_contradiction':{'gap':basis if status!='verified_contract_authority_unconnected' else g['authority_source'],
                               'contradiction':'No evidence contradiction established by this C derivation; D views remain separate.',
@@ -416,7 +487,12 @@ index={'purpose':'Issue #125 C derived Coverage/Gap evidence index, never a runt
        'implementation_base':BASE,'reviewed_ab_head':AB_HEAD,'snapshots':REFS,
        'classification_labels':labels,'assessment_scope':'Reuses A/B fixed code/observations and original contract evidence. Independent D semantic/adversarial/source views have not been executed.',
        'production_claim':'No reviewed authorization edge is classified as verified_production; this does not invalidate recorded native fixtures or observed CI Checks within their own scope.',
-       'families':public_families,'status_counts':status_counts,'source_catalog':catalog,'edges':rows}
+       'families':public_families,'status_counts':status_counts,'source_catalog':catalog,
+       'edge_proof_input':{'path':'evidence/edge-proof-claims.json',
+                            'sha256':hashlib.sha256((EVIDENCE/'edge-proof-claims.json').read_bytes()).hexdigest()},
+       'edge_proof_claims':proof_claims,'proof_layer_counts':{
+           layer:sum(r['edge_proof']['layers'][layer]['status']=='verified' for r in rows)
+           for layer in proof_input['layer_definitions']},'edges':rows}
 write(OUT/'index.json',index)
 write(OUT/'candidate-relations.json',{'purpose':'Reconcile all repaired A/B candidates with C edges without conflating mechanical and semantic coverage',
        'ab_counts':dispositions['counts'],'snapshots':REFS,
@@ -429,16 +505,29 @@ lines=['# C 阶段的实际证据范围','',f'派生输入为已合并 #126 的�
        '## 按边分类','', '| 分类 | 边数 |', '| --- | ---: |']
 for status,label in labels.items():lines.append(f'| {label} (`{status}`) | {status_counts[status]} |')
 lines.extend(['','以上是 **86 条已列依赖边**的证据类别，不是 ECI 授权覆盖率。0 项真实生产表示这些允许性链路没有完成所需真实来源闭包；旧 Native/CI 事实仍在原范围有效。0 项证据矛盾表示 C 未建立此类裁决，不代表 D 已证明没有矛盾。',
+              '', '## 证明对象与层次', '',
+              '[Review #5943207575](https://github.com/dymzz/engineering-ci/pull/127#pullrequestreview-5943207575) 指出的默认合同分类已移除。每条边都有自己的 `edge_proof.proof_object`；层次分别记录组件合同、交接合同、来源认证、生产接线。只有该边显式登记的交接证明，才支持“合同已验证”分类。未逐边绑定的 Family fixtures/CI 只作上下文。', '',
+              '| 已有直接证明的层次 | 边数 |', '| --- | ---: |'])
+for layer,count in index['proof_layer_counts'].items():lines.append(f'| {layer} | {count} |')
+lines.extend(['', '这些计数限于每项 `proof_object` / `scope_limit`。组件层通过不能提升交接层；交接层可只证明受控 API/格式/参数传递，不提升实际 issuer、token/App 或端到端运行权限。', '',
+              '## 逐边直接证明', '',
+              '[证明输入](evidence/edge-proof-claims.json)逐项写明本边条件、固定源码路径、测试调用点、断言角色及其证明内容；[机器索引](index.json)进一步保存原文摘录、行号和 SHA。校核器核对这些手工审阅的绑定与真实 AST/源字节一致，不能自动裁定全部业务语义。', '',
+              '| 证明 | 层次 | 证明对象 | 直接断言（固定源码行） |', '| --- | --- | --- | --- |'])
+for key,p in proof_claims.items():
+    assertions='、'.join(f'[{a["start"]}]({catalog[p["test_ref"]]["url"].split("#")[0]}#L{a["start"]})' for a in p['assertion_bindings'])
+    lines.append(f'| {key} | {" / ".join(p["layers"])} | {p["proof_object"]} | {assertions} |')
+lines.extend(['', 'E059/E062/E085 仅保留明确的组件断言，外部来源交接仍未调查。E063 保留精确 Python transport API 正例：repository、`check-runs`、`POST`、请求体等于 `publication.request`、返回 ID；真实 token/App 与服务器授权没有据此验证。E079 的范围仅为结构 seal→Binder 的对齐/拒绝行为，与 E085 的真实 Phase 来源分开。',
               '','## 逐边索引','',
               '每行的固定源码、身份/Phase/时间、failure、原始证据/测试、trust boundary 与原 Issue/PR 均在 [机器索引](index.json) 的同名 edge 中。`contract_input` 不能充作生产接线；测试名中的 real/verified 不改变 fixture 证据类型。','',
-              '| 边 | 生产/验证 → 消费 | 分类 | 原归属 |', '| --- | --- | --- | --- |'])
+              '| 边 | 生产/验证 → 消费 | 分类 | 已证层次 | 原归属 |', '| --- | --- | --- | --- | --- |'])
 for row in rows:
     edge=next(e for e in graph['edges'] if e['id']==row['edge'])
     a,b=[graph['nodes'][edge[k]] for k in ['from','to']]
     def label(n):return n.get('symbol',n.get('external')).removeprefix('engineering_ci.')
     source_link=next((catalog[s]['url'] for s in row['actual_call_path']['anchors']),None)
     owners=' / '.join('#'+u.rsplit('/',1)[-1] for u in row['original_issue_pr']['issues'])
-    lines.append(f'| [{row["edge"]}]({source_link}) | `{label(a)}` → `{label(b)}` | {labels[row["coverage_status"]["value"]]} | {owners} |')
+    verified=' / '.join(k for k,v in row['edge_proof']['layers'].items() if v['status']=='verified') or '未登记直接证明；上下文保留'
+    lines.append(f'| [{row["edge"]}]({source_link}) | `{label(a)}` → `{label(b)}` | {labels[row["coverage_status"]["value"]]} | {verified} | {owners} |')
 lines.extend(['','## 候选去向与未调查范围','',
               '原 A/B 254 项 disposition 原文不改写。C 从完整保留 AST 查找同分区 callee→caller 路径，允许中间 helper 不在候选列表；每一步仍有实际调用表达式依据。正向调用路径与原人工数据边分开校验。','',
               '| 快照 | 同分区静态路径 | 仅相同实现，消费者待查 | 尚未找到图路径 | 明确排除 |', '| --- | ---: | ---: | ---: | ---: |'])
@@ -449,6 +538,9 @@ lines.extend(['','[候选关系](candidate-relations.json)逐项列出原 dispos
               '','## 已知缺口及后续观察','',
               '| 边 | 实际依据 / 待补事实 |', '| --- | --- |'])
 for edge,why in {**known,**uninvestigated}.items():lines.append(f'| {edge} | {why} |')
+for row in rows:
+    if row['coverage_status']['value']=='not_investigated' and row['edge'] not in uninvestigated:
+        lines.append(f'| {row["edge"]} | {row["coverage_status"]["basis"]} |')
 lines.extend(['','权威回调尚未接通的合同边还分别列出真实 Issuer、当前批准/撤销/有效期、Scope、Provider/transport 与消费者的 `needed_observation`。这些条目用于原 Issue 的后续验收；本阶段没有新增修复方案、修改公共接口或运行 D 的组合对抗测试。',
               '','上级入口：[C 阶段索引](README.md)。',''])
 (OUT/'assessment.md').write_bytes('\n'.join(lines).encode('utf-8'))
