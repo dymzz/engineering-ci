@@ -2,7 +2,9 @@
 
 import copy
 import json
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 from test_reconciliation import (
@@ -15,8 +17,17 @@ from test_reconciliation import (
     report_ref_for,
 )
 
-from engineering_ci import check_contract, hooks
+from engineering_ci import (
+    check_contract,
+    expected_checks,
+    hooks,
+    reconciliation,
+    selection,
+)
 from engineering_ci import hook_coordinator as coordinator
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "tests/fixtures/selection-app"
 
 
 def git(root, *args):
@@ -43,6 +54,18 @@ def repo(tmp_path):
     return root
 
 
+@pytest.fixture()
+def selection_repo(tmp_path):
+    target = tmp_path / "selection-repo"
+    shutil.copytree(FIXTURE, target)
+    git(target, "init", "-q", "-b", "main")
+    git(target, "config", "user.email", "expected@example.invalid")
+    git(target, "config", "user.name", "Expected Test")
+    git(target, "add", "-A")
+    git(target, "commit", "-qm", "base")
+    return target, git(target, "rev-parse", "HEAD")
+
+
 def capture_push(
     repo, *, location="origin", after=None, before=None, ref="refs/heads/main"
 ):
@@ -61,7 +84,8 @@ def capture_push_multi(repo, updates, *, location="origin"):
     lines = []
     for local_ref, after, remote_ref, before in updates:
         lines.append(
-            f"{local_ref} {after or head} {remote_ref} {before if before is not None else zero}"
+            f"{local_ref} {after or head} {remote_ref} "
+            f"{before if before is not None else zero}"
         )
     stdin_text = "\n".join(lines) + "\n"
     event = hooks.capture_pre_push(repo, "origin", location, stdin_text)
@@ -74,14 +98,64 @@ def capture_precommit(repo):
 
 
 def event_ref_for_binding(binding, *, ref_index=0):
+    """Producer-shaped Event Ref: head_ref=remote label, base_ref=raw before OID."""
     ref = binding.event["refs"][ref_index]
+    raw_before = ref["before"]
+    raw_after = ref["after"]
     return {
-        "base_ref": ref["remote_ref"],
-        "head_ref": ref["local_ref"],
-        "base_commit": ref["before"],
-        "head_commit": ref["after"],
-        "references": [dict(ref)],
+        "base_ref": raw_before,
+        "head_ref": ref["remote_ref"],
+        "base_commit": raw_before,
+        "head_commit": raw_after,
+        "local_ref": ref["local_ref"],
+        "remote_ref": ref["remote_ref"],
+        "raw_before": raw_before,
+        "raw_after": raw_after,
+        "references": [
+            {
+                **dict(ref),
+                "raw_before": raw_before,
+                "raw_after": raw_after,
+                "source_ref": ref["remote_ref"],
+            }
+        ],
         "ref_action": ref.get("ref_action"),
+    }
+
+
+def attempt_native(run, job_ref, **kwargs):
+    kwargs.setdefault("tool_access", "tach/check")
+    kwargs.setdefault("runner_ref", run.runner_ref)
+    return native(
+        instance=coordinator.attempt_result_instance(run, job_ref),
+        **kwargs,
+    )
+
+
+def runner_report(run, job_ref, result, *, name="tach"):
+    """Simulate an original #52/Host Runner Execution Report."""
+    production_ref = run.jobs[job_ref]["production_ref"]
+    return {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": name,
+                "status": result["status"],
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "status": "valid",
+                },
+                "native_result": result,
+                "native_results": [result],
+            }
+        ],
+        "invocation_ref": run.invocation_ref,
+        "run_ref": run.run_ref,
+        "attempt_ref": run.attempt_ref,
+        "job_ref": job_ref,
+        "production_ref": production_ref,
     }
 
 
@@ -95,50 +169,18 @@ def closed_projection(binding, *, ref_index=0, source=None):
         source=source,
         consumer_completeness="expected_domain_complete",
     )
-    resolution = make_resolution(entry, source=source) if source else make_resolution(entry)
-    result = native(tool_access="tach/check", source=source) if source else native(
-        tool_access="tach/check"
+    resolution = (
+        make_resolution(entry, source=source) if source else make_resolution(entry)
     )
-    return entry, projection, resolution, result
-
-
-def per_ref_scope(binding, *, ref_index, scope_suffix):
-    """Build one Expected per-ref child scope for an Invocation Ref."""
-    ref = binding.event["refs"][ref_index]
-    event_ref = event_ref_for_binding(binding, ref_index=ref_index)
-    entry = make_entry(event=event_ref)
-    digest = (scope_suffix + ("0" * 64))[:64]
-    return {
-        "source_ref": ref["remote_ref"],
-        "local_ref": ref["local_ref"],
-        "remote_ref": ref["remote_ref"],
-        "ref_action": ref.get("ref_action"),
-        "force_push": False,
-        "baseline_status": "ok",
-        "event_ref": event_ref,
-        "source": copy.deepcopy(entry["source_ref"]),
-        "scope_id": f"sha256:{digest}",
-        "expected_set_ref": f"sha256:{'b' * 64}",
-        "checks": [entry],
-        "non_check_obligations": [],
-        "status": "complete",
-        "ref": {
-            "local_ref": ref["local_ref"],
-            "remote_ref": ref["remote_ref"],
-            "before": ref["before"],
-            "after": ref["after"],
-            "ref_action": ref.get("ref_action"),
-        },
-    }
+    return entry, projection, resolution
 
 
 def collect_and_issue(run, job_ref, projection, result):
-    report = coordinator.build_execution_report(
-        run, job_ref, native_results=[result]
-    )
-    _results, _rejections, report_ref = coordinator.collect_job_report(
+    report = runner_report(run, job_ref, result)
+    _results, rejections, report_ref = coordinator.collect_job_report(
         run, job_ref, report
     )
+    assert rejections == {}
     receipt = coordinator.issue_job_receipt(
         run,
         job_ref,
@@ -176,15 +218,26 @@ def test_verify_invocation_cli(repo):
     assert code == 0
 
 
-def test_issue_job_receipt_requires_built_production_report(repo):
+def test_issue_job_receipt_requires_runner_produced_report(repo):
     reference = capture_push(repo)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="abc")
     run.record_job("job-1")
-    _entry, projection, _resolution, result = closed_projection(binding)
+    _entry, projection, _resolution = closed_projection(binding)
+    result = attempt_native(run, "job-1")
     bare = report_for([result])
+    bare.update(
+        {
+            "invocation_ref": run.invocation_ref,
+            "run_ref": run.run_ref,
+            "attempt_ref": run.attempt_ref,
+            "job_ref": "job-1",
+            "production_ref": run.jobs["job-1"]["production_ref"],
+        }
+    )
     with pytest.raises(
-        coordinator.HookCoordinatorError, match="job_production_boundary_unproven"
+        coordinator.HookCoordinatorError,
+        match="execution_report_not_runner_produced",
     ):
         coordinator.collect_job_report(run, "job-1", bare)
     _report, report_ref, receipt = collect_and_issue(run, "job-1", projection, result)
@@ -210,7 +263,8 @@ def test_finalize_matched_invocation_exits_zero(repo):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="match")
     run.record_job("job-1")
-    entry, projection, resolution, result = closed_projection(binding)
+    entry, projection, resolution = closed_projection(binding)
+    result = attempt_native(run, "job-1")
     report, _report_ref, job_receipt = collect_and_issue(
         run, "job-1", projection, result
     )
@@ -236,11 +290,24 @@ def test_expected_event_mismatch_blocks_finalize(repo):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     foreign = make_entry(
         event={
-            "base_ref": "refs/heads/other",
+            "base_ref": "1" * 40,
             "head_ref": "refs/heads/other",
             "base_commit": "1" * 40,
             "head_commit": "2" * 40,
-            "references": [],
+            "local_ref": "refs/heads/other",
+            "remote_ref": "refs/heads/other",
+            "raw_before": "1" * 40,
+            "raw_after": "2" * 40,
+            "references": [
+                {
+                    "local_ref": "refs/heads/other",
+                    "remote_ref": "refs/heads/other",
+                    "before": "1" * 40,
+                    "after": "2" * 40,
+                    "raw_before": "1" * 40,
+                    "raw_after": "2" * 40,
+                }
+            ],
         }
     )
     projection = make_projection(
@@ -262,7 +329,8 @@ def test_old_pass_does_not_cover_new_invocation(repo):
     binding_new = coordinator.load_invocation_binding(second.invocation_path)
     run_old = coordinator.open_attempt(binding_old, run_id="old")
     run_old.record_job("job-1")
-    _entry, projection, _resolution, result = closed_projection(binding_old)
+    _entry, projection, _resolution = closed_projection(binding_old)
+    result = attempt_native(run_old, "job-1")
     report, report_ref, old_receipt = collect_and_issue(
         run_old, "job-1", projection, result
     )
@@ -278,7 +346,7 @@ def test_old_pass_does_not_cover_new_invocation(repo):
         "native_results": [result],
         "job_receipt": old_receipt,
     }
-    entry_new, projection_new, resolution_new, _result = closed_projection(binding_new)
+    entry_new, projection_new, resolution_new = closed_projection(binding_new)
     routing = coordinator.build_routing(
         entry_new["expected_check_ref"], run_new, ["job-1"]
     )
@@ -293,47 +361,34 @@ def test_old_pass_does_not_cover_new_invocation(repo):
     assert outcome["receipts"][0]["entries"][0]["binding_status"] != "matched"
 
 
-def test_old_report_cannot_be_rebranded_onto_new_attempt(repo):
+def test_historical_native_cannot_be_rewrapped_for_new_attempt(repo):
     first = capture_push(repo)
     second = capture_push(repo)
     binding_old = coordinator.load_invocation_binding(first.invocation_path)
     binding_new = coordinator.load_invocation_binding(second.invocation_path)
     run_old = coordinator.open_attempt(binding_old, run_id="old")
     run_old.record_job("job-1")
-    _entry, projection, _resolution, result = closed_projection(binding_old)
-    report, report_ref, _receipt = collect_and_issue(
-        run_old, "job-1", projection, result
+    _entry, projection, _resolution = closed_projection(binding_old)
+    old_result = attempt_native(run_old, "job-1")
+    _report, report_ref, _receipt = collect_and_issue(
+        run_old, "job-1", projection, old_result
     )
     run_new = coordinator.open_attempt(binding_new, run_id="new")
     run_new.record_job("job-1")
-    production_ref = run_new.jobs["job-1"]["production_ref"]
-    # Historical attack: stamp B's identity + production_ref onto A's Report.
-    rebranded = copy.deepcopy(report)
-    rebranded["invocation_ref"] = run_new.invocation_ref
-    rebranded["run_ref"] = run_new.run_ref
-    rebranded["attempt_ref"] = run_new.attempt_ref
-    rebranded["job_ref"] = "job-1"
-    rebranded["production_ref"] = production_ref
+    # A historical Native PASS placed into a B-attributed Report body.
+    rewrapped = runner_report(run_new, "job-1", old_result)
     with pytest.raises(
         coordinator.HookCoordinatorError,
-        match="job_production_boundary_unproven",
+        match="native_result_attempt_mismatch",
     ):
-        coordinator.collect_job_report(run_new, "job-1", rebranded)
-    # B produces different Native Results than A; stamped A body must not Collect.
-    other = native(tool_access="tach/check", instance="attempt-b")
-    genuine = coordinator.build_execution_report(
-        run_new, "job-1", native_results=[other]
-    )
-    with pytest.raises(
-        coordinator.HookCoordinatorError,
-        match="execution_report_production_mismatch",
-    ):
-        coordinator.collect_job_report(run_new, "job-1", rebranded)
+        coordinator.collect_job_report(run_new, "job-1", rewrapped)
+    genuine = attempt_native(run_new, "job-1")
+    report_b = runner_report(run_new, "job-1", genuine)
     _results, _rejections, genuine_ref = coordinator.collect_job_report(
-        run_new, "job-1", genuine
+        run_new, "job-1", report_b
     )
     assert genuine_ref != report_ref
-    assert genuine["production_ref"] == production_ref
+    assert report_b["checks"][0]["plan_authorized"] is True
     with pytest.raises(
         coordinator.HookCoordinatorError, match="execution_report_not_collected"
     ):
@@ -344,8 +399,32 @@ def test_old_report_cannot_be_rebranded_onto_new_attempt(repo):
             event_ref=projection["event_ref"],
             scope_id=projection["scope_id"],
             expected_set_ref=projection["expected_set_ref"],
-            report=rebranded,
+            report=rewrapped,
         )
+
+
+def test_unauthorized_runner_report_rejection_is_preserved(repo):
+    reference = capture_push(repo)
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    run = coordinator.open_attempt(binding, run_id="unauth")
+    run.record_job("job-1")
+    result = attempt_native(run, "job-1")
+    report = runner_report(run, "job-1", result)
+    report["checks"][0]["plan_authorized"] = False
+    with pytest.raises(
+        coordinator.HookCoordinatorError,
+        match="execution_report_not_runner_produced",
+    ):
+        coordinator.collect_job_report(run, "job-1", report)
+    # Valid structure with plan_authorized False still rejected for Collect;
+    # with True but contract invalid likewise.
+    report["checks"][0]["plan_authorized"] = True
+    report["checks"][0]["check_contract"] = {"status": "invalid"}
+    with pytest.raises(
+        coordinator.HookCoordinatorError,
+        match="execution_report_not_runner_produced",
+    ):
+        coordinator.collect_job_report(run, "job-1", report)
 
 
 def test_partial_expected_does_not_exit_zero(repo):
@@ -362,7 +441,7 @@ def test_partial_expected_does_not_exit_zero(repo):
         consumer_completeness="not_claimed",
     )
     resolution = make_resolution(entry)
-    result = native(tool_access="tach/check")
+    result = attempt_native(run, "job-1")
     report, _report_ref, job_receipt = collect_and_issue(
         run, "job-1", projection, result
     )
@@ -383,7 +462,6 @@ def test_partial_expected_does_not_exit_zero(repo):
 
 
 def test_complete_not_claimed_does_not_exit_zero(repo):
-    """P1-4: completeness labels are checked independently of status=matched."""
     reference = capture_push(repo)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="not-claimed")
@@ -397,7 +475,7 @@ def test_complete_not_claimed_does_not_exit_zero(repo):
         consumer_completeness="not_claimed",
     )
     resolution = make_resolution(entry)
-    result = native(tool_access="tach/check")
+    result = attempt_native(run, "job-1")
     report, _report_ref, job_receipt = collect_and_issue(
         run, "job-1", projection, result
     )
@@ -415,11 +493,7 @@ def test_complete_not_claimed_does_not_exit_zero(repo):
     assert outcome["receipts"][0]["status"] == "matched"
     assert outcome["receipts"][0]["expected_completeness"] == "not_claimed"
     assert outcome["exit_code"] != 0
-    # Direct gate: forged matched+not_claimed must also refuse Exit 0.
-    forged = copy.deepcopy(outcome["receipts"][0])
-    assert (
-        coordinator.hook_exit_code([forged]) != 0
-    )
+    assert coordinator.hook_exit_code([outcome["receipts"][0]]) != 0
 
 
 def test_filtered_job_still_runs_final_reconciliation(repo):
@@ -462,10 +536,12 @@ def test_terminal_fail_attempt_still_finalizes(repo):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="fail")
     run.record_job("job-1", eligibility="terminal", mapping_status="routed")
-    entry, projection, resolution, _result = closed_projection(binding)
-    failed = native(status="failed", instance="fail-1")
-    with pytest.raises(coordinator.HookCoordinatorError, match="attempt_not_eligible"):
-        coordinator.build_execution_report(run, "job-1", native_results=[failed])
+    entry, projection, resolution = closed_projection(binding)
+    failed = native(
+        status="failed",
+        instance="fail-1",
+        runner_ref=run.runner_ref,
+    )
     report = report_for([failed])
     report_ref = report_ref_for(report)
     with pytest.raises(coordinator.HookCoordinatorError, match="attempt_not_eligible"):
@@ -496,7 +572,7 @@ def test_terminal_fail_attempt_still_finalizes(repo):
 def test_empty_per_ref_container_is_rejected(repo):
     reference = capture_push(repo)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
-    _entry, projection, _resolution, _result = closed_projection(binding)
+    _entry, projection, _resolution = closed_projection(binding)
     projection["per_ref"] = []
     with pytest.raises(
         coordinator.HookCoordinatorError, match="expected_ref_scopes_empty"
@@ -558,88 +634,170 @@ def test_precommit_index_tree_matches_when_index_differs_from_head(repo):
         coordinator.verify_expected_matches_invocation(binding, wrong_projection)
 
 
-def test_multi_ref_requires_full_invocation_coverage(repo):
-    head = git(repo, "rev-parse", "HEAD")
+def test_producer_new_ref_matches_raw_zero_not_analyzed_baseline(selection_repo):
+    path, base = selection_repo
+    (path / "src/pkg/new_ref.py").write_text("X = 1\n", encoding="utf-8")
+    git(path, "add", "-A")
+    git(path, "commit", "-qm", "new-ref-tip")
+    tip = git(path, "rev-parse", "HEAD")
     zero = "0" * 40
-    reference = capture_push_multi(
-        repo,
+    multi = selection.changeset_multi(
+        path,
+        [("refs/heads/feature", tip, "refs/heads/feature", zero)],
+        new_ref_baseline=base,
+    )
+    assert multi.references[0]["raw_before"] == zero
+    assert multi.references[0]["before"] == base
+    assert multi.references[0]["before"] != multi.references[0]["raw_before"]
+    _label, _baseline, ref_event, ref_source = expected_checks._ref_event_and_source(
+        multi.references[0]
+    )
+    entry = make_entry(event=ref_event, source=ref_source)
+    projection = make_projection(
+        [entry],
+        status="complete",
+        event=ref_event,
+        source=ref_source,
+        consumer_completeness="expected_domain_complete",
+    )
+    reference = capture_push(path, after=tip, before=zero, ref="refs/heads/feature")
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    assert coordinator.verify_expected_matches_invocation(binding, projection) is True
+    # Using analyzed baseline as transport before must not match Invocation.
+    forged = copy.deepcopy(projection)
+    forged["event_ref"]["references"][0]["raw_before"] = base
+    forged["checks"][0]["event_ref"] = copy.deepcopy(forged["event_ref"])
+    forged["checks"][0]["expected_check_ref"] = expected_checks.entry_identity(
+        forged["checks"][0]
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="expected_event_mismatch"
+    ):
+        coordinator.verify_expected_matches_invocation(binding, forged)
+
+
+def test_producer_delete_ref_accepts_null_analyzed_after(selection_repo):
+    path, base = selection_repo
+    zero = "0" * 40
+    multi = selection.changeset_multi(
+        path,
+        [("refs/heads/main", zero, "refs/heads/main", base)],
+    )
+    assert multi.references[0]["ref_action"] == "delete"
+    assert multi.references[0]["after"] is None
+    assert multi.references[0]["raw_after"] == zero
+    _label, _baseline, ref_event, ref_source = expected_checks._ref_event_and_source(
+        multi.references[0]
+    )
+    entry = make_entry(event=ref_event, source=ref_source)
+    projection = make_projection(
+        [entry],
+        status="complete",
+        event=ref_event,
+        source=ref_source,
+        consumer_completeness="expected_domain_complete",
+    )
+    reference = capture_push(path, after=zero, before=base, ref="refs/heads/main")
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    assert binding.event["refs"][0]["ref_action"] == "delete"
+    assert coordinator.verify_expected_matches_invocation(binding, projection) is True
+
+
+def test_multi_ref_finalize_with_producer_expected(selection_repo):
+    path, base = selection_repo
+    (path / "src/pkg/leaf_a.py").write_text("A = 1\n", encoding="utf-8")
+    git(path, "add", "-A")
+    git(path, "commit", "-qm", "ref-a")
+    tip_a = git(path, "rev-parse", "HEAD")
+    git(path, "checkout", "-q", base)
+    (path / "docs/note.md").write_text("# note\n", encoding="utf-8")
+    git(path, "add", "-A")
+    git(path, "commit", "-qm", "ref-b")
+    tip_b = git(path, "rev-parse", "HEAD")
+    multi = selection.changeset_multi(
+        path,
         [
-            ("refs/heads/main", head, "refs/heads/main", zero),
-            ("refs/heads/topic", head, "refs/heads/topic", zero),
+            ("refs/heads/a", tip_a, "refs/heads/a", base),
+            ("refs/heads/b", tip_b, "refs/heads/b", base),
+        ],
+    )
+    cfg = selection.load_config(path / "ci-selection.toml")
+    sel = selection.select(multi, cfg, root=path)
+    plan = selection.plan(
+        sel, config=cfg, config_path=path / "ci-selection.toml", root=path
+    )
+    expected = plan["expected_checks"]
+    assert "per_ref" in expected
+    assert len(expected["per_ref"]) == 2
+    reference = capture_push_multi(
+        path,
+        [
+            ("refs/heads/a", tip_a, "refs/heads/a", base),
+            ("refs/heads/b", tip_b, "refs/heads/b", base),
         ],
     )
     binding = coordinator.load_invocation_binding(reference.invocation_path)
-    assert len(binding.event["refs"]) == 2
-    scope_a = per_ref_scope(binding, ref_index=0, scope_suffix="aa")
-    scope_b = per_ref_scope(binding, ref_index=1, scope_suffix="bb")
-    covered = make_projection(
-        [],
-        status="partial",
-        event=event_ref_for_binding(binding, ref_index=0),
-        consumer_completeness="per_ref_container_only",
-        per_ref_checks=[scope_a, scope_b],
-    )
-    assert coordinator.verify_expected_matches_invocation(binding, covered) is True
-    missing = make_projection(
-        [],
-        status="partial",
-        event=event_ref_for_binding(binding, ref_index=0),
-        consumer_completeness="per_ref_container_only",
-        per_ref_checks=[scope_a],
-    )
+    assert coordinator.verify_expected_matches_invocation(binding, expected) is True
+
+    run = coordinator.open_attempt(binding, run_id="multi")
+    routing_by_scope = {}
+    resolutions_by_scope = {}
+    observations_by_scope = {}
+    for index, scope in enumerate(expected["per_ref"]):
+        job_ref = f"job-{index}"
+        entry = next(
+            (item for item in scope["checks"] if item["name"] == "tach"),
+            None,
+        )
+        if entry is None:
+            routing_by_scope[scope["scope_id"]] = []
+            resolutions_by_scope[scope["scope_id"]] = []
+            observations_by_scope[scope["scope_id"]] = []
+            continue
+        run.record_job(job_ref)
+        result = attempt_native(run, job_ref)
+        report = runner_report(run, job_ref, result, name="tach")
+        _results, _rejections, report_ref = coordinator.collect_job_report(
+            run, job_ref, report
+        )
+        job_receipt = coordinator.issue_job_receipt(
+            run,
+            job_ref,
+            report_ref,
+            event_ref=scope["event_ref"],
+            scope_id=scope["scope_id"],
+            expected_set_ref=scope["expected_set_ref"],
+            report=report,
+        )
+        routing_by_scope[scope["scope_id"]] = [
+            coordinator.build_routing(entry["expected_check_ref"], run, [job_ref])
+        ]
+        resolutions_by_scope[scope["scope_id"]] = [
+            make_resolution(entry, source=entry["source_ref"])
+        ]
+        observations_by_scope[scope["scope_id"]] = [
+            coordinator.build_observation(run, job_ref, report, job_receipt=job_receipt)
+        ]
+
+    missing = copy.deepcopy(expected)
+    missing["per_ref"] = expected["per_ref"][:1]
     with pytest.raises(
         coordinator.HookCoordinatorError, match="invocation_ref_uncovered"
     ):
-        coordinator.verify_expected_matches_invocation(binding, missing)
+        coordinator.finalize_invocation(missing, binding=binding)
 
-
-def test_multi_ref_same_local_different_remote_does_not_cross_match(repo):
-    head = git(repo, "rev-parse", "HEAD")
-    zero = "0" * 40
-    reference = capture_push_multi(
-        repo,
-        [
-            ("refs/heads/main", head, "refs/heads/prod", zero),
-            ("refs/heads/main", head, "refs/heads/staging", zero),
-        ],
+    outcome = coordinator.finalize_invocation(
+        expected,
+        binding=binding,
+        routing_by_scope=routing_by_scope,
+        resolutions_by_scope=resolutions_by_scope,
+        observations_by_scope=observations_by_scope,
     )
-    binding = coordinator.load_invocation_binding(reference.invocation_path)
-    # Swap remotes relative to Invocation order: same local/OID, wrong targets.
-    swapped_a = per_ref_scope(binding, ref_index=0, scope_suffix="cc")
-    swapped_a["remote_ref"] = "refs/heads/staging"
-    swapped_a["source_ref"] = "refs/heads/staging"
-    swapped_a["ref"]["remote_ref"] = "refs/heads/staging"
-    swapped_b = per_ref_scope(binding, ref_index=1, scope_suffix="dd")
-    swapped_b["remote_ref"] = "refs/heads/prod"
-    swapped_b["source_ref"] = "refs/heads/prod"
-    swapped_b["ref"]["remote_ref"] = "refs/heads/prod"
-    # Each Expected identity matches the other Invocation ref — but assignment
-    # must still cover exact (local, remote, before, after) pairs; swapping
-    # remotes yields a valid cover only if both exact pairs still appear.
-    # Construct Expected that only covers prod under staging's remote label.
-    only_wrong = make_projection(
-        [],
-        status="partial",
-        event=event_ref_for_binding(binding, ref_index=0),
-        consumer_completeness="per_ref_container_only",
-        per_ref_checks=[swapped_a],
-    )
-    with pytest.raises(
-        coordinator.HookCoordinatorError,
-        match="expected_event_mismatch|invocation_ref_uncovered",
-    ):
-        coordinator.verify_expected_matches_invocation(binding, only_wrong)
-    both_exact = make_projection(
-        [],
-        status="partial",
-        event=event_ref_for_binding(binding, ref_index=0),
-        consumer_completeness="per_ref_container_only",
-        per_ref_checks=[
-            per_ref_scope(binding, ref_index=0, scope_suffix="ee"),
-            per_ref_scope(binding, ref_index=1, scope_suffix="ff"),
-        ],
-    )
-    assert coordinator.verify_expected_matches_invocation(binding, both_exact) is True
+    assert len(outcome["receipts"]) == 2
+    assert {item["scope_id"] for item in outcome["receipts"]} == {
+        scope["scope_id"] for scope in expected["per_ref"]
+    }
+    assert all(item.get("ref") for item in outcome["receipts"])
 
 
 def test_finalize_cli_reads_invocation(repo, tmp_path):
@@ -647,7 +805,8 @@ def test_finalize_cli_reads_invocation(repo, tmp_path):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="cli")
     run.record_job("job-1")
-    entry, projection, resolution, result = closed_projection(binding)
+    entry, projection, resolution = closed_projection(binding)
+    result = attempt_native(run, "job-1")
     report, _report_ref, job_receipt = collect_and_issue(
         run, "job-1", projection, result
     )

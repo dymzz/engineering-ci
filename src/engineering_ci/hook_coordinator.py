@@ -5,9 +5,9 @@ This module owns one Hook Invocation's outer control path. It:
 - loads and verifies a #102 ``invocation_ref → event_payload_ref → Event``;
 - binds Expected Event/Ref/Baseline identity to that Invocation Event;
 - allocates this Invocation's ``run_ref`` / ``attempt_ref``;
-- mints a Dispatch ``production_ref`` per eligible Job and builds Reports
-  only at that production boundary (no rebrand of historical Reports);
-- collects Execution Reports only when they embed that production identity;
+- mints a Dispatch ``production_ref`` per eligible Job for the Runner;
+- collects original #52 Execution Reports that embed that production identity
+  and Attempt-bound Native Results (no Coordinator re-wrap of natives);
 - issues Job Receipts only for collected Reports;
 - calls #104 ``reconcile_expected_results()`` per Expected scope after
   dispatch returns (including filtered/failed Jobs);
@@ -242,8 +242,23 @@ def open_attempt(
     )
 
 
+_ZERO_OID_40 = "0" * 40
+
+
+def _transport_oid(value, *, delete_after=False):
+    """Normalize a Git transport OID; analyzed ``None`` delete after → zero OID."""
+    if value is None or value == "":
+        if delete_after:
+            return _ZERO_OID_40
+        return None
+    return value
+
+
 def _invocation_push_refs(event):
-    """Return ordered exact pre-push ref identities from a verified Event."""
+    """Ordered raw Git transport identities from a verified pre-push Event.
+
+    Uses stdin ``before``/``after`` OIDs only — never Selection analysis baselines.
+    """
     refs = event.get("refs")
     if not isinstance(refs, list) or not refs:
         raise HookCoordinatorError("invocation_refs_missing")
@@ -264,14 +279,31 @@ def _invocation_push_refs(event):
     return identities
 
 
-def _scope_push_identity(scope, expected):
-    """Exact Expected push identity for one scope (local/remote/before/after)."""
+def _scope_transport_identity(scope, expected):
+    """Raw push transport identity for one Expected scope.
+
+    Matches ``(local_ref, remote_ref, raw_before, raw_after[, ref_action])``.
+    Never treats producer ``event_ref.head_ref`` / ``base_ref`` as local/remote
+    names (those hold the remote label and raw-before OID). Analyzed Selection
+    ``before``/``after`` baselines are not used for Invocation coverage.
+    """
     event_ref = scope.get("event_ref")
     if event_ref is None and scope is expected:
         event_ref = expected.get("event_ref")
     if not isinstance(event_ref, dict):
         raise HookCoordinatorError("expected_event_ref_missing")
-    ref_meta = scope.get("ref") if isinstance(scope.get("ref"), dict) else None
+
+    local_ref = scope.get("local_ref") or event_ref.get("local_ref")
+    remote_ref = scope.get("remote_ref")
+    if isinstance(remote_ref, dict):
+        remote_ref = None
+    source_label = scope.get("source_ref")
+    if remote_ref is None and isinstance(source_label, str) and source_label:
+        remote_ref = source_label
+    if remote_ref is None:
+        remote_ref = event_ref.get("remote_ref")
+    action = scope.get("ref_action") or event_ref.get("ref_action")
+
     references = event_ref.get("references") or []
     ref_item = None
     if isinstance(references, list) and references:
@@ -279,47 +311,53 @@ def _scope_push_identity(scope, expected):
             raise HookCoordinatorError("expected_event_ref_invalid")
         ref_item = references[0]
 
-    # Prefer explicit per-ref fields, then nested ref, then event_ref.
-    local_ref = scope.get("local_ref")
-    remote_ref = scope.get("remote_ref")
-    action = scope.get("ref_action")
-    before = None
-    after = None
-    if isinstance(remote_ref, dict):
-        remote_ref = None
-    source_label = scope.get("source_ref")
-    if remote_ref is None and isinstance(source_label, str) and source_label:
-        remote_ref = source_label
-    if ref_meta is not None:
-        local_ref = local_ref or ref_meta.get("local_ref")
-        remote_candidate = (
-            ref_meta.get("remote_ref") or ref_meta.get("source_ref")
-        )
-        if isinstance(remote_candidate, str) and remote_candidate:
-            remote_ref = remote_ref or remote_candidate
-        before = ref_meta.get("before")
-        after = ref_meta.get("after")
-        action = action or ref_meta.get("ref_action")
+    raw_before = event_ref.get("raw_before")
+    raw_after = event_ref.get("raw_after")
     if ref_item is not None:
-        local_ref = local_ref or ref_item.get("local_ref") or event_ref.get("head_ref")
-        remote_ref = (
-            remote_ref
-            or ref_item.get("remote_ref")
-            or ref_item.get("source_ref")
-            or event_ref.get("base_ref")
-        )
-        before = before or ref_item.get("before") or event_ref.get("base_commit")
-        after = after or ref_item.get("after") or event_ref.get("head_commit")
-        action = action or ref_item.get("ref_action") or event_ref.get("ref_action")
+        local_ref = local_ref or ref_item.get("local_ref")
+        remote_candidate = ref_item.get("remote_ref")
+        if remote_candidate is None and isinstance(ref_item.get("source_ref"), str):
+            remote_candidate = ref_item.get("source_ref")
+        remote_ref = remote_ref or remote_candidate
+        action = action or ref_item.get("ref_action")
+        if raw_before is None:
+            raw_before = ref_item.get("raw_before")
+        if raw_after is None:
+            raw_after = ref_item.get("raw_after")
+        # Producer delete: analyzed after may be None while raw_after is zero.
+        if raw_after is None and (
+            action == "delete" or ref_item.get("ref_action") == "delete"
+        ):
+            raw_after = _transport_oid(ref_item.get("after"), delete_after=True)
+        # Only when raw_* were never recorded (non-producer fixtures): accept
+        # reference before/after as transport OIDs, not Selection baselines.
+        if raw_before is None and "raw_before" not in (ref_item or {}):
+            raw_before = ref_item.get("before")
+        if raw_after is None and "raw_after" not in (ref_item or {}):
+            raw_after = _transport_oid(
+                ref_item.get("after"),
+                delete_after=(action == "delete"),
+            )
     else:
-        local_ref = local_ref or event_ref.get("head_ref")
-        remote_ref = remote_ref or event_ref.get("base_ref")
-        before = before or event_ref.get("base_commit")
-        after = after or event_ref.get("head_commit")
-        action = action or event_ref.get("ref_action")
-    if any(value is None or value == "" for value in (local_ref, remote_ref, before, after)):
+        # Single-scope Expected must declare local/remote explicitly. Do not
+        # read head_ref/base_ref as names (producer: head_ref=remote label,
+        # base_ref=raw_before OID).
+        if raw_before is None:
+            raw_before = event_ref.get("base_commit")
+        if raw_after is None:
+            raw_after = _transport_oid(
+                event_ref.get("head_commit"),
+                delete_after=(action == "delete"),
+            )
+
+    raw_before = _transport_oid(raw_before)
+    raw_after = _transport_oid(raw_after, delete_after=(action == "delete"))
+    if any(
+        value is None or value == ""
+        for value in (local_ref, remote_ref, raw_before, raw_after)
+    ):
         raise HookCoordinatorError("expected_ref_identity_incomplete")
-    return (local_ref, remote_ref, before, after, action)
+    return (local_ref, remote_ref, raw_before, raw_after, action)
 
 
 def _scope_index_tree(scope, expected):
@@ -344,9 +382,10 @@ def _scope_index_tree(scope, expected):
 def verify_expected_matches_invocation(binding, expected):
     """Refuse Expected projections that do not bind this Invocation Event.
 
-    Pre-push: exact ``(local_ref, remote_ref, before, after)`` membership both
-    ways when Expected is multi-ref. Pre-commit: Expected Source Index Tree
-    versus #102 ``index.tree`` (Commit OID is never compared to Tree OID).
+    Pre-push: raw transport ``(local_ref, remote_ref, raw_before, raw_after)``
+    membership both ways when multi-ref; Selection analysis baselines are not
+    compared here. Pre-commit: Expected Source Index Tree versus #102
+    ``index.tree`` (Commit OID is never compared to Tree OID).
     """
     if not isinstance(binding, InvocationBinding):
         raise HookCoordinatorError("invocation_binding_invalid")
@@ -367,16 +406,16 @@ def verify_expected_matches_invocation(binding, expected):
     invocation_refs = _invocation_push_refs(event)
     covered = set()
     for _scope_id, scope in scopes:
-        identity = _scope_push_identity(scope, expected)
-        local_ref, remote_ref, before, after, action = identity
+        identity = _scope_transport_identity(scope, expected)
+        local_ref, remote_ref, raw_before, raw_after, action = identity
         matched = False
         for index, inv in enumerate(invocation_refs):
             inv_local, inv_remote, inv_before, inv_after, inv_action = inv
             if (
                 local_ref == inv_local
                 and remote_ref == inv_remote
-                and before == inv_before
-                and after == inv_after
+                and raw_before == inv_before
+                and raw_after == inv_after
             ):
                 if (
                     action is not None
@@ -440,12 +479,59 @@ def _report_execution_attribution(report):
     }
 
 
-def build_execution_report(run_binding, job_ref, *, native_results):
-    """Create a Report at this Job's Dispatch production boundary.
+def attempt_result_instance(run_binding, job_ref):
+    """Native Result instance identity for this activated Job/Attempt."""
+    return f"{run_binding.run_ref}/{run_binding.attempt_ref}/{job_ref}"
 
-    Embeds the Job's minted ``production_ref``. Does not accept an existing
-    Report body to rebrand; callers supply Native Results produced for this
-    Attempt. Each eligible Job may build at most one Report.
+
+def _require_runner_produced_report(report):
+    """Refuse Coordinator-synthesized Native Result wrappers.
+
+    ``upstream_verified`` Collect requires the original Runner/#52 Report shape
+    so ``plan_authorized`` / contract / prerequisite rejection semantics remain.
+    """
+    checks = report.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise HookCoordinatorError("execution_report_not_runner_produced")
+    saw_results = False
+    for check in checks:
+        if not isinstance(check, dict):
+            raise HookCoordinatorError("execution_report_not_runner_produced")
+        has_results = (
+            check.get("native_results") is not None
+            or check.get("native_result") is not None
+        )
+        if not has_results:
+            continue
+        saw_results = True
+        if check.get("plan_authorized") is not True:
+            raise HookCoordinatorError("execution_report_not_runner_produced")
+        contract = check.get("check_contract")
+        if not isinstance(contract, dict) or contract.get("status") != "valid":
+            raise HookCoordinatorError("execution_report_not_runner_produced")
+    if not saw_results:
+        raise HookCoordinatorError("execution_report_not_runner_produced")
+
+
+def _require_attempt_bound_natives(run_binding, job_ref, results):
+    expected_instance = attempt_result_instance(run_binding, job_ref)
+    if not results:
+        raise HookCoordinatorError("native_results_required")
+    for result in results:
+        if not isinstance(result, dict):
+            raise HookCoordinatorError("native_result_attempt_mismatch")
+        if result.get("result_instance") != expected_instance:
+            raise HookCoordinatorError("native_result_attempt_mismatch")
+        if result.get("runner_ref") != run_binding.runner_ref:
+            raise HookCoordinatorError("native_result_runner_mismatch")
+
+
+def collect_job_report(run_binding, job_ref, report):
+    """Collect an original Runner Execution Report for this Job/Attempt.
+
+    The Report must already embed the Dispatch ``production_ref`` and
+    Attempt-bound Native Results. The Coordinator does not wrap arbitrary
+    historical natives into a substitute success Report.
     """
     if not isinstance(run_binding, RunBinding):
         raise HookCoordinatorError("run_binding_invalid")
@@ -458,43 +544,9 @@ def build_execution_report(run_binding, job_ref, *, native_results):
     if not isinstance(production_ref, str) or not production_ref.startswith("sha256:"):
         raise HookCoordinatorError("job_production_ref_missing")
     if job.get("issued_report_ref") is not None:
-        raise HookCoordinatorError("job_report_already_built")
-    if not isinstance(native_results, (list, tuple)) or not native_results:
-        raise HookCoordinatorError("native_results_required")
-    report = {
-        "kind": reconciliation.EXECUTION_REPORT_KIND,
-        "schema_version": 1,
-        "checks": [{"name": "reconciled", "native_results": list(native_results)}],
-        "invocation_ref": run_binding.invocation_ref,
-        "run_ref": run_binding.run_ref,
-        "attempt_ref": run_binding.attempt_ref,
-        "job_ref": job_ref,
-        "production_ref": production_ref,
-    }
-    report_ref = report_ref_for(report)
-    job["issued_report_ref"] = copy.deepcopy(report_ref)
-    job["report_ref"] = copy.deepcopy(report_ref)
-    return report
-
-
-def collect_job_report(run_binding, job_ref, report):
-    """Register a Report produced for this Job/Attempt on this Invocation.
-
-    Requires the Report to embed the Job's minted ``production_ref`` and to
-    equal the Report previously issued by ``build_execution_report``. Stamping
-    attribution fields onto a historical Report cannot satisfy Collect.
-    """
-    if not isinstance(run_binding, RunBinding):
-        raise HookCoordinatorError("run_binding_invalid")
-    if job_ref not in run_binding.jobs:
-        raise HookCoordinatorError("job_not_activated")
-    job = run_binding.jobs[job_ref]
-    if job.get("attempt_eligibility") != "eligible":
-        raise HookCoordinatorError("attempt_not_eligible")
-    production_ref = job.get("production_ref")
-    issued = job.get("issued_report_ref")
-    if not isinstance(production_ref, str) or issued is None:
-        raise HookCoordinatorError("job_production_boundary_unproven")
+        raise HookCoordinatorError("job_report_already_collected")
+    if not isinstance(report, dict):
+        raise HookCoordinatorError("execution_report_invalid")
     attribution = _report_execution_attribution(report)
     expected = {
         "invocation_ref": run_binding.invocation_ref,
@@ -507,10 +559,11 @@ def collect_job_report(run_binding, job_ref, report):
         raise HookCoordinatorError("execution_report_attribution_missing")
     if attribution != expected:
         raise HookCoordinatorError("execution_report_attribution_mismatch")
+    _require_runner_produced_report(report)
     results, rejections, report_ref = verify_execution_report(report)
-    if report_ref != issued:
-        raise HookCoordinatorError("execution_report_production_mismatch")
+    _require_attempt_bound_natives(run_binding, job_ref, results)
     run_binding.collected_reports[job_ref] = copy.deepcopy(report_ref)
+    job["issued_report_ref"] = copy.deepcopy(report_ref)
     job["report_ref"] = copy.deepcopy(report_ref)
     return results, rejections, report_ref
 
@@ -542,9 +595,11 @@ def issue_job_receipt(
         raise HookCoordinatorError("execution_report_not_collected")
     if job.get("issued_report_ref") != report_ref:
         raise HookCoordinatorError("execution_report_production_mismatch")
-    _results, _rejections, verified_ref = verify_execution_report(report, report_ref)
+    _require_runner_produced_report(report)
+    results, _rejections, verified_ref = verify_execution_report(report, report_ref)
     if verified_ref != report_ref:
         raise HookCoordinatorError("execution_report_digest_mismatch")
+    _require_attempt_bound_natives(run_binding, job_ref, results)
     attribution = _report_execution_attribution(report)
     expected_attr = {
         "invocation_ref": run_binding.invocation_ref,
