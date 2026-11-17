@@ -17,6 +17,7 @@
 - [历史复用接纳](historical-reuse.md) — #63 T2 跨 Run / PR→main 执行前语义等价复用合同切片。
 - [Required Assessment](required-assessment.md) — #61 R1 完整阶段性 Required 判定、四类独立事实、#63 准入与非 Check 证据消费。
 - [Required Assessment Check](required-assessment-check.md) — #61 R2 Assessment → 稳定 GitHub Check Run 发布合同。
+- [Required Assessment → Release 对账](required-assessment-release.md) — #61 R4 Assessment → Manifest v1 / 策略快照发布对账合同。
 - [Check 身份与原生结果](check-contract.md) — 稳定 check_id、规则/Profile 引用、Native Result 与执行报告绑定。
 - [仓库 Hygiene](hygiene.md) — 原生 whitespace/forwarding/docs/Vulture/Tach 检查与结果语义。
 - [来源集合对账](sources.md) — Manifest 投影、集合差、冲突、大小/SHA-256 与宿主 Git attributes。

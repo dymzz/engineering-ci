@@ -6,7 +6,9 @@ judgement for one Action x Target x Phase x Ref scope.
 
 It does **not** publish a GitHub Check (#61 R2; see
 [Required Assessment Check](required-assessment-check.md)), inspect
-Rulesets/Branch Protection (#61 R3), extend the Release Manifest (#61 R4) or
+Rulesets/Branch Protection (#61 R3), map Assessment onto Release Manifest /
+policy-snapshot publish gates (#61 R4; see
+[Required Assessment → Release 对账](required-assessment-release.md)) or
 evaluate a later stage by itself (#61 R5). It also does not re-derive policy
 obligations (#66-B2), admit trusted evidence or prove historical reuse (#63),
 or rebuild the structural Binding/Reconciliation receipt (#66-C).
