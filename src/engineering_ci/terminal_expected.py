@@ -543,43 +543,93 @@ def _normalize_completed_run(value):
             raise TerminalExpectedError("terminal_completed_run_subject_invalid")
         # Pre-execution subject association from Provider/Producer — never OTLP
         # capture / Span Expectation digests (those are post-execution inputs).
+        # Git identity fields are distinct from Plan ``source_tree_id`` (directory
+        # content SHA-256 via selection.directory_content_id).
         normalized_subject = {}
         for key in (
             "declared_target_tree",
-            "source_tree_id",
             "head_commit",
             "base_commit",
             "head_ref",
             "base_ref",
             "expected_check_ref",
             "scope_id",
+            "source_content_id",
         ):
             item = subject.get(key)
             if item is not None:
                 normalized_subject[key] = _text(
                     item, "terminal_completed_run_subject_invalid"
                 )
+        # Legacy alias: source_tree_id on subject means content id, not Git OID.
+        legacy_content = subject.get("source_tree_id")
+        if legacy_content is not None and "source_content_id" not in normalized_subject:
+            normalized_subject["source_content_id"] = _text(
+                legacy_content, "terminal_completed_run_subject_invalid"
+            )
         if not normalized_subject:
             raise TerminalExpectedError("terminal_completed_run_subject_empty")
         completed["subject"] = normalized_subject
     return completed
 
 
-def _verify_completed_run(completed, authority):
-    """Self-reported Plan params cannot alone prove a Provider terminal."""
+def _verify_completed_run(completed, authority, *, expected_subject=None):
+    """Self-reported Plan params cannot alone prove a Provider terminal.
+
+    Returning ``accepted=True`` without ``subject_verified`` only proves Run
+    terminal status — not that the Run inspected this Expected subject.
+    """
     if authority is not None:
-        accepted, reason = _authority_accepted(authority, {"completed_run": completed})
-        if accepted:
-            return True, "authority_verified", []
-        return (
-            False,
-            "rejected",
-            [reason or "terminal_completed_run_authority_rejected"],
+        context = {
+            "completed_run": copy.deepcopy(completed),
+            "expected_subject": copy.deepcopy(expected_subject),
+        }
+        outcome = authority(context)
+        if outcome is True:
+            # Bare True authenticates terminal completion only.
+            return True, "authority_verified", False, []
+        if outcome is False or outcome is None:
+            return (
+                False,
+                "rejected",
+                False,
+                ["terminal_completed_run_authority_rejected"],
+            )
+        if not isinstance(outcome, dict):
+            raise TerminalExpectedError(
+                "terminal_completed_run_authority_result_invalid"
+            )
+        accepted = (
+            outcome.get("accepted") is True and outcome.get("status") == "authorized"
         )
+        if not accepted:
+            if outcome.get("status") == "unverified":
+                return (
+                    False,
+                    "unverified",
+                    False,
+                    ["terminal_completed_run_authority_unverified"],
+                )
+            return (
+                False,
+                "rejected",
+                False,
+                ["terminal_completed_run_authority_rejected"],
+            )
+        subject_attested = (
+            outcome.get("subject_verified") is True
+            or outcome.get("subject_status") == "authorized"
+        )
+        return True, "authority_verified", subject_attested, []
     if completed.get("source") and completed.get("proof_ref"):
         # Structured Provider proof present but not yet re-validated here.
-        return False, "unverified", ["terminal_completed_run_proof_unverified"]
-    return False, "unverified", ["terminal_completed_run_source_unproven"]
+        return (
+            False,
+            "unverified",
+            False,
+            ["terminal_completed_run_proof_unverified"],
+        )
+    return False, "unverified", False, ["terminal_completed_run_source_unproven"]
 
 
 def _require_post_completion_plan(plan):
@@ -675,11 +725,35 @@ def _match_completed_run_to_plan(completed_run, plan_identity):
     return reasons, gaps
 
 
-def _correlate_expected_run_plan(expected_subject, completed_run, plan_identity):
-    """Prove Expected subject ↔ Run/Attempt subject ↔ Terminal Plan source tree.
+# Git / Changeset identity — never the same algorithm as Plan source_tree_id.
+_GIT_SUBJECT_FIELDS = (
+    "declared_target_tree",
+    "head_commit",
+    "base_commit",
+    "head_ref",
+    "base_ref",
+)
+# Corroborating refs only — insufficient alone for subject correlation.
+_REF_ONLY_SUBJECT_FIELDS = ("expected_check_ref", "scope_id")
 
-    Compares Provider-attested pre-execution identity only. Does **not** equate
-    Expected ``source_ref.content_digest`` with OTLP / Span Expectation digests.
+
+def _correlate_expected_run_plan(
+    expected_subject,
+    completed_run,
+    plan_identity,
+    *,
+    subject_attested=False,
+):
+    """Prove Expected Git subject ↔ attested Run subject ↔ Terminal Plan.
+
+    Requires ``completed_run_authority`` to attest the subject mapping
+    (``subject_verified`` / ``subject_status=authorized``). Copying
+    ``expected_check_ref`` / ``scope_id`` alone is never enough.
+
+    Plan ``git.source_tree_id`` is a directory **content** SHA-256
+    (``selection.directory_content_id``); Expected ``declared_target_tree`` is a
+    Git Tree OID. They are never string-compared. Content ids correlate only
+    via ``run_subject.source_content_id``.
     """
     reasons = []
     gaps = []
@@ -695,67 +769,74 @@ def _correlate_expected_run_plan(expected_subject, completed_run, plan_identity)
         )
         return False, "unverified", reasons, gaps
 
-    shared = False
-    for field in (
-        "declared_target_tree",
-        "head_commit",
-        "base_commit",
-        "head_ref",
-        "base_ref",
-        "expected_check_ref",
-        "scope_id",
-    ):
+    if not subject_attested:
+        reasons.append("terminal_subject_authority_unattested")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": expected_subject.get("expected_check_ref"),
+                "reason": "subject_not_attested_by_run_authority",
+            }
+        )
+        return False, "unverified", reasons, gaps
+
+    git_shared = False
+    for field in _GIT_SUBJECT_FIELDS:
         expected_value = expected_subject.get(field)
         run_value = run_subject.get(field)
         if expected_value is None or run_value is None:
             continue
-        shared = True
+        git_shared = True
         if expected_value != run_value:
             reasons.append(f"terminal_subject_{field}_mismatch")
             gaps.append(
                 {
                     "kind": "subject_correlation",
                     "ref": field,
-                    "reason": "expected_run_mismatch",
+                    "reason": "expected_run_git_mismatch",
                 }
             )
 
-    if not shared:
-        reasons.append("terminal_subject_correlation_incomplete")
+    for field in _REF_ONLY_SUBJECT_FIELDS:
+        expected_value = expected_subject.get(field)
+        run_value = run_subject.get(field)
+        if expected_value is None or run_value is None:
+            continue
+        if expected_value != run_value:
+            reasons.append(f"terminal_subject_{field}_mismatch")
+            gaps.append(
+                {
+                    "kind": "subject_correlation",
+                    "ref": field,
+                    "reason": "expected_run_ref_mismatch",
+                }
+            )
+
+    if not git_shared:
+        reasons.append("terminal_subject_git_identity_missing")
         gaps.append(
             {
                 "kind": "subject_correlation",
                 "ref": expected_subject.get("expected_check_ref"),
-                "reason": "no_shared_pre_execution_identity",
+                "reason": "ref_only_subject_insufficient",
             }
         )
         return False, "unverified", reasons, gaps
 
-    plan_tree = plan_identity.get("source_tree_id")
-    run_tree = run_subject.get("source_tree_id") or run_subject.get(
-        "declared_target_tree"
-    )
-    expected_tree = expected_subject.get("declared_target_tree")
-    if plan_tree is not None and run_tree is not None and plan_tree != run_tree:
-        reasons.append("terminal_subject_run_plan_tree_mismatch")
-        gaps.append(
-            {
-                "kind": "subject_correlation",
-                "ref": plan_tree,
-                "reason": "run_plan_source_tree_mismatch",
-            }
-        )
+    # Same-algorithm content id only (Plan source_tree_id ↔ run source_content_id).
+    plan_content_id = plan_identity.get("source_tree_id")
+    run_content_id = run_subject.get("source_content_id")
     if (
-        plan_tree is not None
-        and expected_tree is not None
-        and plan_tree != expected_tree
+        plan_content_id is not None
+        and run_content_id is not None
+        and plan_content_id != run_content_id
     ):
-        reasons.append("terminal_subject_expected_plan_tree_mismatch")
+        reasons.append("terminal_subject_run_plan_content_id_mismatch")
         gaps.append(
             {
                 "kind": "subject_correlation",
-                "ref": plan_tree,
-                "reason": "expected_plan_source_tree_mismatch",
+                "ref": plan_content_id,
+                "reason": "run_plan_content_id_mismatch",
             }
         )
 
@@ -1041,8 +1122,13 @@ def bind_terminal_expected(
     reasons.extend(run_reasons)
     gaps.extend(run_gaps)
 
-    run_ok, run_verification, run_verify_reasons = _verify_completed_run(
-        completed, completed_run_authority
+    expected_subject = _expected_subject(entry, parent_meta)
+    run_ok, run_verification, subject_attested, run_verify_reasons = (
+        _verify_completed_run(
+            completed,
+            completed_run_authority,
+            expected_subject=expected_subject,
+        )
     )
     reasons.extend(run_verify_reasons)
     if not run_ok:
@@ -1054,13 +1140,17 @@ def bind_terminal_expected(
             }
         )
 
-    expected_subject = _expected_subject(entry, parent_meta)
     (
         subject_ok,
         subject_basis,
         subject_reasons,
         subject_gaps,
-    ) = _correlate_expected_run_plan(expected_subject, completed, plan_identity)
+    ) = _correlate_expected_run_plan(
+        expected_subject,
+        completed,
+        plan_identity,
+        subject_attested=subject_attested,
+    )
     reasons.extend(subject_reasons)
     gaps.extend(subject_gaps)
     if subject_ok and "weaver_terminal" in (plan_identity.get("selected_checks") or []):
@@ -1139,6 +1229,9 @@ def bind_terminal_expected(
         "terminal_completed_run_proof_unverified",
         "terminal_subject_correlation_missing",
         "terminal_subject_correlation_incomplete",
+        "terminal_subject_authority_unattested",
+        "terminal_subject_git_identity_missing",
+        "terminal_completed_run_authority_unverified",
         "terminal_expected_terminal_applicability_unknown",
     }
     if blocking:
@@ -1212,6 +1305,8 @@ def bind_terminal_expected(
             "completed_run_is_not_written_into_expected",
             "plan_builder_params_are_not_terminal_proof",
             "pre_execution_source_is_not_otlp_capture_digest",
+            "plan_source_tree_id_is_content_digest_not_git_oid",
+            "ref_only_subject_is_not_source_proof",
             "does_not_implement_phase_producer",
             "does_not_rewrite_b2_projection_schema",
             "binding_digest_is_not_authorization_proof",

@@ -15,28 +15,17 @@ Results, mint #66-C Receipts, perform #63 Admission / #61 Required, or wire
 
 | Fact | Trusted source for `authorized=true` |
 | --- | --- |
-| Projection | Live `expected_checks.validate_projection(parent, git, plan=expected_plan, root=expected_root)` only. Caller `projection_proof` dictionaries are **untrusted**. Terminal Plan must not be supplied as `expected_plan`. |
-| Phase + domain | Structurally sealed Phase Witness **plus** `phase_witness_authority`. `seal_phase_witness` / matching `witness_ref` alone is **not** source authentication. |
-| Subject correlation | Provider-attested `completed_run.subject` pre-execution identity (`declared_target_tree` / commits / refs / `expected_check_ref`) must match Expected `source_ref`/`event_ref`, and Plan `git.source_tree_id` when present. **Never** equate Expected content digests with OTLP/capture digests. |
-| Expected entry | `expected_authority` (does not prove phase/domain/projection/subject) |
-| Provider terminal | `completed_run_authority` (Plan builder params alone insufficient) |
+| Projection | Live `expected_checks.validate_projection(...)` against the **original Expected Plan/Git/Root**. Caller `projection_proof` dictionaries are untrusted. |
+| Phase + domain | Sealed Phase Witness **plus** `phase_witness_authority`. Digest seal alone is not authentication. |
+| Subject correlation | `completed_run_authority` must attest subject (`subject_verified` / `subject_status=authorized`), then Binder matches **Git** identity (`declared_target_tree` / commits / refs). Ref-only `expected_check_ref` / `scope_id` is insufficient. |
+| Plan source | `validate_post_completion_binding` verifies Plan `git.source_tree_id` as directory **content** SHA-256. That value is **never** string-compared to Expected Git Tree OID; same-algorithm correlation uses `run_subject.source_content_id`. |
+| Expected entry | `expected_authority` |
+| Provider terminal | `completed_run_authority` (terminal status alone ≠ subject mapping) |
 | Input closure | `validate_post_completion_binding(plan, root)` |
-
-`expected_set_ref` is recomputed via `expected_checks.set_identity` over the
-parent's actual `checks` / `non_check_obligations`; stale refs after tampering
-cannot authorize.
-
-## Frozen upstream contract
-
-Declared phase projections remain `status=partial` /
-`phase_status=unverified` (or `unknown` applicability for pre-post_completion
-`weaver_terminal`). Parent `phase_status=verified` is rejected as unsupported
-by the current B2 Validator.
 
 ## Directed acceptance
 
-Tests cover forged sealed Phase Witness without authority, subject
-correlation missing/mismatch, `expected_set_ref` recompute tamper, live
-Expected v2 including `weaver_terminal` (`effective_profile` +
-`phase=post_completion`) validate/authorize when subjects correlate, and
-Target/Source mismatch rejection.
+Tests cover ref-only subject rejection, attested Git mismatch, Plan content id
+distinct from Git Tree OID with correct `source_content_id` mapping, wrong
+content-id mapping, forged Phase Witness, and live `weaver_terminal` Expected
+v2 authorize/mismatch paths.

@@ -110,13 +110,12 @@ TARGET_TREE = "a" * 40
 
 
 def matching_run_subject(entry=None, parent=None, **changes):
-    """Provider-attested pre-execution subject — not OTLP/capture digests."""
+    """Provider Git subject — distinct from Plan directory content SHA-256."""
     entry = entry or make_b2_terminal_entry()
     source = entry["source_ref"]
     event = entry["event_ref"]
     value = {
         "declared_target_tree": source.get("declared_target_tree"),
-        "source_tree_id": source.get("declared_target_tree"),
         "head_commit": event.get("head_commit"),
         "base_commit": event.get("base_commit"),
         "head_ref": event.get("head_ref"),
@@ -141,6 +140,27 @@ def completed_run(**changes):
         value["subject"] = matching_run_subject()
     value.pop("omit_subject", None)
     return value
+
+
+def accept(_context):
+    return {"accepted": True, "status": "authorized"}
+
+
+def accept_run_with_subject(context):
+    """Controlled stand-in: Run terminal + attested Expected subject mapping."""
+    assert context.get("expected_subject") is not None
+    assert isinstance((context.get("completed_run") or {}).get("subject"), dict)
+    return {
+        "accepted": True,
+        "status": "authorized",
+        "subject_verified": True,
+        "subject_status": "authorized",
+    }
+
+
+def accept_run_terminal_only(_context):
+    """Run terminal only — does not attest subject mapping."""
+    return {"accepted": True, "status": "authorized"}
 
 
 def sealed_phase_witness(parent, *, domain_complete=True, **changes):
@@ -169,10 +189,6 @@ def self_attested_projection_proof(parent, **changes):
     }
     value.update(changes)
     return value
-
-
-def accept(_context):
-    return {"accepted": True, "status": "authorized"}
 
 
 def reject(_context):
@@ -275,19 +291,62 @@ def test_subject_target_mismatch_cannot_authorize(tmp_path):
         expected,
         plan=plan,
         completed_run=completed_run(
-            subject=matching_run_subject(
-                entry, expected, declared_target_tree="9" * 40, source_tree_id="9" * 40
-            )
+            subject=matching_run_subject(entry, expected, declared_target_tree="9" * 40)
         ),
         root=root,
         expected_authority=accept,
-        completed_run_authority=accept,
+        completed_run_authority=accept_run_with_subject,
         phase_witness=sealed_phase_witness(expected),
         phase_witness_authority=accept,
         projection_proof=self_attested_projection_proof(expected),
     )
     assert binding["authorized"] is False
     assert "terminal_subject_declared_target_tree_mismatch" in binding["reasons"]
+
+
+def test_ref_only_subject_without_git_identity_cannot_authorize(tmp_path):
+    """P0: copying expected_check_ref/scope_id alone is not source proof."""
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    entry = expected["checks"][0]
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(
+            subject={
+                "expected_check_ref": entry["expected_check_ref"],
+                "scope_id": expected["scope_id"],
+            }
+        ),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_terminal_only,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert binding["subject_correlated"] is False
+    assert "terminal_subject_authority_unattested" in binding["reasons"]
+
+    attested_ref_only = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(
+            subject={
+                "expected_check_ref": entry["expected_check_ref"],
+                "scope_id": expected["scope_id"],
+            }
+        ),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert attested_ref_only["authorized"] is False
+    assert "terminal_subject_git_identity_missing" in attested_ref_only["reasons"]
 
 
 def test_sealed_witness_wrong_profile_revision_rejected_with_authority(tmp_path):
@@ -933,9 +992,9 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
 
     terminal_root = tmp_path / "terminal-src"
     shutil.copytree(FIXTURE, terminal_root)
-    # Terminal Plan closure is Weaver-fixture local; do not force Expected's
-    # selection-app tree id into Plan (would fail source_tree verification).
-    # Subject correlation binds Expected ↔ Run; Plan via selected check + closure.
+    # Plan source_tree_id is directory content SHA-256 — not Expected Git Tree OID.
+    plan_content_id = selection.directory_content_id(terminal_root)
+    assert plan_content_id != target_tree
     terminal_plan = selection.post_completion_plan(
         root=terminal_root,
         config_path=terminal_root / "ci-selection.toml",
@@ -943,14 +1002,19 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
         run_id="controlled-42/1",
         attempt=1,
         result="success",
+        source_tree_id=plan_content_id,
     )
     assert selection.validate_post_completion_binding(terminal_plan, terminal_root)[
         "ok"
     ]
 
-    # Controlled stand-ins for Phase Producer / Run Provider — not production PASS.
+    # Controlled stand-ins: Git subject + same-algorithm content id mapping.
     run = completed_run(
-        subject=matching_run_subject(entry, binder_parent, source_tree_id=target_tree)
+        subject=matching_run_subject(
+            entry,
+            binder_parent,
+            source_content_id=plan_content_id,
+        )
     )
     binding = te.bind_terminal_expected(
         binder_parent,
@@ -958,7 +1022,7 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
         completed_run=run,
         root=terminal_root,
         expected_authority=accept,
-        completed_run_authority=accept,
+        completed_run_authority=accept_run_with_subject,
         phase_witness=sealed_phase_witness(binder_parent),
         phase_witness_authority=accept,
         projection_git=expected_plan["git"],
@@ -971,6 +1035,7 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
     assert binding["subject_correlated"] is True
     assert binding["authorized"] is True
     assert binding["expected_check_ref"] == frozen_ref
+    assert binding["plan_identity"]["source_tree_id"] == plan_content_id
 
     # Individually valid objects with Target/Source mismatch cannot authorize.
     mismatched = te.bind_terminal_expected(
@@ -981,12 +1046,12 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
                 entry,
                 binder_parent,
                 declared_target_tree="0" * 40,
-                source_tree_id="0" * 40,
+                source_content_id=plan_content_id,
             )
         ),
         root=terminal_root,
         expected_authority=accept,
-        completed_run_authority=accept,
+        completed_run_authority=accept_run_with_subject,
         phase_witness=sealed_phase_witness(binder_parent),
         phase_witness_authority=accept,
         projection_git=expected_plan["git"],
@@ -995,3 +1060,25 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
     )
     assert mismatched["authorized"] is False
     assert "terminal_subject_declared_target_tree_mismatch" in mismatched["reasons"]
+
+    wrong_content = te.bind_terminal_expected(
+        binder_parent,
+        plan=terminal_plan,
+        completed_run=completed_run(
+            subject=matching_run_subject(
+                entry,
+                binder_parent,
+                source_content_id="f" * 64,
+            )
+        ),
+        root=terminal_root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(binder_parent),
+        phase_witness_authority=accept,
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=path,
+    )
+    assert wrong_content["authorized"] is False
+    assert "terminal_subject_run_plan_content_id_mismatch" in wrong_content["reasons"]
