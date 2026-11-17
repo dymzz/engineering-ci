@@ -15,7 +15,7 @@ artifacts.
 ```text
 prior R1 Assessment (immutable, typically pre_publish PASS)
 post R1 Assessment (post_publish / terminal scope)
-authorized phase_order (#66-B2 / R1)
+R1 evidence-shaped phase_order + phase_order_authority
 trigger_event + due_window
         |
         +--> reconcile_post_stage
@@ -30,11 +30,13 @@ Prior and post Assessments must share `context` / `action` / `target` / `refs` /
 `candidate`. Trigger `target` must match. Cross-Candidate splicing cannot become
 `verified`.
 
-Phase is **not** free-form inequality: callers supply the authorized
-`phase_order` (R1 / #66-B2 shape). True post-stage progression requires
-`post.phase` strictly after `prior.phase` in that order.
-`authorized_reevaluation` requires the **same** phase. Same-phase “fake post”
-and phases absent from the authorized order cannot verify.
+`phase_order` reuses the R1 evidence-ref shape (`name`/`version`/`sha256` +
+ordered `phases`). It is bound to the Assessments' shared Profile
+`profile_ref` / `profile_revision` / authority source, and must be accepted by
+`phase_order_authority` — a caller-supplied list alone cannot verify. True
+post-stage progression requires `post.phase` strictly after `prior.phase`.
+`authorized_reevaluation` requires the **same** phase, and that phase must
+still belong to the authorized order.
 
 ## Due window and temporal consistency
 
@@ -46,10 +48,10 @@ and phases absent from the authorized order cannot verify.
 | `not_applicable` | Derived only from a **passed** post Assessment whose rows are all `not_applicable` (or empty). A blocked post cannot claim N/A |
 
 Temporal checks reject a future trigger, a post Assessment after envelope
-evaluation, and (except reevaluation) a post clock before the prior Assessment.
-`trigger_authority` and `due_window_authority` are required for `verified`.
-`run_completed` must be explicit (never defaulted to true). Timestamps are
-UTC-aware (`datetime.UTC`).
+evaluation, progression with post before prior, and — for
+`run_completed` / `publication_completed` / `artifact_available` — a post
+Assessment that predates the claimed trigger event. `run_completed` must be
+explicit. Timestamps are UTC-aware (`datetime.UTC`).
 
 ## Triggers
 
@@ -85,7 +87,8 @@ Optional `disposition_authority` may record authorized follow-ups
 `tests/test_required_assessment_post.py` covers in-window PASS, not-yet-due
 pending, overdue failure, overdue PASS with/without late-evidence authority,
 smoke FAIL with prior preserved, blocked prior, authorized N/A, Candidate/Target
-mismatch rejection, same-phase and unknown-phase negatives, incomplete-run
-non-wait, future trigger, missing trigger authority, same-phase authorized
-reevaluation, contract-sample non-authorization, forged lifecycle-all-phases
-rejection, and validate consistency rejection.
+mismatch rejection, same-phase and unknown-phase negatives, post-before-trigger
+and forged phase_order negatives, incomplete-run non-wait, future trigger,
+missing trigger authority, same-phase authorized reevaluation, contract-sample
+non-authorization, forged lifecycle-all-phases rejection, and validate
+consistency rejection.

@@ -68,6 +68,7 @@ def reconcile(prior, post, **changes):
         "due_window": window(),
         "evaluated_at": EVALUATED_AT,
         "phase_order": copy.deepcopy(PHASE_ORDER),
+        "phase_order_authority": accept,
         "trigger_authority": accept,
         "due_window_authority": accept,
     }
@@ -126,6 +127,7 @@ def post_assessment(
     candidate_commit="2" * 40,
     applicability="required",
     phase="post_publish",
+    evaluated_at=EVALUATED_AT,
 ):
     profile = make_profile(
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
@@ -164,6 +166,7 @@ def post_assessment(
     )
     kwargs = {
         "admission": make_admission(projection, contract_sample=contract_sample),
+        "evaluated_at": evaluated_at,
     }
     if evidence is not None:
         kwargs["non_check_evidence"] = evidence
@@ -196,7 +199,7 @@ def test_prior_pass_and_in_window_post_pass_is_verified():
 
 def test_before_earliest_is_pending_not_success():
     prior = prior_passed(contract_sample=False)
-    post = post_assessment(passed=True, contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False, evaluated_at=BEFORE)
     result = reconcile(
         prior,
         post,
@@ -210,7 +213,7 @@ def test_before_earliest_is_pending_not_success():
 
 def test_overdue_without_passing_evidence_is_not_success():
     prior = prior_passed(contract_sample=False)
-    post = post_assessment(passed=False, contract_sample=False)
+    post = post_assessment(passed=False, contract_sample=False, evaluated_at=AFTER)
     result = reconcile(
         prior,
         post,
@@ -225,7 +228,7 @@ def test_overdue_without_passing_evidence_is_not_success():
 
 def test_overdue_pass_requires_authorized_late_evidence():
     prior = prior_passed(contract_sample=False)
-    post = post_assessment(passed=True, contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False, evaluated_at=AFTER)
     denied = reconcile(
         prior,
         post,
@@ -345,6 +348,41 @@ def test_future_trigger_is_rejected():
     )
     assert result["status"] != "verified"
     assert "post_trigger_observed_in_future" in result["reasons"]
+
+
+def test_post_assessment_before_trigger_cannot_verify():
+    prior = prior_passed(contract_sample=False)
+    # Stale post PASS evaluated before the claimed run_completed event.
+    post = post_assessment(
+        passed=True,
+        contract_sample=False,
+        evaluated_at="2026-11-16T01:00:00+00:00",
+    )
+    result = reconcile(prior, post)
+    assert result["status"] != "verified"
+    assert "post_assessment_before_trigger_event" in result["reasons"]
+
+
+def test_forged_phase_order_without_authority_cannot_verify():
+    prior = prior_passed(contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False)
+    forged = {
+        "ref": {
+            "name": "org/forged-phase-order",
+            "version": "9",
+            "sha256": "f" * 64,
+        },
+        "phases": ["pre_publish", "post_publish"],
+    }
+    result = reconcile(prior, post, phase_order=forged, phase_order_authority=None)
+    assert result["status"] != "verified"
+    assert "post_phase_order_authority_missing" in result["reasons"]
+
+    rejected = reconcile(
+        prior, post, phase_order=forged, phase_order_authority=lambda _ctx: False
+    )
+    assert rejected["status"] != "verified"
+    assert "post_phase_order_authority_rejected" in rejected["reasons"]
 
 
 def test_missing_trigger_authority_cannot_verify():

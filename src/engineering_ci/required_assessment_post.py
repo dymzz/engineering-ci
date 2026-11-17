@@ -125,24 +125,84 @@ def _lifecycle_identity(assessment):
 
 
 def _normalize_phase_order(value):
-    """Reuse R1-authorized phase order shape without inventing a parallel policy."""
+    """Reuse R1 phase-order shape (evidence ref + ordered phases) — no parallel policy."""
     if value is None:
         raise RequiredAssessmentPostError("post_phase_order_missing")
-    if not isinstance(value, dict):
-        raise RequiredAssessmentPostError("post_phase_order_invalid")
-    phases = value.get("phases")
-    if not isinstance(phases, list) or not phases:
-        raise RequiredAssessmentPostError("post_phase_order_invalid")
-    normalized = []
-    for phase in phases:
-        item = _text(phase, "post_phase_order_invalid")
-        if item in normalized:
-            raise RequiredAssessmentPostError("post_phase_order_invalid")
-        normalized.append(item)
+    try:
+        normalized = required_assessment._normalize_phase_order(value)
+    except required_assessment.RequiredAssessmentError as error:
+        raise RequiredAssessmentPostError("post_phase_order_invalid") from error
+    if normalized is None:
+        raise RequiredAssessmentPostError("post_phase_order_missing")
+    return normalized
+
+
+def _profile_binding(assessment):
+    """Stable Profile revision slice carried on R1 Assessment inputs."""
+    inputs = (
+        assessment.get("inputs") if isinstance(assessment.get("inputs"), dict) else {}
+    )
+    profile = inputs.get("profile") if isinstance(inputs.get("profile"), dict) else {}
+    authority = (
+        inputs.get("authority") if isinstance(inputs.get("authority"), dict) else {}
+    )
     return {
-        "ref": copy.deepcopy(value.get("ref")),
-        "phases": normalized,
+        "profile_ref": copy.deepcopy(profile.get("profile_ref")),
+        "profile_revision": profile.get("profile_revision"),
+        "profile_sha256": profile.get("profile_sha256"),
+        "authority_source_ref": copy.deepcopy(authority.get("source_ref")),
+        "universe_ref": inputs.get("universe_ref"),
     }
+
+
+def _bind_phase_order_to_assessments(prior, post, phase_order):
+    """Bind phase_order Ref to the same Profile/Scope the Assessments already used."""
+    reasons = []
+    gaps = []
+    prior_profile = _profile_binding(prior)
+    post_profile = _profile_binding(post)
+    # Bind on governance identity (ref + revision + authority source). Profile
+    # content digests may differ across phases when obligation sets change.
+    for key in ("profile_ref", "profile_revision", "authority_source_ref"):
+        if prior_profile.get(key) != post_profile.get(key):
+            reasons.append(f"post_phase_order_profile_{key}_mismatch")
+            gaps.append(
+                {
+                    "kind": "phase_order_binding",
+                    "ref": key,
+                    "reason": f"prior_post_{key}_mismatch",
+                }
+            )
+    if (
+        prior_profile.get("profile_ref") is None
+        or prior_profile.get("profile_revision") is None
+    ):
+        reasons.append("post_phase_order_profile_binding_missing")
+        gaps.append(
+            {
+                "kind": "phase_order_binding",
+                "ref": prior.get("assessment_ref"),
+                "reason": "assessment_profile_incomplete",
+            }
+        )
+    # Both Assessment phases must belong to the authorized order set.
+    phases = phase_order["phases"]
+    for label, assessment in (("prior", prior), ("post", post)):
+        phase = assessment.get("phase")
+        if phase not in phases:
+            reasons.append(f"post_phase_order_{label}_phase_not_authorized")
+            gaps.append(
+                {
+                    "kind": "phase_order_binding",
+                    "ref": phase,
+                    "reason": f"{label}_phase_not_in_authorized_order",
+                }
+            )
+    binding = {
+        "phase_order_ref": copy.deepcopy(phase_order.get("ref")),
+        "profile": prior_profile,
+    }
+    return binding, reasons, gaps
 
 
 def _bind_phase_relation(prior, post, *, phase_order, trigger_kind):
@@ -165,6 +225,7 @@ def _bind_phase_relation(prior, post, *, phase_order, trigger_kind):
                 "reason": "post_phase_invalid",
             }
         ]
+    phases = phase_order["phases"]
     if trigger_kind == "authorized_reevaluation":
         if prior_phase != post_phase:
             return ["post_reevaluation_phase_mismatch"], [
@@ -172,6 +233,15 @@ def _bind_phase_relation(prior, post, *, phase_order, trigger_kind):
                     "kind": "phase_relation",
                     "ref": post_phase,
                     "reason": "reevaluation_requires_same_phase",
+                }
+            ]
+        # Reevaluation phase must still be inside the authorized order.
+        if post_phase not in phases:
+            return ["post_reevaluation_phase_not_authorized"], [
+                {
+                    "kind": "phase_relation",
+                    "ref": post_phase,
+                    "reason": "reevaluation_phase_not_in_authorized_order",
                 }
             ]
         return [], []
@@ -184,7 +254,6 @@ def _bind_phase_relation(prior, post, *, phase_order, trigger_kind):
                 "reason": "same_phase_is_not_post_stage",
             }
         ]
-    phases = phase_order["phases"]
     if prior_phase not in phases or post_phase not in phases:
         return ["post_phase_order_unknown_phase"], [
             {
@@ -229,16 +298,22 @@ def _bind_lifecycle(prior, post, trigger, *, phase_order):
                 "reason": "trigger_target_mismatch",
             }
         )
+    order_binding, order_reasons, order_gaps = _bind_phase_order_to_assessments(
+        prior, post, phase_order
+    )
+    reasons.extend(order_reasons)
+    gaps.extend(order_gaps)
     phase_reasons, phase_gaps = _bind_phase_relation(
         prior, post, phase_order=phase_order, trigger_kind=trigger.get("kind")
     )
     reasons.extend(phase_reasons)
     gaps.extend(phase_gaps)
+    prior_id = {**prior_id, "phase_order_binding": order_binding}
     return prior_id, reasons, gaps
 
 
 def _bind_temporal(prior, post, trigger, evaluated_at):
-    """Align trigger / Assessment / envelope clocks — no future trigger."""
+    """Align trigger / Assessment / envelope clocks and event→evidence causality."""
     reasons = []
     gaps = []
     observed = _datetime(trigger["observed_at"], "post_trigger_observed_at_invalid")
@@ -270,6 +345,20 @@ def _bind_temporal(prior, post, trigger, evaluated_at):
                 "kind": "temporal",
                 "ref": post.get("evaluated_at"),
                 "reason": "post_before_prior",
+            }
+        )
+    # Terminal/publication/artifact triggers require post evidence at/after the event.
+    if (
+        trigger.get("kind")
+        in {"run_completed", "publication_completed", "artifact_available"}
+        and post_at < observed
+    ):
+        reasons.append("post_assessment_before_trigger_event")
+        gaps.append(
+            {
+                "kind": "temporal",
+                "ref": post.get("evaluated_at"),
+                "reason": "post_evidence_predates_trigger",
             }
         )
     return reasons, gaps
@@ -387,13 +476,14 @@ def _envelope_status(
     reasons,
     trigger_verified,
     due_window_verified,
+    phase_order_verified,
 ):
     blocking = [item for item in reasons if item not in _INFORMATIONAL]
     if prior_status != "passed":
         return "rejected"
     if due_state == "not_yet_due":
         return "pending"
-    if not trigger_verified or not due_window_verified:
+    if not trigger_verified or not due_window_verified or not phase_order_verified:
         return "unverified" if prior_status == "passed" else "rejected"
     if due_state == "not_applicable":
         # N/A only when derived from authorized post Assessment rows — never from
@@ -457,6 +547,8 @@ def _consistency(envelope):
             errors.append("post_verified_requires_trigger_verified")
         if envelope.get("due_window_verified") is not True:
             errors.append("post_verified_requires_due_window_verified")
+        if envelope.get("phase_order_verified") is not True:
+            errors.append("post_verified_requires_phase_order_verified")
     # Pair reconciliation must never claim full lifecycle PASS (P0-3).
     if envelope.get("lifecycle_all_phases_passed") is True:
         errors.append("post_lifecycle_all_phases_requires_complete_coverage")
@@ -495,6 +587,7 @@ def reconcile_post_stage(
     due_window,
     evaluated_at,
     phase_order,
+    phase_order_authority=None,
     trigger_authority=None,
     due_window_authority=None,
     disposition_authority=None,
@@ -502,10 +595,11 @@ def reconcile_post_stage(
 ):
     """Reconcile prior + post R1 Assessments under trigger/due-window rules.
 
-    ``phase_order`` is the authorized #66-B2/R1 phase sequence for this
-    Candidate. This pair slice never sets ``lifecycle_all_phases_passed=True``;
-    full aggregation remains a later #61 integration
-    (``lifecycle_coverage`` stays ``unverified`` / ``incomplete``).
+    ``phase_order`` must use the R1 evidence-ref shape and be authorized against
+    the same Profile revision the Assessments already consumed
+    (``phase_order_authority``). This pair slice never sets
+    ``lifecycle_all_phases_passed=True``; full aggregation remains a later #61
+    integration (``lifecycle_coverage`` stays ``unverified`` / ``incomplete``).
     """
     prior = required_assessment.validate_assessment(prior_assessment)
     post = required_assessment.validate_assessment(post_assessment)
@@ -514,6 +608,9 @@ def reconcile_post_stage(
     order = _normalize_phase_order(phase_order)
     evaluated = _datetime(evaluated_at, "post_evaluated_at_invalid")
     contract_sample = _flag(contract_sample, "post_contract_sample_flag_invalid")
+    phase_order_authority = _callable_or_none(
+        phase_order_authority, "post_phase_order_authority_invalid"
+    )
     trigger_authority = _callable_or_none(
         trigger_authority, "post_trigger_authority_invalid"
     )
@@ -564,6 +661,27 @@ def reconcile_post_stage(
     not_applicable = _authorized_not_applicable(post)
     due_state = _due_state(evaluated, window, not_applicable=not_applicable)
 
+    phase_order_binding = lifecycle_identity.get("phase_order_binding") or {}
+    phase_ok, phase_status, phase_reasons, _phase_detail = _authority_gate(
+        phase_order_authority,
+        {
+            "phase_order": copy.deepcopy(order),
+            "phase_order_binding": copy.deepcopy(phase_order_binding),
+            "lifecycle_identity": copy.deepcopy(lifecycle_identity),
+            "prior_phase": prior.get("phase"),
+            "post_phase": post.get("phase"),
+            "prior_assessment_ref": prior["assessment_ref"],
+            "post_assessment_ref": post["assessment_ref"],
+            "prior_universe_ref": (prior.get("inputs") or {}).get("universe_ref"),
+            "post_universe_ref": (post.get("inputs") or {}).get("universe_ref"),
+        },
+        missing_code="post_phase_order_authority_missing",
+        rejected_code="post_phase_order_authority_rejected",
+        unverified_code="post_phase_order_authority_unverified",
+    )
+    if not phase_ok:
+        reasons.extend(phase_reasons)
+
     trigger_ok, trigger_status, trigger_reasons, _trigger_detail = _authority_gate(
         trigger_authority,
         {
@@ -574,6 +692,8 @@ def reconcile_post_stage(
             "post_phase": post.get("phase"),
             "prior_assessment_ref": prior["assessment_ref"],
             "post_assessment_ref": post["assessment_ref"],
+            "prior_evaluated_at": prior.get("evaluated_at"),
+            "post_evaluated_at": post.get("evaluated_at"),
         },
         missing_code="post_trigger_authority_missing",
         rejected_code="post_trigger_authority_rejected",
@@ -653,6 +773,7 @@ def reconcile_post_stage(
         reasons=reasons,
         trigger_verified=trigger_ok,
         due_window_verified=due_ok,
+        phase_order_verified=phase_ok,
     )
 
     # Pair reconciliation cannot prove full phase/obligation coverage (P0-3).
@@ -672,6 +793,8 @@ def reconcile_post_stage(
         "post_phase": post.get("phase"),
         "lifecycle_identity": lifecycle_identity,
         "phase_order": order,
+        "phase_order_verified": phase_ok,
+        "phase_order_authority_status": phase_status,
         "trigger_event": trigger,
         "trigger_verified": trigger_ok,
         "trigger_authority_status": trigger_status,
@@ -696,6 +819,7 @@ def reconcile_post_stage(
             "does_not_auto_revoke_published_artifacts",
             "pair_reconciliation_cannot_prove_full_lifecycle",
             "full_lifecycle_requires_authorized_phase_obligation_set",
+            "phase_order_authority_is_not_full_lifecycle_proof",
             "post_stage_digest_is_not_authorization_proof",
         ],
         "post_stage_ref": None,
