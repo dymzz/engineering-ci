@@ -19,9 +19,9 @@ import copy
 import hashlib
 import json
 import re
+from pathlib import Path
 
-from . import check_contract
-from . import selection
+from . import check_contract, expected_checks, selection
 
 KIND = "engineering-ci-terminal-expected-binding"
 VERSION = 1
@@ -29,6 +29,7 @@ TERMINAL_CHECK_ID = "eci/weaver/terminal"
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INFORMATIONAL = frozenset({"contract_sample_inputs_not_production_terminal"})
+INPUT_CLOSURE_STATES = frozenset({"verified", "unverified", "failed"})
 
 
 class TerminalExpectedError(ValueError):
@@ -90,7 +91,7 @@ def _extract_entry(expected):
         scope_id = expected.get("scope_id")
         if scope_id is None:
             raise TerminalExpectedError("terminal_expected_scope_id_missing")
-        return entry, _text(scope_id, "terminal_expected_scope_id_invalid")
+        return entry, _text(scope_id, "terminal_expected_scope_id_invalid"), None
     checks = expected.get("checks")
     if not isinstance(checks, list):
         raise TerminalExpectedError("terminal_expected_missing")
@@ -107,7 +108,12 @@ def _extract_entry(expected):
     scope_id = expected.get("scope_id")
     if scope_id is None:
         raise TerminalExpectedError("terminal_expected_scope_id_missing")
-    return entry, _text(scope_id, "terminal_expected_scope_id_invalid")
+    parent_status = expected.get("status")
+    return (
+        entry,
+        _text(scope_id, "terminal_expected_scope_id_invalid"),
+        parent_status,
+    )
 
 
 def _validate_terminal_entry(entry):
@@ -119,8 +125,19 @@ def _validate_terminal_entry(entry):
         raise TerminalExpectedError("terminal_expected_check_id_invalid")
     if entry.get("phase") != check_contract.POST_COMPLETION_PHASE:
         raise TerminalExpectedError("terminal_expected_phase_invalid")
-    ref = _text(entry.get("expected_check_ref"), "terminal_expected_check_ref_invalid")
-    return entry, ref
+    declared = entry.get("expected_check_ref")
+    computed = expected_checks.entry_identity(
+        {key: value for key, value in entry.items() if key != "expected_check_ref"}
+    )
+    if declared is None:
+        entry = copy.deepcopy(entry)
+        entry["expected_check_ref"] = computed
+        declared = computed
+    else:
+        declared = _text(declared, "terminal_expected_check_ref_invalid")
+        if declared != computed:
+            raise TerminalExpectedError("terminal_expected_check_ref_mismatch")
+    return entry, declared
 
 
 def _require_post_completion_plan(plan):
@@ -151,6 +168,73 @@ def _require_post_completion_plan(plan):
     }
 
 
+def _match_expected_to_plan(entry, plan_identity):
+    """Deterministic Run/Attempt identity check — authority cannot skip this."""
+    reasons = []
+    gaps = []
+    run_id = entry.get("run_id")
+    attempt = entry.get("run_attempt")
+    if run_id is None and isinstance(entry.get("terminal_run"), dict):
+        run_id = entry["terminal_run"].get("run_id")
+        attempt = entry["terminal_run"].get("run_attempt")
+    if run_id is None:
+        reasons.append("terminal_expected_run_identity_missing")
+        gaps.append(
+            {
+                "kind": "expected_plan_identity",
+                "ref": plan_identity["run_id"],
+                "reason": "expected_run_identity_missing",
+            }
+        )
+        return reasons, gaps
+    if run_id != plan_identity["run_id"]:
+        reasons.append("terminal_expected_run_mismatch")
+        gaps.append(
+            {
+                "kind": "expected_plan_identity",
+                "ref": run_id,
+                "reason": "expected_run_mismatch",
+            }
+        )
+    if type(attempt) is not int or attempt < 1:
+        reasons.append("terminal_expected_attempt_invalid")
+        gaps.append(
+            {
+                "kind": "expected_plan_identity",
+                "ref": plan_identity["attempt"],
+                "reason": "expected_attempt_invalid",
+            }
+        )
+    elif attempt != plan_identity["attempt"]:
+        reasons.append("terminal_expected_attempt_mismatch")
+        gaps.append(
+            {
+                "kind": "expected_plan_identity",
+                "ref": attempt,
+                "reason": "expected_attempt_mismatch",
+            }
+        )
+    return reasons, gaps
+
+
+def _verify_input_closure(plan, root):
+    """Reuse selection.validate_post_completion_binding — do not recompute locally."""
+    if root is None:
+        return "unverified", None, ["terminal_input_closure_root_missing"]
+    try:
+        gate = selection.validate_post_completion_binding(plan, Path(root))
+    except selection.SelectionError as error:
+        return "failed", {"ok": False, "reason": str(error)}, [
+            "terminal_input_closure_validation_error"
+        ]
+    if not isinstance(gate, dict):
+        return "failed", None, ["terminal_input_closure_result_invalid"]
+    if gate.get("ok") is True and gate.get("input_closure_verified") == "verified":
+        return "verified", gate, []
+    reason = gate.get("reason") or "terminal_input_closure_unverified"
+    return "failed", gate, [reason]
+
+
 def _authority_accepted(authority, context):
     if authority is None:
         return False, "terminal_expected_authority_missing"
@@ -177,12 +261,15 @@ def _consistency(envelope):
     authorized = envelope.get("authorized")
     sample = envelope.get("contract_sample")
     status = envelope.get("status")
+    input_closure = envelope.get("input_closure")
     if not isinstance(authorized, bool):
         errors.append("terminal_authorized_flag_invalid")
     if not isinstance(sample, bool):
         errors.append("terminal_contract_sample_flag_invalid")
     if status not in {"bound", "rejected", "unverified"}:
         errors.append("terminal_binding_status_invalid")
+    if input_closure not in INPUT_CLOSURE_STATES:
+        errors.append("terminal_input_closure_invalid")
     if authorized is True:
         if status != "bound":
             errors.append("terminal_authorized_requires_bound_status")
@@ -190,6 +277,8 @@ def _consistency(envelope):
             errors.append("terminal_authorized_rejects_contract_sample")
         if envelope.get("authorization_basis") != "authority_verified":
             errors.append("terminal_authorized_requires_authority_verified")
+        if input_closure != "verified":
+            errors.append("terminal_authorized_requires_input_closure_verified")
         if envelope.get("gaps"):
             errors.append("terminal_authorized_rejects_gaps")
     if envelope.get("check_id") != TERMINAL_CHECK_ID:
@@ -227,15 +316,28 @@ def bind_terminal_expected(
     expected,
     *,
     plan,
+    root=None,
     expected_authority=None,
     contract_sample=False,
 ):
-    """Bind an authorized Terminal Check Expected onto a post_completion Plan."""
+    """Bind an authorized Terminal Check Expected onto a post_completion Plan.
+
+    ``expected_authority`` and ``input_closure`` are independent facts. Overall
+    ``authorized=True`` requires both authority acceptance and a verified
+    ``selection.validate_post_completion_binding`` result against ``root``.
+    """
     contract_sample = _flag(contract_sample, "terminal_contract_sample_flag_invalid")
     expected_authority = _callable_or_none(
         expected_authority, "terminal_expected_authority_invalid"
     )
-    entry, scope_id = _extract_entry(expected)
+    entry, scope_id, parent_status = _extract_entry(expected)
+    if parent_status is not None and parent_status not in {
+        "complete",
+        "partial",
+        None,
+    }:
+        # Unknown parent completeness is recorded; incomplete parent cannot authorize.
+        pass
     entry, expected_check_ref = _validate_terminal_entry(entry)
     plan_identity = _require_post_completion_plan(plan)
 
@@ -244,11 +346,39 @@ def bind_terminal_expected(
     if contract_sample:
         reasons.append("contract_sample_inputs_not_production_terminal")
 
+    identity_reasons, identity_gaps = _match_expected_to_plan(entry, plan_identity)
+    reasons.extend(identity_reasons)
+    gaps.extend(identity_gaps)
+
+    if parent_status is not None and parent_status not in {"complete"}:
+        reasons.append("terminal_expected_scope_incomplete")
+        gaps.append(
+            {
+                "kind": "expected_scope",
+                "ref": scope_id,
+                "reason": f"scope_status_{parent_status}",
+            }
+        )
+
+    input_closure, closure_gate, closure_reasons = _verify_input_closure(plan, root)
+    reasons.extend(closure_reasons)
+    if input_closure != "verified":
+        gaps.append(
+            {
+                "kind": "input_closure",
+                "ref": plan_identity["closure_sha256"],
+                "reason": (closure_gate or {}).get("reason")
+                if isinstance(closure_gate, dict)
+                else closure_reasons[0],
+            }
+        )
+
     authority_context = {
         "expected": copy.deepcopy(entry),
         "scope_id": scope_id,
         "expected_check_ref": expected_check_ref,
         "plan_identity": copy.deepcopy(plan_identity),
+        "input_closure": input_closure,
     }
     accepted, authority_reason = _authority_accepted(
         expected_authority, authority_context
@@ -275,6 +405,8 @@ def bind_terminal_expected(
                 in {
                     "terminal_expected_authority_missing",
                     "terminal_expected_authority_unverified",
+                    "terminal_input_closure_root_missing",
+                    "terminal_expected_run_identity_missing",
                 }
                 for item in blocking
             )
@@ -287,6 +419,7 @@ def bind_terminal_expected(
         status == "bound"
         and not contract_sample
         and authorization_basis == "authority_verified"
+        and input_closure == "verified"
         and not gaps
         and not blocking
     )
@@ -297,6 +430,8 @@ def bind_terminal_expected(
         "status": status,
         "authorized": authorized,
         "authorization_basis": authorization_basis,
+        "input_closure": input_closure,
+        "input_closure_gate": copy.deepcopy(closure_gate),
         "contract_sample": contract_sample,
         "check_id": TERMINAL_CHECK_ID,
         "phase": check_contract.POST_COMPLETION_PHASE,
@@ -313,6 +448,7 @@ def bind_terminal_expected(
             "terminal_binding_does_not_produce_native_result",
             "terminal_binding_does_not_admit_or_require",
             "terminal_root_missing_cannot_fake_pass",
+            "expected_authority_is_not_input_closure_proof",
             "binding_digest_is_not_authorization_proof",
         ],
         "binding_ref": None,
@@ -325,6 +461,8 @@ def bind_terminal_expected(
         result["limitations"].append(
             "structural_fixture_cannot_authorize_production_terminal"
         )
+    if input_closure != "verified":
+        result["limitations"].append("input_closure_unverified_cannot_execute_terminal")
     if status != "bound" or not authorized:
         result["limitations"].append("unverified_terminal_must_not_execute_as_required")
     consistency = _consistency(result)
@@ -362,6 +500,7 @@ def post_completion_with_expected(
     return bind_terminal_expected(
         expected,
         plan=plan,
+        root=root,
         expected_authority=expected_authority,
         contract_sample=contract_sample,
     )
@@ -378,18 +517,26 @@ def validate_terminal_expected_binding(value):
     consistency = _consistency(value)
     if consistency:
         raise TerminalExpectedError(consistency[0])
-    # Re-validate the embedded Expected instance and Plan shape.
     entry, expected_check_ref = _validate_terminal_entry(
         copy.deepcopy(value.get("expected") or {})
     )
     if value.get("expected_check_ref") != expected_check_ref:
         raise TerminalExpectedError("terminal_binding_expected_check_ref_mismatch")
+    # Recompute identity from embedded Expected — reject mutated inner payload.
+    recomputed = expected_checks.entry_identity(
+        {key: item for key, item in entry.items() if key != "expected_check_ref"}
+    )
+    if recomputed != expected_check_ref:
+        raise TerminalExpectedError("terminal_binding_expected_identity_mismatch")
     if value.get("check_id") != entry.get("check_id"):
         raise TerminalExpectedError("terminal_binding_check_id_mismatch")
     recorded = value.get("plan_identity") or {}
     actual = _require_post_completion_plan(value.get("plan") or {})
     if actual != recorded:
         raise TerminalExpectedError("terminal_binding_plan_identity_mismatch")
+    match_reasons, _gaps = _match_expected_to_plan(entry, actual)
+    if match_reasons:
+        raise TerminalExpectedError(match_reasons[0])
     if value.get("scope_id") is None:
         raise TerminalExpectedError("terminal_binding_identity_incomplete")
     return value

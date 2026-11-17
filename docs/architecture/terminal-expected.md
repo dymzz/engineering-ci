@@ -34,12 +34,19 @@ existing post_completion_plan (Span Expectations + input closure)
 Span Expectations JSON under `ci-weaver.toml` remain a separate object from the
 Check Expected identity.
 
-## Authorization
+## Authorization vs input closure
 
-| `authorization_basis` | Meaning |
+Two independent facts:
+
+| Field | Meaning |
 | --- | --- |
-| `structural_fixture` | Shape only; **never** `authorized=true` |
-| `authority_verified` | Caller-supplied `expected_authority` accepted the Exact Expected + Plan identity |
+| `authorization_basis=authority_verified` | Caller `expected_authority` accepted the Expected |
+| `input_closure=verified` | `selection.validate_post_completion_binding(plan, root)` recomputed successfully |
+
+Overall `authorized=true` requires **both**, plus deterministic Expected↔Plan
+Run/Attempt identity (and recomputed `expected_checks.entry_identity`). Missing
+`root` yields `input_closure=unverified` and cannot authorize. Authority alone
+never proves live Terminal inputs.
 
 Missing or rejected authority records gaps; the module never synthesizes a
 replacement Expected. Terminal B cannot fake PASS when Root / phase / Expected
