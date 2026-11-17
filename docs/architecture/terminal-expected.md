@@ -18,59 +18,63 @@ wire `release.yml`.
 ```text
 #66-B2 parent Expected v2 (phase / scope_id / checks[])
   └─ weaver_terminal Check Entry (no run_id / run_attempt)
-completed_run (sourced Run/Attempt/Terminal proof)
+completed_run + completed_run_authority (Provider terminal proof)
 existing post_completion_plan (Span Expectations + input closure)
         |
         +--> bind_terminal_expected
                 |
                 status: bound | rejected | unverified
-                authorized: only authority_verified + non-sample
+                authorized: only when phase + run + closure + Expected authority hold
 ```
+
+## Upstream Expected v2 phase contract
+
+When an Effective Profile declares `phase`, real #66-B2 projections are
+`phase_status=unverified` and parent `status=partial`.
+`complete` + `unverified` is illegal (`expected_phase_complete_unproven` /
+`terminal_expected_phase_complete_unproven`). That real shape may bind
+structurally but **cannot** authorize until a Phase Producer fact sets
+`phase_status=verified`. `expected_authority=True` alone never proves phase.
 
 ## Canonical gates reused
 
-- Parent Expected v2 supplies `scope_id`, `phase`, completeness. Missing parent
-  phase cannot authorize; wrong phase is rejected. `phase_status` may remain
-  `unverified` until a Phase Producer exists.
+- Parent Expected v2 supplies `scope_id`, `phase`, completeness.
 - Check Entry keeps the pre-execution `expected_check_ref`
-  (`expected_checks.entry_identity`). Missing refs are rejected; the binder
-  never remints identity from Native Results or stuffed Run fields.
-- `check_contract.validate_expected_instance()` runs on a view that may attach
-  the parent-proven phase without mutating the stored entry.
-- `selection.post_completion_plan()` / `validate_post_completion_binding()` —
-  Run/Attempt/result and recomputable Weaver input closure.
-
-Post-hoc `run_id` / `run_attempt` on the Expected entry are forbidden.
-`completed_run` correlates with Plan identity separately.
+  (`expected_checks.entry_identity`). Missing refs are rejected; post-hoc
+  `run_id` / `run_attempt` on the entry are forbidden.
+- `selection.validate_post_completion_binding()` — recomputable Weaver input
+  closure.
+- `completed_run` correlates with Plan identity, but Plan builder params alone
+  are not Provider terminal proof; `completed_run_authority` (or a future
+  sourced proof) is required for `authorized=true`.
 
 Span Expectations JSON under `ci-weaver.toml` remain a separate object from the
 Check Expected identity.
 
-## Authorization vs input closure
-
-Two independent facts:
+## Authorization facts
 
 | Field | Meaning |
 | --- | --- |
+| `phase_verified` | Parent `phase_status=verified` (Phase Producer fact) |
 | `authorization_basis=authority_verified` | Caller `expected_authority` accepted the Expected |
-| `input_closure=verified` | `selection.validate_post_completion_binding(plan, root)` recomputed successfully |
+| `completed_run_verified` | `completed_run_authority` accepted the terminal claim |
+| `input_closure=verified` | `validate_post_completion_binding(plan, root)` succeeded |
 
-Overall `authorized=true` requires **both**, a complete parent scope, matching
-`completed_run`↔Plan identity, and recomputed `expected_check_ref`. Missing
-`root` yields `input_closure=unverified` and cannot authorize. Authority alone
-never proves live Terminal inputs.
+Overall `authorized=true` requires **all four**, plus matching identities and
+no gaps.
 
 ## Limits
 
-- Does not implement #66-B2 Phase Producer or mark `phase_status=verified`.
+- Does not implement #66-B2 Phase Producer.
 - Does not expand Task-only A (#82) into Terminal B.
 - Digest integrity is not authorization.
 - Production execute-plan Expected injection and #63/#61 remain subsequent work.
 
 ## Directed acceptance
 
-`tests/test_terminal_expected.py` covers authorized bind on real B2-shaped
-entries, missing/rejected authority, wrong/missing parent phase, incomplete
-parent scope, post-hoc Run fields forbidden, missing `expected_check_ref`,
-wrong completed Attempt, contract-sample non-authorization, Plan identity drift
-rejection, Span Expectations independence, and `post_completion_with_expected`.
+`tests/test_terminal_expected.py` covers real B2 partial/unverified non-
+authorization, Phase Producer-verified authorization, illegal
+`complete+unverified`, self-reported completed_run rejection, missing/rejected
+authority, wrong/missing parent phase, post-hoc Run fields forbidden, missing
+`expected_check_ref`, Plan identity drift, Span Expectations independence, and
+helper Plan builder non-self-authorization.

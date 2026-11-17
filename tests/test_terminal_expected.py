@@ -57,7 +57,6 @@ def make_b2_terminal_entry(**changes):
         "policy_status": "resolved",
     }
     entry.update(changes)
-    # Identity is always over the pre-execution payload (no post-hoc Run fields).
     entry["expected_check_ref"] = expected_checks.entry_identity(
         {key: value for key, value in entry.items() if key != "expected_check_ref"}
     )
@@ -69,12 +68,21 @@ def make_parent_expected(
     *,
     phase=check_contract.POST_COMPLETION_PHASE,
     phase_status="unverified",
-    status="complete",
+    status="partial",
     scope_id=SCOPE_ID,
+    expected_set_ref=None,
 ):
-    """Authorized parent Expected v2 projection carrying phase / scope."""
+    """Upstream Expected v2 shape accepted by validate_projection rules.
+
+    Declared phase ⇒ ``phase_status=unverified`` and parent ``status=partial``
+    until a Phase Producer verifies. ``complete`` + ``unverified`` is illegal.
+    """
     if entry is None:
         entry = make_b2_terminal_entry()
+    if expected_set_ref is None:
+        expected_set_ref = expected_checks.set_identity(
+            [entry], schema_version=expected_checks.EXPECTED_V2
+        )
     return {
         "schema_version": expected_checks.EXPECTED_V2,
         "projection_source": "effective_profile",
@@ -82,9 +90,20 @@ def make_parent_expected(
         "scope_id": scope_id,
         "phase": phase,
         "phase_status": phase_status,
+        "expected_set_ref": expected_set_ref,
         "checks": [entry],
         "non_check_obligations": [],
     }
+
+
+def make_phase_verified_parent(**changes):
+    """Consume a future Phase Producer fact — not implemented in #52."""
+    kwargs = {
+        "status": "complete",
+        "phase_status": "verified",
+    }
+    kwargs.update(changes)
+    return make_parent_expected(**kwargs)
 
 
 def completed_run(**changes):
@@ -124,39 +143,82 @@ def make_plan(tmp_path):
     return root, plan
 
 
-def test_authorized_terminal_expected_binds_post_completion_plan(tmp_path):
+def test_real_b2_partial_phase_binds_but_cannot_authorize(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_parent_expected()
+    expected = make_parent_expected()  # partial + unverified — real B2
     binding = te.bind_terminal_expected(
         expected,
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
+    )
+    assert binding["authorized"] is False
+    assert binding["phase_verified"] is False
+    assert "terminal_expected_phase_unverified" in binding["reasons"]
+    assert "run_id" not in binding["expected"]
+
+
+def test_authorized_when_phase_producer_fact_and_run_authority(tmp_path):
+    root, plan = make_plan(tmp_path)
+    expected = make_phase_verified_parent()
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
     )
     assert binding["status"] == "bound"
     assert binding["authorized"] is True
+    assert binding["phase_verified"] is True
+    assert binding["completed_run_verified"] is True
     assert binding["input_closure"] == "verified"
     assert binding["scope_id"] == SCOPE_ID
-    assert binding["phase"] == check_contract.POST_COMPLETION_PHASE
-    assert "run_id" not in binding["expected"]
-    assert "run_attempt" not in binding["expected"]
-    assert binding["expected_check_ref"] == expected["checks"][0]["expected_check_ref"]
-    assert binding["completed_run"]["run_id"] == "controlled-42/1"
-    assert (
-        binding["plan_identity"]["closure_sha256"] == plan["post_completion"]["sha256"]
-    )
     validated = te.validate_terminal_expected_binding(copy.deepcopy(binding))
     assert validated["binding_ref"] == binding["binding_ref"]
+
+
+def test_complete_with_unverified_phase_is_rejected(tmp_path):
+    root, plan = make_plan(tmp_path)
+    with pytest.raises(
+        te.TerminalExpectedError, match="terminal_expected_phase_complete_unproven"
+    ):
+        te.bind_terminal_expected(
+            make_parent_expected(status="complete", phase_status="unverified"),
+            plan=plan,
+            completed_run=completed_run(),
+            root=root,
+            expected_authority=accept,
+            completed_run_authority=accept,
+        )
+
+
+def test_self_reported_completed_run_cannot_authorize(tmp_path):
+    root, plan = make_plan(tmp_path)
+    binding = te.bind_terminal_expected(
+        make_phase_verified_parent(),
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        # No completed_run_authority — Plan builder params are not Provider proof.
+    )
+    assert binding["authorized"] is False
+    assert binding["completed_run_verified"] is False
+    assert "terminal_completed_run_source_unproven" in binding["reasons"]
 
 
 def test_missing_root_marks_input_closure_unverified(tmp_path):
     _root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["input_closure"] == "unverified"
@@ -171,11 +233,12 @@ def test_drifted_plan_inputs_fail_closure_validation(tmp_path):
         encoding="utf-8",
     )
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["input_closure"] == "failed"
@@ -187,10 +250,11 @@ def test_drifted_plan_inputs_fail_closure_validation(tmp_path):
 def test_missing_authority_cannot_authorize_terminal(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
+        completed_run_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["status"] == "unverified"
@@ -200,11 +264,12 @@ def test_missing_authority_cannot_authorize_terminal(tmp_path):
 def test_rejected_authority_is_not_authorized(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=reject,
+        completed_run_authority=accept,
     )
     assert binding["authorized"] is False
     assert binding["status"] == "rejected"
@@ -221,6 +286,7 @@ def test_wrong_parent_phase_is_rejected(tmp_path):
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
@@ -237,17 +303,19 @@ def test_missing_parent_phase_is_rejected(tmp_path):
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
 def test_wrong_completed_attempt_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(attempt=9),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     assert binding["authorized"] is False
     assert "terminal_completed_attempt_mismatch" in binding["reasons"]
@@ -260,11 +328,12 @@ def test_post_hoc_run_fields_on_expected_are_rejected(tmp_path):
         te.TerminalExpectedError, match="terminal_expected_post_hoc_run_forbidden"
     ):
         te.bind_terminal_expected(
-            make_parent_expected(entry),
+            make_phase_verified_parent(entry=entry),
             plan=plan,
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
@@ -276,25 +345,13 @@ def test_missing_expected_check_ref_is_rejected(tmp_path):
         te.TerminalExpectedError, match="terminal_expected_check_ref_missing"
     ):
         te.bind_terminal_expected(
-            make_parent_expected(entry),
+            make_phase_verified_parent(entry=entry),
             plan=plan,
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
-
-
-def test_incomplete_parent_scope_cannot_authorize(tmp_path):
-    root, plan = make_plan(tmp_path)
-    binding = te.bind_terminal_expected(
-        make_parent_expected(status="partial"),
-        plan=plan,
-        completed_run=completed_run(),
-        root=root,
-        expected_authority=accept,
-    )
-    assert binding["authorized"] is False
-    assert "terminal_expected_scope_incomplete" in binding["reasons"]
 
 
 def test_wrong_check_id_is_rejected(tmp_path):
@@ -306,17 +363,18 @@ def test_wrong_check_id_is_rejected(tmp_path):
     )
     with pytest.raises(te.TerminalExpectedError, match="terminal_expected_"):
         te.bind_terminal_expected(
-            make_parent_expected(entry),
+            make_phase_verified_parent(entry=entry),
             plan=plan,
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
 def test_missing_scope_id_is_rejected(tmp_path):
     root, plan = make_plan(tmp_path)
-    parent = make_parent_expected()
+    parent = make_phase_verified_parent()
     del parent["scope_id"]
     with pytest.raises(
         te.TerminalExpectedError, match="terminal_expected_scope_id_missing"
@@ -327,12 +385,12 @@ def test_missing_scope_id_is_rejected(tmp_path):
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
 def test_bare_entry_without_parent_cannot_authorize(tmp_path):
     root, plan = make_plan(tmp_path)
-    # B2 entry alone has no scope_id / phase — binder must not invent them.
     with pytest.raises(
         te.TerminalExpectedError,
         match="terminal_expected_phase_unproven|terminal_expected_scope_id_missing",
@@ -343,17 +401,19 @@ def test_bare_entry_without_parent_cannot_authorize(tmp_path):
             completed_run=completed_run(),
             root=root,
             expected_authority=accept,
+            completed_run_authority=accept,
         )
 
 
 def test_contract_sample_cannot_authorize(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
         contract_sample=True,
     )
     assert binding["status"] == "bound"
@@ -364,11 +424,12 @@ def test_contract_sample_cannot_authorize(tmp_path):
 def test_validate_rejects_mutated_inner_expected_identity(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     forged = copy.deepcopy(binding)
     forged["expected"] = dict(forged["expected"])
@@ -388,11 +449,12 @@ def test_validate_rejects_mutated_inner_expected_identity(tmp_path):
 def test_validate_rejects_plan_identity_drift(tmp_path):
     root, plan = make_plan(tmp_path)
     binding = te.bind_terminal_expected(
-        make_parent_expected(),
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     forged = copy.deepcopy(binding)
     forged["plan_identity"] = dict(forged["plan_identity"])
@@ -407,13 +469,13 @@ def test_validate_rejects_plan_identity_drift(tmp_path):
 
 def test_span_expectations_remain_independent_of_check_expected(tmp_path):
     root, plan = make_plan(tmp_path)
-    expected = make_parent_expected()
     binding = te.bind_terminal_expected(
-        expected,
+        make_phase_verified_parent(),
         plan=plan,
         completed_run=completed_run(),
         root=root,
         expected_authority=accept,
+        completed_run_authority=accept,
     )
     span_path = root / plan["post_completion"]["expectations"]["path"]
     original = span_path.read_text(encoding="utf-8")
@@ -422,7 +484,7 @@ def test_span_expectations_remain_independent_of_check_expected(tmp_path):
     assert binding["expected"]["check_id"] == te.TERMINAL_CHECK_ID
 
 
-def test_post_completion_with_expected_helper(tmp_path):
+def test_post_completion_helper_does_not_self_authorize_from_plan_params(tmp_path):
     if not FIXTURE.is_dir():
         pytest.skip("weaver-cicd fixture unavailable")
     root = tmp_path / "src"
@@ -434,9 +496,23 @@ def test_post_completion_with_expected_helper(tmp_path):
         run_id="controlled-42/1",
         attempt=1,
         result="success",
-        expected=make_parent_expected(),
+        expected=make_phase_verified_parent(),
         expected_authority=accept,
+        # Intentionally omit completed_run_authority.
     )
-    assert binding["authorized"] is True
-    assert binding["input_closure"] == "verified"
+    assert binding["authorized"] is False
+    assert binding["completed_run_verified"] is False
     assert binding["plan"]["phase"] == selection.POST_COMPLETION_PHASE
+
+    authorized = te.post_completion_with_expected(
+        root=root,
+        config_path=root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+        expected=make_phase_verified_parent(),
+        expected_authority=accept,
+        completed_run_authority=accept,
+    )
+    assert authorized["authorized"] is True
