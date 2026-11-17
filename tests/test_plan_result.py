@@ -543,6 +543,60 @@ def test_invalid_plan_refuses_before_source_export(modules):
         asyncio.run(saved.enforce())
 
 
+def test_preparation_operation_exit_is_preserved_without_becoming_a_test_exit(modules):
+    _, collector = modules
+
+    class PreparationFailure(RuntimeError):
+        exit_code = 2
+        stdout = "original preparation stdout"
+        stderr = "lockfile missing"
+
+        def __init__(self, message):
+            super().__init__(message)
+            self.command = ["uv", "sync", "--locked"]
+
+    item = collector._native_failure("tests", PreparationFailure("operation failed"))
+    assert item["status"] == "not_executed" and item["exit_code"] is None
+    assert item["failed_operation"]["exit_code"] == 2
+    assert item["failed_operation"]["stderr"] == "lockfile missing"
+    assert "native_result" not in item
+
+
+def test_artifact_identity_query_failure_keeps_completed_native_test_exit(modules):
+    _, collector = modules
+    adapter = __import__(
+        collector.__package__ + ".native_results", fromlist=["test_result"]
+    )
+
+    class Probe:
+        def with_exec(self, command):
+            return self
+
+        async def stdout(self):
+            return json.dumps({"executable": "python", "tool_version": "3.14"})
+
+    class UnavailableIdentity(MemoryDirectory):
+        async def digest(self):
+            raise RuntimeError("controlled metadata transport failure")
+
+    item = asyncio.run(
+        adapter.test_result(
+            {"status": "failed", "exit_code": 1},
+            Probe(),
+            MemoryDirectory(),
+            "unittest",
+            ["tests.test_native"],
+            artifacts=UnavailableIdentity(),
+        )
+    )
+    assert item["status"] == "failed" and item["exit_code"] == 1
+    assert item["native_result"]["native_exit_code"] == 1
+    assert (
+        item["native_result"]["evidence"]["observation"]["artifact_identity"]["status"]
+        == "unavailable"
+    )
+
+
 def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
     modules, monkeypatch
 ):

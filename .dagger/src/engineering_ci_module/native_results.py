@@ -96,7 +96,13 @@ async def test_result(
     except Exception as error:  # noqa: BLE001 - retain a completed test even if metadata transport fails
         # A failed metadata read cannot erase the completed test process.
         observation = {"status": "unavailable", "reason": str(error)}
-    observation["native_artifacts"] = await directory_reference(artifacts)
+    try:
+        observation["native_artifacts"] = await directory_reference(artifacts)
+    except Exception as error:  # noqa: BLE001 - artifact metadata failure cannot rewrite the native exit
+        observation["artifact_identity"] = {
+            "status": "unavailable",
+            "reason": str(error),
+        }
     impl, hashes = implementation("tests")
     enriched = native_producer.test_check(
         item,

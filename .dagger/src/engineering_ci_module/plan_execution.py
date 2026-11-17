@@ -14,6 +14,26 @@ from .plan_result import PlanExecution
 from .plan_result import result as make_result
 
 
+def _native_failure(name, error):
+    """Keep the failing preparation operation separate from a Check exit."""
+    item = {
+        "name": name,
+        "status": "not_executed",
+        "exit_code": None,
+        "reason": "native_execution_error",
+        "error_type": type(error).__name__,
+        "diagnostic": str(error),
+    }
+    if isinstance(getattr(error, "command", None), list):
+        item["failed_operation"] = {
+            "command": error.command,
+            "exit_code": getattr(error, "exit_code", None),
+            "stdout": getattr(error, "stdout", None),
+            "stderr": getattr(error, "stderr", None),
+        }
+    return item
+
+
 def _aggregate(report):
     """Summarize collected facts; source-wide refusals return before this."""
     delivery = report.get("artifact_delivery")
@@ -302,14 +322,7 @@ async def _native_results(
         if isinstance(output, BaseException):
             if not isinstance(output, Exception):
                 raise output
-            native = {
-                "name": name,
-                "status": "not_executed",
-                "exit_code": None,
-                "reason": "native_execution_error",
-                "error_type": type(output).__name__,
-                "diagnostic": str(output),
-            }
+            native = _native_failure(name, output)
             if name == "tests":
                 report["tests"] = native
             else:
@@ -1001,13 +1014,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["tests"] = {
-                        "status": "not_executed",
-                        "exit_code": None,
-                        "reason": "native_execution_error",
-                        "error_type": type(output).__name__,
-                        "diagnostic": str(output),
-                    }
+                    report["tests"] = _native_failure("tests", output)
                 else:
                     payload, test_files = output
                     report.update(payload)
@@ -1018,16 +1025,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["checks"].append(
-                        {
-                            "name": name,
-                            "status": "not_executed",
-                            "exit_code": None,
-                            "reason": "native_execution_error",
-                            "error_type": type(output).__name__,
-                            "diagnostic": str(output),
-                        }
-                    )
+                    report["checks"].append(_native_failure(name, output))
                 else:
                     native, check_files, metadata = output
                     report.update(metadata)
@@ -1040,14 +1038,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["prerequisites"].append(
-                        {
-                            "name": slot[1],
-                            "status": "not_executed",
-                            "reason": "native_execution_error",
-                            "diagnostic": str(output),
-                        }
-                    )
+                    report["prerequisites"].append(_native_failure(slot[1], output))
                 else:
                     report["prerequisites"].append(output)
             elif slot == ("execution_report", "artifacts") and isinstance(
