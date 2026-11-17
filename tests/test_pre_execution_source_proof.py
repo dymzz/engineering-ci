@@ -1145,3 +1145,154 @@ def test_default_user_attributes_beyond_whitespace_enter_rule_identity(
         )["equivalent"]
         is True
     )
+
+
+def _plan_with_data_edge(plan, *, producer_name, check_name, artifact_path):
+    producer_action = {
+        "type": "command",
+        "argv": [sys.executable, "-c", "pass"],
+    }
+    data_edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": producer_name},
+        "consumer_ref": {"kind": "check", "name": check_name},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "execution_phase": "pre_execution",
+        "output_ref": {"kind": "file", "path": artifact_path},
+        "source_binding_ref": "git",
+        "declaration_ref": {
+            "path": "ci-selection.toml",
+            "sha256": "a" * 64,
+            "section": f"prerequisite_actions.{producer_name}",
+        },
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    return {
+        **plan,
+        "selection": {
+            **plan["selection"],
+            "prerequisites": [producer_name],
+        },
+        "prerequisite_actions": {producer_name: producer_action},
+        "dependency_contract": plan_contract.graph_contract(
+            [data_edge], required_semantics=["data_dependency"]
+        ),
+    }
+
+
+def test_pre_execution_overlay_subset_digest_uses_effective_view(tmp_path):
+    """Producer regression: overlay intersecting Expected changed_paths.
+
+    Subset digest and closed SourceRef must come from the same effective
+    consumer view. An authenticated overlay that mutates a changed_paths
+    member must not mint a verified P0 that silently binds Expected digest X
+    to overlaid closure Y.
+    """
+    root, base = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 7\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+    tach_expected = next(
+        c for c in plan["expected_checks"]["checks"] if c["name"] == "tach"
+    )
+    expected_source = tach_expected["source_ref"]
+    assert expected_source["scope_kind"] == "changed_paths"
+    assert "src/pkg/mod.py" in expected_source["verified_input_scope"]
+    expected_digest = expected_source["content_digest"]
+
+    # Overlay outside the Expected subset: subset digest stays X, overlay
+    # intersection is empty, closed proof remains verified.
+    outside_plan = _plan_with_data_edge(
+        plan,
+        producer_name="codegen",
+        check_name="tach",
+        artifact_path="generated/schema.py",
+    )
+    artifact_root = tmp_path / "artifacts"
+    outside_ns = execution.producer_artifact_root(
+        artifact_root, {"kind": "prerequisite_action", "name": "codegen"}
+    )
+    (outside_ns / "generated").mkdir(parents=True)
+    (outside_ns / "generated" / "schema.py").write_text(
+        "SCHEMA = 1\n", encoding="utf-8"
+    )
+    outside_proof = execution.build_pre_execution_source_proof(
+        outside_plan,
+        "tach",
+        root=root,
+        artifact_root=artifact_root,
+        prerequisite_results={"codegen": {"status": "passed"}},
+    )
+    assert outside_proof["status"] == "verified_candidate_inputs"
+    assert outside_proof["changed_paths_content_digest"] == expected_digest
+    assert outside_proof["overlay_subset_paths"] == []
+    assert "generated/schema.py" in outside_proof["source_ref"]["verified_input_scope"]
+
+    # Overlay mutates a changed_paths member: plan content_binding rejects the
+    # drifted effective view before any verified P0 can be minted.
+    mutate_plan = _plan_with_data_edge(
+        plan,
+        producer_name="rewrite",
+        check_name="tach",
+        artifact_path="src/pkg/mod.py",
+    )
+    mutate_root = tmp_path / "mutate-artifacts"
+    mutate_ns = execution.producer_artifact_root(
+        mutate_root, {"kind": "prerequisite_action", "name": "rewrite"}
+    )
+    (mutate_ns / "src" / "pkg").mkdir(parents=True)
+    (mutate_ns / "src" / "pkg" / "mod.py").write_text("VALUE = 999\n", encoding="utf-8")
+    mutated = execution.build_pre_execution_source_proof(
+        mutate_plan,
+        "tach",
+        root=root,
+        artifact_root=mutate_root,
+        prerequisite_results={"rewrite": {"status": "passed"}},
+    )
+    assert mutated["status"] == "unverified"
+    assert mutated["reason"] == "pre_execution_input_closure_unproven"
+    assert mutated["source_ref"] is None
+
+    # Without plan path-binding, the same overlay still fails: subset digest is
+    # taken from the effective consumer-view snapshot (overlaid bytes), which
+    # no longer equals Expected changed_paths content_digest X.
+    unbound_git = {
+        key: value
+        for key, value in (mutate_plan.get("git") or {}).items()
+        if key != "content_binding"
+    }
+    unbound_plan = {**mutate_plan, "git": unbound_git}
+    mismatched = execution.build_pre_execution_source_proof(
+        unbound_plan,
+        "tach",
+        root=root,
+        artifact_root=mutate_root,
+        prerequisite_results={"rewrite": {"status": "passed"}},
+    )
+    assert mismatched["status"] == "unverified"
+    assert mismatched["reason"] == "pre_execution_changed_paths_digest_mismatch"
+    assert mismatched["source_ref"] is None
+    assert mismatched.get("changed_paths_content_digest") is None
+
+    # Same overlay path, identical bytes: subset digest still equals Expected X,
+    # but overlay_subset_paths records the intersection with the effective view.
+    same_root = tmp_path / "same-artifacts"
+    same_ns = execution.producer_artifact_root(
+        same_root, {"kind": "prerequisite_action", "name": "rewrite"}
+    )
+    (same_ns / "src" / "pkg").mkdir(parents=True)
+    (same_ns / "src" / "pkg" / "mod.py").write_text("VALUE = 7\n", encoding="utf-8")
+    same_bytes = execution.build_pre_execution_source_proof(
+        mutate_plan,
+        "tach",
+        root=root,
+        artifact_root=same_root,
+        prerequisite_results={"rewrite": {"status": "passed"}},
+    )
+    assert same_bytes["status"] == "verified_candidate_inputs"
+    assert same_bytes["changed_paths_content_digest"] == expected_digest
+    assert same_bytes["overlay_subset_paths"] == ["src/pkg/mod.py"]
+    assert same_bytes["source_ref"]["scope_kind"] in {
+        "check_input_closure",
+        "full_input_closure",
+    }
