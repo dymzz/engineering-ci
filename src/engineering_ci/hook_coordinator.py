@@ -627,12 +627,29 @@ def _seal_delivered_report(run_binding, job_ref, report):
     return sealed
 
 
+def _resolve_invocation_index_path(binding, root, git_dir):
+    """Absolute Index path recorded on the verified pre-commit Event."""
+    index = binding.event.get("index")
+    if not isinstance(index, dict):
+        raise HookCoordinatorError("invocation_index_missing")
+    file_ref = index.get("file")
+    if not isinstance(file_ref, str) or not file_ref:
+        raise HookCoordinatorError("invocation_index_file_missing")
+    candidate = Path(file_ref)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        if resolved.is_file():
+            return resolved
+        raise HookCoordinatorError("invocation_index_file_missing")
+    for base in (Path(root).resolve(), Path(git_dir).resolve()):
+        joined = (base / file_ref).resolve()
+        if joined.is_file():
+            return joined
+    raise HookCoordinatorError("invocation_index_file_missing")
+
+
 def _require_plan_matches_push_invocation(binding, plan, git_dir):
     """Refuse Worktree Plans and Plans whose head/tree is not a Push after OID."""
-    if not isinstance(binding, InvocationBinding):
-        raise HookCoordinatorError("invocation_binding_invalid")
-    if binding.hook != "pre-push":
-        return
     if not isinstance(plan, dict):
         raise HookCoordinatorError("execution_plan_invalid")
     git = plan.get("git")
@@ -656,14 +673,58 @@ def _require_plan_matches_push_invocation(binding, plan, git_dir):
         raise HookCoordinatorError("execution_tree_not_invocation_target")
 
 
+def _require_plan_matches_precommit_invocation(binding, plan, root, git_dir):
+    """Refuse Plans that are not the captured Index Source for this Invocation."""
+    index = binding.event.get("index")
+    if not isinstance(index, dict) or not index.get("tree"):
+        raise HookCoordinatorError("invocation_index_missing")
+    captured_tree = index["tree"]
+    captured_index = _resolve_invocation_index_path(binding, root, git_dir)
+    if not isinstance(plan, dict):
+        raise HookCoordinatorError("execution_plan_invalid")
+    git = plan.get("git")
+    if not isinstance(git, dict):
+        raise HookCoordinatorError("execution_source_not_index_target")
+    if git.get("snapshot") != "index":
+        raise HookCoordinatorError("execution_source_not_index_target")
+    declared_trees = [
+        git.get(key) for key in ("index_tree", "execution_tree") if git.get(key)
+    ]
+    if not declared_trees:
+        raise HookCoordinatorError("execution_index_tree_missing")
+    if any(tree != captured_tree for tree in declared_trees):
+        raise HookCoordinatorError("execution_index_tree_mismatch")
+    plan_index = git.get("index_file")
+    if plan_index is None:
+        default_index = (Path(git_dir) / "index").resolve()
+        if captured_index != default_index:
+            raise HookCoordinatorError("execution_index_file_mismatch")
+    elif Path(plan_index).resolve() != captured_index:
+        raise HookCoordinatorError("execution_index_file_mismatch")
+
+
+def _require_plan_matches_invocation(binding, plan, root, git_dir):
+    """Dispatch Hook-specific Plan ↔ Invocation Source ownership checks."""
+    if not isinstance(binding, InvocationBinding):
+        raise HookCoordinatorError("invocation_binding_invalid")
+    if binding.hook == "pre-push":
+        _require_plan_matches_push_invocation(binding, plan, git_dir)
+        return
+    if binding.hook == "pre-commit":
+        _require_plan_matches_precommit_invocation(binding, plan, root, git_dir)
+        return
+    raise HookCoordinatorError("invocation_hook_unsupported")
+
+
 def execute_activated_job(run_binding, job_ref, *, plan, root, **execute_kwargs):
     """Run one eligible Job through #52 ``execution.execute`` and seal delivery.
 
     The returned Report keeps execute's Check/Native bodies intact and records
     ``delivered_report_ref`` so Collect can require this production boundary.
     Source checks always use the Invocation Binding sealed into ``RunBinding``
-    at ``open_attempt``: execution ``root`` must share that Git Directory, and
-    pre-push Plans must target the Push Commit/Tree (Worktree Plans refused).
+    at ``open_attempt``: execution ``root`` must share that Git Directory;
+    pre-push Plans must target the Push Commit/Tree; pre-commit Plans must
+    target the captured Index Tree/file (Worktree Plans refused).
     """
     if not isinstance(run_binding, RunBinding):
         raise HookCoordinatorError("run_binding_invalid")
@@ -683,7 +744,7 @@ def execute_activated_job(run_binding, job_ref, *, plan, root, **execute_kwargs)
     if binding.invocation_ref != run_binding.invocation_ref:
         raise HookCoordinatorError("execution_binding_mismatch")
     git_dir = _require_execution_root_matches_invocation(binding, root)
-    _require_plan_matches_push_invocation(binding, plan, git_dir)
+    _require_plan_matches_invocation(binding, plan, root, git_dir)
     run_instance = attempt_result_instance(run_binding, job_ref)
     execute_kwargs = dict(execute_kwargs)
     execute_kwargs.setdefault("execution_context", "host")

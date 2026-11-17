@@ -139,6 +139,48 @@ def push_source(tip, tree, *, paths):
     }
 
 
+def _whitespace_only_scope(paths):
+    return [
+        {"name": "whitespace", "status": "selected", "inputs": list(paths)},
+        {
+            "name": "docs",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "not selected",
+        },
+        {
+            "name": "tach",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "not selected",
+        },
+        {
+            "name": "vulture",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "not selected",
+        },
+        {
+            "name": "forwarding",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "not selected",
+        },
+        {
+            "name": "source",
+            "status": "not_applicable",
+            "inputs": [],
+            "reason": "not selected",
+        },
+        {
+            "name": "unittest",
+            "status": "no_tests",
+            "inputs": [],
+            "reason": "no mapped tests",
+        },
+    ]
+
+
 def whitespace_push_plan(base, tip, tree, *, paths=("docs/guide.md",)):
     """Host Plan that runs only ``git diff --check`` on the Push tip Tree."""
     return make_execution_plan(
@@ -153,45 +195,26 @@ def whitespace_push_plan(base, tip, tree, *, paths=("docs/guide.md",)):
             "tree": tree,
             "changed_paths": list(paths),
         },
-        check_scope=[
-            {"name": "whitespace", "status": "selected", "inputs": list(paths)},
-            {
-                "name": "docs",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "not selected",
-            },
-            {
-                "name": "tach",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "not selected",
-            },
-            {
-                "name": "vulture",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "not selected",
-            },
-            {
-                "name": "forwarding",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "not selected",
-            },
-            {
-                "name": "source",
-                "status": "not_applicable",
-                "inputs": [],
-                "reason": "not selected",
-            },
-            {
-                "name": "unittest",
-                "status": "no_tests",
-                "inputs": [],
-                "reason": "no mapped tests",
-            },
-        ],
+        check_scope=_whitespace_only_scope(paths),
+    )
+
+
+def whitespace_index_plan(base, head, index_tree, index_file, *, paths):
+    """Host Plan bound to a captured pre-commit Index Tree/file."""
+    return make_execution_plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "INDEX",
+            "base_commit": base,
+            "head_commit": head,
+            "snapshot": "index",
+            "index_tree": index_tree,
+            "execution_tree": index_tree,
+            "index_file": str(index_file),
+            "changed_paths": list(paths),
+        },
+        check_scope=_whitespace_only_scope(paths),
     )
 
 
@@ -885,6 +908,82 @@ def test_precommit_index_tree_matches_when_index_differs_from_head(repo):
         consumer_completeness="expected_domain_complete",
     )
     assert coordinator.verify_expected_matches_invocation(binding, projection) is True
+
+
+def test_precommit_execute_requires_captured_index_source(selection_repo, tmp_path):
+    """P1: pre-commit execute must bind the captured Index Tree/file, not Worktree/B."""
+    path, base = selection_repo
+    head = git(path, "rev-parse", "HEAD")
+    (path / "docs/guide.md").write_text("# staged-index-a\n", encoding="utf-8")
+    git(path, "add", "docs/guide.md")
+    index_a = git(path, "write-tree")
+    reference = capture_precommit(path)
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    assert binding.event["index"]["tree"] == index_a
+    index_file = coordinator._resolve_invocation_index_path(
+        binding, path, coordinator._invocation_git_dir(binding)
+    )
+    plan_a = whitespace_index_plan(
+        base, head, index_a, index_file, paths=("docs/guide.md",)
+    )
+    run = coordinator.open_attempt(binding, run_id="precommit")
+    run.record_job("job-1")
+    report = coordinator.execute_activated_job(run, "job-1", plan=plan_a, root=path)
+    assert report["status"] == "passed"
+    _results, _rej, report_ref = coordinator.collect_job_report(run, "job-1", report)
+    receipt = coordinator.issue_job_receipt(
+        run,
+        "job-1",
+        report_ref,
+        event_ref={"base_ref": "HEAD", "head_ref": "INDEX"},
+        scope_id="sha256:" + ("b" * 64),
+        expected_set_ref="sha256:" + ("a" * 64),
+        report=report,
+    )
+    assert receipt["verification_status"] == "upstream_verified"
+
+    # Same Attempt already executed — open a fresh Attempt for negatives.
+    run_b = coordinator.open_attempt(binding, run_id="precommit-b")
+    run_b.record_job("job-1")
+    worktree_plan = make_execution_plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": base,
+            "head_commit": head,
+            "snapshot": "worktree",
+            "changed_paths": ["docs/guide.md"],
+        },
+        check_scope=_whitespace_only_scope(("docs/guide.md",)),
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_source_not_index_target"
+    ):
+        coordinator.execute_activated_job(run_b, "job-1", plan=worktree_plan, root=path)
+
+    (path / "docs/guide.md").write_text("# staged-index-b\n", encoding="utf-8")
+    git(path, "add", "docs/guide.md")
+    index_b = git(path, "write-tree")
+    assert index_b != index_a
+    plan_b = whitespace_index_plan(
+        base, head, index_b, index_file, paths=("docs/guide.md",)
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_index_tree_mismatch"
+    ):
+        coordinator.execute_activated_job(run_b, "job-1", plan=plan_b, root=path)
+    assert run_b.jobs["job-1"].get("delivered_report_ref") is None
+
+    foreign_index = tmp_path / "foreign-index"
+    foreign_index.write_bytes(index_file.read_bytes())
+    plan_foreign = whitespace_index_plan(
+        base, head, index_a, foreign_index, paths=("docs/guide.md",)
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_index_file_mismatch"
+    ):
+        coordinator.execute_activated_job(run_b, "job-1", plan=plan_foreign, root=path)
 
 
 def test_producer_new_ref_matches_raw_zero_not_analyzed_baseline(selection_repo):
