@@ -6,10 +6,12 @@ import copy
 
 import pytest
 from test_required_assessment import (
+    BASIS_REF,
     assess,
     check_obligation,
     evidence_entry,
     historical_coverage,
+    inapplicability_authorization,
     make_admission,
     make_entry,
     make_evidence,
@@ -48,7 +50,23 @@ def window(**changes):
     return value
 
 
-def prior_passed(*, contract_sample=False):
+def accept(_context):
+    return {"accepted": True, "status": "authorized"}
+
+
+def reconcile(prior, post, **changes):
+    kwargs = {
+        "trigger_event": trigger(),
+        "due_window": window(),
+        "evaluated_at": EVALUATED_AT,
+        "trigger_authority": accept,
+        "due_window_authority": accept,
+    }
+    kwargs.update(changes)
+    return rap.reconcile_post_stage(prior, post, **kwargs)
+
+
+def prior_passed(*, contract_sample=False, candidate_commit="2" * 40):
     profile = make_profile()
     entry = make_entry()
     projection = make_projection(profile, [entry])
@@ -59,6 +77,7 @@ def prior_passed(*, contract_sample=False):
         [obligation],
         contract_sample=contract_sample,
         phase="pre_publish",
+        candidate={"commit": candidate_commit},
     )
     admission = make_admission(
         projection,
@@ -89,7 +108,13 @@ def prior_blocked():
     return assess(universe, projection, admission=admission)
 
 
-def post_assessment(*, passed=True, contract_sample=False):
+def post_assessment(
+    *,
+    passed=True,
+    contract_sample=False,
+    candidate_commit="2" * 40,
+    applicability="required",
+):
     profile = make_profile(
         obligations=[{"obligation_ref": "o/sbom", "kind": "non_check"}],
         declared_checks=[],
@@ -97,28 +122,42 @@ def post_assessment(*, passed=True, contract_sample=False):
     projection = make_projection(
         profile, [], non_check=[non_check_expected("o/sbom")]
     )
-    obligation = non_check_obligation("o/sbom", phase="post_publish")
+    if applicability == "not_applicable":
+        obligation = non_check_obligation(
+            "o/sbom",
+            phase="post_publish",
+            applicability="not_applicable",
+            basis_ref=BASIS_REF,
+            applicability_authorization=inapplicability_authorization(
+                obligation_ref="o/sbom",
+                phase="post_publish",
+            ),
+        )
+        evidence = None
+    else:
+        obligation = non_check_obligation("o/sbom", phase="post_publish")
+        evidence = (
+            make_evidence(
+                [evidence_entry("o/sbom", phase="post_publish")],
+                contract_sample=contract_sample,
+            )
+            if passed
+            else make_evidence([], contract_sample=contract_sample)
+        )
     universe = make_universe(
         profile,
         projection,
         [obligation],
         phase="post_publish",
         contract_sample=contract_sample,
+        candidate={"commit": candidate_commit},
     )
-    evidence = (
-        make_evidence(
-            [evidence_entry("o/sbom", phase="post_publish")],
-            contract_sample=contract_sample,
-        )
-        if passed
-        else make_evidence([], contract_sample=contract_sample)
-    )
-    return assess(
-        universe,
-        projection,
-        admission=make_admission(projection, contract_sample=contract_sample),
-        non_check_evidence=evidence,
-    )
+    kwargs = {
+        "admission": make_admission(projection, contract_sample=contract_sample),
+    }
+    if evidence is not None:
+        kwargs["non_check_evidence"] = evidence
+    return assess(universe, projection, **kwargs)
 
 
 def accept_disposition(_context):
@@ -128,19 +167,16 @@ def accept_disposition(_context):
 def test_prior_pass_and_in_window_post_pass_is_verified():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-    )
+    result = reconcile(prior, post)
     assert result["status"] == "verified"
     assert result["prior_assessment_status"] == "passed"
     assert result["post_assessment_status"] == "passed"
     assert result["due_state"] == "within_window"
+    assert result["lifecycle_identity"]["candidate"] == {"commit": "2" * 40}
     assert result["auto_revoke_published"] is False
-    assert result["lifecycle_all_phases_passed"] is True
+    # Pair slice must not claim full lifecycle PASS.
+    assert result["lifecycle_all_phases_passed"] is False
+    assert result["lifecycle_coverage"] == "unverified"
     assert rap.validate_post_stage(copy.deepcopy(result))["post_stage_ref"] == (
         result["post_stage_ref"]
     )
@@ -149,11 +185,10 @@ def test_prior_pass_and_in_window_post_pass_is_verified():
 def test_before_earliest_is_pending_not_success():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
+    result = reconcile(
         prior,
         post,
         trigger_event=trigger(observed_at=BEFORE),
-        due_window=window(),
         evaluated_at=BEFORE,
     )
     assert result["status"] == "pending"
@@ -164,14 +199,12 @@ def test_before_earliest_is_pending_not_success():
 def test_overdue_without_passing_evidence_is_not_success():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=False, contract_sample=False)
-    result = rap.reconcile_post_stage(
+    result = reconcile(
         prior,
         post,
         trigger_event=trigger(observed_at=AFTER),
-        due_window=window(),
         evaluated_at=AFTER,
     )
-    assert result["status"] in {"rejected", "unverified"}
     assert result["status"] != "verified"
     assert result["due_state"] == "overdue"
     assert result["prior_assessment_status"] == "passed"
@@ -181,13 +214,8 @@ def test_post_smoke_fail_preserves_prior_pass():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=False, contract_sample=False)
     assert post["status"] == "blocked"
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-        disposition_authority=accept_disposition,
+    result = reconcile(
+        prior, post, disposition_authority=accept_disposition
     )
     assert result["status"] != "verified"
     assert result["prior_assessment_status"] == "passed"
@@ -199,60 +227,89 @@ def test_post_smoke_fail_preserves_prior_pass():
 def test_prior_blocked_cannot_open_verified_post_stage():
     prior = prior_blocked()
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-    )
+    result = reconcile(prior, post)
     assert result["status"] == "rejected"
     assert result["prior_assessment_status"] == "blocked"
 
 
-def test_profile_not_applicable_can_verify_without_post_required():
+def test_authorized_not_applicable_post_can_verify():
     prior = prior_passed(contract_sample=False)
-    post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-        profile_applicable=False,
+    post = post_assessment(
+        passed=True, contract_sample=False, applicability="not_applicable"
     )
+    assert post["status"] == "passed"
+    result = reconcile(prior, post)
     assert result["due_state"] == "not_applicable"
     assert result["status"] == "verified"
-    assert result["disposition"] == "none"
+    assert result["lifecycle_all_phases_passed"] is False
+
+
+def test_blocked_post_cannot_become_verified_via_not_applicable_claim():
+    prior = prior_passed(contract_sample=False)
+    post = post_assessment(passed=False, contract_sample=False)
+    assert post["status"] == "blocked"
+    # Even if rows were somehow misread, blocked post must not verify as N/A.
+    result = reconcile(prior, post)
+    assert result["status"] != "verified"
+    assert result["due_state"] != "not_applicable"
+
+
+def test_different_candidate_is_rejected():
+    prior = prior_passed(contract_sample=False, candidate_commit="2" * 40)
+    post = post_assessment(
+        passed=True, contract_sample=False, candidate_commit="3" * 40
+    )
+    result = reconcile(prior, post)
+    assert result["status"] != "verified"
+    assert "post_lifecycle_candidate_mismatch" in result["reasons"]
+
+
+def test_trigger_target_mismatch_is_rejected():
+    prior = prior_passed(contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False)
+    result = reconcile(
+        prior, post, trigger_event=trigger(target="other-target")
+    )
+    assert result["status"] != "verified"
+    assert "post_trigger_target_mismatch" in result["reasons"]
 
 
 def test_incomplete_run_trigger_must_not_force_wait():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(run_completed=False),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
+    result = reconcile(
+        prior, post, trigger_event=trigger(run_completed=False)
     )
     assert result["status"] != "verified"
     assert "post_trigger_run_not_completed" in result["reasons"]
-    assert any(
-        gap["reason"] == "incomplete_run_must_not_force_workflow_wait"
-        for gap in result["gaps"]
-    )
+
+
+def test_missing_trigger_authority_cannot_verify():
+    prior = prior_passed(contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False)
+    result = reconcile(prior, post, trigger_authority=None)
+    assert result["status"] == "unverified"
+    assert "post_trigger_authority_missing" in result["reasons"]
+
+
+def test_missing_run_completed_flag_is_rejected():
+    prior = prior_passed(contract_sample=False)
+    post = post_assessment(passed=True, contract_sample=False)
+    bad = trigger()
+    del bad["run_completed"]
+    with pytest.raises(
+        rap.RequiredAssessmentPostError, match="post_trigger_run_completed_missing"
+    ):
+        reconcile(prior, post, trigger_event=bad)
 
 
 def test_authorized_reevaluation_trigger():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
+    result = reconcile(
         prior,
         post,
         trigger_event=trigger(kind="authorized_reevaluation"),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
         disposition_authority=lambda _ctx: {
             "accepted": True,
             "status": "authorized",
@@ -262,42 +319,31 @@ def test_authorized_reevaluation_trigger():
     assert result["status"] == "verified"
     assert result["trigger_event"]["kind"] == "authorized_reevaluation"
     assert result["disposition"] == "reevaluate"
+    assert result["lifecycle_all_phases_passed"] is False
 
 
 def test_contract_sample_cannot_claim_verified_lifecycle():
     prior = prior_passed(contract_sample=True)
     post = post_assessment(passed=True, contract_sample=True)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-        contract_sample=True,
-    )
+    result = reconcile(prior, post, contract_sample=True)
     assert result["status"] != "verified"
     assert result["contract_sample"] is True
-    assert "contract_sample_inputs_not_production_post_stage" in result["reasons"]
 
 
-def test_validate_rejects_tampered_lifecycle_claim():
+def test_validate_rejects_forged_lifecycle_all_phases_true():
     prior = prior_passed(contract_sample=False)
-    post = post_assessment(passed=False, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-    )
+    post = post_assessment(passed=True, contract_sample=False)
+    result = reconcile(prior, post)
     forged = copy.deepcopy(result)
     forged["lifecycle_all_phases_passed"] = True
+    forged["lifecycle_coverage"] = "complete"
     payload = {
         key: value for key, value in forged.items() if key != "post_stage_ref"
     }
     forged["post_stage_ref"] = rap._digest(payload)
     with pytest.raises(
-        rap.RequiredAssessmentPostError, match="post_lifecycle_requires_verified"
+        rap.RequiredAssessmentPostError,
+        match="post_lifecycle_all_phases_requires_complete_coverage",
     ):
         rap.validate_post_stage(forged)
 
@@ -305,13 +351,7 @@ def test_validate_rejects_tampered_lifecycle_claim():
 def test_validate_rejects_auto_revoke_flag():
     prior = prior_passed(contract_sample=False)
     post = post_assessment(passed=True, contract_sample=False)
-    result = rap.reconcile_post_stage(
-        prior,
-        post,
-        trigger_event=trigger(),
-        due_window=window(),
-        evaluated_at=EVALUATED_AT,
-    )
+    result = reconcile(prior, post)
     forged = copy.deepcopy(result)
     forged["auto_revoke_published"] = True
     payload = {

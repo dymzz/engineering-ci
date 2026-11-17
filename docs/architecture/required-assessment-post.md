@@ -23,6 +23,12 @@ trigger_event + due_window
                 prior_* fields unchanged; never rewritten
 ```
 
+## Lifecycle identity
+
+Prior and post Assessments must share `context` / `action` / `target` / `refs` /
+`candidate`. Phase may differ. Trigger `target` must match. Cross-Candidate
+splicing cannot become `verified`.
+
 ## Due window
 
 | `due_state` | Rule |
@@ -30,7 +36,11 @@ trigger_event + due_window
 | `not_yet_due` | `evaluated_at` before `earliest_at` → envelope `pending` (not success) |
 | `within_window` | Between earliest and due; stage result follows post Assessment |
 | `overdue` | After `due_at`; missing/failed post evidence cannot be verified success |
-| `not_applicable` | Profile does not require post obligations |
+| `not_applicable` | Derived only from a **passed** post Assessment whose rows are all `not_applicable` (or empty). A blocked post cannot claim N/A |
+
+`trigger_authority` and `due_window_authority` are required for `verified`.
+`run_completed` must be explicit (never defaulted to true). Timestamps are
+UTC-aware.
 
 ## Triggers
 
@@ -38,6 +48,12 @@ trigger_event + due_window
 `authorized_reevaluation`, bound to `run_id` / `run_attempt` / `target`
 (optional `artifact_digest`). An incomplete Run (`run_completed=false`) must
 not force the original Workflow to wait on its own Terminal.
+
+## Lifecycle coverage
+
+This **pair** reconciliation always records
+`lifecycle_all_phases_passed=false` and `lifecycle_coverage=unverified`. Two
+passing stage Assessments are not a complete authorized phase/obligation set.
 
 ## Disposition
 
@@ -55,5 +71,7 @@ Optional `disposition_authority` may record authorized follow-ups
 
 `tests/test_required_assessment_post.py` covers in-window PASS, not-yet-due
 pending, overdue failure, smoke FAIL with prior preserved, blocked prior,
-profile N/A, incomplete-run non-wait, authorized reevaluation, contract-sample
-non-authorization, and validate consistency rejection.
+authorized N/A, Candidate/Target mismatch rejection, incomplete-run non-wait,
+missing trigger authority, authorized reevaluation, contract-sample
+non-authorization, forged lifecycle-all-phases rejection, and validate
+consistency rejection.

@@ -11,7 +11,8 @@ This module does **not**:
 - read Rulesets (#61 R3);
 - perform Release Manifest reconciliation (#61 R4);
 - wait for the same incomplete Workflow Run's own Terminal evidence;
-- auto-revoke published artifacts.
+- auto-revoke published artifacts;
+- claim full-lifecycle PASS from a two-Assessment pair alone.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import copy
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import required_assessment
 
@@ -46,6 +47,7 @@ DISPOSITIONS = frozenset(
     }
 )
 ENVELOPE_STATUSES = frozenset({"verified", "rejected", "unverified", "pending"})
+LIFECYCLE_COVERAGE = frozenset({"unverified", "incomplete", "complete"})
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INFORMATIONAL = frozenset({"contract_sample_inputs_not_production_post_stage"})
 
@@ -88,9 +90,12 @@ def _datetime(value, code):
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError as error:
         raise RequiredAssessmentPostError(code) from error
+    if parsed.tzinfo is None:
+        raise RequiredAssessmentPostError(code)
+    return parsed.astimezone(timezone.utc)
 
 
 def _internal_ref(value, code):
@@ -108,12 +113,67 @@ def _callable_or_none(value, code):
     return value
 
 
+def _lifecycle_identity(assessment):
+    """Stable Candidate/Action/Target/Refs slice — phase may differ across stages."""
+    return {
+        "context": assessment.get("context"),
+        "action": assessment.get("action"),
+        "target": assessment.get("target"),
+        "refs": copy.deepcopy(assessment.get("refs")),
+        "candidate": copy.deepcopy(assessment.get("candidate")),
+    }
+
+
+def _bind_lifecycle(prior, post, trigger):
+    """Reject cross-Candidate / Target / Action splicing; allow phase differences."""
+    reasons = []
+    gaps = []
+    prior_id = _lifecycle_identity(prior)
+    post_id = _lifecycle_identity(post)
+    for key in ("context", "action", "target", "refs", "candidate"):
+        if prior_id.get(key) != post_id.get(key):
+            reasons.append(f"post_lifecycle_{key}_mismatch")
+            gaps.append(
+                {
+                    "kind": "lifecycle_identity",
+                    "ref": key,
+                    "reason": f"prior_post_{key}_mismatch",
+                }
+            )
+    if trigger.get("target") != prior_id.get("target"):
+        reasons.append("post_trigger_target_mismatch")
+        gaps.append(
+            {
+                "kind": "trigger",
+                "ref": trigger.get("run_id"),
+                "reason": "trigger_target_mismatch",
+            }
+        )
+    return prior_id, reasons, gaps
+
+
+def _authorized_not_applicable(post):
+    """Derive N/A only from a passed post Assessment whose rows are not_applicable."""
+    if post.get("status") != "passed":
+        return False
+    rows = list(post.get("obligations") or ()) + list(
+        post.get("check_instances") or ()
+    )
+    if not rows:
+        # Empty complete post universe may be legitimate N/A for this pair slice.
+        return True
+    return all(row.get("status") == "not_applicable" for row in rows)
+
+
 def _normalize_trigger(value):
     if not isinstance(value, dict):
         raise RequiredAssessmentPostError("post_trigger_invalid")
     kind = _text(value.get("kind"), "post_trigger_kind_invalid")
     if kind not in TRIGGER_KINDS:
         raise RequiredAssessmentPostError("post_trigger_kind_invalid")
+    # run_completed must be explicit — never default to True (P1).
+    if "run_completed" not in value:
+        raise RequiredAssessmentPostError("post_trigger_run_completed_missing")
     trigger = {
         "kind": kind,
         "observed_at": _datetime(
@@ -124,18 +184,15 @@ def _normalize_trigger(value):
             value.get("run_attempt"), "post_trigger_run_attempt_invalid"
         ),
         "target": _text(value.get("target"), "post_trigger_target_invalid"),
+        "run_completed": _flag(
+            value.get("run_completed"), "post_trigger_run_completed_invalid"
+        ),
     }
     digest = value.get("artifact_digest")
     if digest is not None:
         trigger["artifact_digest"] = _internal_ref(
             digest, "post_trigger_artifact_digest_invalid"
         )
-    completed = value.get("run_completed")
-    if completed is None:
-        # Observable completion identity: completed Run is required except when
-        # explicitly marking an incomplete current Run (must not force wait).
-        completed = True
-    trigger["run_completed"] = _flag(completed, "post_trigger_run_completed_invalid")
     return trigger
 
 
@@ -149,8 +206,8 @@ def _normalize_due_window(value):
     return {"earliest_at": earliest.isoformat(), "due_at": due.isoformat()}
 
 
-def _due_state(evaluated_at, window, *, profile_applicable):
-    if not profile_applicable:
+def _due_state(evaluated_at, window, *, not_applicable):
+    if not_applicable:
         return "not_applicable"
     earliest = _datetime(window["earliest_at"], "post_due_earliest_invalid")
     due = _datetime(window["due_at"], "post_due_at_invalid")
@@ -161,9 +218,26 @@ def _due_state(evaluated_at, window, *, profile_applicable):
     return "within_window"
 
 
+def _authority_gate(authority, context, *, missing_code, rejected_code, unverified_code):
+    if authority is None:
+        return False, "missing", [missing_code]
+    outcome = authority(context)
+    if outcome is True:
+        return True, "authorized", []
+    if outcome is False or outcome is None:
+        return False, "rejected", [rejected_code]
+    if not isinstance(outcome, dict):
+        raise RequiredAssessmentPostError("post_authority_result_invalid")
+    if outcome.get("accepted") is True and outcome.get("status") == "authorized":
+        return True, "authorized", []
+    if outcome.get("status") == "unverified":
+        return False, "unverified", [unverified_code]
+    return False, "rejected", [rejected_code]
+
+
 def _disposition_from_authority(authority, context):
     if authority is None:
-        return "none", "missing", ["post_disposition_authority_missing"]
+        return "none", "not_requested", []
     outcome = authority(context)
     if outcome is True:
         return "none", "authorized", []
@@ -188,20 +262,28 @@ def _envelope_status(
     post_status,
     contract_sample,
     reasons,
+    trigger_verified,
+    due_window_verified,
 ):
     blocking = [item for item in reasons if item not in _INFORMATIONAL]
     if prior_status != "passed":
         return "rejected"
     if due_state == "not_yet_due":
         return "pending"
+    if not trigger_verified or not due_window_verified:
+        return "unverified" if prior_status == "passed" else "rejected"
     if due_state == "not_applicable":
+        # N/A only when derived from authorized post Assessment rows — never from
+        # a blocked post Assessment.
+        if post_status == "blocked":
+            return "rejected"
         return "verified" if not blocking and not contract_sample else "unverified"
     if due_state == "overdue" and post_status != "passed":
         return "rejected" if post_status == "blocked" else "unverified"
     if post_status == "passed" and not blocking and not contract_sample:
         return "verified"
     if post_status == "blocked" or any(
-        item.startswith("post_prior_") or item.startswith("post_trigger_")
+        item.startswith(("post_prior_", "post_trigger_", "post_lifecycle_"))
         for item in blocking
     ):
         return "rejected"
@@ -220,10 +302,13 @@ def _consistency(envelope):
     prior_status = envelope.get("prior_assessment_status")
     post_status = envelope.get("post_assessment_status")
     disposition = envelope.get("disposition")
+    coverage = envelope.get("lifecycle_coverage")
     if status not in ENVELOPE_STATUSES:
         errors.append("post_stage_status_invalid")
     if due_state not in DUE_STATES:
         errors.append("post_stage_due_state_invalid")
+    if coverage not in LIFECYCLE_COVERAGE:
+        errors.append("post_lifecycle_coverage_invalid")
     if not isinstance(sample, bool):
         errors.append("post_contract_sample_flag_invalid")
     if disposition not in DISPOSITIONS:
@@ -241,10 +326,19 @@ def _consistency(envelope):
             errors.append("post_verified_rejects_not_yet_due")
         if due_state != "not_applicable" and post_status != "passed":
             errors.append("post_verified_requires_post_passed")
+        if due_state == "not_applicable" and post_status == "blocked":
+            errors.append("post_verified_rejects_blocked_not_applicable")
         if due_state == "overdue" and post_status != "passed":
             errors.append("post_verified_rejects_overdue_failure")
-    if envelope.get("lifecycle_all_phases_passed") is True and status != "verified":
-        errors.append("post_lifecycle_requires_verified")
+        if envelope.get("trigger_verified") is not True:
+            errors.append("post_verified_requires_trigger_verified")
+        if envelope.get("due_window_verified") is not True:
+            errors.append("post_verified_requires_due_window_verified")
+    # Pair reconciliation must never claim full lifecycle PASS (P0-3).
+    if envelope.get("lifecycle_all_phases_passed") is True:
+        errors.append("post_lifecycle_all_phases_requires_complete_coverage")
+    if coverage == "complete" and envelope.get("lifecycle_all_phases_passed") is not True:
+        errors.append("post_lifecycle_complete_requires_all_phases_passed")
     if envelope.get("auto_revoke_published") is True:
         errors.append("post_auto_revoke_forbidden")
     try:
@@ -256,6 +350,9 @@ def _consistency(envelope):
         )
     except RequiredAssessmentPostError as error:
         errors.append(error.code)
+    identity = envelope.get("lifecycle_identity")
+    if not isinstance(identity, dict):
+        errors.append("post_lifecycle_identity_invalid")
     trigger = envelope.get("trigger_event")
     if not isinstance(trigger, dict) or trigger.get("kind") not in TRIGGER_KINDS:
         errors.append("post_trigger_invalid")
@@ -271,18 +368,29 @@ def reconcile_post_stage(
     trigger_event,
     due_window,
     evaluated_at,
+    trigger_authority=None,
+    due_window_authority=None,
     disposition_authority=None,
-    profile_applicable=True,
     contract_sample=False,
 ):
-    """Reconcile prior + post R1 Assessments under trigger/due-window rules."""
+    """Reconcile prior + post R1 Assessments under trigger/due-window rules.
+
+    This pair slice never sets ``lifecycle_all_phases_passed=True``; full-phase
+    aggregation requires a complete authorized phase/obligation set beyond two
+    Assessments (``lifecycle_coverage`` stays ``unverified`` / ``incomplete``).
+    """
     prior = required_assessment.validate_assessment(prior_assessment)
     post = required_assessment.validate_assessment(post_assessment)
     trigger = _normalize_trigger(trigger_event)
     window = _normalize_due_window(due_window)
     evaluated = _datetime(evaluated_at, "post_evaluated_at_invalid")
     contract_sample = _flag(contract_sample, "post_contract_sample_flag_invalid")
-    profile_applicable = _flag(profile_applicable, "post_profile_applicable_invalid")
+    trigger_authority = _callable_or_none(
+        trigger_authority, "post_trigger_authority_invalid"
+    )
+    due_window_authority = _callable_or_none(
+        due_window_authority, "post_due_window_authority_invalid"
+    )
     disposition_authority = _callable_or_none(
         disposition_authority, "post_disposition_authority_invalid"
     )
@@ -303,6 +411,10 @@ def reconcile_post_stage(
             }
         )
 
+    lifecycle_identity, life_reasons, life_gaps = _bind_lifecycle(prior, post, trigger)
+    reasons.extend(life_reasons)
+    gaps.extend(life_gaps)
+
     if trigger["run_completed"] is not True:
         reasons.append("post_trigger_run_not_completed")
         gaps.append(
@@ -313,9 +425,38 @@ def reconcile_post_stage(
             }
         )
 
-    due_state = _due_state(
-        evaluated, window, profile_applicable=profile_applicable is True
+    trigger_ok, trigger_status, trigger_reasons = _authority_gate(
+        trigger_authority,
+        {
+            "trigger_event": copy.deepcopy(trigger),
+            "lifecycle_identity": copy.deepcopy(lifecycle_identity),
+            "prior_assessment_ref": prior["assessment_ref"],
+            "post_assessment_ref": post["assessment_ref"],
+        },
+        missing_code="post_trigger_authority_missing",
+        rejected_code="post_trigger_authority_rejected",
+        unverified_code="post_trigger_authority_unverified",
     )
+    if not trigger_ok:
+        reasons.extend(trigger_reasons)
+
+    due_ok, due_status, due_reasons = _authority_gate(
+        due_window_authority,
+        {
+            "due_window": copy.deepcopy(window),
+            "evaluated_at": evaluated.isoformat(),
+            "lifecycle_identity": copy.deepcopy(lifecycle_identity),
+        },
+        missing_code="post_due_window_authority_missing",
+        rejected_code="post_due_window_authority_rejected",
+        unverified_code="post_due_window_authority_unverified",
+    )
+    if not due_ok:
+        reasons.extend(due_reasons)
+
+    # N/A only from authorized post Assessment facts — never a bare caller flag.
+    not_applicable = _authorized_not_applicable(post)
+    due_state = _due_state(evaluated, window, not_applicable=not_applicable)
     if due_state == "not_yet_due":
         reasons.append("post_stage_not_yet_due")
     if due_state == "overdue" and post.get("status") != "passed":
@@ -335,22 +476,16 @@ def reconcile_post_stage(
         "post_status": post["status"],
         "due_state": due_state,
         "trigger_event": copy.deepcopy(trigger),
+        "lifecycle_identity": copy.deepcopy(lifecycle_identity),
     }
     disposition, disposition_authority_status, disposition_reasons = (
         _disposition_from_authority(disposition_authority, disposition_context)
     )
-    # Missing disposition authority is informational unless a non-none disposition
-    # is required by failure handling; default remains "none" (no auto-revoke).
     if disposition != "none" and disposition_authority_status != "authorized":
         reasons.extend(disposition_reasons)
-    elif disposition_authority is None:
-        disposition_authority_status = "not_requested"
 
     if post.get("status") == "blocked":
         reasons.append("post_assessment_blocked")
-        if disposition == "none" and disposition_authority is not None:
-            # Keep recorded disposition from authority; otherwise note block.
-            pass
 
     status = _envelope_status(
         due_state=due_state,
@@ -358,10 +493,13 @@ def reconcile_post_stage(
         post_status=post["status"],
         contract_sample=contract_sample,
         reasons=reasons,
+        trigger_verified=trigger_ok,
+        due_window_verified=due_ok,
     )
 
-    # Lifecycle claim: only when this post stage verified; never erases prior.
-    lifecycle_all_phases_passed = status == "verified" and not contract_sample
+    # Pair reconciliation cannot prove full phase/obligation coverage (P0-3).
+    lifecycle_all_phases_passed = False
+    lifecycle_coverage = "unverified"
 
     result = {
         "kind": POST_KIND,
@@ -374,14 +512,20 @@ def reconcile_post_stage(
         "post_assessment_ref": post["assessment_ref"],
         "post_assessment_status": post["status"],
         "post_phase": post.get("phase"),
+        "lifecycle_identity": lifecycle_identity,
         "trigger_event": trigger,
+        "trigger_verified": trigger_ok,
+        "trigger_authority_status": trigger_status,
         "due_window": window,
+        "due_window_verified": due_ok,
+        "due_window_authority_status": due_status,
         "due_state": due_state,
         "evaluated_at": evaluated.isoformat(),
         "disposition": disposition,
         "disposition_authority_status": disposition_authority_status,
         "auto_revoke_published": False,
         "lifecycle_all_phases_passed": lifecycle_all_phases_passed,
+        "lifecycle_coverage": lifecycle_coverage,
         "gaps": gaps,
         "reasons": reasons,
         "limitations": [
@@ -391,6 +535,7 @@ def reconcile_post_stage(
             "post_stage_does_not_read_rulesets",
             "post_stage_does_not_reconcile_release_manifest",
             "does_not_auto_revoke_published_artifacts",
+            "pair_reconciliation_cannot_prove_full_lifecycle",
             "post_stage_digest_is_not_authorization_proof",
         ],
         "post_stage_ref": None,
@@ -400,7 +545,9 @@ def reconcile_post_stage(
             "contract_sample_cannot_authorize_production_post_stage"
         )
     if status != "verified":
-        result["limitations"].append("unverified_post_stage_must_not_claim_lifecycle_pass")
+        result["limitations"].append(
+            "unverified_post_stage_must_not_claim_lifecycle_pass"
+        )
     consistency = _consistency(result)
     if consistency:
         raise RequiredAssessmentPostError(consistency[0])
