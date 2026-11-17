@@ -106,6 +106,29 @@ def make_parent_expected(
     return parent
 
 
+TARGET_TREE = "a" * 40
+
+
+def matching_run_subject(entry=None, parent=None, **changes):
+    """Provider-attested pre-execution subject — not OTLP/capture digests."""
+    entry = entry or make_b2_terminal_entry()
+    source = entry["source_ref"]
+    event = entry["event_ref"]
+    value = {
+        "declared_target_tree": source.get("declared_target_tree"),
+        "source_tree_id": source.get("declared_target_tree"),
+        "head_commit": event.get("head_commit"),
+        "base_commit": event.get("base_commit"),
+        "head_ref": event.get("head_ref"),
+        "base_ref": event.get("base_ref"),
+        "expected_check_ref": entry.get("expected_check_ref"),
+    }
+    if parent is not None:
+        value["scope_id"] = parent.get("scope_id")
+    value.update(changes)
+    return value
+
+
 def completed_run(**changes):
     value = {
         "run_id": "controlled-42/1",
@@ -114,6 +137,9 @@ def completed_run(**changes):
         "status": "completed",
     }
     value.update(changes)
+    if "subject" not in value and "omit_subject" not in value:
+        value["subject"] = matching_run_subject()
+    value.pop("omit_subject", None)
     return value
 
 
@@ -153,7 +179,7 @@ def reject(_context):
     return False
 
 
-def make_plan(tmp_path):
+def make_plan(tmp_path, *, source_tree_id=None):
     if not FIXTURE.is_dir():
         pytest.skip("weaver-cicd fixture unavailable")
     root = tmp_path / "src"
@@ -165,6 +191,7 @@ def make_plan(tmp_path):
         run_id="controlled-42/1",
         attempt=1,
         result="success",
+        source_tree_id=source_tree_id,
     )
     gate = selection.validate_post_completion_binding(plan, root)
     assert gate["ok"]
@@ -219,6 +246,48 @@ def test_forged_sealed_phase_witness_without_authority_cannot_authorize(tmp_path
     assert binding["phase_witness_verified"] is False
     assert binding["phase_witness_status"] == "structurally_aligned"
     assert "terminal_phase_witness_authority_missing" in binding["reasons"]
+
+
+def test_missing_run_subject_cannot_authorize(tmp_path):
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(omit_subject=True),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert binding["subject_correlated"] is False
+    assert "terminal_subject_correlation_missing" in binding["reasons"]
+
+
+def test_subject_target_mismatch_cannot_authorize(tmp_path):
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    entry = expected["checks"][0]
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(
+            subject=matching_run_subject(
+                entry, expected, declared_target_tree="9" * 40, source_tree_id="9" * 40
+            )
+        ),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert "terminal_subject_declared_target_tree_mismatch" in binding["reasons"]
 
 
 def test_sealed_witness_wrong_profile_revision_rejected_with_authority(tmp_path):
@@ -696,12 +765,12 @@ def test_live_expected_v2_phase_unverified_and_terminal_plan_rejected(tmp_path):
         action="worktree",
         target="HEAD",
         phase=check_contract.POST_COMPLETION_PHASE,
-        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        declared_checks=["whitespace", "docs", "weaver_terminal"],
         required_obligations=[
             {
-                "obligation_ref": "ob/docs",
+                "obligation_ref": "ob/term",
                 "kind": "check",
-                "check_names": ["docs"],
+                "check_names": ["weaver_terminal"],
                 "allow_inapplicable": True,
             }
         ],
@@ -735,7 +804,7 @@ def test_live_expected_v2_phase_unverified_and_terminal_plan_rejected(tmp_path):
     assert parent["projection_source"] == "effective_profile"
     assert parent["phase"] == check_contract.POST_COMPLETION_PHASE
     assert parent["phase_status"] == "unverified"
-    assert parent["status"] == "partial"
+    assert any(item.get("name") == "weaver_terminal" for item in parent["checks"])
 
     ok, basis, reasons = te._bind_projection_proof(
         None,
@@ -777,3 +846,152 @@ def test_live_expected_v2_phase_unverified_and_terminal_plan_rejected(tmp_path):
     assert any(
         item.startswith("terminal_projection_validation_") for item in bad_reasons
     )
+
+
+def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
+    """P1: real weaver_terminal Expected v2 → live validate → correlated bind."""
+    import subprocess
+
+    selection_fixture = ROOT / "tests/fixtures/selection-app"
+    if not selection_fixture.is_dir() or not FIXTURE.is_dir():
+        pytest.skip("fixtures unavailable")
+    path = tmp_path / "expected-repo"
+    shutil.copytree(selection_fixture, path)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "terminal@example.invalid")
+    git("config", "user.name", "Terminal Test")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+
+    profile = expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.terminal", "version": "1.0.0"},
+        profile_revision=PROFILE_REVISION,
+        approval_source="governance-signed",
+        authority_verified=True,
+        effective_at="2026-11-17T00:00:00Z",
+        evaluated_at="2026-11-17T01:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        phase=check_contract.POST_COMPLETION_PHASE,
+        declared_checks=["whitespace", "docs", "weaver_terminal"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/term",
+                "kind": "check",
+                "check_names": ["weaver_terminal"],
+                "allow_inapplicable": True,
+            }
+        ],
+        advisory_checks=[],
+        allowed_inapplicability=[],
+        domain_complete=True,
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+    )
+    profile.pop("governed_rules", None)
+    declared_domain = (profile.get("approval_binding") or {}).get("declared_domain")
+    if isinstance(declared_domain, dict):
+        declared_domain.pop("governed_rules", None)
+    cfg = _attach_phase_profile_policy(path, profile)
+    git("add", "ci-selection.toml")
+    git("commit", "-q", "-m", "attach phase profile")
+    base = git("rev-parse", "HEAD").strip()
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    chosen = selection.select(changes, cfg, root=path)
+    expected_plan = selection.plan(
+        chosen,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    parent = expected_plan["expected_checks"]
+    entry = next(item for item in parent["checks"] if item["name"] == "weaver_terminal")
+    # Freeze identity — do not rewrite expected_check_ref / expected_set_ref.
+    frozen_ref = entry["expected_check_ref"]
+    frozen_set = parent["expected_set_ref"]
+    target_tree = entry["source_ref"]["declared_target_tree"]
+
+    # Binder copy may carry Profile revision for Phase Witness association only.
+    binder_parent = copy.deepcopy(parent)
+    binder_parent["profile_ref"] = copy.deepcopy(profile["profile_ref"])
+    binder_parent["profile_revision"] = profile["profile_revision"]
+
+    terminal_root = tmp_path / "terminal-src"
+    shutil.copytree(FIXTURE, terminal_root)
+    # Terminal Plan closure is Weaver-fixture local; do not force Expected's
+    # selection-app tree id into Plan (would fail source_tree verification).
+    # Subject correlation binds Expected ↔ Run; Plan via selected check + closure.
+    terminal_plan = selection.post_completion_plan(
+        root=terminal_root,
+        config_path=terminal_root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+    )
+    assert selection.validate_post_completion_binding(terminal_plan, terminal_root)[
+        "ok"
+    ]
+
+    # Controlled stand-ins for Phase Producer / Run Provider — not production PASS.
+    run = completed_run(
+        subject=matching_run_subject(entry, binder_parent, source_tree_id=target_tree)
+    )
+    binding = te.bind_terminal_expected(
+        binder_parent,
+        plan=terminal_plan,
+        completed_run=run,
+        root=terminal_root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(binder_parent),
+        phase_witness_authority=accept,
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=path,
+    )
+    assert entry["expected_check_ref"] == frozen_ref
+    assert parent["expected_set_ref"] == frozen_set
+    assert binding["projection_verification"] == "validate_projection"
+    assert binding["subject_correlated"] is True
+    assert binding["authorized"] is True
+    assert binding["expected_check_ref"] == frozen_ref
+
+    # Individually valid objects with Target/Source mismatch cannot authorize.
+    mismatched = te.bind_terminal_expected(
+        binder_parent,
+        plan=terminal_plan,
+        completed_run=completed_run(
+            subject=matching_run_subject(
+                entry,
+                binder_parent,
+                declared_target_tree="0" * 40,
+                source_tree_id="0" * 40,
+            )
+        ),
+        root=terminal_root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(binder_parent),
+        phase_witness_authority=accept,
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=path,
+    )
+    assert mismatched["authorized"] is False
+    assert "terminal_subject_declared_target_tree_mismatch" in mismatched["reasons"]

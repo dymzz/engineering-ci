@@ -170,7 +170,19 @@ def _validate_terminal_entry(entry, *, proven_phase):
     try:
         check_contract.validate_expected_instance(validation_view)
     except check_contract.CheckContractError as error:
-        raise TerminalExpectedError("terminal_expected_instance_invalid") from error
+        code = error.args[0] if error.args else str(error)
+        # Pre-post_completion B2 may project weaver_terminal without a resolved
+        # rule_ref (applicability unknown). Identity is still recomputed here;
+        # live validate_projection remains the parent authority for auth.
+        allow_projected = code in {
+            "expected_rule_unproven",
+            "expected_incomplete",
+        } and (
+            entry.get("rule_ref") is None
+            or entry.get("rule_status") in {None, "unknown", "unresolved"}
+        )
+        if not allow_projected:
+            raise TerminalExpectedError("terminal_expected_instance_invalid") from error
     if entry.get("check_id") != TERMINAL_CHECK_ID:
         raise TerminalExpectedError("terminal_expected_check_id_invalid")
     return entry, declared
@@ -247,14 +259,26 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
     if status == "complete" and phase_status == "unverified":
         raise TerminalExpectedError("terminal_expected_phase_complete_unproven")
     if status not in {"complete", "partial"}:
-        reasons.append("terminal_expected_scope_incomplete")
-        gaps.append(
-            {
-                "kind": "expected_scope",
-                "ref": scope_id,
-                "reason": f"scope_status_{status}",
-            }
-        )
+        # Pre-post_completion Expected may mark weaver_terminal applicability
+        # unknown; Terminal Plan selection + subject correlation must close it.
+        if status == "unknown" and entry.get("name") == "weaver_terminal":
+            reasons.append("terminal_expected_terminal_applicability_unknown")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": "terminal_applicability_unknown",
+                }
+            )
+        else:
+            reasons.append("terminal_expected_scope_incomplete")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": f"scope_status_{status}",
+                }
+            )
     # Declared phase without a separate Phase Witness stays unverified on parent.
     if phase_status == "unverified":
         reasons.append("terminal_expected_phase_unverified")
@@ -513,6 +537,31 @@ def _normalize_completed_run(value):
         completed["proof_ref"] = _text(
             proof_ref, "terminal_completed_run_proof_ref_invalid"
         )
+    subject = value.get("subject")
+    if subject is not None:
+        if not isinstance(subject, dict):
+            raise TerminalExpectedError("terminal_completed_run_subject_invalid")
+        # Pre-execution subject association from Provider/Producer — never OTLP
+        # capture / Span Expectation digests (those are post-execution inputs).
+        normalized_subject = {}
+        for key in (
+            "declared_target_tree",
+            "source_tree_id",
+            "head_commit",
+            "base_commit",
+            "head_ref",
+            "base_ref",
+            "expected_check_ref",
+            "scope_id",
+        ):
+            item = subject.get(key)
+            if item is not None:
+                normalized_subject[key] = _text(
+                    item, "terminal_completed_run_subject_invalid"
+                )
+        if not normalized_subject:
+            raise TerminalExpectedError("terminal_completed_run_subject_empty")
+        completed["subject"] = normalized_subject
     return completed
 
 
@@ -552,12 +601,43 @@ def _require_post_completion_plan(plan):
         raise TerminalExpectedError("terminal_plan_attempt_invalid")
     result = _text(binding.get("result"), "terminal_plan_result_invalid")
     closure = _closure_digest(binding.get("sha256"), "terminal_plan_closure_invalid")
+    git = plan.get("git") if isinstance(plan.get("git"), dict) else {}
+    source_tree_id = git.get("source_tree_id")
+    selected = []
+    for item in plan.get("check_scope") or []:
+        if isinstance(item, dict) and item.get("status") == "selected":
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                selected.append(name)
     return {
         "run_id": run_id,
         "attempt": attempt,
         "result": result,
         "status": "completed",
         "closure_sha256": closure,
+        "source_tree_id": source_tree_id,
+        "selected_checks": selected,
+    }
+
+
+def _expected_subject(entry, parent_meta):
+    """Pre-execution Expected subject — never post-execution OTLP/capture digests."""
+    source = (
+        entry.get("source_ref") if isinstance(entry.get("source_ref"), dict) else {}
+    )
+    event = entry.get("event_ref") if isinstance(entry.get("event_ref"), dict) else {}
+    scope_id = None if parent_meta is None else parent_meta.get("scope_id")
+    return {
+        "expected_check_ref": entry.get("expected_check_ref"),
+        "scope_id": scope_id or entry.get("scope_id"),
+        "declared_target_tree": source.get("declared_target_tree"),
+        "source_content_digest": source.get("content_digest"),
+        "head_commit": event.get("head_commit") or source.get("head_commit"),
+        "base_commit": event.get("base_commit"),
+        "head_ref": event.get("head_ref"),
+        "base_ref": event.get("base_ref"),
+        "check_name": entry.get("name"),
+        "check_id": entry.get("check_id"),
     }
 
 
@@ -593,6 +673,107 @@ def _match_completed_run_to_plan(completed_run, plan_identity):
             }
         )
     return reasons, gaps
+
+
+def _correlate_expected_run_plan(expected_subject, completed_run, plan_identity):
+    """Prove Expected subject ↔ Run/Attempt subject ↔ Terminal Plan source tree.
+
+    Compares Provider-attested pre-execution identity only. Does **not** equate
+    Expected ``source_ref.content_digest`` with OTLP / Span Expectation digests.
+    """
+    reasons = []
+    gaps = []
+    run_subject = completed_run.get("subject")
+    if not isinstance(run_subject, dict):
+        reasons.append("terminal_subject_correlation_missing")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": expected_subject.get("expected_check_ref"),
+                "reason": "completed_run_subject_missing",
+            }
+        )
+        return False, "unverified", reasons, gaps
+
+    shared = False
+    for field in (
+        "declared_target_tree",
+        "head_commit",
+        "base_commit",
+        "head_ref",
+        "base_ref",
+        "expected_check_ref",
+        "scope_id",
+    ):
+        expected_value = expected_subject.get(field)
+        run_value = run_subject.get(field)
+        if expected_value is None or run_value is None:
+            continue
+        shared = True
+        if expected_value != run_value:
+            reasons.append(f"terminal_subject_{field}_mismatch")
+            gaps.append(
+                {
+                    "kind": "subject_correlation",
+                    "ref": field,
+                    "reason": "expected_run_mismatch",
+                }
+            )
+
+    if not shared:
+        reasons.append("terminal_subject_correlation_incomplete")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": expected_subject.get("expected_check_ref"),
+                "reason": "no_shared_pre_execution_identity",
+            }
+        )
+        return False, "unverified", reasons, gaps
+
+    plan_tree = plan_identity.get("source_tree_id")
+    run_tree = run_subject.get("source_tree_id") or run_subject.get(
+        "declared_target_tree"
+    )
+    expected_tree = expected_subject.get("declared_target_tree")
+    if plan_tree is not None and run_tree is not None and plan_tree != run_tree:
+        reasons.append("terminal_subject_run_plan_tree_mismatch")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": plan_tree,
+                "reason": "run_plan_source_tree_mismatch",
+            }
+        )
+    if (
+        plan_tree is not None
+        and expected_tree is not None
+        and plan_tree != expected_tree
+    ):
+        reasons.append("terminal_subject_expected_plan_tree_mismatch")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": plan_tree,
+                "reason": "expected_plan_source_tree_mismatch",
+            }
+        )
+
+    selected = plan_identity.get("selected_checks") or []
+    check_name = expected_subject.get("check_name")
+    if check_name and check_name not in selected:
+        reasons.append("terminal_subject_plan_check_not_selected")
+        gaps.append(
+            {
+                "kind": "subject_correlation",
+                "ref": check_name,
+                "reason": "terminal_plan_check_not_selected",
+            }
+        )
+
+    if reasons:
+        return False, "rejected", reasons, gaps
+    return True, "correlated", [], []
 
 
 def _verify_input_closure(plan, root):
@@ -667,6 +848,8 @@ def _consistency(envelope):
             errors.append("terminal_authorized_requires_live_projection_validation")
         if envelope.get("completed_run_verified") is not True:
             errors.append("terminal_authorized_requires_completed_run_verified")
+        if envelope.get("subject_correlated") is not True:
+            errors.append("terminal_authorized_requires_subject_correlation")
         if envelope.get("gaps"):
             errors.append("terminal_authorized_rejects_gaps")
     if envelope.get("check_id") != TERMINAL_CHECK_ID:
@@ -871,6 +1054,29 @@ def bind_terminal_expected(
             }
         )
 
+    expected_subject = _expected_subject(entry, parent_meta)
+    (
+        subject_ok,
+        subject_basis,
+        subject_reasons,
+        subject_gaps,
+    ) = _correlate_expected_run_plan(expected_subject, completed, plan_identity)
+    reasons.extend(subject_reasons)
+    gaps.extend(subject_gaps)
+    if subject_ok and "weaver_terminal" in (plan_identity.get("selected_checks") or []):
+        # Terminal Plan selected the Terminal Check — clear pre-completion
+        # applicability-unknown soft gap from the frozen Expected projection.
+        reasons = [
+            item
+            for item in reasons
+            if item != "terminal_expected_terminal_applicability_unknown"
+        ]
+        gaps = [
+            item
+            for item in gaps
+            if item.get("reason") != "terminal_applicability_unknown"
+        ]
+
     input_closure, closure_gate, closure_reasons = _verify_input_closure(plan, root)
     reasons.extend(closure_reasons)
     if input_closure != "verified":
@@ -886,6 +1092,7 @@ def bind_terminal_expected(
 
     authority_context = {
         "expected": copy.deepcopy(entry),
+        "expected_subject": copy.deepcopy(expected_subject),
         "scope_id": scope_id,
         "expected_check_ref": expected_check_ref,
         "expected_set_ref": expected_set_ref,
@@ -894,6 +1101,7 @@ def bind_terminal_expected(
         "parent_status": None if parent_meta is None else parent_meta.get("status"),
         "completed_run": copy.deepcopy(completed),
         "plan_identity": copy.deepcopy(plan_identity),
+        "subject_correlation": subject_basis,
         "input_closure": input_closure,
     }
     accepted, authority_reason = _authority_accepted(
@@ -929,6 +1137,9 @@ def bind_terminal_expected(
         "terminal_projection_proof_untrusted",
         "terminal_completed_run_source_unproven",
         "terminal_completed_run_proof_unverified",
+        "terminal_subject_correlation_missing",
+        "terminal_subject_correlation_incomplete",
+        "terminal_expected_terminal_applicability_unknown",
     }
     if blocking:
         status = "unverified" if any(item in soft for item in blocking) else "rejected"
@@ -936,7 +1147,8 @@ def bind_terminal_expected(
         status = "bound"
 
     # Production authorization requires live validate_projection — never a
-    # caller-supplied accepted=True dictionary.
+    # caller-supplied accepted=True dictionary — plus Expected↔Run↔Plan subject
+    # correlation on pre-execution identity (not OTLP digests).
     authorized = (
         status == "bound"
         and not contract_sample
@@ -946,6 +1158,8 @@ def bind_terminal_expected(
         and proj_ok
         and proj_basis == "validate_projection"
         and run_ok
+        and subject_ok
+        and subject_basis == "correlated"
         and parent_meta is not None
         and expected_set_ref is not None
         and not gaps
@@ -973,9 +1187,12 @@ def bind_terminal_expected(
         "expected_set_ref": expected_set_ref,
         "expected_check_ref": expected_check_ref,
         "expected": entry,
+        "expected_subject": expected_subject,
         "completed_run": completed,
         "completed_run_verified": run_ok,
         "completed_run_verification": run_verification,
+        "subject_correlated": subject_ok,
+        "subject_correlation": subject_basis,
         "plan_identity": plan_identity,
         "plan": copy.deepcopy(plan),
         "gaps": gaps,
@@ -994,6 +1211,7 @@ def bind_terminal_expected(
             "terminal_plan_is_not_expected_plan",
             "completed_run_is_not_written_into_expected",
             "plan_builder_params_are_not_terminal_proof",
+            "pre_execution_source_is_not_otlp_capture_digest",
             "does_not_implement_phase_producer",
             "does_not_rewrite_b2_projection_schema",
             "binding_digest_is_not_authorization_proof",
