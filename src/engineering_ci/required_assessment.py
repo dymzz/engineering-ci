@@ -386,6 +386,10 @@ def _verify_expected_scope(scope):
             raise RequiredAssessmentError("expected_entry_profile_mismatch")
         if not isinstance(entry.get("applicability"), dict):
             raise RequiredAssessmentError("expected_applicability_invalid")
+        if not isinstance(entry.get("name"), str) or not entry["name"]:
+            raise RequiredAssessmentError("expected_check_invalid")
+        if not isinstance(entry.get("required_by_obligations", []), list):
+            raise RequiredAssessmentError("expected_check_invalid")
         if not isinstance(entry.get("input_refs"), list):
             raise RequiredAssessmentError("expected_input_refs_invalid")
         if entry.get("rule_ref") is not None:
