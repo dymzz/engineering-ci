@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from test_execution import plan as make_execution_plan
 from test_expected_checks import (
     _attach_effective_profile_policy,
     _sample_effective_profile,
@@ -125,54 +126,134 @@ def event_ref_for_binding(binding, *, ref_index=0):
     }
 
 
-def worktree_docs_plan(path, base):
-    """Plan that selects only docs so Report/Expected share one source_ref."""
-    from test_execution import docs_only_plan
+def push_source(tip, tree, *, paths):
+    """Expected Source bound to a Push target Commit/Tree (not Worktree)."""
+    return {
+        "snapshot": "push",
+        "declared_target_tree": tree,
+        "head_commit": tip,
+        "actual_execution_source": "unknown",
+        "verified_input_scope": list(paths),
+        "scope_kind": "changed_paths",
+        "binding_status": "identity_only",
+    }
 
-    (path / "docs/guide.md").write_text("# hook-coordinator\n", encoding="utf-8")
-    head = git(path, "rev-parse", "HEAD")
-    return docs_only_plan(base, head, paths=("docs/guide.md",))
+
+def whitespace_push_plan(base, tip, tree, *, paths=("docs/guide.md",)):
+    """Host Plan that runs only ``git diff --check`` on the Push tip Tree."""
+    return make_execution_plan(
+        [],
+        git={
+            "base_ref": base,
+            "head_ref": tip,
+            "base_commit": base,
+            "head_commit": tip,
+            "snapshot": "push",
+            "execution_tree": tree,
+            "tree": tree,
+            "changed_paths": list(paths),
+        },
+        check_scope=[
+            {"name": "whitespace", "status": "selected", "inputs": list(paths)},
+            {
+                "name": "docs",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "not selected",
+            },
+            {
+                "name": "tach",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "not selected",
+            },
+            {
+                "name": "vulture",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "not selected",
+            },
+            {
+                "name": "forwarding",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "not selected",
+            },
+            {
+                "name": "source",
+                "status": "not_applicable",
+                "inputs": [],
+                "reason": "not selected",
+            },
+            {
+                "name": "unittest",
+                "status": "no_tests",
+                "inputs": [],
+                "reason": "no mapped tests",
+            },
+        ],
+    )
 
 
-def projection_from_executed_report(binding, report):
-    """Closed Expected covering every Check that produced Native Results."""
+def commit_push_whitespace(path, base, *, relative="docs/guide.md", content="# tip\n"):
+    """Commit a tip change, then build a Push-bound whitespace Plan for that tip."""
+    target = path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    git(path, "add", "-A")
+    git(path, "commit", "-qm", "push-tip")
+    tip = git(path, "rev-parse", "HEAD")
+    tree = git(path, "rev-parse", "HEAD^{tree}")
+    plan = whitespace_push_plan(base, tip, tree, paths=(relative,))
+    return tip, tree, plan, (relative,)
+
+
+def expected_before_execute(binding, tip, tree, paths):
+    """Build closed Expected from the Push tip *before* execute (not from Report)."""
     event_ref = event_ref_for_binding(binding)
-    entries = []
-    resolutions = []
-    primary_source = None
-    for check in report.get("checks") or ():
-        natives = check.get("native_results") or ()
-        if not natives:
-            continue
-        primary = check.get("native_result") or natives[0]
-        source = copy.deepcopy(primary["source_ref"])
-        rule = copy.deepcopy(primary["check"].get("rule_ref"))
-        baseline = copy.deepcopy(primary.get("baseline_ref"))
-        entry = make_entry(
-            check["name"],
-            event=event_ref,
-            source=source,
-            rule_ref=rule,
-            baseline_ref=baseline,
-        )
-        entries.append(entry)
-        resolutions.append(
-            make_resolution(entry, rule=rule, source=source, baseline=baseline)
-        )
-        if primary_source is None:
-            primary_source = source
+    source = push_source(tip, tree, paths=paths)
+    entry = make_entry("whitespace", event=event_ref, source=source, rule_ref=None)
     projection = make_projection(
-        entries,
+        [entry],
         status="complete",
         event=event_ref,
-        source=primary_source,
+        source=source,
         consumer_completeness="expected_domain_complete",
     )
-    return entries, projection, resolutions
+    return [entry], projection
 
 
-def closed_projection(binding, *, ref_index=0, source=None):
+def resolutions_from_report(entries, report):
+    """Resolution evidence from the executed Report (after Expected was fixed)."""
+    resolutions = []
+    for entry in entries:
+        executed = next(
+            (
+                item
+                for item in report.get("checks") or ()
+                if item.get("name") == entry["name"] and item.get("native_results")
+            ),
+            None,
+        )
+        assert executed is not None, entry["name"]
+        primary = executed.get("native_result") or executed["native_results"][0]
+        resolutions.append(
+            make_resolution(
+                entry,
+                rule=primary["check"].get("rule_ref"),
+                source=primary["source_ref"],
+                baseline=primary.get("baseline_ref"),
+            )
+        )
+    return resolutions
+
+
+def closed_projection(binding, repo, *, ref_index=0, source=None):
     event_ref = event_ref_for_binding(binding, ref_index=ref_index)
+    if source is None:
+        after = binding.event["refs"][ref_index]["after"]
+        tree = git(repo, "rev-parse", f"{after}^{{tree}}")
+        source = push_source(after, tree, paths=[])
     entry = make_entry(event=event_ref, source=source)
     projection = make_projection(
         [entry],
@@ -181,15 +262,17 @@ def closed_projection(binding, *, ref_index=0, source=None):
         source=source,
         consumer_completeness="expected_domain_complete",
     )
-    resolution = (
-        make_resolution(entry, source=source) if source else make_resolution(entry)
-    )
+    resolution = make_resolution(entry, source=source)
     return entry, projection, resolution
 
 
-def run_collect_issue(run, job_ref, path, plan, binding):
-    report = coordinator.execute_activated_job(run, job_ref, plan=plan, root=path)
-    entries, projection, resolutions = projection_from_executed_report(binding, report)
+def run_collect_issue(run, job_ref, path, plan, binding, *, tip, tree, paths):
+    entries, projection = expected_before_execute(binding, tip, tree, paths)
+    assert coordinator.verify_expected_matches_invocation(binding, projection) is True
+    report = coordinator.execute_activated_job(
+        run, job_ref, plan=plan, root=path, binding=binding
+    )
+    resolutions = resolutions_from_report(entries, report)
     _results, _rejections, report_ref = coordinator.collect_job_report(
         run, job_ref, report
     )
@@ -227,8 +310,8 @@ def test_verify_invocation_cli(repo):
 
 def test_real_execute_delivery_required_for_upstream_verified(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    reference = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="abc")
     run.record_job("job-1")
@@ -237,7 +320,7 @@ def test_real_execute_delivery_required_for_upstream_verified(selection_repo):
         "schema_version": 1,
         "checks": [
             {
-                "name": "docs",
+                "name": "whitespace",
                 "status": "passed",
                 "plan_authorized": True,
                 "check_contract": {
@@ -258,7 +341,7 @@ def test_real_execute_delivery_required_for_upstream_verified(selection_repo):
     ):
         coordinator.collect_job_report(run, "job-1", forged)
     report, report_ref, receipt, _entries, projection, _resolutions = run_collect_issue(
-        run, "job-1", path, plan, binding
+        run, "job-1", path, plan, binding, tip=tip, tree=tree, paths=paths
     )
     assert report["status"] == "passed"
     assert receipt["verification_status"] == "upstream_verified"
@@ -278,13 +361,13 @@ def test_real_execute_delivery_required_for_upstream_verified(selection_repo):
 
 def test_finalize_matched_invocation_exits_zero(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    reference = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="match")
     run.record_job("job-1")
     report, _ref, job_receipt, entries, projection, resolutions = run_collect_issue(
-        run, "job-1", path, plan, binding
+        run, "job-1", path, plan, binding, tip=tip, tree=tree, paths=paths
     )
     routing = [
         coordinator.build_routing(entry["expected_check_ref"], run, ["job-1"])
@@ -306,6 +389,61 @@ def test_finalize_matched_invocation_exits_zero(selection_repo):
         entry["binding_status"] == "matched"
         for entry in outcome["receipts"][0]["entries"]
     )
+
+
+def test_worktree_docs_change_does_not_cover_push_target(selection_repo):
+    """HEAD unchanged Worktree docs edits are not Push target Source coverage."""
+    path, _base = selection_repo
+    tip = git(path, "rev-parse", "HEAD")
+    tip_tree = git(path, "rev-parse", "HEAD^{tree}")
+    reference = capture_push(path, after=tip, before=("0" * 40))
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    (path / "docs/guide.md").write_text("# dirty-worktree\n", encoding="utf-8")
+    git(path, "add", "docs/guide.md")
+    dirty_tree = git(path, "write-tree")
+    assert git(path, "rev-parse", "HEAD") == tip
+    assert dirty_tree != tip_tree
+    worktree_source = {
+        "snapshot": "worktree",
+        "declared_target_tree": dirty_tree,
+        "head_commit": tip,
+        "actual_execution_source": "unknown",
+        "verified_input_scope": ["docs/guide.md"],
+        "scope_kind": "changed_paths",
+        "binding_status": "identity_only",
+    }
+    event_ref = event_ref_for_binding(binding)
+    projection = make_projection(
+        [make_entry("whitespace", event=event_ref, source=worktree_source)],
+        status="complete",
+        event=event_ref,
+        source=worktree_source,
+        consumer_completeness="expected_domain_complete",
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="expected_source_not_push_target"
+    ):
+        coordinator.verify_expected_matches_invocation(binding, projection)
+    run = coordinator.open_attempt(binding, run_id="wt")
+    run.record_job("job-1")
+    worktree_plan = make_execution_plan(
+        [],
+        git={
+            "base_ref": tip,
+            "head_ref": "HEAD",
+            "base_commit": tip,
+            "head_commit": tip,
+            "snapshot": "worktree",
+            "changed_paths": ["docs/guide.md"],
+        },
+        check_scope=[{"name": "whitespace", "status": "selected"}],
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_source_not_push_target"
+    ):
+        coordinator.execute_activated_job(
+            run, "job-1", plan=worktree_plan, root=path, binding=binding
+        )
 
 
 def test_expected_event_mismatch_blocks_finalize(repo):
@@ -347,21 +485,22 @@ def test_expected_event_mismatch_blocks_finalize(repo):
 
 def test_old_pass_does_not_cover_new_invocation(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    first = capture_push(path)
-    second = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    first = capture_push(path, after=tip, before=base)
+    second = capture_push(path, after=tip, before=base)
     binding_old = coordinator.load_invocation_binding(first.invocation_path)
     binding_new = coordinator.load_invocation_binding(second.invocation_path)
     run_old = coordinator.open_attempt(binding_old, run_id="old")
     run_old.record_job("job-1")
     report, report_ref, old_receipt, _entries_old, _p, _resolutions_old = (
-        run_collect_issue(run_old, "job-1", path, plan, binding_old)
+        run_collect_issue(
+            run_old, "job-1", path, plan, binding_old, tip=tip, tree=tree, paths=paths
+        )
     )
     run_new = coordinator.open_attempt(binding_new, run_id="new")
     run_new.record_job("job-1")
-    _entries_new, projection_new, resolutions_new = projection_from_executed_report(
-        binding_new, report
-    )
+    entries_new, projection_new = expected_before_execute(binding_new, tip, tree, paths)
+    resolutions_new = resolutions_from_report(entries_new, report)
     observation = {
         "job_ref": "job-1",
         "run_ref": run_old.run_ref,
@@ -378,7 +517,7 @@ def test_old_pass_does_not_cover_new_invocation(selection_repo):
     }
     routing = [
         coordinator.build_routing(entry["expected_check_ref"], run_new, ["job-1"])
-        for entry in _entries_new
+        for entry in entries_new
     ]
     outcome = coordinator.finalize_invocation(
         projection_new,
@@ -393,15 +532,15 @@ def test_old_pass_does_not_cover_new_invocation(selection_repo):
 
 def test_historical_native_cannot_be_rewrapped_for_new_attempt(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    first = capture_push(path)
-    second = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    first = capture_push(path, after=tip, before=base)
+    second = capture_push(path, after=tip, before=base)
     binding_old = coordinator.load_invocation_binding(first.invocation_path)
     binding_new = coordinator.load_invocation_binding(second.invocation_path)
     run_old = coordinator.open_attempt(binding_old, run_id="old")
     run_old.record_job("job-1")
     report_a, report_ref_a, _receipt, _e, projection, _res = run_collect_issue(
-        run_old, "job-1", path, plan, binding_old
+        run_old, "job-1", path, plan, binding_old, tip=tip, tree=tree, paths=paths
     )
     run_new = coordinator.open_attempt(binding_new, run_id="new")
     run_new.record_job("job-1")
@@ -416,7 +555,9 @@ def test_historical_native_cannot_be_rewrapped_for_new_attempt(selection_repo):
         coordinator.HookCoordinatorError, match="job_execution_delivery_missing"
     ):
         coordinator.collect_job_report(run_new, "job-1", rewrapped)
-    report_b = coordinator.execute_activated_job(run_new, "job-1", plan=plan, root=path)
+    report_b = coordinator.execute_activated_job(
+        run_new, "job-1", plan=plan, root=path, binding=binding_new
+    )
     _results, _rej, genuine_ref = coordinator.collect_job_report(
         run_new, "job-1", report_b
     )
@@ -437,13 +578,16 @@ def test_historical_native_cannot_be_rewrapped_for_new_attempt(selection_repo):
 
 def test_partial_expected_does_not_exit_zero(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    reference = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="partial")
     run.record_job("job-1")
-    report = coordinator.execute_activated_job(run, "job-1", plan=plan, root=path)
-    entries, projection, resolutions = projection_from_executed_report(binding, report)
+    entries, projection = expected_before_execute(binding, tip, tree, paths)
+    report = coordinator.execute_activated_job(
+        run, "job-1", plan=plan, root=path, binding=binding
+    )
+    resolutions = resolutions_from_report(entries, report)
     projection["status"] = "partial"
     projection["consumer_completeness"] = "not_claimed"
     _results, _rej, report_ref = coordinator.collect_job_report(run, "job-1", report)
@@ -476,13 +620,16 @@ def test_partial_expected_does_not_exit_zero(selection_repo):
 
 def test_complete_not_claimed_does_not_exit_zero(selection_repo):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    reference = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="not-claimed")
     run.record_job("job-1")
-    report = coordinator.execute_activated_job(run, "job-1", plan=plan, root=path)
-    entries, projection, resolutions = projection_from_executed_report(binding, report)
+    entries, projection = expected_before_execute(binding, tip, tree, paths)
+    report = coordinator.execute_activated_job(
+        run, "job-1", plan=plan, root=path, binding=binding
+    )
+    resolutions = resolutions_from_report(entries, report)
     projection["consumer_completeness"] = "not_claimed"
     _results, _rej, report_ref = coordinator.collect_job_report(run, "job-1", report)
     job_receipt = coordinator.issue_job_receipt(
@@ -518,11 +665,15 @@ def test_filtered_job_still_runs_final_reconciliation(repo):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="filtered")
     event_ref = event_ref_for_binding(binding)
-    entry = make_entry(event=event_ref, rule_ref=RULE_TACH)
+    after = binding.event["refs"][0]["after"]
+    tree = git(repo, "rev-parse", f"{after}^{{tree}}")
+    source = push_source(after, tree, paths=[])
+    entry = make_entry(event=event_ref, rule_ref=RULE_TACH, source=source)
     projection = make_projection(
         [entry],
         status="complete",
         event=event_ref,
+        source=source,
         consumer_completeness="expected_domain_complete",
     )
     routing = coordinator.build_routing(
@@ -552,7 +703,7 @@ def test_terminal_fail_attempt_still_finalizes(repo):
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="fail")
     run.record_job("job-1", eligibility="terminal", mapping_status="routed")
-    entry, projection, resolution = closed_projection(binding)
+    entry, projection, resolution = closed_projection(binding, repo)
     report = report_for([])
     report_ref = report_ref_for(report)
     with pytest.raises(coordinator.HookCoordinatorError, match="attempt_not_eligible"):
@@ -582,7 +733,7 @@ def test_terminal_fail_attempt_still_finalizes(repo):
 def test_empty_per_ref_container_is_rejected(repo):
     reference = capture_push(repo)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
-    _entry, projection, _resolution = closed_projection(binding)
+    _entry, projection, _resolution = closed_projection(binding, repo)
     projection["per_ref"] = []
     with pytest.raises(
         coordinator.HookCoordinatorError, match="expected_ref_scopes_empty"
@@ -679,32 +830,42 @@ def test_producer_delete_ref_accepts_null_analyzed_after(selection_repo):
 def test_multi_ref_matched_finalize_with_profile(selection_repo):
     """P2: dual-ref producer Expected with complete scopes and exit 0."""
     path, base = selection_repo
+    # Restrict hygiene to tools available in CI (no lychee/tach/vulture).
+    hygiene = path / "ci-hygiene.toml"
+    hygiene.write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding"]\n'
+        '[forwarding]\nsource_prefix = "src/"\n',
+        encoding="utf-8",
+    )
     profile = _sample_effective_profile(
         context="push",
         action="update",
         target="refs/heads/a",
         targets=["refs/heads/a", "refs/heads/b"],
-        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        declared_checks=["whitespace", "forwarding"],
         required_obligations=[
             {
-                "obligation_ref": "ob/docs-a",
+                "obligation_ref": "ob/ws-a",
                 "kind": "check",
-                "check_names": ["docs"],
+                "check_names": ["whitespace"],
                 "target_refs": ["refs/heads/a"],
                 "allow_inapplicable": True,
             },
             {
-                "obligation_ref": "ob/docs-b",
+                "obligation_ref": "ob/ws-b",
                 "kind": "check",
-                "check_names": ["docs"],
+                "check_names": ["whitespace"],
                 "target_refs": ["refs/heads/b"],
                 "allow_inapplicable": True,
             },
         ],
         allowed_inapplicability=["no_tests", "not_applicable"],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
     )
     cfg = _attach_effective_profile_policy(path, profile)
-    git(path, "add", "ci-selection.toml")
+    git(path, "add", "ci-selection.toml", "ci-hygiene.toml")
     git(path, "commit", "-qm", "attach effective profile")
     base = git(path, "rev-parse", "HEAD")
 
@@ -769,12 +930,27 @@ def test_multi_ref_matched_finalize_with_profile(selection_repo):
         )
         run.record_job(job_ref)
         report = coordinator.execute_activated_job(
-            run, job_ref, plan=ref_plan, root=path
+            run, job_ref, plan=ref_plan, root=path, binding=binding
         )
-        assert any(
-            item.get("native_results") and item.get("plan_authorized") is True
-            for item in report.get("checks") or ()
-        ), (report.get("status"), report.get("reason"), report.get("checks"))
+        assert report.get("status") == "passed", (
+            report.get("status"),
+            report.get("reason"),
+            [
+                (
+                    item.get("name"),
+                    item.get("status"),
+                    [
+                        (
+                            n.get("tool", {}).get("access_id"),
+                            n.get("status"),
+                            n.get("native_exit_code"),
+                        )
+                        for n in (item.get("native_results") or ())
+                    ],
+                )
+                for item in report.get("checks") or ()
+            ],
+        )
         _results, _rej, report_ref = coordinator.collect_job_report(
             run, job_ref, report
         )
@@ -838,32 +1014,47 @@ def test_multi_ref_matched_finalize_with_profile(selection_repo):
         observations_by_scope=observations_by_scope,
     )
     assert len(outcome["receipts"]) == 2
-    assert all(item["status"] == "matched" for item in outcome["receipts"])
+    assert all(item["status"] == "matched" for item in outcome["receipts"]), [
+        {
+            "scope": item.get("ref"),
+            "status": item.get("status"),
+            "entries": [
+                {
+                    "name": entry.get("name"),
+                    "binding_status": entry.get("binding_status"),
+                    "reason": entry.get("reason"),
+                    "native_satisfaction": (entry.get("native_satisfaction") or {}).get(
+                        "reason"
+                    ),
+                }
+                for entry in item.get("entries") or ()
+            ],
+        }
+        for item in outcome["receipts"]
+    ]
     assert all(item["all_observations_reconciled"] for item in outcome["receipts"])
     for receipt, scope in zip(outcome["receipts"], expected["per_ref"], strict=True):
-        docs_ref = next(
+        ws_ref = next(
             item["expected_check_ref"]
             for item in scope["checks"]
-            if item["name"] == "docs"
+            if item["name"] == "whitespace"
         )
-        docs_entry = next(
-            item
-            for item in receipt["entries"]
-            if item["expected_check_ref"] == docs_ref
+        ws_entry = next(
+            item for item in receipt["entries"] if item["expected_check_ref"] == ws_ref
         )
-        assert docs_entry["binding_status"] == "matched"
+        assert ws_entry["binding_status"] == "matched"
     assert outcome["exit_code"] == 0
 
 
 def test_finalize_cli_reads_invocation(selection_repo, tmp_path):
     path, base = selection_repo
-    plan = worktree_docs_plan(path, base)
-    reference = capture_push(path)
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
     binding = coordinator.load_invocation_binding(reference.invocation_path)
     run = coordinator.open_attempt(binding, run_id="cli")
     run.record_job("job-1")
     report, _ref, job_receipt, entries, projection, resolutions = run_collect_issue(
-        run, "job-1", path, plan, binding
+        run, "job-1", path, plan, binding, tip=tip, tree=tree, paths=paths
     )
     routing = [
         coordinator.build_routing(entry["expected_check_ref"], run, ["job-1"])
