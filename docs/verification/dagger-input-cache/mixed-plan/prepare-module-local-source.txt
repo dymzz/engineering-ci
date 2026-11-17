@@ -1,0 +1,86 @@
+"""Produce a real mixed Plan with a source-only CPU/document prerequisite."""
+
+import json
+import subprocess
+from pathlib import Path
+
+from engineering_ci import execution, selection
+
+root = Path.cwd()
+source = root / ".artifacts/mixed-plan-cache/local-check-source"
+source.mkdir(parents=True, exist_ok=True)
+assert not (source / ".git").exists(), "fixture already prepared"
+for directory in ["docs", "tools", "inputs", "src/pkg"]:
+    (source / directory).mkdir(parents=True, exist_ok=True)
+config = '''schema_version = 1
+tach = "tach.toml"
+framework = "unittest"
+checks = ["hygiene"]
+ignored_prefixes = ["docs/", "src/", "inputs/"]
+
+[prerequisite_actions.build_docs]
+type = "command"
+argv = ["python", "tools/build_docs.py"]
+
+[[dependency_edges]]
+producer_ref = { kind = "prerequisite_action", name = "build_docs" }
+consumer_ref = { kind = "check", name = "docs" }
+dependency_kind = "data"
+requires_pass = true
+output_ref = { kind = "file", path = "docs/generated.md" }
+
+[[dependency_edges]]
+producer_ref = { kind = "prerequisite_action", name = "build_docs" }
+consumer_ref = { kind = "execution_report", name = "artifacts" }
+dependency_kind = "data"
+requires_pass = true
+output_ref = { kind = "file", path = "docs/generated.md" }
+'''
+(source / "ci-selection.toml").write_text(config, encoding="utf-8")
+(source / "tach.toml").write_bytes((root / "tests/fixtures/selection-app/tach.toml").read_bytes())
+(source / "ci-hygiene.toml").write_text(
+    'schema_version = 1\nchecks = ["forwarding", "docs"]\n[lychee]\n'
+    'executable = "lychee"\narguments = ["--cache=true", "--no-progress"]\n', encoding="utf-8"
+)
+(source / "lychee.toml").write_text('cache = true\n', encoding="utf-8")
+(source / "inputs/payload.txt").write_text("deterministic document input\n", encoding="utf-8")
+(source / "tools/build_docs.py").write_text('''import hashlib
+import json
+import os
+import time
+from pathlib import Path
+
+started = time.time_ns()
+payload = Path("inputs/payload.txt").read_bytes()
+digest = hashlib.pbkdf2_hmac("sha256", payload, b"eci-docs", 4_000_000).hex()
+out = Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"]) / "docs/generated.md"
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text("# Generated\\n\\n" + digest + "\\n\\n[local](local.md)\\n", encoding="utf-8")
+print(json.dumps({"started_at_unix_ns": started, "finished_at_unix_ns": time.time_ns(), "output_sha256": hashlib.sha256(out.read_bytes()).hexdigest()}))
+''', encoding="utf-8")
+(source / "docs/local.md").write_text("# Local dependency\n", encoding="utf-8")
+(source / "docs/link.md").write_text("# Before\n", encoding="utf-8")
+(source / "src/pkg/example.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+def git(*args):
+    return subprocess.run(["git", "-c", "core.hooksPath=NUL", "-c", "core.autocrlf=false", *args],
+        cwd=source, text=True, capture_output=True, check=True).stdout.strip()
+
+git("init", "--initial-branch=main")
+git("config", "user.name", "Mixed Plan fixture")
+git("config", "user.email", "fixture@example.invalid")
+git("add", ".")
+git("commit", "-m", "Controlled mixed Plan Source")
+(source / "docs/link.md").write_text(
+    "# Links\n\n[remote](http://link-fixture:8080/target)\n\n[local](local.md)\n", encoding="utf-8"
+)
+(source / "src/pkg/example.py").write_text("VALUE = 2\n", encoding="utf-8")
+loaded = selection.load_config(source / "ci-selection.toml")
+changes = selection.changeset(source, base="HEAD", config=loaded)
+assert changes.complete, changes
+selected = selection.select(changes, loaded, root=source)
+plan = selection.plan(selected, config=loaded, config_path=source / "ci-selection.toml", root=source)
+execution.validate_plan(plan)
+(source.parent / "local-check-plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+print(json.dumps({"checks": plan["check_scope"], "tests": plan["selection"]["tests"],
+                  "prerequisites": plan["selection"]["prerequisites"], "contract": plan["dependency_contract"]}, indent=2))

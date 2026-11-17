@@ -107,10 +107,11 @@ def test_docs_without_applicable_files_is_not_applicable(repo):
 def test_docs_runs_lychee_once_with_active_files(repo):
     path, base = repo
     (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
-    fake = FakeRunner()
+    fake = FakeRunner(stderr="native successful-tool diagnostic")
     result = report(path, base, checks=("docs",), runner=fake)
     assert result["status"] == "passed"
     assert by_name(result)["docs"]["exit_code"] == 0
+    assert by_name(result)["docs"]["stderr"] == "native successful-tool diagnostic"
     tools = [call for call in fake.calls if call[0][0] != "git"]
     assert len(tools) == 1
     argv, data = tools[0]

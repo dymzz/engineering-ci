@@ -1,0 +1,226 @@
+{
+  "issue": "https://github.com/dymzz/engineering-ci/issues/86",
+  "base_commit": "dd18b6a720c29b62c92f6b1dc4038f80fbd5fc20",
+  "implementation_commit": "5254bfccae80b9ebbd9233fb43342d7befe550ee",
+  "engine_cli_sdk": "1.0.0-beta.16",
+  "source_binding_verified": "unknown",
+  "origin_execution_attributed": false,
+  "trusted": false,
+  "cases": {
+    "initial": {
+      "implementation": "working_tree_before_container_location_annotation",
+      "source_digest": "sha256:25cee0f3c1a7b0aa601de1df6acd1edc11c17860589bee0d6d3d1c646f9f6c2a",
+      "HTTP_target_statuses": [
+        200,
+        200,
+        404
+      ],
+      "offline_process_started_at": "2026-11-17T05:08:19.687987+00:00",
+      "missing_local_process_started_at": "2026-11-17T05:08:20.020677+00:00",
+      "reports": {
+        "passed": {
+          "native_exit_code": 0,
+          "report_exit_code": 0,
+          "strict": {
+            "status": "passed"
+          },
+          "result_id": "sha256:afcf8d748b5d2b6b47441b66bb542f9560fa47018f0a6199e041fb6765234191",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:08:16.967155+00:00",
+            "process_started_at": "2026-11-17T05:08:16.928853+00:00",
+            "requested_at_unix_ns": 1794892096684697471,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 2
+        },
+        "failed": {
+          "native_exit_code": 2,
+          "report_exit_code": 2,
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "result_id": "sha256:0ca2f4707cdcaa0452cfcb35b270bb91c0fabc979974ba85e4e74f29584875c8",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:08:18.353457+00:00",
+            "process_started_at": "2026-11-17T05:08:18.310013+00:00",
+            "requested_at_unix_ns": 1794892098087410158,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 3
+        }
+      }
+    },
+    "current": {
+      "implementation": "5254bfccae80b9ebbd9233fb43342d7befe550ee",
+      "source_digest": "sha256:25cee0f3c1a7b0aa601de1df6acd1edc11c17860589bee0d6d3d1c646f9f6c2a",
+      "HTTP_target_statuses": [
+        200,
+        404
+      ],
+      "offline_process_started_at": "2026-11-17T05:08:19.687987+00:00",
+      "missing_local_process_started_at": "2026-11-17T05:08:20.020677+00:00",
+      "reports": {
+        "passed": {
+          "native_exit_code": 0,
+          "report_exit_code": 0,
+          "strict": {
+            "status": "passed"
+          },
+          "result_id": "sha256:274da721dde7a2adc15657f22445261c4fb5c1ffa94402daeec3bec203947d21",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:13:09.514759+00:00",
+            "process_started_at": "2026-11-17T05:13:09.448687+00:00",
+            "requested_at_unix_ns": 1794892389238857329,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 1
+        },
+        "failed": {
+          "native_exit_code": 2,
+          "report_exit_code": 2,
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "result_id": "sha256:324c27820a069f37df9847c8288b8c56ca9bdbcceaef270c791d616300783b4f",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:13:10.802293+00:00",
+            "process_started_at": "2026-11-17T05:13:10.772006+00:00",
+            "requested_at_unix_ns": 1794892390594346684,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 2
+        }
+      }
+    },
+    "repeated": {
+      "implementation": "5254bfccae80b9ebbd9233fb43342d7befe550ee",
+      "source_digest": "sha256:25cee0f3c1a7b0aa601de1df6acd1edc11c17860589bee0d6d3d1c646f9f6c2a",
+      "HTTP_target_statuses": [
+        200,
+        404
+      ],
+      "offline_process_started_at": "2026-11-17T05:08:19.687987+00:00",
+      "missing_local_process_started_at": "2026-11-17T05:08:20.020677+00:00",
+      "reports": {
+        "passed": {
+          "native_exit_code": 0,
+          "report_exit_code": 0,
+          "strict": {
+            "status": "passed"
+          },
+          "result_id": "sha256:f5f102afdb1ed3330e748ddd896c34775c941d013f204b5e5ae16a48c0656d43",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:14:09.198976+00:00",
+            "process_started_at": "2026-11-17T05:14:09.155802+00:00",
+            "requested_at_unix_ns": 1794892448980455292,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 1
+        },
+        "failed": {
+          "native_exit_code": 2,
+          "report_exit_code": 2,
+          "strict": {
+            "diagnostic": "Plan failed: checks_failed (exit 2)",
+            "status": "failed"
+          },
+          "result_id": "sha256:c096dc9dc033eb08c093fc4fdcede88a9e9fcb5487336cbe00b53640afb7bf3e",
+          "observation": {
+            "argv": [
+              "/usr/local/bin/lychee",
+              "--cache=false",
+              "--no-progress",
+              "docs/link.md"
+            ],
+            "execution_location": "dagger_container",
+            "freshness_policy": "external_reobserve",
+            "input_mode": "external_network",
+            "origin_execution_attributed": false,
+            "process_finished_at": "2026-11-17T05:14:10.401423+00:00",
+            "process_started_at": "2026-11-17T05:14:10.363003+00:00",
+            "requested_at_unix_ns": 1794892450186181400,
+            "source_directory_digest": "sha256:c1dfce70e1249f30c4f1d9d29274e880a7cacc8c91a546ca28214f0b5044d47e",
+            "tool_response_cache_disabled": true
+          },
+          "reader_target_requests": 2
+        }
+      }
+    }
+  },
+  "cross_request": {
+    "same_source_digest": true,
+    "online_process_times_changed": true,
+    "offline_original_result_reused": true,
+    "missing_local_original_failure_reused": true
+  },
+  "implementation_sources": {
+    "dagger/link_cache_fixture.py": "13299b82eee58f36c2fb93f8048cfaf8536baaabc128ef67b5fce5c7286d7f0a",
+    "dagger/link_check.py": "633a89879dd330aa1e20b6c6950f9d0cf212f573742f9835a7d271db29152293",
+    "dagger/main.py": "1e877451bc5776f46762a9ce9c8a371bd17b9af5fb74a501e37dbc24f084676e",
+    "dagger/plan_execution.py": "c1a87db2b52ebf853df779486c4210e231bb7d41ce9732d53bb876c00a9a194d",
+    "dagger/plan_result.py": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+    "dagger/tooling.py": "af07b6b47650a8bffb129d8a40d60f4a653155c257c90c50d0645bd86b9703b8",
+    "engineering_ci/check_contract.py": "8b08266d3e2a3e3450f558662b0072ba75c7a63c306c422beab6a8f8a7ff63b8",
+    "engineering_ci/execution.py": "925285f040029a2b80cefffcbeefa82c289d8495841718507588c16885355c15",
+    "engineering_ci/hygiene.py": "b251230c42a93294d0e995bb6b17f31b3d488d67b171e4ede5def9923bd684eb",
+    "engineering_ci/native_producer.py": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+    "engineering_ci/weaver_tool.py": "2d776ddebe2713c31623ef75d83f9c49263aad0b378c43a7c991475fae85e865"
+  }
+}

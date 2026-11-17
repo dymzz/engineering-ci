@@ -1,0 +1,470 @@
+{
+  "schema_version": 2,
+  "kind": "engineering-ci-selection-plan",
+  "dependency_contract": {
+    "schema_version": 1,
+    "required_semantics": [
+      "prerequisite_policy_aggregation"
+    ],
+    "edges": []
+  },
+  "generator": {
+    "name": "engineering-ci",
+    "version": "0.7.0",
+    "config_sha256": "6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4",
+    "tach_sha256": "6a15279728e3460feb6448c8a5ea9bc3e1a391785a60a6824cd5dc7912b582ab"
+  },
+  "git": {
+    "repo_root": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\link-cache\\source",
+    "base_ref": "HEAD",
+    "head_ref": "HEAD",
+    "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+    "base_tip": null,
+    "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+    "tree": "e107238880b8e865747d5ec9e2745bea72e39326",
+    "worktree_dirty": true,
+    "snapshot": "worktree",
+    "index_tree": null,
+    "index_file": null,
+    "merge_tree": null,
+    "execution_tree": null,
+    "references": [],
+    "changed_paths": [
+      "docs/link.md"
+    ],
+    "deleted_paths": [],
+    "ref_action": null,
+    "object_type": null,
+    "force_push": false,
+    "baseline_status": null,
+    "non_check_obligations": [],
+    "content_binding": {
+      "algorithm": "sha256-paths",
+      "digest": "c6fee142c5a6e222b4cbafb01211e7639bfe271a0476184e2e2207f7014f9601",
+      "paths": {
+        "docs/link.md": "af3bcf34ba944264480c2cd584bd05cbc2ea6fe05d51fea4507ac9902ac9865d"
+      }
+    },
+    "source_tree_id": null
+  },
+  "selection": {
+    "status": "no_tests",
+    "tests": [],
+    "checks": [
+      "hygiene"
+    ],
+    "prerequisites": [],
+    "escalated": false,
+    "escalation_reason": null,
+    "full_tests": false,
+    "framework": "unittest",
+    "tests_dir": "tests",
+    "src_root": "src",
+    "code_prefixes": [
+      "src/",
+      "scripts/",
+      "tests/"
+    ],
+    "source_prefixes": [
+      "data/",
+      "sources/"
+    ],
+    "weaver_prefixes": {
+      "weaver_semantic_conventions": [
+        "telemetry/",
+        "ci-weaver.toml",
+        ".weaver.toml"
+      ]
+    },
+    "coverage_required": false,
+    "tach_graph_validation": {
+      "status": "not_executed"
+    },
+    "requires_tach_check": true,
+    "reasons": {}
+  },
+  "check_scope": [
+    {
+      "name": "unittest",
+      "status": "no_tests",
+      "inputs": [],
+      "reason": null
+    },
+    {
+      "name": "docs",
+      "status": "selected",
+      "inputs": [
+        "docs/link.md"
+      ],
+      "recheck_all": false,
+      "reason": "changed documents"
+    },
+    {
+      "name": "source",
+      "status": "not_applicable",
+      "inputs": [],
+      "reason": "no source changes"
+    }
+  ],
+  "expected_checks": {
+    "kind": "engineering-ci-expected-checks",
+    "schema_version": 1,
+    "projection_source": "check_scope",
+    "status": "partial",
+    "reason": "consumer_profile_not_resolved",
+    "scope_id": "sha256:8c0c4b8756ad2469b072352d49f981955422128cf63233426bb68889285666b1",
+    "selection_rule_ref": {
+      "name": "engineering-ci.selection",
+      "version": "1",
+      "sha256": "sha256:6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4"
+    },
+    "expected_set_ref": "sha256:c32ee5efd9313a1fb74fff8dcdfdc619cd6d5aa77badd00ff671e4b3bd1c4eb9",
+    "definitions_status": "requested_names_complete",
+    "applicability_status": "requested_scope",
+    "consumer": null,
+    "profile_ref": null,
+    "profile_source": null,
+    "consumer_completeness": "not_claimed",
+    "event_ref": {
+      "base_ref": "HEAD",
+      "head_ref": "HEAD",
+      "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+      "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+      "references": []
+    },
+    "source_ref": {
+      "snapshot": "worktree",
+      "declared_target_tree": "e107238880b8e865747d5ec9e2745bea72e39326",
+      "actual_execution_source": "unknown",
+      "verified_input_scope": [
+        "docs/link.md"
+      ],
+      "scope_kind": "changed_paths",
+      "binding_status": "content_digest",
+      "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+      "content_digest": "c6fee142c5a6e222b4cbafb01211e7639bfe271a0476184e2e2207f7014f9601"
+    },
+    "checks": [
+      {
+        "name": "unittest",
+        "check_id": "eci/tests/unittest",
+        "definition_version": 1,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "no_tests",
+          "reason": null
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "e107238880b8e865747d5ec9e2745bea72e39326",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "content_digest": "c6fee142c5a6e222b4cbafb01211e7639bfe271a0476184e2e2207f7014f9601"
+        },
+        "input_refs": [],
+        "baseline_ref": {
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442"
+        },
+        "expected_check_ref": "sha256:08b75f6b329aa73e053df17f5e675be5afe73345307d1155fa8eed265604f6b1"
+      },
+      {
+        "name": "docs",
+        "check_id": "eci/hygiene/docs",
+        "definition_version": 2,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "selected",
+          "reason": "changed documents"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "e107238880b8e865747d5ec9e2745bea72e39326",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "content_digest": "c6fee142c5a6e222b4cbafb01211e7639bfe271a0476184e2e2207f7014f9601"
+        },
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": "docs/link.md"
+          }
+        ],
+        "baseline_ref": {
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442"
+        },
+        "expected_check_ref": "sha256:72db655748ae137a5f257a41f3800be80cd659a2bb52b2bef09da9359d58b0c1"
+      },
+      {
+        "name": "source",
+        "check_id": "eci/sources/reconcile",
+        "definition_version": 1,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "not_applicable",
+          "reason": "no source changes"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "e107238880b8e865747d5ec9e2745bea72e39326",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442",
+          "content_digest": "c6fee142c5a6e222b4cbafb01211e7639bfe271a0476184e2e2207f7014f9601"
+        },
+        "input_refs": [],
+        "baseline_ref": {
+          "base_commit": "334fa75e28fbe54fc91900c21d41db991a3fe442"
+        },
+        "expected_check_ref": "sha256:4db1cd9e4314ae1ee88ec55fa78577196b7b62fe20bc39f6fa0fe2ae31ae4ceb"
+      }
+    ],
+    "missing": [],
+    "conflicts": []
+  },
+  "prerequisite_actions": {},
+  "inputs": {
+    "config": {
+      "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\link-cache\\source\\ci-selection.toml",
+      "sha256": "6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4",
+      "schema_version": 1,
+      "policy_scope": "repo_target_tree",
+      "normalized": {
+        "schema_version": 1,
+        "tach": "tach.toml",
+        "tests_dir": "tests",
+        "src_root": "src",
+        "framework": "unittest",
+        "escalation_files": [
+          ".gitattributes",
+          "pyproject.toml",
+          "tach.toml",
+          "uv.lock"
+        ],
+        "escalation_prefixes": [
+          ".github/workflows/"
+        ],
+        "ignored_files": [
+          ".gitignore",
+          "README.md"
+        ],
+        "ignored_prefixes": [
+          "docs/"
+        ],
+        "checks": [
+          "hygiene"
+        ],
+        "module_tests": {
+          "pkg": [
+            "tests.test_pkg"
+          ],
+          "pkg.other": [
+            "tests.test_other"
+          ],
+          "pkg.sub": [
+            "tests.test_sub"
+          ]
+        },
+        "non_code_rules": [
+          {
+            "prefix": "data/",
+            "exact": null,
+            "tests": [
+              "tests.test_pkg"
+            ],
+            "reason": "data input"
+          }
+        ],
+        "prerequisites": {
+          "identity_commit": [
+            "tests.test_sub"
+          ],
+          "wheel_smoke": [
+            "tests.test_other"
+          ]
+        },
+        "prerequisite_actions": {},
+        "strict_modules": true,
+        "coverage_required": false,
+        "check_scope": {
+          "docs_suffixes": [
+            ".md",
+            ".html"
+          ],
+          "code_prefixes": [
+            "src/",
+            "scripts/",
+            "tests/"
+          ],
+          "source_prefixes": [
+            "data/",
+            "sources/"
+          ],
+          "weaver_prefixes": [
+            "telemetry/",
+            "ci-weaver.toml",
+            ".weaver.toml"
+          ],
+          "workflow_prefixes": [
+            ".github/workflows/"
+          ],
+          "shell_prefixes": []
+        },
+        "workflow_checks": {
+          "actionlint_config": "",
+          "shellcheck_config": "",
+          "zizmor_config": "",
+          "zizmor_persona": "",
+          "zizmor_offline": true,
+          "shellcheck_inline": true
+        },
+        "push": {
+          "new_ref_baseline": null,
+          "target_baselines": {}
+        },
+        "effective_profile": null,
+        "dependency_edges": []
+      },
+      "effective_config_ref": {
+        "name": "engineering-ci.selection",
+        "version": "1",
+        "sha256": "sha256:30280334179270d3a000c5f9cb9653803de5843f66acf08df0aaed2b74d62fba"
+      },
+      "effective_check_config_ref": {
+        "name": "engineering-ci.selection",
+        "version": "1",
+        "path": "ci-selection.toml",
+        "sha256": "6fb65ab35e64631f74a60c0fbd59a2409e67a9722d681dbe13f9eb63fea81ba4"
+      }
+    },
+    "tach": {
+      "path": "tach.toml",
+      "sha256": "6a15279728e3460feb6448c8a5ea9bc3e1a391785a60a6824cd5dc7912b582ab",
+      "modules": [
+        "pkg",
+        "pkg.other",
+        "pkg.sub"
+      ],
+      "reverse": {
+        "pkg": [
+          "pkg.other"
+        ],
+        "pkg.other": [],
+        "pkg.sub": [
+          "pkg"
+        ]
+      },
+      "all_tests": []
+    },
+    "hygiene": {
+      "path": "ci-hygiene.toml",
+      "sha256": "8afb5c1d6384e409346a02713fb44915012617e814b2ad5ce180324a7d55cb37",
+      "schema_version": 1,
+      "policy_scope": "repo_target_tree",
+      "normalized": {
+        "schema_version": 1,
+        "checks": [
+          "docs"
+        ],
+        "docs": {
+          "suffixes": [
+            ".md",
+            ".html"
+          ],
+          "excluded_prefixes": []
+        },
+        "lychee": {
+          "executable": "lychee",
+          "arguments": [
+            "--cache=true",
+            "--no-progress"
+          ]
+        },
+        "forwarding": {
+          "source_prefix": "src/"
+        },
+        "vulture": {
+          "executable": "vulture",
+          "paths": [
+            "src"
+          ],
+          "min_confidence": 60,
+          "advisory_exit_codes": [
+            3
+          ]
+        },
+        "tach": {
+          "executable": "tach",
+          "path": "tach.toml",
+          "external": false
+        }
+      },
+      "effective_check_config_ref": {
+        "name": "engineering-ci.hygiene",
+        "version": "1",
+        "sha256": "sha256:347328fcc9ffcd0646bfc7689ae84f73f1ba95bffeb27e34bbfb1b397e826abe"
+      }
+    }
+  }
+}

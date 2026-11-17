@@ -235,6 +235,7 @@ def _result(
     stderr="",
     findings=(),
     executable=None,
+    observation=None,
 ):
     result = {
         "name": name,
@@ -247,6 +248,8 @@ def _result(
     }
     if executable is not None:
         result["executable"] = str(executable)
+    if observation is not None:
+        result["observation"] = observation
     return result
 
 
@@ -281,13 +284,16 @@ def _tool(
 ):
     result = runner(argv, root, data)
     executable = str(argv[0])
+    observation = getattr(result, "observation", None)
     if result.returncode == 0:
         return _result(
             name,
             "passed",
             exit_code=0,
             stdout=result.stdout,
+            stderr=result.stderr,
             executable=executable,
+            observation=observation,
         )
     if result.returncode in advisory:
         return _result(
@@ -298,6 +304,7 @@ def _tool(
             stdout=result.stdout,
             stderr=result.stderr,
             executable=executable,
+            observation=observation,
         )
     if result.returncode == 127:
         return _result(
@@ -308,6 +315,7 @@ def _tool(
             stdout=result.stdout,
             stderr=result.stderr,
             executable=executable,
+            observation=observation,
         )
     return _result(
         name,
@@ -317,6 +325,7 @@ def _tool(
         stdout=result.stdout,
         stderr=result.stderr,
         executable=executable,
+        observation=observation,
     )
 
 
@@ -816,6 +825,8 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
         "stdout": _bounded(tracked_result.stdout),
         "stderr": _bounded(tracked_result.stderr),
     }
+    if isinstance(getattr(tracked_result, "observation", None), dict):
+        report["inventory"]["observation"] = tracked_result.observation
     tracked = (
         {path for path in tracked_result.stdout.split("\0") if path}
         if tracked_result.returncode == 0

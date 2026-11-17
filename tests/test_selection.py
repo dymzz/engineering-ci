@@ -329,6 +329,34 @@ def test_directory_content_id_detects_tampering(repo, tmp_path):
     assert selection.directory_content_id(export) != expected
 
 
+@pytest.mark.parametrize("bad_image", [False, True])
+def test_selection_preserves_explicit_native_producer_inputs(tmp_path, bad_image):
+    image = (
+        "python:latest" if bad_image else "example.invalid/python@sha256:" + "a" * 64
+    )
+    path = tmp_path / "ci-selection.toml"
+    path.write_text(
+        "schema_version = 1\n[prerequisite_actions.build]\n"
+        'type = "dagger_command"\nargv = ["python", "build.py"]\n'
+        f'image = "{image}"\nplatform = "linux/amd64"\ncache = "source"\n',
+        encoding="utf-8",
+    )
+    if bad_image:
+        with pytest.raises(
+            selection.SelectionError, match="dagger_command_parameters_invalid"
+        ):
+            selection.load_config(path)
+    else:
+        spec = selection.load_config(path).prerequisite_actions["build"]
+        assert spec == {
+            "type": "dagger_command",
+            "argv": ["python", "build.py"],
+            "image": image,
+            "platform": "linux/amd64",
+            "cache": "source",
+        }
+
+
 def test_plan_includes_typed_prerequisite_actions(repo):
     path, base = repo
     config_path = path / "ci-selection.toml"

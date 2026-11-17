@@ -1,0 +1,54 @@
+"""Prepare a disposable, real Git Source using the existing Plan producer."""
+
+import json
+import subprocess
+from pathlib import Path
+
+from engineering_ci import execution, selection
+
+workspace = Path.cwd()
+source = workspace / ".artifacts/link-cache/source"
+source.mkdir(parents=True, exist_ok=False)
+(source / "docs").mkdir()
+fixture = workspace / "tests/fixtures/selection-app"
+config_text = (fixture / "ci-selection.toml").read_text(encoding="utf-8").replace(
+    'checks = ["hygiene", "tach", "vulture"]', 'checks = ["hygiene"]'
+)
+(source / "ci-selection.toml").write_text(config_text, encoding="utf-8")
+(source / "tach.toml").write_bytes((fixture / "tach.toml").read_bytes())
+(source / "ci-hygiene.toml").write_text(
+    'schema_version = 1\nchecks = ["docs"]\n[lychee]\n'
+    'executable = "lychee"\narguments = ["--cache=true", "--no-progress"]\n',
+    encoding="utf-8",
+)
+(source / "lychee.toml").write_text('cache = true\n', encoding="utf-8")
+(source / "README.md").write_text("# Controlled Source\n", encoding="utf-8")
+(source / "docs/local.md").write_text("# Local dependency\n", encoding="utf-8")
+(source / "docs/link.md").write_text("# Before\n", encoding="utf-8")
+
+def git(*args):
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=NUL", "-c", "core.autocrlf=false", *args],
+        cwd=source, text=True, capture_output=True, check=True,
+    ).stdout.strip()
+
+git("init", "--initial-branch=main")
+git("config", "user.name", "Controlled fixture")
+git("config", "user.email", "fixture@example.invalid")
+git("add", ".")
+git("commit", "-m", "Controlled link Source")
+(source / "docs/link.md").write_text(
+    "# Links\n\n[remote](http://link-fixture:8080/target)\n\n[local](local.md)\n",
+    encoding="utf-8",
+)
+config = selection.load_config(source / "ci-selection.toml")
+changes = selection.changeset(source, base="HEAD", config=config)
+assert changes.complete, changes
+selected = selection.select(changes, config, root=source)
+plan = selection.plan(
+    selected, config=config, config_path=source / "ci-selection.toml", root=source
+)
+execution.validate_plan(plan)
+(source.parent / "plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+print(json.dumps({"changes": list(changes.paths), "checks": plan["check_scope"],
+                  "tests": plan["selection"]["tests"]}, indent=2))

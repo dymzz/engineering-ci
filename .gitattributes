@@ -6,3 +6,4 @@ docs/verification/native-tool-contract/process-results/** -text
 # Captured Windows Plan inputs keep their original CRLF, without allowing spaces.
 docs/verification/native-tool-contract/process-results/*-plan.json whitespace=cr-at-eol
 docs/verification/workflow-security/** -text
+docs/verification/dagger-input-cache/** -text

@@ -11,8 +11,8 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, Ignore, check, dag, function, object_type
 
+from . import link_check, repository, tooling
 from . import python_static as static
-from . import repository, tooling
 from . import script_analysis as script
 from .plan_result import PlanExecution
 from .pytest_matrix import (
@@ -73,7 +73,8 @@ _READ_OPTIONAL = (
 # Capture arbitrary 0-255 exit codes cleanly because Dagger ReturnType.ANY omits 128-191
 # (including git exit 128 when .git is absent or invalid).
 _EXEC_CAPTURE_SCRIPT = (
-    "import base64, json, subprocess, sys\n"
+    "import base64, datetime, json, subprocess, sys\n"
+    "started_at = datetime.datetime.now(datetime.UTC).isoformat()\n"
     "try:\n"
     "    proc = subprocess.run(\n"
     "        sys.argv[1:], stdin=subprocess.DEVNULL, capture_output=True, check=False\n"
@@ -88,6 +89,8 @@ _EXEC_CAPTURE_SCRIPT = (
     "    json.dumps(\n"
     "        {\n"
     "            'exit_code': code,\n"
+    "            'process_started_at': started_at,\n"
+    "            'process_finished_at': datetime.datetime.now(datetime.UTC).isoformat(),\n"
     "            'stdout_b64': base64.b64encode(out).decode('ascii'),\n"
     "            'stderr_b64': base64.b64encode(err).decode('ascii'),\n"
     "        }\n"
@@ -96,12 +99,22 @@ _EXEC_CAPTURE_SCRIPT = (
 )
 
 
-async def _exec_capture(container: dagger.Container, argv: list[str]) -> dict:
+async def _exec_capture(
+    container: dagger.Container,
+    argv: list[str],
+    *,
+    with_container: bool = False,
+    script_suffix: str = "",
+):
     """Capture container command exit/output across 0-255 cleanly."""
-    executed = container.with_exec(["python", "-I", "-c", _EXEC_CAPTURE_SCRIPT, *argv])
+    executed = container.with_exec(
+        ["python", "-I", "-c", _EXEC_CAPTURE_SCRIPT + script_suffix, *argv]
+    )
     payload = json.loads(await executed.stdout())
-    return {
+    result = {
         "exit_code": int(payload["exit_code"]),
+        "process_started_at": payload["process_started_at"],
+        "process_finished_at": payload["process_finished_at"],
         "stdout": base64.b64decode(payload["stdout_b64"]).decode(
             "utf-8", errors="replace"
         ),
@@ -109,6 +122,7 @@ async def _exec_capture(container: dagger.Container, argv: list[str]) -> dict:
             "utf-8", errors="replace"
         ),
     }
+    return (result, executed) if with_container else result
 
 
 @object_type
@@ -255,7 +269,7 @@ class EngineeringCi:
             self.weaver_source or source, "terminal", config_path
         )
 
-    @function
+    @function(cache="never")
     async def plan_execution(
         self,
         plan: dagger.File,
@@ -278,7 +292,7 @@ class EngineeringCi:
             attempt_ref=attempt_ref or None,
         )
 
-    @function
+    @function(cache="never")
     async def execute_plan(
         self,
         plan: dagger.File,
@@ -294,7 +308,7 @@ class EngineeringCi:
         )
         return await execution.report()
 
-    @function
+    @function(cache="never")
     async def fixture_plan_execution(
         self,
         plan: dagger.File,
@@ -331,6 +345,24 @@ class EngineeringCi:
             .with_directory("result", bundle)
             .with_new_file("inspection.json", json.dumps(inspection, sort_keys=True))
         )
+
+    @function(cache="never")
+    async def fixture_link_cache(
+        self, plan: dagger.File, source: dagger.Directory
+    ) -> dagger.Directory:
+        """Observe real Lychee against a changing, controlled HTTP service."""
+        from .link_cache_fixture import observe
+
+        return await observe(self, plan, source)
+
+    @function(cache="never")
+    async def fixture_mixed_plan_cache(
+        self, plan: dagger.File, source: dagger.Directory
+    ) -> dagger.Directory:
+        """Observe prerequisites and local checks beside fresh online links."""
+        from .mixed_plan_fixture import observe
+
+        return await observe(self, plan, source)
 
     @function
     async def sources_self_test(self) -> str:
@@ -1023,6 +1055,7 @@ class EngineeringCi:
         argv_tail: list[str],
         *,
         installed: dagger.Container | None = None,
+        capture=None,
     ) -> dict:
         """Run pinned Lychee inside a container over an immutable Directory."""
         if installed is None:
@@ -1036,15 +1069,21 @@ class EngineeringCi:
                         f"{error.get('stderr', '')}"
                     ).strip(),
                 }
-        container = installed.with_directory(
-            "/workspace", source, exclude=list(tooling.SOURCE_NOISE)
-        ).with_workdir("/workspace")
-        return await _exec_capture(container, ["/usr/local/bin/lychee", *argv_tail])
+        return await link_check.run(
+            dag,
+            installed,
+            source,
+            argv_tail,
+            capture=capture or _exec_capture,
+            source_noise=tooling.SOURCE_NOISE,
+        )
 
     async def _run_git(
         self,
         source: dagger.Directory,
         argv_tail: list[str],
+        *,
+        capture=None,
     ) -> dict:
         """Run git inside a container when the Python module lacks git."""
         container = (
@@ -1052,9 +1091,22 @@ class EngineeringCi:
             .with_directory("/workspace", source)
             .with_workdir("/workspace")
         )
-        return await _exec_capture(
-            container, ["git", "-c", "safe.directory=/workspace", *argv_tail]
-        )
+        argv = ["git", "-c", "safe.directory=/workspace", *argv_tail]
+        result = await (capture or _exec_capture)(container, argv)
+        result["observation"] = {
+            "execution_location": "dagger_container",
+            "freshness_policy": "native_exec_cache",
+            "process_started_at": result["process_started_at"],
+            "process_finished_at": result["process_finished_at"],
+            "argv": argv,
+            "origin_execution_attributed": False,
+        }
+        return result
+
+    async def _run_dagger_prerequisite(self, source, name, spec, *, capture=None):
+        from .native_prerequisite import run
+
+        return await run(dag, source, name, spec, capture=capture or _exec_capture)
 
     @function
     async def lychee_check(

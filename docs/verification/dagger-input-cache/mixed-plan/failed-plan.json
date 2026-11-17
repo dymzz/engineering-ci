@@ -1,0 +1,686 @@
+{
+  "schema_version": 2,
+  "kind": "engineering-ci-selection-plan",
+  "dependency_contract": {
+    "schema_version": 2,
+    "required_semantics": [
+      "data_dependency",
+      "pre_execution_pass"
+    ],
+    "edges": [
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "build_docs"
+        },
+        "consumer_ref": {
+          "kind": "check",
+          "name": "docs"
+        },
+        "dependency_kind": "data",
+        "requires_pass": true,
+        "output_ref": {
+          "kind": "file",
+          "path": "docs/generated.md"
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\mixed-plan-cache\\failed-source\\ci-selection.toml",
+          "sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7",
+          "section": "prerequisite_actions.build_docs"
+        },
+        "selection": {
+          "selected_by": "escalated",
+          "escalation_reason": "Unknown or unmapped path changed: tools/build_docs.py"
+        },
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      },
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "module_probe"
+        },
+        "consumer_ref": {
+          "kind": "check",
+          "name": "forwarding"
+        },
+        "dependency_kind": "pre_execution_pass",
+        "requires_pass": true,
+        "output_ref": null,
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\mixed-plan-cache\\failed-source\\ci-selection.toml",
+          "sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7",
+          "section": "prerequisite_actions.module_probe"
+        },
+        "selection": {
+          "selected_by": "escalated",
+          "escalation_reason": "Unknown or unmapped path changed: tools/build_docs.py"
+        },
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      },
+      {
+        "producer_ref": {
+          "kind": "prerequisite_action",
+          "name": "build_docs"
+        },
+        "consumer_ref": {
+          "kind": "execution_report",
+          "name": "artifacts"
+        },
+        "dependency_kind": "data",
+        "requires_pass": true,
+        "output_ref": {
+          "kind": "file",
+          "path": "docs/generated.md"
+        },
+        "source_binding_ref": "git",
+        "declaration_ref": {
+          "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\mixed-plan-cache\\failed-source\\ci-selection.toml",
+          "sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7",
+          "section": "prerequisite_actions.build_docs"
+        },
+        "selection": {
+          "selected_by": "escalated",
+          "escalation_reason": "Unknown or unmapped path changed: tools/build_docs.py"
+        },
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": null
+      }
+    ]
+  },
+  "generator": {
+    "name": "engineering-ci",
+    "version": "0.7.0",
+    "config_sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7",
+    "tach_sha256": "6a15279728e3460feb6448c8a5ea9bc3e1a391785a60a6824cd5dc7912b582ab"
+  },
+  "git": {
+    "repo_root": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\mixed-plan-cache\\failed-source",
+    "base_ref": "HEAD",
+    "head_ref": "HEAD",
+    "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+    "base_tip": null,
+    "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+    "tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+    "worktree_dirty": true,
+    "snapshot": "worktree",
+    "index_tree": null,
+    "index_file": null,
+    "merge_tree": null,
+    "execution_tree": null,
+    "references": [],
+    "changed_paths": [
+      "docs/link.md",
+      "src/pkg/example.py",
+      "tools/build_docs.py"
+    ],
+    "deleted_paths": [],
+    "ref_action": null,
+    "object_type": null,
+    "force_push": false,
+    "baseline_status": null,
+    "non_check_obligations": [],
+    "content_binding": {
+      "algorithm": "sha256-paths",
+      "digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4",
+      "paths": {
+        "docs/link.md": "af3bcf34ba944264480c2cd584bd05cbc2ea6fe05d51fea4507ac9902ac9865d",
+        "src/pkg/example.py": "603f07c14978e83fb4eaaa3fb4a68091e5bebed59d682ed2c11f72bc287806a4",
+        "tools/build_docs.py": "037df647c16b1e302e3926a14b78c25d19968ec72793de3033d7fbf1249e7ae2"
+      }
+    },
+    "source_tree_id": null
+  },
+  "selection": {
+    "status": "escalated",
+    "tests": [],
+    "checks": [
+      "hygiene"
+    ],
+    "prerequisites": [
+      "build_docs",
+      "module_probe"
+    ],
+    "escalated": true,
+    "escalation_reason": "Unknown or unmapped path changed: tools/build_docs.py",
+    "full_tests": false,
+    "framework": "unittest",
+    "tests_dir": "tests",
+    "src_root": "src",
+    "code_prefixes": [
+      "src/",
+      "scripts/",
+      "tests/"
+    ],
+    "source_prefixes": [
+      "data/",
+      "sources/"
+    ],
+    "weaver_prefixes": {
+      "weaver_semantic_conventions": [
+        "telemetry/",
+        "ci-weaver.toml",
+        ".weaver.toml"
+      ]
+    },
+    "coverage_required": false,
+    "tach_graph_validation": {
+      "status": "not_executed"
+    },
+    "requires_tach_check": true,
+    "reasons": {
+      "all": [
+        "Unmapped: tools/build_docs.py"
+      ]
+    }
+  },
+  "check_scope": [
+    {
+      "name": "unittest",
+      "status": "escalated",
+      "inputs": [],
+      "reason": "Unknown or unmapped path changed: tools/build_docs.py"
+    },
+    {
+      "name": "forwarding",
+      "status": "selected",
+      "inputs": [
+        "src/pkg/example.py"
+      ],
+      "reason": "python source changed"
+    },
+    {
+      "name": "docs",
+      "status": "selected",
+      "inputs": [
+        "docs/link.md"
+      ],
+      "recheck_all": false,
+      "reason": "changed documents"
+    },
+    {
+      "name": "source",
+      "status": "not_applicable",
+      "inputs": [],
+      "reason": "no source changes"
+    }
+  ],
+  "expected_checks": {
+    "kind": "engineering-ci-expected-checks",
+    "schema_version": 1,
+    "projection_source": "check_scope",
+    "status": "partial",
+    "reason": "consumer_profile_not_resolved",
+    "scope_id": "sha256:e0b5538facda04712771331f1b4a98635f9e6cb57fba338809a366afa30e68b2",
+    "selection_rule_ref": {
+      "name": "engineering-ci.selection",
+      "version": "1",
+      "sha256": "sha256:770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+    },
+    "expected_set_ref": "sha256:0e36cae35c57ea9388549c254962fa0c4d09dec9585c661cd86a92ce152710e7",
+    "definitions_status": "requested_names_complete",
+    "applicability_status": "requested_scope",
+    "consumer": null,
+    "profile_ref": null,
+    "profile_source": null,
+    "consumer_completeness": "not_claimed",
+    "event_ref": {
+      "base_ref": "HEAD",
+      "head_ref": "HEAD",
+      "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+      "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+      "references": []
+    },
+    "source_ref": {
+      "snapshot": "worktree",
+      "declared_target_tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+      "actual_execution_source": "unknown",
+      "verified_input_scope": [
+        "docs/link.md",
+        "src/pkg/example.py",
+        "tools/build_docs.py"
+      ],
+      "scope_kind": "changed_paths",
+      "binding_status": "content_digest",
+      "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+      "content_digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4"
+    },
+    "checks": [
+      {
+        "name": "unittest",
+        "check_id": "eci/tests/unittest",
+        "definition_version": 1,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "escalated",
+          "reason": "Unknown or unmapped path changed: tools/build_docs.py"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md",
+            "src/pkg/example.py",
+            "tools/build_docs.py"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "content_digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4"
+        },
+        "input_refs": [],
+        "baseline_ref": {
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366"
+        },
+        "expected_check_ref": "sha256:157954dffdaaff53b745b3b5fd8760d5a03cf55c5e6bd4e3365a1b29b2976d75"
+      },
+      {
+        "name": "forwarding",
+        "check_id": "eci/hygiene/forwarding",
+        "definition_version": 1,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "selected",
+          "reason": "python source changed"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md",
+            "src/pkg/example.py",
+            "tools/build_docs.py"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "content_digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4"
+        },
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": "src/pkg/example.py"
+          }
+        ],
+        "baseline_ref": {
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366"
+        },
+        "expected_check_ref": "sha256:1eae46c527ee49a009e34d9dc049c1761fdf6de040dd31a8d90d92537c32b3a0"
+      },
+      {
+        "name": "docs",
+        "check_id": "eci/hygiene/docs",
+        "definition_version": 2,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "selected",
+          "reason": "changed documents"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md",
+            "src/pkg/example.py",
+            "tools/build_docs.py"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "content_digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4"
+        },
+        "input_refs": [
+          {
+            "kind": "changed_path",
+            "path": "docs/link.md"
+          }
+        ],
+        "baseline_ref": {
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366"
+        },
+        "expected_check_ref": "sha256:b285ed2d1c7b61c30521bed419aa455c4360a7e0620b4aa72dfad8efb0be4e8f"
+      },
+      {
+        "name": "source",
+        "check_id": "eci/sources/reconcile",
+        "definition_version": 1,
+        "definition_status": "resolved",
+        "event_ref": {
+          "base_ref": "HEAD",
+          "head_ref": "HEAD",
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "references": []
+        },
+        "selection_rule_ref": {
+          "name": "engineering-ci.selection",
+          "version": "1",
+          "sha256": "sha256:770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+        },
+        "rule_ref": null,
+        "rule_status": "unknown",
+        "profile_ref": null,
+        "applicability": {
+          "status": "not_applicable",
+          "reason": "no source changes"
+        },
+        "policy_status": "unknown",
+        "source_ref": {
+          "snapshot": "worktree",
+          "declared_target_tree": "87a5494421838ebd4e91ea41408d9a9fd35340d2",
+          "actual_execution_source": "unknown",
+          "verified_input_scope": [
+            "docs/link.md",
+            "src/pkg/example.py",
+            "tools/build_docs.py"
+          ],
+          "scope_kind": "changed_paths",
+          "binding_status": "content_digest",
+          "head_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366",
+          "content_digest": "de6ae001a2753b5f3b5fd71924c580febb762582c334818ea6a90b8bdadc4db4"
+        },
+        "input_refs": [],
+        "baseline_ref": {
+          "base_commit": "79ffa9ce60d3fa0074cf74e7def9c4744cdbc366"
+        },
+        "expected_check_ref": "sha256:f53c30e3a7b6c5f95eba2159a9b60e86ea9f13c0baa81bf154e603c9a5b6693b"
+      }
+    ],
+    "missing": [],
+    "conflicts": []
+  },
+  "prerequisite_actions": {
+    "build_docs": {
+      "type": "dagger_command",
+      "cache": "source",
+      "platform": "linux/amd64",
+      "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+      "argv": [
+        "python",
+        "tools/build_docs.py"
+      ]
+    },
+    "module_probe": {
+      "type": "command",
+      "argv": [
+        "python",
+        "-c",
+        "from pathlib import Path; assert Path('docs/local.md').is_file(); print('local Source file is present')"
+      ]
+    }
+  },
+  "inputs": {
+    "config": {
+      "path": "C:\\Users\\Aurola\\.codex\\worktrees\\eci-086-native-dag\\engineering-ci\\.artifacts\\mixed-plan-cache\\failed-source\\ci-selection.toml",
+      "sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7",
+      "schema_version": 1,
+      "policy_scope": "repo_target_tree",
+      "normalized": {
+        "schema_version": 1,
+        "tach": "tach.toml",
+        "tests_dir": "tests",
+        "src_root": "src",
+        "framework": "unittest",
+        "escalation_files": [],
+        "escalation_prefixes": [],
+        "ignored_files": [],
+        "ignored_prefixes": [
+          "docs/",
+          "src/",
+          "inputs/"
+        ],
+        "checks": [
+          "hygiene"
+        ],
+        "module_tests": {},
+        "non_code_rules": [],
+        "prerequisites": {
+          "module_probe": []
+        },
+        "prerequisite_actions": {
+          "build_docs": {
+            "type": "dagger_command",
+            "cache": "source",
+            "platform": "linux/amd64",
+            "image": "ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d",
+            "argv": [
+              "python",
+              "tools/build_docs.py"
+            ]
+          },
+          "module_probe": {
+            "type": "command",
+            "argv": [
+              "python",
+              "-c",
+              "from pathlib import Path; assert Path('docs/local.md').is_file(); print('local Source file is present')"
+            ]
+          }
+        },
+        "strict_modules": true,
+        "coverage_required": false,
+        "check_scope": {
+          "docs_suffixes": [
+            ".md",
+            ".html"
+          ],
+          "code_prefixes": [
+            "src/",
+            "scripts/",
+            "tests/"
+          ],
+          "source_prefixes": [
+            "data/",
+            "sources/"
+          ],
+          "weaver_prefixes": [
+            "telemetry/",
+            "ci-weaver.toml",
+            ".weaver.toml"
+          ],
+          "workflow_prefixes": [
+            ".github/workflows/"
+          ],
+          "shell_prefixes": []
+        },
+        "workflow_checks": {
+          "actionlint_config": "",
+          "shellcheck_config": "",
+          "zizmor_config": "",
+          "zizmor_persona": "",
+          "zizmor_offline": true,
+          "shellcheck_inline": true
+        },
+        "push": {
+          "new_ref_baseline": null,
+          "target_baselines": {}
+        },
+        "effective_profile": null,
+        "dependency_edges": [
+          {
+            "consumer_ref": {
+              "kind": "check",
+              "name": "docs"
+            },
+            "dependency_kind": "data",
+            "output_ref": {
+              "kind": "file",
+              "path": "docs/generated.md"
+            },
+            "producer_ref": {
+              "kind": "prerequisite_action",
+              "name": "build_docs"
+            },
+            "requires_pass": true
+          },
+          {
+            "consumer_ref": {
+              "kind": "execution_report",
+              "name": "artifacts"
+            },
+            "dependency_kind": "data",
+            "output_ref": {
+              "kind": "file",
+              "path": "docs/generated.md"
+            },
+            "producer_ref": {
+              "kind": "prerequisite_action",
+              "name": "build_docs"
+            },
+            "requires_pass": true
+          },
+          {
+            "consumer_ref": {
+              "kind": "check",
+              "name": "forwarding"
+            },
+            "dependency_kind": "pre_execution_pass",
+            "output_ref": null,
+            "producer_ref": {
+              "kind": "prerequisite_action",
+              "name": "module_probe"
+            },
+            "requires_pass": true
+          }
+        ]
+      },
+      "effective_config_ref": {
+        "name": "engineering-ci.selection",
+        "version": "1",
+        "sha256": "sha256:a403f6dc3368bd207c8027d6e3a167898cd38b56826479020cf8291c967ae72a"
+      },
+      "effective_check_config_ref": {
+        "name": "engineering-ci.selection",
+        "version": "1",
+        "path": "ci-selection.toml",
+        "sha256": "770bfaf7c01e257bc3922f1876c802a554d3672d344732a01dad8549cd253eb7"
+      }
+    },
+    "tach": {
+      "path": "tach.toml",
+      "sha256": "6a15279728e3460feb6448c8a5ea9bc3e1a391785a60a6824cd5dc7912b582ab",
+      "modules": [
+        "pkg",
+        "pkg.other",
+        "pkg.sub"
+      ],
+      "reverse": {
+        "pkg": [
+          "pkg.other"
+        ],
+        "pkg.other": [],
+        "pkg.sub": [
+          "pkg"
+        ]
+      },
+      "all_tests": []
+    },
+    "hygiene": {
+      "path": "ci-hygiene.toml",
+      "sha256": "f16690f38d3ebc67a98a2673a930705b4c0bea7f93f6013cde3f6ff990d3e7bc",
+      "schema_version": 1,
+      "policy_scope": "repo_target_tree",
+      "normalized": {
+        "schema_version": 1,
+        "checks": [
+          "forwarding",
+          "docs"
+        ],
+        "docs": {
+          "suffixes": [
+            ".md",
+            ".html"
+          ],
+          "excluded_prefixes": []
+        },
+        "lychee": {
+          "executable": "lychee",
+          "arguments": [
+            "--cache=true",
+            "--no-progress"
+          ]
+        },
+        "forwarding": {
+          "source_prefix": "src/"
+        },
+        "vulture": {
+          "executable": "vulture",
+          "paths": [
+            "src"
+          ],
+          "min_confidence": 60,
+          "advisory_exit_codes": [
+            3
+          ]
+        },
+        "tach": {
+          "executable": "tach",
+          "path": "tach.toml",
+          "external": false
+        }
+      },
+      "effective_check_config_ref": {
+        "name": "engineering-ci.hygiene",
+        "version": "1",
+        "sha256": "sha256:1df56f38df046ed6a712417ad1bb2f2aaac49eb2c0aae91291962ee677f1aa66"
+      }
+    }
+  }
+}

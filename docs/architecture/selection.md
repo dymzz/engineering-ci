@@ -60,6 +60,9 @@ argv = ["python", "-m", "your_wheel_smoke"]
   host/`execute-plan` can run them: `git_commit_present` or `command`. Missing
   parameters stay `not_executed` and block a pass; ECI never hardcodes Knowledge
   SHAs or CLI strings.
+- An explicitly source-only v2 producer may use `dagger_command` with pinned
+  image/platform and cache eligibility. Its declaration, Dagger-only execution
+  and refusal boundaries are defined in the [Dagger integration](integrations/dagger.md#plan-and-link-observation-cache-boundaries).
 - No Knowledge path (`data/catalog/**`, `content/**`) is built into ECI. Its
   domain rules belong in its own config.
 
@@ -430,3 +433,17 @@ Admission/Required decisions remain separate; remaining applicable producers
 and Native DAG edges belong to follow-up `#86 B`, while `#86 D` refines input
 closure, cache hit/invalidation, and external URL/side-effect policy. See also
 [native result-sharing verification](../verification/plan-result-sharing/README.md).
+
+The delivered online-Lychee slice of #86 D.1 refreshes the external-read Exec
+while retaining deterministic native layers. Plan entrypoints reevaluate each
+request; readers of the saved result do not rerun tools. Cache policy and
+observation fields are defined in the [Dagger integration](integrations/dagger.md#plan-and-link-observation-cache-boundaries).
+The broader per-Check input audit, Module Include measurements and remaining
+applicable production DAG edges stay open under #86 B/D.
+
+The mixed-Plan review repair adds an explicit native prerequisite producer
+inside the same v2 data closure. Ordinary `command` actions remain
+module-local and execute for every new Plan; only declared source-only
+`dagger_command` computation receives independent native Exec caching.
+See the [mixed-Plan observations](../verification/dagger-input-cache/mixed-plan/README.md)
+for actual request/reader counts and failure preservation.

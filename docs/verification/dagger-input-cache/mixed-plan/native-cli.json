@@ -1,0 +1,219 @@
+{
+  "scope": "Actual tool-return chunks; no complete Trace or Origin attribution",
+  "records": [
+    {
+      "name": "pr119-mixed-baseline",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/baseline-plan.json --source .artifacts/mixed-plan-cache/module-local-source export --path .artifacts/mixed-plan-cache/baseline --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "9190cf",
+          "wall_time_seconds": 10.0028069,
+          "session_id": 17686,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 15:10:06 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "643694",
+          "wall_time_seconds": 0.0000125,
+          "exit_code": 0,
+          "original_token_count": 311,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/baseline-plan.json --source .artifacts/mixed-plan-cache/module-local-source export --path .artifacts/mixed-plan-cache/baseline --progress dots  29.3s\u001b[8;1H✔ connect 1.8s\r\n✔ load workspace: . 14.4s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.5s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H✔ engineeringCi: EngineeringCi! 2.0s\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 10.8s\r\n  ✔ 2 downloads, 2 uploads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/baseline\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/baseline 0.0s ████████████ 76 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.2f5telaoucr28.dagger.local exec python /service.py 9.0s EXITED s\r\n\u001b[23;80Hspan=f600732b686435ee\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/baseline\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-local-baseline",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/local-check-plan.json --source .artifacts/mixed-plan-cache/local-check-source export --path .artifacts/mixed-plan-cache/local-baseline --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "d9d6ab",
+          "wall_time_seconds": 9.4292034,
+          "exit_code": 1,
+          "original_token_count": 309,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 15:13:57 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/local-check-plan.json --source .artifacts/mixed-plan-cache/local-check-source export --path .artifacts/mixed-plan-cache/local-baseline --progress dots  8.9s\r\n! exit code 1\r\n! failed to get value for argument \"plan\": stat local-check-plan.json: no such file or directory\u001b[11;1H✔ connect 0.9s\r\n✔ load workspace: . 7.9s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.7 MB\r\n✘ parsing command line arguments 0.0s ERROR\r\n┇ .file › Host.file(path: \".artifacts/mixed-plan-cache/local-check-plan.json\") › \r\n✘ Directory.file(path: \"local-check-plan.json\"): File! 0.0s ERROR\r\n! stat local-check-plan.json: no such file or directory\u001b[21;1HSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1\r\n\u001b[?25h\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 1
+    },
+    {
+      "name": "pr119-mixed-local-baseline-valid",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/local-check-plan.json --source .artifacts/mixed-plan-cache/local-check-source export --path .artifacts/mixed-plan-cache/local-baseline --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "007a30",
+          "wall_time_seconds": 10.0160132,
+          "session_id": 57033,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 15:47:11 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "ffb7cb",
+          "wall_time_seconds": 0.0000237,
+          "exit_code": 0,
+          "original_token_count": 316,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/local-check-plan.json --source .artifacts/mixed-plan-cache/local-check-source export --path .artifacts/mixed-plan-cache/local-baseline --progress dots  20.7s\u001b[8;1H✔ connect 1.7s\r\n✔ load workspace: . 2.3s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H✔ engineeringCi: EngineeringCi! 4.3s\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 12.2s\r\n  ✔ 2 downloads, 2 uploads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/local-baseline\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/local-baseline 0.0s ████████████ 89 kB\r\n\u001b[?25h\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.ccgm10ggq7bni.dagger.local exec python /service.py 9.9s EXITED s\r\n\u001b[23;80Hspan=e11298b12f100ad1\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/local-baseline\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-native-first",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/native-first --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "397ab7",
+          "wall_time_seconds": 10.0018315,
+          "session_id": 14232,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 15:56:43 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "889b63",
+          "wall_time_seconds": 0.0000335,
+          "exit_code": 0,
+          "original_token_count": 320,
+          "output": "[dagger] 30.0s elapsed · 4 steps running\r\n== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/native-first --progress dots  31.6s\u001b[9;1H✔ connect 0.5s\r\n✔ load workspace: . 13.2s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.4s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[16;1H✔ engineeringCi: EngineeringCi! 2.3s\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 15.3s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/native-first\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/native-first 0.0s ████████████ 110 kB\u001b[?25h\r\n\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.3jtr6lopo5no6.dagger.local exec python /service.py 13.1s EXITED \r\n\u001b[23;80H span=67c5e809ed028167\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/native-first\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-native-repeated",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/native-repeated --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "04e76a",
+          "wall_time_seconds": 10.0045586,
+          "session_id": 34020,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:04:52 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "5ab879",
+          "wall_time_seconds": 0.0000138,
+          "exit_code": 0,
+          "original_token_count": 314,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/native-repeated --progress dots  18.3s\u001b[8;1H✔ connect 1.3s\r\n✔ load workspace: . 2.4s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ): Directory! 14.5s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/native-repeated\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/native-repeated 0.0s ████████████ 100 kB\r\n\u001b[?25h\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.dec8jj01vmtcu.dagger.local exec python /service.py 9.8s EXITED s\r\n\u001b[23;80Hspan=9cf33f277db17e3d\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/native-repeated\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-changed",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/changed-plan.json --source .artifacts/mixed-plan-cache/changed-source export --path .artifacts/mixed-plan-cache/changed --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "7fd807",
+          "wall_time_seconds": 10.011554,
+          "session_id": 9049,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:10:16 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "4afac3",
+          "wall_time_seconds": 0.0000176,
+          "exit_code": 0,
+          "original_token_count": 307,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/changed-plan.json --source .artifacts/mixed-plan-cache/changed-source export --path .artifacts/mixed-plan-cache/changed --progress dots  20.5s\u001b[8;1H✔ connect 1.8s\r\n✔ load workspace: . 2.2s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 16.3s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/changed\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/changed 0.0s ████████████ 111 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.orugeimhfbf3g.dagger.local exec python /service.py 12.6s EXITED \r\n\u001b[23;80H span=3142e5aab172ebca\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/changed\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-failed",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/failed-plan.json --source .artifacts/mixed-plan-cache/failed-source export --path .artifacts/mixed-plan-cache/failed --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "e316e1",
+          "wall_time_seconds": 10.0044824,
+          "session_id": 78960,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:13:43 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "339c12",
+          "wall_time_seconds": 0.000062,
+          "exit_code": 0,
+          "original_token_count": 305,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/failed-plan.json --source .artifacts/mixed-plan-cache/failed-source export --path .artifacts/mixed-plan-cache/failed --progress dots  16.1s\u001b[8;1H✔ connect 0.9s\r\n✔ load workspace: . 1.2s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 13.9s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/failed\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/failed 0.0s ████████████ 80 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.1mj7ch3q0supk.dagger.local exec python /service.py 10.7s EXITED \r\n\u001b[23;80H span=3282f92ace597a5e\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/failed\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-read-only",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/read-only-plan.json --source .artifacts/mixed-plan-cache/read-only-source export --path .artifacts/mixed-plan-cache/read-only --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "0881e2",
+          "wall_time_seconds": 10.0122152,
+          "session_id": 52724,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:16:39 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "e12131",
+          "wall_time_seconds": 0.000017,
+          "exit_code": 0,
+          "original_token_count": 310,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/read-only-plan.json --source .artifacts/mixed-plan-cache/read-only-source export --path .artifacts/mixed-plan-cache/read-only --progress dots  16.1s\u001b[8;1H✔ connect 0.9s\r\n✔ load workspace: . 0.9s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ): Directory! 14.2s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/read-only\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/read-only 0.0s ████████████ 81 kB\u001b[24;1H== SERVICES ==\u001b[?25h\r\n✔ 3u5ukdsgqdj3i.qe1mgieqapuq8.dagger.local exec python /service.py 11.3s EXITED \r\n\u001b[23;80H span=b1fb67db9f5aab5f\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/read-only\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-current-first",
+      "implementation": "0391997d82e134331ef8bf2cb84f337ad1731098",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/current-first --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "76d5fe",
+          "wall_time_seconds": 10.004277,
+          "session_id": 87616,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:23:43 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "c93ee7",
+          "wall_time_seconds": 0.0000119,
+          "exit_code": 0,
+          "original_token_count": 311,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/current-first --progress dots  25.4s\u001b[8;1H✔ connect 1.4s\r\n✔ load workspace: . 11.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.4s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H✔ engineeringCi: EngineeringCi! 1.8s\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ): Directory! 10.3s\r\n  ✔ 4 downloads 0.1s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/current-first\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/current-first 0.0s ████████████ 100 kB\r\n\u001b[?25h\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.07h7fgpdmo1cm.dagger.local exec python /service.py 7.8s EXITED s\r\n\u001b[23;80Hspan=afac45c06cfb33a3\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/current-first\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pr119-mixed-current-repeated",
+      "implementation": "0391997d82e134331ef8bf2cb84f337ad1731098",
+      "command": "dagger api call fixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/current-repeated --progress dots",
+      "chunks": [
+        {
+          "chunk_id": "eefa2d",
+          "wall_time_seconds": 10.0018616,
+          "session_id": 15355,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 16:25:12 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "0d9360",
+          "wall_time_seconds": 0.000013,
+          "exit_code": 0,
+          "original_token_count": 314,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-mixed-plan-cache --plan .artifacts/mixed-plan-cache/native-plan.json --source .artifacts/mixed-plan-cache/native-source export --path .artifacts/mixed-plan-cache/current-repeated --progress dots  9.6s\u001b[8;1H✔ connect 0.6s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.7 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixtureMixedPlanCache(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ): Directory! 8.2s\r\n  ✔ 4 downloads 0.0s\r\n✔ .export(path: \".artifacts/mixed-plan-cache/current-repeated\"): String! 0.1s\r\n  ✔ downloading .artifacts/mixed-plan-cache/current-repeated 0.0s ████████████ 100 kB\r\n\u001b[?25h\n== SERVICES ==\r\n✔ 3u5ukdsgqdj3i.aafmccrc539e4.dagger.local exec python /service.py 6.6s EXITED s\r\n\u001b[23;80Hspan=95852e4fc275d0a1\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/mi\r\n\u001b[23;80Hixed-plan-cache/current-repeated\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "native_image_metadata",
+      "command": "dagger api query --no-load-module --doc .test-tools/prerequisite-image.graphql --progress dots 1> .artifacts/mixed-plan-cache/image-query.json",
+      "chunk_id": "40e235",
+      "wall_time_seconds": 3.3860695,
+      "exit_code": 0,
+      "original_token_count": 301,
+      "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 15:56:00 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h▶ \u001b[?25l..\u001b[5;1H▼ connect\r\n15:56:00 WRN failed to get stable ID, defaulting to random value error=\"failed to rename stable ID temp file: rename C:\\\\Users\\\\Aurola\\\\AppData\\\\Local\\\\dagger\\\\stable_client_id2289746389 C:\\\\Users\\\\Aurola\\\\AppData\\\\Local\\\\dagger\\\\stable_client_id: The process cannot access the file because it is being used by another process.\"\r\n\u001b[?25h\r\n▶ ....\u001b[?25l....\u001b[14;1H▼ exec docker start dagger-engine-v1.0.0-beta.16\r\ndagger-engine-v1.0.0-beta.16\r\n\u001b[?25h\r\n\u001b[?25l▶ .\u001b[19;1H▼ exec docker ps -a --format {{.Names}}\r\ndagger-engine-v1.0.0-beta.16\r\ndocker-socket-proxy\r\n\u001b[?25h\r\n▼ connecting to engine\r\n15:56:01 INF connected name=2b6dab109e71 client-version=v1.0.0-beta.16 server-ve\r\n\u001b[23;80Hersion=v1.0.0-beta.16+2d95ef98\r\n\n▶ ...............\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+    }
+  ]
+}

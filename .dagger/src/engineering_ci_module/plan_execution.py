@@ -500,12 +500,15 @@ def _make_hygiene_runner(
             outcome = asyncio.run_coroutine_threadsafe(
                 module._run_lychee(consumer_source, argv_list[1:]), loop
             ).result()
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 argv_list,
                 outcome["exit_code"],
                 outcome["stdout"],
                 outcome["stderr"],
             )
+            if isinstance(outcome.get("observation"), dict):
+                completed.observation = outcome["observation"]
+            return completed
         if (
             tool_name == "git"
             and len(argv_list) > 1
@@ -516,12 +519,15 @@ def _make_hygiene_runner(
             outcome = asyncio.run_coroutine_threadsafe(
                 module._run_git(consumer_source, argv_list[1:]), loop
             ).result()
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 argv_list,
                 outcome["exit_code"],
                 outcome["stdout"],
                 outcome["stderr"],
             )
+            if isinstance(outcome.get("observation"), dict):
+                completed.observation = outcome["observation"]
+            return completed
         if (
             allow_container_workflow_tools
             and hasattr(module, "_exec_uv_tool")
@@ -659,6 +665,7 @@ async def _execute_dag(
     closure_records = []
     produced_files = []
     materialized_cache = {}
+    native_producer_outputs = {}
     script_shared_cache = {}
     script_exec_cache = {}
 
@@ -674,6 +681,15 @@ async def _execute_dag(
             if key not in materialized_cache:
 
                 async def _materialize():
+                    native_output = native_producer_outputs.get(str(producer_root))
+                    if native_output is not None:
+                        _, native = native_output
+                        obj = (
+                            native.directory(rel)
+                            if kind == "directory"
+                            else native.file(rel)
+                        )
+                        return await obj.sync()
                     scratch_rel = _scratch_relative(
                         Path(producer_root) / rel, scratch_root
                     )
@@ -860,15 +876,26 @@ async def _execute_dag(
             if kind == "prerequisite_action":
                 name = node_key[1]
                 producer_ref = {"kind": "prerequisite_action", "name": name}
+                spec = actions.get(name)
+                producer_root = execution.producer_artifact_root(
+                    artifact_root, producer_ref
+                )
+                if isinstance(spec, dict) and spec.get("type") == "dagger_command":
+                    entry, outputs = await module._run_dagger_prerequisite(
+                        source, name, spec
+                    )
+                    # Existing v2 closure validation still checks the actual
+                    # exported bytes; downstream objects retain native outputs.
+                    await outputs.export(str(producer_root))
+                    native_producer_outputs[str(producer_root)] = (name, outputs)
+                    return entry
                 entry = await asyncio.to_thread(
                     execution.run_prerequisite_action,
                     name,
-                    actions.get(name),
+                    spec,
                     root=Path(directory),
                     execution_context="dagger_export",
-                    artifact_root=execution.producer_artifact_root(
-                        artifact_root, producer_ref
-                    ),
+                    artifact_root=producer_root,
                 )
                 _tag_command_prerequisites([entry])
                 return entry
@@ -1117,6 +1144,11 @@ async def _execute_dag(
                     execution_context="dagger_export",
                     run_instance=run_instance,
                 )
+            )
+
+        for name, native_outputs in sorted(native_producer_outputs.values()):
+            artifacts = artifacts.with_directory(
+                "prerequisites/" + name, native_outputs
             )
 
         if produced_files:

@@ -108,8 +108,9 @@ dagger call lychee-check --source . --files docs/architecture/selection.md
 ```
 
 Vulture continues to reuse the existing `python_vulture` function; no second
-scanner is added. Full plan-driven hygiene orchestration (host change set +
-acceptance of these native results) remains the next production step.
+scanner is added. The Plan result adapter delegates missing Git/Lychee to
+containers and retains their native results. Online and offline Lychee cache
+boundaries are defined by the [Dagger integration](integrations/dagger.md#plan-and-link-observation-cache-boundaries).
 
 ## CLI
 
@@ -126,12 +127,12 @@ tail, not as an empty success.
 
 ## Handoff and remaining work
 
-The report is native host evidence for local runs and #63 can consume its
-identities/statuses. Dagger's `tach-check` / `lychee-check` are native building
-blocks, but the plan-to-Dagger orchestration (source identity validation,
-check list, aggregated evidence) is not wired yet. Source-manifest
-reconciliation is implemented in `engineering_ci.sources`; its Knowledge
-configuration is verified separately.
+The report is native host evidence for local runs. Dagger Plan execution
+retains the selected checks, inventory and original tool results in one
+Report/Artifact bundle. #66 target Source verification, #63 admission and
+#61 Required coverage remain separate. Source-manifest reconciliation is
+implemented in `engineering_ci.sources`; its Knowledge configuration is
+verified separately.
 
 ## Verification
 

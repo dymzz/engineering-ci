@@ -1,0 +1,49 @@
+"""Explicitly move the measured source-only producer to native Dagger Exec."""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+from engineering_ci import execution, selection
+
+root = Path.cwd()
+source = root / ".artifacts/mixed-plan-cache/native-source"
+if not source.exists():
+    shutil.copytree(root / ".artifacts/mixed-plan-cache/local-check-source", source)
+config_path = source / "ci-selection.toml"
+image = json.loads((source.parent / "image-query.json").read_text())["container"]["from"]["imageRef"]
+text = (root / ".artifacts/mixed-plan-cache/local-check-source/ci-selection.toml").read_text(encoding="utf-8").replace(
+    'type = "command"',
+    'type = "dagger_command"\ncache = "source"\nplatform = "linux/amd64"\n'
+    f'image = {json.dumps(image)}',
+)
+text += '''
+[prerequisites]
+module_probe = []
+
+[prerequisite_actions.module_probe]
+type = "command"
+argv = ["python", "-c", "from pathlib import Path; assert Path('docs/local.md').is_file(); print('local Source file is present')"]
+
+[[dependency_edges]]
+producer_ref = { kind = "prerequisite_action", name = "module_probe" }
+consumer_ref = { kind = "check", name = "forwarding" }
+dependency_kind = "pre_execution_pass"
+requires_pass = true
+'''
+config_path.write_text(text, encoding="utf-8")
+
+def git(*args):
+    return subprocess.run(["git", "-c", "core.hooksPath=NUL", "-c", "core.autocrlf=false", *args],
+        cwd=source, text=True, capture_output=True, check=True).stdout
+
+git("add", "ci-selection.toml")
+git("commit", "-m", "Declare measured source-only native producer")
+loaded = selection.load_config(config_path)
+changes = selection.changeset(source, base="HEAD", config=loaded)
+selected = selection.select(changes, loaded, root=source)
+plan = selection.plan(selected, config=loaded, config_path=config_path, root=source)
+execution.validate_plan(plan)
+(source.parent / "native-plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+print(json.dumps({"prerequisites":plan["selection"]["prerequisites"], "actions":plan["prerequisite_actions"]}, indent=2))

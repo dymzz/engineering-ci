@@ -130,3 +130,41 @@
 - Evidence: `.dagger/sdk/src/dagger/mod/_module.py` at lines 694–706 describes Check functions as returning void/error but its adjacent example declares `-> str`. The fixed upstream source is https://github.com/dagger/dagger/blob/v1.0.0-beta.16/sdk/python/src/dagger/mod/_module.py.
 - Assessment: the wording and example differ; no inference that either return form fails at runtime. Existing root Check signatures remain unchanged. The new result Enforce uses `-> None` and raises on failed verdicts without adding a default Check.
 - Workaround: none; no SDK source or upstream tracker was modified.
+
+## Dagger@1.0.0-beta.16: Function cache policy and timestamp precision
+
+- Status: observed native semantics; no upstream defect asserted.
+- Seen: 2026-11-17, #86 D.1 controlled HTTP/Lychee verification.
+- Evidence: the fixed generated SDK exposes `function(cache="never")` and
+  `dag.current_timestamp()`. A real no-module API query returned
+  `2026-11-17T04:59:47Z` for both timestamp aliases. The value is second-resolution
+  despite being documented as never cached; it is insufficient by itself to
+  distinguish observations within one second.
+- Native observation: a cache-never fixture reused an unchanged Lychee Exec
+  and its original successful process timestamps after HTTP status changed
+  to 404. Function policy does not invalidate deterministic Exec layers.
+  Separate online reads with actual nanosecond request time on that Exec saw
+  200 then 404, while repeated offline scans retained their earlier result.
+  Raw observations and complete bundles are under
+  `docs/verification/dagger-input-cache/`.
+- Integration: keep native Function and Exec policies distinct; scope the
+  actual read-time input to network observation. No SDK/Engine patch, custom
+  cache manager, upstream tracker write or Trace attribution was introduced.
+- Documentation observation: the official
+  [cache-control article](https://dagger.io/blog/cache-control-for-modules/)
+  linked to `https://docs.dagger.io/extending/function-caching`, which returned
+  404 during this review. The pinned SDK and native Engine observations were
+  used to establish the supported behavior.
+
+## Dagger CLI@1.0.0-beta.16: Windows stable-client-ID rename warning
+
+- Status: observed integration warning; root cause unconfirmed.
+- Seen: 2026-11-17, #119 mixed-Plan review verification on Windows.
+- Evidence: native metadata queries emitted `failed to get stable ID,
+  defaulting to random value` with a temporary stable-client-ID rename error
+  saying the file was in use by another process. These queries still returned
+  CLI 0 and the actual image digest. Raw native chunks are retained under
+  `docs/verification/dagger-input-cache/mixed-plan/`.
+- Assessment: no attribution to a specific upstream bug or competing process.
+  This warning is not a tool result, cache-hit proof or fresh Origin identity.
+  No Dagger binary, user profile file or third-party source was modified.

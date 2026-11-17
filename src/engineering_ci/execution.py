@@ -1488,6 +1488,14 @@ def run_prerequisite_action(
             "reason": "prerequisite_parameters_missing",
         }
     kind = spec.get("type")
+    if kind == "dagger_command":
+        return {
+            "name": name,
+            "type": kind,
+            "status": "not_executed",
+            "reason": "prerequisite_requires_dagger",
+            "exit_code": None,
+        }
     if kind == "git_commit_present":
         commit = spec.get("commit")
         if not isinstance(commit, str) or not commit:
@@ -1574,6 +1582,8 @@ def run_prerequisite_action(
                 "status": "passed",
                 "exit_code": 0,
                 "argv": list(rendered),
+                "stdout": getattr(completed, "stdout", "") or "",
+                "stderr": getattr(completed, "stderr", "") or "",
             }
         return {
             "name": name,
@@ -3529,7 +3539,7 @@ def _input_refs(rule, item=None):
 def _check_evidence(item, name):
     evidence = {
         key: item[key]
-        for key in ("stdout", "stderr", "findings", "counts", "failures")
+        for key in ("stdout", "stderr", "findings", "counts", "failures", "observation")
         if item.get(key) is not None
     }
     if name in _WORKFLOW_SCRIPT_CHECKS:
@@ -3641,6 +3651,11 @@ def _inventory_result(
         "stdout": inventory.get("stdout", ""),
         "stderr": inventory.get("stderr", ""),
     }
+    observation = inventory.get("observation")
+    if isinstance(observation, dict):
+        evidence["observation"] = observation
+        if observation.get("execution_location") == "dagger_container":
+            origin, runner_ref = "dagger", "execution:dagger"
     if parent_execution_context is not None:
         evidence["execution_context"] = execution_context
         evidence["parent_execution_context"] = parent_execution_context
@@ -3727,14 +3742,21 @@ def _native_results(
             *inputs,
             *item.get("generated_input_refs", ()),
         ]
+        links_origin, links_runner = origin, resolved_runner
+        observation = item.get("observation")
+        if (
+            isinstance(observation, dict)
+            and observation.get("execution_location") == "dagger_container"
+        ):
+            links_origin, links_runner = "dagger", "execution:dagger"
         links_result = check_contract.native_result(
             definition,
             source=source,
             status=item.get("status", "not_executed"),
             native_exit_code=item.get("exit_code"),
-            result_origin=origin,
-            runner_ref=resolved_runner,
-            result_instance=instance(links_access),
+            result_origin=links_origin,
+            runner_ref=links_runner,
+            result_instance=f"{run_instance}:{links_origin}:{index}:{name}:{links_access}",
             input_refs=links_inputs,
             rule_ref=rule,
             profile_ref=profile_ref,
@@ -3879,7 +3901,7 @@ def _decorate_checks(
                 item["native_results"] = [inventory_result]
                 item["native_satisfaction"] = satisfaction
                 item["result_id"] = inventory_result["result_id"]
-                item["result_origin"] = origin
+                item["result_origin"] = inventory_result["result_origin"]
                 item["source_ref"] = source
             item["check_contract"] = {
                 "kind": check_contract.CHECK_CONTRACT_KIND,
@@ -3942,7 +3964,7 @@ def _decorate_checks(
         item["native_results"] = native_results
         item["native_satisfaction"] = satisfaction
         item["result_id"] = primary["result_id"]
-        item["result_origin"] = origin
+        item["result_origin"] = primary["result_origin"]
         item["source_ref"] = source
     return checks
 
