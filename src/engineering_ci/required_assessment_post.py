@@ -21,7 +21,7 @@ import copy
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import required_assessment
 
@@ -95,7 +95,7 @@ def _datetime(value, code):
         raise RequiredAssessmentPostError(code) from error
     if parsed.tzinfo is None:
         raise RequiredAssessmentPostError(code)
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _internal_ref(value, code):
@@ -124,8 +124,88 @@ def _lifecycle_identity(assessment):
     }
 
 
-def _bind_lifecycle(prior, post, trigger):
-    """Reject cross-Candidate / Target / Action splicing; allow phase differences."""
+def _normalize_phase_order(value):
+    """Reuse R1-authorized phase order shape without inventing a parallel policy."""
+    if value is None:
+        raise RequiredAssessmentPostError("post_phase_order_missing")
+    if not isinstance(value, dict):
+        raise RequiredAssessmentPostError("post_phase_order_invalid")
+    phases = value.get("phases")
+    if not isinstance(phases, list) or not phases:
+        raise RequiredAssessmentPostError("post_phase_order_invalid")
+    normalized = []
+    for phase in phases:
+        item = _text(phase, "post_phase_order_invalid")
+        if item in normalized:
+            raise RequiredAssessmentPostError("post_phase_order_invalid")
+        normalized.append(item)
+    return {
+        "ref": copy.deepcopy(value.get("ref")),
+        "phases": normalized,
+    }
+
+
+def _bind_phase_relation(prior, post, *, phase_order, trigger_kind):
+    """Prove prior.phase → post.phase using authorized order (not bare inequality)."""
+    prior_phase = prior.get("phase")
+    post_phase = post.get("phase")
+    if not isinstance(prior_phase, str) or not prior_phase:
+        return ["post_prior_phase_invalid"], [
+            {
+                "kind": "phase_relation",
+                "ref": prior_phase,
+                "reason": "prior_phase_invalid",
+            }
+        ]
+    if not isinstance(post_phase, str) or not post_phase:
+        return ["post_post_phase_invalid"], [
+            {
+                "kind": "phase_relation",
+                "ref": post_phase,
+                "reason": "post_phase_invalid",
+            }
+        ]
+    if trigger_kind == "authorized_reevaluation":
+        if prior_phase != post_phase:
+            return ["post_reevaluation_phase_mismatch"], [
+                {
+                    "kind": "phase_relation",
+                    "ref": post_phase,
+                    "reason": "reevaluation_requires_same_phase",
+                }
+            ]
+        return [], []
+    # True post-stage progression: post must be strictly after prior.
+    if prior_phase == post_phase:
+        return ["post_stage_same_phase_not_progression"], [
+            {
+                "kind": "phase_relation",
+                "ref": post_phase,
+                "reason": "same_phase_is_not_post_stage",
+            }
+        ]
+    phases = phase_order["phases"]
+    if prior_phase not in phases or post_phase not in phases:
+        return ["post_phase_order_unknown_phase"], [
+            {
+                "kind": "phase_relation",
+                "ref": f"{prior_phase}->{post_phase}",
+                "reason": "phase_not_in_authorized_order",
+            }
+        ]
+    if phases.index(post_phase) <= phases.index(prior_phase):
+        return ["post_phase_not_after_prior"], [
+            {
+                "kind": "phase_relation",
+                "ref": f"{prior_phase}->{post_phase}",
+                "reason": "post_phase_not_after_prior",
+            }
+        ]
+    return [], []
+
+
+def _bind_lifecycle(prior, post, trigger, *, phase_order):
+    """Reject cross-Candidate splicing and unauthorized phase relations."""
     reasons = []
     gaps = []
     prior_id = _lifecycle_identity(prior)
@@ -149,16 +229,57 @@ def _bind_lifecycle(prior, post, trigger):
                 "reason": "trigger_target_mismatch",
             }
         )
+    phase_reasons, phase_gaps = _bind_phase_relation(
+        prior, post, phase_order=phase_order, trigger_kind=trigger.get("kind")
+    )
+    reasons.extend(phase_reasons)
+    gaps.extend(phase_gaps)
     return prior_id, reasons, gaps
+
+
+def _bind_temporal(prior, post, trigger, evaluated_at):
+    """Align trigger / Assessment / envelope clocks — no future trigger."""
+    reasons = []
+    gaps = []
+    observed = _datetime(trigger["observed_at"], "post_trigger_observed_at_invalid")
+    prior_at = _datetime(prior.get("evaluated_at"), "post_prior_evaluated_at_invalid")
+    post_at = _datetime(post.get("evaluated_at"), "post_post_evaluated_at_invalid")
+    if observed > evaluated_at:
+        reasons.append("post_trigger_observed_in_future")
+        gaps.append(
+            {
+                "kind": "temporal",
+                "ref": trigger["observed_at"],
+                "reason": "trigger_after_envelope_evaluation",
+            }
+        )
+    if post_at > evaluated_at:
+        reasons.append("post_assessment_evaluated_in_future")
+        gaps.append(
+            {
+                "kind": "temporal",
+                "ref": post.get("evaluated_at"),
+                "reason": "post_assessment_after_envelope_evaluation",
+            }
+        )
+    if prior_at > post_at and trigger.get("kind") != "authorized_reevaluation":
+        # Re-eval may refresh the same stage clock; progression should not move backward.
+        reasons.append("post_assessment_before_prior_assessment")
+        gaps.append(
+            {
+                "kind": "temporal",
+                "ref": post.get("evaluated_at"),
+                "reason": "post_before_prior",
+            }
+        )
+    return reasons, gaps
 
 
 def _authorized_not_applicable(post):
     """Derive N/A only from a passed post Assessment whose rows are not_applicable."""
     if post.get("status") != "passed":
         return False
-    rows = list(post.get("obligations") or ()) + list(
-        post.get("check_instances") or ()
-    )
+    rows = list(post.get("obligations") or ()) + list(post.get("check_instances") or ())
     if not rows:
         # Empty complete post universe may be legitimate N/A for this pair slice.
         return True
@@ -218,21 +339,23 @@ def _due_state(evaluated_at, window, *, not_applicable):
     return "within_window"
 
 
-def _authority_gate(authority, context, *, missing_code, rejected_code, unverified_code):
+def _authority_gate(
+    authority, context, *, missing_code, rejected_code, unverified_code
+):
     if authority is None:
-        return False, "missing", [missing_code]
+        return False, "missing", [missing_code], {}
     outcome = authority(context)
     if outcome is True:
-        return True, "authorized", []
+        return True, "authorized", [], {}
     if outcome is False or outcome is None:
-        return False, "rejected", [rejected_code]
+        return False, "rejected", [rejected_code], {}
     if not isinstance(outcome, dict):
         raise RequiredAssessmentPostError("post_authority_result_invalid")
     if outcome.get("accepted") is True and outcome.get("status") == "authorized":
-        return True, "authorized", []
+        return True, "authorized", [], outcome
     if outcome.get("status") == "unverified":
-        return False, "unverified", [unverified_code]
-    return False, "rejected", [rejected_code]
+        return False, "unverified", [unverified_code], outcome
+    return False, "rejected", [rejected_code], outcome
 
 
 def _disposition_from_authority(authority, context):
@@ -337,7 +460,10 @@ def _consistency(envelope):
     # Pair reconciliation must never claim full lifecycle PASS (P0-3).
     if envelope.get("lifecycle_all_phases_passed") is True:
         errors.append("post_lifecycle_all_phases_requires_complete_coverage")
-    if coverage == "complete" and envelope.get("lifecycle_all_phases_passed") is not True:
+    if (
+        coverage == "complete"
+        and envelope.get("lifecycle_all_phases_passed") is not True
+    ):
         errors.append("post_lifecycle_complete_requires_all_phases_passed")
     if envelope.get("auto_revoke_published") is True:
         errors.append("post_auto_revoke_forbidden")
@@ -368,6 +494,7 @@ def reconcile_post_stage(
     trigger_event,
     due_window,
     evaluated_at,
+    phase_order,
     trigger_authority=None,
     due_window_authority=None,
     disposition_authority=None,
@@ -375,14 +502,16 @@ def reconcile_post_stage(
 ):
     """Reconcile prior + post R1 Assessments under trigger/due-window rules.
 
-    This pair slice never sets ``lifecycle_all_phases_passed=True``; full-phase
-    aggregation requires a complete authorized phase/obligation set beyond two
-    Assessments (``lifecycle_coverage`` stays ``unverified`` / ``incomplete``).
+    ``phase_order`` is the authorized #66-B2/R1 phase sequence for this
+    Candidate. This pair slice never sets ``lifecycle_all_phases_passed=True``;
+    full aggregation remains a later #61 integration
+    (``lifecycle_coverage`` stays ``unverified`` / ``incomplete``).
     """
     prior = required_assessment.validate_assessment(prior_assessment)
     post = required_assessment.validate_assessment(post_assessment)
     trigger = _normalize_trigger(trigger_event)
     window = _normalize_due_window(due_window)
+    order = _normalize_phase_order(phase_order)
     evaluated = _datetime(evaluated_at, "post_evaluated_at_invalid")
     contract_sample = _flag(contract_sample, "post_contract_sample_flag_invalid")
     trigger_authority = _callable_or_none(
@@ -411,9 +540,15 @@ def reconcile_post_stage(
             }
         )
 
-    lifecycle_identity, life_reasons, life_gaps = _bind_lifecycle(prior, post, trigger)
+    lifecycle_identity, life_reasons, life_gaps = _bind_lifecycle(
+        prior, post, trigger, phase_order=order
+    )
     reasons.extend(life_reasons)
     gaps.extend(life_gaps)
+
+    temporal_reasons, temporal_gaps = _bind_temporal(prior, post, trigger, evaluated)
+    reasons.extend(temporal_reasons)
+    gaps.extend(temporal_gaps)
 
     if trigger["run_completed"] is not True:
         reasons.append("post_trigger_run_not_completed")
@@ -425,11 +560,18 @@ def reconcile_post_stage(
             }
         )
 
-    trigger_ok, trigger_status, trigger_reasons = _authority_gate(
+    # N/A only from authorized post Assessment facts — never a bare caller flag.
+    not_applicable = _authorized_not_applicable(post)
+    due_state = _due_state(evaluated, window, not_applicable=not_applicable)
+
+    trigger_ok, trigger_status, trigger_reasons, _trigger_detail = _authority_gate(
         trigger_authority,
         {
             "trigger_event": copy.deepcopy(trigger),
             "lifecycle_identity": copy.deepcopy(lifecycle_identity),
+            "phase_order": copy.deepcopy(order),
+            "prior_phase": prior.get("phase"),
+            "post_phase": post.get("phase"),
             "prior_assessment_ref": prior["assessment_ref"],
             "post_assessment_ref": post["assessment_ref"],
         },
@@ -440,11 +582,15 @@ def reconcile_post_stage(
     if not trigger_ok:
         reasons.extend(trigger_reasons)
 
-    due_ok, due_status, due_reasons = _authority_gate(
+    due_ok, due_status, due_reasons, due_detail = _authority_gate(
         due_window_authority,
         {
             "due_window": copy.deepcopy(window),
+            "due_state": due_state,
             "evaluated_at": evaluated.isoformat(),
+            "trigger_observed_at": trigger["observed_at"],
+            "prior_evaluated_at": prior.get("evaluated_at"),
+            "post_evaluated_at": post.get("evaluated_at"),
             "lifecycle_identity": copy.deepcopy(lifecycle_identity),
         },
         missing_code="post_due_window_authority_missing",
@@ -454,9 +600,6 @@ def reconcile_post_stage(
     if not due_ok:
         reasons.extend(due_reasons)
 
-    # N/A only from authorized post Assessment facts — never a bare caller flag.
-    not_applicable = _authorized_not_applicable(post)
-    due_state = _due_state(evaluated, window, not_applicable=not_applicable)
     if due_state == "not_yet_due":
         reasons.append("post_stage_not_yet_due")
     if due_state == "overdue" and post.get("status") != "passed":
@@ -468,6 +611,20 @@ def reconcile_post_stage(
                 "reason": "overdue_missing_or_failed_evidence",
             }
         )
+    # PASS alone cannot cover overdue — authority must accept late evidence.
+    if (
+        due_state == "overdue"
+        and post.get("status") == "passed"
+        and due_detail.get("late_evidence_accepted") is not True
+    ):
+        reasons.append("post_overdue_late_evidence_unproven")
+        gaps.append(
+            {
+                "kind": "due_window",
+                "ref": window["due_at"],
+                "reason": "late_evidence_not_authorized",
+            }
+        )
 
     disposition_context = {
         "prior_assessment_ref": prior["assessment_ref"],
@@ -477,6 +634,7 @@ def reconcile_post_stage(
         "due_state": due_state,
         "trigger_event": copy.deepcopy(trigger),
         "lifecycle_identity": copy.deepcopy(lifecycle_identity),
+        "phase_order": copy.deepcopy(order),
     }
     disposition, disposition_authority_status, disposition_reasons = (
         _disposition_from_authority(disposition_authority, disposition_context)
@@ -513,6 +671,7 @@ def reconcile_post_stage(
         "post_assessment_status": post["status"],
         "post_phase": post.get("phase"),
         "lifecycle_identity": lifecycle_identity,
+        "phase_order": order,
         "trigger_event": trigger,
         "trigger_verified": trigger_ok,
         "trigger_authority_status": trigger_status,
@@ -536,6 +695,7 @@ def reconcile_post_stage(
             "post_stage_does_not_reconcile_release_manifest",
             "does_not_auto_revoke_published_artifacts",
             "pair_reconciliation_cannot_prove_full_lifecycle",
+            "full_lifecycle_requires_authorized_phase_obligation_set",
             "post_stage_digest_is_not_authorization_proof",
         ],
         "post_stage_ref": None,
