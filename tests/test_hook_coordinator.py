@@ -269,9 +269,7 @@ def closed_projection(binding, repo, *, ref_index=0, source=None):
 def run_collect_issue(run, job_ref, path, plan, binding, *, tip, tree, paths):
     entries, projection = expected_before_execute(binding, tip, tree, paths)
     assert coordinator.verify_expected_matches_invocation(binding, projection) is True
-    report = coordinator.execute_activated_job(
-        run, job_ref, plan=plan, root=path, binding=binding
-    )
+    report = coordinator.execute_activated_job(run, job_ref, plan=plan, root=path)
     resolutions = resolutions_from_report(entries, report)
     _results, _rejections, report_ref = coordinator.collect_job_report(
         run, job_ref, report
@@ -441,9 +439,130 @@ def test_worktree_docs_change_does_not_cover_push_target(selection_repo):
     with pytest.raises(
         coordinator.HookCoordinatorError, match="execution_source_not_push_target"
     ):
-        coordinator.execute_activated_job(
-            run, "job-1", plan=worktree_plan, root=path, binding=binding
+        coordinator.execute_activated_job(run, "job-1", plan=worktree_plan, root=path)
+    assert run.jobs["job-1"].get("delivered_report_ref") is None
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="job_execution_delivery_missing"
+    ):
+        coordinator.collect_job_report(
+            run,
+            "job-1",
+            {
+                "kind": reconciliation.EXECUTION_REPORT_KIND,
+                "schema_version": 1,
+                "checks": [
+                    {
+                        "name": "whitespace",
+                        "status": "passed",
+                        "plan_authorized": True,
+                        "check_contract": {
+                            "kind": check_contract.CHECK_CONTRACT_KIND,
+                            "status": "valid",
+                        },
+                        "native_results": [],
+                    }
+                ],
+                "invocation_ref": run.invocation_ref,
+                "run_ref": run.run_ref,
+                "attempt_ref": run.attempt_ref,
+                "job_ref": "job-1",
+                "production_ref": run.jobs["job-1"]["production_ref"],
+            },
         )
+
+
+def test_omit_binding_worktree_plan_cannot_upstream_verify(selection_repo):
+    """P1: sealed RunBinding always enforces Push Source; Worktree Plan cannot verify."""
+    path, base = selection_repo
+    tip, tree, plan, paths = commit_push_whitespace(path, base)
+    reference = capture_push(path, after=tip, before=base)
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    run = coordinator.open_attempt(binding, run_id="omit")
+    run.record_job("job-1")
+    assert run.binding is binding
+    worktree_plan = make_execution_plan(
+        [],
+        git={
+            "base_ref": tip,
+            "head_ref": "HEAD",
+            "base_commit": tip,
+            "head_commit": tip,
+            "snapshot": "worktree",
+            "changed_paths": list(paths),
+        },
+        check_scope=[{"name": "whitespace", "status": "selected"}],
+    )
+    with pytest.raises(
+        coordinator.HookCoordinatorError, match="execution_source_not_push_target"
+    ):
+        coordinator.execute_activated_job(run, "job-1", plan=worktree_plan, root=path)
+    report, _ref, receipt, _e, _p, _r = run_collect_issue(
+        run, "job-1", path, plan, binding, tip=tip, tree=tree, paths=paths
+    )
+    assert report["status"] == "passed"
+    assert receipt["verification_status"] == "upstream_verified"
+
+
+def test_separate_git_dir_push_source_and_execute(tmp_path):
+    """P2: separate-git-dir Invocation resolves trees via Git Directory, not parent()."""
+    work = tmp_path / "work"
+    work.mkdir()
+    git_dir = tmp_path / "store.git"
+    git(work, "init", "-q", "--separate-git-dir", str(git_dir), "-b", "main")
+    git(work, "config", "user.email", "sep@example.invalid")
+    git(work, "config", "user.name", "Sep")
+    shutil.copytree(FIXTURE, work, dirs_exist_ok=True)
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "base")
+    base = git(work, "rev-parse", "HEAD")
+    tip, tree, plan, paths = commit_push_whitespace(work, base, content="# sep\n")
+    assert Path(hooks._git_dir(work)).resolve() == git_dir.resolve()
+    reference = capture_push(work, after=tip, before=base)
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    assert Path(hooks._invocation_git_dir(reference.invocation_path)).resolve() == (
+        git_dir.resolve()
+    )
+    _entries, projection = expected_before_execute(binding, tip, tree, paths)
+    assert coordinator.verify_expected_matches_invocation(binding, projection) is True
+    run = coordinator.open_attempt(binding, run_id="sep")
+    run.record_job("job-1")
+    report, _ref, receipt, _e, _p, _r = run_collect_issue(
+        run, "job-1", work, plan, binding, tip=tip, tree=tree, paths=paths
+    )
+    assert report["status"] == "passed"
+    assert receipt["verification_status"] == "upstream_verified"
+
+
+def test_linked_worktree_push_source_verify(tmp_path):
+    """P2: linked worktree Invocation Git Directory is not ``git_dir.parent``."""
+    main = tmp_path / "main"
+    main.mkdir()
+    git(main, "init", "-q", "-b", "main")
+    git(main, "config", "user.email", "wt@example.invalid")
+    git(main, "config", "user.name", "Wt")
+    (main / "a.txt").write_text("a\n", encoding="utf-8")
+    git(main, "add", "a.txt")
+    git(main, "commit", "-qm", "base")
+    linked = tmp_path / "linked"
+    git(main, "worktree", "add", "-q", str(linked))
+    tip = git(linked, "rev-parse", "HEAD")
+    tree = git(linked, "rev-parse", "HEAD^{tree}")
+    reference = capture_push(linked, after=tip, before=("0" * 40))
+    binding = coordinator.load_invocation_binding(reference.invocation_path)
+    inv_git = Path(hooks._invocation_git_dir(reference.invocation_path)).resolve()
+    assert inv_git != linked.resolve()
+    assert inv_git.parent != linked.resolve()
+    assert inv_git == Path(git(linked, "rev-parse", "--absolute-git-dir")).resolve()
+    source = push_source(tip, tree, paths=["a.txt"])
+    event_ref = event_ref_for_binding(binding)
+    projection = make_projection(
+        [make_entry("whitespace", event=event_ref, source=source)],
+        status="complete",
+        event=event_ref,
+        source=source,
+        consumer_completeness="expected_domain_complete",
+    )
+    assert coordinator.verify_expected_matches_invocation(binding, projection) is True
 
 
 def test_expected_event_mismatch_blocks_finalize(repo):
@@ -555,9 +674,7 @@ def test_historical_native_cannot_be_rewrapped_for_new_attempt(selection_repo):
         coordinator.HookCoordinatorError, match="job_execution_delivery_missing"
     ):
         coordinator.collect_job_report(run_new, "job-1", rewrapped)
-    report_b = coordinator.execute_activated_job(
-        run_new, "job-1", plan=plan, root=path, binding=binding_new
-    )
+    report_b = coordinator.execute_activated_job(run_new, "job-1", plan=plan, root=path)
     _results, _rej, genuine_ref = coordinator.collect_job_report(
         run_new, "job-1", report_b
     )
@@ -584,9 +701,7 @@ def test_partial_expected_does_not_exit_zero(selection_repo):
     run = coordinator.open_attempt(binding, run_id="partial")
     run.record_job("job-1")
     entries, projection = expected_before_execute(binding, tip, tree, paths)
-    report = coordinator.execute_activated_job(
-        run, "job-1", plan=plan, root=path, binding=binding
-    )
+    report = coordinator.execute_activated_job(run, "job-1", plan=plan, root=path)
     resolutions = resolutions_from_report(entries, report)
     projection["status"] = "partial"
     projection["consumer_completeness"] = "not_claimed"
@@ -626,9 +741,7 @@ def test_complete_not_claimed_does_not_exit_zero(selection_repo):
     run = coordinator.open_attempt(binding, run_id="not-claimed")
     run.record_job("job-1")
     entries, projection = expected_before_execute(binding, tip, tree, paths)
-    report = coordinator.execute_activated_job(
-        run, "job-1", plan=plan, root=path, binding=binding
-    )
+    report = coordinator.execute_activated_job(run, "job-1", plan=plan, root=path)
     resolutions = resolutions_from_report(entries, report)
     projection["consumer_completeness"] = "not_claimed"
     _results, _rej, report_ref = coordinator.collect_job_report(run, "job-1", report)
@@ -930,7 +1043,7 @@ def test_multi_ref_matched_finalize_with_profile(selection_repo):
         )
         run.record_job(job_ref)
         report = coordinator.execute_activated_job(
-            run, job_ref, plan=ref_plan, root=path, binding=binding
+            run, job_ref, plan=ref_plan, root=path
         )
         assert report.get("status") == "passed", (
             report.get("status"),

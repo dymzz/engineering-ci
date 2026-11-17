@@ -25,6 +25,7 @@ import argparse
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -120,6 +121,7 @@ class RunBinding:
     invocation_ref: str
     run_ref: str
     attempt_ref: str
+    binding: InvocationBinding
     runner_ref: str = DEFAULT_RUNNER_REF
     jobs: dict = field(default_factory=dict)
     collected_reports: dict = field(default_factory=dict)
@@ -238,6 +240,7 @@ def open_attempt(
         invocation_ref=binding.invocation_ref,
         run_ref=f"run/{run_token}",
         attempt_ref=f"attempt/{attempt_token}",
+        binding=binding,
         runner_ref=runner_ref,
     )
 
@@ -379,17 +382,45 @@ def _scope_index_tree(scope, expected):
     raise HookCoordinatorError("expected_index_tree_missing")
 
 
-def _repository_root_for_binding(binding):
-    """Work tree root owning the verified Invocation store."""
-    git_dir = hooks._invocation_git_dir(binding.invocation_path)
-    return Path(git_dir).resolve().parent
+def _invocation_git_dir(binding):
+    """Physical Git Directory that owns this verified Invocation store."""
+    if not isinstance(binding, InvocationBinding):
+        raise HookCoordinatorError("invocation_binding_invalid")
+    return Path(hooks._invocation_git_dir(binding.invocation_path)).resolve()
 
 
-def _tree_of_commit(root, commit):
-    """Resolve ``commit^{tree}``; refuse unavailable or zero OIDs."""
+def _absolute_git_dir(root):
+    """Resolve ``rev-parse --absolute-git-dir`` for an execution Worktree root."""
+    result = hooks._git(root, "rev-parse", "--absolute-git-dir")
+    if result.returncode != 0:
+        raise HookCoordinatorError("execution_git_dir_unavailable")
+    value = (result.stdout or "").strip()
+    if not value:
+        raise HookCoordinatorError("execution_git_dir_unavailable")
+    return Path(value).resolve()
+
+
+def _require_execution_root_matches_invocation(binding, root):
+    """Refuse roots whose absolute Git Directory is not this Invocation store."""
+    invocation_git_dir = _invocation_git_dir(binding)
+    root_git_dir = _absolute_git_dir(root)
+    if root_git_dir != invocation_git_dir:
+        raise HookCoordinatorError("execution_repository_mismatch")
+    return invocation_git_dir
+
+
+def _tree_of_commit(git_dir, commit):
+    """Resolve ``commit^{tree}`` via the Invocation Git Directory (no worktree guess)."""
     if not isinstance(commit, str) or not commit or commit == _ZERO_OID_40:
         raise HookCoordinatorError("push_target_tree_unavailable")
-    result = hooks._git(root, "rev-parse", f"{commit}^{{tree}}")
+    result = subprocess.run(
+        ["git", "--git-dir", str(git_dir), "rev-parse", f"{commit}^{{tree}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     if result.returncode != 0:
         raise HookCoordinatorError("push_target_tree_unavailable")
     tree = (result.stdout or "").strip()
@@ -412,14 +443,14 @@ def _scope_push_source(scope, expected):
     return source
 
 
-def _verify_push_source_matches_target(root, source, raw_after, *, action=None):
+def _verify_push_source_matches_target(git_dir, source, raw_after, *, action=None):
     """Require Expected Source to name the Push target Commit/Tree — not Worktree."""
     if action == "delete" or raw_after == _ZERO_OID_40:
         return
     snapshot = source.get("snapshot")
     if snapshot not in {"push", "commit"}:
         raise HookCoordinatorError("expected_source_not_push_target")
-    target_tree = _tree_of_commit(root, raw_after)
+    target_tree = _tree_of_commit(git_dir, raw_after)
     declared = source.get("declared_target_tree")
     if not declared or declared != target_tree:
         raise HookCoordinatorError("expected_source_tree_mismatch")
@@ -454,7 +485,7 @@ def verify_expected_matches_invocation(binding, expected):
     if hook != "pre-push":
         raise HookCoordinatorError("invocation_hook_unsupported")
     invocation_refs = _invocation_push_refs(event)
-    root = _repository_root_for_binding(binding)
+    git_dir = _invocation_git_dir(binding)
     covered = set()
     for _scope_id, scope in scopes:
         identity = _scope_transport_identity(scope, expected)
@@ -483,7 +514,7 @@ def verify_expected_matches_invocation(binding, expected):
             raise HookCoordinatorError("expected_event_mismatch")
         source = _scope_push_source(scope, expected)
         _verify_push_source_matches_target(
-            root, source, raw_after, action=matched_action
+            git_dir, source, raw_after, action=matched_action
         )
     multi_expected = any(scope_id is not None for scope_id, _scope in scopes)
     multi_invocation = len(invocation_refs) > 1
@@ -596,7 +627,7 @@ def _seal_delivered_report(run_binding, job_ref, report):
     return sealed
 
 
-def _require_plan_matches_push_invocation(binding, plan, root):
+def _require_plan_matches_push_invocation(binding, plan, git_dir):
     """Refuse Worktree Plans and Plans whose head/tree is not a Push after OID."""
     if not isinstance(binding, InvocationBinding):
         raise HookCoordinatorError("invocation_binding_invalid")
@@ -619,21 +650,20 @@ def _require_plan_matches_push_invocation(binding, plan, root):
     }
     if head not in afters:
         raise HookCoordinatorError("execution_head_not_invocation_target")
-    target_tree = _tree_of_commit(root, head)
+    target_tree = _tree_of_commit(git_dir, head)
     declared = git.get("execution_tree") or git.get("tree")
     if declared is not None and declared != target_tree:
         raise HookCoordinatorError("execution_tree_not_invocation_target")
 
 
-def execute_activated_job(
-    run_binding, job_ref, *, plan, root, binding=None, **execute_kwargs
-):
+def execute_activated_job(run_binding, job_ref, *, plan, root, **execute_kwargs):
     """Run one eligible Job through #52 ``execution.execute`` and seal delivery.
 
     The returned Report keeps execute's Check/Native bodies intact and records
     ``delivered_report_ref`` so Collect can require this production boundary.
-    When ``binding`` is a pre-push Invocation, the Plan must target that Push
-    Commit/Tree (``snapshot`` ``push``/``commit``); Worktree Plans are refused.
+    Source checks always use the Invocation Binding sealed into ``RunBinding``
+    at ``open_attempt``: execution ``root`` must share that Git Directory, and
+    pre-push Plans must target the Push Commit/Tree (Worktree Plans refused).
     """
     if not isinstance(run_binding, RunBinding):
         raise HookCoordinatorError("run_binding_invalid")
@@ -647,10 +677,13 @@ def execute_activated_job(
         raise HookCoordinatorError("job_production_ref_missing")
     if job.get("delivered_report_ref") is not None:
         raise HookCoordinatorError("job_already_executed")
-    if binding is not None:
-        if binding.invocation_ref != run_binding.invocation_ref:
-            raise HookCoordinatorError("execution_binding_mismatch")
-        _require_plan_matches_push_invocation(binding, plan, root)
+    binding = run_binding.binding
+    if not isinstance(binding, InvocationBinding):
+        raise HookCoordinatorError("invocation_binding_invalid")
+    if binding.invocation_ref != run_binding.invocation_ref:
+        raise HookCoordinatorError("execution_binding_mismatch")
+    git_dir = _require_execution_root_matches_invocation(binding, root)
+    _require_plan_matches_push_invocation(binding, plan, git_dir)
     run_instance = attempt_result_instance(run_binding, job_ref)
     execute_kwargs = dict(execute_kwargs)
     execute_kwargs.setdefault("execution_context", "host")
