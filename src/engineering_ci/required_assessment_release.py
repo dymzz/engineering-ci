@@ -25,7 +25,9 @@ from datetime import datetime
 
 from . import required_assessment
 from .release import manifest as release_manifest
+from .release import publishing as release_publishing
 from .release import registry as release_registry
+from .release import verification as release_verification
 
 RECONCILIATION_KIND = "engineering-ci-required-assessment-release"
 RECONCILIATION_VERSION = 1
@@ -197,10 +199,8 @@ def _bind_manifest_run(manifest, context):
         reasons.append("release_handoff_validation_run_mismatch")
     if workflow.get("run_attempt") != identity["run_attempt"]:
         reasons.append("release_handoff_validation_attempt_mismatch")
-    if (
-        context["run_id"] == identity["run_id"]
-        and context["run_attempt"] == identity["run_attempt"]
-    ):
+    # Distinct *Run* identity — same Run / different Attempt is not cross-Run.
+    if context["run_id"] == identity["run_id"]:
         reasons.append("release_handoff_requires_distinct_publication_run")
     return reasons, identity
 
@@ -363,8 +363,55 @@ def _artifact_set_authorized(obligations, *, authority, snapshot):
     raise RequiredAssessmentReleaseError("artifact_obligation_authority_result_invalid")
 
 
+def manifest_provider_from_verification(api):
+    """Adapter: reuse ``verification.evidence`` — do not invent a second verifier."""
+
+    def authority(context):
+        manifest = context["manifest"]
+        publish = context["publish_context"]
+        try:
+            release_verification.evidence(
+                api,
+                manifest,
+                publish["repository"],
+                publish["tag"],
+                publish["head_sha"],
+            )
+        except ValueError:
+            return False
+        return True
+
+    return authority
+
+
+def manifest_provider_from_publication(api):
+    """Adapter: reuse ``publishing.published_evidence`` for publication Manifests."""
+
+    def authority(context):
+        manifest = context["manifest"]
+        publish = context["publish_context"]
+        try:
+            release_publishing.published_evidence(
+                api,
+                manifest,
+                publish["repository"],
+                publish["tag"],
+                publish["head_sha"],
+            )
+        except ValueError:
+            return False
+        return True
+
+    return authority
+
+
 def _provider_basis(manifest, context, *, provider_authority, handoff_authority):
-    """Structural fixtures never become production authorization by themselves."""
+    """Structural fixtures never become production authorization by themselves.
+
+    Production callers should pass ``manifest_provider_from_verification`` /
+    ``manifest_provider_from_publication`` so Artifact ID/digest/Run linkage is
+    checked by the existing Release Provider path.
+    """
     if provider_authority is None:
         return "structural_fixture", ["release_provider_authority_missing"]
     provider_context = {
@@ -433,6 +480,12 @@ def _authorization_consistent(envelope):
         errors.append("release_reconciliation_collections_invalid")
         return errors
     blocking = _blocking_reasons(reasons)
+    assessment_status = envelope.get("assessment_status")
+    artifact_status = envelope.get("artifact_obligation_status")
+    if assessment_status not in {"passed", "blocked"}:
+        errors.append("release_assessment_status_invalid")
+    if artifact_status not in {"authorized", "rejected", "unverified"}:
+        errors.append("release_artifact_obligation_status_invalid")
     if authorized is True:
         if status != "verified":
             errors.append("release_authorized_requires_verified_status")
@@ -444,6 +497,10 @@ def _authorization_consistent(envelope):
             errors.append("release_authorized_requires_provider_verified")
         if manifest_result != "passed":
             errors.append("release_authorized_requires_manifest_passed")
+        if assessment_status != "passed":
+            errors.append("release_authorized_requires_assessment_passed")
+        if artifact_status != "authorized":
+            errors.append("release_authorized_requires_artifact_obligations_authorized")
         if gaps:
             errors.append("release_authorized_rejects_gaps")
         if blocking:
@@ -453,6 +510,25 @@ def _authorization_consistent(envelope):
     if not isinstance(candidate, dict) or not isinstance(context, dict):
         errors.append("release_candidate_context_invalid")
         return errors
+    mode = context.get("mode")
+    binding = context.get("manifest_binding")
+    if mode not in PUBLISH_MODES:
+        errors.append("release_publish_context_mode_invalid")
+    if binding not in MANIFEST_BINDINGS:
+        errors.append("release_publish_context_binding_invalid")
+    if authorized is True:
+        if mode != "publication":
+            errors.append("release_authorized_requires_publication_mode")
+        if binding == "validation_to_publication":
+            identity = envelope.get("validation_identity")
+            if not isinstance(identity, dict):
+                errors.append("release_authorized_requires_validation_identity")
+            elif identity.get("run_id") == context.get("run_id"):
+                errors.append("release_authorized_requires_distinct_publication_run")
+        elif binding == "same_run":
+            # Publication same-run must carry a publication-mode context.
+            if mode != "publication":
+                errors.append("release_authorized_same_run_requires_publication_mode")
     if candidate.get("commit") != context.get("head_sha") and (
         status == "verified" or authorized is True
     ):
@@ -688,12 +764,16 @@ def reconcile_release_assessment(
     status = _derive_status(
         blocking, policy_status=policy_status, artifact_status=artifact_status
     )
-    # Production authorization requires provider-verified basis; structural
-    # fixtures never mint release_authorized=true.
+    # Validation-stage reconciliation may be status=verified, but production
+    # publish permission requires publication-mode context. Structural fixtures
+    # never mint release_authorized=true.
     release_authorized = (
         status == "verified"
         and not contract_sample
         and authorization_basis == "provider_verified"
+        and context["mode"] == "publication"
+        and assessment.get("status") == "passed"
+        and artifact_status == "authorized"
         and not gaps
         and not blocking
     )

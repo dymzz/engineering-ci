@@ -33,6 +33,9 @@ class R4ManifestGitHub(ManifestGitHub):
         self.run["head_sha"] = HEAD
         self.run["repository"] = {"full_name": REPO}
         self.run["html_url"] = f"https://github.com/{REPO}/actions/runs/123"
+        self.run["status"] = "completed"
+        self.run["conclusion"] = "success"
+        self.run["head_branch"] = "main"
         for job in self.jobs:
             job["head_sha"] = HEAD
         for item in self.artifacts:
@@ -40,6 +43,11 @@ class R4ManifestGitHub(ManifestGitHub):
             item["url"] = (
                 f"https://api.github.com/repos/{REPO}/actions/artifacts/{item['id']}"
             )
+
+    def __call__(self, path, method="GET", data=None):
+        if path == "actions/runs/123":
+            return self.run
+        return super().__call__(path, method=method, data=data)
 
 
 def make_v1_manifest(*, mode="validation", api=None, ids=None, source=None):
@@ -119,6 +127,22 @@ def publish_context(**changes):
     return value
 
 
+def publication_same_run_context(**changes):
+    return publish_context(mode="publication", **changes)
+
+
+def publication_handoff_context(**changes):
+    value = publish_context(
+        mode="publication",
+        manifest_binding="validation_to_publication",
+        run_id=999,
+        run_attempt=1,
+        validation_identity={"run_id": 123, "run_attempt": 1},
+    )
+    value.update(changes)
+    return value
+
+
 def empty_artifact_obligations():
     return {"completeness": "empty", "items": []}
 
@@ -169,13 +193,25 @@ def reconcile(assessment, manifest=None, **changes):
     )
 
 
-def test_valid_v1_manifest_with_provider_authority_authorizes_release():
+def authorize(assessment, **changes):
+    """Publication-stage authorization using a validation→publication handoff."""
+    kwargs = {
+        "manifest": make_v1_manifest(mode="validation"),
+        "publish_context": publication_handoff_context(),
+        "handoff_authority": accept_provider,
+    }
+    kwargs.update(changes)
+    return reconcile(assessment, **kwargs)
+
+
+def test_validation_mode_is_verified_but_does_not_authorize_publication():
     assessment, _entry = passed_assessment(contract_sample=False)
-    manifest = make_v1_manifest()
+    manifest = make_v1_manifest(mode="validation")
     result = reconcile(assessment, manifest)
     assert result["status"] == "verified"
     assert result["authorization_basis"] == "provider_verified"
-    assert result["release_authorized"] is True
+    assert result["publish_context"]["mode"] == "validation"
+    assert result["release_authorized"] is False
     assert result["policy_snapshot_status"] == "authorized"
     assert result["gaps"] == []
     assert all(
@@ -183,6 +219,69 @@ def test_valid_v1_manifest_with_provider_authority_authorizes_release():
         for item in result["fixed_manifest_checks"].values()
     )
     assert rar.validate_release_reconciliation(result) is result
+
+
+def test_publication_mode_with_authorities_can_authorize_release():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(assessment)
+    assert result["status"] == "verified"
+    assert result["publish_context"]["mode"] == "publication"
+    assert result["release_authorized"] is True
+    assert rar.validate_release_reconciliation(result) is result
+
+
+def test_publication_same_run_context_can_authorize():
+    assessment, _ = passed_assessment(contract_sample=False)
+    manifest = make_v1_manifest(mode="publication")
+    result = reconcile(
+        assessment,
+        manifest,
+        publish_context=publication_same_run_context(),
+    )
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is True
+
+
+def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding():
+    assessment, _ = passed_assessment(contract_sample=False)
+    api = R4ManifestGitHub()
+    manifest = make_v1_manifest(api=api, mode="validation")
+    result = authorize(
+        assessment,
+        manifest=manifest,
+        manifest_provider_authority=rar.manifest_provider_from_verification(api),
+    )
+    assert result["status"] == "verified"
+    assert result["authorization_basis"] == "provider_verified"
+    assert result["release_authorized"] is True
+
+
+def test_provider_rejects_same_name_wrong_artifact_digest():
+    assessment, _ = passed_assessment(contract_sample=False)
+    api = R4ManifestGitHub()
+    manifest = make_v1_manifest(api=api)
+    # Keep name/id/url valid for manifest.validate, but disagree with Provider digest.
+    manifest["artifacts"] = copy.deepcopy(manifest["artifacts"])
+    manifest["artifacts"][0]["digest"] = "sha256:" + ("d" * 64)
+    release_manifest.validate(manifest, REPO, TAG, HEAD)
+    result = authorize(
+        assessment,
+        manifest=manifest,
+        manifest_provider_authority=rar.manifest_provider_from_verification(api),
+    )
+    assert result["release_authorized"] is False
+    assert result["authorization_basis"] == "structural_fixture"
+    assert "release_provider_authority_rejected" in result["reasons"]
+
+
+def test_invalid_v1_artifact_digest_format_is_rejected():
+    assessment, _ = passed_assessment(contract_sample=False)
+    invalid = make_v1_manifest()
+    invalid["artifacts"][0]["digest"] = "not-a-digest"
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError, match="release_manifest_v1_invalid"
+    ):
+        reconcile(assessment, invalid)
 
 
 def test_structural_fixture_without_provider_is_not_production_authorization():
@@ -303,13 +402,7 @@ def test_wrong_run_attempt_same_run_is_rejected():
 def test_validation_to_publication_handoff_requires_distinct_run_and_authorities():
     assessment, _ = passed_assessment(contract_sample=False)
     validation = make_v1_manifest(mode="validation")
-    context = publish_context(
-        mode="publication",
-        manifest_binding="validation_to_publication",
-        run_id=999,
-        run_attempt=2,
-        validation_identity={"run_id": 123, "run_attempt": 1, "mode": "validation"},
-    )
+    context = publication_handoff_context()
     missing = reconcile(
         assessment,
         validation,
@@ -331,17 +424,46 @@ def test_validation_to_publication_handoff_requires_distinct_run_and_authorities
     assert ok["validation_identity"]["run_id"] == 123
 
 
+def test_same_run_different_attempt_is_not_distinct_run_handoff():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = reconcile(
+        assessment,
+        make_v1_manifest(mode="validation"),
+        publish_context=publication_handoff_context(
+            run_id=123,
+            run_attempt=2,
+            validation_identity={"run_id": 123, "run_attempt": 1},
+        ),
+        handoff_authority=accept_provider,
+    )
+    assert result["status"] == "rejected"
+    assert "release_handoff_requires_distinct_publication_run" in result["reasons"]
+    assert result["release_authorized"] is False
+
+
+def test_distinct_run_same_attempt_handoff_is_allowed():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        publish_context=publication_handoff_context(
+            run_id=999,
+            run_attempt=1,
+            validation_identity={"run_id": 123, "run_attempt": 1},
+        ),
+    )
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is True
+    assert result["publish_context"]["run_id"] == 999
+    assert result["validation_identity"]["run_id"] == 123
+
+
 def test_validation_handoff_rejects_wrong_validation_identity():
     assessment, _ = passed_assessment(contract_sample=False)
     validation = make_v1_manifest(mode="validation")
     result = reconcile(
         assessment,
         validation,
-        publish_context=publish_context(
-            mode="publication",
-            manifest_binding="validation_to_publication",
-            run_id=999,
-            run_attempt=2,
+        publish_context=publication_handoff_context(
             validation_identity={"run_id": 50, "run_attempt": 1},
         ),
         handoff_authority=accept_provider,
@@ -352,7 +474,7 @@ def test_validation_handoff_rejects_wrong_validation_identity():
 
 def test_complete_authorized_artifact_obligation_set_matches_manifest():
     assessment, _ = passed_assessment(contract_sample=False)
-    result = reconcile(
+    result = authorize(
         assessment,
         artifact_obligations=complete_artifact_obligations(
             "pytest-report", "core-tests"
@@ -410,7 +532,7 @@ def test_artifact_obligation_authority_missing_is_unverified():
 
 def test_authorized_empty_artifact_obligation_set_is_valid():
     assessment, _ = passed_assessment(contract_sample=False)
-    result = reconcile(
+    result = authorize(
         assessment,
         artifact_obligations=empty_artifact_obligations(),
         artifact_obligation_authority=accept,
@@ -432,7 +554,7 @@ def test_phase_mismatch_is_rejected():
 
 def test_contract_sample_cannot_authorize_production_release():
     assessment, _ = passed_assessment(contract_sample=True)
-    result = reconcile(assessment, contract_sample=True)
+    result = authorize(assessment, contract_sample=True)
     assert result["status"] == "verified"
     assert result["release_authorized"] is False
     assert "contract_sample_inputs_not_production_release" in result["reasons"]
@@ -476,7 +598,7 @@ def _recompute(envelope):
 
 def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
     assessment, _ = passed_assessment(contract_sample=False)
-    result = reconcile(assessment)
+    result = authorize(assessment)
     assert result["release_authorized"] is True
 
     forged = copy.deepcopy(result)
@@ -527,6 +649,34 @@ def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
         rar.validate_release_reconciliation(forged)
 
     forged = copy.deepcopy(result)
+    forged["assessment_status"] = "blocked"
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_authorized_requires_assessment_passed",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["artifact_obligation_status"] = "rejected"
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_authorized_requires_artifact_obligations_authorized",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
+    forged["publish_context"] = dict(forged["publish_context"])
+    forged["publish_context"]["mode"] = "validation"
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_authorized_requires_publication_mode",
+    ):
+        rar.validate_release_reconciliation(forged)
+
+    forged = copy.deepcopy(result)
     forged["gaps"] = [{"kind": "x", "ref": "y", "reason": "z"}]
     forged = _recompute(forged)
     with pytest.raises(
@@ -544,8 +694,27 @@ def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
     ):
         rar.validate_release_reconciliation(forged)
 
+    forged = copy.deepcopy(result)
+    forged["validation_identity"] = dict(forged["validation_identity"])
+    forged["validation_identity"]["run_id"] = forged["publish_context"]["run_id"]
+    forged = _recompute(forged)
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_authorized_requires_distinct_publication_run",
+    ):
+        rar.validate_release_reconciliation(forged)
+
 
 def test_validate_accepts_unchanged_valid_envelope():
     assessment, _ = passed_assessment(contract_sample=False)
-    result = reconcile(assessment)
-    assert rar.validate_release_reconciliation(copy.deepcopy(result)) is not None
+    result = authorize(assessment)
+    assert (
+        rar.validate_release_reconciliation(copy.deepcopy(result))["reconciliation_ref"]
+        == result["reconciliation_ref"]
+    )
+    validated = reconcile(assessment, make_v1_manifest(mode="validation"))
+    assert validated["release_authorized"] is False
+    assert (
+        rar.validate_release_reconciliation(copy.deepcopy(validated))["status"]
+        == "verified"
+    )

@@ -38,7 +38,18 @@ authorization can be minted. R4 does not reimplement a parallel v1 schema.
 | Binding | Rule |
 | --- | --- |
 | `same_run` | Context `mode` / `run_id` / `run_attempt` equal Manifest |
-| `validation_to_publication` | Manifest is validation identity; context is a **distinct** publication Run; `handoff_authority` must accept the linkage |
+| `validation_to_publication` | Manifest is validation identity; context is a **distinct Run ID** publication Run (same Run / different Attempt is **not** distinct); `handoff_authority` must accept the linkage |
+
+## Validation vs publication authorization
+
+| Stage | `status=verified` | `release_authorized` |
+| --- | --- | --- |
+| `mode=validation` | Allowed for structurally complete reconciliation | **Always false** — validation is not a publish grant |
+| `mode=publication` + provider basis + passed Assessment + authorized Artifact set | Required | May be true when all other gates pass |
+
+A future publish boundary must still recheck policy authorization and exact
+current Run/Attempt/Artifact evidence; this module does not perform Tag/Release
+publication.
 
 ## Artifact obligations
 
@@ -57,7 +68,11 @@ Profile projection. A bare name list without that authority cannot authorize.
 | `authorization_basis` | Meaning |
 | --- | --- |
 | `structural_fixture` | Contract shape only; **never** `release_authorized=true` |
-| `provider_verified` | `manifest_provider_authority` accepted (stands in for existing `verification.evidence` / `publishing.published_evidence` at the real publication boundary) |
+| `provider_verified` | `manifest_provider_authority` accepted. Production adapters are
+  `manifest_provider_from_verification(api)` /
+  `manifest_provider_from_publication(api)`, which call existing
+  `verification.evidence` / `publishing.published_evidence` for Artifact
+  ID/digest/Run linkage — R4 does not invent a second remote verifier. |
 
 Digest integrity is **not** authorization. `validate_release_reconciliation()`
 recomputes `reconciliation_ref` **and** re-checks pure authorization-consistency
