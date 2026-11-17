@@ -20,6 +20,7 @@
 - [Required Assessment Publish](required-assessment-publish.md) — #61 G2 受信 Actions/Workflow `publish_authority` 合同。
 - [Required Assessment Protection](required-assessment-protection.md) — #61 G3/R3 Ruleset/Branch Protection 只读观察合同。
 - [Required Assessment → Release 对账](required-assessment-release.md) — #61 R4 Assessment → Manifest v1 / 策略快照发布对账合同。
+- [Required Assessment 后置阶段](required-assessment-post.md) — #61 R5 独立后置 Assessment（触发/到期窗/处置）合同。
 - [Check 身份与原生结果](check-contract.md) — 稳定 check_id、规则/Profile 引用、Native Result 与执行报告绑定。
 - [仓库 Hygiene](hygiene.md) — 原生 whitespace/forwarding/docs/Vulture/Tach 检查与结果语义。
 - [来源集合对账](sources.md) — Manifest 投影、集合差、冲突、大小/SHA-256 与宿主 Git attributes。
