@@ -6,8 +6,8 @@ This module owns one Hook Invocation's outer control path. It:
 - binds Expected Event/Ref/Baseline identity to that Invocation Event;
 - allocates this Invocation's ``run_ref`` / ``attempt_ref``;
 - mints a Dispatch ``production_ref`` per eligible Job for the Runner;
-- collects original #52 Execution Reports that embed that production identity
-  and Attempt-bound Native Results (no Coordinator re-wrap of natives);
+- dispatches Jobs through #52 ``execution.execute()`` and seals delivery;
+- collects only delivered original Reports (no field-only ``upstream_verified``);
 - issues Job Receipts only for collected Reports;
 - calls #104 ``reconcile_expected_results()`` per Expected scope after
   dispatch returns (including filtered/failed Jobs);
@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from engineering_ci import hooks, reconciliation
+from engineering_ci import execution, hooks, reconciliation
 
 DISPATCH_KIND = "engineering-ci-hook-dispatch"
 DISPATCH_VERSION = 1
@@ -480,7 +480,7 @@ def _report_execution_attribution(report):
 
 
 def attempt_result_instance(run_binding, job_ref):
-    """Native Result instance identity for this activated Job/Attempt."""
+    """``execution.execute`` ``run_instance`` prefix for this Job/Attempt."""
     return f"{run_binding.run_ref}/{run_binding.attempt_ref}/{job_ref}"
 
 
@@ -514,24 +514,36 @@ def _require_runner_produced_report(report):
 
 
 def _require_attempt_bound_natives(run_binding, job_ref, results):
-    expected_instance = attempt_result_instance(run_binding, job_ref)
+    """Native Results must be minted under this Attempt's execute run_instance."""
+    expected_prefix = attempt_result_instance(run_binding, job_ref)
     if not results:
         raise HookCoordinatorError("native_results_required")
     for result in results:
         if not isinstance(result, dict):
             raise HookCoordinatorError("native_result_attempt_mismatch")
-        if result.get("result_instance") != expected_instance:
+        instance = result.get("result_instance")
+        if not isinstance(instance, str) or not instance.startswith(expected_prefix):
             raise HookCoordinatorError("native_result_attempt_mismatch")
         if result.get("runner_ref") != run_binding.runner_ref:
             raise HookCoordinatorError("native_result_runner_mismatch")
 
 
-def collect_job_report(run_binding, job_ref, report):
-    """Collect an original Runner Execution Report for this Job/Attempt.
+def _seal_delivered_report(run_binding, job_ref, report):
+    """Attach Dispatch attribution without rewriting Check/Native bodies."""
+    sealed = copy.deepcopy(report)
+    sealed["invocation_ref"] = run_binding.invocation_ref
+    sealed["run_ref"] = run_binding.run_ref
+    sealed["attempt_ref"] = run_binding.attempt_ref
+    sealed["job_ref"] = job_ref
+    sealed["production_ref"] = run_binding.jobs[job_ref]["production_ref"]
+    return sealed
 
-    The Report must already embed the Dispatch ``production_ref`` and
-    Attempt-bound Native Results. The Coordinator does not wrap arbitrary
-    historical natives into a substitute success Report.
+
+def execute_activated_job(run_binding, job_ref, *, plan, root, **execute_kwargs):
+    """Run one eligible Job through #52 ``execution.execute`` and seal delivery.
+
+    The returned Report keeps execute's Check/Native bodies intact and records
+    ``delivered_report_ref`` so Collect can require this production boundary.
     """
     if not isinstance(run_binding, RunBinding):
         raise HookCoordinatorError("run_binding_invalid")
@@ -543,6 +555,51 @@ def collect_job_report(run_binding, job_ref, report):
     production_ref = job.get("production_ref")
     if not isinstance(production_ref, str) or not production_ref.startswith("sha256:"):
         raise HookCoordinatorError("job_production_ref_missing")
+    if job.get("delivered_report_ref") is not None:
+        raise HookCoordinatorError("job_already_executed")
+    run_instance = attempt_result_instance(run_binding, job_ref)
+    execute_kwargs = dict(execute_kwargs)
+    execute_kwargs.setdefault("execution_context", "host")
+    if execute_kwargs.get("run_instance") not in (None, run_instance):
+        raise HookCoordinatorError("run_instance_mismatch")
+    report = execution.execute(
+        plan,
+        root=root,
+        run_instance=run_instance,
+        **{
+            key: value for key, value in execute_kwargs.items() if key != "run_instance"
+        },
+    )
+    if (
+        not isinstance(report, dict)
+        or report.get("kind") != reconciliation.EXECUTION_REPORT_KIND
+    ):
+        raise HookCoordinatorError("execution_report_invalid")
+    sealed = _seal_delivered_report(run_binding, job_ref, report)
+    report_ref = report_ref_for(sealed)
+    job["delivered_report_ref"] = copy.deepcopy(report_ref)
+    job["report_ref"] = copy.deepcopy(report_ref)
+    return sealed
+
+
+def collect_job_report(run_binding, job_ref, report):
+    """Collect a Report delivered by ``execute_activated_job`` for this Job.
+
+    Field-identical hand-built Reports without a recorded delivery are refused.
+    """
+    if not isinstance(run_binding, RunBinding):
+        raise HookCoordinatorError("run_binding_invalid")
+    if job_ref not in run_binding.jobs:
+        raise HookCoordinatorError("job_not_activated")
+    job = run_binding.jobs[job_ref]
+    if job.get("attempt_eligibility") != "eligible":
+        raise HookCoordinatorError("attempt_not_eligible")
+    production_ref = job.get("production_ref")
+    delivered = job.get("delivered_report_ref")
+    if not isinstance(production_ref, str) or not production_ref.startswith("sha256:"):
+        raise HookCoordinatorError("job_production_ref_missing")
+    if delivered is None:
+        raise HookCoordinatorError("job_execution_delivery_missing")
     if job.get("issued_report_ref") is not None:
         raise HookCoordinatorError("job_report_already_collected")
     if not isinstance(report, dict):
@@ -561,6 +618,8 @@ def collect_job_report(run_binding, job_ref, report):
         raise HookCoordinatorError("execution_report_attribution_mismatch")
     _require_runner_produced_report(report)
     results, rejections, report_ref = verify_execution_report(report)
+    if report_ref != delivered:
+        raise HookCoordinatorError("execution_report_delivery_mismatch")
     _require_attempt_bound_natives(run_binding, job_ref, results)
     run_binding.collected_reports[job_ref] = copy.deepcopy(report_ref)
     job["issued_report_ref"] = copy.deepcopy(report_ref)
