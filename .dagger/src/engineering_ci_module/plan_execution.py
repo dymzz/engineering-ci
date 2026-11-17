@@ -1,6 +1,7 @@
 """Native Plan result collection; Dagger owns graphs and cache."""
 
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -11,6 +12,26 @@ from dagger import dag
 
 from .plan_result import PlanExecution
 from .plan_result import result as make_result
+
+
+def _native_failure(name, error):
+    """Keep the failing preparation operation separate from a Check exit."""
+    item = {
+        "name": name,
+        "status": "not_executed",
+        "exit_code": None,
+        "reason": "native_execution_error",
+        "error_type": type(error).__name__,
+        "diagnostic": str(error),
+    }
+    if isinstance(getattr(error, "command", None), list):
+        item["failed_operation"] = {
+            "command": error.command,
+            "exit_code": getattr(error, "exit_code", None),
+            "stdout": getattr(error, "stdout", None),
+            "stderr": getattr(error, "stderr", None),
+        }
+    return item
 
 
 def _aggregate(report):
@@ -53,7 +74,7 @@ def _aggregate(report):
                 report.update(status="failed", exit_code=code or 1, reason=reason)
                 return report
 
-    for item in checks:
+    for item in [tests, *checks]:
         contract = item.get("check_contract")
         if isinstance(contract, dict) and contract.get("status") not in {
             "valid",
@@ -133,13 +154,24 @@ def _aggregate(report):
     return report
 
 
-async def _tests(module, source, targets, framework, python_version):
+async def _tests(
+    module,
+    source,
+    targets,
+    framework,
+    python_version,
+    *,
+    context=None,
+    plan=None,
+    generated_inputs=(),
+):
     """Use the existing pytest computation, or native unittest, exactly once."""
     if framework == "pytest":
         execution = await module._run_pytest(
             source, python_version, targets[0], _targets=targets
         )
         code = execution.exit_code
+        container = execution.container
         stdout = execution.output
         stderr = await execution.container.stderr()
         xml = execution.xml
@@ -164,10 +196,37 @@ async def _tests(module, source, targets, framework, python_version):
     }
     if xml is not None:
         payload["junit"] = xml
+    from . import native_results
+
+    payload["tests"] = await native_results.test_result(
+        payload["tests"],
+        container,
+        source,
+        framework,
+        targets,
+        artifacts=files,
+        context=context,
+        plan=plan,
+        generated_inputs=generated_inputs,
+    )
+    files = files.with_new_file(
+        "check-result.json", json.dumps(payload["tests"], sort_keys=True)
+    )
     return payload, files
 
 
-async def _weaver(module, source, value, directory, item, config_path, tree_state):
+async def _weaver(
+    module,
+    source,
+    value,
+    directory,
+    item,
+    config_path,
+    tree_state,
+    *,
+    context=None,
+    generated_inputs=(),
+):
     """Read one original /out Directory; do not rescan for Report or Enforce."""
     from engineering_ci import selection
 
@@ -202,9 +261,25 @@ async def _weaver(module, source, value, directory, item, config_path, tree_stat
                 metadata,
             )
         config_path = value["post_completion"]["weaver_config"]["path"]
-    files = await module.weaver_artifacts(source, kind, config_path)
-    native = json.loads(await files.file("report.json").contents())
+    if hasattr(module, "_weaver_execution"):
+        files = await module._weaver_execution(
+            source,
+            kind,
+            config_path,
+            context=context,
+            plan=value,
+            generated_inputs=generated_inputs,
+        )
+        native = json.loads(await files.file("check-result.json").contents())
+    else:
+        files = await module.weaver_artifacts(source, kind, config_path)
+        native = json.loads(await files.file("report.json").contents())
     native["selected"] = item.get("status")
+    if generated_inputs:
+        # Keep the report view too; the adapter already bound these inputs
+        # into each immutable Native Result before calculating its identity.
+        native["generated_input_refs"] = list(generated_inputs)
+    native["artifact_root"] = "checks/" + item["name"]
     native["source_tree_verified"] = metadata.get("source_tree_verified", tree_state)
     if kind == "terminal":
         native.update(phase=selection.POST_COMPLETION_PHASE, **metadata)
@@ -241,7 +316,15 @@ async def _native_results(
         branches.append(
             (
                 "tests",
-                _tests(module, source, targets, report["framework"], python_version),
+                _tests(
+                    module,
+                    source,
+                    targets,
+                    report["framework"],
+                    python_version,
+                    context=report.get("execution_identity"),
+                    plan=value,
+                ),
             )
         )
     branches.extend(
@@ -255,6 +338,7 @@ async def _native_results(
                 item,
                 weaver_config,
                 report["source_tree_verified"],
+                context=report.get("execution_identity"),
             ),
         )
         for item in selected
@@ -269,14 +353,7 @@ async def _native_results(
         if isinstance(output, BaseException):
             if not isinstance(output, Exception):
                 raise output
-            native = {
-                "name": name,
-                "status": "not_executed",
-                "exit_code": None,
-                "reason": "native_execution_error",
-                "error_type": type(output).__name__,
-                "diagnostic": str(output),
-            }
+            native = _native_failure(name, output)
             if name == "tests":
                 report["tests"] = native
             else:
@@ -553,7 +630,6 @@ async def _execute_dag(
 ):
     """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
     import tempfile
-    import uuid
     from pathlib import Path
 
     from engineering_ci import execution, selection
@@ -574,7 +650,10 @@ async def _execute_dag(
         execution_context="dagger_export",
     )
     selected_by_name = {item.get("name"): item for item in selected_checks}
-    run_instance = uuid.uuid4().hex
+    run_instance = report["execution_identity"]["execution_ref"]
+    report["source_handoff"]["before_host_content_id"] = selection.directory_content_id(
+        directory
+    )
     loop = asyncio.get_running_loop()
     scratch_root = Path.cwd().resolve()
     closure_records = []
@@ -828,9 +907,9 @@ async def _execute_dag(
                         item,
                         weaver_config,
                         report["source_tree_verified"],
+                        context=report.get("execution_identity"),
+                        generated_inputs=generated_refs,
                     )
-                    if generated_refs and isinstance(native, dict):
-                        native["generated_input_refs"] = generated_refs
                     return native, check_files, metadata
                 fs_files = [
                     (p_root, rel, obj_kind) for p_root, rel, obj_kind, _ in delivered
@@ -906,12 +985,15 @@ async def _execute_dag(
                 ]
                 consumer_source = _overlay_files(source, dag_objects)
                 payload, test_files = await _tests(
-                    module, consumer_source, targets, framework, python_version
+                    module,
+                    consumer_source,
+                    targets,
+                    framework,
+                    python_version,
+                    context=report.get("execution_identity"),
+                    plan=value,
+                    generated_inputs=generated_refs,
                 )
-                if generated_refs and isinstance(payload, dict):
-                    payload.setdefault("tests", {})["generated_input_refs"] = (
-                        generated_refs
-                    )
                 return payload, test_files
             if kind == "report_artifacts":
                 await resolve_incoming(("execution_report", "artifacts"))
@@ -960,13 +1042,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["tests"] = {
-                        "status": "not_executed",
-                        "exit_code": None,
-                        "reason": "native_execution_error",
-                        "error_type": type(output).__name__,
-                        "diagnostic": str(output),
-                    }
+                    report["tests"] = _native_failure("tests", output)
                 else:
                     payload, test_files = output
                     report.update(payload)
@@ -977,16 +1053,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["checks"].append(
-                        {
-                            "name": name,
-                            "status": "not_executed",
-                            "exit_code": None,
-                            "reason": "native_execution_error",
-                            "error_type": type(output).__name__,
-                            "diagnostic": str(output),
-                        }
-                    )
+                    report["checks"].append(_native_failure(name, output))
                 else:
                     native, check_files, metadata = output
                     report.update(metadata)
@@ -999,14 +1066,7 @@ async def _execute_dag(
                 if isinstance(output, BaseException):
                     if not isinstance(output, Exception):
                         raise output
-                    report["prerequisites"].append(
-                        {
-                            "name": slot[1],
-                            "status": "not_executed",
-                            "reason": "native_execution_error",
-                            "diagnostic": str(output),
-                        }
-                    )
+                    report["prerequisites"].append(_native_failure(slot[1], output))
                 else:
                     report["prerequisites"].append(output)
             elif slot == ("execution_report", "artifacts") and isinstance(
@@ -1107,6 +1167,12 @@ async def _execute_dag(
             "origin_execution_attributed": False,
         }
         after_host = selection.directory_content_id(directory)
+        report["source_handoff"]["host_result_ids"] = [
+            result["result_id"]
+            for check in report["checks"]
+            for result in check.get("native_results") or ()
+            if result.get("result_origin") == "host"
+        ]
         report["source_handoff"]["after_host_content_id"] = after_host
         if after_host != exported_content_id:
             report.update(
@@ -1124,12 +1190,25 @@ async def _execute_dag(
     return report, artifacts, False
 
 
-async def execute(module, plan, source, python_version, weaver_config) -> PlanExecution:
+async def execute(
+    module,
+    plan,
+    source,
+    python_version,
+    weaver_config,
+    *,
+    run_ref=None,
+    attempt_ref=None,
+) -> PlanExecution:
     """Execute plan targets and preserve one complete native result bundle."""
     artifacts = dag.directory()
     import tempfile
 
-    from engineering_ci import execution, plan_contract, selection
+    from engineering_ci import execution, native_producer, plan_contract, selection
+
+    identity = native_producer.execution_identity(
+        run_ref=run_ref, attempt_ref=attempt_ref
+    )
 
     raw = await plan.contents()
     artifacts = artifacts.with_new_file("plan.json", raw)
@@ -1161,6 +1240,11 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
         selected_checks = [
             {"name": name, "status": "unknown"} for name in chosen["checks"]
         ]
+    if targets:
+        # A framework Check observes the existing tests producer.
+        selected_checks = [
+            item for item in selected_checks if item.get("name") != framework
+        ]
     prerequisites = list(chosen.get("prerequisites") or [])
     if value.get("git", {}).get("snapshot") == "multi":
         return make_result(
@@ -1189,6 +1273,9 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
     input_closure_verified = "not_requested"
     with tempfile.TemporaryDirectory() as directory:
         await source.export(directory)
+        from . import native_results
+
+        exported_directory = await native_results.directory_reference(source)
         exported_content_id = selection.directory_content_id(directory)
         if source_tree_id and execution_tree:
             source_digest = selection.directory_content_id(directory)
@@ -1224,6 +1311,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             "source_binding_verified": "unknown",
             "plan": {"generator": value.get("generator"), "git": git},
             "execution_context": "dagger_export",
+            "execution_identity": identity,
             "status": "passed",
             "exit_code": 0,
             "targets": targets,
@@ -1246,6 +1334,11 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 "exported_content_id": exported_content_id,
                 "host_context": "dagger_export",
                 "original_git_snapshot_preserved": True,
+                "parent_execution_ref": identity["execution_ref"],
+                "run_ref": identity["run_ref"],
+                "attempt_ref": identity["attempt_ref"],
+                "source_proof_status": "export_observation_only",
+                "directory": exported_directory,
             },
         }
         if execution.pre_execution_edges(value):
@@ -1292,6 +1385,9 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                 root=directory,
                 execution_context="dagger_export",
             )
+            report["source_handoff"]["before_host_content_id"] = (
+                selection.directory_content_id(directory)
+            )
             host = (
                 await asyncio.to_thread(
                     execution.execute,
@@ -1300,6 +1396,7 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
                     profile_ref=verified_profile,
+                    run_instance=identity["execution_ref"],
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {
@@ -1312,6 +1409,16 @@ async def execute(module, plan, source, python_version, weaver_config) -> PlanEx
             host_prerequisites = host.get("prerequisites") or []
             _tag_command_prerequisites(host_prerequisites)
             host_checks_out = host.get("checks") or []
+            host_raw = json.dumps(host, sort_keys=True)
+            artifacts = artifacts.with_new_file("host/report.json", host_raw)
+            report["source_handoff"]["host_report_sha256"] = hashlib.sha256(
+                host_raw.encode()
+            ).hexdigest()
+            report["source_handoff"]["host_result_ids"] = [
+                result["result_id"]
+                for check in host_checks_out
+                for result in check.get("native_results") or ()
+            ]
             if host_checks_out:
                 report["checks"].extend(host_checks_out)
             elif host_checks and host.get("status") in {"blocked", "not_executed"}:

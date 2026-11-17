@@ -25,9 +25,80 @@ status and does not replace Runtime `tool_id`/`group_id`/`access_id`.
 | `plan_contract.PLAN_VERSION = 2` | Selection/Plan dependency declarations | Unchanged |
 | `execution.SCHEMA_VERSION = 1` | Execution Report (`engineering-ci-execution-report`) | Extended with `check_contract`, per-check `check_id`/`result_id`/`native_result`; old fields retained |
 | `execution.execute()` | Host execution and native check report | Emits the contract for known built-in checks |
-| Dagger `execute-plan` | Container plan execution | Calls the Host `execution.execute()` on the exported Source, so it emits this contract, but `execution_context=dagger_export` maps to `result_origin=unknown` and the Dagger tool pins are not recorded |
+| Dagger `plan-execution` / `execute-plan` | One saved native Plan result | Test/Weaver Container observations emit `dagger` Native Results. Exported Host checks keep `host` origin, `execution:dagger_export` runner and parent Dagger context. The result records Directory/export facts and original Host Report separately |
 | Actions reusable selection job | Calls `select` then `execute` | Consumes the host report; no separate contract translation |
 | Runtime `tool_id`/`group_id`/`access_id` | Tool/group/access identity | A declared alternative may name a verified `tool_id`; results record only observed evidence. Never inferred from a name and never used as `check_id` |
+
+## Native Producer observations and handoff
+
+`native_producer.py` maps retained observations to the existing schema-2
+Native Result contract; it never invokes a tool or grants approval. The Dagger
+adapter is `native_results.py`. Both reuse the existing CheckDefinitions and
+satisfaction evaluator, without another registry, Result Store or Source
+attestation format.
+
+- Plan pytest/unittest use the existing single test execution. The `tests`
+  field keeps its original verdict/exit and gains the framework Native Result.
+  `checks` exposes that same Result to per-Check consumers; registering or
+  selecting the matching framework definition does not start another runner.
+  Host tests retain actual argv, executable and captured output. Container
+  tests read environment metadata from the retained Container, not a second
+  test invocation. A failed metadata read cannot erase a completed native
+  PASS/FAIL. Missing metadata is explicitly unavailable.
+- Both Plan execution paths pass the validated Plan's Git identity into the
+  framework/Weaver adapters before Native Result construction. The Source
+  snapshot, declared execution Tree, Head and Index identities are retained
+  independently from proof strength: a declaration alone remains
+  `identity_only` (or `unknown` without an identity), with no invented content
+  digest, verified scope or `byte_tree` claim. Standalone calls without a Plan
+  keep their earlier unbound Source description.
+- Data consumers use the existing verified `generated_input_refs()` closure
+  projection before constructing Native Results. Producer ref, output kind,
+  path and measured digest enter each consumer's immutable `input_refs` and
+  existing Result identity, alongside native stage predecessor references.
+  The outer `generated_input_refs` field mirrors these facts for inspection;
+  it is not their only record. An invalid/missing data closure prevents the
+  affected consumer from starting and creates no proved input or native exit.
+- Weaver Registry/Live/Terminal map only command records that actually have
+  an integer native exit. Each declared stage receives its actual access,
+  verified ECI-pinned asset, rule/config digest, original stdio artifact refs
+  and predecessor Result IDs. Unstarted later stages are absent. A setup or
+  configuration refusal does not invent an exit from the gate. Native exit
+  zero followed by a failing semantic/terminal gate stays native zero; the
+  failed Check/gate remains separate. Weaver `report.json` and its original
+  logs/packages are unchanged; `check-result.json` adds the contract view.
+  `weaver-report` reads that view and strict Enforce checks both the original
+  gate and the native composition. `sample` remains its earlier diagnostic
+  interface, outside these three CheckDefinitions.
+- `verification_implementation` uses the existing #63 three-field identity
+  (`implementation_id/version/sha256`). `implementation_sources` hashes the
+  actual adapter/validator/runtime sources; the identity is also bound into
+  Native Result evidence. Changing those bytes changes the implementation
+  and Result identities. This is an observation, **not** proof of Runtime
+  registration or an approved implementation. #63 independently verifies
+  provenance and approval; no approval is inferred from successful execution.
+- `execution_identity` identifies the local observation and its parent.
+  `plan-execution` accepts paired optional `run-ref` / `attempt-ref`; these
+  caller references remain `unverified` (or `not_supplied`). They are not
+  authenticated Job Receipts, native Dagger Trace/Origin evidence or a cache
+  freshness claim. #87 retains actual Origin attribution.
+- Native observations retain the exact input and original output Directory
+  IDs/digests. Export handoff records that input Directory, the actual exported
+  content ID, before/after Host content IDs and parent execution reference.
+  The policy-only Host adapter also retains its original `host/report.json`,
+  its byte SHA-256 and actual Result IDs. Dependency consumers preserve their
+  existing generated-input/closure and per-Result Source facts. A Host write
+  keeps the existing whole-Source refusal and does not relabel prior results.
+
+These associations do not prove a complete tool input closure. Rule, Registry,
+Capture and other digests already measured by the native Weaver runtime stay
+in `input_refs`; Container Source references conservatively retain unknown or
+identity-only binding. #66-P0 owns stronger Source/closure production. The Host
+adapter's existing per-Check Source proofs remain at their proven scope.
+`source_binding_verified=unknown`, `trusted=false` and
+`origin_execution_attributed=false` retain their separate meanings. Terminal
+Expected/Phase authorization is #52-D4/#66-B2; this Producer mapping does not
+construct Expected obligations or change #63 Admission / #61 Required policy.
 
 ## Stable identities
 

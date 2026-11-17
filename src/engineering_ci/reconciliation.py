@@ -887,58 +887,53 @@ def _unknown_fields(reason):
     return mapping.get(reason, ["expected_constraints"])
 
 
-def _resolve_expected(entry, resolution):
-    """Build the strict #52 Expected instance from separately sourced evidence.
+def derive_strict_expected(entry, resolved):
+    """Pure derivation: immutable Expected + verified resolved facts → #52 Expected.
 
-    Returns ``(strict_expected, status, reason, evidence_refs)``. ``status`` is
-    ``unknown`` when authoritative evidence is absent and ``insufficient`` when
-    the resolved identity conflicts with the immutable Expected instance.
+    Shared by #66-C Resolution and #63 T2 pre-execution promotion. Callers supply
+    already-authenticated ``resolved`` facts; this function does not authenticate
+    issuers, Receipts or P0 provenance.
+
+    Returns ``(strict_expected, status, reason)``. ``status`` is ``matched``,
+    ``unknown`` or ``insufficient``.
     """
-    if resolution is None:
-        return None, "unknown", "resolution_missing", {}
-    evidence = {}
-    for key in ("rule_source_ref", "source_receipt_ref"):
-        if resolution.get(key) is None:
-            return None, "unknown", "resolution_evidence_missing", evidence
-        evidence[key] = resolution[key]
+    if not isinstance(entry, dict) or not isinstance(resolved, dict):
+        return None, "unknown", "expected_source_unproven"
 
     expected_profile = entry.get("profile_ref")
     if (
         expected_profile is not None
-        and resolution.get("profile_ref") is not None
-        and resolution["profile_ref"] != expected_profile
+        and resolved.get("profile_ref") is not None
+        and resolved["profile_ref"] != expected_profile
     ):
-        return None, "insufficient", "expected_profile_mismatch", evidence
+        return None, "insufficient", "expected_profile_mismatch"
 
     entry_rule = entry.get("rule_ref")
-    resolved_rule = resolution.get("rule_ref")
+    resolved_rule = resolved.get("rule_ref")
     if resolved_rule is None:
         # The immutable Expected instance may already declare the native rule.
         resolved_rule = entry_rule
     elif entry_rule is not None and entry_rule != resolved_rule:
-        return None, "insufficient", "expected_rule_mismatch", evidence
+        return None, "insufficient", "expected_rule_mismatch"
 
-    resolved_baseline = resolution.get("baseline_ref")
-    if resolved_baseline is not None:
-        if resolution.get("baseline_source_ref") is None:
-            return None, "unknown", "resolution_evidence_missing", evidence
-        evidence["baseline_source_ref"] = resolution["baseline_source_ref"]
-
-    expected_source = entry["source_ref"]
-    resolved_source = resolution.get("source_ref")
+    resolved_baseline = resolved.get("baseline_ref")
+    expected_source = entry.get("source_ref")
+    if not isinstance(expected_source, dict):
+        return None, "unknown", "expected_source_unproven"
+    resolved_source = resolved.get("source_ref")
     if not isinstance(resolved_source, dict):
-        return None, "unknown", "expected_source_unproven", evidence
+        return None, "unknown", "expected_source_unproven"
     if expected_source.get("snapshot") != resolved_source.get("snapshot"):
-        return None, "insufficient", "expected_source_snapshot_mismatch", evidence
+        return None, "insufficient", "expected_source_snapshot_mismatch"
     for key in ("declared_target_tree", "head_commit", "index_tree"):
         if expected_source.get(key) is not None and expected_source.get(
             key
         ) != resolved_source.get(key):
-            return None, "insufficient", f"expected_source_{key}_mismatch", evidence
+            return None, "insufficient", f"expected_source_{key}_mismatch"
     exp_scope_set = set(expected_source.get("verified_input_scope") or ())
     res_scope_set = set(resolved_source.get("verified_input_scope") or ())
     if exp_scope_set - res_scope_set:
-        return None, "insufficient", "expected_input_scope_uncovered", evidence
+        return None, "insufficient", "expected_input_scope_uncovered"
     if expected_source.get("content_digest") is not None:
         exp_digest = expected_source["content_digest"]
         res_digest = resolved_source.get("content_digest")
@@ -950,23 +945,20 @@ def _resolve_expected(entry, resolution):
         )
         if exp_digest != res_digest and not (
             expanded_closure
-            and resolution.get("changed_paths_content_digest") == exp_digest
+            and resolved.get("changed_paths_content_digest") == exp_digest
         ):
-            return (
-                None,
-                "insufficient",
-                "expected_source_content_digest_mismatch",
-                evidence,
-            )
+            return None, "insufficient", "expected_source_content_digest_mismatch"
 
     # The immutable Expected input constraints are a floor. Resolution may add
     # native input evidence, but it may never drop or shrink an expected input.
     expected_inputs = list(entry.get("input_refs") or ())
-    resolved_inputs = resolution.get("input_refs")
+    resolved_inputs = resolved.get("input_refs")
     if resolved_inputs is not None:
+        if not isinstance(resolved_inputs, list):
+            return None, "unknown", "expected_input_refs_invalid"
         missing_inputs = [ref for ref in expected_inputs if ref not in resolved_inputs]
         if missing_inputs:
-            return None, "insufficient", "expected_inputs_reduced", evidence
+            return None, "insufficient", "expected_inputs_reduced"
         merged_inputs = list(expected_inputs)
         for ref in resolved_inputs:
             if ref not in merged_inputs:
@@ -986,13 +978,16 @@ def _resolve_expected(entry, resolution):
                 not isinstance(resolved_baseline, dict)
                 or resolved_baseline.get("base_commit") != base_commit
             ):
-                return None, "insufficient", "expected_baseline_mismatch", evidence
+                return None, "insufficient", "expected_baseline_mismatch"
         elif expected_baseline.get("baseline_status") in {
             "unknown",
             "old_object_unavailable",
             "policy",
         } or expected_baseline.get("raw_before") in (None, ""):
-            return None, "unknown", "expected_baseline_unresolved", evidence
+            return None, "unknown", "expected_baseline_unresolved"
+
+    if resolved_rule is None:
+        return None, "unknown", "expected_rule_unproven"
 
     strict = {
         "check_id": entry["check_id"],
@@ -1007,15 +1002,40 @@ def _resolve_expected(entry, resolution):
     if resolved_baseline is not None:
         strict["baseline_ref"] = resolved_baseline
     for key in ("coverage", "coverage_by_requirement", "phase"):
-        if resolution.get(key) is not None:
-            strict[key] = resolution[key]
+        if resolved.get(key) is not None:
+            strict[key] = resolved[key]
     if entry.get("comparison"):
         strict["comparison"] = entry["comparison"]
     try:
         check_contract.validate_expected_instance(strict)
     except check_contract.CheckContractError as error:
-        return None, "unknown", error.code, evidence
-    return strict, "matched", None, evidence
+        return None, "unknown", error.code
+    return strict, "matched", None
+
+
+def _resolve_expected(entry, resolution):
+    """Build the strict #52 Expected instance from separately sourced evidence.
+
+    Returns ``(strict_expected, status, reason, evidence_refs)``. ``status`` is
+    ``unknown`` when authoritative evidence is absent and ``insufficient`` when
+    the resolved identity conflicts with the immutable Expected instance.
+    """
+    if resolution is None:
+        return None, "unknown", "resolution_missing", {}
+    evidence = {}
+    for key in ("rule_source_ref", "source_receipt_ref"):
+        if resolution.get(key) is None:
+            return None, "unknown", "resolution_evidence_missing", evidence
+        evidence[key] = resolution[key]
+
+    resolved_baseline = resolution.get("baseline_ref")
+    if resolved_baseline is not None:
+        if resolution.get("baseline_source_ref") is None:
+            return None, "unknown", "resolution_evidence_missing", evidence
+        evidence["baseline_source_ref"] = resolution["baseline_source_ref"]
+
+    strict, status, reason = derive_strict_expected(entry, resolution)
+    return strict, status, reason, evidence
 
 
 def _attribution_problem(instance, observation, *, scope=None, invocation_ref=None):

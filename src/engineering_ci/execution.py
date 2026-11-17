@@ -25,6 +25,7 @@ from . import (
     check_contract,
     expected_checks,
     hygiene,
+    native_producer,
     plan_contract,
     security_policy,
     selection,
@@ -2132,6 +2133,61 @@ def _canonical_sha256(value):
     )
 
 
+def _snapshot_binding_for_check(snapshots, check_name):
+    """Return the effective-view content binding used for one Check SourceRef."""
+    if not isinstance(snapshots, dict):
+        return None
+    if snapshots.get("kind") == "full":
+        binding = snapshots.get("binding")
+        return binding if isinstance(binding, dict) else None
+    if snapshots.get("kind") == "per_check":
+        entry = (snapshots.get("checks") or {}).get(check_name)
+        if not isinstance(entry, dict):
+            return None
+        binding = entry.get("binding")
+        return binding if isinstance(binding, dict) else None
+    return None
+
+
+def _subset_digest_from_binding(binding, subset_paths):
+    """Digest a path subset using an existing snapshot binding's path hashes.
+
+    Uses the same canonical encoding as ``selection.worktree_content_binding`` so
+    the subset digest and full-closure digest describe one effective input view.
+    """
+    if not isinstance(binding, dict) or not isinstance(binding.get("paths"), dict):
+        return None
+    if not subset_paths:
+        return None
+    paths = binding["paths"]
+    entries = {}
+    for path in sorted({str(item).replace("\\", "/") for item in subset_paths}):
+        if path not in paths:
+            return None
+        entries[path] = paths[path]
+    return hashlib.sha256(
+        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _overlay_intersects_subset(overlay_paths, subset_paths):
+    """Return subset paths covered by verified producer overlay targets."""
+    overlays = {
+        str(path).replace("\\", "/").rstrip("/") for path in (overlay_paths or ())
+    }
+    hits = []
+    for raw in subset_paths or ():
+        path = str(raw).replace("\\", "/").rstrip("/")
+        if any(
+            path == overlay
+            or path.startswith(overlay + "/")
+            or overlay.startswith(path + "/")
+            for overlay in overlays
+        ):
+            hits.append(str(raw).replace("\\", "/"))
+    return tuple(sorted(hits))
+
+
 def _scope_plan_for_pre_execution(
     plan,
     check_name,
@@ -2822,6 +2878,8 @@ def build_pre_execution_source_proof(
     has_data_edge = any(edge.get("dependency_kind") == "data" for edge in incoming)
     temporary = None
     unproven_reason = None
+    changed_paths_content_digest = None
+    overlay_subset_paths = ()
     try:
         if verified_files:
             temporary, effective_root = build_consumer_view(
@@ -2863,6 +2921,37 @@ def build_pre_execution_source_proof(
                 execution_context=execution_context,
                 hygiene_config=hygiene_config,
             )
+        else:
+            # Derive the Expected changed-path subset digest from the same
+            # effective-view snapshot binding that produced the closed SourceRef.
+            # Do not re-hash resolved_root after the consumer view is gone.
+            expected_source = (
+                matched_expected.get("source_ref")
+                if isinstance(matched_expected, dict)
+                else None
+            )
+            if (
+                isinstance(expected_source, dict)
+                and expected_source.get("scope_kind") == "changed_paths"
+                and source.get("scope_kind")
+                in {"check_input_closure", "full_input_closure"}
+            ):
+                subset = list(expected_source.get("verified_input_scope") or ())
+                snapshot_binding = _snapshot_binding_for_check(snapshots, check_name)
+                subset_digest = _subset_digest_from_binding(snapshot_binding, subset)
+                if subset_digest is None:
+                    source = None
+                    unproven_reason = "pre_execution_changed_paths_digest_unproven"
+                else:
+                    expected_digest = expected_source.get("content_digest")
+                    if expected_digest is not None and expected_digest != subset_digest:
+                        source = None
+                        unproven_reason = "pre_execution_changed_paths_digest_mismatch"
+                    else:
+                        changed_paths_content_digest = subset_digest
+                        overlay_subset_paths = _overlay_intersects_subset(
+                            effective_artifact_paths, subset
+                        )
     finally:
         if temporary is not None:
             temporary.cleanup()
@@ -2895,6 +2984,8 @@ def build_pre_execution_source_proof(
         "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
+        "changed_paths_content_digest": changed_paths_content_digest,
+        "overlay_subset_paths": list(overlay_subset_paths),
     }
     return {
         "phase": "pre_execution",
@@ -2920,6 +3011,8 @@ def build_pre_execution_source_proof(
         "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
+        "changed_paths_content_digest": changed_paths_content_digest,
+        "overlay_subset_paths": list(overlay_subset_paths),
         "closure_digest": _canonical_sha256(closure_payload),
     }
 
@@ -4301,7 +4394,11 @@ def _execute_with_dependencies(
             report["native_stdout"] = native.get("stdout", "")
             report["native_stderr"] = native.get("stderr", "")
             tests_status = "passed" if exit_code == 0 else "failed"
-            report["tests"] = {"status": tests_status, "exit_code": exit_code}
+            report["tests"] = {
+                "status": tests_status,
+                "exit_code": exit_code,
+                "observation": native,
+            }
 
     checks_out = [check_cache[item.get("name")] for item in selected]
     omitted = omitted_hygiene_checks(
@@ -4367,6 +4464,32 @@ def _decorated_blocked_check(
 
 
 def _finalize_report(report):
+    tests = report.get("tests") or {}
+    if tests.get("observation") and not tests.get("check_contract"):
+        origin, _, parent = _result_origin_and_runner(report["execution_context"])
+        impl, hashes = native_producer.implementation(
+            "engineering-ci/host/tests",
+            {
+                "engineering_ci/execution.py": Path(__file__),
+                "engineering_ci/selection.py": Path(selection.__file__),
+            },
+        )
+        native_producer.test_check(
+            tests,
+            framework=report["framework"],
+            targets=report["targets"],
+            observation={**tests["observation"], "parent_execution_context": parent},
+            source=native_producer.source_reference(
+                report.get("plan"), actual="worktree"
+            ),
+            context=report["execution_identity"],
+            impl=impl,
+            origin=origin,
+            artifact_prefix=None,
+            generated_inputs=tests.get("generated_input_refs") or (),
+        )
+        tests["implementation_sources"] = hashes
+        report["checks"].append({"name": report["framework"], **tests})
     delivery = report.get("artifact_delivery")
     if isinstance(delivery, dict):
         for consumer in delivery.get("consumers", []):
@@ -4581,6 +4704,15 @@ def execute(
         # Source/Prerequisite receipt. Narrow Git checks below remain separate.
         "source_binding_verified": "unknown",
         "execution_context": execution_context,
+        "execution_identity": {
+            "execution_ref": run_instance
+            if run_instance.startswith("execution:")
+            else "execution:" + run_instance,
+            "run_ref": None,
+            "attempt_ref": None,
+            "run_attempt_verification": "not_supplied",
+            "origin_execution_attributed": False,
+        },
         "plan": {
             "generator": plan.get("generator"),
             "git": plan.get("git"),
@@ -4684,7 +4816,11 @@ def execute(
         report["native_stdout"] = native.get("stdout", "")
         report["native_stderr"] = native.get("stderr", "")
         tests_status = "passed" if exit_code == 0 else "failed"
-        report["tests"] = {"status": tests_status, "exit_code": exit_code}
+        report["tests"] = {
+            "status": tests_status,
+            "exit_code": exit_code,
+            "observation": native,
+        }
     else:
         report["tests"] = {"status": "not_executed", "exit_code": 3}
 
@@ -4722,6 +4858,9 @@ def execute(
     if source_result is not None:
         native_checks.append(source_result)
     covered = {item["name"] for item in native_checks}
+    if tests and report.get("tests", {}).get("observation"):
+        # A framework Check observes the existing selected-tests invocation.
+        covered.add(framework)
     remaining = [
         {
             "name": item.get("name"),

@@ -1,0 +1,232 @@
+{
+  "scope": "Tool-return chunks, not a full native Trace or fresh Origin proof",
+  "records": [
+    {
+      "name": "pass",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/source export --path .artifacts/native-producer/passed-bundle",
+      "implementation": "c09643210b631ee0e02ee34c588abc2ea040ea7c",
+      "chunks": [
+        {
+          "chunk_id": "455638",
+          "wall_time_seconds": 10.0066266,
+          "session_id": 30749,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:07:32 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "1805a6",
+          "wall_time_seconds": 5.0113802,
+          "session_id": 30749,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "8a9cc0",
+          "wall_time_seconds": 0.000012,
+          "exit_code": 0,
+          "original_token_count": 314,
+          "output": "[dagger] 30.0s elapsed · 16 steps running\r\n[dagger] 1m0s elapsed · 14 steps running\r\n== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/source export --path .artifacts/native-producer/passed-bundle  1m9s\u001b[10;1H✔ connect 1.4s\r\n✔ load workspace: . 15.3s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.6s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[17;1H✔ engineeringCi: EngineeringCi! 2.4s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ): Directory! 49.4s\r\n  ✔ downloading /tmp/tmp2nt65lyw 0.0s ████████████ 24 kB\r\n✔ .export(path: \".artifacts/native-producer/passed-bundle\"): String! 0.1s\u001b[?25h\r\n  ✔ downloading .artifacts/native-producer/passed-bundle 0.0s ████████████ 67 kB\u001b[24;80H\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/passed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "session_id": 30749,
+      "cli_exit_code": 0,
+      "expected_cli": 0
+    },
+    {
+      "name": "locked-pass",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/locked-source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/passed-locked-bundle",
+      "chunks": [
+        {
+          "chunk_id": "e100c8",
+          "wall_time_seconds": 10.0089342,
+          "session_id": 55573,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:12:13 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "956417",
+          "wall_time_seconds": 0.0000127,
+          "exit_code": 0,
+          "original_token_count": 331,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/locked-source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/passed-locked-bundle  15.9s\u001b[8;1H✔ connect 1.2s\r\n✔ load workspace: . 8.4s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H✔ engineeringCi: EngineeringCi! 2.4s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"run/controlled\"\r\n  ┆ attemptRef: \"attempt/1\"\r\n  ): Directory! 3.7s\r\n  ✔ downloading /tmp/tmp_imc0yse 0.0s ████████████ 24 kB\r\n✔ .export(path: \".artifacts/native-producer/passed-locked-bundle\"): String! 0.1s\u001b[24;80H\u001b[?25h\r\n  ✔ downloading .artifacts/native-producer/passed-locked-bundle 0.0s ███████████\r\n\u001b[23;80H██ 90 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/passed-locked-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "session_id": 55573,
+      "cli_exit_code": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "expected_cli": 0
+    },
+    {
+      "name": "failed",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/failed.json --source .artifacts/native-producer/failure-source export --path .artifacts/native-producer/failed-bundle",
+      "expected_cli": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "070b76",
+          "wall_time_seconds": 10.0022026,
+          "session_id": 70304,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:14:22 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "08324d",
+          "wall_time_seconds": 5.0023061,
+          "session_id": 70304,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "4cdbf0",
+          "wall_time_seconds": 0.664074,
+          "exit_code": 0,
+          "original_token_count": 305,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/failed.json --source .artifacts/native-producer/failure-source export --path .artifacts/native-producer/failed-bundle  14.7s\u001b[8;1H✔ connect 1.5s\r\n✔ load workspace: . 3.6s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.5s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"\"\r\n  ┆ attemptRef: \"\"\r\n  ): Directory! 9.4s\r\n  ✔ downloading /tmp/tmpcaltxboy 0.0s ████████████ 33 kB\r\n✔ .export(path: \".artifacts/native-producer/failed-bundle\"): String! 0.1s\u001b[?25h\r\n  ✔ downloading .artifacts/native-producer/failed-bundle 0.0s ████████████ 92 kB\u001b[24;80H\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/failed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "blocked",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/blocked.json --source .artifacts/native-producer/locked-source export --path .artifacts/native-producer/blocked-bundle",
+      "expected_cli": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "d1bb81",
+          "wall_time_seconds": 4.3321633,
+          "exit_code": 0,
+          "original_token_count": 387,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:14:41 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/blocked.json --source .artifacts/native-producer/locked-source export --path .artifacts/native-producer/blocked-bundle  3.9s\u001b[8;1H✔ connect 0.6s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"\"\r\n  ┆ attemptRef: \"\"\r\n  ): Directory! 2.4s\r\n  ✔ downloading /tmp/tmpkye2f0_h 0.0s ████████████ 24 kB\r\n✔ .export(path: \".artifacts/native-producer/blocked-bundle\"): String! 0.0s\u001b[?25h\r\n  ✔ downloading .artifacts/native-producer/blocked-bundle 0.0s ████████████ 57 k\r\n\u001b[23;80HkB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/blocked-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "pytest-passed",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/pytest-passed.json --source .artifacts/native-producer/pytest-source export --path .artifacts/native-producer/pytest-passed-bundle",
+      "expected_cli": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "956042",
+          "wall_time_seconds": 6.1705354,
+          "exit_code": 0,
+          "original_token_count": 396,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:14:49 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/pytest-passed.json --source .artifacts/native-producer/pytest-source export --path .artifacts/native-producer/pytest-passed-bundle  5.8s\u001b[8;1H✔ connect 0.5s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"\"\r\n  ┆ attemptRef: \"\"\r\n  ): Directory! 4.5s\r\n  ✔ downloading /tmp/tmpouna054j 0.0s ████████████ 33 kB\r\n✔ .export(path: \".artifacts/native-producer/pytest-passed-bundle\"): String! 0.1s\u001b[24;80H\u001b[?25h\r\n  ✔ downloading .artifacts/native-producer/pytest-passed-bundle 0.0s ███████████\r\n\u001b[23;80H██ 36 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/pytest-passed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "live",
+      "command": "dagger api call weaver-artifacts --source .artifacts/native-producer/locked-source --kind live export --path .artifacts/native-producer/live-bundle",
+      "expected_cli": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "68a899",
+          "wall_time_seconds": 5.0464382,
+          "exit_code": 0,
+          "original_token_count": 375,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:14:59 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lweaver-artifacts --source .artifacts/native-producer/locked-source --kind live export --path .artifacts/native-producer/live-bundle  4.7s\u001b[7;1H✔ connect 0.4s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/native-producer/locked-source 0.0s ████████████ 23 kB\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .weaverArtifacts(\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ kind: \"live\"\r\n  ┆ configPath: \"ci-weaver.toml\"\r\n  ): Directory! 3.5s\r\n✔ .export(path: \".artifacts/native-producer/live-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/native-producer/live-bundle 0.0s ████████████ 58 kB\u001b[24;1HC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\u001b[?25h\r\n\u001b[23;80Hative-producer/live-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "terminal",
+      "command": "dagger api call weaver-artifacts --source .artifacts/native-producer/locked-source --kind terminal export --path .artifacts/native-producer/terminal-bundle",
+      "expected_cli": 0,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "af2c0a",
+          "wall_time_seconds": 4.7696758,
+          "exit_code": 0,
+          "original_token_count": 380,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:15:09 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lweaver-artifacts --source .artifacts/native-producer/locked-source --kind terminal export --path .artifacts/native-producer/terminal-bundle  4.5s\u001b[7;1H✔ connect 0.5s\r\n✔ load workspace: . 0.7s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/native-producer/locked-source 0.0s ████████████ 23 kB\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .weaverArtifacts(\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ kind: \"terminal\"\r\n  ┆ configPath: \"ci-weaver.toml\"\r\n  ): Directory! 3.2s\r\n✔ .export(path: \".artifacts/native-producer/terminal-bundle\"): String! 0.0s\r\n  ✔ downloading .artifacts/native-producer/terminal-bundle 0.0s ████████████ 58 kB\r\n\u001b[?25h\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/terminal-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "strict-failed",
+      "command": "dagger api call plan-execution --plan .artifacts/native-producer/failed.json --source .artifacts/native-producer/failure-source enforce",
+      "expected_cli": 1,
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "chunks": [
+        {
+          "chunk_id": "288d1e",
+          "wall_time_seconds": 5.390269,
+          "exit_code": 1,
+          "original_token_count": 505,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:15:19 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✘ FAILED\r\n\u001b[?25lplan-execution --plan .artifacts/native-producer/failed.json --source .artifacts/native-producer/failure-source enforce  5.0s\r\n! exit code 1\r\n! FunctionError: Plan failed: tests_failed (exit 1)\u001b[9;1H✔ connect 0.5s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[16;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .planExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ weaverConfig: \"ci-weaver.toml\"\r\n  ┆ runRef: \"\"\r\n  ┆ attemptRef: \"\"\r\n  ): EngineeringCiPlanExecution! 2.1s\u001b[?25h\r\n  ✔ downloading /tmp/tmpqkkpaydx 0.0s ████████████ 33 kB\r\n✘ .enforce: Void 1.6s ERROR\r\n! FunctionError: Plan failed: tests_failed (exit 1)\r\n\n✘ EngineeringCiPlanExecution.enforce: Void 1.6s ERROR\r\nERROR [dagger.mod]: Unhandled exception while executing function\r\nTraceback (most recent call last):\r\n  File \"/src/xxh3:5bf33b91bba32b2d/.dagger/sdk/src/dagger/mod/_module.py\", line \r\n\u001b[23;80H 462, in call\r\n    result = await cast(typing.Awaitable[R], result)\r\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/src/xxh3:5bf33b91bba32b2d/.dagger/src/engineering_ci_module/plan_result\r\n\u001b[23;80Ht.py\", line 44, in enforce\r\n    raise RuntimeError(\r\n    ...<3 lines>...\r\n    )\r\nRuntimeError: Plan failed: tests_failed (exit 1)\r\n! FunctionError: Plan failed: tests_failed (exit 1)\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 1
+    },
+    {
+      "name": "registry-failed",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/blocked.json --source .artifacts/native-producer/registry-failure-source export --path .artifacts/native-producer/registry-failed-bundle",
+      "implementation": "348f088b7081bc96e1f04844079f1330543e2489",
+      "expected_cli": 0,
+      "chunks": [
+        {
+          "chunk_id": "a7107f",
+          "wall_time_seconds": 5.2640924,
+          "exit_code": 0,
+          "original_token_count": 400,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:17:19 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/blocked.json --source .artifacts/native-producer/registry-failure-source export --path .artifacts/native-producer/registry-failed-bundle  4.7s\u001b[8;1H✔ connect 0.6s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.1s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Host.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"\"\r\n  ┆ attemptRef: \"\"\r\n  ): Directory! 3.1s\r\n  ✔ downloading /tmp/tmprjdpfi2i 0.0s ████████████ 33 kB\r\n✔ .export(path: \".artifacts/native-producer/registry-failed-bundle\"): String! 0.\u001b[?25h\r\n\u001b[23;80H.0s\r\n  ✔ downloading .artifacts/native-producer/registry-failed-bundle 0.0s █████████\r\n\u001b[23;80H████ 31 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/registry-failed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "setup-diagnostic",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/setup-diagnostic-bundle",
+      "implementation": "e337cbe1afcf4ebdb825e8a0b85e8e54d89006aa",
+      "expected_cli": 0,
+      "chunks": [
+        {
+          "chunk_id": "456cef",
+          "wall_time_seconds": 10.0038629,
+          "session_id": 5261,
+          "original_token_count": 80,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:22:54 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h"
+        },
+        {
+          "chunk_id": "92d85d",
+          "wall_time_seconds": 5.0037708,
+          "session_id": 5261,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "0e6db4",
+          "wall_time_seconds": 4.7297177,
+          "exit_code": 0,
+          "original_token_count": 334,
+          "output": "== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/setup-diagnostic-bundle  19.1s\u001b[8;1H✔ connect 1.0s\r\n✔ load workspace: . 12.2s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.3s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.1s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H✔ engineeringCi: EngineeringCi! 2.1s\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"run/controlled\"\r\n  ┆ attemptRef: \"attempt/1\"\r\n  ): Directory! 3.6s\r\n  ✔ downloading /tmp/tmpt7in6dbt 0.1s ████████████ 24 kB\r\n✔ .export(path: \".artifacts/native-producer/setup-diagnostic-bundle\"): String! 0\u001b[?25h\r\n\u001b[23;80H0.0s\r\n  ✔ downloading .artifacts/native-producer/setup-diagnostic-bundle 0.0s ████████\r\n\u001b[23;80H█████ 68 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/setup-diagnostic-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    },
+    {
+      "name": "current-passed",
+      "command": "dagger api call fixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/locked-source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/current-passed-bundle",
+      "implementation": "e337cbe1afcf4ebdb825e8a0b85e8e54d89006aa",
+      "expected_cli": 0,
+      "chunks": [
+        {
+          "chunk_id": "d9363e",
+          "wall_time_seconds": 4.2968731,
+          "exit_code": 0,
+          "original_token_count": 415,
+          "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H2026/11/17 11:23:17 WARN failed to open git repository err=\"core.repositoryformatversion does not support extension: worktreeconfig\"\r\n\u001b]0;C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26-1112-737-0_26.1112.737.0_x64__3k8sg7r9htsxt\\dependencies\\native\\powershell\\pwsh.exe\u0007\u001b[?25h== TRACE ==  ✔ PASSED\r\n\u001b[?25lfixture-plan-execution --plan .artifacts/native-producer/passed.json --source .artifacts/native-producer/locked-source --run-ref run/controlled --attempt-ref attempt/1 export --path .artifacts/native-producer/current-passed-bundle  4.0s\u001b[8;1H✔ connect 0.6s\r\n✔ load workspace: . 0.8s\r\n  ✔ uploading C:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci 0.2s ████████████ 3.6 MB\r\n✔ parsing command line arguments 0.0s\r\n  ✔ 2 uploads 0.0s\u001b[15;1H$ engineeringCi: EngineeringCi! 0.0s CACHED\r\n✔ .fixturePlanExecution(\r\n  ┆ plan: Directory.file: File!\r\n  ┆ source: Address.directory: Directory!\r\n  ┆ pythonVersion: \"3.14\"\r\n  ┆ runRef: \"run/controlled\"\r\n  ┆ attemptRef: \"attempt/1\"\r\n  ): Directory! 2.4s\r\n  ✔ downloading /tmp/tmpt7cutvo6 0.0s ████████████ 24 kB\r\n✔ .export(path: \".artifacts/native-producer/current-passed-bundle\"): String! 0.1\u001b[?25h\r\n\u001b[23;80H1s\r\n  ✔ downloading .artifacts/native-producer/current-passed-bundle 0.0s ██████████\r\n\u001b[23;80H███ 90 kB\r\n\nC:/Users/Aurola/.codex/worktrees/eci-086-native-dag/engineering-ci/.artifacts/na\r\n\u001b[23;80Hative-producer/current-passed-bundle\r\n\nSetup tracing at https://dagger.cloud/traces/setup. To hide set DAGGER_NO_NAG=1 \u001b[24;80H\r\n\u001b[?9001l\u001b[?1004l"
+        }
+      ],
+      "cli_exit_code": 0
+    }
+  ]
+}

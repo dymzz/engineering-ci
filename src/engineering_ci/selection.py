@@ -4373,6 +4373,9 @@ def run_tests(
     if capture is not None:
         capture["stdout"] = result.stdout or ""
         capture["stderr"] = result.stderr or ""
+        capture["argv"] = command
+        capture["executable"] = executable
+        capture["execution_source"] = str(root.resolve())
     return result.returncode
 
 
