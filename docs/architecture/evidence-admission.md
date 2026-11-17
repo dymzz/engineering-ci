@@ -83,9 +83,11 @@ Policy 是 caller 提供的显式 allowlist；`authority` 是单独输入的 pro
 - 真实 T1-a 验收仍需要独立认证的 issuer、受控执行/采集边界与当前批准的实现注册；
 - 在取得这些事实前，输出保持接口级和 non-production 状态，不宣称 T1-a 通过。
 
-## 与 #66-C / #61 的关系
+## 与 #66-C / #61 / T2 的关系
 
 - 输入 Receipt 保持 `trusted=false`, `evidence_admission=not_evaluated`,
   `required_gate=not_evaluated`；Admission 不重写它。
 - Admission 只输出当前 Expected 实例的可复核覆盖/未满足，供 #61 后续消费。
 - 不创建第二套 Receipt、Result、Expected、Gate、Scanner 或证据账本。
+- 跨 Run / PR→main 执行前复用见 [历史复用接纳](historical-reuse.md)
+  （`admit_historical_reuse()`）；T1-a 的同次接纳不升级为 T2 输入等价。

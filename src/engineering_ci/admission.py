@@ -1,10 +1,12 @@
-"""#63 T1-a same-execution evidence admission.
+"""#63 evidence admission: T1-a same-execution and T2 historical reuse.
 
-This module independently admits a limited set of raw execution evidence for an
-already reconciled #66-C Receipt. It does not execute checks, enumerate
-Expected Checks, rewrite the Receipt, or decide #61 Required/Release status.
+T1-a independently admits raw execution evidence for an already reconciled
+#66-C Receipt. T2 admits historically authenticated evidence against the
+current Expected instances using #66-P0 pre-execution Source proofs and
+per-Result input equivalence. Neither path executes checks, rewrites a
+Receipt, or decides #61 Required/Release status.
 
-The caller supplies:
+T1-a caller supplies:
 
 - the immutable #66-B Expected projection and its #66-C Receipt;
 - the actual raw Execution Report and Job/Attempt receipt objects;
@@ -12,12 +14,20 @@ The caller supplies:
 - an explicit admission policy naming trusted issuers and approved
   Check/definition implementation digests.
 
+T2 caller supplies:
+
+- the current immutable #66-B Expected projection (no current Receipt);
+- independently obtained #66-P0 pre-execution Source proofs;
+- historical candidates whose origin was already OriginAccepted (T1-a);
+- an explicit reuse policy.
+
 The output is per ``(scope_id, expected_check_ref)``. ``origin_status`` records
 whether the raw native fact was authenticated; ``obligation_status`` records
 whether the current Expected obligation is satisfied. ``admitted`` is true only
 when both are established and the selected #52 witness is a successful native
 result. A verified native FAIL is preserved as ``verified`` +
-``unsatisfied`` and is never promoted to Accepted Coverage.
+``unsatisfied`` and is never promoted to Accepted Coverage. T2 never rebinds
+historical Run/Attempt/Result identities onto the current invocation.
 """
 
 from __future__ import annotations
@@ -31,6 +41,8 @@ from . import check_contract, reconciliation
 
 ADMISSION_KIND = "engineering-ci-evidence-admission"
 ADMISSION_VERSION = 1
+HISTORICAL_REUSE_KIND = "engineering-ci-historical-reuse-admission"
+HISTORICAL_REUSE_VERSION = 1
 ORIGIN_STATUSES = frozenset({"verified", "rejected", "unverified"})
 OBLIGATION_STATUSES = frozenset(
     {"satisfied", "unsatisfied", "unknown", "not_applicable"}
@@ -49,6 +61,38 @@ POLICY_KEYS = frozenset(
         "allowed_runner_refs",
         "allowed_result_origins",
     }
+)
+REUSE_POLICY_KEYS = frozenset(
+    {
+        "permitted_check_ids",
+        "require_closed_source",
+        "permit_native_fail_reuse",
+        "current_phase",
+        "current_action",
+        "current_target_ref",
+        "forbid_phase_obligation_transfer",
+    }
+)
+CLOSED_SOURCE_SCOPES = frozenset({"check_input_closure", "full_input_closure"})
+HISTORICAL_CANDIDATE_KEYS = frozenset(
+    {
+        "historical_scope_id",
+        "historical_expected_check_ref",
+        "historical_event_ref",
+        "origin_trace",
+        "origin_status",
+        "obligation_status",
+        "admitted",
+        "issuer_verified",
+        "results",
+        "check_name",
+        "check_id",
+        "definition_version",
+        "applicability",
+    }
+)
+ORIGIN_TRACE_KEYS = frozenset(
+    {"run_ref", "attempt_ref", "runner_ref", "result_origin", "result_id", "report_ref"}
 )
 IMPLEMENTATION_RECORD_KEYS = frozenset(
     {
@@ -888,6 +932,666 @@ def admit_evidence(
             "verification_implementation_from_report_check",
             "legally_empty_expected_is_not_trusted_complete",
             "cross_run_reuse_not_evaluated",
+            "required_gate_not_evaluated",
+        ],
+    }
+
+
+def _reuse_policy(value):
+    if not isinstance(value, dict) or set(value) - REUSE_POLICY_KEYS:
+        raise AdmissionError("reuse_policy_invalid")
+    permitted = value.get("permitted_check_ids")
+    if permitted is not None:
+        if not isinstance(permitted, (list, tuple)) or not permitted:
+            raise AdmissionError("reuse_policy_checks_invalid")
+        if any(not isinstance(item, str) or not item for item in permitted):
+            raise AdmissionError("reuse_policy_checks_invalid")
+        permitted = tuple(permitted)
+    require_closed = value.get("require_closed_source", True)
+    if not isinstance(require_closed, bool):
+        raise AdmissionError("reuse_policy_invalid")
+    permit_fail = value.get("permit_native_fail_reuse", False)
+    if not isinstance(permit_fail, bool):
+        raise AdmissionError("reuse_policy_invalid")
+    forbid_phase = value.get("forbid_phase_obligation_transfer", True)
+    if not isinstance(forbid_phase, bool):
+        raise AdmissionError("reuse_policy_invalid")
+    for key in ("current_phase", "current_action", "current_target_ref"):
+        field = value.get(key)
+        if field is not None and (not isinstance(field, str) or not field):
+            raise AdmissionError("reuse_policy_invalid")
+    return {
+        "permitted_check_ids": permitted,
+        "require_closed_source": require_closed,
+        "permit_native_fail_reuse": permit_fail,
+        "current_phase": value.get("current_phase"),
+        "current_action": value.get("current_action"),
+        "current_target_ref": value.get("current_target_ref"),
+        "forbid_phase_obligation_transfer": forbid_phase,
+    }
+
+
+def _index_pre_execution_proofs(proofs):
+    if not isinstance(proofs, (list, tuple)):
+        raise AdmissionError("pre_execution_proofs_invalid")
+    indexed = {}
+    for proof in proofs:
+        if not isinstance(proof, dict):
+            raise AdmissionError("pre_execution_proofs_invalid")
+        if proof.get("phase") != "pre_execution":
+            raise AdmissionError("pre_execution_proof_phase_invalid")
+        if proof.get("execution_started") is not False:
+            raise AdmissionError("pre_execution_proof_execution_started")
+        expected_ref = proof.get("expected_check_ref")
+        if not isinstance(expected_ref, str) or not expected_ref:
+            raise AdmissionError("pre_execution_proof_ref_missing")
+        key = (proof.get("scope_id"), expected_ref)
+        if key in indexed:
+            raise AdmissionError("pre_execution_proof_duplicate")
+        indexed[key] = proof
+    return indexed
+
+
+def _origin_trace(value):
+    if not isinstance(value, dict) or set(value) - ORIGIN_TRACE_KEYS:
+        raise AdmissionError("historical_origin_trace_invalid")
+    for key in ("run_ref", "attempt_ref", "result_origin"):
+        _text(value.get(key), "historical_origin_trace_invalid")
+    if value.get("runner_ref") is not None:
+        _text(value["runner_ref"], "historical_origin_trace_invalid")
+    if value.get("result_id") is not None:
+        _text(value["result_id"], "historical_origin_trace_invalid")
+    if value.get("report_ref") is not None and not isinstance(
+        value["report_ref"], dict
+    ):
+        raise AdmissionError("historical_origin_trace_invalid")
+    return copy.deepcopy(value)
+
+
+def _historical_candidate(value):
+    if not isinstance(value, dict) or set(value) - HISTORICAL_CANDIDATE_KEYS:
+        raise AdmissionError("historical_candidate_invalid")
+    historical_scope = _text(
+        value.get("historical_scope_id"), "historical_candidate_invalid"
+    )
+    historical_ref = _text(
+        value.get("historical_expected_check_ref"), "historical_candidate_invalid"
+    )
+    origin_status = value.get("origin_status")
+    if origin_status not in ORIGIN_STATUSES:
+        raise AdmissionError("historical_candidate_origin_invalid")
+    obligation_status = value.get("obligation_status")
+    if obligation_status not in OBLIGATION_STATUSES:
+        raise AdmissionError("historical_candidate_obligation_invalid")
+    if not isinstance(value.get("admitted"), bool):
+        raise AdmissionError("historical_candidate_invalid")
+    if not isinstance(value.get("issuer_verified"), bool):
+        raise AdmissionError("historical_candidate_invalid")
+    results = value.get("results")
+    if not isinstance(results, (list, tuple)) or not results:
+        raise AdmissionError("historical_candidate_results_invalid")
+    validated_results = []
+    for item in results:
+        try:
+            check_contract.validate_result(item)
+        except check_contract.CheckContractError as error:
+            raise AdmissionError(
+                "historical_candidate_results_invalid", native_code=error.code
+            ) from None
+        validated_results.append(item)
+    check_id = _text(value.get("check_id"), "historical_candidate_invalid")
+    definition_version = value.get("definition_version")
+    if type(definition_version) is not int or definition_version < 1:
+        raise AdmissionError("historical_candidate_invalid")
+    check_name = value.get("check_name")
+    if check_name is not None:
+        _text(check_name, "historical_candidate_invalid")
+    applicability = value.get("applicability")
+    if applicability is not None and (
+        not isinstance(applicability, dict) or not applicability.get("status")
+    ):
+        raise AdmissionError("historical_candidate_applicability_invalid")
+    event_ref = value.get("historical_event_ref")
+    if event_ref is not None and not isinstance(event_ref, dict):
+        raise AdmissionError("historical_candidate_event_invalid")
+    return {
+        "historical_scope_id": historical_scope,
+        "historical_expected_check_ref": historical_ref,
+        "historical_event_ref": copy.deepcopy(event_ref),
+        "origin_trace": _origin_trace(value.get("origin_trace")),
+        "origin_status": origin_status,
+        "obligation_status": obligation_status,
+        "admitted": value["admitted"],
+        "issuer_verified": value["issuer_verified"],
+        "results": validated_results,
+        "check_name": check_name,
+        "check_id": check_id,
+        "definition_version": definition_version,
+        "applicability": copy.deepcopy(applicability),
+    }
+
+
+def _origin_accepted(candidate):
+    return (
+        candidate["admitted"] is True
+        and candidate["origin_status"] == "verified"
+        and candidate["issuer_verified"] is True
+        and candidate["obligation_status"] == "satisfied"
+    )
+
+
+def _policy_permits_reuse(policy, expected_entry):
+    check_id = expected_entry.get("check_id")
+    if (
+        policy["permitted_check_ids"] is not None
+        and check_id not in policy["permitted_check_ids"]
+    ):
+        return False, "reuse_policy_check_not_permitted"
+    applicability = expected_entry.get("applicability") or {}
+    status = applicability.get("status")
+    if (
+        policy["forbid_phase_obligation_transfer"]
+        and status in _NOT_APPLICABLE_APPLICABILITY
+    ):
+        return False, "current_expected_not_applicable"
+    return True, None
+
+
+def _equivalence_basis(pre_proof, comparisons, *, issuer_verified):
+    source = pre_proof.get("source_ref") or {}
+    return {
+        "verified": all(item.get("equivalent") is True for item in comparisons),
+        "requires_baseline": pre_proof.get("baseline_ref") is not None,
+        "closed_source_scope_kind": source.get("scope_kind"),
+        "raw_native_source_digest_equal": all(
+            item.get("reason") != "source_content_mismatch" for item in comparisons
+        ),
+        "raw_native_rule_and_profile_equal": all(
+            item.get("reason") not in {"rule_mismatch", "profile_mismatch"}
+            for item in comparisons
+        ),
+        "issuer_verified": issuer_verified,
+        "closure_digest": pre_proof.get("closure_digest"),
+        "comparison_reasons": [
+            item.get("reason") for item in comparisons if item.get("reason")
+        ],
+    }
+
+
+def _evaluate_historical_candidate(expected_entry, pre_proof, candidate, policy):
+    """Return coverage decision for one historical candidate against one Expected."""
+    if not _origin_accepted(candidate):
+        return {
+            "admitted": False,
+            "status": "rejected"
+            if candidate["origin_status"] == "rejected"
+            else "unverified",
+            "origin_status": candidate["origin_status"],
+            "obligation_status": "unknown",
+            "reason": "historical_origin_not_accepted",
+            "equivalence_basis": None,
+            "comparisons": [],
+        }
+    if candidate["check_id"] != expected_entry.get("check_id") or candidate[
+        "definition_version"
+    ] != expected_entry.get("definition_version"):
+        return {
+            "admitted": False,
+            "status": "rejected",
+            "origin_status": "verified",
+            "obligation_status": "unsatisfied",
+            "reason": "check_identity_mismatch",
+            "equivalence_basis": None,
+            "comparisons": [],
+        }
+    if policy["forbid_phase_obligation_transfer"]:
+        hist_app = (candidate.get("applicability") or {}).get("status")
+        if hist_app in _NOT_APPLICABLE_APPLICABILITY:
+            return {
+                "admitted": False,
+                "status": "rejected",
+                "origin_status": "verified",
+                "obligation_status": "unsatisfied",
+                "reason": "historical_phase_obligation_not_transferable",
+                "equivalence_basis": None,
+                "comparisons": [],
+            }
+
+    source = pre_proof.get("source_ref") or {}
+    if policy["require_closed_source"] and (
+        pre_proof.get("status") != "verified_candidate_inputs"
+        or source.get("scope_kind") not in CLOSED_SOURCE_SCOPES
+        or source.get("binding_status") != "content_digest"
+    ):
+        return {
+            "admitted": False,
+            "status": "unverified",
+            "origin_status": "verified",
+            "obligation_status": "unknown",
+            "reason": "pre_execution_source_unverified",
+            "equivalence_basis": None,
+            "comparisons": [],
+        }
+
+    from . import execution
+
+    comparisons = [
+        execution.compare_pre_execution_to_historical_result(pre_proof, result)
+        for result in candidate["results"]
+    ]
+    basis = _equivalence_basis(
+        pre_proof, comparisons, issuer_verified=candidate["issuer_verified"]
+    )
+    if any(item.get("equivalent") is not True for item in comparisons):
+        reason = next(
+            (
+                item.get("reason")
+                for item in comparisons
+                if item.get("equivalent") is not True
+            ),
+            "input_not_equivalent",
+        )
+        return {
+            "admitted": False,
+            "status": "rejected",
+            "origin_status": "verified",
+            "obligation_status": "unsatisfied",
+            "reason": reason or "input_not_equivalent",
+            "equivalence_basis": basis,
+            "comparisons": comparisons,
+        }
+
+    try:
+        satisfaction = check_contract.evaluate_expected_satisfaction(
+            list(candidate["results"]), expected_entry
+        )
+    except check_contract.CheckContractError as error:
+        return {
+            "admitted": False,
+            "status": "rejected",
+            "origin_status": "verified",
+            "obligation_status": "unsatisfied",
+            "reason": error.code,
+            "equivalence_basis": basis,
+            "comparisons": comparisons,
+        }
+    if satisfaction.get("status") != "satisfied":
+        native_fail = any(
+            result.get("status") == "failed" for result in candidate["results"]
+        )
+        if native_fail and not policy["permit_native_fail_reuse"]:
+            return {
+                "admitted": False,
+                "status": "unsatisfied",
+                "origin_status": "verified",
+                "obligation_status": "unsatisfied",
+                "reason": "verified_native_fail_not_reusable_as_coverage",
+                "equivalence_basis": basis,
+                "comparisons": comparisons,
+                "satisfaction": satisfaction,
+            }
+        return {
+            "admitted": False,
+            "status": "unsatisfied",
+            "origin_status": "verified",
+            "obligation_status": "unsatisfied",
+            "reason": satisfaction.get("reason") or "result_not_eligible",
+            "equivalence_basis": basis,
+            "comparisons": comparisons,
+            "satisfaction": satisfaction,
+        }
+
+    for comparison in comparisons:
+        comparison["whole_check_reuse_admitted"] = True
+        comparison["check_satisfaction_evaluated"] = True
+        comparison["admission_status"] = "admitted"
+        comparison["trusted"] = True
+
+    return {
+        "admitted": True,
+        "status": "admitted",
+        "origin_status": "verified",
+        "obligation_status": "satisfied",
+        "reason": None,
+        "equivalence_basis": {
+            **basis,
+            "verified": True,
+            "check_satisfaction_status": "satisfied",
+            "selected_result_ids": list(satisfaction.get("selected_result_ids") or ()),
+        },
+        "comparisons": comparisons,
+        "satisfaction": satisfaction,
+    }
+
+
+def _reuse_coverage_entry(entry):
+    return {
+        "scope_id": entry["scope_id"],
+        "expected_check_ref": entry["expected_check_ref"],
+        "check_name": entry.get("check_name"),
+        "admission_status": entry["status"],
+        "admitted": entry.get("admitted") is True,
+        "source_kind": "historical_reuse" if entry.get("admitted") else None,
+        "origin_status": entry.get("origin_status"),
+        "obligation_status": entry.get("obligation_status"),
+        "historical_scope_id": entry.get("historical_scope_id"),
+        "historical_expected_check_ref": entry.get("historical_expected_check_ref"),
+        "historical_event_ref": copy.deepcopy(entry.get("historical_event_ref")),
+        "origin_trace": copy.deepcopy(entry.get("origin_trace")),
+        "equivalence_basis": copy.deepcopy(entry.get("equivalence_basis")),
+        "result_ids": list(entry.get("result_ids") or ()),
+        "reasons": list(entry.get("reasons") or ()),
+    }
+
+
+def admit_historical_reuse(
+    expected,
+    *,
+    pre_execution_proofs,
+    historical_candidates,
+    reuse_policy,
+    ref_scope_id=None,
+):
+    """Admit historically authenticated evidence for current Expected instances.
+
+    This is the #63 T2 contract surface. It evaluates
+    ``OriginAccepted ∧ InputEquivalent ∧ ResultEligible ∧ ScopeCovered ∧
+    PolicyPermitsReuse`` *before* the current expensive Check runs and without
+    requiring a current #66-C Receipt, Job, or Native Result.
+
+    Historical Run/Attempt/Result identities stay on the candidate; coverage is
+    keyed only by the current ``(scope_id, expected_check_ref)``. Fixture-level
+    OriginAccepted claims are not production trust roots.
+    """
+    try:
+        scope = reconciliation._select_scope(expected, ref_scope_id)
+        reconciliation._verify_scope(scope)
+    except reconciliation.ReconciliationError as error:
+        raise AdmissionError(
+            "admission_expected_invalid", native_code=error.code
+        ) from None
+    policy = _reuse_policy(reuse_policy)
+    proofs = _index_pre_execution_proofs(pre_execution_proofs)
+    if not isinstance(historical_candidates, (list, tuple)):
+        raise AdmissionError("historical_candidates_invalid")
+    candidates = [_historical_candidate(item) for item in historical_candidates]
+
+    entries = []
+    for expected_entry in scope.get("checks") or ():
+        expected_ref = expected_entry.get("expected_check_ref")
+        scope_id = scope.get("scope_id")
+        applicability = expected_entry.get("applicability") or {}
+        if applicability.get("status") in _NOT_APPLICABLE_APPLICABILITY:
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "not_applicable",
+                    "admitted": False,
+                    "origin_status": "unverified",
+                    "obligation_status": "not_applicable",
+                    "historical_scope_id": None,
+                    "historical_expected_check_ref": None,
+                    "historical_event_ref": None,
+                    "origin_trace": None,
+                    "equivalence_basis": None,
+                    "result_ids": [],
+                    "reasons": [],
+                }
+            )
+            continue
+
+        permitted, policy_reason = _policy_permits_reuse(policy, expected_entry)
+        proof = proofs.get((scope_id, expected_ref))
+        if proof is None:
+            # Allow proofs that omit scope_id when the Expected scope is unique.
+            proof = proofs.get((None, expected_ref))
+        if not permitted:
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "rejected",
+                    "admitted": False,
+                    "origin_status": "unverified",
+                    "obligation_status": "unsatisfied",
+                    "historical_scope_id": None,
+                    "historical_expected_check_ref": None,
+                    "historical_event_ref": None,
+                    "origin_trace": None,
+                    "equivalence_basis": None,
+                    "result_ids": [],
+                    "reasons": [policy_reason],
+                }
+            )
+            continue
+        if proof is None:
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "unverified",
+                    "admitted": False,
+                    "origin_status": "unverified",
+                    "obligation_status": "unknown",
+                    "historical_scope_id": None,
+                    "historical_expected_check_ref": None,
+                    "historical_event_ref": None,
+                    "origin_trace": None,
+                    "equivalence_basis": None,
+                    "result_ids": [],
+                    "reasons": ["pre_execution_proof_missing"],
+                }
+            )
+            continue
+        if proof.get("status") != "verified_candidate_inputs":
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "unverified",
+                    "admitted": False,
+                    "origin_status": "unverified",
+                    "obligation_status": "unknown",
+                    "historical_scope_id": None,
+                    "historical_expected_check_ref": None,
+                    "historical_event_ref": None,
+                    "origin_trace": None,
+                    "equivalence_basis": None,
+                    "result_ids": [],
+                    "reasons": [
+                        proof.get("reason") or "pre_execution_source_unverified"
+                    ],
+                }
+            )
+            continue
+
+        matching = [
+            candidate
+            for candidate in candidates
+            if candidate["check_id"] == expected_entry.get("check_id")
+            and candidate["definition_version"]
+            == expected_entry.get("definition_version")
+        ]
+        if not matching:
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "unverified",
+                    "admitted": False,
+                    "origin_status": "unverified",
+                    "obligation_status": "unknown",
+                    "historical_scope_id": None,
+                    "historical_expected_check_ref": None,
+                    "historical_event_ref": None,
+                    "origin_trace": None,
+                    "equivalence_basis": None,
+                    "result_ids": [],
+                    "reasons": ["historical_candidate_missing"],
+                }
+            )
+            continue
+
+        decisions = [
+            (
+                candidate,
+                _evaluate_historical_candidate(
+                    expected_entry, proof, candidate, policy
+                ),
+            )
+            for candidate in matching
+        ]
+        admitted = [
+            (candidate, decision)
+            for candidate, decision in decisions
+            if decision.get("admitted") is True
+        ]
+        if admitted:
+            # Deterministic pick: earliest historical_scope_id then expected ref.
+            admitted.sort(
+                key=lambda item: (
+                    item[0]["historical_scope_id"],
+                    item[0]["historical_expected_check_ref"],
+                )
+            )
+            candidate, decision = admitted[0]
+            entries.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": expected_ref,
+                    "check_name": expected_entry.get("name"),
+                    "check_id": expected_entry.get("check_id"),
+                    "status": "admitted",
+                    "admitted": True,
+                    "origin_status": "verified",
+                    "obligation_status": "satisfied",
+                    "historical_scope_id": candidate["historical_scope_id"],
+                    "historical_expected_check_ref": candidate[
+                        "historical_expected_check_ref"
+                    ],
+                    "historical_event_ref": copy.deepcopy(
+                        candidate.get("historical_event_ref")
+                    ),
+                    "origin_trace": copy.deepcopy(candidate["origin_trace"]),
+                    "equivalence_basis": copy.deepcopy(decision["equivalence_basis"]),
+                    "result_ids": [
+                        result["result_id"] for result in candidate["results"]
+                    ],
+                    "reasons": [],
+                }
+            )
+            continue
+
+        # Prefer a concrete rejection/unsatisfied reason over a bare miss.
+        ranked = sorted(
+            decisions,
+            key=lambda item: (
+                0
+                if item[1]["status"] == "unsatisfied"
+                else 1
+                if item[1]["status"] == "rejected"
+                else 2,
+                item[0]["historical_scope_id"],
+                item[0]["historical_expected_check_ref"],
+            ),
+        )
+        candidate, decision = ranked[0]
+        entries.append(
+            {
+                "scope_id": scope_id,
+                "expected_check_ref": expected_ref,
+                "check_name": expected_entry.get("name"),
+                "check_id": expected_entry.get("check_id"),
+                "status": decision["status"],
+                "admitted": False,
+                "origin_status": decision["origin_status"],
+                "obligation_status": decision["obligation_status"],
+                "historical_scope_id": candidate["historical_scope_id"],
+                "historical_expected_check_ref": candidate[
+                    "historical_expected_check_ref"
+                ],
+                "historical_event_ref": copy.deepcopy(
+                    candidate.get("historical_event_ref")
+                ),
+                "origin_trace": copy.deepcopy(candidate["origin_trace"]),
+                "equivalence_basis": copy.deepcopy(decision.get("equivalence_basis")),
+                "result_ids": [result["result_id"] for result in candidate["results"]],
+                "reasons": [decision["reason"]] if decision.get("reason") else [],
+            }
+        )
+
+    applicable = [
+        entry for entry in entries if entry["obligation_status"] != "not_applicable"
+    ]
+    admitted_entries = [entry for entry in entries if entry["admitted"]]
+    if not applicable:
+        status = "unknown"
+    elif len(admitted_entries) == len(applicable):
+        status = "admitted"
+    elif admitted_entries:
+        status = "partial"
+    elif any(entry["status"] == "rejected" for entry in entries):
+        status = "rejected"
+    else:
+        status = "unknown"
+
+    remaining_work = [
+        {
+            "scope_id": entry["scope_id"],
+            "expected_check_ref": entry["expected_check_ref"],
+            "check_name": entry.get("check_name"),
+            "reason": (entry["reasons"] or ["obligation_not_admitted"])[0],
+            "reasons": list(entry["reasons"]),
+        }
+        for entry in applicable
+        if not entry["admitted"]
+    ]
+    accepted = {
+        f"{entry['scope_id']}/{entry['expected_check_ref']}": _reuse_coverage_entry(
+            entry
+        )
+        for entry in entries
+    }
+    summary = {
+        "expected": len(entries),
+        "admitted": len(admitted_entries),
+        "remaining": len(remaining_work),
+        "historical_candidates": len(candidates),
+        "not_applicable": sum(
+            entry["obligation_status"] == "not_applicable" for entry in entries
+        ),
+    }
+    return {
+        "kind": HISTORICAL_REUSE_KIND,
+        "schema_version": HISTORICAL_REUSE_VERSION,
+        "scope_id": scope.get("scope_id"),
+        "expected_set_ref": scope.get("expected_set_ref"),
+        "receipt_ref": None,
+        "expected_status": scope.get("status"),
+        "ref": scope.get("ref"),
+        "status": status,
+        "entries": entries,
+        "accepted_coverage_by_instance": accepted,
+        "remaining_work": remaining_work,
+        "summary": summary,
+        "evidence_admission": "evaluated",
+        "required_gate": "not_evaluated",
+        "limitations": [
+            "current_receipt_not_required_for_pre_execution_reuse",
+            "historical_origin_acceptance_is_caller_supplied",
+            "fixture_origin_claims_are_not_production_trust",
+            "t1b_local_to_actions_handoff_not_evaluated",
             "required_gate_not_evaluated",
         ],
     }
