@@ -93,13 +93,26 @@ def make_parent_expected(
         "schema_version": expected_checks.EXPECTED_V2,
         "projection_source": "effective_profile",
         "status": status,
+        "reason": (
+            "effective_profile_phase_unverified"
+            if status == "partial" and phase_status == "unverified"
+            else None
+        ),
         "scope_id": scope_id,
         "phase": phase,
         "phase_status": phase_status,
+        "authority_status": "verified",
+        "consumer_completeness": (
+            "incomplete_profile"
+            if status == "partial" and phase_status == "unverified"
+            else None
+        ),
         "profile_ref": copy.deepcopy(PROFILE_REF),
         "profile_revision": PROFILE_REVISION,
         "checks": checks,
         "non_check_obligations": [],
+        "missing": [],
+        "conflicts": [],
     }
     if include_expected_set_ref:
         parent["expected_set_ref"] = expected_set_ref
@@ -302,6 +315,93 @@ def test_subject_target_mismatch_cannot_authorize(tmp_path):
     )
     assert binding["authorized"] is False
     assert "terminal_subject_declared_target_tree_mismatch" in binding["reasons"]
+
+
+def test_upstream_unknown_from_other_check_cannot_authorize(tmp_path):
+    """P0: unknown caused by another Check must not clear via Terminal evidence."""
+    root, plan = make_plan(tmp_path)
+    other = make_b2_terminal_entry()
+    other["name"] = "docs"
+    other["check_id"] = "eci/docs/render"
+    other["applicability"] = {"status": "unknown", "reason": "changeset_incomplete"}
+    other["expected_check_ref"] = expected_checks.entry_identity(
+        {key: value for key, value in other.items() if key != "expected_check_ref"}
+    )
+    expected = make_parent_expected(extra_checks=(other,))
+    expected["status"] = "unknown"
+    expected["reason"] = "applicability_or_changeset_incomplete"
+    expected["consumer_completeness"] = "unknown"
+    terminal = expected["checks"][0]
+    terminal["applicability"] = {
+        "status": "unknown",
+        "reason": "check_scope_missing",
+    }
+    terminal["expected_check_ref"] = expected_checks.entry_identity(
+        {key: value for key, value in terminal.items() if key != "expected_check_ref"}
+    )
+    expected["expected_set_ref"] = expected_checks.set_identity(
+        expected["checks"],
+        expected.get("non_check_obligations") or (),
+        schema_version=expected_checks.EXPECTED_V2,
+    )
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert "terminal_expected_upstream_unknown" in binding["reasons"]
+
+
+def test_upstream_partial_non_phase_cannot_authorize(tmp_path):
+    """P0: partial from policy/rule/authority gaps is not cleared by Phase Witness."""
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    expected["status"] = "partial"
+    expected["reason"] = "effective_profile_authority_unverified"
+    expected["authority_status"] = "unverified"
+    expected["consumer_completeness"] = "incomplete_profile"
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert "terminal_expected_upstream_partial" in binding["reasons"]
+
+
+def test_phase_only_partial_clears_with_witness(tmp_path):
+    """Positive: partial solely from phase_unverified remains bindable with witness."""
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    assert expected["reason"] == "effective_profile_phase_unverified"
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert "terminal_expected_upstream_partial" not in binding["reasons"]
+    assert binding["phase_witness_verified"] is True
+    assert binding["authorized"] is False  # still needs live projection
+    assert binding["projection_verification"] == "untrusted"
 
 
 def test_ref_only_subject_without_git_identity_cannot_authorize(tmp_path):

@@ -219,6 +219,138 @@ def _freeze_parent_phase(parent_meta, entry):
     return parent_phase, phase_status
 
 
+_PHASE_ONLY_PARTIAL_REASONS = frozenset({None, "effective_profile_phase_unverified"})
+_TERMINAL_UNKNOWN_REASONS = frozenset({None, "applicability_or_changeset_incomplete"})
+_UNRESOLVED_APP = frozenset({"unknown", "incomplete", "blocked"})
+
+
+def _is_terminal_check(check):
+    return isinstance(check, dict) and (
+        check.get("check_id") == TERMINAL_CHECK_ID
+        or check.get("name") == "weaver_terminal"
+    )
+
+
+def _check_app_status(check):
+    applicability = check.get("applicability")
+    if not isinstance(applicability, dict):
+        return None
+    return applicability.get("status")
+
+
+def _partial_is_phase_only(parent):
+    """True when partial incompleteness is only undeclared Phase verification."""
+    if parent.get("status") != "partial":
+        return False
+    if parent.get("reason") not in _PHASE_ONLY_PARTIAL_REASONS:
+        return False
+    if parent.get("conflicts") or parent.get("missing"):
+        return False
+    if parent.get("authority_status") == "unverified":
+        return False
+    for check in parent.get("checks") or []:
+        if not isinstance(check, dict) or _is_terminal_check(check):
+            continue
+        if check.get("rule_status") in {"unknown", "unresolved"}:
+            return False
+        if _check_app_status(check) in _UNRESOLVED_APP:
+            return False
+    return True
+
+
+def _terminal_applicability_is_sole_unknown(parent):
+    """True when unknown status is solely weaver_terminal pre-post_completion."""
+    if parent.get("status") != "unknown":
+        return False
+    if parent.get("reason") not in _TERMINAL_UNKNOWN_REASONS:
+        return False
+    if parent.get("conflicts") or parent.get("missing"):
+        return False
+    if parent.get("authority_status") == "unverified":
+        return False
+    terminal_unresolved = False
+    for check in parent.get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        app_status = _check_app_status(check)
+        if _is_terminal_check(check):
+            if app_status in _UNRESOLVED_APP or app_status == "not_applicable":
+                terminal_unresolved = True
+            continue
+        if app_status in _UNRESOLVED_APP:
+            return False
+        if check.get("rule_status") in {"unknown", "unresolved"}:
+            return False
+    return terminal_unresolved
+
+
+def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
+    """Attribute Expected unknown/partial causes without inventing a second engine.
+
+    Only Terminal applicability unknown (sole cause) and Phase-only partial are
+    clearable by this Binder's Terminal Plan / Phase Witness evidence. All other
+    upstream incompleteness remains blocking.
+    """
+    reasons = []
+    gaps = []
+    status = parent.get("status")
+    upstream_reason = parent.get("reason")
+
+    if status == "unknown":
+        if _terminal_applicability_is_sole_unknown(parent):
+            reasons.append("terminal_expected_terminal_applicability_unknown")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": "terminal_applicability_unknown",
+                    "upstream_reason": upstream_reason,
+                }
+            )
+        else:
+            reasons.append("terminal_expected_upstream_unknown")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": "upstream_unknown",
+                    "upstream_reason": upstream_reason,
+                }
+            )
+    elif status == "partial":
+        if not _partial_is_phase_only(parent):
+            reasons.append("terminal_expected_upstream_partial")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": "upstream_partial",
+                    "upstream_reason": upstream_reason,
+                }
+            )
+    elif status not in {"complete", None}:
+        reasons.append("terminal_expected_scope_incomplete")
+        gaps.append(
+            {
+                "kind": "expected_scope",
+                "ref": scope_id,
+                "reason": f"scope_status_{status}",
+            }
+        )
+
+    if parent.get("conflicts"):
+        reasons.append("terminal_expected_upstream_conflicts")
+        gaps.append(
+            {
+                "kind": "expected_scope",
+                "ref": scope_id,
+                "reason": "upstream_conflicts",
+            }
+        )
+
+    return reasons, gaps
+
+
 def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
     """Deterministic parent identity — does not treat phase as domain-complete."""
     reasons = []
@@ -258,27 +390,12 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
     phase_status = parent_meta.get("phase_status") or "unverified"
     if status == "complete" and phase_status == "unverified":
         raise TerminalExpectedError("terminal_expected_phase_complete_unproven")
-    if status not in {"complete", "partial"}:
-        # Pre-post_completion Expected may mark weaver_terminal applicability
-        # unknown; Terminal Plan selection + subject correlation must close it.
-        if status == "unknown" and entry.get("name") == "weaver_terminal":
-            reasons.append("terminal_expected_terminal_applicability_unknown")
-            gaps.append(
-                {
-                    "kind": "expected_scope",
-                    "ref": scope_id,
-                    "reason": "terminal_applicability_unknown",
-                }
-            )
-        else:
-            reasons.append("terminal_expected_scope_incomplete")
-            gaps.append(
-                {
-                    "kind": "expected_scope",
-                    "ref": scope_id,
-                    "reason": f"scope_status_{status}",
-                }
-            )
+    parent = parent_meta.get("parent") or {}
+    upstream_reasons, upstream_gaps = _attribute_upstream_incompleteness(
+        parent, entry, scope_id=scope_id
+    )
+    reasons.extend(upstream_reasons)
+    gaps.extend(upstream_gaps)
     # Declared phase without a separate Phase Witness stays unverified on parent.
     if phase_status == "unverified":
         reasons.append("terminal_expected_phase_unverified")
@@ -303,7 +420,6 @@ def _require_parent_scope(parent_meta, entry, *, scope_id_fallback=None):
                 "reason": "schema_unsupported",
             }
         )
-    parent = parent_meta.get("parent") or {}
     declared_set_ref = parent.get("expected_set_ref")
     if declared_set_ref is None:
         reasons.append("terminal_expected_set_ref_missing")
@@ -1154,8 +1270,9 @@ def bind_terminal_expected(
     reasons.extend(subject_reasons)
     gaps.extend(subject_gaps)
     if subject_ok and "weaver_terminal" in (plan_identity.get("selected_checks") or []):
-        # Terminal Plan selected the Terminal Check — clear pre-completion
-        # applicability-unknown soft gap from the frozen Expected projection.
+        # Clear only Terminal-applicability-unknown attributed as sole cause.
+        # Other upstream unknown/partial gaps remain (changeset, other checks,
+        # policy/rule/authority/conflicts).
         reasons = [
             item
             for item in reasons
@@ -1233,6 +1350,9 @@ def bind_terminal_expected(
         "terminal_subject_git_identity_missing",
         "terminal_completed_run_authority_unverified",
         "terminal_expected_terminal_applicability_unknown",
+        "terminal_expected_upstream_unknown",
+        "terminal_expected_upstream_partial",
+        "terminal_expected_upstream_conflicts",
     }
     if blocking:
         status = "unverified" if any(item in soft for item in blocking) else "rejected"

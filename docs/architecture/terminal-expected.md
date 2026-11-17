@@ -23,9 +23,21 @@ Results, mint #66-C Receipts, perform #63 Admission / #61 Required, or wire
 | Provider terminal | `completed_run_authority` (terminal status alone ≠ subject mapping) |
 | Input closure | `validate_post_completion_binding(plan, root)` |
 
+## Upstream incompleteness attribution
+
+`unknown` / `partial` are attributed from Existing Expected `reason`,
+`authority_status`, `conflicts` / `missing`, and per-check applicability —
+not assumed to be Terminal-only. Only:
+
+- sole `weaver_terminal` applicability unknown, and
+- phase-only partial (`effective_profile_phase_unverified`)
+
+are clearable by Terminal Plan selection / Phase Witness. Other upstream gaps
+remain blocking.
+
 ## Directed acceptance
 
-Tests cover ref-only subject rejection, attested Git mismatch, Plan content id
-distinct from Git Tree OID with correct `source_content_id` mapping, wrong
-content-id mapping, forged Phase Witness, and live `weaver_terminal` Expected
-v2 authorize/mismatch paths.
+Tests cover upstream unknown from another Check, non-phase partial retention,
+phase-only partial clearable with witness, ref-only subject rejection, Plan
+content id vs Git Tree OID mapping, and live `weaver_terminal` Expected v2
+authorize/mismatch paths.
