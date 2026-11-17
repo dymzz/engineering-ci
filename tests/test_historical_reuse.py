@@ -523,14 +523,44 @@ def test_policy_can_forbid_check_reuse():
     assert decision["remaining_work"][0]["reason"] == "reuse_policy_check_not_permitted"
 
 
-def test_historical_not_applicable_is_not_transferred():
-    projection, proof, candidate, _, _, _ = setup_equivalent()
+def test_historical_not_applicable_execution_may_cover_current_required():
+    """Historical obligation decision must not transfer; real PASS still reusable."""
+    projection, proof, candidate, current_entry, _, result = setup_equivalent()
     candidate["applicability"] = {"status": "not_applicable", "reason": "old-phase"}
 
     decision = admit(projection, proof, candidate)
 
-    assert decision["remaining_work"][0]["reason"] == (
-        "historical_phase_obligation_not_transferable"
+    key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
+    coverage = decision["accepted_coverage_by_instance"][key]
+    assert decision["status"] == "admitted"
+    assert coverage["admitted"] is True
+    assert coverage["source_kind"] == "historical_reuse"
+    assert coverage["result_ids"] == [result["result_id"]]
+    assert decision["remaining_work"] == []
+
+
+def test_weak_expected_promoted_by_authenticated_closed_p0_is_admitted():
+    """changed_paths Expected + closed authenticated P0 can feed #52."""
+    current_entry = make_entry(source=CHANGED_PATHS_SOURCE, event=EVENT_CURRENT)
+    historical_entry = make_entry(event=EVENT_HISTORICAL)
+    projection = make_projection(
+        current_entry, source=CHANGED_PATHS_SOURCE, event=EVENT_CURRENT
+    )
+    result = native(status="passed", source=STRONG_SOURCE)
+    proof = pre_proof_for(current_entry, source=STRONG_SOURCE)
+    proof["scope_id"] = projection["scope_id"]
+    candidate = historical_candidate(historical_entry, result)
+
+    decision = admit(projection, proof, candidate)
+
+    key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
+    coverage = decision["accepted_coverage_by_instance"][key]
+    assert current_entry["source_ref"]["scope_kind"] == "changed_paths"
+    assert proof["source_ref"]["scope_kind"] == "check_input_closure"
+    assert decision["status"] == "admitted"
+    assert coverage["admitted"] is True
+    assert coverage["equivalence_basis"]["closed_source_scope_kind"] == (
+        "check_input_closure"
     )
 
 

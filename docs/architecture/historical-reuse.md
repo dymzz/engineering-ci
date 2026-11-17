@@ -38,17 +38,22 @@ Result、不判定 #61 Required/Release，也不完成 T1-b 本地→Actions 交
 - **InputEquivalent**：对每个历史 Result 调用既有
   `execution.compare_pre_execution_to_historical_result()`；任一不等价则拒绝。
   比较器保持 `trusted=false`；等价本身不等于 T2 trust。
-- **ResultEligible**：完整 Result 集合经 `#52 evaluate_expected_satisfaction()`
-  对**当前** Expected 满足；受信 Native FAIL 保留为 `verified + unsatisfied`，
-  永不进入成功覆盖。
+- **ResultEligible**：用不可变当前 Expected + 已鉴权 P0 闭包派生临时严格
+  Expected（复用 `#66-C _resolve_expected` 的 Source/Rule/Input/Baseline 约束，
+  不改写原 Expected、不要求当前 Receipt），再交给
+  `#52 evaluate_expected_satisfaction()`。受信 Native FAIL 保留为
+  `verified + unsatisfied`，永不进入成功覆盖。弱 Expected（如
+  `changed_paths`）在 P0 已证明闭合闭包时可提升；P0 本身仍为 open/changed_paths
+  则保持 Remaining Work。
 - **ScopeCovered**：执行前 Source 必须为闭合
   `check_input_closure`/`full_input_closure` 且 `binding_status=content_digest`；
   另须核对 `closure_digest` 可独立重算，并由 `pre_execution_authority` 绑定当前
-  目标/Scope。`changed_paths` 或伪造 proof 不足以跨 Run 复用。
+  目标/Scope。
 - **PolicyPermitsReuse**：reuse policy 允许该 Check；`approved_implementations`
   必须匹配历史 `verification_implementation`；`authorization_authority` 必须确认
-  当前 Action×Target×Phase×Candidate。历史 `not_applicable`/`not_yet_due` 不得
-  迁移为当前义务结论。
+  当前 Action×Target×Phase×Candidate。历史义务适用性（`not_applicable`/
+  `not_yet_due`）只作 provenance，不得单独否决已认证的历史执行事实，也不得
+  把旧阶段 Required/不适用结论迁移为当前义务结论。
 
 ## 输出语义
 
