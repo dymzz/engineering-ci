@@ -25,6 +25,7 @@ from . import (
     check_contract,
     expected_checks,
     hygiene,
+    native_producer,
     plan_contract,
     security_policy,
     selection,
@@ -4301,7 +4302,11 @@ def _execute_with_dependencies(
             report["native_stdout"] = native.get("stdout", "")
             report["native_stderr"] = native.get("stderr", "")
             tests_status = "passed" if exit_code == 0 else "failed"
-            report["tests"] = {"status": tests_status, "exit_code": exit_code}
+            report["tests"] = {
+                "status": tests_status,
+                "exit_code": exit_code,
+                "observation": native,
+            }
 
     checks_out = [check_cache[item.get("name")] for item in selected]
     omitted = omitted_hygiene_checks(
@@ -4367,6 +4372,32 @@ def _decorated_blocked_check(
 
 
 def _finalize_report(report):
+    tests = report.get("tests") or {}
+    if tests.get("observation") and not tests.get("check_contract"):
+        origin, _, parent = _result_origin_and_runner(report["execution_context"])
+        impl, hashes = native_producer.implementation(
+            "engineering-ci/host/tests",
+            {
+                "engineering_ci/execution.py": Path(__file__),
+                "engineering_ci/selection.py": Path(selection.__file__),
+            },
+        )
+        native_producer.test_check(
+            tests,
+            framework=report["framework"],
+            targets=report["targets"],
+            observation={**tests["observation"], "parent_execution_context": parent},
+            source=native_producer.source_reference(
+                report.get("plan"), actual="worktree"
+            ),
+            context=report["execution_identity"],
+            impl=impl,
+            origin=origin,
+            artifact_prefix=None,
+            generated_inputs=tests.get("generated_input_refs") or (),
+        )
+        tests["implementation_sources"] = hashes
+        report["checks"].append({"name": report["framework"], **tests})
     delivery = report.get("artifact_delivery")
     if isinstance(delivery, dict):
         for consumer in delivery.get("consumers", []):
@@ -4581,6 +4612,13 @@ def execute(
         # Source/Prerequisite receipt. Narrow Git checks below remain separate.
         "source_binding_verified": "unknown",
         "execution_context": execution_context,
+        "execution_identity": {
+            "execution_ref": "execution:" + run_instance,
+            "run_ref": None,
+            "attempt_ref": None,
+            "run_attempt_verification": "not_supplied",
+            "origin_execution_attributed": False,
+        },
         "plan": {
             "generator": plan.get("generator"),
             "git": plan.get("git"),
@@ -4684,7 +4722,11 @@ def execute(
         report["native_stdout"] = native.get("stdout", "")
         report["native_stderr"] = native.get("stderr", "")
         tests_status = "passed" if exit_code == 0 else "failed"
-        report["tests"] = {"status": tests_status, "exit_code": exit_code}
+        report["tests"] = {
+            "status": tests_status,
+            "exit_code": exit_code,
+            "observation": native,
+        }
     else:
         report["tests"] = {"status": "not_executed", "exit_code": 3}
 
@@ -4722,6 +4764,9 @@ def execute(
     if source_result is not None:
         native_checks.append(source_result)
     covered = {item["name"] for item in native_checks}
+    if tests and report.get("tests", {}).get("observation"):
+        # A framework Check observes the existing selected-tests invocation.
+        covered.add(framework)
     remaining = [
         {
             "name": item.get("name"),

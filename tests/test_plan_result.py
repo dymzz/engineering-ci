@@ -2,6 +2,7 @@
 
 import asyncio
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import sys
@@ -104,6 +105,9 @@ class MemoryDirectory:
             },
             sort_keys=True,
         )
+
+    async def digest(self):
+        return hashlib.sha256((await self.id()).encode()).hexdigest()
 
     async def export(self, directory):
         cur_files, cur_dirs = self._materialize()
@@ -537,6 +541,85 @@ def test_invalid_plan_refuses_before_source_export(modules):
     )
     with pytest.raises(RuntimeError):
         asyncio.run(saved.enforce())
+
+
+def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
+    modules, monkeypatch
+):
+    from engineering_ci import check_contract, selection
+
+    _, collector = modules
+    source = MemoryDirectory({"input.txt": "original source bytes"})
+    plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 1,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {"snapshot": "worktree"},
+        "selection": {"tests": []},
+        "check_scope": [{"name": "source", "status": "selected"}],
+    }
+    observed = {}
+
+    def host(plan, *, root, run_instance, **kwargs):
+        observed["content_id"] = selection.directory_content_id(root)
+        observed["instance"] = run_instance
+        native = check_contract.native_result(
+            check_contract.definition_for("source"),
+            source=check_contract.source_ref("worktree"),
+            status="passed",
+            result_origin="host",
+            result_instance=run_instance + ":host:source",
+            evidence={"unit_double": True},
+            runner_ref="execution:dagger_export",
+        )
+        return {
+            "kind": host_execution.REPORT_KIND,
+            "schema_version": 1,
+            "status": "passed",
+            "exit_code": 0,
+            "checks": [
+                {
+                    "name": "source",
+                    "status": "passed",
+                    "native_results": [native],
+                    "check_contract": {"status": "valid"},
+                }
+            ],
+            "prerequisites": [],
+        }
+
+    monkeypatch.setattr(host_execution, "execute", host)
+
+    async def run():
+        saved = await collector.execute(
+            object(),
+            MemoryFile(json.dumps(plan)),
+            source,
+            "3.14",
+            "ci-weaver.toml",
+            run_ref="run/123",
+            attempt_ref="attempt/2",
+        )
+        report = json.loads(await saved.report())
+        handoff = report["source_handoff"]
+        assert (
+            handoff["before_host_content_id"]
+            == observed["content_id"]
+            == handoff["exported_content_id"]
+        )
+        assert handoff["after_host_content_id"] == handoff["exported_content_id"]
+        assert handoff["directory"]["digest"] == await source.digest()
+        assert handoff["parent_execution_ref"] == observed["instance"]
+        assert handoff["run_ref"] == "run/123" and handoff["attempt_ref"] == "attempt/2"
+        raw = await saved.artifacts.file("host/report.json").contents()
+        assert hashlib.sha256(raw.encode()).hexdigest() == handoff["host_report_sha256"]
+        result = json.loads(raw)["checks"][0]["native_results"][0]
+        assert handoff["host_result_ids"] == [result["result_id"]]
+        assert result["result_origin"] == "host"
+        assert report["source_binding_verified"] == "unknown"
+        assert report["execution_identity"]["run_attempt_verification"] == "unverified"
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("weaver_failed", [False, True])
