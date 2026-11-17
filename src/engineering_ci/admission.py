@@ -1053,6 +1053,7 @@ def _recompute_closure_digest(proof):
         "environment_inputs": proof.get("environment_inputs"),
         "tool_identities": proof.get("tool_identities"),
         "prerequisite_inputs": proof.get("prerequisite_inputs"),
+        "changed_paths_content_digest": proof.get("changed_paths_content_digest"),
     }
     return _digest(payload)
 
@@ -1295,96 +1296,24 @@ def _equivalence_basis(pre_proof, comparisons, *, origin_authenticated):
 def _derive_strict_expected_from_pre_proof(expected_entry, pre_proof):
     """Build a temporary strict #52 Expected from immutable Expected + P0 proof.
 
-    Reuses the Source/Rule/Input/Baseline constraints of
-    ``reconciliation._resolve_expected()`` without requiring a current Receipt or
-    fabricating resolution evidence refs. The original Expected is not mutated.
+    Reuses ``reconciliation.derive_strict_expected()`` without fabricating a
+    current Receipt or dummy resolution evidence refs. The original Expected is
+    not mutated. P0 ``prerequisite_inputs`` are not Expected ``input_refs``.
     """
-    resolved_source = pre_proof.get("source_ref")
-    if not isinstance(resolved_source, dict):
+    if not isinstance(pre_proof.get("source_ref"), dict):
         return None, "pre_execution_source_unverified"
-    expected_source = expected_entry.get("source_ref") or {}
-    if expected_source.get("snapshot") != resolved_source.get("snapshot"):
-        return None, "expected_source_snapshot_mismatch"
-    for key in ("declared_target_tree", "head_commit", "index_tree"):
-        if expected_source.get(key) is not None and expected_source.get(
-            key
-        ) != resolved_source.get(key):
-            return None, f"expected_source_{key}_mismatch"
-    exp_scope_set = set(expected_source.get("verified_input_scope") or ())
-    res_scope_set = set(resolved_source.get("verified_input_scope") or ())
-    if exp_scope_set - res_scope_set:
-        return None, "expected_input_scope_uncovered"
-    if expected_source.get("content_digest") is not None:
-        exp_digest = expected_source["content_digest"]
-        res_digest = resolved_source.get("content_digest")
-        expanded_closure = (
-            expected_source.get("scope_kind") == "changed_paths"
-            and resolved_source.get("scope_kind") in CLOSED_SOURCE_SCOPES
-            and exp_scope_set < res_scope_set
-        )
-        if exp_digest != res_digest and not (
-            expanded_closure
-            and pre_proof.get("changed_paths_content_digest") == exp_digest
-        ):
-            return None, "expected_source_content_digest_mismatch"
-
-    expected_profile = expected_entry.get("profile_ref")
-    if (
-        expected_profile is not None
-        and pre_proof.get("profile_ref") is not None
-        and pre_proof["profile_ref"] != expected_profile
-    ):
-        return None, "expected_profile_mismatch"
-
-    entry_rule = expected_entry.get("rule_ref")
-    resolved_rule = pre_proof.get("rule_ref")
-    if resolved_rule is None:
-        resolved_rule = entry_rule
-    elif entry_rule is not None and entry_rule != resolved_rule:
-        return None, "expected_rule_mismatch"
-    if resolved_rule is None:
-        return None, "expected_rule_unproven"
-
-    expected_inputs = list(expected_entry.get("input_refs") or ())
-    resolved_inputs = pre_proof.get("prerequisite_inputs")
-    if isinstance(resolved_inputs, (list, tuple)):
-        # P0 prerequisite_inputs are structural records, not Expected input_refs.
-        # Keep the immutable Expected floor; do not invent native input refs here.
-        merged_inputs = list(expected_inputs)
-    else:
-        merged_inputs = list(expected_inputs)
-
-    expected_baseline = expected_entry.get("baseline_ref")
-    resolved_baseline = pre_proof.get("baseline_ref")
-    if isinstance(expected_baseline, dict):
-        base_commit = expected_baseline.get("base_commit")
-        if base_commit is not None:
-            if resolved_baseline is None:
-                resolved_baseline = {"base_commit": base_commit}
-            elif (
-                not isinstance(resolved_baseline, dict)
-                or resolved_baseline.get("base_commit") != base_commit
-            ):
-                return None, "expected_baseline_mismatch"
-
-    strict = {
-        "check_id": expected_entry["check_id"],
-        "definition_version": expected_entry["definition_version"],
-        "rule_ref": copy.deepcopy(resolved_rule),
-        "source_ref": copy.deepcopy(resolved_source),
+    resolved = {
+        "source_ref": copy.deepcopy(pre_proof.get("source_ref")),
+        "rule_ref": copy.deepcopy(pre_proof.get("rule_ref")),
+        "profile_ref": copy.deepcopy(pre_proof.get("profile_ref")),
+        "baseline_ref": copy.deepcopy(pre_proof.get("baseline_ref")),
+        "changed_paths_content_digest": pre_proof.get("changed_paths_content_digest"),
     }
-    if expected_profile is not None:
-        strict["profile_ref"] = copy.deepcopy(expected_profile)
-    if merged_inputs:
-        strict["input_refs"] = copy.deepcopy(merged_inputs)
-    if resolved_baseline is not None:
-        strict["baseline_ref"] = copy.deepcopy(resolved_baseline)
-    if expected_entry.get("comparison"):
-        strict["comparison"] = copy.deepcopy(expected_entry["comparison"])
-    try:
-        check_contract.validate_expected_instance(strict)
-    except check_contract.CheckContractError as error:
-        return None, error.code
+    strict, status, reason = reconciliation.derive_strict_expected(
+        expected_entry, resolved
+    )
+    if status != "matched" or strict is None:
+        return None, reason or "strict_expected_unresolved"
     return strict, None
 
 

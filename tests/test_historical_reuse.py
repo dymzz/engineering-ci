@@ -149,11 +149,28 @@ def native(
     )
 
 
-def pre_proof_for(entry, *, source=STRONG_SOURCE, status="verified_candidate_inputs"):
+def pre_proof_for(
+    entry,
+    *,
+    source=STRONG_SOURCE,
+    status="verified_candidate_inputs",
+    changed_paths_content_digest=None,
+):
     definition = check_contract.definition_for(entry["name"])
     source_ref = copy.deepcopy(source)
     if status == "verified_candidate_inputs":
         check_contract.validate_source_ref(source_ref)
+    if changed_paths_content_digest is None:
+        expected_source = entry.get("source_ref") or {}
+        if (
+            expected_source.get("scope_kind") == "changed_paths"
+            and isinstance(source_ref, dict)
+            and source_ref.get("scope_kind")
+            in {"check_input_closure", "full_input_closure"}
+            and set(expected_source.get("verified_input_scope") or ())
+            < set(source_ref.get("verified_input_scope") or ())
+        ):
+            changed_paths_content_digest = expected_source.get("content_digest")
     proof = {
         "phase": "pre_execution",
         "check_name": entry["name"],
@@ -178,6 +195,7 @@ def pre_proof_for(entry, *, source=STRONG_SOURCE, status="verified_candidate_inp
         "environment_inputs": None,
         "tool_identities": None,
         "prerequisite_inputs": (),
+        "changed_paths_content_digest": changed_paths_content_digest,
     }
     proof["closure_digest"] = admission._recompute_closure_digest(proof)
     return proof
@@ -539,15 +557,38 @@ def test_historical_not_applicable_execution_may_cover_current_required():
     assert decision["remaining_work"] == []
 
 
+SUBSET_CHANGED_SOURCE = check_contract.source_ref(
+    "worktree",
+    declared_target_tree="3" * 40,
+    actual_execution_source="worktree",
+    content_digest="a" * 64,
+    verified_scope=["src/pkg/module.py"],
+    scope_kind="changed_paths",
+    binding_status="content_digest",
+)
+EXPANDED_CLOSED_SOURCE = check_contract.source_ref(
+    "worktree",
+    declared_target_tree="3" * 40,
+    actual_execution_source="worktree",
+    content_digest="b" * 64,
+    verified_scope=["src/pkg/module.py", "src/pkg/extra.py"],
+    scope_kind="check_input_closure",
+)
+
+
 def test_weak_expected_promoted_by_authenticated_closed_p0_is_admitted():
-    """changed_paths Expected + closed authenticated P0 can feed #52."""
-    current_entry = make_entry(source=CHANGED_PATHS_SOURCE, event=EVENT_CURRENT)
+    """X≠Y changed_paths→closed expansion with bound subset digest is admitted."""
+    current_entry = make_entry(source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT)
     historical_entry = make_entry(event=EVENT_HISTORICAL)
     projection = make_projection(
-        current_entry, source=CHANGED_PATHS_SOURCE, event=EVENT_CURRENT
+        current_entry, source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT
     )
-    result = native(status="passed", source=STRONG_SOURCE)
-    proof = pre_proof_for(current_entry, source=STRONG_SOURCE)
+    result = native(status="passed", source=EXPANDED_CLOSED_SOURCE)
+    proof = pre_proof_for(
+        current_entry,
+        source=EXPANDED_CLOSED_SOURCE,
+        changed_paths_content_digest="a" * 64,
+    )
     proof["scope_id"] = projection["scope_id"]
     candidate = historical_candidate(historical_entry, result)
 
@@ -555,12 +596,62 @@ def test_weak_expected_promoted_by_authenticated_closed_p0_is_admitted():
 
     key = f"{projection['scope_id']}/{current_entry['expected_check_ref']}"
     coverage = decision["accepted_coverage_by_instance"][key]
-    assert current_entry["source_ref"]["scope_kind"] == "changed_paths"
-    assert proof["source_ref"]["scope_kind"] == "check_input_closure"
+    assert current_entry["source_ref"]["content_digest"] == "a" * 64
+    assert proof["source_ref"]["content_digest"] == "b" * 64
+    assert proof["changed_paths_content_digest"] == "a" * 64
     assert decision["status"] == "admitted"
     assert coverage["admitted"] is True
     assert coverage["equivalence_basis"]["closed_source_scope_kind"] == (
         "check_input_closure"
+    )
+
+
+def test_forged_changed_paths_digest_blocks_expansion_reuse():
+    current_entry = make_entry(source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT)
+    historical_entry = make_entry(event=EVENT_HISTORICAL)
+    projection = make_projection(
+        current_entry, source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT
+    )
+    result = native(status="passed", source=EXPANDED_CLOSED_SOURCE)
+    proof = pre_proof_for(
+        current_entry,
+        source=EXPANDED_CLOSED_SOURCE,
+        changed_paths_content_digest="a" * 64,
+    )
+    proof["scope_id"] = projection["scope_id"]
+    # Forge the subset digest without rebinding closure_digest.
+    proof["changed_paths_content_digest"] = "f" * 64
+    candidate = historical_candidate(historical_entry, result)
+
+    decision = admit(projection, proof, candidate)
+
+    assert decision["remaining_work"][0]["reason"] == (
+        "pre_execution_closure_digest_mismatch"
+    )
+
+
+def test_missing_changed_paths_digest_blocks_x_neq_y_expansion():
+    current_entry = make_entry(source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT)
+    historical_entry = make_entry(event=EVENT_HISTORICAL)
+    projection = make_projection(
+        current_entry, source=SUBSET_CHANGED_SOURCE, event=EVENT_CURRENT
+    )
+    result = native(status="passed", source=EXPANDED_CLOSED_SOURCE)
+    proof = pre_proof_for(
+        current_entry,
+        source=EXPANDED_CLOSED_SOURCE,
+        changed_paths_content_digest=None,
+    )
+    # Force absence even if helper would auto-fill.
+    proof["changed_paths_content_digest"] = None
+    proof["closure_digest"] = admission._recompute_closure_digest(proof)
+    proof["scope_id"] = projection["scope_id"]
+    candidate = historical_candidate(historical_entry, result)
+
+    decision = admit(projection, proof, candidate)
+
+    assert decision["remaining_work"][0]["reason"] == (
+        "expected_source_content_digest_mismatch"
     )
 
 

@@ -38,13 +38,14 @@ Result、不判定 #61 Required/Release，也不完成 T1-b 本地→Actions 交
 - **InputEquivalent**：对每个历史 Result 调用既有
   `execution.compare_pre_execution_to_historical_result()`；任一不等价则拒绝。
   比较器保持 `trusted=false`；等价本身不等于 T2 trust。
-- **ResultEligible**：用不可变当前 Expected + 已鉴权 P0 闭包派生临时严格
-  Expected（复用 `#66-C _resolve_expected` 的 Source/Rule/Input/Baseline 约束，
-  不改写原 Expected、不要求当前 Receipt），再交给
+- **ResultEligible**：用不可变当前 Expected + 已鉴权 P0 闭包，经共用
+  `reconciliation.derive_strict_expected()` 派生临时严格 Expected（与 #66-C
+  Resolution 同一核心；#66-C 仍强制其 evidence refs，T2 不伪造 Receipt），再交给
   `#52 evaluate_expected_satisfaction()`。受信 Native FAIL 保留为
-  `verified + unsatisfied`，永不进入成功覆盖。弱 Expected（如
-  `changed_paths`）在 P0 已证明闭合闭包时可提升；P0 本身仍为 open/changed_paths
-  则保持 Remaining Work。
+  `verified + unsatisfied`，永不进入成功覆盖。弱 Expected（`changed_paths`，
+  digest X）提升到闭合 P0（digest Y，X≠Y）时，要求 P0 在 `closure_digest` 内
+  绑定已验证的 `changed_paths_content_digest=X`；伪造/缺失子集 digest 或 P0
+  本身仍为 open/changed_paths 则 Remaining Work。
 - **ScopeCovered**：执行前 Source 必须为闭合
   `check_input_closure`/`full_input_closure` 且 `binding_status=content_digest`；
   另须核对 `closure_digest` 可独立重算，并由 `pre_execution_authority` 绑定当前

@@ -2877,6 +2877,29 @@ def build_pre_execution_source_proof(
         source.pop("materialization_ref", None)
     check_contract.validate_source_ref(source)
 
+    changed_paths_content_digest = None
+    expected_source = (
+        matched_expected.get("source_ref")
+        if isinstance(matched_expected, dict)
+        else None
+    )
+    if (
+        isinstance(expected_source, dict)
+        and expected_source.get("scope_kind") == "changed_paths"
+        and source.get("scope_kind") in {"check_input_closure", "full_input_closure"}
+    ):
+        subset = list(expected_source.get("verified_input_scope") or ())
+        if not subset:
+            return unverified("pre_execution_changed_paths_digest_unproven")
+        subset_binding = selection.worktree_content_binding(resolved_root, subset)
+        subset_digest = subset_binding.get("digest")
+        if not isinstance(subset_digest, str) or not subset_digest:
+            return unverified("pre_execution_changed_paths_digest_unproven")
+        expected_digest = expected_source.get("content_digest")
+        if expected_digest is not None and expected_digest != subset_digest:
+            return unverified("pre_execution_changed_paths_digest_mismatch")
+        changed_paths_content_digest = subset_digest
+
     closure_payload = {
         "check_id": definition.check_id if definition is not None else None,
         "definition_version": (
@@ -2895,6 +2918,7 @@ def build_pre_execution_source_proof(
         "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
+        "changed_paths_content_digest": changed_paths_content_digest,
     }
     return {
         "phase": "pre_execution",
@@ -2920,6 +2944,7 @@ def build_pre_execution_source_proof(
         "environment_inputs": env_inputs,
         "tool_identities": tool_identities,
         "prerequisite_inputs": prereq_inputs,
+        "changed_paths_content_digest": changed_paths_content_digest,
         "closure_digest": _canonical_sha256(closure_payload),
     }
 
