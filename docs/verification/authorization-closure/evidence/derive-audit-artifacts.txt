@@ -1,0 +1,351 @@
+"""One-off Issue #125 A/B evidence derivation; not an authorization gate."""
+
+import ast
+import gzip
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path('docs/verification/authorization-closure')
+RAW = Path('.artifacts/authorization-closure')
+ROOT.mkdir(parents=True, exist_ok=True)
+EVIDENCE = ROOT / 'evidence'
+EVIDENCE.mkdir(exist_ok=True)
+discovery = json.loads((RAW / 'mechanical-discovery.json').read_text(encoding='utf-8'))
+snapshots = json.loads((RAW / 'source-snapshots.json').read_text(encoding='utf-8'))
+
+
+def git(*args):
+    return subprocess.check_output(['git', '-c', 'core.hooksPath=NUL', *args])
+
+
+def blobs(ref, paths):
+    payload = subprocess.run(['git', '-c', 'core.hooksPath=NUL', 'cat-file', '--batch'],
+                             input=''.join(f'{ref}:{p}\n' for p in paths).encode(),
+                             check=True, capture_output=True).stdout
+    result, cursor = {}, 0
+    for path in paths:
+        end = payload.index(b'\n', cursor)
+        oid, kind, size = payload[cursor:end].decode().split()
+        assert kind == 'blob'
+        cursor = end + 1
+        result[path] = payload[cursor:cursor+int(size)]
+        cursor += int(size) + 1
+    return result
+
+
+def write_json(path, value):
+    path.write_bytes((json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+
+
+def archive(path, value):
+    raw = (json.dumps(value, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8')
+    path.write_bytes(gzip.compress(raw, mtime=0))
+    return hashlib.sha256(raw).hexdigest()
+
+
+archive_sources = dict(snapshots)
+archive_sources['open_pull_requests'] = [{k:v for k,v in p.items() if k not in ['body', 'diff']}
+                                         for p in snapshots['open_pull_requests']]
+issue_digest = archive(EVIDENCE / 'github-source-snapshots.json.gz', archive_sources)
+archive(EVIDENCE / 'mechanical-discovery.json.gz', discovery)
+for name in ['github-visibility.json', 'protection-observation.json']:
+    (EVIDENCE / name).write_bytes((RAW / name).read_bytes())
+
+module_routes = {
+    'admission': 'same-execution-admission / historical-reuse',
+    'expected_checks': 'expected-profile-source',
+    'selection': 'expected-profile-source / terminal-inputs',
+    'execution': 'native-execution-source',
+    'local_actions_handoff': 'local-actions-handoff',
+    'reconciliation': 'structural-reconciliation',
+    'required_assessment': 'required-assessment',
+    'required_assessment_check': 'check-publication',
+    'required_assessment_publish': 'publisher-identity',
+    'required_assessment_protection': 'server-observation',
+    'required_assessment_release': 'release-reconciliation',
+    'required_assessment_post': 'post-stage',
+    'terminal_expected': 'terminal-candidate',
+    'security_policy': 'tool-policy-admission',
+    'hook_coordinator': 'activated-job-report-boundary (read only; never invoked)',
+    'cicd_telemetry': 'run-job-facts (observation, no admission grant)',
+    'dagger_telemetry': 'capture-correlation / A.1 (no issuer authentication)',
+    'hygiene': 'native-tool-helper',
+    'workflow_analysis': 'native-tool-helper',
+    'check_contract': 'native-result-validation / witness-selection',
+    'workflow_actions': 'real-release-workflow / operation dispatch',
+}
+supplemental = [
+    'engineering_ci.expected_checks.build_effective_profile',
+    'engineering_ci.expected_checks._verify_profile_authority',
+    'engineering_ci.expected_checks.derive_expected_checks',
+    'engineering_ci.expected_checks.validate_projection',
+    'engineering_ci.selection.plan',
+    'engineering_ci.selection.validate_post_completion_binding',
+    'engineering_ci.selection.post_completion_plan',
+    'engineering_ci.execution.execute',
+    'engineering_ci.execution.build_source_resolution',
+    'engineering_ci.execution.source_resolution_receipt',
+    'engineering_ci.check_contract.evaluate_expected_satisfaction',
+    'engineering_ci.check_contract.native_result',
+    'engineering_ci.check_contract.validate_result',
+    'engineering_ci.reconciliation.reconcile_expected_results',
+    'engineering_ci.reconciliation.validate_receipt',
+    'engineering_ci.required_assessment.validate_assessment',
+    'engineering_ci.required_assessment_protection.inspect_server_protection',
+    'engineering_ci.required_assessment_protection.validate_protection_observation',
+    'engineering_ci.required_assessment_publish.verify_publisher_identity',
+    'engineering_ci.required_assessment_publish.workflow_publish_authority',
+    'engineering_ci.required_assessment_check.resolve_conclusion',
+    'engineering_ci.release.publishing.main',
+    'engineering_ci.release.publishing.publish_release',
+    'engineering_ci.release.publishing.published_evidence',
+    'engineering_ci.release.request.dispatch',
+    'engineering_ci.workflow_actions.main',
+    'engineering_ci.security_policy.receive',
+    'engineering_ci_module.main.EngineeringCi.plan_execution',
+    'engineering_ci_module.main.EngineeringCi.execute_plan',
+    'engineering_ci_module.plan_result.PlanExecution.enforce',
+    'engineering_ci.terminal_expected.post_completion_with_expected',
+    'engineering_ci.terminal_expected.validate_terminal_expected_binding',
+]
+
+inventory = {'purpose': 'Derived discovery inventory, not a policy/authorization registry',
+             'roots': ['src/engineering_ci/', '.dagger/src/engineering_ci_module/', 'scripts/'],
+             'limitations': ['Lexical candidates are not exhaustive authorization exits.',
+                             'AST resolves module imports and same-module/self calls only.',
+                             'Nested functions, local imports, aliases/providers/environment and data flow require manual tracing.',
+                             'Zero resolved callers does not mean no external callers; tests and workflows are searched separately.'],
+             'snapshots': {}}
+search_pattern = re.compile(r'accepted_coverage|remaining_work|authorized|authorization|\bbound\b|conclusion|disposition|release_authorized|verified_materials|proof_status|execution_started|assessment_basis')
+entry_names = re.compile(r'admit_evidence|admit_historical_reuse|bind_terminal_expected|post_completion_with_expected|assess_required_obligations|reconcile_post_stage|reconcile_release_assessment|require_reconciliation_manifest|authorize_and_publish|publish_check_run|verify_local_handoff|release publish|engineering_ci\.workflow_actions|dagger.*(enforce|execute-plan)')
+
+for sn, data in discovery['snapshots'].items():
+    candidates = set(data['authorization_candidates'])
+    candidates.update(k for k in supplemental if k in data['nodes'])
+    rows = []
+    for symbol in sorted(candidates):
+        n = data['nodes'][symbol]
+        module = n['module']
+        if module.startswith('engineering_ci.release.') or module == 'engineering_ci.cli.release':
+            route = 'real-release-workflow'
+        elif module == 'engineering_ci.cli.download':
+            route = 'display/download conclusion only; not an authorization exit'
+        elif module == 'engineering_ci.tools.performance':
+            route = 'performance report vocabulary; not an authorization exit'
+        elif module.startswith('engineering_ci_module.'):
+            route = 'native-dagger-plan-result'
+        else:
+            route = module_routes.get(module.removeprefix('engineering_ci.'), 'manual review required')
+        rows.append({'symbol': symbol, 'path': n['path'], 'line': n['line'],
+                     'end_line': n['end_line'], 'blob': n['blob'], 'sha256': n['sha256'],
+                     'discovery': 'lexical' if symbol in data['authorization_candidates'] else 'manual-entrypoint-expansion',
+                     'route': route, 'resolved_runtime_callers': n['callers']})
+    paths = git('ls-tree', '-r', '--name-only', data['commit']).decode().splitlines()
+    search_files = [p for p in paths if (p.startswith(('src/engineering_ci/', '.dagger/src/engineering_ci_module/', 'scripts/', 'tests/', '.github/workflows/'))
+                                        and p.endswith(('.py', '.yml', '.yaml'))) or p in ['pyproject.toml', 'dagger.json', '.dagger/pyproject.toml']]
+    hits, source_files, dagger_entrypoints = [], [], []
+    for p, raw in blobs(data['commit'], search_files).items():
+        source_files.append({'path': p, 'sha256': hashlib.sha256(raw).hexdigest()})
+        if p.startswith('.dagger/src/engineering_ci_module/') and p.endswith('.py'):
+            for item in ast.walk(ast.parse(raw.decode('utf-8-sig'))):
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    decorators = [ast.unparse(d) for d in item.decorator_list]
+                    if any(d.split('(')[0] in ['check', 'function'] for d in decorators):
+                        dagger_entrypoints.append({'path':p,'line':item.lineno,'name':item.name,'decorators':decorators})
+        if p.startswith(('tests/', '.github/workflows/')) or p == 'pyproject.toml':
+            for i, line in enumerate(raw.decode('utf-8-sig').splitlines(), 1):
+                if entry_names.search(line):
+                    hits.append({'path': p, 'line': i, 'text': line.strip()})
+    inventory['snapshots'][sn] = {'commit': data['commit'], 'runtime_files_parsed': data['runtime_files_parsed'],
+                                'symbols_parsed': data['symbols_parsed'],
+                                'lexical_candidates': len(data['authorization_candidates']),
+                                'expanded_candidates': rows, 'searched_files': source_files,
+                                'test_workflow_entrypoint_hits': hits,
+                                'dagger_decorated_entrypoints':dagger_entrypoints}
+write_json(ROOT / 'discovery-inventory.json', inventory)
+
+graph = {'purpose': 'Issue #125 B manual data-contract map, no new authority decisions',
+         'direction': 'Producer/fact -> Validator/Consumer; physical call graph is in mechanical-discovery archive',
+         'edge_kinds': {'contract_input': 'API input/output compatibility to be checked, not a discovered call',
+                        'static_call': 'Direct call verified in pinned code',
+                        'manual_dispatch': 'Local import/closure/Workflow dispatch traced manually',
+                        'unresolved': 'External source/issuer/provider/environment edge needs actual observation'},
+         'nodes': {}, 'edges': []}
+
+
+def node(sn, symbol):
+    key = sn + ':' + symbol
+    if key not in graph['nodes']:
+        n = discovery['snapshots'][sn]['nodes'][symbol]
+        graph['nodes'][key] = {'snapshot': sn, 'symbol': symbol,
+                               **{k: n[k] for k in ['commit', 'path', 'line', 'end_line', 'blob', 'sha256']},
+                               'resolved_runtime_callers': n['callers']}
+    return key
+
+
+def external(sn, name, observation):
+    key = sn + ':external:' + name
+    graph['nodes'][key] = {'snapshot': sn, 'external': name, 'resolution': 'unresolved', 'needed_observation': observation}
+    return key
+
+
+def edge(sn, producer, consumer, kind, fact):
+    def resolve(value):
+        return value if ':external:' in value else node(sn, value)
+    graph['edges'].append({'id': f'E{len(graph["edges"])+1:03}', 'from': resolve(producer), 'to': resolve(consumer),
+                           'kind': kind, 'fact': fact})
+
+
+def f(short):
+    return ('engineering_ci_module.' if short.startswith(('main.EngineeringCi.', 'plan_execution.', 'plan_result.')) else 'engineering_ci.') + short
+
+
+links = [
+ ('selection.plan','expected_checks.derive_expected_checks','static_call','Plan/config/Profile/source scope -> pre-execution Expected'),
+ ('expected_checks._verify_profile_authority','expected_checks.derive_expected_checks','contract_input','Rule/policy/Profile/phase authority predicates'),
+ ('expected_checks.derive_expected_checks','reconciliation.derive_strict_expected','contract_input','Frozen Expected scope and check entries'),
+ ('expected_checks.derive_expected_checks','required_assessment.assess_required_obligations','contract_input','Expected v2; scope_id and expected_set_ref'),
+ ('expected_checks.validate_projection','required_assessment.assess_required_obligations','contract_input','R1 has its own _verify_expected_scope; no implied call to validate_projection'),
+ ('selection.verify_materialized_source_snapshot','execution.execute','contract_input','Physical Git/tree/directory binding; actual callers retained in mechanical graph'),
+ ('execution.build_pre_execution_source_proof','admission.admit_historical_reuse','contract_input','Current P0 source/input/rule/tool/baseline closure plus independent verifier'),
+ ('execution.compare_pre_execution_to_historical_result','admission.admit_historical_reuse','contract_input','Typed current vs historical equivalence; origin remains separate'),
+ ('execution.build_source_resolution','reconciliation.derive_strict_expected','contract_input','Independently resolved Source/Rule/Baseline facts'),
+ ('execution.source_resolution_receipt','admission.admit_evidence','contract_input','Resolution envelopes require resolution_authority'),
+ ('execution.execute','check_contract.validate_result','contract_input','Original Host native results; failure/blocked/unexecuted retained'),
+ ('main.EngineeringCi.plan_execution','plan_execution.execute','manual_dispatch','Function-local import -> Dagger Plan/Source/native execution'),
+ ('plan_execution.execute','plan_result.PlanExecution.enforce','contract_input','Same PlanExecution report+artifacts, Enforce may raise'),
+ ('main.EngineeringCi.execute_plan','plan_result.PlanExecution.report','manual_dispatch','Returns report projection only; API exit 0 is not Enforce success'),
+ ('check_contract.native_result','check_contract.validate_result','contract_input','Structural result envelope, no issuer approval'),
+ ('native_producer.test_check','check_contract.native_result','contract_input','Native test process -> versioned result; original Exit and implementation identity retained'),
+ ('native_producer.weaver_check','check_contract.native_result','contract_input','Native Weaver -> versioned result; Task-only/Terminal applicability remains separate'),
+ ('check_contract.validate_result','check_contract.evaluate_expected_satisfaction','contract_input','Identity-qualified native result candidates'),
+ ('check_contract.evaluate_expected_satisfaction','reconciliation.reconcile_expected_results','contract_input','Selected witness IDs and satisfaction; not admission'),
+ ('reconciliation.reconcile_expected_results','admission.admit_evidence','contract_input','Receipt v1 plus independently obtained raw Reports/Job Receipts'),
+ ('reconciliation.validate_receipt','admission.admit_evidence','contract_input','Receipt shape/scope membership validator'),
+ ('local_actions_handoff.build_local_handoff_package','local_actions_handoff.validate_local_handoff_package','contract_input','Local material/package digest consistency'),
+ ('local_actions_handoff.validate_local_handoff_package','local_actions_handoff.verify_local_handoff','contract_input','Package consistency plus independent consumer scope/authorities'),
+ ('local_actions_handoff.verify_local_handoff','admission.admit_evidence','unresolved','Verified materials do not themselves constitute Admission; actual receiver wiring unobserved'),
+ ('admission.admit_evidence','required_assessment._validate_admission','contract_input','Admission v1 accepted coverage/authenticated failures with exact instance identity'),
+ ('required_assessment._validate_admission','required_assessment.assess_required_obligations','contract_input','Validated coverage and native failure facts'),
+ ('reconciliation.validate_receipt','required_assessment.assess_required_obligations','contract_input','Receipt is separate from admitted coverage'),
+ ('required_assessment._validate_universe','required_assessment.assess_required_obligations','contract_input','Universe/profile/governance/evaluation/Check+Non-Check obligation facts'),
+ ('required_assessment.assess_required_obligations','required_assessment.validate_assessment','contract_input','Assessment digest/consistency, not independent issuer authentication'),
+ ('required_assessment.validate_assessment','required_assessment_check.build_check_publication','contract_input','R1 status/reasons -> Check conclusion'),
+ ('required_assessment_check.build_check_publication','required_assessment_check.publish_check_run','contract_input','Publication envelope/request; production success needs publisher authorization'),
+ ('required_assessment_check.publication_for_missing_assessment','required_assessment_check.publish_check_run','contract_input','Missing-assessment non-success publication'),
+ ('required_assessment_publish.verify_publisher_identity','required_assessment_publish.authorize_and_publish','contract_input','Approved Workflow/Actions runtime and independent approval verifier'),
+ ('required_assessment_publish.workflow_publish_authority','required_assessment_check.publish_check_run','manual_dispatch','Nested publish_authority closure verifies request-bound authorization'),
+ ('required_assessment_publish.authorize_and_publish','required_assessment_check.publish_check_run','static_call','Higher-level publisher also verifies non-success publisher identity'),
+ ('required_assessment_protection.inspect_server_protection','required_assessment_protection.validate_protection_observation','contract_input','Observed configuration only; controlled deny probe not performed'),
+ ('required_assessment.validate_assessment','required_assessment_release.reconcile_release_assessment','contract_input','Required Assessment bound to exact Release candidate/phase'),
+ ('release.manifest.validate','required_assessment_release.reconcile_release_assessment','contract_input','Manifest v1 structural/check/artifact identity'),
+ ('required_assessment_release.manifest_provider_from_verification','required_assessment_release.reconcile_release_assessment','manual_dispatch','Returned callback reuses verification.evidence(api, ...)'),
+ ('required_assessment_release.manifest_provider_from_publication','required_assessment_release.reconcile_release_assessment','manual_dispatch','Returned callback reuses publishing.published_evidence(api, ...)'),
+ ('required_assessment_release.reconcile_release_assessment','required_assessment_release.validate_release_reconciliation','contract_input','Verified vs release_authorized separated'),
+ ('required_assessment_release.validate_release_reconciliation','required_assessment_release.require_reconciliation_manifest','contract_input','Envelope + exact Manifest identity for optional consumer'),
+ ('required_assessment.validate_assessment','required_assessment_post.reconcile_post_stage','contract_input','Prior/post pair with phase/lifecycle/candidate/time binding'),
+ ('security_policy.receive','security_policy.decide','contract_input','Authenticated publication + persisted accepted revision/state; no rollback'),
+ ('security_policy.decide','execution._build_workflow_admission_fn','manual_dispatch','Nested admission callback permits/denies protected workflow tool execution'),
+ ('release.request.dispatch','release.publishing.main','unresolved','Workflow dispatch/server scheduling boundary, not a local direct call'),
+ ('workflow_actions.main','release.publishing.main','manual_dispatch','operation=release local import invoke'),
+ ('release.manifest.validate','release.publishing.published_evidence','contract_input','Manifest fields + original server Job/Step/Artifact evidence'),
+ ('release.publishing.published_evidence','release.publishing.publish_release','contract_input','Actual publication evidence recheck before and during writes'),
+ ('release.publishing.main','release.publishing.publish_release','static_call','publish flag/current Run+Attempt/repository checks precede call'),
+ ('cicd_telemetry.fetch_github_run_job','cicd_telemetry.produce','contract_input','GitHub Run/Job facts -> telemetry observation'),
+ ('cicd_telemetry.produce','selection.post_completion_plan','contract_input','Completed Attempt telemetry/expectations files consumed through configured closure'),
+ ('selection.post_completion_plan','selection.validate_post_completion_binding','contract_input','Post-completion config/OTLP/Expected/Registry/Matcher/Advice closure'),
+ ('selection.validate_post_completion_binding','execution.execute','contract_input','Reject drift before Native Terminal; not Required authorization'),
+ ('dagger_telemetry.correlate_capture','dagger_telemetry.verify_a1_suite','contract_input','Correlation/native A.1 gates retain origin trust limits'),
+ ('hook_coordinator._require_runner_produced_report','hook_coordinator.execute_activated_job','contract_input','Runner report shape/plan_authorized/attempt attribution, not issuer authentication'),
+]
+
+# Manual local-import/nested-function names are deliberately checked against AST.
+for sn in ['main']:
+    for a, b, kind, fact in links:
+        edge(sn, f(a), f(b), kind, fact)
+    unresolved = [
+        ('governed-profile-and-phase','expected_checks._verify_profile_authority','Authenticated approval/delegation/inheritance/exclusion and phase producer, live validity/revocation; JSON digest alone insufficient'),
+        ('complete-universe-and-non-check-evidence','required_assessment.assess_required_obligations','Actual governed obligations enumeration and issuer-authenticated non-Check evidence for current Action/Target/Phase/Ref/Candidate/time'),
+        ('raw-origin-and-resolution-authorities','admission.admit_evidence','Real raw Report/Job Receipt transport, approved verification_implementation and authority(context)/resolution_authority(context)'),
+        ('historical-authorities','admission.admit_historical_reuse','Historical issuer, current P0 provenance, current authorization, freshness/revocation; actual Remaining Work execution consumer'),
+        ('local-controlled-boundary','local_actions_handoff.verify_local_handoff','Issuer + execution time + grant verifier, controlled runner and receiving Actions transport'),
+        ('actions-approval-and-execution','required_assessment_publish.authorize_and_publish','Approved publisher issuer, actual runtime execution envelope, Workflow/Run/Attempt/App identity; env alone insufficient'),
+        ('github-check-transport','required_assessment_check.publish_check_run','Actual publishing token/App permissions and POST result; no Check writes performed in A/B'),
+        ('github-server-enforcement','required_assessment_protection.inspect_server_protection','Branch Protection GET401; bypass/source App and controlled deny enforcement probe unobserved'),
+        ('release-authorities','required_assessment_release.reconcile_release_assessment','Policy at publication time, complete artifact obligations, provider evidence and validation-to-publication handoff authorities'),
+        ('release-workflow-server','release.publishing.main','Actual workflow_dispatch/needs/permissions/environment and fresh server Job/Artifact facts at publication; static release.yml inspected only'),
+        ('release-api-writes','release.publishing.publish_release','Actual create-only Tag/Release POST/asset upload/final draft=false PATCH; no publication run initiated'),
+        ('post-authorities','required_assessment_post.reconcile_post_stage','Actual Phase-order/Trigger/Due Window/Disposition authority + current lifecycle; no enforcement side effect from envelope alone'),
+        ('policy-anchor-and-provider','security_policy.receive','Approved trust anchor + native API/release assets + durable state ownership for actual tool execution environment'),
+        ('dagger-engine-source','plan_execution.execute','Actual caller Source/Engine graph/raw process output; old Native evidence only within recorded inputs/version'),
+    ]
+    for name, consumer, observation in unresolved:
+        ext = external(sn, name, observation)
+        edge(sn, ext, f(consumer), 'unresolved', observation)
+    ext = external(sn, 'remaining-work-dispatch-consumer', 'Actual executor/selector consuming T2 remaining_work; no resolved direct runtime caller found in parsed roots')
+    edge(sn, f('admission.admit_historical_reuse'), ext, 'unresolved', 'Do not infer saved work from a computed reuse document')
+    ext = external(sn, 'r4-actual-publication-consumer', 'No direct R4 caller in pinned runtime roots; current publishing.py imports neither R4 reconcile nor require_reconciliation_manifest')
+    edge(sn, f('required_assessment_release.require_reconciliation_manifest'), ext, 'unresolved', 'Do not equate optional R4 contract with current Workflow publication guard')
+    for producer, name, observation in [
+        ('admission.admit_evidence','same-run-coverage-dispatch','Actual receiver/executor reducing current Remaining Work from T1-a; no direct runtime admission caller found in parsed roots'),
+        ('required_assessment_check.publish_check_run','server-check-consumer','Actual Check response/App/subject and Branch Protection consumption; no Check POST performed in A/B'),
+        ('required_assessment_protection.inspect_server_protection','server-deny-enforcement','Observed configuration does not execute a deny probe; actual server bypass/source-App enforcement unresolved'),
+        ('required_assessment_post.reconcile_post_stage','post-disposition-enforcer','Actual revoke/retain/other disposition consumer; reconcile API itself returns a document and has no resolved direct runtime caller'),
+    ]:
+        ext = external(sn,name,observation)
+        edge(sn,f(producer),ext,'unresolved',observation)
+
+sn = 'pr124'
+for a,b,kind,fact in [
+    ('expected_checks.derive_expected_checks','terminal_expected.bind_terminal_expected','contract_input','Original frozen Expected and original Plan/Git/root; candidate-only graph'),
+    ('expected_checks.validate_projection','terminal_expected.bind_terminal_expected','contract_input','Live original-Expected projection validation, never Terminal Plan as parent'),
+    ('terminal_expected.seal_phase_witness','terminal_expected.bind_terminal_expected','contract_input','Structural witness seal requires separate phase_witness_authority'),
+    ('selection.post_completion_plan','terminal_expected.post_completion_with_expected','contract_input','Completed-run Terminal Plan closure'),
+    ('terminal_expected.post_completion_with_expected','terminal_expected.bind_terminal_expected','static_call','Explicit convenience API calls binder; not selection.post_completion_plan'),
+    ('terminal_expected.bind_terminal_expected','terminal_expected.validate_terminal_expected_binding','contract_input','Bound/authorized envelope consistency validator, no authority reauthentication'),
+    ('terminal_expected.bind_terminal_expected','terminal_expected.post_completion_with_expected','contract_input','Returned binding accompanies Terminal Plan; data dependency is not recursive execution'),
+    ('selection.validate_post_completion_binding','terminal_expected.bind_terminal_expected','contract_input','Terminal input closure plus current Source identity'),
+]: edge(sn,f(a),f(b),kind,fact)
+for name, observation in [
+    ('expected-phase-completed-authorities','Actual Expected authority, completed Run/Attempt provider and trusted #66-B2 Phase Witness issuer for original scope; seal/callback True fixture is not production acceptance'),
+    ('terminal-runtime-consumer','Actual caller using bound/authorized before execution/Admission/R1; candidate wrapper has no statically resolved runtime callers in parsed roots'),
+]:
+    ext=external(sn,name,observation)
+    if name.endswith('consumer'): edge(sn,f('terminal_expected.post_completion_with_expected'),ext,'unresolved',observation)
+    else: edge(sn,ext,f('terminal_expected.bind_terminal_expected'),'unresolved',observation)
+
+for key in graph['nodes']:
+    graph['nodes'][key]['incoming_edges'] = [e['id'] for e in graph['edges'] if e['to'] == key]
+    graph['nodes'][key]['outgoing_edges'] = [e['id'] for e in graph['edges'] if e['from'] == key]
+write_json(ROOT / 'dependency-map.json', graph)
+
+lines = ['# 固定源码引用', '', '由人工依赖图派生；行号来自相应 commit 的 Git blob，不能按当前工作区行号替换。', '',
+         '完整调用表达式、私有 helper 及未解析 callback 见 [AST 归档](evidence/mechanical-discovery.json.gz)。', '']
+for sn in ['main','pr124']:
+    lines.extend(['## ' + sn, '', '| 函数 | 固定源码 | 已解析的直接运行时调用者 |', '| --- | --- | --- |'])
+    for n in sorted(graph['nodes'].values(),key=lambda n:n.get('symbol','')):
+        if n['snapshot'] != sn or 'symbol' not in n: continue
+        source = f"https://github.com/dymzz/engineering-ci/blob/{n['commit']}/{n['path']}#L{n['line']}"
+        callers = '; '.join('`' + c['caller'] + '`:' + str(c['line']) for c in n['resolved_runtime_callers']) or '0（所列 AST 根中；外部/动态调用未知）'
+        lines.append(f"| `{n['symbol']}` | [{n['path']}:{n['line']}]({source}) | {callers} |")
+    lines.append('')
+lines.extend(['上级入口：[A/B 审阅快照](README.md)。', ''])
+(ROOT / 'source-index.md').write_bytes('\n'.join(lines).encode('utf-8'))
+
+pr_metadata = {k:v for k,v in snapshots.items() if k not in ['issues','open_pull_requests']}
+pr_metadata['source_archive'] = {'path':'evidence/github-source-snapshots.json.gz', 'decompressed_sha256':issue_digest}
+pr_metadata['issues'] = [{'number':i['issue_number'],'url':i['url'],'title':i['title'], 'updated_at':i['updated_at'],
+                          'body_sha256':hashlib.sha256(i['body'].encode('utf-8')).hexdigest(),
+                          'section_headings':[line for line in i['body'].splitlines() if re.match(r'^#{1,5} ',line)]}
+                         for i in snapshots['issues']]
+pr_metadata['open_pull_requests'] = [{k:v for k,v in p.items() if k != 'body'} for p in snapshots['open_pull_requests']]
+write_json(ROOT / 'baseline-snapshot.json', pr_metadata)
+
+for src,name in [('.test-tools/discover_authorization_paths.py','discover-authorization-paths.txt'),
+                 ('.test-tools/capture_authorization_visibility.py','capture-github-visibility.txt'),
+                 ('.test-tools/build_authorization_audit.py','derive-audit-artifacts.txt')]:
+    (EVIDENCE / name).write_bytes(Path(src).read_bytes())
+print('Derived', len(graph['nodes']), 'nodes', len(graph['edges']), 'edges; snapshots kept separate')

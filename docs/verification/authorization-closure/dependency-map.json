@@ -1,0 +1,2453 @@
+{
+  "purpose": "Issue #125 B manual data-contract map, no new authority decisions",
+  "direction": "Producer/fact -> Validator/Consumer; physical call graph is in mechanical-discovery archive",
+  "edge_kinds": {
+    "contract_input": "API input/output compatibility to be checked, not a discovered call",
+    "static_call": "Direct call verified in pinned code",
+    "manual_dispatch": "Local import/closure/Workflow dispatch traced manually",
+    "unresolved": "External source/issuer/provider/environment edge needs actual observation"
+  },
+  "nodes": {
+    "main:engineering_ci.selection.plan": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.plan",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3651,
+      "end_line": 3894,
+      "blob": "e1f954fe7b37c65a9902d8f73d28b9c45057386c",
+      "sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.selection.main",
+          "line": 4511
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E001"
+      ]
+    },
+    "main:engineering_ci.expected_checks.derive_expected_checks": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.derive_expected_checks",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 1885,
+      "end_line": 2131,
+      "blob": "90b91fad854364f9e4ea6f1fc3ced41bbc109f09",
+      "sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.selection.plan",
+          "line": 3782
+        }
+      ],
+      "incoming_edges": [
+        "E001",
+        "E002"
+      ],
+      "outgoing_edges": [
+        "E003",
+        "E004"
+      ]
+    },
+    "main:engineering_ci.expected_checks._verify_profile_authority": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks._verify_profile_authority",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 687,
+      "end_line": 761,
+      "blob": "90b91fad854364f9e4ea6f1fc3ced41bbc109f09",
+      "sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.execution._profile_reference",
+          "line": 1753
+        },
+        {
+          "caller": "engineering_ci.expected_checks._derive_v2_from_profile",
+          "line": 1573
+        },
+        {
+          "caller": "engineering_ci.expected_checks.derive_expected_checks",
+          "line": 1964
+        },
+        {
+          "caller": "engineering_ci.expected_checks._validate_per_ref",
+          "line": 2499
+        },
+        {
+          "caller": "engineering_ci.expected_checks.validate_projection",
+          "line": 2932
+        }
+      ],
+      "incoming_edges": [
+        "E057"
+      ],
+      "outgoing_edges": [
+        "E002"
+      ]
+    },
+    "main:engineering_ci.reconciliation.derive_strict_expected": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation.derive_strict_expected",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 890,
+      "end_line": 1013,
+      "blob": "d2aa17340584d72e9a84a40458575aa34fe593eb",
+      "sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.admission._derive_strict_expected_from_pre_proof",
+          "line": 1313
+        },
+        {
+          "caller": "engineering_ci.reconciliation._resolve_expected",
+          "line": 1037
+        }
+      ],
+      "incoming_edges": [
+        "E003",
+        "E009"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.required_assessment.assess_required_obligations": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2449,
+      "end_line": 2634,
+      "blob": "539f871646901d6fea7f387e989a759c614d892c",
+      "sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E004",
+        "E005",
+        "E026",
+        "E027",
+        "E028",
+        "E058"
+      ],
+      "outgoing_edges": [
+        "E029"
+      ]
+    },
+    "main:engineering_ci.expected_checks.validate_projection": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.expected_checks.validate_projection",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2874,
+      "end_line": 3238,
+      "blob": "90b91fad854364f9e4ea6f1fc3ced41bbc109f09",
+      "sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E005"
+      ]
+    },
+    "main:engineering_ci.selection.verify_materialized_source_snapshot": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.verify_materialized_source_snapshot",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/selection.py",
+      "line": 3233,
+      "end_line": 3365,
+      "blob": "e1f954fe7b37c65a9902d8f73d28b9c45057386c",
+      "sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E006"
+      ]
+    },
+    "main:engineering_ci.execution.execute": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.execute",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 4682,
+      "end_line": 4915,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.execution.main",
+          "line": 4949
+        },
+        {
+          "caller": "engineering_ci.hook_coordinator.execute_activated_job",
+          "line": 747
+        }
+      ],
+      "incoming_edges": [
+        "E006",
+        "E054"
+      ],
+      "outgoing_edges": [
+        "E011"
+      ]
+    },
+    "main:engineering_ci.execution.build_pre_execution_source_proof": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.build_pre_execution_source_proof",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 2754,
+      "end_line": 3027,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E007"
+      ]
+    },
+    "main:engineering_ci.admission.admit_historical_reuse": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission.admit_historical_reuse",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/admission.py",
+      "line": 1527,
+      "end_line": 1848,
+      "blob": "bfcbf274ff5a15b14339d02b6bea138478811f5f",
+      "sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E007",
+        "E008",
+        "E060"
+      ],
+      "outgoing_edges": [
+        "E071"
+      ]
+    },
+    "main:engineering_ci.execution.compare_pre_execution_to_historical_result": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3030,
+      "end_line": 3210,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E008"
+      ]
+    },
+    "main:engineering_ci.execution.build_source_resolution": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.build_source_resolution",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3362,
+      "end_line": 3495,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.execution.source_resolution_receipt",
+          "line": 3511
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E009"
+      ]
+    },
+    "main:engineering_ci.execution.source_resolution_receipt": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution.source_resolution_receipt",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 3498,
+      "end_line": 3521,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E010"
+      ]
+    },
+    "main:engineering_ci.admission.admit_evidence": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.admission.admit_evidence",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/admission.py",
+      "line": 779,
+      "end_line": 951,
+      "blob": "bfcbf274ff5a15b14339d02b6bea138478811f5f",
+      "sha256": "4b4a5dc2689e570f03ea974b7948c5bb00d084fd079566c44758bda67f54d26a",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E010",
+        "E020",
+        "E021",
+        "E024",
+        "E059"
+      ],
+      "outgoing_edges": [
+        "E025",
+        "E073"
+      ]
+    },
+    "main:engineering_ci.check_contract.validate_result": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.validate_result",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1053,
+      "end_line": 1161,
+      "blob": "7ea0c1e365104482d580510d503532a4cdeec33c",
+      "sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.admission._historical_candidate",
+          "line": 1129
+        },
+        {
+          "caller": "engineering_ci.check_contract.native_result",
+          "line": 1049
+        },
+        {
+          "caller": "engineering_ci.check_contract.validate_result_set",
+          "line": 1170
+        },
+        {
+          "caller": "engineering_ci.check_contract.result_matches_expected",
+          "line": 1256
+        },
+        {
+          "caller": "engineering_ci.check_contract.result_covers_expected",
+          "line": 1364
+        },
+        {
+          "caller": "engineering_ci.execution.compare_pre_execution_to_historical_result",
+          "line": 3081
+        },
+        {
+          "caller": "engineering_ci.execution._decorate_checks",
+          "line": 3889
+        },
+        {
+          "caller": "engineering_ci.execution._decorate_checks",
+          "line": 3943
+        },
+        {
+          "caller": "engineering_ci.reconciliation._check_report_rejection",
+          "line": 286
+        },
+        {
+          "caller": "engineering_ci.reconciliation._execution_report",
+          "line": 377
+        },
+        {
+          "caller": "engineering_ci.reconciliation._execution_report",
+          "line": 392
+        },
+        {
+          "caller": "engineering_ci.reconciliation._normalize_observations",
+          "line": 772
+        }
+      ],
+      "incoming_edges": [
+        "E011",
+        "E015"
+      ],
+      "outgoing_edges": [
+        "E018"
+      ]
+    },
+    "main:engineering_ci_module.main.EngineeringCi.plan_execution": {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.main.EngineeringCi.plan_execution",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 273,
+      "end_line": 293,
+      "blob": "3ab79f3d31cd4d7670d1ac721a5cb26ec00e3726",
+      "sha256": "bd1181e540ee0d116c64fbcde440925bd76bf7f58ab43bb7044673ec913cf1ae",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci_module.main.EngineeringCi.execute_plan",
+          "line": 306
+        },
+        {
+          "caller": "engineering_ci_module.main.EngineeringCi.fixture_plan_execution",
+          "line": 321
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E012"
+      ]
+    },
+    "main:engineering_ci_module.plan_execution.execute": {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_execution.execute",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+      "line": 1225,
+      "end_line": 1500,
+      "blob": "ab58e33ebcd3afc20ea2766c1c059916557d5edc",
+      "sha256": "007602e9aadcb6319b6918a7f1babf67a425cfdabe0b7e3647afa75194848f7d",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci_module.link_cache_fixture.observe",
+          "line": 144
+        },
+        {
+          "caller": "engineering_ci_module.link_cache_fixture.observe",
+          "line": 149
+        }
+      ],
+      "incoming_edges": [
+        "E012",
+        "E070"
+      ],
+      "outgoing_edges": [
+        "E013"
+      ]
+    },
+    "main:engineering_ci_module.plan_result.PlanExecution.enforce": {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_result.PlanExecution.enforce",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": ".dagger/src/engineering_ci_module/plan_result.py",
+      "line": 19,
+      "end_line": 48,
+      "blob": "b9376b769a4502fc68e908d728b00ee3ccf1d762",
+      "sha256": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E013"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci_module.main.EngineeringCi.execute_plan": {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.main.EngineeringCi.execute_plan",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": ".dagger/src/engineering_ci_module/main.py",
+      "line": 296,
+      "end_line": 309,
+      "blob": "3ab79f3d31cd4d7670d1ac721a5cb26ec00e3726",
+      "sha256": "bd1181e540ee0d116c64fbcde440925bd76bf7f58ab43bb7044673ec913cf1ae",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E014"
+      ]
+    },
+    "main:engineering_ci_module.plan_result.PlanExecution.report": {
+      "snapshot": "main",
+      "symbol": "engineering_ci_module.plan_result.PlanExecution.report",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": ".dagger/src/engineering_ci_module/plan_result.py",
+      "line": 14,
+      "end_line": 16,
+      "blob": "b9376b769a4502fc68e908d728b00ee3ccf1d762",
+      "sha256": "218c5f6a32e16b8616ffa19c27dbfe3257b1db4748b952f8477b4068d112600f",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci_module.plan_result.PlanExecution.enforce",
+          "line": 24
+        }
+      ],
+      "incoming_edges": [
+        "E014"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.check_contract.native_result": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.native_result",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 927,
+      "end_line": 1050,
+      "blob": "7ea0c1e365104482d580510d503532a4cdeec33c",
+      "sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.execution._inventory_result",
+          "line": 3662
+        },
+        {
+          "caller": "engineering_ci.execution._native_results",
+          "line": 3752
+        },
+        {
+          "caller": "engineering_ci.execution._native_results",
+          "line": 3786
+        },
+        {
+          "caller": "engineering_ci.native_producer.test_check",
+          "line": 124
+        },
+        {
+          "caller": "engineering_ci.native_producer.weaver_check",
+          "line": 204
+        }
+      ],
+      "incoming_edges": [
+        "E016",
+        "E017"
+      ],
+      "outgoing_edges": [
+        "E015"
+      ]
+    },
+    "main:engineering_ci.native_producer.test_check": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.native_producer.test_check",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/native_producer.py",
+      "line": 95,
+      "end_line": 154,
+      "blob": "5182c63d505a117259ceee92cb879d5de77c98cd",
+      "sha256": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci_module.native_results.test_result",
+          "line": 119
+        },
+        {
+          "caller": "engineering_ci.execution._finalize_report",
+          "line": 4499
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E016"
+      ]
+    },
+    "main:engineering_ci.native_producer.weaver_check": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.native_producer.weaver_check",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/native_producer.py",
+      "line": 157,
+      "end_line": 236,
+      "blob": "5182c63d505a117259ceee92cb879d5de77c98cd",
+      "sha256": "40f0c59e8cf740907ae4c36d1f9ec320fe182ffaf23f1e9aeeb674b9205f5a33",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci_module.native_results.weaver_result",
+          "line": 59
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E017"
+      ]
+    },
+    "main:engineering_ci.check_contract.evaluate_expected_satisfaction": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/check_contract.py",
+      "line": 1451,
+      "end_line": 1484,
+      "blob": "7ea0c1e365104482d580510d503532a4cdeec33c",
+      "sha256": "aeb4df49ede5e0a3cdda20245cc4b4cf53f6e2234632d806ef103e0e438368e1",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.admission._entry_admission_v2",
+          "line": 619
+        },
+        {
+          "caller": "engineering_ci.admission._evaluate_historical_candidate",
+          "line": 1428
+        },
+        {
+          "caller": "engineering_ci.check_contract.results_cover_expected",
+          "line": 1386
+        },
+        {
+          "caller": "engineering_ci.reconciliation._evaluate_candidates",
+          "line": 1238
+        }
+      ],
+      "incoming_edges": [
+        "E018"
+      ],
+      "outgoing_edges": [
+        "E019"
+      ]
+    },
+    "main:engineering_ci.reconciliation.reconcile_expected_results": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation.reconcile_expected_results",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1748,
+      "end_line": 1834,
+      "blob": "d2aa17340584d72e9a84a40458575aa34fe593eb",
+      "sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.hook_coordinator.finalize_invocation",
+          "line": 1079
+        }
+      ],
+      "incoming_edges": [
+        "E019"
+      ],
+      "outgoing_edges": [
+        "E020"
+      ]
+    },
+    "main:engineering_ci.reconciliation.validate_receipt": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.reconciliation.validate_receipt",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/reconciliation.py",
+      "line": 1984,
+      "end_line": 2186,
+      "blob": "d2aa17340584d72e9a84a40458575aa34fe593eb",
+      "sha256": "3c73232240c43e5b82c166aef505f0d40434fadeb6df549db8d043fa238150cf",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.admission.admit_evidence",
+          "line": 801
+        },
+        {
+          "caller": "engineering_ci.hook_coordinator.finalize_invocation",
+          "line": 1087
+        },
+        {
+          "caller": "engineering_ci.required_assessment._validate_receipt",
+          "line": 1447
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E021",
+        "E027"
+      ]
+    },
+    "main:engineering_ci.local_actions_handoff.build_local_handoff_package": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 254,
+      "end_line": 323,
+      "blob": "9877ecab1241e6fab7dca252e94f86b49b9aa363",
+      "sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E022"
+      ]
+    },
+    "main:engineering_ci.local_actions_handoff.validate_local_handoff_package": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 326,
+      "end_line": 394,
+      "blob": "9877ecab1241e6fab7dca252e94f86b49b9aa363",
+      "sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.local_actions_handoff.verify_local_handoff",
+          "line": 549
+        }
+      ],
+      "incoming_edges": [
+        "E022"
+      ],
+      "outgoing_edges": [
+        "E023"
+      ]
+    },
+    "main:engineering_ci.local_actions_handoff.verify_local_handoff": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/local_actions_handoff.py",
+      "line": 526,
+      "end_line": 749,
+      "blob": "9877ecab1241e6fab7dca252e94f86b49b9aa363",
+      "sha256": "44a0795f87b76d013f325d4fc47c1e3bca626e9127acc78237a1c6114895c046",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E023",
+        "E061"
+      ],
+      "outgoing_edges": [
+        "E024"
+      ]
+    },
+    "main:engineering_ci.required_assessment._validate_admission": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._validate_admission",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 1341,
+      "end_line": 1441,
+      "blob": "539f871646901d6fea7f387e989a759c614d892c",
+      "sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment.assess_required_obligations",
+          "line": 2479
+        }
+      ],
+      "incoming_edges": [
+        "E025"
+      ],
+      "outgoing_edges": [
+        "E026"
+      ]
+    },
+    "main:engineering_ci.required_assessment._validate_universe": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment._validate_universe",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 791,
+      "end_line": 831,
+      "blob": "539f871646901d6fea7f387e989a759c614d892c",
+      "sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment.assess_required_obligations",
+          "line": 2477
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E028"
+      ]
+    },
+    "main:engineering_ci.required_assessment.validate_assessment": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment.validate_assessment",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment.py",
+      "line": 2637,
+      "end_line": 2826,
+      "blob": "539f871646901d6fea7f387e989a759c614d892c",
+      "sha256": "c163058bfca535070a5576b175715ffa93f8305868b676b7788421aeb22a047e",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment_check.build_check_publication",
+          "line": 313
+        },
+        {
+          "caller": "engineering_ci.required_assessment_post.reconcile_post_stage",
+          "line": 604
+        },
+        {
+          "caller": "engineering_ci.required_assessment_post.reconcile_post_stage",
+          "line": 605
+        },
+        {
+          "caller": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+          "line": 694
+        }
+      ],
+      "incoming_edges": [
+        "E029"
+      ],
+      "outgoing_edges": [
+        "E030",
+        "E037",
+        "E043"
+      ]
+    },
+    "main:engineering_ci.required_assessment_check.build_check_publication": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.build_check_publication",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 306,
+      "end_line": 385,
+      "blob": "51122b72ac648c8fb4f615c562f870e6fd5de819",
+      "sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E030"
+      ],
+      "outgoing_edges": [
+        "E031"
+      ]
+    },
+    "main:engineering_ci.required_assessment_check.publish_check_run": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 696,
+      "end_line": 739,
+      "blob": "51122b72ac648c8fb4f615c562f870e6fd5de819",
+      "sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "line": 644
+        },
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "line": 663
+        }
+      ],
+      "incoming_edges": [
+        "E031",
+        "E032",
+        "E034",
+        "E035",
+        "E063"
+      ],
+      "outgoing_edges": [
+        "E074"
+      ]
+    },
+    "main:engineering_ci.required_assessment_check.publication_for_missing_assessment": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_check.py",
+      "line": 388,
+      "end_line": 449,
+      "blob": "51122b72ac648c8fb4f615c562f870e6fd5de819",
+      "sha256": "56ce0e309f914012c74778bc57afb0abc55c64fa79955855fed76564c91f9a1b",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E032"
+      ]
+    },
+    "main:engineering_ci.required_assessment_publish.verify_publisher_identity": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 463,
+      "end_line": 512,
+      "blob": "efaf90dc56c615c0e60671adcc2e690e44cecf41",
+      "sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "line": 635
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E033"
+      ]
+    },
+    "main:engineering_ci.required_assessment_publish.authorize_and_publish": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 615,
+      "end_line": 669,
+      "blob": "efaf90dc56c615c0e60671adcc2e690e44cecf41",
+      "sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E033",
+        "E062"
+      ],
+      "outgoing_edges": [
+        "E035"
+      ]
+    },
+    "main:engineering_ci.required_assessment_publish.workflow_publish_authority": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_publish.py",
+      "line": 515,
+      "end_line": 612,
+      "blob": "efaf90dc56c615c0e60671adcc2e690e44cecf41",
+      "sha256": "0b2d7b1c4fdb0df3c53d7da5ae1eef253bbc5b985c11c599b143ab8766fc6ab2",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "line": 651
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E034"
+      ]
+    },
+    "main:engineering_ci.required_assessment_protection.inspect_server_protection": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_protection.inspect_server_protection",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 257,
+      "end_line": 478,
+      "blob": "c132c2931b5efc1be8077a48c448fbaa844de800",
+      "sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E064"
+      ],
+      "outgoing_edges": [
+        "E036",
+        "E075"
+      ]
+    },
+    "main:engineering_ci.required_assessment_protection.validate_protection_observation": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_protection.validate_protection_observation",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_protection.py",
+      "line": 481,
+      "end_line": 518,
+      "blob": "c132c2931b5efc1be8077a48c448fbaa844de800",
+      "sha256": "f17fea7c78051a331ad1a64ad6f4ea91f32dd834b2a4b3f9fb624aec499bd716",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E036"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.required_assessment_release.reconcile_release_assessment": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 673,
+      "end_line": 978,
+      "blob": "d5c2a7dcf6a054280ab33627d43a15d6b0a7f9a8",
+      "sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E037",
+        "E038",
+        "E039",
+        "E040",
+        "E065"
+      ],
+      "outgoing_edges": [
+        "E041"
+      ]
+    },
+    "main:engineering_ci.release.manifest.validate": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.manifest.validate",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/release/manifest.py",
+      "line": 340,
+      "end_line": 479,
+      "blob": "07e102288473b606a0e923eb0690eb73e90d291c",
+      "sha256": "8e864f139cd66335f2f0117077d0ee6dc930df47bbd597ac0152fd3a243dcba4",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.release.manifest.manifest",
+          "line": 336
+        },
+        {
+          "caller": "engineering_ci.release.verification.evidence",
+          "line": 173
+        },
+        {
+          "caller": "engineering_ci.required_assessment_release._load_manifest_v1",
+          "line": 175
+        },
+        {
+          "caller": "engineering_ci.security_policy._verify_release",
+          "line": 457
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E038",
+        "E048"
+      ]
+    },
+    "main:engineering_ci.required_assessment_release.manifest_provider_from_verification": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.manifest_provider_from_verification",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 409,
+      "end_line": 427,
+      "blob": "d5c2a7dcf6a054280ab33627d43a15d6b0a7f9a8",
+      "sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E039"
+      ]
+    },
+    "main:engineering_ci.required_assessment_release.manifest_provider_from_publication": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.manifest_provider_from_publication",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 430,
+      "end_line": 448,
+      "blob": "d5c2a7dcf6a054280ab33627d43a15d6b0a7f9a8",
+      "sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E040"
+      ]
+    },
+    "main:engineering_ci.required_assessment_release.validate_release_reconciliation": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 981,
+      "end_line": 1001,
+      "blob": "d5c2a7dcf6a054280ab33627d43a15d6b0a7f9a8",
+      "sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+          "line": 244
+        }
+      ],
+      "incoming_edges": [
+        "E041"
+      ],
+      "outgoing_edges": [
+        "E042"
+      ]
+    },
+    "main:engineering_ci.required_assessment_release.require_reconciliation_manifest": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_release.py",
+      "line": 242,
+      "end_line": 248,
+      "blob": "d5c2a7dcf6a054280ab33627d43a15d6b0a7f9a8",
+      "sha256": "661d01f199c3612a683e2b9eba733e1e160e4509e003cfeb1effa465b0bed3ec",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E042"
+      ],
+      "outgoing_edges": [
+        "E072"
+      ]
+    },
+    "main:engineering_ci.required_assessment_post.reconcile_post_stage": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.required_assessment_post.reconcile_post_stage",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/required_assessment_post.py",
+      "line": 582,
+      "end_line": 841,
+      "blob": "bd63250317aef8dc8e8ab3b83d8306d54826deda",
+      "sha256": "00cf503b4dddcfd036305e97cb3365446cc1701fd010820572634afb7a38e6d6",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E043",
+        "E068"
+      ],
+      "outgoing_edges": [
+        "E076"
+      ]
+    },
+    "main:engineering_ci.security_policy.receive": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.security_policy.receive",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 684,
+      "end_line": 736,
+      "blob": "70ab51d149ac9ed48937cd2b73de0f20a414a682",
+      "sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.security_policy.main",
+          "line": 975
+        }
+      ],
+      "incoming_edges": [
+        "E069"
+      ],
+      "outgoing_edges": [
+        "E044"
+      ]
+    },
+    "main:engineering_ci.security_policy.decide": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.security_policy.decide",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/security_policy.py",
+      "line": 814,
+      "end_line": 844,
+      "blob": "70ab51d149ac9ed48937cd2b73de0f20a414a682",
+      "sha256": "445f33108336f9b46bb9dfdaa562144d26bb5f969fe64e8f6e1d168354d3f188",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.security_policy.main",
+          "line": 995
+        }
+      ],
+      "incoming_edges": [
+        "E044"
+      ],
+      "outgoing_edges": [
+        "E045"
+      ]
+    },
+    "main:engineering_ci.execution._build_workflow_admission_fn": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.execution._build_workflow_admission_fn",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/execution.py",
+      "line": 939,
+      "end_line": 1005,
+      "blob": "ca030111f24174d5e7f2ef13e5cb4c9255d34387",
+      "sha256": "f3b88334b3c7603aaafe85002574a4449257cdbff346f9019119e5794f125f03",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.execution._run_workflow_script_checks",
+          "line": 1169
+        }
+      ],
+      "incoming_edges": [
+        "E045"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.release.request.dispatch": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.request.dispatch",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/release/request.py",
+      "line": 55,
+      "end_line": 146,
+      "blob": "8e0a6a4e658ce20442aadf430975b6a306d6d264",
+      "sha256": "25e41acf2eef99f905ed4b6993fcbe5be6607a5401fd83cd47a7371e1bd63548",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.cli.release.main",
+          "line": 109
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E046"
+      ]
+    },
+    "main:engineering_ci.release.publishing.main": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.main",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 336,
+      "end_line": 453,
+      "blob": "94a25daacaf60a46134f08bc1c9ef49c8fc9ae8d",
+      "sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E046",
+        "E047",
+        "E066"
+      ],
+      "outgoing_edges": [
+        "E050"
+      ]
+    },
+    "main:engineering_ci.workflow_actions.main": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.workflow_actions.main",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/workflow_actions.py",
+      "line": 10,
+      "end_line": 28,
+      "blob": "b5bf90ac9577101359fea38fa0583740bf809331",
+      "sha256": "bd4e30703b2efcdc45b22874ed1ec1e23daf808dca5003c245aba1f2d5c8b570",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E047"
+      ]
+    },
+    "main:engineering_ci.release.publishing.published_evidence": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.published_evidence",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 114,
+      "end_line": 155,
+      "blob": "94a25daacaf60a46134f08bc1c9ef49c8fc9ae8d",
+      "sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "line": 218
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "line": 227
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "line": 252
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "line": 266
+        },
+        {
+          "caller": "engineering_ci.release.verification.published",
+          "line": 314
+        }
+      ],
+      "incoming_edges": [
+        "E048"
+      ],
+      "outgoing_edges": [
+        "E049"
+      ]
+    },
+    "main:engineering_ci.release.publishing.publish_release": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.release.publishing.publish_release",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/release/publishing.py",
+      "line": 213,
+      "end_line": 280,
+      "blob": "94a25daacaf60a46134f08bc1c9ef49c8fc9ae8d",
+      "sha256": "0295a6217ee74ca8b1510fd291de985d35857a74f5e9e5baa66288ed61f26623",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.release.publishing.main",
+          "line": 426
+        }
+      ],
+      "incoming_edges": [
+        "E049",
+        "E050",
+        "E067"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.cicd_telemetry.fetch_github_run_job": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 2646,
+      "end_line": 2794,
+      "blob": "2dc817f86dbe984c913afbc868c74eb4f9550f3b",
+      "sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.cicd_telemetry.main",
+          "line": 2924
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E051"
+      ]
+    },
+    "main:engineering_ci.cicd_telemetry.produce": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.cicd_telemetry.produce",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/cicd_telemetry.py",
+      "line": 857,
+      "end_line": 1491,
+      "blob": "2dc817f86dbe984c913afbc868c74eb4f9550f3b",
+      "sha256": "d429d2a79d6bb99ded2b7b99a78a9fc8f8f6b9bd01a8be45e31366e3cc13f630",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.cicd_telemetry.main",
+          "line": 2960
+        }
+      ],
+      "incoming_edges": [
+        "E051"
+      ],
+      "outgoing_edges": [
+        "E052"
+      ]
+    },
+    "main:engineering_ci.selection.post_completion_plan": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.post_completion_plan",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4048,
+      "end_line": 4171,
+      "blob": "e1f954fe7b37c65a9902d8f73d28b9c45057386c",
+      "sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E052"
+      ],
+      "outgoing_edges": [
+        "E053"
+      ]
+    },
+    "main:engineering_ci.selection.validate_post_completion_binding": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.selection.validate_post_completion_binding",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4174,
+      "end_line": 4320,
+      "blob": "e1f954fe7b37c65a9902d8f73d28b9c45057386c",
+      "sha256": "e4afe18333db492443c8eee3a2088a65c2943910bb90b2ef58fb87527950419f",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E053"
+      ],
+      "outgoing_edges": [
+        "E054"
+      ]
+    },
+    "main:engineering_ci.dagger_telemetry.correlate_capture": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry.correlate_capture",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 1649,
+      "end_line": 1810,
+      "blob": "855fdc81f0dd1d816fcf3f5912073a2b8b27aef4",
+      "sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.dagger_telemetry._reconcile_receipt_with_capture",
+          "line": 2446
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2639
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2649
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2659
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2671
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2681
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2696
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2713
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2730
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2747
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2764
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2776
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2788
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2798
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2808
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2818
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2828
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "line": 2840
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.main",
+          "line": 3052
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E055"
+      ]
+    },
+    "main:engineering_ci.dagger_telemetry.verify_a1_suite": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.dagger_telemetry.verify_a1_suite",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/dagger_telemetry.py",
+      "line": 2517,
+      "end_line": 2888,
+      "blob": "855fdc81f0dd1d816fcf3f5912073a2b8b27aef4",
+      "sha256": "19ca1fba17a327173b68ede0e7651a1a34705e3fdb6c3e9f0b410992eb09350b",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.dagger_telemetry.main",
+          "line": 3080
+        }
+      ],
+      "incoming_edges": [
+        "E055"
+      ],
+      "outgoing_edges": []
+    },
+    "main:engineering_ci.hook_coordinator._require_runner_produced_report": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hook_coordinator._require_runner_produced_report",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/hook_coordinator.py",
+      "line": 575,
+      "end_line": 601,
+      "blob": "97fe4abae37193cc169906267e30a6f6028889a4",
+      "sha256": "e09b4a6e1c2fb6b1a6401a42980c347f254e6f58a422d4972aeb9411243bda3c",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.hook_coordinator.collect_job_report",
+          "line": 801
+        },
+        {
+          "caller": "engineering_ci.hook_coordinator.issue_job_receipt",
+          "line": 839
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E056"
+      ]
+    },
+    "main:engineering_ci.hook_coordinator.execute_activated_job": {
+      "snapshot": "main",
+      "symbol": "engineering_ci.hook_coordinator.execute_activated_job",
+      "commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "path": "src/engineering_ci/hook_coordinator.py",
+      "line": 713,
+      "end_line": 764,
+      "blob": "97fe4abae37193cc169906267e30a6f6028889a4",
+      "sha256": "e09b4a6e1c2fb6b1a6401a42980c347f254e6f58a422d4972aeb9411243bda3c",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E056"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:governed-profile-and-phase": {
+      "snapshot": "main",
+      "external": "governed-profile-and-phase",
+      "resolution": "unresolved",
+      "needed_observation": "Authenticated approval/delegation/inheritance/exclusion and phase producer, live validity/revocation; JSON digest alone insufficient",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E057"
+      ]
+    },
+    "main:external:complete-universe-and-non-check-evidence": {
+      "snapshot": "main",
+      "external": "complete-universe-and-non-check-evidence",
+      "resolution": "unresolved",
+      "needed_observation": "Actual governed obligations enumeration and issuer-authenticated non-Check evidence for current Action/Target/Phase/Ref/Candidate/time",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E058"
+      ]
+    },
+    "main:external:raw-origin-and-resolution-authorities": {
+      "snapshot": "main",
+      "external": "raw-origin-and-resolution-authorities",
+      "resolution": "unresolved",
+      "needed_observation": "Real raw Report/Job Receipt transport, approved verification_implementation and authority(context)/resolution_authority(context)",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E059"
+      ]
+    },
+    "main:external:historical-authorities": {
+      "snapshot": "main",
+      "external": "historical-authorities",
+      "resolution": "unresolved",
+      "needed_observation": "Historical issuer, current P0 provenance, current authorization, freshness/revocation; actual Remaining Work execution consumer",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E060"
+      ]
+    },
+    "main:external:local-controlled-boundary": {
+      "snapshot": "main",
+      "external": "local-controlled-boundary",
+      "resolution": "unresolved",
+      "needed_observation": "Issuer + execution time + grant verifier, controlled runner and receiving Actions transport",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E061"
+      ]
+    },
+    "main:external:actions-approval-and-execution": {
+      "snapshot": "main",
+      "external": "actions-approval-and-execution",
+      "resolution": "unresolved",
+      "needed_observation": "Approved publisher issuer, actual runtime execution envelope, Workflow/Run/Attempt/App identity; env alone insufficient",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E062"
+      ]
+    },
+    "main:external:github-check-transport": {
+      "snapshot": "main",
+      "external": "github-check-transport",
+      "resolution": "unresolved",
+      "needed_observation": "Actual publishing token/App permissions and POST result; no Check writes performed in A/B",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E063"
+      ]
+    },
+    "main:external:github-server-enforcement": {
+      "snapshot": "main",
+      "external": "github-server-enforcement",
+      "resolution": "unresolved",
+      "needed_observation": "Branch Protection GET401; bypass/source App and controlled deny enforcement probe unobserved",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E064"
+      ]
+    },
+    "main:external:release-authorities": {
+      "snapshot": "main",
+      "external": "release-authorities",
+      "resolution": "unresolved",
+      "needed_observation": "Policy at publication time, complete artifact obligations, provider evidence and validation-to-publication handoff authorities",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E065"
+      ]
+    },
+    "main:external:release-workflow-server": {
+      "snapshot": "main",
+      "external": "release-workflow-server",
+      "resolution": "unresolved",
+      "needed_observation": "Actual workflow_dispatch/needs/permissions/environment and fresh server Job/Artifact facts at publication; static release.yml inspected only",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E066"
+      ]
+    },
+    "main:external:release-api-writes": {
+      "snapshot": "main",
+      "external": "release-api-writes",
+      "resolution": "unresolved",
+      "needed_observation": "Actual create-only Tag/Release POST/asset upload/final draft=false PATCH; no publication run initiated",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E067"
+      ]
+    },
+    "main:external:post-authorities": {
+      "snapshot": "main",
+      "external": "post-authorities",
+      "resolution": "unresolved",
+      "needed_observation": "Actual Phase-order/Trigger/Due Window/Disposition authority + current lifecycle; no enforcement side effect from envelope alone",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E068"
+      ]
+    },
+    "main:external:policy-anchor-and-provider": {
+      "snapshot": "main",
+      "external": "policy-anchor-and-provider",
+      "resolution": "unresolved",
+      "needed_observation": "Approved trust anchor + native API/release assets + durable state ownership for actual tool execution environment",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E069"
+      ]
+    },
+    "main:external:dagger-engine-source": {
+      "snapshot": "main",
+      "external": "dagger-engine-source",
+      "resolution": "unresolved",
+      "needed_observation": "Actual caller Source/Engine graph/raw process output; old Native evidence only within recorded inputs/version",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E070"
+      ]
+    },
+    "main:external:remaining-work-dispatch-consumer": {
+      "snapshot": "main",
+      "external": "remaining-work-dispatch-consumer",
+      "resolution": "unresolved",
+      "needed_observation": "Actual executor/selector consuming T2 remaining_work; no resolved direct runtime caller found in parsed roots",
+      "incoming_edges": [
+        "E071"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:r4-actual-publication-consumer": {
+      "snapshot": "main",
+      "external": "r4-actual-publication-consumer",
+      "resolution": "unresolved",
+      "needed_observation": "No direct R4 caller in pinned runtime roots; current publishing.py imports neither R4 reconcile nor require_reconciliation_manifest",
+      "incoming_edges": [
+        "E072"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:same-run-coverage-dispatch": {
+      "snapshot": "main",
+      "external": "same-run-coverage-dispatch",
+      "resolution": "unresolved",
+      "needed_observation": "Actual receiver/executor reducing current Remaining Work from T1-a; no direct runtime admission caller found in parsed roots",
+      "incoming_edges": [
+        "E073"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:server-check-consumer": {
+      "snapshot": "main",
+      "external": "server-check-consumer",
+      "resolution": "unresolved",
+      "needed_observation": "Actual Check response/App/subject and Branch Protection consumption; no Check POST performed in A/B",
+      "incoming_edges": [
+        "E074"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:server-deny-enforcement": {
+      "snapshot": "main",
+      "external": "server-deny-enforcement",
+      "resolution": "unresolved",
+      "needed_observation": "Observed configuration does not execute a deny probe; actual server bypass/source-App enforcement unresolved",
+      "incoming_edges": [
+        "E075"
+      ],
+      "outgoing_edges": []
+    },
+    "main:external:post-disposition-enforcer": {
+      "snapshot": "main",
+      "external": "post-disposition-enforcer",
+      "resolution": "unresolved",
+      "needed_observation": "Actual revoke/retain/other disposition consumer; reconcile API itself returns a document and has no resolved direct runtime caller",
+      "incoming_edges": [
+        "E076"
+      ],
+      "outgoing_edges": []
+    },
+    "pr124:engineering_ci.expected_checks.derive_expected_checks": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.derive_expected_checks",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 1885,
+      "end_line": 2131,
+      "blob": "90b91fad854364f9e4ea6f1fc3ced41bbc109f09",
+      "sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.selection.plan",
+          "line": 3776
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E077"
+      ]
+    },
+    "pr124:engineering_ci.terminal_expected.bind_terminal_expected": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1121,
+      "end_line": 1454,
+      "blob": "780e4a0894d2f58a592aac3edd11c596a1f1770e",
+      "sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "line": 1501
+        }
+      ],
+      "incoming_edges": [
+        "E077",
+        "E078",
+        "E079",
+        "E081",
+        "E084",
+        "E085"
+      ],
+      "outgoing_edges": [
+        "E082",
+        "E083"
+      ]
+    },
+    "pr124:engineering_ci.expected_checks.validate_projection": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.expected_checks.validate_projection",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/expected_checks.py",
+      "line": 2874,
+      "end_line": 3238,
+      "blob": "90b91fad854364f9e4ea6f1fc3ced41bbc109f09",
+      "sha256": "1d59340d7ac34072428b59553d03ef0cd86b9b78f6ca689dea0f627a94eee03c",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.terminal_expected._bind_projection_proof",
+          "line": 595
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E078"
+      ]
+    },
+    "pr124:engineering_ci.terminal_expected.seal_phase_witness": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.seal_phase_witness",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1086,
+      "end_line": 1118,
+      "blob": "780e4a0894d2f58a592aac3edd11c596a1f1770e",
+      "sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E079"
+      ]
+    },
+    "pr124:engineering_ci.selection.post_completion_plan": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.post_completion_plan",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4042,
+      "end_line": 4165,
+      "blob": "57a91c0c2f1f482b4e1b79ba28b6d50b2dab9cce",
+      "sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "line": 1485
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E080"
+      ]
+    },
+    "pr124:engineering_ci.terminal_expected.post_completion_with_expected": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.post_completion_with_expected",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1457,
+      "end_line": 1515,
+      "blob": "780e4a0894d2f58a592aac3edd11c596a1f1770e",
+      "sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E080",
+        "E083"
+      ],
+      "outgoing_edges": [
+        "E081",
+        "E086"
+      ]
+    },
+    "pr124:engineering_ci.terminal_expected.validate_terminal_expected_binding": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/terminal_expected.py",
+      "line": 1518,
+      "end_line": 1553,
+      "blob": "780e4a0894d2f58a592aac3edd11c596a1f1770e",
+      "sha256": "1cd8f84a59ce1147a34ce270feb0b0da5e5330fdb01a76a0fa0e895f46b8ae3d",
+      "resolved_runtime_callers": [],
+      "incoming_edges": [
+        "E082"
+      ],
+      "outgoing_edges": []
+    },
+    "pr124:engineering_ci.selection.validate_post_completion_binding": {
+      "snapshot": "pr124",
+      "symbol": "engineering_ci.selection.validate_post_completion_binding",
+      "commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "path": "src/engineering_ci/selection.py",
+      "line": 4168,
+      "end_line": 4314,
+      "blob": "57a91c0c2f1f482b4e1b79ba28b6d50b2dab9cce",
+      "sha256": "a8f0ed46dbf97c0e462d640d7887e439940830efb4df895308d2cce0dd36fa39",
+      "resolved_runtime_callers": [
+        {
+          "caller": "engineering_ci.terminal_expected._verify_input_closure",
+          "line": 981
+        }
+      ],
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E084"
+      ]
+    },
+    "pr124:external:expected-phase-completed-authorities": {
+      "snapshot": "pr124",
+      "external": "expected-phase-completed-authorities",
+      "resolution": "unresolved",
+      "needed_observation": "Actual Expected authority, completed Run/Attempt provider and trusted #66-B2 Phase Witness issuer for original scope; seal/callback True fixture is not production acceptance",
+      "incoming_edges": [],
+      "outgoing_edges": [
+        "E085"
+      ]
+    },
+    "pr124:external:terminal-runtime-consumer": {
+      "snapshot": "pr124",
+      "external": "terminal-runtime-consumer",
+      "resolution": "unresolved",
+      "needed_observation": "Actual caller using bound/authorized before execution/Admission/R1; candidate wrapper has no statically resolved runtime callers in parsed roots",
+      "incoming_edges": [
+        "E086"
+      ],
+      "outgoing_edges": []
+    }
+  },
+  "edges": [
+    {
+      "id": "E001",
+      "from": "main:engineering_ci.selection.plan",
+      "to": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "kind": "static_call",
+      "fact": "Plan/config/Profile/source scope -> pre-execution Expected"
+    },
+    {
+      "id": "E002",
+      "from": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "to": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "kind": "contract_input",
+      "fact": "Rule/policy/Profile/phase authority predicates"
+    },
+    {
+      "id": "E003",
+      "from": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "main:engineering_ci.reconciliation.derive_strict_expected",
+      "kind": "contract_input",
+      "fact": "Frozen Expected scope and check entries"
+    },
+    {
+      "id": "E004",
+      "from": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "fact": "Expected v2; scope_id and expected_set_ref"
+    },
+    {
+      "id": "E005",
+      "from": "main:engineering_ci.expected_checks.validate_projection",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "fact": "R1 has its own _verify_expected_scope; no implied call to validate_projection"
+    },
+    {
+      "id": "E006",
+      "from": "main:engineering_ci.selection.verify_materialized_source_snapshot",
+      "to": "main:engineering_ci.execution.execute",
+      "kind": "contract_input",
+      "fact": "Physical Git/tree/directory binding; actual callers retained in mechanical graph"
+    },
+    {
+      "id": "E007",
+      "from": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "contract_input",
+      "fact": "Current P0 source/input/rule/tool/baseline closure plus independent verifier"
+    },
+    {
+      "id": "E008",
+      "from": "main:engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "contract_input",
+      "fact": "Typed current vs historical equivalence; origin remains separate"
+    },
+    {
+      "id": "E009",
+      "from": "main:engineering_ci.execution.build_source_resolution",
+      "to": "main:engineering_ci.reconciliation.derive_strict_expected",
+      "kind": "contract_input",
+      "fact": "Independently resolved Source/Rule/Baseline facts"
+    },
+    {
+      "id": "E010",
+      "from": "main:engineering_ci.execution.source_resolution_receipt",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "fact": "Resolution envelopes require resolution_authority"
+    },
+    {
+      "id": "E011",
+      "from": "main:engineering_ci.execution.execute",
+      "to": "main:engineering_ci.check_contract.validate_result",
+      "kind": "contract_input",
+      "fact": "Original Host native results; failure/blocked/unexecuted retained"
+    },
+    {
+      "id": "E012",
+      "from": "main:engineering_ci_module.main.EngineeringCi.plan_execution",
+      "to": "main:engineering_ci_module.plan_execution.execute",
+      "kind": "manual_dispatch",
+      "fact": "Function-local import -> Dagger Plan/Source/native execution"
+    },
+    {
+      "id": "E013",
+      "from": "main:engineering_ci_module.plan_execution.execute",
+      "to": "main:engineering_ci_module.plan_result.PlanExecution.enforce",
+      "kind": "contract_input",
+      "fact": "Same PlanExecution report+artifacts, Enforce may raise"
+    },
+    {
+      "id": "E014",
+      "from": "main:engineering_ci_module.main.EngineeringCi.execute_plan",
+      "to": "main:engineering_ci_module.plan_result.PlanExecution.report",
+      "kind": "manual_dispatch",
+      "fact": "Returns report projection only; API exit 0 is not Enforce success"
+    },
+    {
+      "id": "E015",
+      "from": "main:engineering_ci.check_contract.native_result",
+      "to": "main:engineering_ci.check_contract.validate_result",
+      "kind": "contract_input",
+      "fact": "Structural result envelope, no issuer approval"
+    },
+    {
+      "id": "E016",
+      "from": "main:engineering_ci.native_producer.test_check",
+      "to": "main:engineering_ci.check_contract.native_result",
+      "kind": "contract_input",
+      "fact": "Native test process -> versioned result; original Exit and implementation identity retained"
+    },
+    {
+      "id": "E017",
+      "from": "main:engineering_ci.native_producer.weaver_check",
+      "to": "main:engineering_ci.check_contract.native_result",
+      "kind": "contract_input",
+      "fact": "Native Weaver -> versioned result; Task-only/Terminal applicability remains separate"
+    },
+    {
+      "id": "E018",
+      "from": "main:engineering_ci.check_contract.validate_result",
+      "to": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "kind": "contract_input",
+      "fact": "Identity-qualified native result candidates"
+    },
+    {
+      "id": "E019",
+      "from": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "to": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "kind": "contract_input",
+      "fact": "Selected witness IDs and satisfaction; not admission"
+    },
+    {
+      "id": "E020",
+      "from": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "fact": "Receipt v1 plus independently obtained raw Reports/Job Receipts"
+    },
+    {
+      "id": "E021",
+      "from": "main:engineering_ci.reconciliation.validate_receipt",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "fact": "Receipt shape/scope membership validator"
+    },
+    {
+      "id": "E022",
+      "from": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "to": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "kind": "contract_input",
+      "fact": "Local material/package digest consistency"
+    },
+    {
+      "id": "E023",
+      "from": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "to": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "kind": "contract_input",
+      "fact": "Package consistency plus independent consumer scope/authorities"
+    },
+    {
+      "id": "E024",
+      "from": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "unresolved",
+      "fact": "Verified materials do not themselves constitute Admission; actual receiver wiring unobserved"
+    },
+    {
+      "id": "E025",
+      "from": "main:engineering_ci.admission.admit_evidence",
+      "to": "main:engineering_ci.required_assessment._validate_admission",
+      "kind": "contract_input",
+      "fact": "Admission v1 accepted coverage/authenticated failures with exact instance identity"
+    },
+    {
+      "id": "E026",
+      "from": "main:engineering_ci.required_assessment._validate_admission",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "fact": "Validated coverage and native failure facts"
+    },
+    {
+      "id": "E027",
+      "from": "main:engineering_ci.reconciliation.validate_receipt",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "fact": "Receipt is separate from admitted coverage"
+    },
+    {
+      "id": "E028",
+      "from": "main:engineering_ci.required_assessment._validate_universe",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "fact": "Universe/profile/governance/evaluation/Check+Non-Check obligation facts"
+    },
+    {
+      "id": "E029",
+      "from": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "to": "main:engineering_ci.required_assessment.validate_assessment",
+      "kind": "contract_input",
+      "fact": "Assessment digest/consistency, not independent issuer authentication"
+    },
+    {
+      "id": "E030",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "kind": "contract_input",
+      "fact": "R1 status/reasons -> Check conclusion"
+    },
+    {
+      "id": "E031",
+      "from": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "contract_input",
+      "fact": "Publication envelope/request; production success needs publisher authorization"
+    },
+    {
+      "id": "E032",
+      "from": "main:engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "contract_input",
+      "fact": "Missing-assessment non-success publication"
+    },
+    {
+      "id": "E033",
+      "from": "main:engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "to": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "kind": "contract_input",
+      "fact": "Approved Workflow/Actions runtime and independent approval verifier"
+    },
+    {
+      "id": "E034",
+      "from": "main:engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "manual_dispatch",
+      "fact": "Nested publish_authority closure verifies request-bound authorization"
+    },
+    {
+      "id": "E035",
+      "from": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "static_call",
+      "fact": "Higher-level publisher also verifies non-success publisher identity"
+    },
+    {
+      "id": "E036",
+      "from": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "to": "main:engineering_ci.required_assessment_protection.validate_protection_observation",
+      "kind": "contract_input",
+      "fact": "Observed configuration only; controlled deny probe not performed"
+    },
+    {
+      "id": "E037",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "contract_input",
+      "fact": "Required Assessment bound to exact Release candidate/phase"
+    },
+    {
+      "id": "E038",
+      "from": "main:engineering_ci.release.manifest.validate",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "contract_input",
+      "fact": "Manifest v1 structural/check/artifact identity"
+    },
+    {
+      "id": "E039",
+      "from": "main:engineering_ci.required_assessment_release.manifest_provider_from_verification",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "manual_dispatch",
+      "fact": "Returned callback reuses verification.evidence(api, ...)"
+    },
+    {
+      "id": "E040",
+      "from": "main:engineering_ci.required_assessment_release.manifest_provider_from_publication",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "manual_dispatch",
+      "fact": "Returned callback reuses publishing.published_evidence(api, ...)"
+    },
+    {
+      "id": "E041",
+      "from": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "to": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "kind": "contract_input",
+      "fact": "Verified vs release_authorized separated"
+    },
+    {
+      "id": "E042",
+      "from": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "to": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "kind": "contract_input",
+      "fact": "Envelope + exact Manifest identity for optional consumer"
+    },
+    {
+      "id": "E043",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "kind": "contract_input",
+      "fact": "Prior/post pair with phase/lifecycle/candidate/time binding"
+    },
+    {
+      "id": "E044",
+      "from": "main:engineering_ci.security_policy.receive",
+      "to": "main:engineering_ci.security_policy.decide",
+      "kind": "contract_input",
+      "fact": "Authenticated publication + persisted accepted revision/state; no rollback"
+    },
+    {
+      "id": "E045",
+      "from": "main:engineering_ci.security_policy.decide",
+      "to": "main:engineering_ci.execution._build_workflow_admission_fn",
+      "kind": "manual_dispatch",
+      "fact": "Nested admission callback permits/denies protected workflow tool execution"
+    },
+    {
+      "id": "E046",
+      "from": "main:engineering_ci.release.request.dispatch",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "unresolved",
+      "fact": "Workflow dispatch/server scheduling boundary, not a local direct call"
+    },
+    {
+      "id": "E047",
+      "from": "main:engineering_ci.workflow_actions.main",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "manual_dispatch",
+      "fact": "operation=release local import invoke"
+    },
+    {
+      "id": "E048",
+      "from": "main:engineering_ci.release.manifest.validate",
+      "to": "main:engineering_ci.release.publishing.published_evidence",
+      "kind": "contract_input",
+      "fact": "Manifest fields + original server Job/Step/Artifact evidence"
+    },
+    {
+      "id": "E049",
+      "from": "main:engineering_ci.release.publishing.published_evidence",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "contract_input",
+      "fact": "Actual publication evidence recheck before and during writes"
+    },
+    {
+      "id": "E050",
+      "from": "main:engineering_ci.release.publishing.main",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "static_call",
+      "fact": "publish flag/current Run+Attempt/repository checks precede call"
+    },
+    {
+      "id": "E051",
+      "from": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "to": "main:engineering_ci.cicd_telemetry.produce",
+      "kind": "contract_input",
+      "fact": "GitHub Run/Job facts -> telemetry observation"
+    },
+    {
+      "id": "E052",
+      "from": "main:engineering_ci.cicd_telemetry.produce",
+      "to": "main:engineering_ci.selection.post_completion_plan",
+      "kind": "contract_input",
+      "fact": "Completed Attempt telemetry/expectations files consumed through configured closure"
+    },
+    {
+      "id": "E053",
+      "from": "main:engineering_ci.selection.post_completion_plan",
+      "to": "main:engineering_ci.selection.validate_post_completion_binding",
+      "kind": "contract_input",
+      "fact": "Post-completion config/OTLP/Expected/Registry/Matcher/Advice closure"
+    },
+    {
+      "id": "E054",
+      "from": "main:engineering_ci.selection.validate_post_completion_binding",
+      "to": "main:engineering_ci.execution.execute",
+      "kind": "contract_input",
+      "fact": "Reject drift before Native Terminal; not Required authorization"
+    },
+    {
+      "id": "E055",
+      "from": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "to": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "kind": "contract_input",
+      "fact": "Correlation/native A.1 gates retain origin trust limits"
+    },
+    {
+      "id": "E056",
+      "from": "main:engineering_ci.hook_coordinator._require_runner_produced_report",
+      "to": "main:engineering_ci.hook_coordinator.execute_activated_job",
+      "kind": "contract_input",
+      "fact": "Runner report shape/plan_authorized/attempt attribution, not issuer authentication"
+    },
+    {
+      "id": "E057",
+      "from": "main:external:governed-profile-and-phase",
+      "to": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "kind": "unresolved",
+      "fact": "Authenticated approval/delegation/inheritance/exclusion and phase producer, live validity/revocation; JSON digest alone insufficient"
+    },
+    {
+      "id": "E058",
+      "from": "main:external:complete-universe-and-non-check-evidence",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "unresolved",
+      "fact": "Actual governed obligations enumeration and issuer-authenticated non-Check evidence for current Action/Target/Phase/Ref/Candidate/time"
+    },
+    {
+      "id": "E059",
+      "from": "main:external:raw-origin-and-resolution-authorities",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "unresolved",
+      "fact": "Real raw Report/Job Receipt transport, approved verification_implementation and authority(context)/resolution_authority(context)"
+    },
+    {
+      "id": "E060",
+      "from": "main:external:historical-authorities",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "unresolved",
+      "fact": "Historical issuer, current P0 provenance, current authorization, freshness/revocation; actual Remaining Work execution consumer"
+    },
+    {
+      "id": "E061",
+      "from": "main:external:local-controlled-boundary",
+      "to": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "kind": "unresolved",
+      "fact": "Issuer + execution time + grant verifier, controlled runner and receiving Actions transport"
+    },
+    {
+      "id": "E062",
+      "from": "main:external:actions-approval-and-execution",
+      "to": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "kind": "unresolved",
+      "fact": "Approved publisher issuer, actual runtime execution envelope, Workflow/Run/Attempt/App identity; env alone insufficient"
+    },
+    {
+      "id": "E063",
+      "from": "main:external:github-check-transport",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "unresolved",
+      "fact": "Actual publishing token/App permissions and POST result; no Check writes performed in A/B"
+    },
+    {
+      "id": "E064",
+      "from": "main:external:github-server-enforcement",
+      "to": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "kind": "unresolved",
+      "fact": "Branch Protection GET401; bypass/source App and controlled deny enforcement probe unobserved"
+    },
+    {
+      "id": "E065",
+      "from": "main:external:release-authorities",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "unresolved",
+      "fact": "Policy at publication time, complete artifact obligations, provider evidence and validation-to-publication handoff authorities"
+    },
+    {
+      "id": "E066",
+      "from": "main:external:release-workflow-server",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "unresolved",
+      "fact": "Actual workflow_dispatch/needs/permissions/environment and fresh server Job/Artifact facts at publication; static release.yml inspected only"
+    },
+    {
+      "id": "E067",
+      "from": "main:external:release-api-writes",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "unresolved",
+      "fact": "Actual create-only Tag/Release POST/asset upload/final draft=false PATCH; no publication run initiated"
+    },
+    {
+      "id": "E068",
+      "from": "main:external:post-authorities",
+      "to": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "kind": "unresolved",
+      "fact": "Actual Phase-order/Trigger/Due Window/Disposition authority + current lifecycle; no enforcement side effect from envelope alone"
+    },
+    {
+      "id": "E069",
+      "from": "main:external:policy-anchor-and-provider",
+      "to": "main:engineering_ci.security_policy.receive",
+      "kind": "unresolved",
+      "fact": "Approved trust anchor + native API/release assets + durable state ownership for actual tool execution environment"
+    },
+    {
+      "id": "E070",
+      "from": "main:external:dagger-engine-source",
+      "to": "main:engineering_ci_module.plan_execution.execute",
+      "kind": "unresolved",
+      "fact": "Actual caller Source/Engine graph/raw process output; old Native evidence only within recorded inputs/version"
+    },
+    {
+      "id": "E071",
+      "from": "main:engineering_ci.admission.admit_historical_reuse",
+      "to": "main:external:remaining-work-dispatch-consumer",
+      "kind": "unresolved",
+      "fact": "Do not infer saved work from a computed reuse document"
+    },
+    {
+      "id": "E072",
+      "from": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "to": "main:external:r4-actual-publication-consumer",
+      "kind": "unresolved",
+      "fact": "Do not equate optional R4 contract with current Workflow publication guard"
+    },
+    {
+      "id": "E073",
+      "from": "main:engineering_ci.admission.admit_evidence",
+      "to": "main:external:same-run-coverage-dispatch",
+      "kind": "unresolved",
+      "fact": "Actual receiver/executor reducing current Remaining Work from T1-a; no direct runtime admission caller found in parsed roots"
+    },
+    {
+      "id": "E074",
+      "from": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "to": "main:external:server-check-consumer",
+      "kind": "unresolved",
+      "fact": "Actual Check response/App/subject and Branch Protection consumption; no Check POST performed in A/B"
+    },
+    {
+      "id": "E075",
+      "from": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "to": "main:external:server-deny-enforcement",
+      "kind": "unresolved",
+      "fact": "Observed configuration does not execute a deny probe; actual server bypass/source-App enforcement unresolved"
+    },
+    {
+      "id": "E076",
+      "from": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "to": "main:external:post-disposition-enforcer",
+      "kind": "unresolved",
+      "fact": "Actual revoke/retain/other disposition consumer; reconcile API itself returns a document and has no resolved direct runtime caller"
+    },
+    {
+      "id": "E077",
+      "from": "pr124:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "fact": "Original frozen Expected and original Plan/Git/root; candidate-only graph"
+    },
+    {
+      "id": "E078",
+      "from": "pr124:engineering_ci.expected_checks.validate_projection",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "fact": "Live original-Expected projection validation, never Terminal Plan as parent"
+    },
+    {
+      "id": "E079",
+      "from": "pr124:engineering_ci.terminal_expected.seal_phase_witness",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "fact": "Structural witness seal requires separate phase_witness_authority"
+    },
+    {
+      "id": "E080",
+      "from": "pr124:engineering_ci.selection.post_completion_plan",
+      "to": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "kind": "contract_input",
+      "fact": "Completed-run Terminal Plan closure"
+    },
+    {
+      "id": "E081",
+      "from": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "static_call",
+      "fact": "Explicit convenience API calls binder; not selection.post_completion_plan"
+    },
+    {
+      "id": "E082",
+      "from": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "to": "pr124:engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "kind": "contract_input",
+      "fact": "Bound/authorized envelope consistency validator, no authority reauthentication"
+    },
+    {
+      "id": "E083",
+      "from": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "to": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "kind": "contract_input",
+      "fact": "Returned binding accompanies Terminal Plan; data dependency is not recursive execution"
+    },
+    {
+      "id": "E084",
+      "from": "pr124:engineering_ci.selection.validate_post_completion_binding",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "fact": "Terminal input closure plus current Source identity"
+    },
+    {
+      "id": "E085",
+      "from": "pr124:external:expected-phase-completed-authorities",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "unresolved",
+      "fact": "Actual Expected authority, completed Run/Attempt provider and trusted #66-B2 Phase Witness issuer for original scope; seal/callback True fixture is not production acceptance"
+    },
+    {
+      "id": "E086",
+      "from": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "to": "pr124:external:terminal-runtime-consumer",
+      "kind": "unresolved",
+      "fact": "Actual caller using bound/authorized before execution/Admission/R1; candidate wrapper has no statically resolved runtime callers in parsed roots"
+    }
+  ]
+}

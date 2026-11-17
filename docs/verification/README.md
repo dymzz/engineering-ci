@@ -3,6 +3,7 @@
 本目录保存已执行验证的结果、风险审查及性能测量证据。
 
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
+- [授权依赖审阅](authorization-closure/README.md) — #125 A/B 固定版本、授权出口与双向依赖及服务端可见性快照。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
 - [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
 - [Plan 依赖盘点](plan-dependencies/README.md) — #86 A 实例矩阵、版本拒绝与 Host/Dagger 上下文证据。

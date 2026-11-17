@@ -1,0 +1,68 @@
+"""Read-only validation of #125 A/B discovered-candidate dispositions.
+
+Run from repository root, e.g.:
+    python docs/verification/authorization-closure/evidence/check-candidate-dispositions.txt
+The .txt is a retained Python audit helper, not a production gate or new framework.
+"""
+import json
+from collections import Counter
+from pathlib import Path
+
+ROOT = Path("docs/verification/authorization-closure")
+inventory = json.loads((ROOT / "discovery-inventory.json").read_text(encoding="utf-8"))
+graph = json.loads((ROOT / "dependency-map.json").read_text(encoding="utf-8"))
+disposition = json.loads((ROOT / "candidate-disposition.json").read_text(encoding="utf-8"))
+assert disposition["kind"] == "eci-125-candidate-disposition"
+assert disposition["schema_version"] == 1
+entries = disposition["candidates"]
+assert len(entries) == sum(len(s["expanded_candidates"]) for s in inventory["snapshots"].values())
+
+for snapshot, source in inventory["snapshots"].items():
+    assert disposition["snapshots"][snapshot] == source["commit"]
+    expected = {c["symbol"]: c for c in source["expanded_candidates"]}
+    actual = [r for r in entries if r["snapshot"] == snapshot]
+    assert len(actual) == len(expected)
+    assert len({r["symbol"] for r in actual}) == len(expected)
+    assert set(r["symbol"] for r in actual) == set(expected)
+    for row in actual:
+        symbol = row["symbol"]
+        candidate = expected[symbol]
+        assert row["path"] == candidate["path"]
+        assert row["line"] == candidate["line"]
+        assert row["source_sha256"] == candidate["sha256"]
+        assert row["route"] == candidate["route"]
+        assert row["reason"], row
+        kind = row["disposition"]
+        target = row["graph_node"]
+        chain = row["caller_chain"]
+        if kind == "graph_node":
+            assert target == snapshot + ":" + symbol
+            assert chain == [symbol]
+            assert graph["nodes"][target]["sha256"] == row["source_sha256"]
+        elif kind == "covered_by_graph":
+            assert len(chain) >= 2 and chain[0] == symbol
+            assert target == snapshot + ":" + chain[-1]
+            assert target in graph["nodes"]
+            for caller, parent in zip(chain, chain[1:]):
+                assert caller in expected and parent in expected
+                assert any(x["caller"] == parent for x in expected[caller]["resolved_runtime_callers"])
+        elif kind == "shared_implementation":
+            assert snapshot == "pr124"
+            reuse = row["reused_from"]
+            assert reuse["snapshot"] == "main" and reuse["symbol"] == symbol
+            original = {c["symbol"]: c for c in inventory["snapshots"]["main"]["expanded_candidates"]}[symbol]
+            assert original["path"] == row["path"] and original["sha256"] == row["source_sha256"]
+            assert reuse["source_sha256"] == row["source_sha256"]
+            assert target in graph["nodes"] and target.startswith("main:")
+            assert row["consumer_status"] == "requires_pr124_consumer_recheck"
+        elif kind == "excluded":
+            assert "not an authorization exit" in row["route"]
+            assert target is None
+        elif kind == "unresolved":
+            assert target is None and not chain
+        else:
+            raise AssertionError("Unknown disposition: " + str(kind))
+    assert disposition["counts"][snapshot] == dict(Counter(r["disposition"] for r in actual))
+
+print("candidate dispositions validated:", len(entries), "across", len(inventory["snapshots"]), "separate snapshots")
+print("Unresolved candidates remain visible and are not treated as covered or excluded.")
