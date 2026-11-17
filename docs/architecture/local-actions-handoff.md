@@ -35,26 +35,36 @@ Hook/CLI 原生证据 → Actions/ECI 受控交接输入/输出形状。它要�
 
 ## 判定规则
 
-仅当以下全部成立，交接才为完整 `verified` 并释放原始 `materials`：
+来源认证（issuer / execution / authorization / 时间）与 **consumer 覆盖度**
+彼此独立：
+
+| `provenance_status` | `consumer_coverage` | `status` | `admitted_for_t1a` / `materials` |
+| --- | --- | --- | --- |
+| `authenticated` | `complete` | `verified` | raw Reports/Receipts 可交 T1-a |
+| `authenticated` | `partial` | `partial` | **否**；仅保留授权元数据 |
+| `authenticated` / 其他 | `none` | `rejected` 等 | 无 materials |
+| `unverified` | * | `unverified` | 无 materials |
+
+完整 `verified` 另需：
 
 1. **Issuer 允许且 authority 接受** — policy allowlist 不够；缺 verifier →
    `unverified`。
-2. **执行边界受控** — `controlled=true`、`self_reported=false`，且 kind 不属于
-   `uncontrolled_developer_workstation`；execution authority 必须接受并给出认证
-   `executed_at`（须与包内 `produced_at` 一致；`produced_at` 单独不作授权证明）。
-3. **生产者授权覆盖当前 consumer** — Action/Target/Phase 必须与独立
-   `consumer_scope` 一致；grant 的 `check_ids` 覆盖 consumer 的 Check 集合。
-4. **时间双检** — 授权在认证的 `executed_at` **与** `evaluated_at` 均有效；
-   撤销在执行时或当前消费时生效则拒绝；`executed_at > evaluated_at` 拒绝。
+2. **执行边界受控** — `controlled=true`、`self_reported=false`；execution
+   authority 返回认证 `executed_at`（须与包内 `produced_at` 一致；`produced_at`
+   单独不作授权证明）。
+3. **生产者授权覆盖当前 consumer** — Action/Target/Phase 与独立
+   `consumer_scope` 一致，且 grant 覆盖全部 consumer `check_ids`。
+4. **时间双检** — 授权在 `executed_at` **与** `evaluated_at` 均有效。
 5. **载荷摘要一致** — `payload_digest` / `handoff_ref` 可独立重算。
 
-部分授权（Action/Target/Phase 匹配，但仅部分 Check 被 grant）：
+部分授权（Action/Target/Phase 匹配，仅部分 Check 被 grant）：
 
-- `status=verified`，`materials` **仅**含 `authorized_check_ids`，不释放未受限的
-  reports/job_receipts/result_ids；
-- `remaining_work[]` 记录未授权 Check；
-- 无 consumer Check 集合、或 Action/Target/Phase 不匹配、或无一 Check 被授权 →
-  不释放 materials。
+- `provenance_status=authenticated`，`consumer_coverage=partial`，
+  `status=partial`（**不是**整包 `verified`）；
+- `authorized_check_ids` / `remaining_work[]` 仅作元数据；
+- `materials=null`，`admitted_for_t1a=false` — Check ID 白名单**不是** T1-a
+  可消费的 raw Report/Job Receipt；若将来要部分交给 T1-a，须按授权实例投影并
+  独立核验真实 raw 对象，不得从 Check ID 推断 Native PASS。
 
 显式负例（不得提升 Trusted）：
 
@@ -68,13 +78,16 @@ Hook/CLI 原生证据 → Actions/ECI 受控交接输入/输出形状。它要�
 
 ## 输出语义
 
-- `status`: `verified` / `rejected` / `unverified`。
+- `status`: `verified` / `partial` / `rejected` / `unverified`。
+- `provenance_status`: `authenticated` / `rejected` / `unverified` — 来源认证，
+  独立于 consumer 覆盖度。
+- `consumer_coverage`: `complete` / `partial` / `none`。
 - `executed_at`: 由 execution authority 认证的执行/采集时间；未认证则为 `null`。
-- `authorized_check_ids` / `remaining_work[]`: 相对独立 consumer Check 集合的授权子集。
-- `admitted_for_t1a`: 完整或授权子集材料可供后续 T1-a 评估时为 `true`；
-  **不等于** T1-a 已接纳。
-- `materials`: 完整核验时含 raw bags + `authorized_check_ids`；部分授权时仅含
-  `authorized_check_ids`；失败时为 `null`。
+- `authorized_check_ids` / `remaining_work[]`: 相对独立 consumer Check 集合的元数据。
+- `admitted_for_t1a`: 仅在 `consumer_coverage=complete` 且 `materials` 含 raw
+  Reports/Receipts 时为 `true`；**不等于** T1-a 已接纳。
+- `materials`: 完整核验时含 raw bags + `authorized_check_ids`；部分/失败时为
+  `null`（不得用仅含 Check ID 的 dict 冒充可接纳材料）。
 - 本地执行身份与本次 Actions Job 身份保持独立；不重写 GitHub Ruleset。
 
 ## 信任边界

@@ -658,21 +658,28 @@ def verify_local_handoff(
         blocking.append("producer_authorization_revoked")
 
     reasons = informational + blocking
-    # Full verify only when every consumer check is granted and no blockers.
-    full_coverage = bool(authorized_checks) and not remaining_work
-    verified = not blocking and full_coverage
-    # Partial: Action×Target×Phase matched and some checks granted, but out-of-
-    # scope checks remain. Do not release unrestricted payload materials.
-    partial = (
-        not blocking
-        and bool(authorized_checks)
-        and bool(remaining_work)
-        and "producer_authorization_action_mismatch" not in blocking
-        and "producer_authorization_target_mismatch" not in blocking
-        and "producer_authorization_phase_mismatch" not in blocking
-    )
-    if verified or partial:
+    # Provenance authentication is independent of consumer Check coverage.
+    provenance_authenticated = not blocking
+    if provenance_authenticated and authorized_checks and not remaining_work:
+        consumer_coverage = "complete"
+    elif provenance_authenticated and authorized_checks and remaining_work:
+        consumer_coverage = "partial"
+    else:
+        consumer_coverage = "none"
+
+    # Full verify only when provenance is authenticated and every consumer check
+    # is granted. Partial coverage must not advertise the whole handoff as
+    # verified or release Check-ID-only dicts as T1-a materials.
+    verified = provenance_authenticated and consumer_coverage == "complete"
+    partial = provenance_authenticated and consumer_coverage == "partial"
+    if verified:
         status = "verified"
+        provenance_status = "authenticated"
+    elif partial:
+        status = "partial"
+        provenance_status = "authenticated"
+        if "producer_authorization_scope_partial" not in reasons:
+            reasons.append("producer_authorization_scope_partial")
     elif (
         "issuer_authority_missing" in blocking
         or "execution_authority_missing" in blocking
@@ -680,12 +687,15 @@ def verify_local_handoff(
         or "execution_time_unverified" in blocking
     ):
         status = "unverified"
+        provenance_status = "unverified"
     else:
         status = "rejected"
+        provenance_status = "rejected"
 
     materials = None
     admitted_for_t1a = False
     if verified:
+        # Only complete coverage with raw Reports/Receipts is T1-a-consumable.
         admitted_for_t1a = True
         materials = {
             "authorized_check_ids": list(authorized_checks),
@@ -694,18 +704,13 @@ def verify_local_handoff(
             "result_ids": list(package["payload"]["result_ids"]),
             "source_digests": list(package["payload"]["source_digests"]),
         }
-    elif partial:
-        # Authorized subset only: withhold unrestricted raw bags so out-of-scope
-        # checks cannot consume the full payload as verified materials.
-        admitted_for_t1a = True
-        materials = {"authorized_check_ids": list(authorized_checks)}
-        if "producer_authorization_scope_partial" not in reasons:
-            reasons.append("producer_authorization_scope_partial")
 
     result = {
         "kind": HANDOFF_KIND,
         "schema_version": HANDOFF_VERSION,
         "status": status,
+        "provenance_status": provenance_status,
+        "consumer_coverage": consumer_coverage,
         "handoff_ref": package["handoff_ref"],
         "payload_digest": package["payload"]["payload_digest"],
         "issuer_ref": copy.deepcopy(package["issuer_ref"]),
@@ -714,10 +719,10 @@ def verify_local_handoff(
         "consumer_scope": copy.deepcopy(consumer),
         "evaluated_at": evaluated.isoformat(),
         "executed_at": executed_at.isoformat() if executed_at is not None else None,
-        "authorized_check_ids": list(authorized_checks) if not blocking else [],
-        "remaining_work": remaining_work
-        if (verified or partial or remaining_work)
-        else [],
+        "authorized_check_ids": (
+            list(authorized_checks) if provenance_authenticated else []
+        ),
+        "remaining_work": list(remaining_work),
         "admitted_for_t1a": admitted_for_t1a,
         "materials": materials,
         "reasons": reasons,
@@ -728,13 +733,16 @@ def verify_local_handoff(
             "local_and_actions_identities_remain_distinct",
             "produced_at_is_not_authorization_proof",
             "consumer_scope_is_independent_of_producer_grant",
+            "check_id_allowlist_is_not_t1a_material",
         ],
         "verification_ref": None,
     }
     if not verified:
         result["limitations"].append("unverified_handoff_must_run_actions_checks")
     if partial:
-        result["limitations"].append("partial_authorization_withholds_raw_materials")
+        result["limitations"].append(
+            "partial_authorization_not_ready_for_t1a_without_bound_raw_materials"
+        )
     result["verification_ref"] = _digest(
         {key: value for key, value in result.items() if key != "verification_ref"}
     )

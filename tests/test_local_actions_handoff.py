@@ -153,6 +153,8 @@ def test_controlled_local_handoff_verifies_and_exposes_t1a_materials():
 
     verified = verify(package)
     assert verified["status"] == "verified"
+    assert verified["provenance_status"] == "authenticated"
+    assert verified["consumer_coverage"] == "complete"
     assert verified["admitted_for_t1a"] is True
     assert verified["executed_at"] == PRODUCED_AT
     assert verified["authorized_check_ids"] == ["eci/hygiene/tach"]
@@ -269,7 +271,7 @@ def test_omitted_consumer_scope_is_rejected():
         )
 
 
-def test_mixed_authorized_and_unauthorized_checks_withhold_raw_materials():
+def test_mixed_authorized_and_unauthorized_checks_not_ready_for_t1a():
     package = build_package(
         producer_authorization=producer_authorization(
             scope={
@@ -280,24 +282,39 @@ def test_mixed_authorized_and_unauthorized_checks_withhold_raw_materials():
             }
         )
     )
-    verified = verify(
+    result = verify(
         package,
         consumer_scope=consumer_scope(
             check_ids=["eci/hygiene/tach", "eci/hygiene/vulture"]
         ),
     )
-    assert verified["status"] == "verified"
-    assert verified["authorized_check_ids"] == ["eci/hygiene/tach"]
-    assert verified["remaining_work"] == [
+    # Provenance may be authenticated, but incomplete consumer coverage is not
+    # a full verified handoff and cannot feed T1-a without bound raw materials.
+    assert result["status"] == "partial"
+    assert result["provenance_status"] == "authenticated"
+    assert result["consumer_coverage"] == "partial"
+    assert result["authorized_check_ids"] == ["eci/hygiene/tach"]
+    assert result["remaining_work"] == [
         {
             "check_id": "eci/hygiene/vulture",
             "reason": "producer_authorization_check_not_granted",
         }
     ]
-    assert "producer_authorization_scope_partial" in verified["reasons"]
-    assert verified["materials"] == {"authorized_check_ids": ["eci/hygiene/tach"]}
-    assert "reports" not in verified["materials"]
+    assert "producer_authorization_scope_partial" in result["reasons"]
+    assert result["materials"] is None
+    assert result["admitted_for_t1a"] is False
+
+
+def test_fully_authorized_handoff_still_exposes_raw_materials_for_t1a():
+    package = build_package()
+    verified = verify(package)
+    assert verified["status"] == "verified"
+    assert verified["provenance_status"] == "authenticated"
+    assert verified["consumer_coverage"] == "complete"
     assert verified["admitted_for_t1a"] is True
+    assert verified["materials"]["reports"]
+    assert verified["materials"]["job_receipts"]
+    assert verified["remaining_work"] == []
 
 
 def test_none_of_consumer_checks_granted_is_rejected():
