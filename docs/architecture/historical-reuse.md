@@ -76,7 +76,8 @@ Result、不判定 #61 Required/Release，也不完成 T1-b 本地→Actions 交
 - 三个 authority verifier 是集成边界；JSON 自报或仅 allowlist 不能产生生产覆盖。
 - 单元/夹具中的 verifier、实现摘要和 policy **不是**生产信任根。
 - 真实 T2 验收仍需要：可认证历史证据获取、真实 PR→main 免重跑路径，以及与
-  #61 的逐实例交接。T1-b 本地→Actions 仍是独立交付。
+  #61 的逐实例交接。T1-b 本地→Actions 见
+  [本地 → Actions 交接](local-actions-handoff.md)，仍是独立交付。
 
 ## 与相邻组件的关系
 

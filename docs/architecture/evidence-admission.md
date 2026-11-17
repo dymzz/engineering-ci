@@ -89,5 +89,8 @@ Policy 是 caller 提供的显式 allowlist；`authority` 是单独输入的 pro
   `required_gate=not_evaluated`；Admission 不重写它。
 - Admission 只输出当前 Expected 实例的可复核覆盖/未满足，供 #61 后续消费。
 - 不创建第二套 Receipt、Result、Expected、Gate、Scanner 或证据账本。
+- 本地→Actions 受控交接见 [本地 → Actions 交接](local-actions-handoff.md)
+  （`verify_local_handoff()`）；verified materials 可供后续 T1-a 评估，本模块不调用
+  Admission。
 - 跨 Run / PR→main 执行前复用见 [历史复用接纳](historical-reuse.md)
   （`admit_historical_reuse()`）；T1-a 的同次接纳不升级为 T2 输入等价。
