@@ -16,7 +16,7 @@ Results, mint #66-C Receipts, perform #63 Admission / #61 Required, or wire
 | Fact | Trusted source for `authorized=true` |
 | --- | --- |
 | Projection | Live `expected_checks.validate_projection(parent, git, plan=expected_plan, root=expected_root)` only. Caller `projection_proof` dictionaries are **untrusted**. Terminal Plan must not be supplied as `expected_plan`. |
-| Phase + domain | Digest-sealed Phase Witness (`seal_phase_witness` / `witness_ref`) bound to Scope/Set/Profile revision/issuer/time. Bare `accepted=True` is untrusted. |
+| Phase + domain | Structurally sealed Phase Witness **plus** `phase_witness_authority` (stand-in for a future #66-B2 Phase/Obligation Producer verification). `seal_phase_witness` / matching `witness_ref` alone is **not** source authentication. |
 | Expected entry | `expected_authority` (does not prove phase/domain/projection) |
 | Provider terminal | `completed_run_authority` (Plan builder params alone insufficient) |
 | Input closure | `validate_post_completion_binding(plan, root)` |
@@ -33,7 +33,8 @@ unsupported by the current B2 Validator.
 
 ## Directed acceptance
 
-Tests cover untrusted self-attested proofs, sealed-vs-bare Phase Witness,
-`expected_set_ref` recompute tamper, live `validate_projection` against the
-original Expected Plan (positive) versus Terminal Plan as wrong context
-(negative), frozen parent negatives, and Plan closure / Run identity guards.
+Tests cover forged sealed Phase Witness without authority, wrong Profile
+revision, self-attested projection proofs, `expected_set_ref` recompute
+tamper, live Expected v2 (`effective_profile` + `phase=post_completion`)
+`validate_projection` positive versus Terminal Plan as wrong context, frozen
+parent negatives, and Plan closure / Run identity guards.

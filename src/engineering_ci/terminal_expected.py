@@ -316,13 +316,13 @@ def _witness_payload(witness):
     return {key: value for key, value in witness.items() if key != "witness_ref"}
 
 
-def _bind_phase_witness(witness, *, scope_id, expected_set_ref, phase, profile_binding):
-    """Sealed external Phase/domain witness — never mutates the frozen parent.
+def _phase_witness_structure(
+    witness, *, scope_id, expected_set_ref, phase, profile_binding
+):
+    """Deterministic Scope/Set/Profile/time/digest association only.
 
-    A bare ``accepted=True`` dictionary is not a trusted source. The witness
-    must carry issuer/profile/time identity and a recomputed ``witness_ref``.
-    Even a sealed witness is a controlled attestation of a future Phase
-    Producer — it does not rewrite #66-B2 Schema.
+    A matching ``witness_ref`` proves the payload is self-consistent for this
+    call — it does **not** authenticate the issuer or authorize production.
     """
     if witness is None:
         return False, "missing", ["terminal_phase_witness_missing"]
@@ -368,7 +368,62 @@ def _bind_phase_witness(witness, *, scope_id, expected_set_ref, phase, profile_b
     recomputed = _digest(_witness_payload(witness))
     if declared_ref != recomputed:
         return False, "untrusted", ["terminal_phase_witness_ref_mismatch"]
-    return True, "sealed_attestation", []
+    return True, "structurally_aligned", []
+
+
+def _bind_phase_witness(
+    witness,
+    *,
+    scope_id,
+    expected_set_ref,
+    phase,
+    profile_binding,
+    authority=None,
+):
+    """Associate a Phase Witness, then require ``phase_witness_authority``.
+
+    ``seal_phase_witness`` / matching ``witness_ref`` only prove structure.
+    Production ``phase_ok`` needs a trusted upstream authority callback (stand-in
+    for a future #66-B2 Phase/Obligation Producer verification result).
+    """
+    ok, status, reasons = _phase_witness_structure(
+        witness,
+        scope_id=scope_id,
+        expected_set_ref=expected_set_ref,
+        phase=phase,
+        profile_binding=profile_binding,
+    )
+    if not ok:
+        return False, status, reasons
+    if authority is None:
+        return (
+            False,
+            "structurally_aligned",
+            ["terminal_phase_witness_authority_missing"],
+        )
+    context = {
+        "phase_witness": copy.deepcopy(witness),
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+        "phase": phase,
+        "profile_ref": copy.deepcopy(profile_binding.get("profile_ref")),
+        "profile_revision": profile_binding.get("profile_revision"),
+    }
+    accepted, reason = _authority_accepted(authority, context)
+    if accepted:
+        return True, "authority_verified", []
+    mapped = {
+        "terminal_expected_authority_missing": (
+            "terminal_phase_witness_authority_missing"
+        ),
+        "terminal_expected_authority_rejected": (
+            "terminal_phase_witness_authority_rejected"
+        ),
+        "terminal_expected_authority_unverified": (
+            "terminal_phase_witness_authority_unverified"
+        ),
+    }.get(reason, reason or "terminal_phase_witness_authority_rejected")
+    return False, "unverified", [mapped]
 
 
 def _bind_projection_proof(
@@ -606,6 +661,8 @@ def _consistency(envelope):
             errors.append("terminal_authorized_requires_input_closure_verified")
         if envelope.get("phase_witness_verified") is not True:
             errors.append("terminal_authorized_requires_phase_witness")
+        if envelope.get("phase_witness_status") != "authority_verified":
+            errors.append("terminal_authorized_requires_phase_witness_authority")
         if envelope.get("projection_verification") != "validate_projection":
             errors.append("terminal_authorized_requires_live_projection_validation")
         if envelope.get("completed_run_verified") is not True:
@@ -658,7 +715,11 @@ def seal_phase_witness(
     domain_complete=True,
     **extra,
 ):
-    """Build a digest-sealed Phase Witness (controlled future-Producer attestation)."""
+    """Structural Phase Witness constructor — digest is not source authentication.
+
+    Callers may forge ``issuer_ref`` / ``domain_complete`` and recompute a valid
+    ``witness_ref``. Trust requires ``phase_witness_authority``, not this seal.
+    """
     witness = {
         "accepted": True,
         "status": "authorized",
@@ -670,7 +731,7 @@ def seal_phase_witness(
         "profile_revision": profile_revision,
         "issuer_ref": copy.deepcopy(issuer_ref),
         "validated_at": validated_at,
-        "note": "controlled attestation — not a current #66-B2 production PASS",
+        "note": "structural seal only — not a trusted #66-B2 Phase Producer result",
     }
     witness.update(extra)
     witness["witness_ref"] = _digest(_witness_payload(witness))
@@ -686,6 +747,7 @@ def bind_terminal_expected(
     expected_authority=None,
     completed_run_authority=None,
     phase_witness=None,
+    phase_witness_authority=None,
     projection_proof=None,
     projection_git=None,
     expected_plan=None,
@@ -697,9 +759,10 @@ def bind_terminal_expected(
     Parent Expected stays validate_projection-compatible (declared phase ⇒
     ``partial`` / ``phase_status=unverified``). Production ``authorized=True``
     requires live ``expected_checks.validate_projection`` against the **original
-    Expected Plan/Git/Root** (never the Terminal Plan), a digest-sealed Phase
-    Witness, completed-run authority, Expected authority, and verified input
-    closure. Caller-supplied ``projection_proof`` dictionaries are untrusted.
+    Expected Plan/Git/Root** (never the Terminal Plan), a Phase Witness verified
+    by ``phase_witness_authority`` (seal digest alone is insufficient),
+    completed-run authority, Expected authority, and verified input closure.
+    Caller-supplied ``projection_proof`` dictionaries are untrusted.
     """
     contract_sample = _flag(contract_sample, "terminal_contract_sample_flag_invalid")
     expected_authority = _callable_or_none(
@@ -707,6 +770,9 @@ def bind_terminal_expected(
     )
     completed_run_authority = _callable_or_none(
         completed_run_authority, "terminal_completed_run_authority_invalid"
+    )
+    phase_witness_authority = _callable_or_none(
+        phase_witness_authority, "terminal_phase_witness_authority_invalid"
     )
     entry, parent_meta = _extract_entry(expected)
     proven_phase, phase_basis = _freeze_parent_phase(parent_meta, entry)
@@ -771,6 +837,7 @@ def bind_terminal_expected(
         expected_set_ref=expected_set_ref,
         phase=proven_phase,
         profile_binding=profile,
+        authority=phase_witness_authority,
     )
     reasons.extend(phase_reasons)
     if not phase_ok:
@@ -856,6 +923,8 @@ def bind_terminal_expected(
         "terminal_phase_witness_domain_incomplete",
         "terminal_phase_witness_issuer_unproven",
         "terminal_phase_witness_ref_missing",
+        "terminal_phase_witness_authority_missing",
+        "terminal_phase_witness_authority_unverified",
         "terminal_projection_proof_missing",
         "terminal_projection_proof_untrusted",
         "terminal_completed_run_source_unproven",
@@ -920,6 +989,7 @@ def bind_terminal_expected(
             "expected_authority_is_not_input_closure_proof",
             "expected_authority_is_not_phase_or_domain_proof",
             "phase_witness_is_external_to_parent_schema",
+            "phase_witness_seal_is_not_source_authentication",
             "caller_projection_proof_is_untrusted",
             "terminal_plan_is_not_expected_plan",
             "completed_run_is_not_written_into_expected",
@@ -964,6 +1034,7 @@ def post_completion_with_expected(
     completed_run=None,
     completed_run_authority=None,
     phase_witness=None,
+    phase_witness_authority=None,
     projection_proof=None,
     projection_git=None,
     expected_plan=None,
@@ -975,7 +1046,8 @@ def post_completion_with_expected(
 
     Helper Plan builder params are never treated as Provider terminal proof.
     ``expected_plan`` / ``projection_git`` are the original Expected context —
-    not this Terminal Plan.
+    not this Terminal Plan. ``phase_witness_authority`` is required for
+    production Phase verification — seal digest alone is not enough.
     """
     plan = selection.post_completion_plan(
         root=root,
@@ -1001,6 +1073,7 @@ def post_completion_with_expected(
         expected_authority=expected_authority,
         completed_run_authority=completed_run_authority,
         phase_witness=phase_witness,
+        phase_witness_authority=phase_witness_authority,
         projection_proof=projection_proof,
         projection_git=projection_git,
         expected_plan=expected_plan,

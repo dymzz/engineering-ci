@@ -182,12 +182,83 @@ def test_frozen_b2_partial_binds_but_self_attested_proofs_cannot_authorize(tmp_p
         expected_authority=accept,
         completed_run_authority=accept,
         phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
         projection_proof=self_attested_projection_proof(expected),
     )
     assert binding["authorized"] is False
     assert binding["projection_verification"] == "untrusted"
     assert "terminal_projection_proof_untrusted" in binding["reasons"]
     assert expected["phase_status"] == "unverified"
+
+
+def test_forged_sealed_phase_witness_without_authority_cannot_authorize(tmp_path):
+    """P0: caller-forged issuer_ref + recomputed witness_ref is not trust."""
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    forged = sealed_phase_witness(
+        expected,
+        issuer_ref={
+            "name": "org/forged-issuer",
+            "version": "1",
+            "sha256": "f" * 64,
+        },
+    )
+    assert forged["witness_ref"] == te._digest(te._witness_payload(forged))
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=forged,
+        # No phase_witness_authority — seal alone must not authorize.
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert binding["phase_witness_verified"] is False
+    assert binding["phase_witness_status"] == "structurally_aligned"
+    assert "terminal_phase_witness_authority_missing" in binding["reasons"]
+
+
+def test_sealed_witness_wrong_profile_revision_rejected_with_authority(tmp_path):
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(
+            expected, profile_revision="rev-wrong-profile"
+        ),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert "terminal_phase_witness_profile_revision_mismatch" in binding["reasons"]
+
+
+def test_phase_authority_accept_still_requires_live_projection(tmp_path):
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected()
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["phase_witness_verified"] is True
+    assert binding["phase_witness_status"] == "authority_verified"
+    assert binding["authorized"] is False
+    assert binding["projection_verification"] == "untrusted"
 
 
 def test_bare_accepted_phase_witness_is_untrusted(tmp_path):
@@ -209,6 +280,7 @@ def test_bare_accepted_phase_witness_is_untrusted(tmp_path):
         expected_authority=accept,
         completed_run_authority=accept,
         phase_witness=bare,
+        phase_witness_authority=accept,
         projection_proof=self_attested_projection_proof(expected),
     )
     assert binding["authorized"] is False
@@ -256,6 +328,7 @@ def test_terminal_plan_is_rejected_as_projection_context(tmp_path):
         expected_authority=accept,
         completed_run_authority=accept,
         phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
         projection_git=plan.get("git") or {"snapshot": "worktree"},
         expected_plan=plan,
         expected_root=root,
@@ -553,8 +626,41 @@ def test_post_completion_helper_does_not_self_authorize_from_plan_params(tmp_pat
     assert "terminal_projection_proof_untrusted" in binding["reasons"]
 
 
-def test_live_validate_projection_accepts_expected_plan_not_terminal_plan(tmp_path):
-    """P1: live validator needs the original Expected Plan context."""
+def _attach_phase_profile_policy(path, profile):
+    """Minimal [effective_profile] policy binding for live Expected v2 tests."""
+    import json
+
+    binding = profile["approval_binding"]
+    binding["approval_digest"] = expected_checks._approval_digest(profile)
+    profile["profile_sha256"] = expected_checks.profile_digest(profile)
+    declared = profile.get("declared_checks") or []
+    config_path = path / "ci-selection.toml"
+    existing = config_path.read_text(encoding="utf-8")
+    existing = existing.split("\n[effective_profile]", 1)[0].rstrip()
+    phase_line = (
+        f'phase = "{profile["phase"]}"\n'
+        if isinstance(profile.get("phase"), str) and profile["phase"]
+        else ""
+    )
+    config_path.write_text(
+        existing
+        + f"""
+
+[effective_profile]
+profile_ref = {{ name = "{profile["profile_ref"]["name"]}", version = "{profile["profile_ref"]["version"]}" }}
+profile_revision = "{profile["profile_revision"]}"
+approval_source = "{binding["approval_source"]}"
+approval_digest = "{binding["approval_digest"]}"
+effective_at = "{profile["effective_at"]}"
+declared_checks = {json.dumps(declared)}
+{phase_line}""",
+        encoding="utf-8",
+    )
+    return selection.load_config(config_path)
+
+
+def test_live_expected_v2_phase_unverified_and_terminal_plan_rejected(tmp_path):
+    """P1: real Effective Profile Expected v2 validates; Terminal Plan context fails."""
     import subprocess
 
     selection_fixture = ROOT / "tests/fixtures/selection-app"
@@ -578,16 +684,59 @@ def test_live_validate_projection_accepts_expected_plan_not_terminal_plan(tmp_pa
     git("config", "user.name", "Terminal Test")
     git("add", "-A")
     git("commit", "-q", "-m", "base")
+
+    profile = expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.terminal", "version": "1.0.0"},
+        profile_revision=PROFILE_REVISION,
+        approval_source="governance-signed",
+        authority_verified=True,
+        effective_at="2026-11-17T00:00:00Z",
+        evaluated_at="2026-11-17T01:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        phase=check_contract.POST_COMPLETION_PHASE,
+        declared_checks=["whitespace", "forwarding", "docs", "vulture", "tach"],
+        required_obligations=[
+            {
+                "obligation_ref": "ob/docs",
+                "kind": "check",
+                "check_names": ["docs"],
+                "allow_inapplicable": True,
+            }
+        ],
+        advisory_checks=[],
+        allowed_inapplicability=[],
+        domain_complete=True,
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+    )
+    profile.pop("governed_rules", None)
+    declared_domain = (profile.get("approval_binding") or {}).get("declared_domain")
+    if isinstance(declared_domain, dict):
+        declared_domain.pop("governed_rules", None)
+    cfg = _attach_phase_profile_policy(path, profile)
+    git("add", "ci-selection.toml")
+    git("commit", "-q", "-m", "attach phase profile")
     base = git("rev-parse", "HEAD").strip()
-    config = selection.load_config(path / "ci-selection.toml")
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
     changes = selection.changeset(path, base=base, mode="worktree")
-    chosen = selection.select(changes, config, root=path)
+    chosen = selection.select(changes, cfg, root=path)
     expected_plan = selection.plan(
-        chosen, config=config, config_path=path / "ci-selection.toml", root=path
+        chosen,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
     )
     parent = expected_plan["expected_checks"]
-    assert expected_plan.get("check_scope") is not None
-    # Positive: original Expected Plan + Git + Root → live validate_projection.
+    assert parent["schema_version"] == expected_checks.EXPECTED_V2
+    assert parent["projection_source"] == "effective_profile"
+    assert parent["phase"] == check_contract.POST_COMPLETION_PHASE
+    assert parent["phase_status"] == "unverified"
+    assert parent["status"] == "partial"
+
     ok, basis, reasons = te._bind_projection_proof(
         None,
         scope_id=parent["scope_id"],
@@ -601,7 +750,7 @@ def test_live_validate_projection_accepts_expected_plan_not_terminal_plan(tmp_pa
     assert basis == "validate_projection"
     assert reasons == []
 
-    # Wrong context: Terminal post_completion Plan is not an Expected Plan.
+    # Wrong context: Terminal Plan is not Expected Plan for validate_projection.
     if not FIXTURE.is_dir():
         return
     terminal_root = tmp_path / "terminal-src"
