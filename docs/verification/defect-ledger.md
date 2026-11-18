@@ -30,6 +30,8 @@
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 序列化 Assessment 时间/样本校验、R5 Reevaluation 时序、G2 Publisher Approval 时钟与 R5 逾期证据授权关联；复核 #63 原始 Issuer Context | 新增 **NEW-026～NEW-029**；其中 026/027/029 是明示的局部校验缺口，028 是调用方时间注入风险。**未执行本轮新增完整 API 反例、未证明生产绕过**；同时给 NEW-019 增加 #63 消费证据 |
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 非 Check Verifier 来源认证、Universe Evaluation 与 Assessment 时钟绑定、Profile ApprovedAt 真实性、G2 实际 Evaluator Revision 身份 | 新增 **NEW-030～NEW-033**。核对 #61 设计原文与实际源码/既有测试；四项分别落在不同 Producer→Consumer 关系，**代码条件确认但尚未运行新增原生 API 差异/生产认证测试** |
 
+| 2026-11-18：PR #129 Release 原生证据审阅 | 对照 Manifest Dagger Policy Check / Tool Version 来源、首次发布过期 Artifact、缺失 Digest 的 Provider 条件及 #61 Release 合同 | 新增 **NEW-034～NEW-037** 四项源码级候选，未运行新增真实模块组合 API；034/035 共用派生事实来源认证根因，不宣称真实发布权限已绕过 |
+
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
 ### 0.2 授权数据链与顺序约束
@@ -42,7 +44,7 @@
 | T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
 | T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006、NEW-026、NEW-030** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
 | T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
-| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
+| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013、NEW-027、NEW-029**、D-G04 | 重新评估的时间箭头和逾期证据批准的 Assessment 对象身份须独立核实；不代表全生命周期 PASS |
 | TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
 
@@ -94,6 +96,11 @@
 
 
 
+
+| NEW-034 | 序列化 Manifest 派生 Dagger 子 Policy Check 从 unavailable 改 passed，而原 Dagger Job 仍 success | 验证器核对成功 Job/Step 字段，未重取独立 Dagger Policy Check 原始证明 | Release 固定 Required 的子 Check 可被未经验证的 Manifest 声明替代；生产篡改来源未证 | 复用原 Manifest facts/Native Provider，不新建 Dagger 执行器 |
+| NEW-035 | Manifest tools 版本字符串被替换为另一合法版本，而原工具文件和成功 Run 未变 | clean_tools 只验证格式/集合；Verification/Publishing 不复核原始 Tool Version 输出 | 工具版本 provenance 可能漂移，是否影响已签发正式 Manifest 待证 | 与 NEW-034 同族、不能各建版本存储或检查器 |
+| NEW-036 | 原 Manifest 在 t0 合格，首次发布前其 Actions Artifact 在 t1 过期 | 新建 Manifest 会拒绝过期项，但首次 publish_release 使用允许过期元数据的 published_evidence | 若发布时要求源 Artifact 仍可取，过期证据可能支持首次发布；合法历史复用另论 | 不把历史已发布 Release 的只读核验一律改为拒绝 |
+| NEW-037 | GitHub Artifact 元数据不提供 digest，但相同 Run/ID/名称均合法 | passed Manifest 接受 digest=None，Provider 仅在声明 Digest 时比较 | 无法仅凭当前 Manifest 完成字节 Digest 证明；API 可达性/当前义务未实测 | 不把不适用的软件制品要求强加给所有 Release |
 
 ### 0.4 发现依赖的裁决顺序（**不是立即修复顺序**）
 
@@ -155,6 +162,11 @@
 | **NEW-031** | **P1 候选** | **源码确定两个求值时钟未对账** | `main@fc0df2a`；#66-B2→#61-R1 | `universe.evaluation.evaluated_at` 已作为完整全集求值输入并入摘要，但 `assess_required_obligations(evaluated_at=...)` 独立控制阶段 Assessment；两时刻不比较，可能拿后来求值的 Obligations Universe 评价较早时点 | 未修复；需同源、先后与 As-of 反例及有权 Universe 来源 |
 | **NEW-032** | P1/P2 待语义裁决 | **源码确认 Approval 签发晚于 Assessment 时不被拒绝** | `main@fc0df2a`；#66-B2→#61-R1 | R1 只解析 `authority.approved_at`，`_authority_fact` 核验状态、生效和有效期，但未比较 `approved_at <= assessed_at`；若政策不允许追认，未来才批准的 Profile 可参与过去 Assessment PASS | 未修复；须核对回溯授权与 Approval 有效时间语义 |
 | **NEW-033** | **P1 候选** | **G2 声称实际执行的 Evaluator/Policy 身份仍是调用方提供** | `main@fc0df2a`；#61-G2/G3 | `execution_identity` 的 `workflow_sha` 与 GitHub Runtime 比较，但 Evaluator/Policy Ref 只与 Approval/Publication 的声明比对，没有内置独立执行产物签发证明；一致的自声明仍可能获得发布 Authority | 未修复；查实际运行身份的有权 Producer、Approval Authority 及 Check 发布来源 |
+
+| **NEW-034** | P1 候选 | **Dagger 子 Policy Check 没有独立原生来源重验** | main@fc0df2a；Release Manifest/Verification/Publisher | 生成器要求 Dagger 原始 Check 名称，序列化验证和真实 Publisher 仅重查基础 CHECKS Job/Step | 未修复；需原生差异 API 和真实来源边界 |
+| **NEW-035** | P2/P1 待裁决 | **Release Tool Version 字段未绑定原始版本记录** | main@fc0df2a；Release Manifest/Provider | 版本仅做合法格式、枚举、唯一性检查；未从原生 Producer 复核取值 | 未修复；034/035 同源验证族 |
+| **NEW-036** | P1/P2 待裁决 | **首次 Publish 使用过期 Artifact 的历史核验策略** | main@fc0df2a；Release Publishing | allow_expired=True 不区分历史已发布核验与首次 publish_release | 未修复；依赖当前 Profile 发布时可取用合同 |
+| **NEW-037** | P1/P2 待裁决 | **固定 Release Artifact 缺 Digest 仍能经 Provider 验证** | main@fc0df2a；Manifest/Publishing | Digest=None 可通过固定 Artifact 名称/ID/Run 的 Manifest 验证，Provider 不核对字节摘要 | 未修复；真实 API 及字节义务待验证 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -302,6 +314,8 @@
 - **已有测试例证**：[`test_precommit_execute_requires_captured_index_source`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py#L927-L947) 以构造的 Event Ref、任意示例 Scope/Expected Digest 签发 Receipt，断言上游验证标志成立。
 - **依赖关系**：#66-C `_attribution_problem` 会核对 Receipt **声明**与当前 Expected，但不能单凭该检查证明 Receipt 的声明与真实 Invocation 同源。#63 外部 Issuer Authority 可能补足来源认证。下轮应以“Invocation A 的真实执行结果被赋予 B Scope”做组合反例，不直接宣称生产越权。
 
+- **补充 #63 交叉证据（2026-11-18）**： [admission._authenticate_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/admission.py#L337-L470) 读取 Job Receipt 原件、验证 Digest 和 Job/Run/Attempt/Report 关联，并向外部 Issuer Authority 发送 job_receipt_ref 等上下文；但未直接展开 event_ref、scope_id、expected_set_ref。外部 Authority **可能通过受信 Receipt Ref 独立取原件核对**，因此不能认定完整认证已绕过。此处补入前一轮摘要声称已更新、但原详细条目漏记的证据。
+
 ### NEW-020 — Native Result Attempt 实例匹配缺少 Job 分隔边界
 
 - **位置**：[`_require_attempt_bound_natives`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L604-L617) 使用 `instance.startswith(expected_prefix)`，其中 `expected_prefix=run_ref/attempt_ref/job_ref`；#52 [`_native_results`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L3680-L3805) 的正确结果再接 `:origin:index:check:access_id`。
@@ -385,6 +399,30 @@
 - **现有测试**：[`test_workflow_publish_authority_rejects_mismatched_actual_evaluator`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_publish.py#L205-L220) 仅模拟调用方把 `execution_identity.evaluator_ref` 置为不受批准版本，从而拒绝；它没有模拟 **实际运行错误版本、但向 Authority 申报受批准版本** 的对抗输入。
 - **信任边界**：外部 `approval_authority` 能收到 `execution_identity` 并自行交叉验证真实执行 Artifact/Attestation，当前仓库缺少对应生产证据。不可将“Workflow 版本得到 GitHub Runtime 证明”偷换成“本次真正运行的 Evaluator/Policy 版本已认证”。与 NEW-010 的 Assessment PASS 原件来源不同，也与 NEW-028 的时钟注入不同，属于执行代码来源绑定风险。
 
+### NEW-034 — Release Dagger Policy Check 的派生 PASS 未在独立消费端复核
+
+- **源码**：[Manifest facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 要求原始 remaining-checks.txt 中具备 registry.DAGGER_POLICY_CHECKS 的两个子 Check 名称；[Manifest 构造](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L274-L334) 据此将 coverage/python_matrix 设置为 passed 或 unavailable。[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L393-L447) 对序列化子 Check 只验证名称、Job/Step 字段、状态合法性；[Verification](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) 和 [Publisher](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 只重取 CHECKS 的原始 Job/Step 结果，不重新验证这两个 Dagger 子 Check 的原始事实。
+- **差异反例条件**：以已有 [缺子检查生成器测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py#L190-L202) 的失败 Manifest 为起点，保持真实 Dagger Job/Step 成功且不改变其他来源，将派生 coverage/python_matrix 由 unavailable 改为 passed、聚合 result 改 passed，再比较 validate、verification.evidence、publishing.published_evidence 的结果。应再增加原生 Runtime 的合法正例，不能使用自造 Job PASS 证明受信签发。**本次尚未执行此组合 API**。
+- **根因与边界**：这是 Manifest 生成事实与独立序列化消费者重验证不等价，不同于 NEW-004 的 R4 optional Check Mapping。实际 Release Workflow 已通过固定 Artifact ID 交付 Manifest，真实被篡改可达性未证明；复用现有 facts/Provider，不另造第二套 Dagger Checker。
+
+### NEW-035 — Release Tool Version 声明没有独立校验实际生产值
+
+- **源码**：[facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 从 core/ruff tool-versions.json、Dagger 和 OSV 原始文件取得版本；[clean_tools](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L141-L160) 仅验证工具允许集合、字符串格式、去重/排序；[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L440-L450) 及 [Publishing Provider](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 没有把保存的 tools[].version 与相同 Run 的原始版本文件/独立受信实现版本重新对账。
+- **差异反例条件**：保留真实成功 Run、同一 Artifact ID 与其他 Manifest 项，仅将一个 tools[].version 替换为不同但合法的版本；再用实际 verification/published_evidence 核对，观察是否与原值等价接受。需确认 Tool Version 是否属于当前 Release 授权前提、真实 Manifest 的交付保护及原生 Provider 能否取得版本原件。
+- **去重**：与 NEW-034 是同一“衍生事实未在消费边界关联原件”的根因族，但 034 是 Dagger 子 Check 结果，035 是版本来源属性；合并设计修复，不创建平行版本注册表。未证正式发布可被外部篡改。
+
+### NEW-036 — 首次 Release Publish 与已发布历史核验共用 Artifact 过期宽容
+
+- **源码**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 默认遇 expired=True 返回 None，故新 [manifest()](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L306-L334) 无法将其构造成完整 PASSED；[published_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 却用 allow_expired=True 接受此元数据；[publish_release](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L213-L282) 在首次创建 Tag/Release 前也调用 published_evidence。现有 [过期 Artifact 测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py) 只证明生成器阻断和历史元数据可检索。
+- **反例**：在 t0 经原生 API 创建正常 PASSED Manifest；t1 Artifact 过期、其他 Run/Job/Digest/Tag/Commit 保持合法；t1 首次尝试 publish_release。比较已发布 Release 历史只读核验、首次新发布、可用性要求明确的 Profile 三种情形。**未执行新增原生差异/外部写操作**。
+- **裁决边界**：当前 Profile 如果允许以有效历史不可变证据发布，不能机械拒绝过期；若要求可获取的发行制品或发布时实时证据，则不能把历史检索宽容直接作为首次授权。保留原生 Release 发布程序，不引入新的 Coordinator。
+
+### NEW-037 — Release Manifest 固定 Artifact 缺 Digest 时的字节证明缺口
+
+- **源码**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 返回 GitHub Metadata 的可选 digest；[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L448-L475) 即使所有固定 Artifact 名称和 ID 齐全、result=passed 也允许 digest=None；[verification.evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) 和 [published_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 只在 Manifest 提供 Digest 时与 Metadata 比较，因此在没有 Digest 的条件下不能建立字节摘要对账。
+- **差异反例条件**：构造真实合法 Run/Attempt/所有固定 Artifact ID 与原生 Check 成功，但令其中一份 Artifact Metadata 不含 digest；对照正常具 Digest 的输入。使用真实 manifest、verification.evidence、published_evidence API 核对，确认 GitHub 当前生产 API 是否真的存在 None。官方 [Actions Artifact REST API](https://docs.github.com/en/rest/actions/artifacts?apiVersion=2026-03-10) 展示 Run 身份和 SHA-256，但示例存在不等于所有实际响应都有 Digest。
+- **上下游限制**：R4 [reconcile_release_assessment](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L822-L868) 在 publication 且某 Artifact 明确被授权列为当前 obligation 时，会因缺 Digest 阻断；但 D-G04 已证明实际 Release Publisher 还未接入这一 R4 消费。不能宣称当前生产发行软件包被错误签发；先查当前真正要求字节校验的 Artifact/Release Profile。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -405,7 +443,7 @@
 | C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
 | D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
 | Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-033/HYP-001～HYP-003 待复核 | 新增 Non-Check Verifier 真实签发、Universe→Assessment As-of、Profile Approval 发生时间、G2 实际 Evaluator/Policy 来源认证四条独立追查边。均已核对权威 Issue/Doc、源码和相关测试；尚未运行新原生 API 或生产签发反例，不宣称已找到所有问题 | 继续 |
+| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-037/HYP-001～HYP-003 待复核 | 新增 Release Dagger Policy/Tool Version 来源复核、首次 Publish 过期 Artifact 与缺 Digest 四项独立调查面（034/035 共用根因族）；原有 Non-Check、Universe As-of、Profile Approval、G2 Evaluator 追查仍保留。均已核对权威 Issue/Doc、源码和相关测试；尚未运行新原生 API 或生产签发反例，不宣称已找到所有问题 | 继续 |
 
 **进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
 
