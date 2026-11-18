@@ -1,0 +1,19 @@
+{
+  "checked_at_utc": "2026-11-18T04:48:22.433926+00:00",
+  "status": "passed",
+  "scope": "D audit evidence integrity only; no production authorization or runtime repair acceptance",
+  "checks": {
+    "bundle_sha256_files": 33,
+    "retained_gzip_and_script_syntax": "valid",
+    "pinned_git_blob_sha256": 975,
+    "mechanical_nodes": 93,
+    "mechanical_edges": 86,
+    "retained_external_dynamic_edges": 24,
+    "api_cases": 82,
+    "expected_counterexamples": 5,
+    "deduplicated_findings": 2,
+    "server_get_only_observation": "not_verified / not_performed; HTTP 401",
+    "historical_AB_C_checksums": "valid; only parent navigation digest refreshed for D link",
+    "local_document_links": "valid"
+  }
+}

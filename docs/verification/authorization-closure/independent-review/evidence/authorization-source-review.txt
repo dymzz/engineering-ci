@@ -1,0 +1,36 @@
+"""Live #61 G3 observer with a GET-only native gh guard; no enforcement probe."""
+import datetime
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root=Path('.artifacts/authorization-review-d').resolve()
+manifest=json.loads((root/'snapshot-manifest.json').read_text(encoding='utf-8'))
+source=Path(manifest['main']['root'])/'src'
+sys.path.insert(0,str(source));sys.dont_write_bytecode=True
+from engineering_ci import required_assessment_protection as protection
+from engineering_ci.github_cli import GitHub,ApiError
+
+calls=[]
+class ReadOnly:
+    def __init__(self):self.client=GitHub('dymzz/engineering-ci')
+    def __call__(self,path,method='GET',data=None):
+        assert method=='GET' and data is None
+        assert path.startswith(('rules/branches/main?','rulesets?','rulesets/','branches/main/protection'))
+        at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+        try:
+            value=self.client(path,method='GET')
+            calls.append({'observed_at_utc':at,'method':'GET','path':path,'response':value})
+            return value
+        except ApiError as exc:
+            calls.append({'observed_at_utc':at,'method':'GET','path':path,'raised':{'type':'ApiError','http_status':exc.status,'exit_code':exc.exit_code,'diagnostic':str(exc)}})
+            raise
+
+at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+result=protection.inspect_server_protection('dymzz/engineering-ci',branch='main',github=ReadOnly())
+assert result['enforcement']['probe']=='not_performed'
+payload={'code_commit':manifest['main']['commit'],'started_at_utc':at,'completed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+         'code_sha256':hashlib.sha256(Path(protection.__file__).read_bytes()).hexdigest(),'transport':'actual native gh GET, no writes','calls':calls,'result':result}
+(root/'live-server-observation.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+print(json.dumps({'calls':len(calls),'visibility':result['visibility'],'enforcement':result['enforcement']}))

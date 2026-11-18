@@ -1,0 +1,300 @@
+{
+  "purpose": "Issue #125-D 的派生审阅清单；记录两个已复现根因和五组生产证据缺口，不执行任何授权决策。先汇总，再修订。",
+  "snapshots": {
+    "main": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+    "pr124": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5"
+  },
+  "findings": [
+    {
+      "id": "D-F01",
+      "classification": "confirmed_semantic_defect",
+      "priority": "P1",
+      "snapshot": "pr124",
+      "title": "Terminal/Phase 清除同时存在的 Domain 缺口",
+      "reproducible_cases": [
+        "terminal.compound_open_domain",
+        "terminal.compound_original_declared_domain"
+      ],
+      "positive_cases": [
+        "terminal.compound_closed_domain",
+        "producer.phase_only"
+      ],
+      "evidence": "evidence/pr124-semantic-results.json.gz",
+      "edges": [
+        "E002",
+        "E077",
+        "E078",
+        "E079",
+        "E085"
+      ],
+      "source": [
+        {
+          "snapshot": "main",
+          "path": "src/engineering_ci/expected_checks.py",
+          "symbol": "engineering_ci.expected_checks._derive_v2_from_profile",
+          "line": 1770
+        },
+        {
+          "snapshot": "pr124",
+          "path": "src/engineering_ci/expected_checks.py",
+          "symbol": "engineering_ci.expected_checks._derive_v2_from_profile",
+          "line": 1770
+        },
+        {
+          "snapshot": "pr124",
+          "path": "src/engineering_ci/terminal_expected.py",
+          "symbol": "engineering_ci.terminal_expected._terminal_applicability_is_sole_unknown",
+          "line": 261
+        },
+        {
+          "snapshot": "pr124",
+          "path": "src/engineering_ci/terminal_expected.py",
+          "symbol": "engineering_ci.terminal_expected._partial_is_phase_only",
+          "line": 241
+        },
+        {
+          "snapshot": "pr124",
+          "path": "src/engineering_ci/terminal_expected.py",
+          "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+          "line": 1121
+        }
+      ],
+      "actual": "实际 selection.plan 输出 unknown/applicability_or_changeset_incomplete，effective_profile.domain_complete=False、definitions_status=requested_names_complete；关联的原 Plan/Git/Root、Completed Run Subject 和 Phase Witness 均通过受控验证时，Binder 返回 bound/authorized=True、reasons=[]。声明域未覆盖配置域的原测试构造也有相同结果。完整域的匹配正例仍为 True。",
+      "root_cause": "B2 用优先级 status/reason 代表多项并存条件；Binder 的 sole-unknown/phase-only 判断核对 authority/conflicts/missing/其他 Check，但没有保留 Domain 未闭合事实。身份/Phase 证明不能代签治理/Check Domain 完整性。",
+      "authority_limit": "Issuer/Expected/Run/Phase 回调是明确的受控替身；这是本地合同反例，未证明真实生产 Issuer 可被绕过。Phase Witness 不是 Profile/治理域闭包证明。",
+      "consumers": {
+        "confirmed": [
+          "#124 bind_terminal_expected",
+          "post_completion_with_expected 返回的 authorized/bound"
+        ],
+        "shared_upstream": [
+          "selection.plan 及 Expected v2 消费方"
+        ],
+        "potential_unverified": [
+          "未来将 Binder 结果交给执行、#63 Admission、#61 Required 的外部消费者；当前仓内没有已核实接线，不能据此宣称它们已错误放行。"
+        ]
+      },
+      "owners": [
+        "#66-B2 Producer/Validator",
+        "#52-D4 / PR #124 Binder"
+      ],
+      "interface_change": "I01",
+      "acceptance_positive": [
+        "同一原 Plan/Git/Root 的合法单一闭合域、sole Terminal unknown + 有效 Phase/Completed Run 仍可 bound。",
+        "合法 Phase-only partial 可由相应 Phase 证明解除其自身缺口；空域/空阶段不被默认作废。"
+      ],
+      "acceptance_negative": [
+        "Domain false、配置域未覆盖、missing definition/rule/applicability、authority/撤销/时间缺口并存时，只清除被证明解决的条件。",
+        "各缺口应独立可见，修复一个原因后其他原因仍阻断；不用消费方猜字符串或一律拒绝 unknown/partial。"
+      ]
+    },
+    {
+      "id": "D-F02",
+      "classification": "confirmed_cross_module_contract_gap",
+      "priority": "P1",
+      "snapshot": "main",
+      "title": "T1-a/T2 实际 Admission 输出没有可消费的 R1 交接",
+      "reproducible_cases": [
+        "interop.t1_pass_to_r1",
+        "interop.t1_fail_to_r1",
+        "interop.t2_pass_to_r1"
+      ],
+      "positive_cases": [
+        "t1.pass",
+        "t2.pass",
+        "r1.normalized_closed_single_scope"
+      ],
+      "evidence": "evidence/main-semantic-results.json.gz",
+      "edges": [
+        "E020",
+        "E025",
+        "E026",
+        "E060",
+        "E071",
+        "E073"
+      ],
+      "source": [
+        {
+          "snapshot": "main",
+          "path": "src/engineering_ci/admission.py",
+          "symbol": "engineering_ci.admission.admit_evidence",
+          "line": 779
+        },
+        {
+          "snapshot": "main",
+          "path": "src/engineering_ci/admission.py",
+          "symbol": "engineering_ci.admission.admit_historical_reuse",
+          "line": 1527
+        },
+        {
+          "snapshot": "main",
+          "path": "src/engineering_ci/required_assessment.py",
+          "symbol": "engineering_ci.required_assessment._validate_admission",
+          "line": 1341
+        },
+        {
+          "snapshot": "main",
+          "path": "src/engineering_ci/required_assessment.py",
+          "symbol": "engineering_ci.required_assessment._coverage_entry",
+          "line": 1231
+        }
+      ],
+      "actual": "共享同一个 v2 Expected/Universe/Receipt，实际 T1-a 已 admitted，未经改写直接进入 R1 -> RequiredAssessmentError(admission_phase_invalid)。实际 T2 已 admitted -> RequiredAssessmentError(admission_kind_invalid)。实际已认证 Native FAIL 的 T1-a 输出也在 Admission phase 验证处抛错；没有被放行。",
+      "root_cause": "#63 的执行/证据接纳对象与 #61 冻结的 post_run_evidence_to_gate_projection 归一化对象职责不同，却未交付显式、保留证据的生产投影。T1 与 R1 同名 kind/v1 但缺少 phase/admission_ref；Coverage 字段和 Failure 投影也不同。仅补 kind/phase 不足以形成有效交接。",
+      "authority_limit": "Producer 确实调用实际 API；Native Result 是受控模型，Issuer/Resolution/P0/Authorization 回调是替身。R1 单独正例使用预归一化可信事实，不能证明真实 T1/T2 交接或生产授权。",
+      "consumers": {
+        "confirmed": [
+          "R1 _validate_admission / assess_required_obligations"
+        ],
+        "transitive_contract_consumers": [
+          "G2 Check Publication",
+          "#61 R4 Release Reconciliation",
+          "#61 R5 Post-stage"
+        ],
+        "unverified": [
+          "实际 Remaining Work 执行者、受信 Receiver/Issuer、跨 Run transport；不从缺少静态调用推导外部不存在。"
+        ]
+      },
+      "owners": [
+        "#63 Admission/Reuse 的 Gate 投影",
+        "#61 R1 输入合同"
+      ],
+      "interface_change": "I02",
+      "acceptance_positive": [
+        "真实 T1-a 成功输出经显式受信投影进入 R1，返回 passed。",
+        "真实 T2 合法复用输出满足当前范围，不要求当前 Native execution/Receipt；保留历史 Run/Attempt/Result 原身份。"
+      ],
+      "acceptance_negative": [
+        "认证 Native FAIL/conflict 投影为结构化 blocked 并保留失败来源；旧 PASS 不能清除当前失败。",
+        "缺 verifier、错 Source/Rule/Profile/Target/Phase/Attempt/Candidate/Time、expired/revoked 都不变成 Coverage。",
+        "测试消费真正 Producer 输出，不能手工补 verified/issuer/raw flags、kind 或 phase 取得 PASS。"
+      ]
+    }
+  ],
+  "interface_changes": [
+    {
+      "id": "I01",
+      "status": "proposed_not_implemented",
+      "root": "D-F01",
+      "owner": "#66-B2 主导，#52/#63/#61 共同消费",
+      "change": "在现有 Expected Producer/Validator 上明确并保留独立的 authority、governance/check-domain、definitions、rules、applicability、Phase、Source/Ref、time 缺口及证明范围；下游只解除与证明相符的条件。字段和版本在修订 PR 中共同裁定。",
+      "constraints": [
+        "不建立新 Policy/Expected/全局授权注册表。",
+        "Domain 缺口只由其有权 Producer/Validator 关闭。",
+        "同一合同变更可在一个原子 PR 同步 Producer/Validator/Binder。"
+      ]
+    },
+    {
+      "id": "I02",
+      "status": "proposed_not_implemented",
+      "root": "D-F02",
+      "owner": "#63 与 #61 联合",
+      "change": "在现有 Admission/Reuse 模块交付显式 Gate 投影及版本/来源标识；统一实例键、成功 Witness、Origin/Issuer/适用范围/时间、当前 Receipt 绑定与历史等价性、认证失败/冲突和 Remaining Work 的表示。R1 验证该输出。",
+      "constraints": [
+        "Admission 与复用保留自身职责，归一化不产生或伪造认证。",
+        "不把 T2 的历史身份改写为当前 Run；不强制合法复用重新执行。",
+        "不加宽 R1 过滤接受未经验证对象；不只修改常量或补几个布尔字段。"
+      ]
+    }
+  ],
+  "known_gaps": [
+    {
+      "id": "D-G01",
+      "classification": "production_authority_unverified",
+      "owners": [
+        "#66-B2",
+        "#61 R1"
+      ],
+      "edges": [
+        "E057",
+        "E058"
+      ],
+      "facts": "完整受管/委托/继承/排除域、有权 Obligations Universe、真实 Phase Producer、当前有效性/撤销来源未做生产验收。受控 normalized authority=verified/contract_sample=False 不等于原始签发认证。",
+      "required_acceptance": "记录原治理 Producer/Issuer、完整范围与时效、实际 verifier 的认证结果，再验证合法闭域 PASS 与缺源/复合缺口阻断。",
+      "interface_change": "I01 解决事实表达；真实 Producer 接线按原 Issue 实施。"
+    },
+    {
+      "id": "D-G02",
+      "classification": "production_admission_wiring_unverified",
+      "owners": [
+        "#63 T1/T2/T1-b",
+        "#66-P0"
+      ],
+      "edges": [
+        "E024",
+        "E059",
+        "E060",
+        "E071",
+        "E073"
+      ],
+      "facts": "本轮回调/transport 为替身；实际受信 Issuer、受控 Local/Actions Receiver、历史来源/P0/current grant 和 Remaining Work 执行消费者未被生产证据闭合。v1 Target 授权映射委托给 authorization verifier，accept_all 接受不同 Target 不作为消费者绕过缺陷。",
+      "required_acceptance": "同一版本/范围保留真实 raw Report/Job Receipt、Issuer/验证实现、受控执行边界、有效 grant/撤销与 receiver/dispatch 观察；T1/T2 历史事实不互相代签。",
+      "interface_change": "I02 解决归一化；来源认证/执行接线继续归 #63。"
+    },
+    {
+      "id": "D-G03",
+      "classification": "github_gate_unverified",
+      "owners": [
+        "#61 G2/G3"
+      ],
+      "edges": [
+        "E061",
+        "E062",
+        "E063",
+        "E064"
+      ],
+      "facts": "固定 main 的 5 个成功 GitHub Actions Check 均不是 engineering-ci / required-assessment。4 个实际 Job 的 Runner 元数据可读。G3 主规则/Rulesets=[]；Branch Protection 原生 gh HTTP401、连接器HTTP403，visibility=forbidden、enforcement=not_verified、probe=not_performed。",
+      "required_acceptance": "受治理 Publisher approval + 真实固定 evaluator/workflow/Run/Attempt/App、目标 Check，以及可见的分支强制规则和授权的受控拒绝证据分别验收；本次只读观察不执行拒绝测试或修改保护。",
+      "interface_change": "不据读权限缺口新建接口或放宽规则。"
+    },
+    {
+      "id": "D-G04",
+      "classification": "release_post_integration_unverified",
+      "owners": [
+        "#61 R4/R5",
+        "既有 Release Workflow"
+      ],
+      "edges": [
+        "E065",
+        "E066",
+        "E067",
+        "E068",
+        "E072"
+      ],
+      "facts": "实际 release.publishing.main -> publish_release 使用原 Manifest/Run/Attempt/Job/Artifact guard，当前源码没有接入 R4 envelope。R5 是无外部副作用的后置合同，合法 pair 不宣称 full lifecycle。未选择或发起实际 Release/Disposition Run。",
+      "required_acceptance": "先提供同一当前候选的实际 Required、完整 Artifact obligations、Policy/Provider/Handoff/Phase/Trigger/Due authority，再验证真正消费 R4/R5 的出口；保留既有原生发布证据保障。",
+      "interface_change": "在既有 R4/R5/Release 归属中明确消费者；不是泛化发布状态机。"
+    },
+    {
+      "id": "D-G05",
+      "classification": "external_execution_authority_unverified",
+      "owners": [
+        "现有 Security Policy / Tool Runtime 集成"
+      ],
+      "edges": [
+        "E045",
+        "E069"
+      ],
+      "facts": "独立 AST 找到 execution._build_workflow_admission_fn.admit -> security_policy.decide，receive/decide 的原 Release/anchor/state 边仍需要实际环境事实。本轮仅静态核查这些额外出口，未执行 Hook、Tool Runtime 或持久 Policy 状态迁移。",
+      "required_acceptance": "选定实际受保护 Tool/selection/Policy revision、批准 anchor、原 Release/资产/API 和持久状态归属，再按受影响子图补验。",
+      "interface_change": "无新通用调度器、Store 或兼容层；动态资产/运行环境边保持 unresolved。"
+    }
+  ],
+  "partition_decision": [
+    {
+      "order": 1,
+      "scope": "D-F01 / I01",
+      "pr": "独立原子修订：#66-B2 多原因/证明范围 + #124 Binder 同步；先修共享根因并保留闭域正例。"
+    },
+    {
+      "order": 2,
+      "scope": "D-F02 / I02",
+      "pr": "独立原子修订：#63 Gate 投影 + #61 R1 真实 Producer 输出集成和失败传播。与 I01 的身份/范围字段共用同一基线。"
+    },
+    {
+      "order": 3,
+      "scope": "D-G01..D-G05",
+      "pr": "按原 Issue 的实际来源/消费者分批接线与验收；需要真实外部事实时保留 unverified，不复制合同或强制重跑无关矩阵。"
+    }
+  ]
+}

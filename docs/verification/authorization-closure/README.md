@@ -10,6 +10,7 @@
 - [双向依赖图](dependency-map.json)：Producer/fact → Validator/Consumer 的审阅数据，含每个节点的入边和出边。边类型区分直接调用、人工派发、数据合同和 `unresolved`。
 - [基线元数据](baseline-snapshot.json)与[保留证据](evidence/README.md)：可解压的原始归一化响应、只读 GitHub 观察、机械 AST 结果及一次性推导脚本。
 - [C 阶段 Coverage/Gap 索引](coverage/README.md)：基于本 A/B 固定快照的逐边证据范围与未调查关系；与本页原 A/B 结算分别记录。
+- [D 阶段独立审阅](independent-review/README.md)：固定后续 main/候选版本，独立核对机械关系、语义反例和真实来源；去重缺陷与公共接口修订清单先于运行时修复。
 
 ## B 阶段候选覆盖的实际边界
 

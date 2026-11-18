@@ -1,0 +1,41 @@
+"""Prepare isolated, immutable D-review source snapshots inside this workspace."""
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+ROOT=Path('.artifacts/authorization-review-d').resolve()
+assert ROOT.is_relative_to(Path.cwd().resolve())
+ROOT.mkdir(parents=True,exist_ok=True)
+REFS={'main':'adeeb4b15e47072c5091a31c048253f60471ff1b',
+      'pr124':'4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5'}
+manifest={}
+for name,ref in REFS.items():
+    target=ROOT/'snapshots'/name
+    assert target.is_relative_to(ROOT)
+    target.mkdir(parents=True,exist_ok=True)
+    entries=subprocess.check_output(['git','-c','core.hooksPath=NUL','ls-tree','-r','-z',ref]).split(b'\0')
+    paths=[]
+    for record in entries:
+        if not record:continue
+        meta,raw_path=record.split(b'\t',1);path=raw_path.decode('utf-8')
+        if path.startswith(('src/engineering_ci/','tests/','.dagger/src/engineering_ci_module/','.github/workflows/','config/','scripts/')) or (path.endswith('.toml') and '/' not in path):
+            assert meta.split()[0] in [b'100644',b'100755'],(path,meta)
+            paths.append(path)
+    requests=''.join(ref+':'+path+'\n' for path in paths).encode()
+    # Git archive can apply worktree EOL conversion on Windows. Export exact
+    # immutable blob bytes, independently verified by the retained checker.
+    result=subprocess.run(['git','-c','core.hooksPath=NUL','cat-file','--batch'],input=requests,capture_output=True,check=True)
+    payload=result.stdout;offset=0
+    files=[]
+    for path in paths:
+        end=payload.index(b'\n',offset);header=payload[offset:end].decode().split()
+        assert len(header)==3 and header[1]=='blob',(path,header)
+        size=int(header[2]);offset=end+1;raw=payload[offset:offset+size];offset+=size+1
+        resolved=(target/path).resolve();assert resolved.is_relative_to(target.resolve()),path
+        resolved.parent.mkdir(parents=True,exist_ok=True);resolved.write_bytes(raw)
+        files.append({'path':path,'sha256':hashlib.sha256(raw).hexdigest()})
+    assert offset==len(payload)
+    manifest[name]={'commit':ref,'root':target.as_posix(),'files':files}
+(ROOT/'snapshot-manifest.json').write_bytes((json.dumps(manifest,indent=2)+'\n').encode('utf-8'))
+print(json.dumps({n:{'commit':d['commit'],'files':len(d['files'])} for n,d in manifest.items()}))

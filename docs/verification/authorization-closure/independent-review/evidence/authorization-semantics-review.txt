@@ -1,0 +1,412 @@
+"""Independent #125-D API probes. Controlled fixtures are never real authority."""
+import copy
+import dataclasses
+import datetime
+import hashlib
+import importlib
+import json
+import os
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+WORKSPACE=Path.cwd().resolve()
+REVIEW=WORKSPACE/'.artifacts/authorization-review-d'
+SNAPSHOT=sys.argv[1]
+manifest=json.loads((REVIEW/'snapshot-manifest.json').read_text(encoding='utf-8'))
+SOURCE=Path(manifest[SNAPSHOT]['root']).resolve()
+assert SOURCE.is_relative_to(REVIEW.resolve())
+sys.path[:0]=[str(SOURCE/'src'),str(SOURCE/'tests')]
+sys.dont_write_bytecode=True
+os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'
+for key in ('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_COMMON_DIR','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES'):
+    os.environ.pop(key,None)
+git_count=int(os.environ.get('GIT_CONFIG_COUNT','0'))
+os.environ['GIT_CONFIG_COUNT']=str(git_count+1)
+os.environ[f'GIT_CONFIG_KEY_{git_count}']='core.hooksPath'
+os.environ[f'GIT_CONFIG_VALUE_{git_count}']='NUL'
+os.environ['GIT_TERMINAL_PROMPT']='0'
+
+class UnexpectedExternalCall(RuntimeError): pass
+class NoNetworkGitHub:
+    def __init__(self,*args,**kwargs): pass
+    def __call__(self,*args,**kwargs):raise UnexpectedExternalCall('Real GitHub invocation forbidden in semantic worker')
+
+from engineering_ci import github_cli
+github_cli.GitHub=NoNetworkGitHub
+original_popen=subprocess.Popen
+def git_only(args,*a,**kw):
+    assert not kw.get('shell'), 'Shell execution is not a semantic probe'
+    program=Path(str(args[0])).name.lower() if isinstance(args,(list,tuple)) and args else ''
+    if program not in ['git','git.exe']:raise UnexpectedExternalCall('Native program forbidden: '+program)
+    return original_popen(args,*a,**kw)
+subprocess.Popen=git_only
+
+from engineering_ci import admission,check_contract,expected_checks,reconciliation,required_assessment
+from engineering_ci import local_actions_handoff,required_assessment_check,required_assessment_publish
+from engineering_ci import required_assessment_release
+if SNAPSHOT=='main':
+    from engineering_ci import required_assessment_post
+import test_admission as ta
+import test_historical_reuse as th
+import test_required_assessment as tr
+import test_local_actions_handoff as tl
+import test_required_assessment_check as tc
+import test_required_assessment_publish as tp
+import test_required_assessment_release as trel
+if SNAPSHOT=='main':import test_required_assessment_post as tpost
+
+RESULTS=[]
+def plain(value):
+    if dataclasses.is_dataclass(value):return plain(dataclasses.asdict(value))
+    if isinstance(value,dict):return {str(k):plain(v) for k,v in value.items()}
+    if isinstance(value,(list,tuple)):return [plain(v) for v in value]
+    if isinstance(value,(set,frozenset)):return sorted(plain(v) for v in value)
+    if isinstance(value,(datetime.datetime,datetime.date)):return value.isoformat()
+    if isinstance(value,Path):return value.as_posix()
+    if callable(value):return {'controlled_callable':getattr(value,'__module__','')+'.'+getattr(value,'__qualname__',type(value).__name__)}
+    if value is None or isinstance(value,(str,int,float,bool)):return value
+    return {'controlled_object_type':type(value).__module__+'.'+type(value).__name__}
+def digest(value):return hashlib.sha256(json.dumps(plain(value),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def status(out):return out.get('returned',{}).get('status')
+def error(out,types=()):return bool(out.get('raised')) and (not types or out['raised']['type'] in types)
+def has_coverage(out):return any(r.get('admitted') is True for r in out.get('returned',{}).get('accepted_coverage_by_instance',{}).values())
+def run(name,family,expected,inputs,invoke,predicate,*,note=''):
+    frozen=plain(inputs);before=digest(inputs)
+    try:out={'returned':plain(invoke())}
+    except Exception as exc:
+        out={'raised':{'type':type(exc).__name__,'code':getattr(exc,'code',None),'native_code':getattr(exc,'native_code',None),'diagnostic':str(exc)}}
+    try:conforms=bool(predicate(out))
+    except Exception as exc:conforms=False;out['predicate_error']=type(exc).__name__+': '+str(exc)
+    RESULTS.append({'case':name,'family':family,'snapshot':SNAPSHOT,'commit':manifest[SNAPSHOT]['commit'],
+                    'expected':expected,'inputs':frozen,'input_sha256':before,'input_mutated':digest(inputs)!=before,
+                    'actual':out,'result':'conforms' if conforms else 'counterexample','note':note,
+                    'authority_scope':'Controlled normalized inputs/callback/provider fixtures only; no real issuer or production authorization acceptance.'})
+def case(name,fn):
+    try:fn()
+    except Exception as exc:RESULTS.append({'case':name,'snapshot':SNAPSHOT,'result':'probe_error','diagnostic':type(exc).__name__+': '+str(exc)})
+
+def r1_fixture(empty=False):
+    p=tr.make_profile(obligations=[] if empty else None,declared_checks=[] if empty else None)
+    e=None if empty else tr.make_entry()
+    proj=tr.make_projection(p,[] if empty else [e])
+    obs=[] if empty else [tr.check_obligation('o/tach',[e['expected_check_ref']])]
+    u=tr.make_universe(p,proj,obs,contract_sample=False)
+    receipt,rid=(None,None) if empty else tr.make_receipt(proj,e)
+    a=None if empty else tr.make_admission(proj,coverage_entries=[(e,tr.coverage(proj,e,rid))],contract_sample=False)
+    return p,e,proj,u,a,receipt
+
+def required_cases():
+    for empty in [False,True]:
+        p,e,proj,u,a,receipt=r1_fixture(empty)
+        run('r1.legal_empty' if empty else 'r1.normalized_closed_single_scope','required',
+            'Authorized normalized single domain/empty universe is reachable as passed; this does not authenticate its real producer.',
+            {'universe':u,'expected':proj,'admission':a,'receipt':receipt},lambda:tr.assess(u,proj,admission=a,receipt=receipt),lambda o:status(o)=='passed',
+            note='R1 public contract assumes already-produced authorized facts; contract_sample=False is not independent source authentication.')
+    for field,value in [('authority_status','unverified'),('closure_status','open'),('universe_status','incomplete'),
+                        ('valid_until','2026-11-16T00:05:00Z'),('revoked_at','2026-11-16T00:05:00Z')]:
+        p,e,proj,u,a,receipt=r1_fixture()
+        u=tr.make_universe(p,proj,[tr.check_obligation('o/tach',[e['expected_check_ref']])],contract_sample=False,**{field:value})
+        run('r1.'+field,'required','Missing/incomplete/expired/revoked current authority must not pass.',
+            {'universe':u,'expected':proj,'admission':a,'receipt':receipt},lambda:tr.assess(u,proj,admission=a,receipt=receipt),lambda o:status(o)=='blocked' or error(o,['RequiredAssessmentError']))
+    p,e,proj,u,a,receipt=r1_fixture()
+    a=tr.make_admission(proj,coverage_entries=[(e,tr.historical_coverage(proj,e))],failures={tr.instance_key(proj,e):[tr.failure(e)]},contract_sample=False)
+    run('r1.current_fail_vs_historical_pass','required','Authenticated current failure must not be cleared by old PASS.',
+        {'universe':u,'expected':proj,'admission':a},lambda:tr.assess(u,proj,admission=a),lambda o:status(o)=='blocked')
+    for wrong in ['candidate','phase','target_ref','action']:
+        p,e,proj,u,a,receipt=r1_fixture()
+        rid=receipt['entries'][0]['selected_result_ids'][0]
+        cov=tr.coverage(proj,e,rid,**({'candidate_digest':'sha256:'+'f'*64} if wrong=='candidate' else {wrong:'different-subject'}))
+        a=tr.make_admission(proj,coverage_entries=[(e,cov)],contract_sample=False)
+        run('r1.coverage_wrong_'+wrong,'required','Same instance strings cannot transfer coverage to another subject/phase/action.',
+            {'universe':u,'expected':proj,'admission':a,'receipt':receipt},lambda:tr.assess(u,proj,admission=a,receipt=receipt),lambda o:status(o)=='blocked' or error(o,['RequiredAssessmentError']))
+    p,proj,obligation,u,a=tr.non_check_setup()
+    run('r1.empty_checks_noncheck_due','required','Empty Check set does not satisfy an outstanding Non-Check obligation.',
+        {'universe':u,'expected':proj},lambda:tr.assess(u,proj),lambda o:status(o)=='blocked' or error(o,['RequiredAssessmentError']))
+    for slot in ['artifact_digest','version','tag']:
+        p,e,proj,u,a,receipt=r1_fixture();marker='sha256:'+'a'*64
+        u=tr.make_universe(p,proj,[tr.check_obligation('o/tach',[e['expected_check_ref']])],candidate={'commit':'2'*40,slot:marker},contract_sample=False)
+        rid=receipt['entries'][0]['selected_result_ids'][0]
+        a=tr.make_admission(proj,coverage_entries=[(e,tr.coverage(proj,e,rid,candidate_digest=marker))],contract_sample=False)
+        run('r1.candidate_digest_matching_'+slot,'required',
+            'Only a declared Candidate identity field can match candidate_digest; ignored version/tag fields cannot supply identity.',
+            {'universe':u,'expected':proj,'admission':a,'receipt':receipt},lambda:tr.assess(u,proj,admission=a,receipt=receipt),
+            lambda out,slot=slot:status(out)=='passed' if slot=='artifact_digest' else status(out)=='blocked' or error(out,['RequiredAssessmentError']))
+    for variant in ['valid','wrong_artifact','commit_only','wrong_verifier','expired','revoked','not_yet_due']:
+        p,proj,obligation,u,a=tr.non_check_setup(contract_sample=False)
+        marker='sha256:'+'a'*64;candidate={'commit':'2'*40,'artifact_digest':marker}
+        obligation=tr.non_check_obligation('o/sbom',required_subject_fields=['artifact_digest'])
+        if variant=='not_yet_due':
+            obligation=tr.non_check_obligation('o/sbom',required_subject_fields=['artifact_digest'],applicability='not_yet_due',due_at='2026-11-17T00:00:00Z',basis_ref=tr.BASIS_REF)
+        u=tr.make_universe(p,proj,[obligation],candidate=candidate,contract_sample=False)
+        ev=tr.evidence_entry('o/sbom',subject_ref=candidate)
+        if variant=='wrong_artifact':ev['subject_ref']['artifact_digest']='sha256:'+'b'*64
+        if variant=='commit_only':ev['subject_ref']={'commit':'2'*40}
+        if variant=='wrong_verifier':ev['verifier_ref']['name']='foreign/verifier'
+        if variant=='expired':ev['valid_until']='2026-11-16T00:59:00Z'
+        if variant=='revoked':ev['revoked_at']='2026-11-16T00:59:00Z'
+        evidence=tr.make_evidence([ev]) if variant!='not_yet_due' else None
+        run('non_check.'+variant,'required_non_check','Only the declared verifier, artifact subject and current validity satisfy a due obligation; a future due_at remains not_yet_due.',
+            {'universe':u,'expected':proj,'admission':a,'evidence':evidence},
+            lambda:tr.assess(u,proj,admission=a,non_check_evidence=evidence),
+            lambda out,variant=variant:status(out)=='passed' if variant in ['valid','not_yet_due'] else status(out)=='blocked' or error(out,['RequiredAssessmentError']))
+
+def admission_cases():
+    for variant in ['pass','fail','no_origin_verifier','no_resolution_verifier','tampered_report','wrong_job_attempt']:
+        proj,receipt,report,job=ta.setup(status='failed' if variant=='fail' else 'passed')
+        kwargs={'reports':[report],'job_receipts':[job],'policy':ta.policy_for(),
+                'authority':ta.authority_for(),'resolutions':ta.resolutions_for(receipt),'resolution_authority':ta.resolution_authority_for()}
+        if variant=='no_origin_verifier':kwargs['authority']=None
+        if variant=='no_resolution_verifier':kwargs['resolution_authority']=None
+        if variant=='tampered_report':report['checks'][0]['native_results'][0]['evidence']={'stdout':'changed independently of Receipt'}
+        if variant=='wrong_job_attempt':job['attempt_ref']='attempt/foreign'
+        def wanted(out,variant=variant):
+            if variant=='pass':return status(out)=='admitted' and not out['returned']['remaining_work'] and has_coverage(out)
+            if variant=='fail':
+                r=out.get('returned',{});entries=r.get('entries',[])
+                return bool(entries) and entries[0]['origin_status']=='verified' and entries[0]['obligation_status']=='unsatisfied' and not has_coverage(out)
+            return error(out,['AdmissionError']) or not has_coverage(out)
+        run('t1.'+variant,'admission','Only independent valid raw/receipt/origin/resolution admits; verified Native FAIL stays unsatisfied.',
+            {'expected':proj,'receipt':receipt,'kwargs':kwargs},lambda:admission.admit_evidence(proj,receipt,**kwargs),wanted)
+
+def reuse_cases():
+    for variant in ['pass','fail','no_origin','no_p0','no_authorization','source_changed','rule_changed','delegated_target','rejected_target','rejected_revocation','unsupported_revoked_field']:
+        proj,proof,candidate,current,historical,result=th.setup_equivalent(historical_status='failed' if variant=='fail' else 'passed')
+        kwargs={}
+        if variant=='no_origin':kwargs['historical_origin_authority']=None
+        if variant=='no_p0':kwargs['pre_execution_authority']=None
+        if variant=='no_authorization':kwargs['authorization_authority']=None
+        if variant=='source_changed':
+            proof['source_ref']['content_digest']='f'*64
+            proof['closure_digest']=admission._recompute_closure_digest(proof)
+        if variant=='rule_changed':
+            proof['rule_ref']['sha256']='f'*64
+            proof['closure_digest']=admission._recompute_closure_digest(proof)
+        if variant in ['delegated_target','rejected_target','unsupported_revoked_field']:
+            auth=copy.deepcopy(th.AUTH)
+            if variant in ['delegated_target','rejected_target']:auth['target_ref']='refs/heads/foreign'
+            else:auth['revoked_at']='2026-11-16T00:01:00Z'
+            kwargs['current_authorization']=auth
+        if variant in ['rejected_target','rejected_revocation']:kwargs['authorization_authority']=lambda context:False
+        run('t2.'+variant,'reuse','Current pre-execution closure/origin/current grant must independently qualify historical coverage.',
+            {'expected':proj,'proof':proof,'candidate':candidate,'kwargs':kwargs},lambda:th.admit(proj,proof,candidate,**kwargs),
+            lambda out,variant=variant:status(out)=='admitted' and has_coverage(out) if variant in ['pass','delegated_target'] else error(out,['AdmissionError']) or not has_coverage(out),
+            note='Legacy Expected v1 does not define an independent consumer Target. Target/grant applicability and current revocation are delegated to the authorization verifier; accept_all cannot test a wrong-target authority. Unknown revoked_at field tests schema rejection only.' if variant in ['delegated_target','rejected_target','rejected_revocation','unsupported_revoked_field'] else '')
+
+def local_cases():
+    for variant in ['controlled','no_issuer','bare_execution_true','uncontrolled','wrong_target','expired_at_execution']:
+        package=tl.build_package();kwargs={}
+        if variant=='no_issuer':kwargs['issuer_authority']=None
+        if variant=='bare_execution_true':kwargs['execution_authority']=tl.accept_execution_bare_true
+        if variant=='uncontrolled':package=tl.build_package(execution_boundary=tl.execution_boundary(kind='uncontrolled_developer_workstation',controlled=False,self_reported=True))
+        if variant=='wrong_target':kwargs['consumer_scope']=tl.consumer_scope(target_ref='refs/heads/foreign')
+        if variant=='expired_at_execution':
+            package=tl.build_package(producer_authorization=tl.producer_authorization(valid_until='2026-11-15T00:00:00Z'))
+        run('local.'+variant,'handoff','Controlled identity/time/grant are separate from self-reported trust and consumer scope.',
+            {'package':package,'kwargs':kwargs},lambda:tl.verify(package,**kwargs),
+            lambda out,variant=variant:status(out)=='verified' if variant=='controlled' else error(out,['LocalActionsHandoffError']) or status(out)!='verified')
+
+class RecordingAPI:
+    def __init__(self):self.calls=[]
+    def __call__(self,path,method='GET',data=None):self.calls.append({'path':path,'method':method,'data':copy.deepcopy(data)});return {'id':73}
+
+def publishing_cases():
+    for variant in ['controlled','no_approval_verifier','self_signed_approval','wrong_execution_attempt']:
+        publication=required_assessment_check.build_check_publication(tc.passed_assessment(contract_sample=False),tp.production_context())
+        client=RecordingAPI();approval=tp.publisher_approval();execution=tp.execution_identity()
+        authority=tp.accept_approval
+        if variant=='no_approval_verifier':authority=None
+        if variant=='self_signed_approval':authority=tp.reject_approval
+        env=tp.actions_env()
+        if variant=='wrong_execution_attempt':env['GITHUB_RUN_ATTEMPT']='99'
+        kwargs={'publisher_approval':approval,'approval_authority':authority,'execution_identity':execution,'environ':env,'github':client}
+        def want(out,variant=variant):
+            return (out.get('returned',{}).get('id')==73 and len(client.calls)==1) if variant=='controlled' else error(out,['RequiredAssessmentPublishError','RequiredAssessmentCheckError']) and not client.calls
+        run('publisher.'+variant,'check','Publisher approval/execution mismatch must prevent even a simulated POST.',
+            {'publication':publication,'kwargs':kwargs},lambda:required_assessment_publish.authorize_and_publish(publication,**kwargs),want)
+        RESULTS[-1]['simulated_api_calls']=plain(client.calls)
+
+def release_cases():
+    for variant in ['validation','publication_controlled','no_policy_authority','no_provider_authority','wrong_candidate','manifest_identity_swap']:
+        assessment,entry=trel.passed_assessment();manifest_value=trel.make_v1_manifest(mode='publication' if variant!='validation' else 'validation')
+        kwargs={}
+        if variant!='validation':kwargs['publish_context']=trel.publication_same_run_context()
+        if variant=='no_policy_authority':kwargs['policy_snapshot_authority']=None
+        if variant=='no_provider_authority':kwargs['manifest_provider_authority']=None
+        if variant=='wrong_candidate':kwargs['publish_context']={**trel.publication_same_run_context(),'head_sha':'f'*40}
+        if variant=='manifest_identity_swap':manifest_value['repository']='other/project'
+        run('release.'+variant,'release','Validation alone does not authorize publication; exact candidate/provider/policy/Manifest identity required.',
+            {'assessment':assessment,'manifest':manifest_value,'kwargs':kwargs},lambda:trel.reconcile(assessment,manifest_value,**kwargs),
+            lambda out,variant=variant:out.get('returned',{}).get('release_authorized') is True if variant=='publication_controlled' else (status(out)=='verified' and out['returned']['release_authorized'] is False) if variant=='validation' else error(out,['RequiredAssessmentReleaseError','ValueError']) or out.get('returned',{}).get('release_authorized') is False)
+
+def post_cases():
+    for variant in ['in_window','before_due','overdue','wrong_candidate','no_trigger_authority','no_disposition_authority']:
+        prior=tpost.prior_passed();post=tpost.post_assessment();kwargs={}
+        if variant=='before_due':
+            kwargs['evaluated_at']=tpost.BEFORE
+            kwargs['trigger_event']=tpost.trigger(observed_at=tpost.BEFORE)
+            post=tpost.post_assessment(evaluated_at=tpost.BEFORE)
+        if variant=='overdue':post=tpost.post_assessment(passed=False);kwargs['evaluated_at']='2026-11-19T00:00:00Z'
+        if variant=='wrong_candidate':post=tpost.post_assessment(candidate_commit='f'*40)
+        if variant=='no_trigger_authority':kwargs['trigger_authority']=None
+        if variant=='no_disposition_authority':kwargs['disposition_authority']=None
+        def want(out,variant=variant):
+            r=out.get('returned',{})
+            if variant in ['in_window','no_disposition_authority']:return status(out)=='verified' and r.get('lifecycle_all_phases_passed') is False and r.get('disposition')=='none'
+            if variant=='before_due':return status(out)=='pending'
+            return error(out,['RequiredAssessmentPostError']) or status(out) not in ['verified','passed']
+        run('post.'+variant,'post','Current trigger/due/candidate remain distinct from immutable prior PASS; passing pair needs no disposition action.',
+            {'prior':prior,'post':post,'kwargs':kwargs},lambda:tpost.reconcile(prior,post,**kwargs),want)
+
+def interoperability_cases():
+    for mode in ['t1_pass','t1_fail','t2_pass']:
+        profile=tr.make_profile();source=copy.deepcopy(th.STRONG_SOURCE if mode=='t2_pass' else ta.STRONG_SOURCE)
+        rule=copy.deepcopy(th.RULE_TACH if mode=='t2_pass' else ta.RULE_TACH)
+        entry=tr.make_entry(source=source,rule_ref=rule)
+        entry['input_refs']=[]
+        entry['expected_check_ref']=expected_checks.entry_identity({k:v for k,v in entry.items() if k!='expected_check_ref'})
+        projection=tr.make_projection(profile,[entry],source=source)
+        universe=tr.make_universe(profile,projection,[tr.check_obligation('o/tach',[entry['expected_check_ref']])],contract_sample=False)
+        result=check_contract.native_result(check_contract.definition_for('tach'),source=source,
+             status='failed' if mode=='t1_fail' else 'passed',result_origin='host',result_instance='d-review/native',
+             native_exit_code=1 if mode=='t1_fail' else 0,evidence={'stdout':'controlled Native Result model; no tool execution'},
+             rule_ref=rule,profile_ref=entry['profile_ref'],input_refs=[],tool=check_contract.tool_ref('tach/check'),runner_ref='execution:host')
+        receipt=None
+        if mode.startswith('t1'):
+            report=ta.report_for(result);report_ref=ta.report_ref_for(report);job=ta.job_receipt_for(report_ref)
+            resolution={**ta.resolution_for(entry),'rule_ref':rule,'source_ref':source}
+            receipt=reconciliation.reconcile_expected_results(projection,routing=[ta.routing_for(entry)],resolutions=[resolution],observations=[ta.observation_for(report,report_ref,job)])
+            produced=admission.admit_evidence(projection,receipt,reports=[report],job_receipts=[job],policy=ta.policy_for(),
+                     authority=ta.authority_for(),resolutions=[resolution],resolution_authority=ta.resolution_authority_for())
+        else:
+            historical=copy.deepcopy(entry);historical['event_ref']=copy.deepcopy(th.EVENT_HISTORICAL)
+            historical['expected_check_ref']=expected_checks.entry_identity({k:v for k,v in historical.items() if k!='expected_check_ref'})
+            proof=th.pre_proof_for(entry,source=source);proof['scope_id']=projection['scope_id']
+            candidate=th.historical_candidate(historical,result)
+            produced=th.admit(projection,proof,candidate,current_authorization={'phase':'pre_publish','action':'publish','target_ref':'refs/heads/main'})
+        if mode!='t1_fail' and produced['status']!='admitted':
+            raise RuntimeError('Producer fixture did not admit: '+json.dumps(produced.get('entries')))
+        if mode=='t1_fail' and produced['entries'][0]['origin_status']!='verified':raise RuntimeError('Failure fixture lacks verified-origin control')
+        run('interop.'+mode+'_to_r1','interoperability',
+            'Actual #63 output for this same v2 scope must be consumable as #61 success/failure, without rewriting kind/phase or fabricating coverage.',
+            {'expected':projection,'universe':universe,'receipt':receipt,'producer_output':produced},
+            lambda:tr.assess(universe,projection,admission=produced,receipt=receipt),
+            lambda out,mode=mode:status(out)==('blocked' if mode=='t1_fail' else 'passed'),
+            note='Shared actual API-produced scope/Receipt/Admission; only issuer/verifier callbacks and native process model are controlled fixtures.')
+
+def terminal_cases():
+    from engineering_ci import terminal_expected as te,selection
+    import test_terminal_expected as tt
+    class InputsReady(Exception):pass
+    captured={};plans=[]
+    original=te.bind_terminal_expected;original_plan=selection.plan
+    def capture(expected,**kwargs):
+        captured['expected']=copy.deepcopy(expected);captured['kwargs']=copy.deepcopy(kwargs);raise InputsReady()
+    def capture_plan(*args,**kwargs):
+        value=original_plan(*args,**kwargs);plans.append({'args':args,'kwargs':kwargs,'plan':value});return value
+    directory=REVIEW/'cases'/('pr124-terminal-'+uuid.uuid4().hex[:10]);directory.mkdir(parents=True,exist_ok=True)
+    assert directory.resolve().is_relative_to(REVIEW.resolve())
+    te.bind_terminal_expected=capture;selection.plan=capture_plan
+    try:
+        try:tt.test_weaver_terminal_v2_authorizes_when_subjects_correlate(directory)
+        except InputsReady:pass
+    finally:te.bind_terminal_expected=original;selection.plan=original_plan
+    assert captured and plans,'Positive setup did not reach actual Binder'
+    (REVIEW/'candidate-builder-plan-inputs.json').write_bytes((json.dumps(plain(plans),ensure_ascii=False,indent=2)+'\n').encode('utf-8'))
+    # The historical test fixture's declared domain is narrower than its
+    # configured domain. Build a genuinely closed positive before deriving
+    # identity/authority negatives; retain the original as an explicit compound
+    # counterexample below rather than accidentally blessing its old oracle.
+    frame=plans[0];closed=copy.deepcopy(frame['kwargs']['effective_profile'])
+    scope_names={s['name'] for s in frame['plan']['check_scope']}
+    closed['declared_checks']=sorted(set(closed['declared_checks'])|(expected_checks._HYGIENE_MANAGED&scope_names))
+    closed['approval_binding']['declared_domain']['declared_checks']=closed['declared_checks']
+    expected_root=Path(frame['kwargs']['root']);cfg=tt._attach_phase_profile_policy(expected_root,closed)
+    closed_plan=original_plan(frame['args'][0],config=cfg,config_path=expected_root/'ci-selection.toml',root=expected_root,effective_profile=closed)
+    parent=copy.deepcopy(closed_plan['expected_checks']);parent['profile_revision']=closed['profile_revision']
+    assert parent['definitions_status']=='domain_complete'
+    captured['expected']=parent;captured['kwargs']['expected_plan']=closed_plan;captured['kwargs']['projection_git']=closed_plan['git']
+    captured['kwargs']['phase_witness']=tt.sealed_phase_witness(parent)
+    terminal_entry=next(e for e in parent['checks'] if e['name']=='weaver_terminal')
+    captured['kwargs']['completed_run']['subject']=tt.matching_run_subject(terminal_entry,parent,source_content_id=captured['kwargs']['plan']['git']['source_tree_id'])
+    for variant in ['valid','no_expected_authority','no_run_authority','no_phase_authority','wrong_run_attempt','wrong_profile_revision','wrong_content_id','wrong_git_tree','terminal_as_original_context','self_attested_projection']:
+        expected=copy.deepcopy(captured['expected']);kwargs=copy.deepcopy(captured['kwargs'])
+        if variant=='no_expected_authority':kwargs['expected_authority']=None
+        if variant=='no_run_authority':kwargs['completed_run_authority']=None
+        if variant=='no_phase_authority':kwargs['phase_witness_authority']=None
+        if variant=='wrong_run_attempt':kwargs['completed_run']['attempt']+=1
+        if variant=='wrong_profile_revision':
+            witness=kwargs['phase_witness'];witness['profile_revision']='different-revision';witness['witness_ref']=te._digest(te._witness_payload(witness))
+        if variant=='wrong_content_id':kwargs['completed_run']['subject']['source_content_id']='f'*64
+        if variant=='wrong_git_tree':kwargs['completed_run']['subject']['declared_target_tree']='0'*40
+        if variant=='terminal_as_original_context':kwargs['expected_plan']=kwargs['plan'];kwargs['projection_git']=kwargs['plan']['git']
+        if variant=='self_attested_projection':
+            kwargs['expected_plan']=None;kwargs['projection_git']=None;kwargs['expected_root']=None;kwargs['projection_proof']=tt.self_attested_projection_proof(expected)
+        run('terminal.'+variant,'terminal','Valid independently-correlated original context is reachable; missing authority/wrong typed subject cannot authorize.',
+            {'expected':expected,'kwargs':kwargs},lambda:original(expected,**kwargs),
+            lambda out,variant=variant:out.get('returned',{}).get('authorized') is True if variant=='valid' else error(out,['TerminalExpectedError']) or out.get('returned',{}).get('authorized') is False,
+            note='Input construction captured before the old test oracle; actual Binder then invoked independently. Git/physical files real, all authority callbacks controlled.')
+    for variant in ['closed_domain','open_domain','original_declared_domain','missing_declared_domain','authority_and_domain_missing']:
+        frame=plans[0];profile=copy.deepcopy(frame['kwargs']['effective_profile'])
+        # Broaden the positive control to every configured Hygiene name. Rebuild
+        # the actual producer and its projection proof rather than editing output.
+        scope_names={s['name'] for s in frame['plan']['check_scope']}
+        if variant!='original_declared_domain':
+            profile['declared_checks']=sorted(set(profile['declared_checks'])|(expected_checks._HYGIENE_MANAGED&scope_names))
+        if variant in ['open_domain','authority_and_domain_missing']:profile['domain_complete']=False
+        if variant=='missing_declared_domain':profile.pop('declared_checks',None)
+        if variant=='authority_and_domain_missing':profile['authority_verified']=False
+        domain=profile['approval_binding']['declared_domain']
+        domain['domain_complete']=profile['domain_complete']
+        if 'declared_checks' in profile:domain['declared_checks']=profile['declared_checks']
+        else:domain.pop('declared_checks',None)
+        root=Path(frame['kwargs']['root']);cfg=tt._attach_phase_profile_policy(root,profile)
+        def evaluate():
+            produced_plan=original_plan(frame['args'][0],config=cfg,config_path=root/'ci-selection.toml',root=root,effective_profile=profile)
+            parent=copy.deepcopy(produced_plan['expected_checks']);parent['profile_revision']=profile['profile_revision']
+            entry=next(e for e in parent['checks'] if e['name']=='weaver_terminal')
+            kwargs=copy.deepcopy(captured['kwargs']);kwargs['expected_plan']=produced_plan;kwargs['projection_git']=produced_plan['git']
+            kwargs['phase_witness']=tt.sealed_phase_witness(parent)
+            kwargs['completed_run']['subject']=tt.matching_run_subject(entry,parent,source_content_id=kwargs['plan']['git']['source_tree_id'])
+            binding=original(parent,**kwargs)
+            return {**binding,'producer_expected':parent,'producer_plan':produced_plan}
+        run('terminal.compound_'+variant,'terminal_compound',
+            'A Terminal/Phase witness may clear its own unknowns; an actual Producer domain gap must remain blocking. The closed-domain control must remain reachable.',
+            {'profile':profile,'original_plan_inputs':plain(frame),'controlled_authorities':plain(captured['kwargs'])},evaluate,
+            lambda out,variant=variant:out.get('returned',{}).get('authorized') is True if variant=='closed_domain' else error(out,['TerminalExpectedError','ExpectedError']) or out.get('returned',{}).get('authorized') is False,
+            note='Actual selection.plan producer output with approval/policy hashes rebuilt by controlled fixture; no forged status/reason. Authority callbacks are synthetic and cannot establish production authority.')
+    for variant in ['phase_only','phase_and_open_domain']:
+        frame=plans[0];profile=copy.deepcopy(frame['kwargs']['effective_profile'])
+        scope_names={s['name'] for s in frame['plan']['check_scope']}
+        profile['declared_checks']=sorted(expected_checks._HYGIENE_MANAGED&scope_names)
+        profile['required_obligations']=[{'obligation_ref':'ob/whitespace','kind':'check','check_names':['whitespace'],'allow_inapplicable':True}]
+        profile['domain_complete']=variant=='phase_only'
+        domain=profile['approval_binding']['declared_domain'];domain['domain_complete']=profile['domain_complete'];domain['declared_checks']=profile['declared_checks']
+        root=Path(frame['kwargs']['root']);cfg=tt._attach_phase_profile_policy(root,profile)
+        def produce_phase():
+            return original_plan(frame['args'][0],config=cfg,config_path=root/'ci-selection.toml',root=root,effective_profile=profile)['expected_checks']
+        run('producer.'+variant,'expected_compound','A legal Phase-only partial is reachable; an additional domain gap must remain visible as a separate producer fact, despite the scalar reason.',
+            {'profile':profile,'plan_inputs':plain(frame)},produce_phase,
+            lambda out,variant=variant:status(out)=='partial' and out['returned']['phase_status']=='unverified' and out['returned']['definitions_status']==('domain_complete' if variant=='phase_only' else 'requested_names_complete'),
+            note='Producer-only control: a partial projection is not an authorization PASS. This demonstrates scalar reason masking with retained domain/definitions facts; the Binder probes independently demonstrate unsafe clearing.')
+
+if SNAPSHOT=='main':
+    for name,fn in [('required',required_cases),('admission',admission_cases),('reuse',reuse_cases),('handoff',local_cases),('publisher',publishing_cases),('release',release_cases),('post',post_cases),('interoperability',interoperability_cases)]:case(name,fn)
+else:case('terminal',terminal_cases)
+
+loaded=[]
+for name,module in sorted(sys.modules.items()):
+    if name=='engineering_ci' or name.startswith('engineering_ci.'):
+        path=getattr(module,'__file__',None)
+        if path:
+            path=Path(path).resolve();assert path.is_relative_to(SOURCE/'src'),(name,path)
+            loaded.append({'module':name,'path':path.relative_to(SOURCE).as_posix(),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+report={'snapshot':SNAPSHOT,'commit':manifest[SNAPSHOT]['commit'],'python':sys.version,'source_modules':loaded,
+        'scope':'Actual APIs under isolated pinned code; controlled normalized fixtures and callbacks only. Git only; no real provider writes/native tools.',
+        'cases':RESULTS}
+(REVIEW/(SNAPSHOT+'-semantic-results.json')).write_bytes((json.dumps(report,ensure_ascii=False,indent=2)+'\n').encode('utf-8'))
+print(json.dumps({'snapshot':SNAPSHOT,'cases':len(RESULTS),'counts':{s:sum(c['result']==s for c in RESULTS) for s in ['conforms','counterexample','probe_error']},
+                  'attention':[{'case':c['case'],'result':c['result'],'status':status(c.get('actual',{})),
+                                'raised':c.get('actual',{}).get('raised'),'reasons':c.get('actual',{}).get('returned',{}).get('reasons',[]),
+                                'diagnostic':c.get('diagnostic')} for c in RESULTS if c['result']!='conforms']}))

@@ -1,0 +1,121 @@
+"""Independent AST discovery for #125-D; no authorization decisions."""
+import ast
+import builtins
+import gzip
+import hashlib
+import json
+from pathlib import Path
+
+ROOT=Path('.artifacts/authorization-review-d').resolve()
+manifest=json.loads((ROOT/'snapshot-manifest.json').read_text(encoding='utf-8'))
+KEYS={'accepted_coverage_by_instance','remaining_work','authorized','release_authorized','bound','conclusion','disposition'}
+SEEDS={
+ 'engineering_ci.admission.admit_evidence','engineering_ci.admission.admit_historical_reuse',
+ 'engineering_ci.local_actions_handoff.verify_local_handoff','engineering_ci.terminal_expected.bind_terminal_expected',
+ 'engineering_ci.required_assessment.assess_required_obligations','engineering_ci.required_assessment_check.build_check_publication',
+ 'engineering_ci.required_assessment_check.publish_check_run','engineering_ci.required_assessment_publish.authorize_and_publish',
+ 'engineering_ci.required_assessment_protection.inspect_server_protection','engineering_ci.required_assessment_release.reconcile_release_assessment',
+ 'engineering_ci.required_assessment_post.reconcile_post_stage','engineering_ci.release.publishing.publish_release',
+ 'engineering_ci.release.publishing.main','engineering_ci.security_policy.receive','engineering_ci.security_policy.decide',
+ 'engineering_ci.execution.execute','engineering_ci.workflow_actions.main'}
+
+def owned(node):
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Lambda)):continue
+        yield child
+        yield from owned(child)
+
+def absolute(module,level,name,path):
+    if not level:return name or ''
+    package=module if path.endswith('/__init__.py') else module.rsplit('.',1)[0]
+    parts=package.split('.')
+    return '.'.join(parts[:len(parts)-level+1]+([name] if name else []))
+
+def imports(node,module,path):
+    found={}
+    for child in owned(node):
+        if isinstance(child,ast.Import):
+            for alias in child.names:found[alias.asname or alias.name.split('.')[0]]=alias.name if alias.asname else alias.name.split('.')[0]
+        if isinstance(child,ast.ImportFrom):
+            base=absolute(module,child.level,child.module,path)
+            for alias in child.names:found[alias.asname or alias.name]=base+'.'+alias.name
+    return found
+
+output={}
+for label,spec in manifest.items():
+    root=Path(spec['root']);files=[];symbols={};trees={};modules={};globals_={}
+    for item in spec['files']:
+        path=item['path']
+        if not path.endswith('.py') or not path.startswith(('src/','.dagger/src/','scripts/')):continue
+        rel=(path.split('src/',1)[1] if 'src/' in path else path)[:-3].replace('/','.')
+        module=rel.removesuffix('.__init__');tree=ast.parse((root/path).read_text(encoding='utf-8'),filename=path)
+        trees[module]=tree;modules[module]=path;globals_[module]=imports(tree,module,path)
+        files.append({'path':path,'sha256':item['sha256'],'module':module})
+        symbols[module+'.__module_entry__']={'id':module+'.__module_entry__','module':module,'path':path,'line':1,'end_line':len((root/path).read_text(encoding='utf-8').splitlines()),
+             'body_ast_sha256':hashlib.sha256(ast.dump(tree,include_attributes=False).encode()).hexdigest(),'node':tree,'prefix':module}
+        def collect(node,prefix):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
+                    name=prefix+'.'+child.name
+                    if not isinstance(child,ast.ClassDef):
+                        symbols[name]={'id':name,'module':module,'path':path,'line':child.lineno,'end_line':child.end_lineno,
+                         'body_ast_sha256':hashlib.sha256(ast.dump(child,include_attributes=False).encode()).hexdigest(),
+                         'node':child,'prefix':prefix}
+                    collect(child,name)
+                else:collect(child,prefix)
+        collect(tree,module)
+    calls=[];candidates=[]
+    for name,record in symbols.items():
+        node=record['node'];module=record['module'];aliases={**globals_[module],**imports(node,module,record['path'])}
+        params={p.arg for p in node.args.posonlyargs+node.args.args+node.args.kwonlyargs} if hasattr(node,'args') else set()
+        if hasattr(node,'args') and node.args.vararg:params.add(node.args.vararg.arg)
+        if hasattr(node,'args') and node.args.kwarg:params.add(node.args.kwarg.arg)
+        fields=set();body=list(owned(node))
+        for child in body:
+            if isinstance(child,ast.Dict):fields|={k.value for k in child.keys if isinstance(k,ast.Constant) and isinstance(k.value,str)}
+            if not isinstance(child,ast.Call):continue
+            expression=ast.unparse(child.func);head=expression.split('.',1)[0];tail=expression[len(head):]
+            target=None;kind='unresolved_receiver_or_value'
+            if head in params:kind='callback_or_parameter'
+            elif head in aliases:
+                possible=aliases[head]+tail
+                if possible in symbols:target=possible;kind='resolved_import'
+                else:kind='imported_external_or_dynamic';target=possible
+            elif isinstance(child.func,ast.Name):
+                prefix=record['prefix']
+                while prefix.startswith(module):
+                    possible=prefix+'.'+expression
+                    if possible in symbols:target=possible;kind='resolved_lexical';break
+                    if prefix==module:break
+                    prefix=prefix.rsplit('.',1)[0]
+                if target is None and expression in dir(builtins):kind='builtin'
+            elif head in {'self','cls'}:
+                possible=record['prefix']+tail
+                if possible in symbols:target=possible;kind='resolved_same_class'
+            calls.append({'caller':name,'path':record['path'],'line':child.lineno,'expression':expression,'target':target,'kind':kind,
+                          'keywords':[k.arg for k in child.keywords]})
+        if fields&KEYS or name in SEEDS:
+            candidates.append({'id':name,'path':record['path'],'line':record['line'],'surface_keys':sorted(fields&KEYS),'seed':name in SEEDS})
+    reverse={}
+    for call in calls:
+        if call['kind'].startswith('resolved_'):reverse.setdefault(call['target'],[]).append({'caller':call['caller'],'line':call['line'],'path':call['path']})
+    boundaries=[]
+    for item in spec['files']:
+        if item['path'].startswith('.github/workflows/'):
+            text=(root/item['path']).read_text(encoding='utf-8')
+            boundaries.append({'path':item['path'],'sha256':item['sha256'],'lines':[{'line':n,'text':line.strip()} for n,line in enumerate(text.splitlines(),1)
+              if any(token in line for token in ['uses:','run:','python -m','workflow_dispatch:','workflow_run:','checks:','contents:','permissions:'])]})
+    summary={'files':len(files),'symbols':len(symbols),'calls':len(calls),'resolved_calls':sum(c['kind'].startswith('resolved_') for c in calls),
+       'callback_calls':sum(c['kind']=='callback_or_parameter' for c in calls),'expanded_sink_candidates':len(candidates),'workflow_files':len(boundaries)}
+    output[label]={'commit':spec['commit'],'summary':summary,'files':files,
+      'symbols':[{k:v for k,v in r.items() if k not in {'node','prefix'}} for r in symbols.values()],
+      'calls':calls,'sink_candidates':candidates,'reverse_callers':{c['id']:reverse.get(c['id'],[]) for c in candidates},
+      'workflow_boundaries':boundaries,'limitations':['AST symbol resolution is syntactic; no execution/authority authentication.',
+        'Assignments, returned closures, provider dispatch, receiver types, getattr, imported star aliases and external services remain unresolved.',
+        'Candidate key search expands review scope; it is neither complete business semantics nor a registry of all authorizations.',
+        'An absent statically resolved caller is not proof that a public API has no external consumer.']}
+    print(json.dumps({'snapshot':label,**summary}))
+with (ROOT/'mechanical-review.json.gz').open('wb') as raw:
+    with gzip.GzipFile(fileobj=raw,mode='wb',mtime=0) as compressed:
+        compressed.write((json.dumps(output,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n').encode())
+(ROOT/'mechanical-summary.json').write_text(json.dumps({k:{'commit':v['commit'],'summary':v['summary'],'sink_candidates':v['sink_candidates'],'reverse_callers':v['reverse_callers'],'workflow_boundaries':v['workflow_boundaries'],'limitations':v['limitations']} for k,v in output.items()},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
