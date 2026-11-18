@@ -28,6 +28,7 @@
 | 2026-11-18：PR #129 继续审阅（本批四项） | #66 Hook 同 Job 重复激活、Job Receipt 事件与 Scope 签发、Native Result Attempt 字符串身份、multi-ref Final Reconciliation 输入全集 | 新增 **NEW-018～NEW-021**；源码给出明确可达条件，尚未运行原生组合反例或确证生产权限绕过 |
 | 2026-11-18：PR #129 继续审阅（本批四项） | #52 Report 全局终态、#66-C Check/Plan admissibility、Attempt Qualification 来源、Hook Final 退出码 | 新增 **NEW-022～NEW-025**。逐项区分已证源码分支与真实来源/可利用性，未运行新的实际组合反例，也未将独立 Check PASS 等同整个 Job PASS |
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 序列化 Assessment 时间/样本校验、R5 Reevaluation 时序、G2 Publisher Approval 时钟与 R5 逾期证据授权关联；复核 #63 原始 Issuer Context | 新增 **NEW-026～NEW-029**；其中 026/027/029 是明示的局部校验缺口，028 是调用方时间注入风险。**未执行本轮新增完整 API 反例、未证明生产绕过**；同时给 NEW-019 增加 #63 消费证据 |
+| 2026-11-18：PR #129 继续审阅（本批四项） | R1 非 Check Verifier 来源认证、Universe Evaluation 与 Assessment 时钟绑定、Profile ApprovedAt 真实性、G2 实际 Evaluator Revision 身份 | 新增 **NEW-030～NEW-033**。核对 #61 设计原文与实际源码/既有测试；四项分别落在不同 Producer→Consumer 关系，**代码条件确认但尚未运行新增原生 API 差异/生产认证测试** |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -37,10 +38,10 @@
 
 | 序位 | Producer / 关键事实 | Validator → Consumer | 涉及的发现 | 已证状态 / 待核实 |
 | --- | --- | --- | --- | --- |
-| T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01 | Domain/Phase/时效真实来源未验收；#124 Binder 中的错误解除已复现，但 **不等于 R1 已错** |
+| T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01、**NEW-031、NEW-032** | 除 Domain/Phase 真实性，还须核对 Universe 与 R1 的求值时点及 Approval 签发先后；#124 Binder 的错误授权并不等于 R1 已错 |
 | T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
-| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006、NEW-026** | 除多裁决的来源选择外，下游消费经过重新摘要的 Assessment 时，不能把摘要/局部一致性验证当成完整时间和来源证明 |
-| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028** | 检查发行者批准有效期所用时间是当前受信时钟，不能因 Approval 已签发就默认其仍有效；真实服务端保护未验收 |
+| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006、NEW-026、NEW-030** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
+| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
 | T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013、NEW-027、NEW-029**、D-G04 | 重新评估的时间箭头和逾期证据批准的 Assessment 对象身份须独立核实；不代表全生命周期 PASS |
 | TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
@@ -85,6 +86,11 @@
 | NEW-027 | 同 Phase 的授权 Reevaluation，`post_at` 比 `prior_at` 早，或 Reevaluation Trigger 发生在 `post_at` 之后 | R5 `_bind_temporal` 跳过该 Trigger 的时间单调与事件→后证据因果断言 | 较旧的 Stage 判定可能被重新命名为较新的验证结论；真实 Authority 对回溯式评估是否允许尚未知 | 不将回放历史合法分析一律视为新阶段授权；先定业务时间定义 |
 | NEW-028 | 真实 Approval 已过 `valid_to`，调用 `authorize_and_publish(...,now=<expiry 前时间>)` | 该组件用注入时钟判断窗口，外部 Approval Verifier 仅在返回 True 时被采纳 | 如果真实发布入口允许自定测试时间且外部 Authority 不复核，过期身份可取得 Required Check 发布资格 | 不禁止测试注入 Clock；必须查生产绑定和受信时钟来源 |
 | NEW-029 | Post Assessment A/B 同 Scope、`evaluated_at`，但内容/Ref 不同；两者都 Overdue | Due Authority 不见 `post_assessment_ref`，因此同一时间元数据下无法仅凭入参区分被批准的迟到证据 | 逾期例外可能从 A 传播到 B，影响后置 verified/disposition；真实 Issuer/Callback 未证 | 不新增平行 Evidence Registry；应复用已有 Assessment Ref/原生证据身份并裁决其授权粒度 |
+| NEW-030 | Non-Check Evidence 声明 `result=satisfied`，Verifier/Authorization/Rule Ref 与 Obligation 匹配；无独立 Verifier 签发事实 | R1 结构性算法可将对应 Non-Check Obligation 标记为 `satisfied`；现有正例测试使用自建 Evidence Document 即产生阶段 PASS | 当前 Phase/Release/Check 可能引用来源尚未经认证的领域 PASS；若真实上游确有签发验收，风险会降低 | 不在 R1 重写各领域算法，只核对真实 Producer 的签发、接纳和 Scope |
+| NEW-031 | Universe 自报 `evaluation.evaluated_at=t2`、R1 传 `evaluated_at=t1`，`t1!=t2` | Universe 只存时间字段并校验格式；R1 判定基于 t1，跨时点一致性无显式要求 | 撤销、策略修订或后置义务变化可能被错误套用到另一个时点；生产有权 Universe 签发未验 | 不机械要求所有获取时间完全等于评估时点，先明确“事实的 As-of 与再评估”关系 |
+| NEW-032 | `approved_at=t2>assessed_at=t1` 但 `effective_at<=t1`、Authority 仍 `verified` | R1 没有 Approval-issued-at 与 Assessment 的因果比较 | 若不允许追认，尚未发生的批准可能支持较早的 PASS；真实 Issuer 的授权窗口/回溯规则未证 | 不否定有权来源显式批准的合法回溯，先查审批时间合同 |
+| NEW-033 | 恶意或错误的实际 Evaluator/Policy Version，却将 `execution_identity` 自报为受批准 Ref | G2 只校验自报的 Ref 与批准及 Publication 一致，Workflow SHA 与 GitHub Runtime 匹配 | 有发布权限但未运行批准评估器的 Workflow 可能发布 Required SUCCESS；Approval Authority 是否验证实际执行版本未知 | 不自行新建 Evaluator Registry 或 Coordinator，核对已有 Action/Artifact/真实工作流不可伪造的身份来源 |
+
 
 
 
@@ -145,6 +151,10 @@
 | **NEW-027** | P1/P2 待裁决 | **R5 对重新评估显式跳过评估时间单调性** | `main@fc0df2a`；#61-R5 | `_bind_temporal` 当 Trigger=`authorized_reevaluation` 时允许 `post.evaluated_at < prior.evaluated_at`，也不要求 Post Evidence 不早于 Reevaluation 事件 | 未修复；须明确追溯型重算与新判定的时间语义 |
 | **NEW-028** | P1 候选 | **G2 Publisher 的 Approval 有效期时钟可由调用者替换** | `main@fc0df2a`；#61-G2 | `normalize_publisher_approval(...,now=...)` 以参数时间判断过期；`authorize_and_publish/workflow_publish_authority` 原样透传该时间。若独立 Approval Authority 只认证签发而不验证当前时钟，过期审批可能通过 | 未修复；真实接线和外部 Authority 是否重验时钟未证 |
 | **NEW-029** | P1/P2 待裁决 | **R5 Late Evidence 的 Due Authority Context 缺少具体 Assessment 身份** | `main@fc0df2a`；#61-R5 | `due_window_authority` 可签出 `late_evidence_accepted=True`，其 Context 只有时间、Due Window 与 Lifecycle identity，没有 `post_assessment_ref` 或证据内容引用；难以对具体迟到证据做逐件授权 | 未修复；需同一 Scope/时间不同 Post Assessment 的差异反例 |
+| **NEW-030** | **P1 候选** | **源码与合同冲突：R1 仅比对 Verifier 引用，无独立签发核验** | `main@fc0df2a`；#61-R1 Non-Check / D-G05 | `non_check_evidence` 的 `result=satisfied` 与 Obligation 的 Verifier/Authorization/Rule Ref 匹配即可记 `satisfied`；代码只验证引用形状/相等、时间、Candidate Subject，不核实真实 Verifier 是否签发了该 Result | 未修复；查领域 Producer 是否在 R1 前保证受信交接，不能把内容哈希当证明 |
+| **NEW-031** | **P1 候选** | **源码确定两个求值时钟未对账** | `main@fc0df2a`；#66-B2→#61-R1 | `universe.evaluation.evaluated_at` 已作为完整全集求值输入并入摘要，但 `assess_required_obligations(evaluated_at=...)` 独立控制阶段 Assessment；两时刻不比较，可能拿后来求值的 Obligations Universe 评价较早时点 | 未修复；需同源、先后与 As-of 反例及有权 Universe 来源 |
+| **NEW-032** | P1/P2 待语义裁决 | **源码确认 Approval 签发晚于 Assessment 时不被拒绝** | `main@fc0df2a`；#66-B2→#61-R1 | R1 只解析 `authority.approved_at`，`_authority_fact` 核验状态、生效和有效期，但未比较 `approved_at <= assessed_at`；若政策不允许追认，未来才批准的 Profile 可参与过去 Assessment PASS | 未修复；须核对回溯授权与 Approval 有效时间语义 |
+| **NEW-033** | **P1 候选** | **G2 声称实际执行的 Evaluator/Policy 身份仍是调用方提供** | `main@fc0df2a`；#61-G2/G3 | `execution_identity` 的 `workflow_sha` 与 GitHub Runtime 比较，但 Evaluator/Policy Ref 只与 Approval/Publication 的声明比对，没有内置独立执行产物签发证明；一致的自声明仍可能获得发布 Authority | 未修复；查实际运行身份的有权 Producer、Approval Authority 及 Check 发布来源 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -350,6 +360,31 @@
 - **差异案例**：构造两份通过、Profile/Candidate/Phase/时间相同但具体 Obligation/Evidence 引用不同的合法 Post Assessment A/B；将 Due Authority 授权 A 的 Late Evidence，而触发链消费 B。由于回调没有 B 的具体 Ref，存在无法凭当前 Context 区分的风险。Trigger Authority 的 Context **确实**含 `post_assessment_ref`，所以不能说所有 R5 外部权威都失去此身份。
 - **关联**：与 NEW-001 的样本标志传播、NEW-013 的 Trigger Artifact 归属不同；这里是 **Due Authority 对 Late Evidence 的逐件授权粒度**。未验实际 Authority、未证生产误放行。
 
+### NEW-030 — Non-Check Evidence 的验证者身份匹配不等于真实签发认证
+
+- **权威需求**：[Issue #61 的权威分层](https://github.com/dymzz/engineering-ci/issues/61) 明确要求消费“各领域非 Check 原生证明”；[R1 设计](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/docs/architecture/required-assessment.md#L46-L50) 宣称校验独立 Verifier Authorization，但不能据此默认验证真实签发已经发生。
+- **实现**：[`_validate_non_check_entry`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1486-L1539) 只验证 Verifier/Authorization/Rule/Evidence Ref 结构；[`_non_check_evidence_usable`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2095-L2130) 只比较 Ref 相等、时间和 Candidate Subject；[`_non_check_obligation_row`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2158-L2247) 在所有可用 Evidence 为 `satisfied` 时授该义务满足。没有 Verifier Issuer 调用、原件加载/验签，也未核对 `evidence_ref.sha256` 实际对应出具的内容。
+- **已有正例证据**：[`test_authorized_non_check_evidence_satisfies`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment.py#L908-L931) 中，构造与义务匹配的 Evidence Document 就可得到 `status=passed`。这证明合同当前接受了自带元数据的结果，**但不能推论部署环境允许不受信用户注入该文档**。
+- **后续反例**：对相同有权 Obligation 使用同一 Scope/Subject，分别传真实领域 Verifier 签发的 `satisfied` 和外部自造同字段/不同实际 Result Ref 的 `satisfied`；追查 R1 前真实 Producer/Issuer 与 Evidence 来源认证所在位置，不能基于 Ref 相同认定签发同源。与 D-G05 重叠生产真实性前提，但属**具体 Non-Check 消费边界**。
+
+### NEW-031 — Universe 求值时间与 R1 Assessment 求值时间没有显式绑定
+
+- **源码事实**：[`_normalize_evaluation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L583-L615) 保留 `universe.evaluation.evaluated_at`；[`_validate_universe`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L791-L832) 检查该字段格式并将其置入自摘要；[`assess_required_obligations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2449-L2636) 另用外部 `evaluated_at` 作当前评估时间，没有将两时间对账。`_cross_check_universe` 只对 Action/Target/Phase/Ref/Candidate/Source 身份做对比，未检查二者时间关系。
+- **反例条件**：正常闭合 Universe 的求值时刻 `t2`，将独立 R1 `evaluated_at` 设为 `t1<t2`（或反之），保持 Profile/Expected/Scope 一致，使用经验证的真实 Non-Check/Check 见证；观察是否不改变 PASS，却将不同求值切面拼接成同一 Assessment。还要验证原 Universe Producer 是否有唯一 As-of、是否只允许重用相同时间快照，不能用自重算摘要冒充权威事实。
+- **根因关系**：与 NEW-002（Native Failure `issued_at`）、NEW-005（R1→R4 时序）、NEW-026（R1 序列化重验证）同属时间来源族，但本项是 **#66-B2 Obligation Universe 的求值时间 → #61-R1 使用时间**，属于新的输入接口，必须单独复核。
+
+### NEW-032 — Profile Approval 的签发时间没有进入 R1 当前有效性评价
+
+- **源码**：[`_normalize_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L457-L500) 仅对 `authority.approved_at` 调用 `_datetime` 解析，没有与 `effective_at`、`evaluated_at` 建立顺序；[`_authority_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1540-L1564) 校验 `status/effective_at/valid_from/valid_until/revoked_at`，没有读取 `approved_at`。
+- **差异条件**：同一经来源证明的有效 Profile，令 `approved_at=t2 > assessment.evaluated_at=t1`、`effective_at<=t1`，对照 `approved_at<=t1`，比较 R1 Authority Fact。当前可从代码证明 ApprovedAt 仅是记录，不影响允许性。
+- **待裁决**：某些有权治理源可能允许明确、可追溯的**追认或回溯生效**；如有此机制应有显式授权与事件/交易时间证明，不可默默以未来 Approval 为早期 PASS。若原合同明确允许此行为，应据实降低本项严重性，不擅自附加更严格策略。
+
+### NEW-033 — G2 执行身份是调用者声明，而非已认证的实际 Evaluator 版本
+
+- **源码**：[`normalize_execution_identity`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L182-L205) 只归一化调用方 `workflow_sha/evaluator_ref/policy_ref`；[`_require_execution_matches_approval`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L355-L381) 将 Workflow SHA 与 Runtime SHA/Approval 对比，但 Evaluator/Policy Ref 仅与 Approval 列表对比；[`authorize_and_publish`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L669) 的 `execution_identity` 是外部入参。 `workflow_publish_authority` 再把这个同样自报值与 Publication 对齐；没有验证实际运行的 Evaluator 二进制/源码内容摘要。
+- **现有测试**：[`test_workflow_publish_authority_rejects_mismatched_actual_evaluator`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_publish.py#L205-L220) 仅模拟调用方把 `execution_identity.evaluator_ref` 置为不受批准版本，从而拒绝；它没有模拟 **实际运行错误版本、但向 Authority 申报受批准版本** 的对抗输入。
+- **信任边界**：外部 `approval_authority` 能收到 `execution_identity` 并自行交叉验证真实执行 Artifact/Attestation，当前仓库缺少对应生产证据。不可将“Workflow 版本得到 GitHub Runtime 证明”偷换成“本次真正运行的 Evaluator/Policy 版本已认证”。与 NEW-010 的 Assessment PASS 原件来源不同，也与 NEW-028 的时钟注入不同，属于执行代码来源绑定风险。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -370,7 +405,7 @@
 | C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
 | D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
 | Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-029/HYP-001～HYP-003 待复核 | 新增 R1 序列化 Assessment 时间/样本证明、R5 Reevaluation 逆时序、G2 Publisher Approval 注入时钟、R5 Late Evidence 授权 Ref 缺失；另对 NEW-019 补充 #63 Issuer Context 证据。四项需原生 API/权威链裁决，不是已复现的生产漏洞 | 继续 |
+| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-033/HYP-001～HYP-003 待复核 | 新增 Non-Check Verifier 真实签发、Universe→Assessment As-of、Profile Approval 发生时间、G2 实际 Evaluator/Policy 来源认证四条独立追查边。均已核对权威 Issue/Doc、源码和相关测试；尚未运行新原生 API 或生产签发反例，不宣称已找到所有问题 | 继续 |
 
 **进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
 
