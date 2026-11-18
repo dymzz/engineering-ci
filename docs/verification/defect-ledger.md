@@ -26,6 +26,7 @@
 | 2026-11-18：PR #129 继续审阅（本批四项） | #61 G2 发布数据来源、Assessment→GitHub/Release 跨 Scope、R5 Trigger 身份 | 新增 **NEW-010～NEW-013**。四项均定位到消费边界及具体可变输入，尚未执行差异 API，也未确认任何已部署生产链被绕过 |
 | 2026-11-18：PR #129 继续审阅（本批四项） | #63 T1-a 的 Report 失败隔离、#66-C 重复 Result/空 Observation、#63 T2 历史候选排序 | 新增 **NEW-014～NEW-017**。其中 014/015 的相关行为已有既有测试，016/017 是确定代码路径；四项的**违规合同与生产后果仍待独立反例** |
 | 2026-11-18：PR #129 继续审阅（本批四项） | #66 Hook 同 Job 重复激活、Job Receipt 事件与 Scope 签发、Native Result Attempt 字符串身份、multi-ref Final Reconciliation 输入全集 | 新增 **NEW-018～NEW-021**；源码给出明确可达条件，尚未运行原生组合反例或确证生产权限绕过 |
+| 2026-11-18：PR #129 继续审阅（本批四项） | #52 Report 全局终态、#66-C Check/Plan admissibility、Attempt Qualification 来源、Hook Final 退出码 | 新增 **NEW-022～NEW-025**。逐项区分已证源码分支与真实来源/可利用性，未运行新的实际组合反例，也未将独立 Check PASS 等同整个 Job PASS |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -36,12 +37,12 @@
 | 序位 | Producer / 关键事实 | Validator → Consumer | 涉及的发现 | 已证状态 / 待核实 |
 | --- | --- | --- | --- | --- |
 | T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01 | Domain/Phase/时效真实来源未验收；#124 Binder 中的错误解除已复现，但 **不等于 R1 已错** |
-| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017** | T1/T2→R1 合同断裂已复现；额外报告中的 Failed、跨 Job 重复 Result、无 Native 的 Job 及历史候选选择另需独立验证 |
+| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
 | T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006** | Adjudication 多版本/多签发者同时生效时，选择顺序与冲突语义待验证 |
 | T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011** | 需要逐层分清授权发布者身份、真实 Assessment PASS 来源及目标 Scope 绑定；服务端保护仍为 forbidden/not_verified |
 | T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013**、D-G04 | post-only 样本传播及 Trigger Artifact/Attempt 归属未验证；R5 未证明全生命周期 PASS |
-| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021** | 同 Job 再激活身份、Receipt 签发 Scope、Attempt Native 实例分界、Final 输入闭包尚未形成全链证明 |
+| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
 
 ### 0.3 缺陷影响半径、证据等级与连锁约束
 
@@ -75,6 +76,11 @@
 | NEW-019 | Invocation A 已收集真实 Report，却以 Event/Expected B 的声明调用 Receipt 签发 | 本地仍可将未对账字段写入 `upstream_verified` Receipt | 若后续消费仅比较 Receipt 和 Expected B，会发生来源错归属；外部权威是否防止未知 | 不把 `sha256:` 前缀或自重算 Digest 当签发认证 |
 | NEW-020 | 两个同 Run/Attempt Job Ref 一个是另一个字符串前缀 | Attempt 前缀检查不能区分 `job-1` 与 `job-1-extra` 的 `result_instance` | 如错误 Result 进入有权 Delivered Report，Collect 的本地 Job 实例判断可错接 | 当前受控生产链未证可越过 Delivered Report 保护 |
 | NEW-021 | 多 Ref 真实 Expected 完全覆盖 Invocation，但 `observations_by_scope` 多一个未知 Scope | Extra Scope 从未送入 `reconcile_expected_results`，不影响已生成 Receipt 与 Exit | 当前 Invocation 的实际失败若被错标 Scope，可能被 Final 静默丢弃 | 区分外来无关数据与真正已分发的受检 Job |
+| NEW-022 | 同一完整 Execution Report 含合法匹配 PASS Native，同时 Report 因其他必需 Check/Prerequisite/Artifact Delivery 为 `failed/blocked` | `_execution_report` 对全局状态无一般失败拒绝；选中 PASS 只按单 Check admissibility 进入 `matched`，是否最终 Hook PASS 取决于 Expected 枚举 | 整体 Job/Producer 失败可能未通过 Report→Receipt 传播到需要该前置事实的消费者 | 不将独立可复用的 Check PASS 一律判错；先确定其要求的 Job-level 依赖和 Report 全局失败原因 |
+| NEW-023 | ECI 样式 Report 保留 `plan_authorized=True/check_contract.valid`，但删除或设空 `plan_declaration_consistent` | 原生 Reconciliation Report 校验只拒绝显式 `False`，缺失值不进入 `report_reason` | Plan Source/选择一致性无证明时，若外部 Raw Report 被误当受信，可获得结构性匹配 | 不否定由 #52 真实产生且明确 `True` 的 Report；重点核对来源和必要字段合同 |
+| NEW-024 | 构造 `attempt_eligibility=eligible` 与形状合法、但不属于当前 Run/Attempt 的 `qualification_ref` | `_job_instance` 未核验 Qualification 绑定，Reconciliation 可将该实例列为 Eligible | 结构性 Witness Selection 可使用无资格证据的 Attempt；#63 外部签发是否拒绝尚未知 | 不建立另一套本地资格存储；检查原始 Scheduler/Issuer 与 #63 的可信链 |
+| NEW-025 | Hook Final 消费完整结构性 `matched` Receipt，而 #63/R1 尚未执行 | Hook 仅检查 `status`、`all_observations_reconciled`、Expected completeness，成功则返回进程 0 | 如果此进程零退出被 Lefthook 作为唯一准入，未认证 Report/Qualification 的结构性通过可能误放行 | 不预设本地 Hook 必须承担 Release Governance；确认用户原需求中 Hook 本地执行与生产授权不同职责 |
+
 
 
 
@@ -126,6 +132,10 @@
 | **NEW-019** | P1 候选 | **源码确定事件/Scope 签发缺少来源对账，现有测试提供行为例证** | `main@fc0df2a`；#66 Hook Producer/#63 T1-a | `issue_job_receipt` 从调用方接收 Event/Scope/Expected Set，仅做形状/前缀检查便写 `upstream_verified`，未与本 Invocation 实际 Event/Expected 对照 | 未修复；查原始 Issuer Authority 是否已独立阻断 |
 | **NEW-020** | P2 候选 | **字符串前缀碰撞，真实 Runner 可达性待核对** | `main@fc0df2a`；#52 Native/#66 Hook Collect | `_require_attempt_bound_natives` 用 `startswith` 匹配实例，`job-1-extra` 文字会满足 `job-1` 的前缀 | 未修复；实际 Deliver/Production Ref 另有保护 |
 | **NEW-021** | P1 候选 | **源码确定多余 Scoped 输入未进入计算，待多 Ref API 差异反例** | `main@fc0df2a`；#66 Hook/#66-C | `finalize_invocation` 不拒绝输入字典的未知 Scope key，额外 Observation 直接被忽略，Exit 仅依赖 Expected Scope Receipts | 未修复；先确认额外数据属于本 Invocation |
+| **NEW-022** | P1 候选 | **源码可达 Report-wide 失败与单 Check PASS 分离，待原生组合反例** | `main@fc0df2a`；#52→#66-C/#63 | `_execution_report` 只全局拒绝 `status=not_executed`/显式 Plan 不一致，却未对 `status=failed/blocked`、Report 级 Artifact Delivery/Prerequisite 失败传递否决；符合局部 Check 的 PASS 仍可被选为 matched | 未修复；须区分独立 Check 可复用与整个 Job 的 Required FAIL |
+| **NEW-023** | P2 候选 | **源码确认 ECI Report 缺失一致性断言不拒绝，待真假 Report 对照** | `main@fc0df2a`；#52→#66-C | ECI Report 仅 `plan_declaration_consistent is False` 会被整体拒绝，缺字段/None 不会触发拒绝；同一 Report 内 Checked Native Result 可获 matched | 未修复；实际 Runner 产物通常显式带 True；查是否强制受信原件 |
+| **NEW-024** | P1 候选 | **源码确认 Attempt Qualification 仅按形状接纳，待 Issuer/Dispatch 证据核查** | `main@fc0df2a`；#66-C | `_job_instance` 只要求 eligible 时存在一个合法 `qualification_ref` 对象，不验证其 SHA 与 Job/Run/Attempt/Invocation 内容或有权资格签发；可独立自报 eligible | 未修复；这一级自称 structural，不可推断 #63 已承认来源 |
+| **NEW-025** | P1 候选 | **源码证明结构性 matched 决定 Hook exit=0，合同意图待确认** | `main@fc0df2a`；#66 Hook Final/#66-C/#63 | `hook_exit_code` 将结构性 Receipt `matched` + 闭包标志直接映射进程成功，即使 `required_gate=not_evaluated`、`trusted_evidence_not_admitted`；若外部 Scoped JSON 并非可信 Dispatch 产物，可能错放行 | 未修复；须查实际 Lefthook 调用、输入来源和本地 Gate 目标 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -283,6 +293,30 @@
 - **位置**：[`finalize_invocation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1022-L1101) 先验证 Expected 覆盖 Invocation，但只循环 `_iter_scopes(expected)` 的 key，从三个 `*_by_scope` 映射中取对应条目；额外未知 key 从未检测或进入 Reconciliation，`hook_exit_code` 只检查已产生 Receipts。
 - **差异反例**：复用 [multi-ref Final 正例](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py#L1186-L1336) 的两个合法 Scope/成功 Job，添加 `observations_by_scope[unknown]=[来自本 Invocation 的 Failed Job Observation]`，观察 `exit_code`/Receipt 是否完全不变。要进一步证明真实故障，应确认该额外 Job 的激活、Assignment 与上游 Scoped key 来源，不能把故意提供的无关数据当真实当前失败。
 
+### NEW-022 — 失败/阻断的 Execution Report 仍可提供可匹配 Native PASS
+
+- **源链**：[#52 `execution._finalize_report`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4488-L4635) 在 Test/Prerequisite 失败、Artifact Delivery blocked 或 Checks unfinished 时将整份 Report 置为 `failed/blocked`；但可包含另一个 Check 的原生 PASS。 [#66-C `_execution_report`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L310-L415) 只有 `not_executed`、显式 Plan 不一致/Contract Kind 错误成为 Report-wide rejection；`failed/blocked` 不在分支中。[Check-level `_check_report_rejection`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L234-L309) 仅在当前 Check 自身有依赖失败或状态矛盾时拒绝。
+- **时序与差异反例**：以合法 `execution.execute` 得到“当前 Required Check PASS、另一 Prerequisite/Artifact 失败导致 Report `blocked/failed`”为 A 组；完整 Report 均 PASS 为 B 组。将 A 组真实 Report 经 Collect → Reconciliation → T1-a，比较局部 `matched/admitted` 与整体失败保留位置。**不能用手工伪造 `report.status` 代替原生失败运行**。
+- **边界/去重**：NEW-014 是跨独立 Report/Receipt 的失败隔离；这里是**同一 Report 的整体终态/单 Check 见证**。允许独立 Check 局部 PASS 可能完全合理，只有当消费者的 Required Scope 还包含那个失败的全局前置时才是授权缺陷。若已由 Plan/Expected 独立枚举，需据实降级。
+
+### NEW-023 — ECI Report 的 Plan 一致性证明缺失时未明确拒绝
+
+- **源代码**：[`reconciliation._execution_report`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L326-L360) 将 `schema_version>=2` 及 `plan/plan_authorized/check_contract` 等判为 ECI Report，却仅在 `plan_declaration_consistent is False` 时拒绝，没有拒绝 **None/缺失**。[#52 `execution.execute`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4682-L4728) 正常新计划产生 `plan_declaration_consistent=True`；[既有测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_reconciliation.py#L2511-L2548) 只证明显式 `False` 会被拒绝。
+- **待测**：同一已通过 Native 的 ECI Report 固定其他字段，分别设 Plan 一致性 `True/False/None/缺失`、重新计算对应完整 Report Digest 并生成合法 Observation，观察 `report_rejections/binding_status`。再查原 Runner/Issuer 的真实受信来源，确认是否强制签发 `True`；单纯可重算 Digest 不等于外部认证。
+- **影响级别**：这属于来源证明缺失是否被错误容许的合同问题，不是已证生产伪造。它与 NEW-022 的 **已明确 Report failed** 不同：这里 `Plan declaration 未获验证` 是未知，而非明示失败。
+
+### NEW-024 — Attempt Qualification 只做存在与格式检查，没有资格来源证明
+
+- **代码**：[`reconciliation._job_instance`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L588-L637) 只要求 `attempt_eligibility!="unknown"` 时存在 `qualification_ref` 并调用 `_evidence_ref` 校验形状；不比较 Qualification 与当前 `job_ref/run_ref/attempt_ref/invocation_ref`，也不查询真实 Scheduler Issuer。`_reconcile_entry` 继而把该状态用于选择 eligible 实例。 [#66 Hook `attempt_qualification_ref`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L89-L104) 以 Run/Attempt/Invocation 自算 SHA，且真实 `record_job` 产生此引用。
+- **对照**：`tests/test_reconciliation.py` 中 `test_unqualified_or_ambiguous_attempts_stay_unknown` 证明 `unknown` 与多 eligible 尝试有阻断，但没有证明一个单独的、**来源错误的形状合法 qualification_ref** 必然被拒绝。
+- **后续**：使用相同 Job/Report，分别提供当前 Attempt 的真实 Qualification 与另一 Attempt 的合法引用，在独立 Reconciliation 中比较 `matched`；再核实原生 Dispatch 是否存在被跳过的授权边界。#66-C 明确称其为结构性 Witness，不应据此声称 #63 已接受可伪造的资格。
+
+### NEW-025 — Hook Process Exit 使用结构性 Receipt，而非已认证 Admission
+
+- **实际调用**：[`finalize_invocation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1022-L1101) 在 Reconciliation 后直接调用 `hook_exit_code`，输出 `trusted=False, required=False`；[`hook_exit_code`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L986-L1020) 用结构性 `status=matched`、`all_observations_reconciled`、Expected completeness 算 `0`；[`main finalize`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1137-L1222) 接受 JSON Routing/Resolution/Observation 路径后直接返回此 Exit Code。 [#66-C Receipt](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L1788-L1827) 自述 `trusted_evidence_not_admitted`、`required_gate_not_evaluated`。
+- **边界**：零退出的本地 Git Hook 可能只表示“所声明的 Native Checks 全部匹配”，无需等同 R1/G2 发布授权；但是，如果用户的原始要求是**本地 Hook 必须执行真实 Native、不能接受任意自填的 Report/Eligibility 证据**，那么 `main finalize` 的外部 JSON 输入链是否受信就成为必要的事实。该项不是 NEW-019 的 Event/Scope 签发错配，而是**消费阶段将何种结论提升为允许 Git 操作**。
+- **待审查**：实际 Lefthook 配置的可执行入口、谁生成/保护这些 JSON、是否仅消费 `execute_activated_job`/Collect 已交付结果、真实 Native FAIL 是否导致非 0；不得借此又建 Hook Coordinator/FSM，亦不能以本地进程 exit 0 断言生产 GitHub/Release 权限已经开放。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -303,7 +337,7 @@
 | C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
 | D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
 | Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-021/HYP-001～HYP-003 待复核 | 新增 Hook Job 重复激活覆盖、Receipt 实际 Event/Expected Scope 缺少生产者锚定、Native Attempt 字符串前缀碰撞、多 Ref 未知 Scope 静默忽略。均需基于真实 Producer/Dispatch 的组合反例确诊；继续审阅其他授权边，不宣称所有 BUG 已找到 | 继续 |
+| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-025/HYP-001～HYP-003 待复核 | 本轮对 Report-wide 状态与单 Check PASS、Plan 一致性缺省、Attempt Qualification 来源及 Hook Exit 提升的四条路径提出不同的可核查反例；关联 #52→#66-C→#63→Hook。查实来源/原始合同后再统一裁决，不宣称已全仓穷尽 | 继续 |
 
 **进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
 
