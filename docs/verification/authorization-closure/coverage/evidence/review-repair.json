@@ -1,0 +1,78 @@
+{
+  "purpose": "PR #127 review repair input; original A/B and C observation times remain unchanged",
+  "review_url": "https://github.com/dymzz/engineering-ci/pull/127#pullrequestreview-5943207575",
+  "review_id": 5943207575,
+  "review_created_at": "2026-11-17T17:17:02Z",
+  "reviewed_head": "c586fb56fa6aeadab7e8b5b208b49281334aefa3",
+  "review_body": "## ECI #125-C / PR #127 — 独立审阅（HEAD `c586fb56fa6aeadab7e8b5b208b49281334aefa3`）\n\n**裁决：CHANGES REQUIRED — P1：Coverage/Gap 中“合同已验证”的逐边证据依据不足。** 本轮只验收 C 阶段的派生索引及证据分类，不把 #125-D 的独立语义/对抗/来源审查或尚未交付的真实 Issuer、G2/G3、Release 生产能力提前列为 C 的完成前提。\n\n### 已核实、应保留的成果\n\nA/B 固定 main 与 #124 两个独立快照；86 条边、254 个候选有结构化索引与溯源；源码/测试/CI/Blob 和原始观察保留固定身份；C 阶段校验及重放留有通过记录，PR HEAD 的 [CI #44121149442](https://github.com/dymzz/engineering-ci/actions/runs/44121149442) 4/4 Success；未把 Branch Protection HTTP401、未执行 deny probe 或未接线生产来源记为真实授权 PASS。这些无需重建或无依据重复检查。\n\n### P1 — 默认分类将“存在相关组件测试”提升成“该依赖边合同已验证”\n\n定位：`docs/verification/authorization-closure/coverage/evidence/derive-index.txt` L~230–256、L~340；`evidence/check-index.txt` L109–111。\n\n当前 `contract = set(numbers(...)) - set(known) - set(uninvestigated)`，随后未命中后两类的边统一归为 `verified_contract_authority_unconnected`。校验器对该状态只强制存在一个 `contract_test_fixture` 引用和一个成功 `recorded_ci_suite`，**没有核对测试/既有执行证据证明的是此条边的 Producer→Validator→Consumer 交接关系，还是该 Family 的某个局部组件接口。** 这使当前“64 条合同已验证”的统计缺乏充分的逐边可复核判据。\n\n具体对照：\n- **E025**（实际 `admit_evidence` → R1 Admission 消费）正确保留 `not_investigated`，因为独立组件测试不能自动证明两端组合。\n- **E059**（真实 Origin/Resolution Authority → Admission）、**E062**（Actions Approval/Execution → Publisher）、**E063**（GitHub Check Transport → POST）、**E085**（#124 的 Expected/Phase/Completed Run Authority → Binder）均标为 `verified_contract_authority_unconnected`，但所引用的同 Family 测试主要证明受控接口/回调、模拟 Transport 或 Binder 行为；**尚未逐边明确证明外部来源→接收边的交接合同**。这不意味着已认定这些实现有漏洞，也不意味着相关局部合同测试无效；错误在于混淆“已有组件合同证据”和“该边本身已验证”。\n\n### 定向修复与验收要求（在 PR #127 内）\n\n1. 为每条边增加/明确**证明对象和边证据依据**，区分 `component_contract`、`handoff_contract`、`origin_authentication`、`production_wiring` 等已验证层次；可继续使用既有索引，不必新建权威注册表或系统。只有具有直接对应本边条件的既有测试、可信执行证据或经核实的实际调用/数据路径，才宣称该层次已验证。\n2. **不能采用“除了已知缺口和未调查，其余全是合同已验证”的默认授权式归类。** 对缺乏直接交接证据的边，保留其已证实的组件合同，同时将该边的交接状态列为 `not_investigated` 或明确的未验证范围。并非要求所有外部真实执行边都改成同一种状态：例如模拟 Transport 的精确定义 API 合同可能有合法正例，前提是明确证据只覆盖该层。\n3. 更新 C 的推导/校验脚本与范围表，使分类核对包含**本边证明对象、引用证据与既有断言的直接关联**，不能仅通过测试名存在、Family 共用一组 fixtures、CI 绿或静态 `route` 分类计算“已验证”。同步实际分类计数、原始来源链接和独立摘要；原 A/B 86 条边与 254 候选追溯保留，未知动态关系仍须可见。\n4. **只按实际变更定向复核**分类/证据关系与保存产物的完整性；不要求重跑无关 Dagger/Weaver/OTLP、完整工程矩阵，亦不要求此 PR 实施 #125-D 或修改运行时代码。若审阅发现某条原实现真正有缺陷，则记录到后续统一根因集合，避免在本 PR 反复局部修补。\n\n**A/B 已合并成果保持有效；#125-C 待修复后独立验收。** 目前不批准合并 PR #127，不关闭 Issue #125，也不修改/关闭其他 Issue。",
+  "scope": "Correct per-edge proof object/layer/assertion bindings and classification, with targeted artifact checks only; no runtime or #125-D implementation",
+  "prior_validation": {
+    "commit": "c586fb56fa6aeadab7e8b5b208b49281334aefa3",
+    "path": "docs/verification/authorization-closure/coverage/evidence/validation.json",
+    "sha256": "ee4ad9fdf1cba1834933af5d689239e30a3903de31ab5f494e66527e69d48841",
+    "record": {
+      "scope": "Issue #125 C index integrity only; no D semantic/adversarial/production acceptance",
+      "status": "passed",
+      "implementation_base": "990cd59f83153a1ad3978dc933f89af5ca4829e3",
+      "ab_reviewed_head": "363bb19d381146890b57341f686b03f311fd0d0a",
+      "checked_edges": 86,
+      "checked_candidates": 254,
+      "checked_source_refs": 364,
+      "git_blobs_checked": 99,
+      "status_counts": {
+        "verified_production": 0,
+        "verified_contract_authority_unconnected": 64,
+        "known_gap": 5,
+        "evidence_contradiction": 0,
+        "not_investigated": 17
+      },
+      "candidate_relation_counts": {
+        "main": {
+          "same_snapshot_static_path": 111,
+          "uninvestigated": 13,
+          "explicitly_excluded": 3
+        },
+        "pr124": {
+          "uninvestigated": 45,
+          "implementation_only_consumer_uninvestigated": 65,
+          "explicitly_excluded": 3,
+          "same_snapshot_static_path": 14
+        }
+      },
+      "ab_listed_files_checked": 19,
+      "ab_original_non_navigation_hashes_preserved": 17,
+      "c_files_hashed": 9,
+      "relative_links_checked": 15,
+      "checks": [
+        "all required edge fields and A/B edge reconciliation",
+        "exact code/test/blob/SHA/line references",
+        "recorded CI suite identities and dispatch sources",
+        "static-call and candidate helper-chain evidence",
+        "same-snapshot consumers vs implementation-only reuse",
+        "A/B source preservation and independent C hashes",
+        "native scoped runtime diff has no changed paths",
+        "local navigation"
+      ],
+      "not_run": [
+        "D independent semantic/adversarial/source views",
+        "manual Dagger/Weaver/OTLP",
+        "full local engineering matrix",
+        "Agent/Git hooks"
+      ],
+      "native_exit_code": 0,
+      "reproduction": {
+        "native_exit_code": 0,
+        "input": "evidence/inputs.json",
+        "outputs_checked": {
+          "index.json": "26599d3493c363e0ab9d5e6ac8ed49c4bb9d20cc186966bb6203cfc0ee49396c",
+          "candidate-relations.json": "8113180a008528f4ca97b12c81bb414b01b9b8228c9d96d36ad213fab711952b",
+          "assessment.md": "dcf52869a17b9241fd1440e23df3546dabd259b6d3e891df6e9c0ab98e5947b5",
+          "evidence/inputs.json": "0a1dafaa3df273a892ade777f8e8d6356e5dd01343688f819c3748881fd4f682",
+          "evidence/derive-index.txt": "9c6cb3a8d093f442a0cba290bcf321bc54b4631be87e8a5d11be2b0e385bbe95"
+        },
+        "changed_outputs": []
+      }
+    },
+    "scope": "Prior integrity/reproduction result remains valid for that earlier schema and data; it does not establish the disputed edge classifications."
+  }
+}

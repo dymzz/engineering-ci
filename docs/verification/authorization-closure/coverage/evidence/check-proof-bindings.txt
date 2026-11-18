@@ -1,0 +1,60 @@
+"""Targeted in-memory rejection probes for PR #127's evidence-index repair.
+
+These corrupt audit records only. They do not exercise production APIs, native
+tools, authority semantics or the independent #125-D adversarial acceptance.
+"""
+import contextlib
+import copy
+import io
+import json
+import runpy
+import traceback
+from pathlib import Path
+from unittest.mock import patch
+
+CHECKER=Path('docs/verification/authorization-closure/coverage/evidence/check-index.txt')
+original_loads=json.loads
+
+def promote_component_only(index):
+    row=next(r for r in index['edges'] if r['edge']=='E059')
+    # Retain all component, Family and successful CI references and valid counts.
+    row['coverage_status']['value']='verified_contract_authority_unconnected'
+    row['coverage_status']['label']=index['classification_labels'][row['coverage_status']['value']]
+    index['status_counts']['not_investigated']-=1
+    index['status_counts']['verified_contract_authority_unconnected']+=1
+
+def erase_proof_object(index):
+    index['edge_proof_claims']['E063.handoff']['proof_object']=''
+
+def substitute_assertion(index):
+    binding=next(a for a in index['edge_proof_claims']['E063.handoff']['assertion_bindings'] if a['start']==298)
+    binding['assertion_expression']='True'
+
+def reuse_wrong_edge(index):
+    index['edge_proof_claims']['E063.handoff']['edge_binding']['edge']='E059'
+
+def cross_snapshot(index):
+    # A self-consistent real main excerpt still cannot prove a pr124 edge.
+    index['edge_proof_claims']['E081.handoff']['source_steps'][0]=copy.deepcopy(index['edge_proof_claims']['E001.handoff']['source_steps'][1])
+
+results=[]
+for name,mutate,guard in [('component_plus_ci_cannot_promote_handoff',promote_component_only,"assert state in ['known_gap','not_investigated']"),
+                    ('proof_object_required',erase_proof_object,'assert p[k]==spec[k]'),
+                    ('exact_assertion_binding_required',substitute_assertion,'isinstance(n,ast.Assert)'),
+                    ('proof_cannot_be_reused_for_another_edge',reuse_wrong_edge,"spec['edge']==binding['edge']"),
+                    ('proof_path_cannot_cross_snapshots',cross_snapshot,"s['snapshot']==sn")]:
+    touched=[]
+    def intercepted(raw,*args,**kwargs):
+        value=original_loads(raw,*args,**kwargs)
+        if isinstance(value,dict) and value.get('purpose')=='Issue #125 C derived Coverage/Gap evidence index, never a runtime authorization registry':
+            mutate(value);touched.append(True)
+        return value
+    rejected=False
+    with patch('json.loads',side_effect=intercepted),contextlib.redirect_stdout(io.StringIO()):
+        try:runpy.run_path(str(CHECKER),run_name='__main__')
+        except AssertionError as error:
+            failed_guard=traceback.extract_tb(error.__traceback__)[-1].line
+            rejected=guard in failed_guard
+    assert touched and rejected,(name,failed_guard if touched else 'index not intercepted')
+    results.append({'probe':name,'result':'rejected_as_expected','failed_guard':failed_guard})
+print(json.dumps({'scope':'audit-integrity rejection only; not #125-D semantics','status':'passed','probes':results}))

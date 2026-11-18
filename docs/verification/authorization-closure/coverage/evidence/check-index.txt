@@ -1,0 +1,287 @@
+"""Read-only integrity check of the fixed Issue #125-C evidence index.
+
+Run with the existing Python from repository root. This is an audit attachment,
+not a runtime authorization validator, installed command, or CI gate.
+"""
+import ast
+import gzip
+import hashlib
+import json
+import re
+import subprocess
+from collections import Counter
+from pathlib import Path
+
+AB=Path('docs/verification/authorization-closure')
+ROOT=AB/'coverage'
+index=json.loads((ROOT/'index.json').read_text(encoding='utf-8'))
+relations=json.loads((ROOT/'candidate-relations.json').read_text(encoding='utf-8'))
+inputs=json.loads((ROOT/'evidence/inputs.json').read_text(encoding='utf-8'))
+proof_input=json.loads((ROOT/'evidence/edge-proof-claims.json').read_text(encoding='utf-8'))
+review=json.loads((ROOT/'evidence/review-repair.json').read_text(encoding='utf-8'))
+assert review['reviewed_head']==proof_input['reviewed_head']
+assert review['review_url']==proof_input['review_url']
+assert index['edge_proof_input']['path']=='evidence/edge-proof-claims.json'
+assert index['edge_proof_input']['sha256']==hashlib.sha256((ROOT/index['edge_proof_input']['path']).read_bytes()).hexdigest()
+graph=json.loads((AB/'dependency-map.json').read_text(encoding='utf-8'))
+inventory=json.loads((AB/'discovery-inventory.json').read_text(encoding='utf-8'))
+old=json.loads((AB/'candidate-disposition.json').read_text(encoding='utf-8'))
+mechanical=json.loads(gzip.decompress((AB/'evidence/mechanical-discovery.json.gz').read_bytes()))
+baseline=json.loads((AB/'baseline-snapshot.json').read_text(encoding='utf-8'))
+base=index['implementation_base']
+ab_head=index['reviewed_ab_head']
+assert base==inputs['implementation_base']==inputs['ab_merge']
+assert ab_head==inputs['ab_reviewed_head']
+assert index['snapshots']=={s:d['commit'] for s,d in mechanical['snapshots'].items()}==relations['snapshots']
+assert inputs['candidate_pr']['head_sha']==index['snapshots']['pr124']
+assert set(index['classification_labels'])=={'verified_production','verified_contract_authority_unconnected','known_gap','evidence_contradiction','not_investigated'}
+
+def git(*args):
+    return subprocess.check_output(['git','-c','core.hooksPath=NUL',*args])
+
+changed=git('diff','--name-only',index['snapshots']['main']+'..'+base,'--','src','.dagger','.github/workflows','tests','pyproject.toml','uv.lock')
+assert not changed, changed.decode()
+
+# Batch immutable Git source reads; never inspect other worktrees or install tools.
+catalog=index['source_catalog']
+pairs={(s['commit'],s['path']) for s in catalog.values() if 'path' in s}
+pairs|={(ab_head,(AB/'evidence/SHA256SUMS').as_posix())}
+payload=subprocess.run(['git','-c','core.hooksPath=NUL','cat-file','--batch'],
+                        input=''.join(f'{c}:{p}\n' for c,p in sorted(pairs)).encode(),
+                        capture_output=True,check=True).stdout
+blobs={};cursor=0
+for key in sorted(pairs):
+    end=payload.index(b'\n',cursor);oid,kind,size=payload[cursor:end].decode().split()
+    assert kind=='blob',key
+    cursor=end+1;raw=payload[cursor:cursor+int(size)];cursor+=int(size)+1
+    assert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==oid
+    blobs[key]=(raw,oid)
+trees={}
+for key,s in catalog.items():
+    if s['kind']=='recorded_ci_suite':
+        ci=next(c for c in baseline['ci'] if c['run_id']==s['run_id'])
+        job=next(j for j in ci['jobs']['jobs'] if j['id']==s['job_id'])
+        assert job['name']=='sync-tool-tests' and job['conclusion']==s['conclusion']=='success'
+        assert s['commit']==index['snapshots'][s['snapshot']]
+        for ref in s['dispatch_refs']: assert ref in catalog
+        continue
+    raw,oid=blobs[(s['commit'],s['path'])]
+    assert hashlib.sha256(raw).hexdigest()==s['sha256'],key
+    if 'blob' in s: assert oid==s['blob'],key
+    expected_url=f'https://github.com/dymzz/engineering-ci/blob/{s["commit"]}/{s["path"]}'
+    assert s['url']==expected_url+(f'#L{s["line"]}' if 'line' in s else '')
+    if s['kind'] in ['function','contract_test_fixture']:
+        pair=(s['commit'],s['path'])
+        if pair not in trees:trees[pair]=ast.parse(raw.decode('utf-8-sig'))
+        name=s.get('name',s.get('symbol','').rsplit('.',1)[-1])
+        assert any(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name and n.lineno==s['line'] and n.end_lineno==s['end_line'] for n in ast.walk(trees[pair])),key
+        assert s['commit']==index['snapshots'][s['snapshot']]
+    if s['kind']=='function':
+        n=mechanical['snapshots'][s['snapshot']]['nodes'][s['symbol']]
+        assert all(s[k]==n[k] for k in ['path','line','end_line','sha256','blob','commit'])
+
+def check_excerpt(span):
+    s=catalog[span['source_ref']]
+    raw=blobs[(s['commit'],s['path'])][0].decode('utf-8-sig').splitlines()
+    assert 1<=span['start']<=span['end']<=len(raw)
+    text='\n'.join(raw[span['start']-1:span['end']])+'\n'
+    assert text==span['text']
+    assert hashlib.sha256(text.encode('utf-8')).hexdigest()==span['text_sha256']
+
+specs={p['id']:p for p in proof_input['claims']}
+claims=index['edge_proof_claims']
+assert len(specs)==len(proof_input['claims']) and set(specs)==set(claims)
+assert set(proof_input['layer_definitions'])=={'component_contract','handoff_contract','origin_authentication','production_wiring'}
+for key,p in claims.items():
+    spec=specs[key];binding=p['edge_binding']
+    edge=next(e for e in graph['edges'] if e['id']==binding['edge'])
+    sn=graph['nodes'][edge['from']]['snapshot']
+    assert p['id']==key and spec['edge']==binding['edge']
+    assert binding=={'edge':edge['id'],'snapshot':sn,'from_node':edge['from'],'to_node':edge['to']}
+    assert p['layers']==spec['layers'] and set(p['layers'])<={'component_contract','handoff_contract'}
+    for k in ['proof_object','scope_limit','method','controlled_actor']:assert p[k]==spec[k]
+    assert p['proof_object'] and p['scope_limit']
+    assert len(p['source_steps'])==len(spec['source_steps'])
+    source_roles=set();symbols=set()
+    for step,original in zip(p['source_steps'],spec['source_steps']):
+        check_excerpt(step);s=catalog[step['source_ref']]
+        assert s['kind']=='function' and s['snapshot']==sn and s['symbol']==original['symbol']
+        assert s['line']<=step['start']==original['start']<=step['end']==original['end']<=s['end_line']
+        assert step['roles']==original['roles'] and step['proves']==original['proves'] and step['proves']
+        source_roles.update(step['roles']);symbols.add(s['symbol'])
+    source=catalog[p['test_ref']];test=spec['test']
+    assert source['kind']=='contract_test_fixture' and source['snapshot']==sn
+    assert source['path']==test['file'] and source['name']==test['name']
+    tree=trees[(source['commit'],source['path'])]
+    case=next(n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
+              and n.name==source['name'] and n.lineno==source['line'])
+    assert len(p['invocations'])==len(test['act_lines']) and p['invocations']
+    for invocation,line in zip(p['invocations'],test['act_lines']):
+        check_excerpt(invocation)
+        assert invocation['source_ref']==p['test_ref'] and invocation['start']==line
+        assert any(isinstance(n,ast.Call) and n.lineno==line and n.end_lineno==invocation['end']
+                   and ast.unparse(n.func)==invocation['expression'] for n in ast.walk(case))
+    assertion_roles=set()
+    assert len(p['assertion_bindings'])==len(test['assertions']) and p['assertion_bindings']
+    for assertion,original in zip(p['assertion_bindings'],test['assertions']):
+        check_excerpt(assertion)
+        assert assertion['source_ref']==p['test_ref'] and assertion['start']==original['line']
+        assert assertion['roles']==original['roles'] and assertion['proves']==original['proves'] and assertion['proves']
+        assert any(isinstance(n,ast.Assert) and n.lineno==assertion['start'] and n.end_lineno==assertion['end']
+                   and ast.unparse(n.test)==assertion['assertion_expression'] for n in ast.walk(case))
+        assertion_roles.update(assertion['roles'])
+    assert len(p['fixture_context'])==len(test['fixture_context'])
+    for context,original in zip(p['fixture_context'],test['fixture_context']):
+        check_excerpt(context)
+        assert context['source_ref']==p['test_ref'] and context['start']==original['start'] and context['end']==original['end']
+        assert context['proves']==original['proves'] and context['proves']
+    suite=catalog[p['recorded_suite_ref']]
+    assert suite['kind']=='recorded_ci_suite' and suite['snapshot']==sn
+    if 'handoff_contract' in p['layers']:
+        assert {'validator','consumer'}<=source_roles
+        assert 'producer' in source_roles or p['controlled_actor']['kind']=='controlled_producer'
+        assert {'handoff_binding','receiver_effect'}<=assertion_roles
+        # Both concrete endpoints must occur in this edge's reviewed data path.
+        # An external actor may be modeled only with a declared controlled scope.
+        for endpoint in [graph['nodes'][edge['from']],graph['nodes'][edge['to']]]:
+            if 'symbol' in endpoint:assert endpoint['symbol'] in symbols
+            else:assert p['controlled_actor'] and p['fixture_context']
+
+rows={r['edge']:r for r in index['edges']}
+assert len(rows)==len(index['edges'])==len(graph['edges'])==86
+assert set(rows)=={e['id'] for e in graph['edges']}
+families=index['families']
+assert len([e for f in families.values() for e in f['edges']])==86
+assert {e for f in families.values() for e in f['edges']}==set(rows)
+required={'sink','invariants','actual_call_path','producer_and_authority_source','validator_and_trust_boundary','consumer',
+          'scope_typed_identity_phase_time','failure_behavior','raw_evidence_and_tests','coverage_status','gap_or_contradiction','original_issue_pr'}
+required.add('edge_proof')
+for edge in graph['edges']:
+    row=rows[edge['id']];assert required<=set(row)
+    a,b=[graph['nodes'][edge[k]] for k in ['from','to']]
+    sn=a['snapshot'];assert b['snapshot']==row['snapshot']==sn
+    assert row['edge'] in families[row['family']]['edges']
+    path=row['actual_call_path']
+    assert path['from_node']==edge['from'] and path['to_node']==edge['to'] and path['relationship']==edge['kind']
+    assert row['sink']['edge_fact']==edge['fact'] and row['sink']['local_consumer_node']==edge['to']
+    for endpoint in [a,b]:
+        if 'symbol' in endpoint:assert sn+':'+endpoint['symbol'] in path['anchors']
+    for ref in path['anchors']+row['validator_and_trust_boundary']['function_refs']+[row['sink']['function_ref']]:
+        assert ref in catalog and catalog[ref]['kind']=='function' and catalog[ref]['snapshot']==sn
+    assert row['producer_and_authority_source']['producer_node']==edge['from']
+    assert row['consumer']['node']==edge['to']
+    assert row['scope_typed_identity_phase_time']['commit']==index['snapshots'][sn]
+    for k in ['typed_identity','phase','time']:assert row['scope_typed_identity_phase_time'][k]
+    assert {r['number'] for r in row['invariants']}<={1,2,3,4,5,6}
+    assert row['invariants'] and row['failure_behavior']['recorded_contract']
+    assert row['gap_or_contradiction']['needed_observation']
+    assert row['original_issue_pr']['issues']
+    for ref in row['raw_evidence_and_tests']:assert ref in catalog,ref
+    state=row['coverage_status']['value']
+    assert state in index['classification_labels'] and row['coverage_status']['label']==index['classification_labels'][state]
+    assert row['coverage_status']['basis']
+    proof=row['edge_proof'];layers=proof['layers']
+    assert proof['proof_object']=={'edge':edge['id'],'from_node':edge['from'],'to_node':edge['to'],
+                                   'declared_handoff':edge['fact'],'snapshot':sn}
+    assert set(layers)==set(proof_input['layer_definitions'])
+    for layer in ['component_contract','handoff_contract']:
+        own=[p['id'] for p in claims.values() if p['edge_binding']['edge']==edge['id'] and layer in p['layers']]
+        assert layers[layer]['claim_ids']==own
+        empty='related_evidence_only' if layer=='component_contract' else 'not_investigated'
+        assert layers[layer]['status']==('verified' if own else empty)
+        for key in own:
+            p=claims[key]
+            assert p['edge_binding']['snapshot']==sn
+            assert p['test_ref'] in row['raw_evidence_and_tests']
+            assert all(s['source_ref'] in row['raw_evidence_and_tests'] for s in p['source_steps'])
+    assert not layers['origin_authentication']['claim_ids'] and layers['origin_authentication']['status']=='not_investigated'
+    assert not layers['production_wiring']['claim_ids'] and layers['production_wiring']['status']!='verified'
+    handoff=layers['handoff_contract']['claim_ids']
+    if handoff and state!='known_gap':
+        assert state=='verified_contract_authority_unconnected'
+        assert row['coverage_status']['verified_layer']=='handoff_contract'
+        assert row['coverage_status']['proof_claim_ids']==handoff
+    elif not handoff:
+        assert state in ['known_gap','not_investigated']
+        assert not row['coverage_status']['proof_claim_ids'] and row['coverage_status']['verified_layer'] is None
+    # Categories are reviewed evidence assessments. This integrity checker does
+    # not adjudicate semantic truth or require permanent zero production counts.
+    if edge['kind']=='static_call':
+        actual=[c['line'] for c in mechanical['snapshots'][sn]['nodes'][a['symbol']]['calls'] if c.get('target')==b['symbol']]
+        assert actual==path['proven_static_callsites'] and actual
+    else:assert not path['proven_static_callsites']
+assert index['status_counts']=={s:sum(r['coverage_status']['value']==s for r in rows.values()) for s in index['classification_labels']}
+assert index['proof_layer_counts']=={layer:sum(r['edge_proof']['layers'][layer]['status']=='verified' for r in rows.values())
+                                      for layer in proof_input['layer_definitions']}
+
+expected={(r['snapshot'],r['symbol']):r for r in old['candidates']}
+actual={(r['snapshot'],r['symbol']):r for r in relations['candidates']}
+assert len(actual)==len(relations['candidates'])==len(expected)==254 and set(actual)==set(expected)
+for key,r in actual.items():
+    sn,symbol=key;original=expected[key];nodes=mechanical['snapshots'][sn]['nodes']
+    assert r['ab_disposition']==original['disposition'] and r['ab_reason']==original['reason']
+    assert catalog[r['source_ref']]['symbol']==symbol and catalog[r['source_ref']]['snapshot']==sn
+    assert catalog[r['source_ref']]['sha256']==original['source_sha256']
+    chain=[catalog[s] for s in r['callee_to_caller_chain']]
+    if r['same_snapshot_graph_node']:
+        target=graph['nodes'][r['same_snapshot_graph_node']]
+        assert target['snapshot']==sn and chain[0]['symbol']==symbol and chain[-1]['symbol']==target['symbol']
+        for callee,caller in zip(chain,chain[1:]):
+            assert callee['snapshot']==caller['snapshot']==sn
+            assert any(c['caller']==caller['symbol'] for c in nodes[callee['symbol']]['callers'])
+        assert set(r['edge_refs'])=={e['id'] for e in graph['edges'] if r['same_snapshot_graph_node'] in [e['from'],e['to']]}
+    else:assert not chain and not r['edge_refs']
+    for e in r['edge_refs']:
+        assert rows[e]['snapshot']==sn and r['edge_statuses'][e]==rows[e]['coverage_status']['value']
+    if r['implementation_only_main_edge_refs']:
+        assert sn=='pr124' and original['disposition']=='shared_implementation'
+        assert nodes[symbol]['sha256']==mechanical['snapshots']['main']['nodes'][symbol]['sha256']
+        assert all(rows[e]['snapshot']=='main' for e in r['implementation_only_main_edge_refs'])
+        if not r['same_snapshot_graph_node']:assert r['coverage_status_if_unmapped']=='not_investigated'
+    if original['disposition']=='excluded':
+        assert r['relation']=='explicitly_excluded' and r['coverage_status_if_unmapped'] is None
+    elif not r['same_snapshot_graph_node']:
+        assert r['coverage_status_if_unmapped']=='not_investigated' and r['needed_observation']
+for sn in index['snapshots']:
+    assert relations['counts'][sn]==dict(Counter(r['relation'] for r in actual.values() if r['snapshot']==sn))
+
+# The only edited A/B inputs are its two navigation documents and corresponding
+# checksum lines. Every other listed original byte remains at the reviewed HEAD.
+historic_sums=blobs[(ab_head,(AB/'evidence/SHA256SUMS').as_posix())][0].decode().splitlines()
+navigation={'README.md','evidence/README.md'}
+ab_records=(AB/'evidence/SHA256SUMS').read_text(encoding='utf-8').splitlines()
+historic={line.split('  ',1)[1]:line.split('  ',1)[0] for line in historic_sums}
+current={line.split('  ',1)[1]:line.split('  ',1)[0] for line in ab_records}
+assert set(historic)==set(current) and len(current)==19
+for path,digest in current.items():
+    assert hashlib.sha256((AB/path).read_bytes()).hexdigest()==digest
+    if path not in navigation:assert digest==historic[path]
+
+relative_links=0
+for p in ROOT.rglob('*.md'):
+    for target in re.findall(r'\]\(([^\s)]+)\)',p.read_text(encoding='utf-8')):
+        if target.startswith(('https:','http:','#')):continue
+        local=(p.parent/target.split('#')[0]).resolve()
+        assert local.is_relative_to(Path.cwd().resolve()) and local.exists(),(p,target)
+        relative_links+=1
+
+sum_path=ROOT/'evidence/SHA256SUMS'
+checksums={line.split('  ',1)[1]:line.split('  ',1)[0] for line in sum_path.read_text(encoding='utf-8').splitlines()}
+assert set(checksums)=={p.relative_to(ROOT).as_posix() for p in ROOT.rglob('*') if p.is_file() and p!=sum_path}
+for p,digest in checksums.items():assert hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==digest
+
+result={'scope':'Issue #125 C index integrity only; no D semantic/adversarial/production acceptance',
+        'status':'passed','implementation_base':base,'ab_reviewed_head':ab_head,
+        'checked_edges':len(rows),'checked_candidates':len(actual),'checked_source_refs':len(catalog),
+        'checked_edge_proof_claims':len(claims),'proof_layer_counts':index['proof_layer_counts'],
+        'git_blobs_checked':len(blobs),'status_counts':index['status_counts'],'candidate_relation_counts':relations['counts'],
+        'ab_listed_files_checked':len(current),'ab_original_non_navigation_hashes_preserved':len(current)-len(navigation),
+        'c_files_hashed':len(checksums),'relative_links_checked':relative_links,
+        'checks':['all required edge fields and A/B edge reconciliation','exact code/test/blob/SHA/line references',
+                  'edge-specific proof objects/layers/endpoints and assertion/data-path bindings',
+                  'component-only and contextual fixtures cannot promote handoff classification',
+                  'recorded CI suite identities and dispatch sources','static-call and candidate helper-chain evidence',
+                  'same-snapshot consumers vs implementation-only reuse','A/B source preservation and independent C hashes',
+                  'native scoped runtime diff has no changed paths','local navigation'],
+        'not_run':['D independent semantic/adversarial/source views','manual Dagger/Weaver/OTLP','full local engineering matrix','Agent/Git hooks']}
+print(json.dumps(result,ensure_ascii=False))

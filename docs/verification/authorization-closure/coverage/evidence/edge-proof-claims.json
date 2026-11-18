@@ -1,0 +1,1428 @@
+{
+  "purpose": "Review #5943207575: edge-specific proof scopes and direct assertion/data-path bindings; audit input only",
+  "review_url": "https://github.com/dymzz/engineering-ci/pull/127#pullrequestreview-5943207575",
+  "reviewed_head": "c586fb56fa6aeadab7e8b5b208b49281334aefa3",
+  "layer_definitions": {
+    "component_contract": "所列本地 API/分支的直接断言，不能替代边交接。",
+    "handoff_contract": "明确绑定到本边的受控调用/数据传递与接收结果；仅在 proof_object/scope_limit 内成立。",
+    "origin_authentication": "实际签发者/来源认证；本修订未新增验证。",
+    "production_wiring": "实际运行环境与端到端接线；本修订未新增验证。"
+  },
+  "claims": [
+    {
+      "id": "E001.handoff",
+      "edge": "E001",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "selection.plan 的 legacy/v1 partial 分支将 Selection/Source scope 传给真实 derive_expected_checks，并把返回对象纳入 Plan；断言仅证明 schema=1、partial 与 Source snapshot 传递。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.selection.plan",
+          "start": 3782,
+          "end": 3800,
+          "roles": [
+            "producer"
+          ],
+          "proves": "真实调用 derive_expected_checks 并绑定其返回值 expected。"
+        },
+        {
+          "symbol": "engineering_ci.expected_checks.derive_expected_checks",
+          "start": 1885,
+          "end": 1920,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "实际派生 API 的输入/入口身份；不宣称治理完整。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_expected_checks.py",
+        "name": "test_plan_contains_partial_expected_checks",
+        "act_lines": [
+          64
+        ],
+        "assertions": [
+          {
+            "line": 66,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "Plan 内 Expected schema 为 1。"
+          },
+          {
+            "line": 67,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "结果保持 partial。"
+          },
+          {
+            "line": 72,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "Expected 的每个 Source snapshot 等于该 Plan 的 Git snapshot。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 50,
+            "end": 60,
+            "proves": "make_plan 实际调用 selection.plan，不替换 Expected Producer。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "仅固定测试的 legacy/v1 partial Plan→Expected 字段/调用交接；不覆盖 EffectiveProfile/v2 分支或 Profile/Phase issuer 认证。"
+    },
+    {
+      "id": "E020.handoff",
+      "edge": "E020",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "真实 reconciliation Receipt fixture 进入 T1-a API 后，Coverage 保持同一 Expected instance；不证明 raw issuer transport。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.reconciliation.reconcile_expected_results",
+          "start": 1748,
+          "end": 1776,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "实际 Receipt 构造/结构 validator 的固定入口。"
+        },
+        {
+          "symbol": "engineering_ci.admission.admit_evidence",
+          "start": 800,
+          "end": 825,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "先 validate_receipt，再对照 Expected scope 与 ExpectedSet。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_admission.py",
+        "name": "test_t1a_admits_real_verified_native_pass",
+        "act_lines": [
+          381,
+          383
+        ],
+        "assertions": [
+          {
+            "line": 382,
+            "roles": [
+              "producer_fact"
+            ],
+            "proves": "setup 产生的 Receipt instance 是 matched。"
+          },
+          {
+            "line": 384,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "T1-a 在受控 authority 下返回 admitted。"
+          },
+          {
+            "line": 391,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "接纳 Coverage 引用等于输入 Receipt 的 Expected check ref。"
+          },
+          {
+            "line": 393,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "该 fixture 不留下 Remaining Work。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 237,
+            "end": 254,
+            "proves": "setup 内调用真实 reconciliation.reconcile_expected_results。"
+          },
+          {
+            "start": 337,
+            "end": 341,
+            "proves": "测试 wrapper 调真实 admit_evidence，authority/resolution 来自受控 fixture。"
+          },
+          {
+            "start": 370,
+            "end": 377,
+            "proves": "admit helper 将同一个 Receipt/Report 传入 wrapper。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "原始 fixture 的结构 Receipt→Admission 实例交接；authority/provider 为测试替身，实际来源与执行者未验证。"
+    },
+    {
+      "id": "E021.handoff",
+      "edge": "E021",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "T1-a API 调用 Receipt validator 后使用相同 scope/Expected instance；不证明 Receipt 来源认证。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.reconciliation.validate_receipt",
+          "start": 1984,
+          "end": 2002,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "实际 Receipt 构造/结构 validator 的固定入口。"
+        },
+        {
+          "symbol": "engineering_ci.admission.admit_evidence",
+          "start": 800,
+          "end": 825,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "先 validate_receipt，再对照 Expected scope 与 ExpectedSet。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_admission.py",
+        "name": "test_t1a_admits_real_verified_native_pass",
+        "act_lines": [
+          381,
+          383
+        ],
+        "assertions": [
+          {
+            "line": 382,
+            "roles": [
+              "producer_fact"
+            ],
+            "proves": "setup 产生的 Receipt instance 是 matched。"
+          },
+          {
+            "line": 384,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "T1-a 在受控 authority 下返回 admitted。"
+          },
+          {
+            "line": 391,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "接纳 Coverage 引用等于输入 Receipt 的 Expected check ref。"
+          },
+          {
+            "line": 393,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "该 fixture 不留下 Remaining Work。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 237,
+            "end": 254,
+            "proves": "setup 内调用真实 reconciliation.reconcile_expected_results。"
+          },
+          {
+            "start": 337,
+            "end": 341,
+            "proves": "测试 wrapper 调真实 admit_evidence，authority/resolution 来自受控 fixture。"
+          },
+          {
+            "start": 370,
+            "end": 377,
+            "proves": "admit helper 将同一个 Receipt/Report 传入 wrapper。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "原始 fixture 的结构 Receipt→Admission 实例交接；authority/provider 为测试替身，实际来源与执行者未验证。"
+    },
+    {
+      "id": "E023.handoff",
+      "edge": "E023",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "验证过的 Package 原对象送入 verify_local_handoff；受控授权下返回材料摘要和该 Package 相同。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.local_actions_handoff.validate_local_handoff_package",
+          "start": 326,
+          "end": 352,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "Package 结构/摘要入口。"
+        },
+        {
+          "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+          "start": 549,
+          "end": 568,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "接收端实际调用 Package validator，再处理独立 consumer scope 和回调。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_local_actions_handoff.py",
+        "name": "test_controlled_local_handoff_verifies_and_exposes_t1a_materials",
+        "act_lines": [
+          149,
+          154
+        ],
+        "assertions": [
+          {
+            "line": 152,
+            "roles": [
+              "producer_fact"
+            ],
+            "proves": "validator 接受并返回同一 package 对象。"
+          },
+          {
+            "line": 155,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "受控 verifier 返回 verified。"
+          },
+          {
+            "line": 164,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "返回 payload_digest 等于该输入 Package 的 payload_digest。"
+          },
+          {
+            "line": 165,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "消费范围仍指向 main。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 121,
+            "end": 145,
+            "proves": "真实构造/verify API；issuer/execution/authorization 均为受控 callback。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "Package 摘要/材料与 receiver scope 的受控交接，不是本地 issuer→Actions 的真实认证或后续 Admission。"
+    },
+    {
+      "id": "E026.handoff",
+      "edge": "E026",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "R1 内部 Admission validator 的结果参加当前实例评估；此输入是 make_admission fixture，不是实际 T1-a 输出。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment._validate_admission",
+          "start": 1341,
+          "end": 1379,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "按当前 scope/ExpectedSet 校验 Admission 结构及 Coverage 实例。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+          "start": 2474,
+          "end": 2484,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "实际调用 _validate_admission(admission, scope, checks) 并保留返回 admission_facts。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment.py",
+        "name": "test_complete_current_run_assessment_passes_with_all_four_facts",
+        "act_lines": [
+          823,
+          828
+        ],
+        "assertions": [
+          {
+            "line": 830,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "受控样本评估通过。"
+          },
+          {
+            "line": 840,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "当前 Check 行保留 admitted 的 Admission 状态。"
+          },
+          {
+            "line": 844,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "输出明确 contract_sample=True。"
+          },
+          {
+            "line": 845,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "样本不构成生产 Admission。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 787,
+            "end": 793,
+            "proves": "assess helper 调真实 Required Assessment API。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "R1 对已给定 Admission fixture 的内部 validator→实例评估关系；E025 的实际 T1-a→R1 集成仍未调查。"
+    },
+    {
+      "id": "E029.handoff",
+      "edge": "E029",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "真实 R1 builder 返回的同一个 Assessment 对象可通过纯 Assessment validator；只证明结构/digest 合同。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment.assess_required_obligations",
+          "start": 2449,
+          "end": 2472,
+          "roles": [
+            "producer"
+          ],
+          "proves": "实际 Assessment builder 的固定入口。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment.validate_assessment",
+          "start": 2637,
+          "end": 2652,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "检查 Assessment kind/version/ref 与 payload digest。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment.py",
+        "name": "test_complete_current_run_assessment_passes_with_all_four_facts",
+        "act_lines": [
+          828,
+          849
+        ],
+        "assertions": [
+          {
+            "line": 830,
+            "roles": [
+              "producer_fact"
+            ],
+            "proves": "builder 在 fixture 下返回 passed。"
+          },
+          {
+            "line": 849,
+            "roles": [
+              "handoff_binding",
+              "receiver_effect"
+            ],
+            "proves": "validator 接收并返回同一个 builder 返回对象。"
+          },
+          {
+            "line": 844,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "样本身份仍显式为 True。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 787,
+            "end": 793,
+            "proves": "真实 Assessment builder 调用。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "样本 Assessment 的结构一致性；不认证 Universe/Profile/Admission 真实来源。"
+    },
+    {
+      "id": "E031.handoff",
+      "edge": "E031",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "build_check_publication 产生 publication 后，publisher 将其中 request 原样交给模拟 API 并返回 ID。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_check.build_check_publication",
+          "start": 306,
+          "end": 335,
+          "roles": [
+            "producer"
+          ],
+          "proves": "实际 publication 构造入口。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+          "start": 712,
+          "end": 739,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "先 validate_publication，再发送 publication.request 并验证返回 id 类型。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_check.py",
+        "name": "test_authorized_production_success_posts_once",
+        "act_lines": [
+          272,
+          286
+        ],
+        "assertions": [
+          {
+            "line": 298,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "模拟 API 收到的 data 等于同一个 builder 输出的 publication.request。"
+          },
+          {
+            "line": 294,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "返回的是模拟 API 的 id 99。"
+          },
+          {
+            "line": 297,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "方法为 POST。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 275,
+            "end": 285,
+            "proves": "FakeGitHub 记录参数并返回固定 ID；真实网络没有调用。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "builder→publisher 的受控请求对象交接；publisher authority 与 GitHub 均为 fixture，不能据此证明真实 App/来源。"
+    },
+    {
+      "id": "E035.handoff",
+      "edge": "E035",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "authorize_and_publish 成功分支将 publication/授权/注入 client 交给真实低层 publisher，保留其 API 返回 ID。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "start": 651,
+          "end": 669,
+          "roles": [
+            "producer"
+          ],
+          "proves": "成功分支构造请求绑定授权并调用 rac.publish_check_run。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+          "start": 712,
+          "end": 739,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "低层实际验证请求/授权后调用注入 API。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_publish.py",
+        "name": "test_authorize_and_publish_success_posts_when_verified",
+        "act_lines": [
+          253,
+          265
+        ],
+        "assertions": [
+          {
+            "line": 261,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "低层调用注入 client 的 check-runs 路径。"
+          },
+          {
+            "line": 273,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "高层返回模拟低层 API 的 ID 77。"
+          },
+          {
+            "line": 274,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "低层发出的结论仍为该 success publication。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 256,
+            "end": 263,
+            "proves": "只注入 FakeGitHub；没有替换真实低层 publish_check_run。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "高层→低层的受控 API 分支与结果传递；Actions 环境、approval 与 execution 身份为 fixture，E062 的外部来源仍未调查。"
+    },
+    {
+      "id": "E047.handoff",
+      "edge": "E047",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "Workflow Actions 的 release 操作定位 release.publishing.main，并原样转发 argv/返回值；消费函数在测试中被替换。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.workflow_actions.main",
+          "start": 19,
+          "end": 28,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "release 分支局部 import 对应 module.main，并 invoke(args[1:])。"
+        },
+        {
+          "symbol": "engineering_ci.release.publishing.main",
+          "start": 336,
+          "end": 341,
+          "roles": [
+            "consumer"
+          ],
+          "proves": "声明的 release main 接口身份；测试不执行真实发布实现。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_unified_cli.py",
+        "name": "test_actions_dispatcher_preserves_original_result",
+        "act_lines": [
+          124
+        ],
+        "assertions": [
+          {
+            "line": 125,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "被替换的目标 main 精确收到 ['argument'] 和空 kwargs。"
+          },
+          {
+            "line": 124,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "dispatcher 返回目标的 7。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 107,
+            "end": 123,
+            "proves": "参数化明确包含 release.publishing；monkeypatch 将其 main 替换成记录器。"
+          }
+        ]
+      },
+      "controlled_actor": {
+        "kind": "controlled_consumer",
+        "description": "目标 main 是 monkeypatch 记录器，真实发布实现没有执行。"
+      },
+      "scope_limit": "仅 dispatch adapter 的模块/argv/result 合同；不证明 Release main 的执行、服务器调度或权限。"
+    },
+    {
+      "id": "E053.handoff",
+      "edge": "E053",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "post_completion_plan 的配置闭包交给真实 validator 重算，返回一致摘要；修改文件后同一 Plan 被拒。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.selection.post_completion_plan",
+          "start": 4110,
+          "end": 4171,
+          "roles": [
+            "producer"
+          ],
+          "proves": "Plan 保存完成阶段与配置闭包 binding。"
+        },
+        {
+          "symbol": "engineering_ci.selection.validate_post_completion_binding",
+          "start": 4230,
+          "end": 4237,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "重新计算闭包，比较 actual 与 planned SHA。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_selection.py",
+        "name": "test_post_completion_plan_binds_terminal_inputs",
+        "act_lines": [
+          618,
+          638,
+          658
+        ],
+        "assertions": [
+          {
+            "line": 639,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "实际 validator 接受初始闭包。"
+          },
+          {
+            "line": 640,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "回报 plan_closure_digest 等于该 Plan 的 binding.sha256。"
+          },
+          {
+            "line": 660,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "输入变更后报 closure_digest_mismatch。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 653,
+            "end": 658,
+            "proves": "修改已绑定的 matcher 文件后重用同一个 Plan 评价。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "临时目录内 Plan→validator 的输入摘要正反例；不是实际 Run/Phase issuer 或 Native Terminal 执行事实。"
+    },
+    {
+      "id": "E063.handoff",
+      "edge": "E063",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "publisher 与受控 GitHub callable 的精确请求/响应接口：repository、check-runs、POST、publication.request 与 ID。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+          "start": 712,
+          "end": 729,
+          "roles": [
+            "validator"
+          ],
+          "proves": "接收 API 对象前的 publication/成功授权结构门。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment_check.publish_check_run",
+          "start": 730,
+          "end": 739,
+          "roles": [
+            "consumer"
+          ],
+          "proves": "默认或注入 client 接收精确 request，响应必须含整数 ID。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_check.py",
+        "name": "test_authorized_production_success_posts_once",
+        "act_lines": [
+          286
+        ],
+        "assertions": [
+          {
+            "line": 295,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "client 初始化绑定 publication 的 repository。"
+          },
+          {
+            "line": 296,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "路径为 check-runs。"
+          },
+          {
+            "line": 297,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "method 为 POST。"
+          },
+          {
+            "line": 298,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "请求 data 等于 publication.request。"
+          },
+          {
+            "line": 294,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "保留 client 返回的整数 ID。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 275,
+            "end": 285,
+            "proves": "受控 producer 是 FakeGitHub.__call__ 的响应；没有真实 gh/network/token。"
+          }
+        ]
+      },
+      "controlled_actor": {
+        "kind": "controlled_producer",
+        "description": "外部 transport 节点仅以 FakeGitHub 响应建模，不能代签其真实身份。"
+      },
+      "scope_limit": "只验证 Python transport adapter 的 API 形状和请求/响应传递；真实 token、App、服务器授权和来源认证未调查。"
+    },
+    {
+      "id": "E079.handoff",
+      "edge": "E079",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "结构 seal 的 witness 被 Binder 判为 structurally_aligned，但缺 Phase authority 时仍不授权。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.terminal_expected.seal_phase_witness",
+          "start": 1086,
+          "end": 1118,
+          "roles": [
+            "producer"
+          ],
+          "proves": "结构 witness 构造与 digest；注释明确可伪造。"
+        },
+        {
+          "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+          "start": 1210,
+          "end": 1234,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "消费 Phase witness 验证结果与原因，不提升 seal 为真实 issuer。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_terminal_expected.py",
+        "name": "test_forged_sealed_phase_witness_without_authority_cannot_authorize",
+        "act_lines": [
+          254,
+          263
+        ],
+        "assertions": [
+          {
+            "line": 262,
+            "roles": [
+              "producer_fact"
+            ],
+            "proves": "伪造 witness 的结构 digest 自洽。"
+          },
+          {
+            "line": 276,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "接收端把传入 witness 归为 structurally_aligned。"
+          },
+          {
+            "line": 274,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "接收结果仍 authorized=False。"
+          },
+          {
+            "line": 277,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "保留 Phase authority 缺失原因。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 179,
+            "end": 191,
+            "proves": "测试 helper 调用真实 seal_phase_witness 构造 witness。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "结构 witness→Binder 的局部格式/拒绝合同；E085 的外部 Expected/Phase/Completed Run authority 交接未验证。"
+    },
+    {
+      "id": "E081.handoff",
+      "edge": "E081",
+      "layers": [
+        "component_contract",
+        "handoff_contract"
+      ],
+      "proof_object": "wrapper 将原 Expected 和创建的 Terminal Plan/显式参数传给 Binder，并返回其拒绝自报证明的结果。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "start": 1501,
+          "end": 1515,
+          "roles": [
+            "producer"
+          ],
+          "proves": "直接 return bind_terminal_expected，保留参数映射。"
+        },
+        {
+          "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+          "start": 1193,
+          "end": 1208,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "调用原 Expected projection proof 验证并保留结果。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_terminal_expected.py",
+        "name": "test_post_completion_helper_does_not_self_authorize_from_plan_params",
+        "act_lines": [
+          840
+        ],
+        "assertions": [
+          {
+            "line": 854,
+            "roles": [
+              "handoff_binding"
+            ],
+            "proves": "wrapper 传入的自报 projection_proof 到接收端仍产生 untrusted 原因。"
+          },
+          {
+            "line": 853,
+            "roles": [
+              "receiver_effect"
+            ],
+            "proves": "wrapper 返回的 Binding 不授权。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 834,
+            "end": 852,
+            "proves": "fixture 条件可见；调用实际 wrapper，没有替换 Binder。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "固定候选代码中的参数转发与负面 fixture；原始 Expected/Completed Run/Phase 真实来源、其他分支和生产接线未验证。"
+    },
+    {
+      "id": "E059.component",
+      "edge": "E059",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "Admission 对缺 raw Report 的本地接收行为：origin 未验证、实例未接纳且仍有剩余工作。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.admission.admit_evidence",
+          "start": 800,
+          "end": 825,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "本地 Receipt/Expected 验证与 raw Report 索引入口。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_admission.py",
+        "name": "test_t1a_missing_raw_report_is_unverified_and_remaining",
+        "act_lines": [
+          411
+        ],
+        "assertions": [
+          {
+            "line": 415,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "缺 Report 的 origin_status 为 unverified。"
+          },
+          {
+            "line": 417,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "不 admitted。"
+          },
+          {
+            "line": 418,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "仍保留 Remaining Work。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 337,
+            "end": 341,
+            "proves": "helper 使用受控 authority/resolution fixtures。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "仅 Admission receiver 的组件合同；没有 raw Origin/Resolution Authority 到 receiver 的直接交接证明。"
+    },
+    {
+      "id": "E060.component",
+      "edge": "E060",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "T2 对自报 trusted/eligible 但缺 origin verifier 的本地响应。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.admission.admit_historical_reuse",
+          "start": 1550,
+          "end": 1567,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "正规化 scope 和三类独立 verifier。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_historical_reuse.py",
+        "name": "test_self_declared_flags_without_origin_authority_remain_unresolved",
+        "act_lines": [
+          339
+        ],
+        "assertions": [
+          {
+            "line": 346,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "本地结果 unknown。"
+          },
+          {
+            "line": 347,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "保留 historical_origin_authority_missing。"
+          }
+        ],
+        "fixture_context": []
+      },
+      "controlled_actor": null,
+      "scope_limit": "只证明 receiver 处理缺 verifier 的分支；不认证历史 issuer/P0/current authorization。"
+    },
+    {
+      "id": "E061.component",
+      "edge": "E061",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "本地 Handoff receiver 对受控 callbacks/package 的材料摘要和 consumer scope 投影。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.local_actions_handoff.verify_local_handoff",
+          "start": 549,
+          "end": 568,
+          "roles": [
+            "validator",
+            "consumer"
+          ],
+          "proves": "真实接收入口验证 package，并接受独立 scope/authority 参数。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_local_actions_handoff.py",
+        "name": "test_controlled_local_handoff_verifies_and_exposes_t1a_materials",
+        "act_lines": [
+          154
+        ],
+        "assertions": [
+          {
+            "line": 164,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "材料 digest 与受控 package 保持一致。"
+          },
+          {
+            "line": 165,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "consumer target 保持 main。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 135,
+            "end": 145,
+            "proves": "issuer/execution/authorization 都是受控 callback。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "组件接口成立；受控 Runner/执行时间/真实 grant 来源到 receiver 的交接没有证明。"
+    },
+    {
+      "id": "E062.component",
+      "edge": "E062",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "Publisher 对明确拒绝的 approval callback 的本地拒绝行为。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "start": 634,
+          "end": 642,
+          "roles": [
+            "consumer"
+          ],
+          "proves": "高层先调用 publisher identity verifier。"
+        },
+        {
+          "symbol": "engineering_ci.required_assessment_publish._verify_approval_authority",
+          "start": 206,
+          "end": 217,
+          "roles": [
+            "validator"
+          ],
+          "proves": "调用 verifier 并把拒绝映射为 approval_authority_rejected。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_publish.py",
+        "name": "test_authorize_and_publish_failure_requires_verified_publisher",
+        "act_lines": [
+          282
+        ],
+        "assertions": [
+          {
+            "line": 289,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "返回确切 approval_authority_rejected 错误码。"
+          }
+        ],
+        "fixture_context": []
+      },
+      "controlled_actor": null,
+      "scope_limit": "只证明组件拒绝 callback=False 的分支；没有真实 Actions approval/execution issuer 交接与认证。"
+    },
+    {
+      "id": "E065.component",
+      "edge": "E065",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "R4 的 validation 模式虽 verified，仍不授予 publication 授权。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+          "start": 895,
+          "end": 913,
+          "roles": [
+            "consumer",
+            "validator"
+          ],
+          "proves": "release_authorized 另要求 publication 模式与相应条件。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_release.py",
+        "name": "test_validation_mode_is_verified_but_does_not_authorize_publication",
+        "act_lines": [
+          210
+        ],
+        "assertions": [
+          {
+            "line": 211,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "样本结果 verified。"
+          },
+          {
+            "line": 213,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "当前模式是 validation。"
+          },
+          {
+            "line": 214,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "release_authorized 保持 False。"
+          },
+          {
+            "line": 217,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "固定检查仍 trusted=False/evidence_admission=not_evaluated。"
+          }
+        ],
+        "fixture_context": []
+      },
+      "controlled_actor": null,
+      "scope_limit": "只证明 R4 组件模式区分；未认证发布时 Policy/Artifact/provider/handoff 来源。"
+    },
+    {
+      "id": "E068.component",
+      "edge": "E068",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "R5 在最早 due 时间前返回 pending，而不聚合为全生命周期通过。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.required_assessment_post.reconcile_post_stage",
+          "start": 604,
+          "end": 622,
+          "roles": [
+            "consumer",
+            "validator"
+          ],
+          "proves": "正规化 prior/post、due window、评价时间与权威接口。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_required_assessment_post.py",
+        "name": "test_before_earliest_is_pending_not_success",
+        "act_lines": [
+          203
+        ],
+        "assertions": [
+          {
+            "line": 209,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "状态 pending。"
+          },
+          {
+            "line": 210,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "due_state 为 not_yet_due。"
+          },
+          {
+            "line": 211,
+            "roles": [
+              "scope_limit"
+            ],
+            "proves": "生命周期聚合标志仍 False。"
+          }
+        ],
+        "fixture_context": []
+      },
+      "controlled_actor": null,
+      "scope_limit": "只证明本地 due-window 组件分支；不认证 trigger/due/disposition issuer。"
+    },
+    {
+      "id": "E085.component",
+      "edge": "E085",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "Binder 对 digest 自洽、issuer 自报但缺 Phase authority 的本地拒绝行为。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.terminal_expected.bind_terminal_expected",
+          "start": 1210,
+          "end": 1234,
+          "roles": [
+            "consumer",
+            "validator"
+          ],
+          "proves": "本地处理 Phase witness 与缺 authority 原因。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_terminal_expected.py",
+        "name": "test_forged_sealed_phase_witness_without_authority_cannot_authorize",
+        "act_lines": [
+          263
+        ],
+        "assertions": [
+          {
+            "line": 274,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "authorized=False。"
+          },
+          {
+            "line": 275,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "phase_witness_verified=False。"
+          },
+          {
+            "line": 277,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "明确缺 Phase authority。"
+          }
+        ],
+        "fixture_context": []
+      },
+      "controlled_actor": null,
+      "scope_limit": "Binder 局部断言成立；未证明真实 Expected/Phase/Completed Run Authority 的交接或来源。"
+    },
+    {
+      "id": "E025.component",
+      "edge": "E025",
+      "layers": [
+        "component_contract"
+      ],
+      "proof_object": "实际 T1-a builder 的受控 fixture 能形成逐实例 Coverage；此证明只属于该组件。",
+      "method": "reviewed_call_data_path_and_assertions",
+      "source_steps": [
+        {
+          "symbol": "engineering_ci.admission.admit_evidence",
+          "start": 800,
+          "end": 825,
+          "roles": [
+            "producer",
+            "validator"
+          ],
+          "proves": "T1-a 接收端校验 scope 与独立 raw 索引。"
+        }
+      ],
+      "test": {
+        "file": "tests/test_admission.py",
+        "name": "test_t1a_admits_real_verified_native_pass",
+        "act_lines": [
+          383
+        ],
+        "assertions": [
+          {
+            "line": 391,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "Coverage 保持输入 Expected instance ref。"
+          },
+          {
+            "line": 393,
+            "roles": [
+              "component_effect"
+            ],
+            "proves": "受控输入满足后不剩工作。"
+          }
+        ],
+        "fixture_context": [
+          {
+            "start": 337,
+            "end": 341,
+            "proves": "受控 authority/resolution callbacks，未调用 R1。"
+          }
+        ]
+      },
+      "controlled_actor": null,
+      "scope_limit": "此 case 没有 R1 调用，不用于证明 admit_evidence→R1 的交接。"
+    }
+  ]
+}

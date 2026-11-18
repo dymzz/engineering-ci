@@ -9,6 +9,7 @@
 - [候选入口逐项去向](candidate-disposition.json)：两版本各 127 项均逐项记录同分区图节点、静态调用链、相同源码的跨版本复用、明确排除或 `unresolved`；[独立一致性检查](evidence/check-candidate-dispositions.txt)核查候选集合、固定源码、调用链和分区引用。这是 **A/B 发现覆盖记账**，不是 C/D 的语义授权结论。
 - [双向依赖图](dependency-map.json)：Producer/fact → Validator/Consumer 的审阅数据，含每个节点的入边和出边。边类型区分直接调用、人工派发、数据合同和 `unresolved`。
 - [基线元数据](baseline-snapshot.json)与[保留证据](evidence/README.md)：可解压的原始归一化响应、只读 GitHub 观察、机械 AST 结果及一次性推导脚本。
+- [C 阶段 Coverage/Gap 索引](coverage/README.md)：基于本 A/B 固定快照的逐边证据范围与未调查关系；与本页原 A/B 结算分别记录。
 
 ## B 阶段候选覆盖的实际边界
 

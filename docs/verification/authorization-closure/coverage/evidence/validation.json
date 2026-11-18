@@ -1,0 +1,112 @@
+{
+  "scope": "Issue #125 C index integrity only; no D semantic/adversarial/production acceptance",
+  "status": "passed",
+  "implementation_base": "990cd59f83153a1ad3978dc933f89af5ca4829e3",
+  "ab_reviewed_head": "363bb19d381146890b57341f686b03f311fd0d0a",
+  "checked_edges": 86,
+  "checked_candidates": 254,
+  "checked_source_refs": 366,
+  "checked_edge_proof_claims": 21,
+  "proof_layer_counts": {
+    "component_contract": 21,
+    "handoff_contract": 13,
+    "origin_authentication": 0,
+    "production_wiring": 0
+  },
+  "git_blobs_checked": 99,
+  "status_counts": {
+    "verified_production": 0,
+    "verified_contract_authority_unconnected": 13,
+    "known_gap": 5,
+    "evidence_contradiction": 0,
+    "not_investigated": 68
+  },
+  "candidate_relation_counts": {
+    "main": {
+      "same_snapshot_static_path": 111,
+      "uninvestigated": 13,
+      "explicitly_excluded": 3
+    },
+    "pr124": {
+      "uninvestigated": 45,
+      "implementation_only_consumer_uninvestigated": 65,
+      "explicitly_excluded": 3,
+      "same_snapshot_static_path": 14
+    }
+  },
+  "ab_listed_files_checked": 19,
+  "ab_original_non_navigation_hashes_preserved": 17,
+  "c_files_hashed": 12,
+  "relative_links_checked": 20,
+  "checks": [
+    "all required edge fields and A/B edge reconciliation",
+    "exact code/test/blob/SHA/line references",
+    "edge-specific proof objects/layers/endpoints and assertion/data-path bindings",
+    "component-only and contextual fixtures cannot promote handoff classification",
+    "recorded CI suite identities and dispatch sources",
+    "static-call and candidate helper-chain evidence",
+    "same-snapshot consumers vs implementation-only reuse",
+    "A/B source preservation and independent C hashes",
+    "native scoped runtime diff has no changed paths",
+    "local navigation"
+  ],
+  "not_run": [
+    "D independent semantic/adversarial/source views",
+    "manual Dagger/Weaver/OTLP",
+    "full local engineering matrix",
+    "Agent/Git hooks"
+  ],
+  "native_exit_code": 0,
+  "reproduction": {
+    "native_exit_code": 0,
+    "input": [
+      "evidence/inputs.json",
+      "evidence/edge-proof-claims.json"
+    ],
+    "outputs_checked": {
+      "index.json": "f6335e3527e216d1cbbcf5843a16a2e1c5aac34d1735255612ac9b8c9d727fb5",
+      "candidate-relations.json": "a6c1ed9c6231953a5fe50b30838184277d4c8781bbf308ed14579e8effec9df7",
+      "assessment.md": "af065e8c1545feb79310bc1270b9158131e50f2387783648bb4b807940d808cd",
+      "evidence/inputs.json": "0a1dafaa3df273a892ade777f8e8d6356e5dd01343688f819c3748881fd4f682",
+      "evidence/derive-index.txt": "9281d5aa7fd1b24bdd3d5147551a6e4200c82fd25c5a8d2c489068d5f6564f1a"
+    },
+    "changed_outputs": []
+  },
+  "integrity_rejection_probes": {
+    "scope": "audit-integrity rejection only; not #125-D semantics",
+    "status": "passed",
+    "probes": [
+      {
+        "probe": "component_plus_ci_cannot_promote_handoff",
+        "result": "rejected_as_expected",
+        "failed_guard": "assert state in ['known_gap','not_investigated']"
+      },
+      {
+        "probe": "proof_object_required",
+        "result": "rejected_as_expected",
+        "failed_guard": "for k in ['proof_object','scope_limit','method','controlled_actor']:assert p[k]==spec[k]"
+      },
+      {
+        "probe": "exact_assertion_binding_required",
+        "result": "rejected_as_expected",
+        "failed_guard": "assert any(isinstance(n,ast.Assert) and n.lineno==assertion['start'] and n.end_lineno==assertion['end']"
+      },
+      {
+        "probe": "proof_cannot_be_reused_for_another_edge",
+        "result": "rejected_as_expected",
+        "failed_guard": "assert p['id']==key and spec['edge']==binding['edge']"
+      },
+      {
+        "probe": "proof_path_cannot_cross_snapshots",
+        "result": "rejected_as_expected",
+        "failed_guard": "assert s['kind']=='function' and s['snapshot']==sn and s['symbol']==original['symbol']"
+      }
+    ],
+    "native_exit_code": 0
+  },
+  "review_repair": {
+    "review_id": 5943207575,
+    "reviewed_head": "c586fb56fa6aeadab7e8b5b208b49281334aefa3",
+    "prior_validation_reference": "evidence/review-repair.json#prior_validation"
+  }
+}

@@ -1,6 +1,6 @@
 # A/B 保留证据
 
-本目录保存这次固定快照的解码元数据、机械发现结果及一次性推导输入。Git 属性保护原字节；[SHA256SUMS](SHA256SUMS)覆盖本审阅目录的文件（不含清单本身）。这些摘要用于核对保存完整性，不认证 Issuer 或授权来源。
+本目录保存这次固定快照的解码元数据、机械发现结果及一次性推导输入。Git 属性保护原字节；[SHA256SUMS](SHA256SUMS)覆盖清单所列 A/B 文件（不含清单本身）。后续 [C 索引](../coverage/README.md)使用独立摘要清单；A/B 原始快照不变，仅随导航变化更新导航文件摘要。这些摘要用于核对保存完整性，不认证 Issuer 或授权来源。
 
 两个原始 Windows JSON 响应（`github-visibility.json`、`protection-observation.json`）保留 CRLF；仅对这两条路径声明 `whitespace=cr-at-eol`，其他尾随空格仍由原生 diff 检查拒绝。
 

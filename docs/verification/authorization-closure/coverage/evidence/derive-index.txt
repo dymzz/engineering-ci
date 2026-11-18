@@ -1,0 +1,549 @@
+"""Issue #125 C: one-off editorial derivation from the reviewed A/B snapshot.
+
+This saved audit input is not imported by runtime code or installed as a gate.
+The five coverage labels describe evidence scope, never Allow/Deny decisions.
+"""
+import ast
+import gzip
+import hashlib
+import json
+import subprocess
+from collections import Counter, deque
+from pathlib import Path
+
+AB = Path('docs/verification/authorization-closure')
+OUT = AB / 'coverage'
+EVIDENCE = OUT / 'evidence'
+EVIDENCE.mkdir(parents=True, exist_ok=True)
+graph = json.loads((AB/'dependency-map.json').read_text(encoding='utf-8'))
+inventory = json.loads((AB/'discovery-inventory.json').read_text(encoding='utf-8'))
+dispositions = json.loads((AB/'candidate-disposition.json').read_text(encoding='utf-8'))
+baseline = json.loads((AB/'baseline-snapshot.json').read_text(encoding='utf-8'))
+mechanical = json.loads(gzip.decompress((AB/'evidence/mechanical-discovery.json.gz').read_bytes()))
+inputs = json.loads((EVIDENCE/'inputs.json').read_text(encoding='utf-8'))
+proof_input = json.loads((EVIDENCE/'edge-proof-claims.json').read_text(encoding='utf-8'))
+BASE = inputs['implementation_base']
+REFS = {s:d['commit'] for s,d in mechanical['snapshots'].items()}
+AB_HEAD = inputs['ab_reviewed_head']
+
+
+def git(*args):
+    return subprocess.check_output(['git','-c','core.hooksPath=NUL',*args])
+
+
+def write(path, data):
+    path.write_bytes((json.dumps(data,ensure_ascii=False,indent=2)+'\n').encode('utf-8'))
+
+
+def qualified(name):
+    return name if name.startswith('engineering_ci') else 'engineering_ci.'+name
+
+
+def numbers(text):
+    result=[]
+    for part in text.split():
+        ends=[int(x) for x in part.split('-')]
+        result.extend(f'E{i:03}' for i in range(ends[0],ends[-1]+1))
+    return result
+
+
+# Reviewed families group repeated scope descriptions; every edge keeps its own
+# exact A/B identity, endpoints, relationship kind, fact and assessment basis.
+families={}
+def family(key,edges,*,label,sink,condition,validators,authority,identities,phase,time,failure,issues,prs,tests,raw=()):
+    families[key]={'label':label,'edges':numbers(edges),'sink':qualified(sink),
+                   'allowing_condition':condition,'validators':[qualified(v) for v in validators],
+                   'authority_source':authority,'typed_identity':identities,'phase':phase,'time':time,
+                   'failure_behavior':failure,'original_issues':issues,'original_prs':prs,
+                   'test_selection':tests,'retained_raw_paths':list(raw)}
+
+family('expected','1-3 57',label='Profile / Expected 投影',sink='expected_checks.derive_expected_checks',
+ condition='当前 Profile/规则/Phase 对独立 Check Domain 的投影和验证；结构摘要与完整有权治理来源分别成立。',
+ validators=['expected_checks.validate_effective_profile','expected_checks._verify_profile_authority','expected_checks.validate_projection','required_assessment._verify_expected_scope'],
+ authority='受管/委托/继承/排除域及 Profile/Phase 的真实批准来源；构造器 authority_verified/domain_complete 与自签 digest 不能认证该来源。',
+ identities=['Profile ref/revision/approval digest','Action×Target×Phase×Ref/Candidate','scope_id','expected_set_ref','Check Domain','Selection/Hygiene/Sources Rule refs'],
+ phase='执行前 Expected；逐 Ref/声明 Phase 与消费者评价阶段分别保存',time=['Profile effective/valid_from/valid_until','evaluation time','Phase producer time'],
+ failure='现有验证器拒绝不匹配身份；unknown/partial/未证 Phase 等状态向消费者保留。多原因合并及合法 Phase-only Partial 的独立语义核验留 D。',
+ issues=[66,125],prs=[111,112],tests={'test_expected_checks':['test_expected_public_api_cannot_forge_complete','test_expected_complete_requires_evidence','test_plan_contains_partial_expected_checks']})
+family('source','6 9-10',label='Source 与输入闭包',sink='execution.execute',
+ condition='实际 Source 字节与 Plan/Expected 的类型化引用相符；Resolution 的独立来源不能由自身 hash 代签。',
+ validators=['selection.verify_materialized_source_snapshot','selection.verify_per_ref_source_snapshot','expected_checks.verify_per_ref_source_handoff','check_contract.validate_source_ref'],
+ authority='实际 Git ODB/物化目录/生成输入的来源和独立 resolution verifier；Host、Dagger caller Directory 与外部接收方各自留边界。',
+ identities=['Git tree OID','directory Content SHA','Source/Rule/Tool/Baseline refs','generated-input artifacts','scope_id + expected_check_ref'],
+ phase='执行前物化与当前 Check 输入解析',time=['snapshot/materialization time','pre-execution proof time'],
+ failure='Source/config/ODB/闭包不匹配时拒绝或保留未验证；当前执行后 Result 不回填预执行事实。',
+ issues=[66,52,86],prs=[111,119],tests={'test_pre_execution_source_proof':['test_pre_execution_proof_binds_closed_checks_and_detects_gitattributes_and_drift','test_pre_execution_open_world_external_and_dynamic_checks_stay_unverified','test_pre_execution_refuses_index_worktree_divergence_missing_odb_and_config_drift']})
+family('reuse','7-8 60 71',label='T2 历史复用',sink='admission.admit_historical_reuse',
+ condition='OriginAccepted、InputEquivalent、ResultEligible、ScopeCovered、PolicyPermitsReuse 分项成立才形成当前 Coverage/Remaining Work。',
+ validators=['execution.compare_pre_execution_to_historical_result','admission._authenticate_pre_execution_proof','admission._evaluate_historical_candidate'],
+ authority='历史 Origin issuer、当前 P0 provenance 与当前 Action/Target/Phase 授权的独立 verifier；实际减少工作量的消费者需观察。',
+ identities=['current scope_id + expected_check_ref','historical Run/Attempt/Result instance','Source/Input/Rule/Tool/Baseline','current authorization/implementation approval'],
+ phase='当前昂贵 Check 执行前；历史执行身份保持原值',time=['historical execution time','current authorization validity','current evaluation/reuse time'],
+ failure='假 Origin/P0、输入不等价或当前授权不足不接纳；历史 Native FAIL 不成为当前 Coverage；计算出的 Remaining Work 不证明执行器实际省略工作。',
+ issues=[63,66],prs=[111,116],tests={'test_historical_reuse':['test_equivalent_closed_source_historical_pass_is_admitted','test_self_declared_flags_without_origin_authority_remain_unresolved','test_origin_authority_rejection_blocks_matching_native_inputs']})
+family('native-host','11 15-18 56',label='原生 Result 与 Runner Report',sink='execution.execute',
+ condition='实际原生 Exit/Result、Definition/Tool/Source 身份与当前执行许可相符；Result/Report 不单独签发 Admission/Required。',
+ validators=['check_contract.validate_result','check_contract.evaluate_expected_satisfaction','hook_coordinator._require_runner_produced_report'],
+ authority='实际工具/Runner/Run/Attempt 及 transport 来源；结构 validator 与 issuer/批准权威分开。',
+ identities=['CheckDefinition/check_id','result_instance','runner_ref/Run/Attempt','tool implementation','Source/Rule/Baseline refs'],
+ phase='已选择 Check 的实际执行及结果接收',time=['original process start/end','Attempt identity and result time'],
+ failure='真实 Native FAIL/退出码保留；未执行、先决条件阻断或配置拒绝不伪造原生结果；Runner 结构校验不认证 issuer。',
+ issues=[52,66,63],prs=[113,119],tests={'test_check_contract':['test_native_failure_and_reason_are_preserved','test_declared_tree_does_not_claim_byte_binding'],
+ 'test_native_producer':['test_framework_results_preserve_native_exit_and_do_not_claim_source_or_admission','test_configuration_refusal_has_no_fabricated_native_result']},
+ raw=['docs/verification/native-tool-contract/process-results/receipt.json','docs/verification/native-tool-contract/process-results/current-passed-report.json','docs/verification/native-tool-contract/process-results/blocked-report.json'])
+family('native-dagger','12-14 70',label='Dagger Report / Artifact / Enforce',sink='engineering_ci_module.plan_result.PlanExecution.enforce',
+ condition='同一 PlanExecution 的原始 Report/Artifact 供严格 Enforce 读取；execute_plan 的 Report API 返回不等于 Enforce 成功。',
+ validators=['engineering_ci_module.plan_result.PlanExecution.enforce','engineering_ci_module.plan_execution.execute'],
+ authority='实际 caller Source、Engine 内部图、工具原始结果；旧可控 fixture 证据保留原实现/Source，不成为生产 OriginAccepted。',
+ identities=['Plan contract','Dagger caller Directory identity','Check/Prerequisite/Artifact edge','same PlanExecution','native implementation fingerprint'],
+ phase='Dagger 内部执行与同一结果对象读取',time=['process start/end','online observation refresh','offline input-cache validity'],
+ failure='严格 Enforce 保留原始失败/退出码；Report/Artifact 导出成功不覆盖 FAIL。动态 SDK/Engine 来源仍需当前实际观察。',
+ issues=[86,52,63],prs=[117,119],tests={'test_plan_result':['test_strict_failure_keeps_the_same_report_and_native_artifacts','test_strict_reader_accepts_one_passed_consistent_result','test_strict_reader_refuses_unknown_or_malformed_report_schema']},
+ raw=['docs/verification/dagger-input-cache/mixed-plan/receipt.json','docs/verification/dagger-input-cache/mixed-plan/native-cli.json','docs/verification/dagger-input-cache/current-failed-report.json'])
+family('reconciliation','19',label='结构满足关系 → Receipt',sink='reconciliation.reconcile_expected_results',
+ condition='按独立 Expected 逐实例选择身份合格 witness 并保留原始 Selected Result IDs；结构 matched 不代替可信接纳。',
+ validators=['reconciliation.derive_strict_expected','reconciliation.validate_receipt','check_contract.evaluate_expected_satisfaction'],
+ authority='冻结 Expected、原始 Report/Job Receipt/Result 与独立 Source/Rule/Baseline resolution；Origin 接纳属于 #63。',
+ identities=['scope_id + expected_check_ref','expected_set_ref','Job/Run/Attempt','selected_result_ids','receipt_ref'],
+ phase='当前执行结果结构对账',time=['current Attempt','original result timestamps'],
+ failure='不匹配、未路由、缺失、重复、未选择或失败 witness 不补齐覆盖；Receipt validator 不签发信任。',
+ issues=[66,52,63],prs=[113],tests={'test_reconciliation':['test_reconciles_matched_witness_without_claiming_authority','test_report_digest_or_result_membership_mismatch_is_refused','test_wrapped_result_without_upstream_attribution_is_unknown']})
+family('admission','20-21 25-26 59 73',label='T1-a 同执行接纳',sink='admission.admit_evidence',
+ condition='当前 Expected/Receipt 与独立 raw Report/Job Receipt、独立 resolutions、已批准 implementation 和 authority 校验一致。',
+ validators=['reconciliation.validate_receipt','admission._authenticate_evidence','required_assessment._validate_admission'],
+ authority='实际 raw issuer/transport/批准实现及独立 authority、resolution_authority；mock True 只验证合同分支。',
+ identities=['scope_id + expected_check_ref','ExpectedSet/receipt_ref','Report digest and Result membership','Run/Attempt/Job','verification_implementation'],
+ phase='同次执行证据 → 当前 Admission / Remaining Work',time=['original execution/collection','current admission evaluation and authorization validity'],
+ failure='缺 raw/认证失败不接纳；经认证 Native FAIL 保留 authenticated failure 并为 unsatisfied；实际减少工作量的调用方另行核查。',
+ issues=[63,66,61],prs=[113,114],tests={'test_admission':['test_t1a_admits_real_verified_native_pass','test_t1a_verified_native_fail_is_unsatisfied_not_accepted','test_t1a_missing_raw_report_is_unverified_and_remaining']})
+family('handoff','22-24 61',label='T1-b 本地 → Actions 受控交接',sink='local_actions_handoff.verify_local_handoff',
+ condition='Package/材料一致性、独立 consumer scope、Issuer/Execution/Authorization 三类 verifier 及其有效时间均相符。',
+ validators=['local_actions_handoff.validate_local_handoff_package','local_actions_handoff.verify_local_handoff'],
+ authority='受控 Runner、issuer、执行时间与授权来源；本地 declared_trusted 和自报工作站不认证这些事实。',
+ identities=['package/material digest','issuer_ref/execution boundary','producer grant','independent consumer Action×Target×Phase×Check scope'],
+ phase='本地原生证据交接给 Actions/ECI，后续 Admission 分开',time=['produced_at','authenticated executed_at','authorization not_before/expires_at','evaluated_at'],
+ failure='不受控/自报或缺经认证执行时间不验证；verified_materials 不直接成为 Admission 或历史复用批准。',
+ issues=[63],prs=[120],tests={'test_local_actions_handoff':['test_controlled_local_handoff_verifies_and_exposes_t1a_materials','test_declared_trusted_local_pass_is_not_authority','test_uncontrolled_or_self_reported_execution_is_rejected']})
+family('required','4-5 27-29 58',label='R1 Required Assessment',sink='required_assessment.assess_required_obligations',
+ condition='authority_verified、check_domain_verified、universe_verified、evidence_satisfied 四项独立事实及完整当前义务集合成立。',
+ validators=['required_assessment._verify_expected_scope','required_assessment._validate_universe','required_assessment._cross_check_universe','required_assessment._authority_fact','required_assessment._validate_admission','required_assessment.validate_assessment'],
+ authority='完整治理/委托域、当前有权 Universe/Phase Producer、Admission 与 Non-Check Evidence 的真实来源；JSON 自报状态非认证。',
+ identities=['Profile revision/approval/source ref','Action×Target×Phase×Ref/Candidate','Check + Non-Check obligations universe','evaluation input','scope_id/ExpectedSet'],
+ phase='一个当前 staged scope；合法空域与完整性证明分开核查',time=['Profile authority window/effective/revoked','assessed_at','obligation due/phase time'],
+ failure='并存的全域缺口不抹除已证单项 Coverage；无受信 Phase/authority 时保留阻断。合法空阶段及复合原因的独立 D 语义验收尚未执行。',
+ issues=[61,66,63],prs=[112,114],tests={'test_required_assessment':['test_complete_current_run_assessment_passes_with_all_four_facts','test_legal_empty_projection_and_universe_passes','test_authority_fact_blocks_without_erasing_proven_check_coverage','test_phase_bearing_scope_with_unverified_phase_blocks']})
+family('check','30-35 62-63 74',label='G2 Check 构造 / 授权 / POST',sink='required_assessment_check.publish_check_run',
+ condition='Assessment 与目标绑定、稳定生产 Check 名称、经批准 Workflow/执行身份及请求绑定发布授权成立；构造请求与真正 POST 分开。',
+ validators=['required_assessment_check.validate_publication','required_assessment_check.normalize_publishing_authorization','required_assessment_publish.verify_publisher_identity','required_assessment_publish.workflow_publish_authority'],
+ authority='独立 approval issuer、Actions Workflow/Run/Attempt/execution、native gh token/App/服务器；环境变量和自签 approval 不是批准来源。',
+ identities=['repository/head SHA/Check name','Assessment ref','Workflow ref/event','Run/Attempt/execution identity','publisher approval/request binding','Check App'],
+ phase='当前候选/阶段的 Check 发布；高层 publisher 和可单独调用的底层 API 分开',time=['approval not_before/expires_at','publisher evaluated_at','actual execution/POST time'],
+ failure='sample/错 repository/缺 success 授权拒绝生产 success；底层非成功分支与高层 publisher 验证各有范围。POST/服务器消费尚未作生产验收。',
+ issues=[61],prs=[118,122],tests={'test_required_assessment_check':['test_passed_assessment_builds_success_under_approved_evaluator','test_blocked_assessment_always_builds_failure','test_contract_sample_uses_non_required_name_and_cannot_production_post'],
+ 'test_required_assessment_publish':['test_authorize_and_publish_success_posts_when_verified','test_authorize_and_publish_failure_requires_verified_publisher','test_workflow_publish_authority_rejects_caller_minted_approval']})
+family('protection','36 64 75',label='G3 服务端保护观察',sink='required_assessment_protection.inspect_server_protection',
+ condition='独立读取 branch-applicable 配置后，还需 App/bypass/真实 deny 执法观察；配置观察不签发服务器 enforcement 证明。',
+ validators=['required_assessment_protection.inspect_server_protection','required_assessment_protection.validate_protection_observation'],
+ authority='GitHub branch rules / Rulesets / Branch Protection 与实际服务器权限、来源 App；当前凭证可见性有边界。',
+ identities=['repository/main','stable Required Check context','source App','branch applicability','ruleset/bypass conditions'],
+ phase='服务端 Required 配置与实际拦截；与内部 G1/G2 分开',time=['GET observed_at (2026-11-17 14:02 UTC)','controlled deny probe time (not performed)'],
+ failure='Branch Protection GET HTTP401/native1 保持 not_verified；不能因其余列表为空宣称保护缺席或执法成立。',
+ issues=[61],prs=[118,122],tests={'test_required_assessment_protection':['test_inspect_absent_when_no_branch_rules_and_no_branch_protection','test_inspect_configured_via_branch_applicable_rules']})
+family('release-reconciliation','37-42 65 72',label='R4 Release 对账合同',sink='required_assessment_release.reconcile_release_assessment',
+ condition='R1 与 canonical Manifest v1 精确绑定，当前 Policy、完整 Artifact obligations、provider/handoff 均认证；verified 与 release_authorized 分开。',
+ validators=['release.manifest.validate','required_assessment_release.validate_release_reconciliation','required_assessment_release.require_reconciliation_manifest'],
+ authority='发布时 Policy/Artifact obligations、原 verifier provider、validation→publication handoff 的真实批准来源；当前发行写入方的接线单独核对。',
+ identities=['exact Manifest identity','repository/tag/head SHA','validation/publication Run/Attempt','Profile/Assessment phase','Artifact obligations/check bindings'],
+ phase='validation / publication 模式与 handoff 分开',time=['publish context evaluated_at','Policy validity/revocation','Artifact/Run evidence time'],
+ failure='validation 或 sample 不能产生 publication 授权；provider/完整 Artifact/Policy 缺口保留。当前真实 publishing.py 路径没有调用 R4，不能由合同绿推导已集成。',
+ issues=[61,63],prs=[122],tests={'test_required_assessment_release':['test_validation_mode_is_verified_but_does_not_authorize_publication','test_publication_mode_with_authorities_can_authorize_release','test_provider_reuses_verification_evidence_for_artifact_digest_run_binding']})
+family('release-publication','46-50 66-67',label='实际 Release 请求与写入',sink='release.publishing.publish_release',
+ condition='CLI 仅请求 Workflow；release.yml 的 publish/needs/权限、当前 Run/Attempt/repository、canonical Manifest、原 Job/Artifact、main/不可变 Tag 共同约束实际写入。',
+ validators=['release.publishing.require_jobs','release.publishing.published_evidence','release.manifest.validate','release.verification.completed_run'],
+ authority='实际 GitHub Workflow dispatch/调度/needs/contents:write token、原 Run/Job/Step/Artifact API；本轮未执行发布或 dispatch。',
+ identities=['repository/tag/head/main SHA','current Run/Attempt','Job/Step/Artifact identity/digest','immutable Tag/ref','Release URL/asset'],
+ phase='request/validation/verified/publish；已有 final Release 的复用分支分开',time=['fresh main/tag check','current workflow time','original evidence/Attempt time','final draft=false PATCH time'],
+ failure='原 Job 未执行/失败、main 前移、Tag 冲突或 Manifest/Run 不匹配拒绝写入；retry 不重写已有 Tag。实际服务器发布授权仍未观察。',
+ issues=[61,63],prs=[],tests={'test_manual_release':['test_only_manual_main_pass_can_publish','test_every_job_must_run_and_pass_with_same_sha','test_main_advance_and_conflicting_tag_never_write']})
+family('post','43 68 76',label='R5 Post-stage',sink='required_assessment_post.reconcile_post_stage',
+ condition='prior/post 的治理、候选、生命周期、Phase-order/trigger/due window/评价时刻相符；Disposition 有独立 authority。',
+ validators=['required_assessment.validate_assessment','required_assessment_post._authority_gate','required_assessment_post._disposition_from_authority'],
+ authority='真实 Phase-order、Trigger、Due Window 与 Disposition 签发方；执行 retain/revoke 的实际消费者另行观察。',
+ identities=['prior/post Assessment refs','common Profile revision/authority','lifecycle/candidate','phase order/trigger/due window'],
+ phase='前置/后置 pair，不是完整生命周期聚合',time=['earliest/latest due window','triggered_at','evaluated_at','late-evidence authorization'],
+ failure='pending/not-yet-due 不变最终 PASS；到期缺证保留原因；pair 不置 lifecycle_all_phases_passed=True，旧 PASS 不代签未来阶段。',
+ issues=[61],prs=[123],tests={'test_required_assessment_post':['test_prior_pass_and_in_window_post_pass_is_verified','test_before_earliest_is_pending_not_success','test_overdue_without_passing_evidence_is_not_success']})
+family('policy','44-45 69',label='持久 Policy 工具准入',sink='security_policy.decide',
+ condition='publication/Manifest/anchor 已认证并持久接收新 revision；当前 snapshot/state/有效窗口及 deny 优先规则相符。',
+ validators=['security_policy.receive','security_policy._authenticate_publication','security_policy.decide'],
+ authority='批准的 trust anchor、发行物 provider 与持久状态所有权；policy JSON/hash 与旧 state 不代签批准。',
+ identities=['policy revision/snapshot SHA','release publisher/workflow','asset/tool/access/platform','selection/protected profile','durable accepted revision'],
+ phase='接收可信 Policy 后的实际工具调用准入，不是工程 Required',time=['not_before/expires_at','accepted revision/revocation','decision evaluated_at'],
+ failure='回退/改写/过期或未匹配 Policy 不能 allowed；状态缺失/错误由执行适配器保留 unknown/allowed=False。',
+ issues=[56,53,57],prs=[],tests={'test_security_policy':['test_unpublished_manifest_does_not_establish_publisher_trust','test_old_snapshot_cannot_override_an_accepted_revocation','test_modified_snapshot_cannot_reuse_a_saved_policy_digest'],
+ 'test_workflow_security_checks':['test_protected_admission_fail_closed_and_allowed']},raw=['docs/verification/security-policy.md'])
+family('telemetry-terminal-inputs','51-55',label='Run/Job / OTLP / Terminal 输入',sink='selection.validate_post_completion_binding',
+ condition='固定 Run/Attempt 的事实与配置闭包、原生 correlation/gate 一致；Task-only 与完整 Terminal 的 Root/终态义务各自保留。',
+ validators=['selection.validate_post_completion_binding','dagger_telemetry.verify_a1_suite','cicd_telemetry.facts_from_github_api_objects'],
+ authority='实际 GitHub Run/Job provider、Engine 原始 OTLP 与 Registry/Matcher/Advice/Expectation 来源；相关性不认证 #63 Origin。',
+ identities=['Run/Job/Attempt','OTLP trace/span/Engine session','Root vs Task','Registry/Matcher/Advice/Expectation closure','source tree/content'],
+ phase='Task-only A 与完成后 Terminal B 分开；不成为当前未终结 Workflow 的自等待',time=['Run/Job terminal times','capture/process times','post-completion evaluation'],
+ failure='Job success 不提升成 Pipeline/Terminal success；失败/错 Attempt/闭包漂移保留原生失败或 not_executed。生产来源及新组合语义留 D。',
+ issues=[52,74,75,86,87],prs=[119],tests={'test_cicd_telemetry':['test_job_success_does_not_imply_pipeline_success','test_job_success_with_run_in_progress_is_partial_task_only'],
+ 'test_selection':['test_post_completion_plan_binds_terminal_inputs'],
+ 'test_dagger_native_telemetry':['test_failed_check_preserves_failure_even_when_trace_binds','test_unisolated_expected_session_id_does_not_prove_invocation']})
+family('terminal-candidate','77-86',label='#124 Terminal Expected Binder 候选',sink='terminal_expected.bind_terminal_expected',
+ condition='原 frozen Expected/原 Plan/Git/root 的现场 projection validation、真实 Expected/Completed Run/Phase authority 与 Terminal 输入闭包同时成立。',
+ validators=['expected_checks.validate_projection','terminal_expected.bind_terminal_expected','terminal_expected.validate_terminal_expected_binding'],
+ authority='原 Expected 的批准方、真实 Completed Run/Attempt provider、受信 #66-B2 Phase Witness issuer；结构 seal/回调 True 不能当生产来源。',
+ identities=['parent scope_id/ExpectedSet/check ref','original Expected Plan/Git/root','Profile revision/Phase witness','completed Run/Attempt/subject','Terminal closure'],
+ phase='仅 pr124 固定 HEAD 的 post_completion；不与更新 main 的 R5 等代码自动拼接',time=['original Expected evaluation','witness validated_at','completed Run time','current binding evaluation'],
+ failure='错 subject/缺 authority/上游其他 unknown 或 non-phase partial 不授权；结构 binding validator 不重新认证 issuer。',
+ issues=[52,66,61],prs=[124],tests={'test_terminal_expected':['test_frozen_b2_partial_binds_but_self_attested_proofs_cannot_authorize','test_forged_sealed_phase_witness_without_authority_cannot_authorize','test_phase_only_partial_clears_with_witness','test_post_completion_helper_does_not_self_authorize_from_plan_params']})
+
+family_by_edge={}
+for key,g in families.items():
+    for edge in g['edges']:
+        assert edge not in family_by_edge, edge
+        family_by_edge[edge]=key
+assert set(family_by_edge)=={e['id'] for e in graph['edges']}
+
+labels={
+ 'verified_production':'已验证真实生产',
+ 'verified_contract_authority_unconnected':'已验证合同但真实权威未接通',
+ 'known_gap':'已知缺口',
+ 'evidence_contradiction':'证据矛盾',
+ 'not_investigated':'尚未调查',
+}
+invariants_by_family={
+ 'expected':[1,2,3,4,6], 'source':[1,3,4,5,6], 'reuse':[1,3,4,5,6],
+ 'native-host':[1,3,5,6], 'native-dagger':[1,3,4,5,6],
+ 'reconciliation':[1,3,5,6], 'admission':[1,3,4,5,6], 'handoff':[1,3,4,5,6],
+ 'required':[1,2,3,4,5,6], 'check':[1,3,4,5,6], 'protection':[1,3,5,6],
+ 'release-reconciliation':[1,2,3,4,5,6], 'release-publication':[1,3,4,5,6],
+ 'post':[1,2,3,4,5,6], 'policy':[1,3,4,6], 'telemetry-terminal-inputs':[1,3,4,5,6],
+ 'terminal-candidate':[1,2,3,4,5,6],
+}
+known={
+ 'E057':'#125 §0 明确完整有权治理/Phase Producer 尚未交付；当前构造/摘要/规则匹配不能补造批准来源。',
+ 'E058':'#125 §0 与 R1 接口分别要求完整有权 Universe/Non-Check 事实；现有合同切片不交付该生产来源。',
+ 'E064':'原始 GET records[2]：Branch Protection HTTP401/native exit1，现有 observer 因可见性不足给 not_verified。',
+ 'E072':'固定代码中 R4 optional require API 与现有 workflow_actions→publishing.main→publish_release 的消费路径未接通；不外推其他外部消费者不存在。',
+ 'E075':'同一服务端记录明确 probe=not_performed 且保护可见性不足；本快照没有 actual deny/bypass/App 执法事实。',
+}
+uninvestigated={
+ 'E004':'Expected Producer 与 R1 各有合同测试；尚未核查真实派生 Expected 到 R1 的组合输入链，不以两侧测试绿代替本边验证。',
+ 'E005':'A/B 明确 R1 使用自己的 _verify_expected_scope，并不调用 validate_projection；两种验证的组合充分性尚未独立核查。',
+ 'E010':'Resolution Receipt 构造与 Admission 分别有合同；当前所引用证据未建立生产构造器到接纳方的真实传递与认证链。',
+ 'E024':'未观察实际 Actions Receiver 将 T1-b 材料送入 T1-a；材料 verified 不等于生产接纳已执行。',
+ 'E025':'R1 现有 Admission 输入测试包含合同 fixture；尚未核查真实 admit_evidence 输出到 R1 的组合消费，不因两侧对象自洽即确认本边。',
+ 'E032':'已核查缺失 Assessment 构造 failure 的合同；该特定 failure 请求传至实际 publisher 的组合/服务器路径尚未核查。',
+ 'E046':'仅静态定位 CLI dispatch 与 Release Workflow，未跟踪一次真实请求到服务器调度/执行的当前身份链。',
+ 'E066':'未观察当前发行 Workflow 的实际 needs/permissions/环境与新鲜 provider 事实。',
+ 'E067':'本轮没有执行 Tag/Release/asset 写入；native publication authority/服务器响应不在已有全链验收范围。',
+ 'E051':'Run/Job provider 解析与 Produce 各有证据；本边实际 provider 事实到当前 Producer 的来源/版本/组合断言尚未单独核查。',
+ 'E052':'Produce/Terminal Plan 各自输入合同存在，尚未核查一次真实 Produce 输出经配置文件送入 post_completion_plan 的组合链。',
+ 'E054':'Terminal closure validator 的合同已核查；本边到 execute 的原生 Terminal 执行与失败传播组合留待定向观察。',
+ 'E071':'未观察真实 executor 按 T2 Remaining Work 减小当前执行集合。',
+ 'E073':'未观察真实 executor/receiver 消费 T1-a Coverage/Remaining Work。',
+ 'E074':'三个固定 SHA 的可见 Check 列表未出现稳定 Required 名称；没有观察实际 POST/App→Required 服务器消费链。',
+ 'E076':'未观察 R5 Disposition 的实际 retain/revoke 执行者；API 返回文档不代行执法。',
+ 'E086':'未观察 #124 wrapper/bound/authorized 的真实执行/Admission/R1 消费者。',
+}
+# No complement/default "verified" class. A reviewed proof must name this edge,
+# the exact layer, its receiving condition, source path and direct assertions.
+proof_specs={c['id']:c for c in proof_input['claims']}
+assert len(proof_specs)==len(proof_input['claims'])
+assert all(c['edge'] in family_by_edge for c in proof_specs.values())
+
+catalog={}
+def function_ref(sn,symbol):
+    symbol=qualified(symbol)
+    key=sn+':'+symbol
+    if key not in catalog:
+        n=mechanical['snapshots'][sn]['nodes'][symbol]
+        catalog[key]={'kind':'function','snapshot':sn,'symbol':symbol,
+                      **{k:n[k] for k in ['commit','path','line','end_line','blob','sha256']},
+                      'url':f'https://github.com/dymzz/engineering-ci/blob/{n["commit"]}/{n["path"]}#L{n["line"]}'}
+    return key
+
+blob_cache={}
+def blob(ref,path):
+    key=(ref,path)
+    if key not in blob_cache: blob_cache[key]=git('show',ref+':'+path)
+    return blob_cache[key]
+
+def file_ref(ref,path,kind):
+    key=ref+':'+path
+    if key not in catalog:
+        raw=blob(ref,path)
+        catalog[key]={'kind':kind,'commit':ref,'path':path,'sha256':hashlib.sha256(raw).hexdigest(),
+                      'blob':hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest(),
+                      'url':f'https://github.com/dymzz/engineering-ci/blob/{ref}/{path}'}
+    return key
+
+def test_ref(sn,file,name):
+    path='tests/'+file+'.py';raw=blob(REFS[sn],path)
+    selected=[n for n in ast.walk(ast.parse(raw.decode('utf-8-sig'))) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name]
+    assert len(selected)==1,(sn,file,name)
+    n=selected[0];key=sn+':'+path+'#'+name
+    catalog[key]={'kind':'contract_test_fixture','snapshot':sn,'commit':REFS[sn],'path':path,'name':name,
+                  'line':n.lineno,'end_line':n.end_lineno,'sha256':hashlib.sha256(raw).hexdigest(),
+                  'url':f'https://github.com/dymzz/engineering-ci/blob/{REFS[sn]}/{path}#L{n.lineno}',
+                  'trust_scope':'Existing test source/recorded suite evidence; fixture authority/provider doubles are not production facts.',
+                  'case_result':'No new per-case execution or independent D replay in C; prior suite result referenced separately.'}
+    return key
+
+
+def excerpt(ref,start,end):
+    source=catalog[ref]
+    lines=blob(source['commit'],source['path']).decode('utf-8-sig').splitlines()
+    assert 1<=start<=end<=len(lines)
+    text='\n'.join(lines[start-1:end])+'\n'
+    return {'source_ref':ref,'start':start,'end':end,'text':text,
+            'text_sha256':hashlib.sha256(text.encode('utf-8')).hexdigest(),
+            'normalization':'UTF-8/LF excerpt; file SHA remains the exact Git blob content'}
+
+
+def expand_proof(sn,spec,edge):
+    assert spec['edge']==edge['id'] and spec['proof_object'] and spec['scope_limit']
+    assert set(spec['layers'])<={'component_contract','handoff_contract'}
+    source_steps=[]
+    for step in spec['source_steps']:
+        ref=function_ref(sn,step['symbol']);source=catalog[ref]
+        assert source['line']<=step['start']<=step['end']<=source['end_line'],(spec['id'],step)
+        source_steps.append({**excerpt(ref,step['start'],step['end']),
+                             'roles':step['roles'],'proves':step['proves']})
+    test=spec['test'];file=Path(test['file']).stem
+    ref=test_ref(sn,file,test['name']);source=catalog[ref]
+    tree=ast.parse(blob(source['commit'],source['path']).decode('utf-8-sig'))
+    case=next(n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
+              and n.name==test['name'] and n.lineno==source['line'])
+    assertions=[]
+    for binding in test['assertions']:
+        statement=next(n for n in ast.walk(case) if isinstance(n,ast.Assert) and n.lineno==binding['line'])
+        assertions.append({**excerpt(ref,statement.lineno,statement.end_lineno),
+                           'assertion_expression':ast.unparse(statement.test),
+                           'roles':binding['roles'],'proves':binding['proves']})
+    invocations=[]
+    for line in test['act_lines']:
+        calls=[n for n in ast.walk(case) if isinstance(n,ast.Call) and n.lineno==line]
+        assert calls,(spec['id'],line)
+        call=max(calls,key=lambda n:(n.end_lineno-n.lineno,n.end_col_offset-n.col_offset))
+        invocations.append({**excerpt(ref,call.lineno,call.end_lineno),'expression':ast.unparse(call.func)})
+    contexts=[{**excerpt(ref,c['start'],c['end']),'proves':c['proves']} for c in test['fixture_context']]
+    return {'id':spec['id'],'layers':spec['layers'],'proof_object':spec['proof_object'],
+            'edge_binding':{'edge':edge['id'],'snapshot':sn,'from_node':edge['from'],'to_node':edge['to']},
+            'method':spec['method'],'source_steps':source_steps,'test_ref':ref,
+            'invocations':invocations,'assertion_bindings':assertions,'fixture_context':contexts,
+            'controlled_actor':spec['controlled_actor'],'scope_limit':spec['scope_limit'],
+            'recorded_suite_ref':ci_by_snapshot[sn],
+            'execution_scope':'Existing fixed test source and suite receipt; no new per-case execution, origin authentication or D replay.'}
+
+ci_by_snapshot={}
+for sn,run_id in [('main',44068954853),('pr124',44085810641)]:
+    ci=next(x for x in baseline['ci'] if x['run_id']==run_id)
+    job=next(j for j in ci['jobs']['jobs'] if j['name']=='sync-tool-tests')
+    assert job['conclusion']=='success'
+    key=f'actions-run:{run_id}:sync-tool-tests'
+    catalog[key]={'kind':'recorded_ci_suite','snapshot':sn,'commit':REFS[sn],
+                  'run_id':run_id,'job_id':job['id'],'conclusion':job['conclusion'],
+                  'url':f'https://github.com/dymzz/engineering-ci/actions/runs/{run_id}',
+                  'ab_metadata':'../baseline-snapshot.json',
+                  'scope':'Recorded core suite success at exact SHA; no archived per-case assertion output and no full-chain production authentication.',
+                  'dispatch_refs':[file_ref(REFS[sn],'.github/workflows/ci.yml','workflow_source'),
+                                   function_ref(sn,'engineering_ci_module.main.EngineeringCi.tests'),
+                                   function_ref(sn,'engineering_ci_module.main.EngineeringCi._repository_tests')]}
+    ci_by_snapshot[sn]=key
+
+issue_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/github-source-snapshots.json.gz','normalized_issue_pr_ci_archive')
+visibility_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/github-visibility.json','decoded_GET_observation')
+protection_key=file_ref(AB_HEAD,'docs/verification/authorization-closure/evidence/protection-observation.json','protection_observation')
+rows=[]
+proof_claims={}
+for e in graph['edges']:
+    group_key=family_by_edge[e['id']];g=families[group_key]
+    a,b=[graph['nodes'][e[k]] for k in ['from','to']]
+    sn=a['snapshot'];assert b['snapshot']==sn
+    anchors=[function_ref(sn,n['symbol']) for n in [a,b] if 'symbol' in n]
+    validators=[function_ref(sn,s) for s in g['validators']]
+    tests=[test_ref(sn,f,n) for f,names in g['test_selection'].items() for n in names]
+    raw=[file_ref(REFS['main'],p,'retained_verification_summary' if p.endswith('.md') else 'retained_native_fixture') for p in g['retained_raw_paths']]
+    evidence=[*anchors,*validators,*tests,ci_by_snapshot[sn],issue_key,*raw]
+    if group_key=='protection' or e['id']=='E074': evidence.extend([visibility_key,protection_key])
+    if group_key=='release-publication' or e['id']=='E072':
+        evidence.extend([file_ref(REFS[sn],'.github/workflows/release.yml','workflow_source'),
+                         function_ref(sn,'workflow_actions.main'),function_ref(sn,'release.publishing.main'),
+                         function_ref(sn,'release.publishing.publish_release')])
+    extra_tests={
+        'E003':{'test_reconciliation':['test_real_v2_effective_profile_expected_is_accepted']},
+        'E006':{'test_execution':['test_a2_real_non_mocked_host_execution_and_reconciliation']},
+        'E009':{'test_execution':['test_a2_real_non_mocked_host_execution_and_reconciliation','test_raw_execution_reports_carry_plan_authorization_for_reconciliation']},
+        'E010':{'test_execution':['test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end']},
+        'E011':{'test_execution':['test_execute_propagates_test_failure']},
+        'E032':{'test_required_assessment_check':['test_missing_assessment_completes_as_failure_not_skipped']},
+        'E047':{'test_unified_cli':['test_actions_dispatcher_preserves_original_result']},
+    }
+    evidence.extend(test_ref(sn,f,n) for f,names in extra_tests.get(e['id'],{}).items() for n in names)
+    own_proofs=[expand_proof(sn,spec,e) for spec in proof_specs.values() if spec['edge']==e['id']]
+    proof_claims.update({p['id']:p for p in own_proofs})
+    handoff_claims=[p['id'] for p in own_proofs if 'handoff_contract' in p['layers']]
+    component_claims=[p['id'] for p in own_proofs if 'component_contract' in p['layers']]
+    status=('known_gap' if e['id'] in known else
+            'verified_contract_authority_unconnected' if handoff_claims else 'not_investigated')
+    basis=(known[e['id']] if e['id'] in known else
+           '；'.join(proof_claims[p]['proof_object'] for p in handoff_claims) if handoff_claims else
+           uninvestigated.get(e['id'],'本边尚未登记直接交接断言/已核实数据路径；相关组件测试保留为上下文，局部已证层次单独列出。'))
+    for p in own_proofs:
+        evidence.extend([p['test_ref'],p['recorded_suite_ref'],*[s['source_ref'] for s in p['source_steps']]])
+    if 'external' in a or 'external' in b:
+        external_node=a if 'external' in a else b
+        next_observation=external_node['needed_observation']
+    else:
+        next_observation=g['authority_source']+'；按本边 subject/time 核对实际接线和 D 的独立反例。'
+    callsites=[]
+    if e['kind']=='static_call':
+        callsites=[c['line'] for c in mechanical['snapshots'][sn]['nodes'][a['symbol']]['calls'] if c.get('target')==b['symbol']]
+        assert callsites
+    rows.append({'edge':e['id'],'snapshot':sn,'family':group_key,
+      'sink':{'function_ref':function_ref(sn,g['sink']),'local_consumer_node':e['to'],'allowing_condition':g['allowing_condition'],'edge_fact':e['fact'],
+              'limit':'The named family exit anchors the allowing condition; it does not assert that every family edge is wired to it in production.'},
+      'invariants':[{'number':i,'issue':'https://github.com/dymzz/engineering-ci/issues/125','section':'§1'} for i in invariants_by_family[group_key]],
+      'actual_call_path':{'from_node':e['from'],'to_node':e['to'],'relationship':e['kind'],
+                          'anchors':anchors,'proven_static_callsites':callsites,
+                          'limit':'Data-contract/manual/external edges do not claim a direct runtime call or actual transport execution.'},
+      'producer_and_authority_source':{'producer_node':e['from'],'code_ref':function_ref(sn,a['symbol']) if 'symbol' in a else None,
+                                       'authority_source':g['authority_source'],'external_observation':a.get('needed_observation')},
+      'validator_and_trust_boundary':{'function_refs':validators,'boundary':g['authority_source'],
+                                       'limit':'Structural/hash/fixture consistency is distinct from real origin, grant and actual execution.'},
+      'consumer':{'node':e['to'],'code_ref':function_ref(sn,b['symbol']) if 'symbol' in b else None,
+                  'external_observation':b.get('needed_observation')},
+      'scope_typed_identity_phase_time':{'commit':REFS[sn],'typed_identity':g['typed_identity'],'phase':g['phase'],'time':g['time'],
+                                        'scope_limit':'This pinned edge only; no authority transfer between snapshots or unrelated obligations.'},
+      'failure_behavior':{'recorded_contract':g['failure_behavior'],'independent_semantic_adversarial_replay':'not performed in C'},
+      'raw_evidence_and_tests':list(dict.fromkeys(evidence)),
+      'edge_proof':{'proof_object':{'edge':e['id'],'from_node':e['from'],'to_node':e['to'],
+                                    'declared_handoff':e['fact'],'snapshot':sn},
+                    'layers':{
+                      'component_contract':{'status':'verified' if component_claims else 'related_evidence_only',
+                                             'claim_ids':component_claims,'limit':'局部 API/分支证据不提升为本边交接。'},
+                      'handoff_contract':{'status':'verified' if handoff_claims else 'not_investigated',
+                                           'claim_ids':handoff_claims,'limit':'只在逐条 proof_object/scope_limit 内成立。'},
+                      'origin_authentication':{'status':'not_investigated','claim_ids':[],
+                                                'limit':'没有新增真实 issuer/source 认证证明；fixture True 不代签。'},
+                      'production_wiring':{'status':'known_gap' if e['id'] in known else 'not_investigated','claim_ids':[],
+                                           'limit':'保留原已知缺口/观察；没有新增真实端到端接线验收。'}},
+                    'contextual_test_refs':tests,
+                    'classification_rule':'仅本边显式 handoff_contract 证明可支持合同已验证分类；Family/CI/测试名存在不构成该证明。'},
+      'coverage_status':{'value':status,'label':labels[status],'basis':basis,
+                          'verified_layer':'handoff_contract' if handoff_claims and status=='verified_contract_authority_unconnected' else None,
+                          'proof_claim_ids':handoff_claims if status=='verified_contract_authority_unconnected' else [],
+                          'evidence_scope':'Contract/observation only as cited; not a new Required/Release/production decision.'},
+      'gap_or_contradiction':{'gap':basis if status!='verified_contract_authority_unconnected' else g['authority_source'],
+                              'contradiction':'No evidence contradiction established by this C derivation; D views remain separate.',
+                              'needed_observation':next_observation},
+      'original_issue_pr':{'issues':[f'https://github.com/dymzz/engineering-ci/issues/{n}' for n in g['original_issues']],
+                           'pull_requests':[f'https://github.com/dymzz/engineering-ci/pull/{n}' for n in g['original_prs']],
+                           'ab_review_pr':'https://github.com/dymzz/engineering-ci/pull/126',
+                           'limit':'References retain their original contract/consumer scope; no whole-Issue production completion inferred.'}})
+
+# Keep the repaired A/B candidate ledger immutable. C adds a relation using the
+# full retained AST (including non-candidate intermediate helpers) or preserves
+# a visible unknown. Equal code only references implementation evidence.
+relations=[]
+for original in dispositions['candidates']:
+    sn=original['snapshot'];symbol=original['symbol'];nodes=mechanical['snapshots'][sn]['nodes']
+    targets={n['symbol']:key for key,n in graph['nodes'].items() if n['snapshot']==sn and 'symbol' in n}
+    chain=[];target=None
+    if original['disposition']!='excluded':
+        todo=deque([[symbol]]);seen={symbol}
+        while todo:
+            p=todo.popleft();current=p[-1]
+            if current in targets:chain=p;target=targets[current];break
+            for caller in sorted(nodes[current]['callers'],key=lambda x:x['caller']):
+                if caller['caller'] not in seen:seen.add(caller['caller']);todo.append(p+[caller['caller']])
+    edge_refs=[e['id'] for e in graph['edges'] if target and target in [e['from'],e['to']]]
+    reused=[]
+    if original['disposition']=='shared_implementation':
+        reuse=original['reused_from'];main_node=original['graph_node']
+        assert nodes[symbol]['sha256']==mechanical['snapshots']['main']['nodes'][symbol]['sha256']==original['source_sha256']
+        reused=[e['id'] for e in graph['edges'] if main_node in [e['from'],e['to']]]
+    relation=('explicitly_excluded' if original['disposition']=='excluded' else
+              'same_snapshot_static_path' if target else
+              'implementation_only_consumer_uninvestigated' if reused else 'uninvestigated')
+    relations.append({'snapshot':sn,'symbol':symbol,'source_ref':function_ref(sn,symbol),
+       'ab_disposition':original['disposition'],'ab_reason':original['reason'],'relation':relation,
+       'same_snapshot_graph_node':target,'callee_to_caller_chain':[function_ref(sn,s) for s in chain],
+       'edge_refs':edge_refs,'edge_statuses':{e:next(r['coverage_status']['value'] for r in rows if r['edge']==e) for e in edge_refs},
+       'implementation_only_main_edge_refs':reused,
+       'coverage_status_if_unmapped':'not_investigated' if not target and original['disposition']!='excluded' else None,
+       'needed_observation':('Non-authorization vocabulary exclusion retained from A/B.' if original['disposition']=='excluded' else
+                             'Actual source/authority/subject/time and runtime consumer must be checked; static helper coverage is not semantic coverage.' if target else
+                             'Same implementation does not establish pr124 runtime consumers; inspect local imports/closures/providers/Workflow/receiver and actual authority.')})
+
+status_counts={s:sum(r['coverage_status']['value']==s for r in rows) for s in labels}
+public_families={key:{k:v for k,v in value.items() if k not in ['test_selection','retained_raw_paths']} for key,value in families.items()}
+index={'purpose':'Issue #125 C derived Coverage/Gap evidence index, never a runtime authorization registry',
+       'implementation_base':BASE,'reviewed_ab_head':AB_HEAD,'snapshots':REFS,
+       'classification_labels':labels,'assessment_scope':'Reuses A/B fixed code/observations and original contract evidence. Independent D semantic/adversarial/source views have not been executed.',
+       'production_claim':'No reviewed authorization edge is classified as verified_production; this does not invalidate recorded native fixtures or observed CI Checks within their own scope.',
+       'families':public_families,'status_counts':status_counts,'source_catalog':catalog,
+       'edge_proof_input':{'path':'evidence/edge-proof-claims.json',
+                            'sha256':hashlib.sha256((EVIDENCE/'edge-proof-claims.json').read_bytes()).hexdigest()},
+       'edge_proof_claims':proof_claims,'proof_layer_counts':{
+           layer:sum(r['edge_proof']['layers'][layer]['status']=='verified' for r in rows)
+           for layer in proof_input['layer_definitions']},'edges':rows}
+write(OUT/'index.json',index)
+write(OUT/'candidate-relations.json',{'purpose':'Reconcile all repaired A/B candidates with C edges without conflating mechanical and semantic coverage',
+       'ab_counts':dispositions['counts'],'snapshots':REFS,
+       'counts':{sn:dict(Counter(r['relation'] for r in relations if r['snapshot']==sn)) for sn in REFS},
+       'candidates':relations})
+write(EVIDENCE/'inputs.json',inputs)
+
+lines=['# C 阶段的实际证据范围','',f'派生输入为已合并 #126 的审阅 HEAD `{AB_HEAD}`；本轮实现基线为 `{BASE}`。',
+       '运行时代码/测试/Workflow/依赖相对 A/B main 无变化，索引沿用原 main 与 #124 两个独立快照，未刷新旧服务端观察的时间。','',
+       '## 按边分类','', '| 分类 | 边数 |', '| --- | ---: |']
+for status,label in labels.items():lines.append(f'| {label} (`{status}`) | {status_counts[status]} |')
+lines.extend(['','以上是 **86 条已列依赖边**的证据类别，不是 ECI 授权覆盖率。0 项真实生产表示这些允许性链路没有完成所需真实来源闭包；旧 Native/CI 事实仍在原范围有效。0 项证据矛盾表示 C 未建立此类裁决，不代表 D 已证明没有矛盾。',
+              '', '## 证明对象与层次', '',
+              '[Review #5943207575](https://github.com/dymzz/engineering-ci/pull/127#pullrequestreview-5943207575) 指出的默认合同分类已移除。每条边都有自己的 `edge_proof.proof_object`；层次分别记录组件合同、交接合同、来源认证、生产接线。只有该边显式登记的交接证明，才支持“合同已验证”分类。未逐边绑定的 Family fixtures/CI 只作上下文。', '',
+              '| 已有直接证明的层次 | 边数 |', '| --- | ---: |'])
+for layer,count in index['proof_layer_counts'].items():lines.append(f'| {layer} | {count} |')
+lines.extend(['', '这些计数限于每项 `proof_object` / `scope_limit`。组件层通过不能提升交接层；交接层可只证明受控 API/格式/参数传递，不提升实际 issuer、token/App 或端到端运行权限。', '',
+              '## 逐边直接证明', '',
+              '[证明输入](evidence/edge-proof-claims.json)逐项写明本边条件、固定源码路径、测试调用点、断言角色及其证明内容；[机器索引](index.json)进一步保存原文摘录、行号和 SHA。校核器核对这些手工审阅的绑定与真实 AST/源字节一致，不能自动裁定全部业务语义。', '',
+              '| 证明 | 层次 | 证明对象 | 直接断言（固定源码行） |', '| --- | --- | --- | --- |'])
+for key,p in proof_claims.items():
+    assertions='、'.join(f'[{a["start"]}]({catalog[p["test_ref"]]["url"].split("#")[0]}#L{a["start"]})' for a in p['assertion_bindings'])
+    lines.append(f'| {key} | {" / ".join(p["layers"])} | {p["proof_object"]} | {assertions} |')
+lines.extend(['', 'E059/E062/E085 仅保留明确的组件断言，外部来源交接仍未调查。E063 保留精确 Python transport API 正例：repository、`check-runs`、`POST`、请求体等于 `publication.request`、返回 ID；真实 token/App 与服务器授权没有据此验证。E079 的范围仅为结构 seal→Binder 的对齐/拒绝行为，与 E085 的真实 Phase 来源分开。',
+              '','## 逐边索引','',
+              '每行的固定源码、身份/Phase/时间、failure、原始证据/测试、trust boundary 与原 Issue/PR 均在 [机器索引](index.json) 的同名 edge 中。`contract_input` 不能充作生产接线；测试名中的 real/verified 不改变 fixture 证据类型。','',
+              '| 边 | 生产/验证 → 消费 | 分类 | 已证层次 | 原归属 |', '| --- | --- | --- | --- | --- |'])
+for row in rows:
+    edge=next(e for e in graph['edges'] if e['id']==row['edge'])
+    a,b=[graph['nodes'][edge[k]] for k in ['from','to']]
+    def label(n):return n.get('symbol',n.get('external')).removeprefix('engineering_ci.')
+    source_link=next((catalog[s]['url'] for s in row['actual_call_path']['anchors']),None)
+    owners=' / '.join('#'+u.rsplit('/',1)[-1] for u in row['original_issue_pr']['issues'])
+    verified=' / '.join(k for k,v in row['edge_proof']['layers'].items() if v['status']=='verified') or '未登记直接证明；上下文保留'
+    lines.append(f'| [{row["edge"]}]({source_link}) | `{label(a)}` → `{label(b)}` | {labels[row["coverage_status"]["value"]]} | {verified} | {owners} |')
+lines.extend(['','## 候选去向与未调查范围','',
+              '原 A/B 254 项 disposition 原文不改写。C 从完整保留 AST 查找同分区 callee→caller 路径，允许中间 helper 不在候选列表；每一步仍有实际调用表达式依据。正向调用路径与原人工数据边分开校验。','',
+              '| 快照 | 同分区静态路径 | 仅相同实现，消费者待查 | 尚未找到图路径 | 明确排除 |', '| --- | ---: | ---: | ---: | ---: |'])
+for sn in REFS:
+    counts=Counter(r['relation'] for r in relations if r['snapshot']==sn)
+    lines.append(f'| {sn} | {counts["same_snapshot_static_path"]} | {counts["implementation_only_consumer_uninvestigated"]} | {counts["uninvestigated"]} | {counts["explicitly_excluded"]} |')
+lines.extend(['','[候选关系](candidate-relations.json)逐项列出原 disposition、固定源码、完整 helper 调用链、同分区边以及实现证据引用。跨快照 main 引用只列在 `implementation_only_main_edge_refs`，不复制 main 的生产/消费者结论。无映射项保留 `not_investigated` 和待补观察；不按 route 或零调用者自动排除。',
+              '','## 已知缺口及后续观察','',
+              '| 边 | 实际依据 / 待补事实 |', '| --- | --- |'])
+for edge,why in {**known,**uninvestigated}.items():lines.append(f'| {edge} | {why} |')
+for row in rows:
+    if row['coverage_status']['value']=='not_investigated' and row['edge'] not in uninvestigated:
+        lines.append(f'| {row["edge"]} | {row["coverage_status"]["basis"]} |')
+lines.extend(['','权威回调尚未接通的合同边还分别列出真实 Issuer、当前批准/撤销/有效期、Scope、Provider/transport 与消费者的 `needed_observation`。这些条目用于原 Issue 的后续验收；本阶段没有新增修复方案、修改公共接口或运行 D 的组合对抗测试。',
+              '','上级入口：[C 阶段索引](README.md)。',''])
+(OUT/'assessment.md').write_bytes('\n'.join(lines).encode('utf-8'))
+(EVIDENCE/'derive-index.txt').write_bytes(Path(__file__).read_bytes())
+print('C edge classifications:',status_counts)
+print('Candidate relations:',json.dumps({sn:dict(Counter(r['relation'] for r in relations if r['snapshot']==sn)) for sn in REFS}))
