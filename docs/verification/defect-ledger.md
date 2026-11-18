@@ -47,12 +47,12 @@
 | 序位 | Producer / 关键事实 | Validator → Consumer | 涉及的发现 | 已证状态 / 待核实 |
 | --- | --- | --- | --- | --- |
 | T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01、**NEW-031、NEW-032** | 除 Domain/Phase 真实性，还须核对 Universe 与 R1 的求值时点及 Approval 签发先后；#124 Binder 的错误授权并不等于 R1 已错 |
-| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
-| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006、NEW-026、NEW-030** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
-| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
+| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024、NEW-041～NEW-044、NEW-048～NEW-052** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
+| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-002、NEW-006、NEW-026、NEW-030、NEW-043、NEW-044** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
+| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033、NEW-045～NEW-047** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
 | T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037** | 尚待核对 Assessment 原 Target/Action/Ref 与 Release 作用域、Manifest 来源及真实消费边界 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013、NEW-027、NEW-029**、D-G04 | 重新评估的时间箭头和逾期证据批准的 Assessment 对象身份须独立核实；不代表全生命周期 PASS |
-| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
+| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025、NEW-042** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
 
 ### 0.3 源码事实、条件性影响和反证
 
@@ -105,6 +105,18 @@
 | NEW-038 | 未执行 Lefthook 调度，但调用本地 `record_job` 与默认 `build_routing` | Routing 中写入固定 Lefthook 调度器身份与 `hook-job:1` 配置标签，`_normalize_routing` 只验证字段为字典并在 Receipt 中保留 | 若有消费者将此标签解释为实际调度、过滤或生效配置证明，可能发生来源错归属；当前没有全链受信消费证据 | 真实 Scheduler activation / effective merged config / Event 关联、下游受信规则待核实；NEW-024/025 涉及其他属性 |
 | NEW-039 | 指定具有合法二参/三参 Runner，当 Runner 开始执行副作用后抛出 `TypeError` | `_run_command()` 会在 `except TypeError` 里以三个位置参数重新调用同一个 Runner；真实错误上下文可能被覆盖，命令可能被第二次执行 | Pre-execution Command 的生成产物、远端副作用或 Report 准确性受影响；现有内置 `_run` 及真实 Host/Dagger 中是否可达此后置异常未证 | 需要区分签名不兼容与 Runner 内部异常；用带调用次数/副作用的受控二参/三参 Runner、实际 PREREQ Provider 验证 |
 | NEW-040 | 两个已完成的 `vesryn` PR Run 确有非空且通过认证的 `ENGINEERING_CI_READ_TOKEN`；但两次 PR 作者均有仓库 `admin` 权限且均未改动 `.dagger` 模块 | 固定 ECI 旧版提供原生 `pytest_ci.py` 输出，Host 执行的 `ci.py` 仍沿报告接口交付；Dagger 旧版使用原生 Secret 仅在 uv 依赖同步时注入并撤销，Host Credential Store 在 Job 内可访问 | 若未来有未授权 PR 代码能控制本地报告函数且同 Job 持有私有令牌，会扩展 Host 执行权限；两次真实运行不能作为凭证泄漏或权限绕过证据 | 区分现有 admin 信任域正例、真正不可信 PR 与受信 ECI Module 输出；必要性按 GitHub 原生 Secret 规则和 Dagger Secret 生命周期判定 |
+| NEW-041 | Terminal Live 命令 exit=0，而 Terminal Correlation 整体 failed | Native Producer 把 terminal-live-check 记为 passed；注册 Check Requirement 无 Terminal Correlation，局部可满足，Dagger 总 Gate 会阻断 | 独立转交/历史复用局部 Check Satisfaction 时可能错认完整 Terminal；未证 #63/R1 生产错误接纳 | 同次 Live PASS/Correlation FAIL 与合法双 PASS，验证 Native→Check→Admission 的资格语义 |
+| NEW-042 | 受保护 Vulture/Tach 等 Hygiene 实际进入 Host 原生进程路径 | run_host_check/execute 只把 policy_admission 传给 Workflow Script，Hygiene/Source 未使用，真实外部进程仍可调用 | 若 #57 明确保护该工具且没有外层同等准入，禁用/撤销的资产可能运行；实际授权越界待 Native 验证 | 一个真实受保护工具的撤销/有效配置，分别验证 Host、Dagger 与缓存命中前准入 |
+| NEW-043 | T1-b 同 Action×Target×Phase×Check 集合，Consumer Event/Expected/Candidate 身份不同 | Consumer Scope 保存 event_ref、expected_set_ref、candidate_digest，但 _match_consumer_authorization 仅比较核心 Action/Target/Phase/Check | 若受信 authorization_authority 或下游 T1-a 未核对，Handoff verified 可能错归属当前 Invocation；真实 Authority 未证 | 同授权 Check 集合下修改 Event/Expected/Candidate，确认实际 Issuer 与 T1-a 在何处拒绝 |
+| NEW-044 | Local Handoff 或 Release evaluated_at 无时区，混合其他 UTC/偏移的有效期、撤销时刻 | 两模块 _datetime 只调用 fromisoformat，不要求 tzinfo；与 aware datetime 比较可抛 TypeError | 可能丢失可解释的结构化拒绝，或把无绝对基准的时间交给受信回调；未证真实授权错误放行 | T1-b produced/executed/evaluated/grant 起止撤销、R4 evaluated_at 的无时区/混合输入与合法 Z/偏移正例 |
+| NEW-045 | 直接调用公开 publish_check_run(failure)，无已认证 Publisher Authority | 下层仅 success 检查 publish_authority；failure 可直接到 client POST，上层 authorize_and_publish 已正确先验证身份 | 存在两条公开发布入口的授权前置不一致；真实生产服务端 POST/权限配置未证 | 同一个 FakeGitHub 检查 failure 未授权零 POST、合法 failure POST、success 授权两态 |
+| NEW-046 | Approval 本身允许 PR/Push，调用方额外 allowed_events 仅 Push，尝试发布 PR failure | 上层 failure 校验 Approval 自带 allowed_events，但没有消费调用者额外更窄限制；success 会验证附加集合 | 同一调用的附加 Event Policy 对成功/失败不对称；不等于失败支持任意 Event | Approval 允许 PR/Push，额外仅 Push，分别尝试 failure 与 success，确保合法 failure 保留 |
+| NEW-047 | 同一个 Required Context 被不同 app_id/integration_id 的来源签发 | 观察器只提取 context 文本，configured 判断名称存在，不核 G2 Publisher App 是否相符 | 服务端配置存在同名 Check 不足以证明有权 Publisher 来源已受限；未证服务器错误合并 | 相同 Context 的正确/错误/无 App 以及 Branch Protection/Ruleset 冲突输入，复用原生 API |
+| NEW-048 | Plan 绑定 Base/Head Tree，但执行目录内容与 Head Commit 不同 | _whitespace 仅运行 git diff --check <base>，不使用 head_commit/tree/snapshot；Git 原生命令对比工作树 | 同一 Plan 的原生结果可能对应错误输入字节；已有外层 Source Refusal 是否阻断具体场景待核验 | Base clean、Head trailing whitespace、Worktree clean；对照 git diff --check base 与 base head |
+| NEW-049 | actionlint 命令声明 JSON 格式、exit=0，但 stdout 为不可匹配文本，raw 为空 | _actionlint_facts 在非 [ 前缀时转用正则文本，无法匹配便返回空 findings/limitations；下游可 clean | 结构化证据缺失与原生无问题被混淆；未证固定 Actionlint 正常会输出此异形正文 | 合法 JSON [] clean、JSON Finding，以及请求 JSON/无 JSON/文本无法匹配时结果不 clean |
+| NEW-050 | Pyright --outputjson / Pylint --output-format=json 在 stdout 输出，调用方未提供 native_output 文件 | Dagger _run_static 解析 native_raw 文件路径但默认为空，stdout JSON 未进入相应结构化诊断 | Pyright/Pylint 诊断/版本缺失或错误归因为执行失败；未跑真实 Engine Fixture | 固定 ECI 版本的两工具 stdout JSON 与 Deptry 文件型 JSON 对照，不重跑无关工具 |
+| NEW-051 | 当前范围内需要分析两个以上 .ps1/.psm1 脚本 | Python CLI 以单个 -Path 后追加多个文件，而 PowerShell Helper 参数按单值解析 | 合法多脚本扫描在原生参数绑定处失败，非错误 clean；真实 Windows 多文件生产案例未验 | 两个不同脚本和 Native 诊断，比较已支持的重复 -Path 参数形式 |
+| NEW-052 | PR 只改 .dagger/ 或 .github/ 等敏感路径，Live Capture 选择依赖路径判断 | lstrip('./') 把开头 .dagger/ 改为 dagger/，.github/ 改为 github/，导致不匹配 | 应执行 Engine Live Capture 却仅运行离线合同回归；离线证据仍声明 native_capture_verified=false | 隐藏路径、Unicode quotePath、跨敏感目录重命名旧路径的实际文件集对照 |
 
 ### 0.4 调查依赖（可并行，不是修改门槛）
 
@@ -177,8 +189,22 @@
 | **NEW-038** | 待评估 | **源码声明行为已确认；真实调度来源与消费者待核验** | `main@fc0df2a`；#66 Hook/Lefthook → #66-C Routing | 未调用 Lefthook 的模块级执行和对账中，`scheduler_ref` 自动写 Lefthook 2.2.2，`effective_config_ref` 自动写 `hook-job:1` | 原生来源/生产授权影响未证；与 NEW-024/025 关联 |
 | **NEW-039** | 待评估 | **源码级重调条件确认；原生 Runner 异常复现与生产可达性待验证** | `main@fc0df2a`；#86 Host Prerequisite / Dagger Module-local command | `_run_command` 把 Runner 内部抛出的 `TypeError` 当作参数签名失败，可能重复调用已开始执行的原生命令 | 没有提交原生复现、没有证明真实受保护发布/门禁错误 |
 | **NEW-040** | 待评估 | **非空 Secret+真实 Consumer+成功 Gate 已证；未授权控制/泄漏未证** | ECI `main@fc0df2a` / ECI Reusable `@0f74b2f` / vesryn PR #32/#29 | 原始 Job 日志证明两次私有 Git 认证成功；PR 作者均为 `admin`、均未修改 `.dagger`；旧版 ECI 在 uv sync 后撤销容器 Secret 并从固定文件生成 `ci.py` | 当前实测为授权正例；不代表 Host 执行导出脚本的设计风险已经消失，需真实不可信来源与凭证隔离合同 |
+| **NEW-041** | 待评估 | **Weaver Terminal 局部 Native Satisfaction 未绑定外层 Terminal Correlation** | `main@fc0df2a` | Native Producer 把 terminal-live-check 记为 passed；注册 Check Requirement 无 Terminal Correlation，局部可满足，Dagger 总 Gate 会阻断 | 独立转交/历史复用局部 Check Satisfaction 时可能错认完整 Terminal；未证 #63/R1 生产错误接纳 |
+| **NEW-042** | 待评估 | **受保护 Host Hygiene 工具未消费已有 Tool Policy Admission** | `main@fc0df2a` | run_host_check/execute 只把 policy_admission 传给 Workflow Script，Hygiene/Source 未使用，真实外部进程仍可调用 | 若 #57 明确保护该工具且没有外层同等准入，禁用/撤销的资产可能运行；实际授权越界待 Native 验证 |
+| **NEW-043** | 待评估 | **T1-b Local/Actions Handoff 的 Event/Expected/候选主体未由本层强制绑定** | `main@fc0df2a` | Consumer Scope 保存 event_ref、expected_set_ref、candidate_digest，但 _match_consumer_authorization 仅比较核心 Action/Target/Phase/Check | 若受信 authorization_authority 或下游 T1-a 未核对，Handoff verified 可能错归属当前 Invocation；真实 Authority 未证 |
+| **NEW-044** | 待评估 | **T1-b/R4 授权时间解析接纳无时区值，跨模块时序语义不一致** | `main@fc0df2a` | 两模块 _datetime 只调用 fromisoformat，不要求 tzinfo；与 aware datetime 比较可抛 TypeError | 可能丢失可解释的结构化拒绝，或把无绝对基准的时间交给受信回调；未证真实授权错误放行 |
+| **NEW-045** | 待评估 | **G2 底层正式 Check POST 对 failure 缺独立 Publisher 身份硬性前置** | `main@fc0df2a` | 下层仅 success 检查 publish_authority；failure 可直接到 client POST，上层 authorize_and_publish 已正确先验证身份 | 存在两条公开发布入口的授权前置不一致；真实生产服务端 POST/权限配置未证 |
+| **NEW-046** | 待评估 | **G2 显式 allowed_events 收窄仅在 success 路径生效** | `main@fc0df2a` | 上层 failure 校验 Approval 自带 allowed_events，但没有消费调用者额外更窄限制；success 会验证附加集合 | 同一调用的附加 Event Policy 对成功/失败不对称；不等于失败支持任意 Event |
+| **NEW-047** | 待评估 | **G3 Required Context 只核名称，未认证指定 Source App** | `main@fc0df2a` | 观察器只提取 context 文本，configured 判断名称存在，不核 G2 Publisher App 是否相符 | 服务端配置存在同名 Check 不足以证明有权 Publisher 来源已受限；未证服务器错误合并 |
+| **NEW-048** | 待评估 | **Hygiene whitespace 使用工作树而非 Plan 声明的 Head Tree** | `main@fc0df2a` | _whitespace 仅运行 git diff --check <base>，不使用 head_commit/tree/snapshot；Git 原生命令对比工作树 | 同一 Plan 的原生结果可能对应错误输入字节；已有外层 Source Refusal 是否阻断具体场景待核验 |
+| **NEW-049** | 待评估 | **Actionlint 期望 JSON，却能在文本回退缺失诊断时标为 clean** | `main@fc0df2a` | _actionlint_facts 在非 [ 前缀时转用正则文本，无法匹配便返回空 findings/limitations；下游可 clean | 结构化证据缺失与原生无问题被混淆；未证固定 Actionlint 正常会输出此异形正文 |
+| **NEW-050** | 待评估 | **Pyright/Pylint 原生结构化输出渠道与 Dagger Parser 不一致** | `main@fc0df2a` | Dagger _run_static 解析 native_raw 文件路径但默认为空，stdout JSON 未进入相应结构化诊断 | Pyright/Pylint 诊断/版本缺失或错误归因为执行失败；未跑真实 Engine Fixture |
+| **NEW-051** | 待评估 | **Windows PSScriptAnalyzer 多脚本参数契约不一致** | `main@fc0df2a` | Python CLI 以单个 -Path 后追加多个文件，而 PowerShell Helper 参数按单值解析 | 合法多脚本扫描在原生参数绑定处失败，非错误 clean；真实 Windows 多文件生产案例未验 |
+| **NEW-052** | 待评估 | **Live Capture 敏感隐藏路径因 lstrip 归一化被错误移除** | `main@fc0df2a` | lstrip('./') 把开头 .dagger/ 改为 dagger/，.github/ 改为 github/，导致不匹配 | 应执行 Engine Live Capture 却仅运行离线合同回归；离线证据仍声明 native_capture_verified=false |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
+
+- **同一候选 #124 的独立主体/时序边界（仅候选，不是 main 漏洞）**：[`terminal_expected._correlate_expected_run_plan`](https://github.com/dymzz/engineering-ci/blob/4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5/src/engineering_ci/terminal_expected.py#L789-L974) 允许 Expected/Run 只共享一个 Git 字段（例如 `head_ref`）就形成局部 `correlated`，其他已声明 Source Tree/Commit/Scope 可能因缺失而未验证；外部 Completed Run Provider 仍须独立认可 `subject_attested`。[`Phase Witness`](https://github.com/dymzz/engineering-ci/blob/4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5/src/engineering_ci/terminal_expected.py#L454-L568) 的 `validated_at` 校验有时区格式，但未本地关联真实终态时点。只有当当前有权 Phase/Run 语义要求对应主体与因果时序、而外部 Provider 又未覆盖时才构成授权缺口；候选 Binder 未运行新增生产 Authority 反例。二者和 D-F01 的并存 Domain 缺口不是同一个谓词。
 
 - **证据与输入**：[#125-D assessment](authorization-closure/independent-review/assessment.md)、[findings.json](authorization-closure/independent-review/findings.json)（`D-F01`）；原始案例 `terminal.compound_open_domain` 与 `terminal.compound_original_declared_domain`，详见 [cases.json](authorization-closure/independent-review/cases.json) 与保存的 `pr124-semantic-results.json.gz`。
 - **实际结果**：`selection.plan()` 真正导出 `status=unknown`、`effective_profile.domain_complete=False`、`definitions_status=requested_names_complete`，与合法 Terminal/Phase 见证同时出现时，Binder 返回 `bound/authorized=True` 且 `reasons=[]`。合法闭域对照 `terminal.compound_closed_domain` 也应允许 `bound`。
@@ -207,6 +233,9 @@
 - **待核对证据**：#61 身份合同、两类不同标识但字符串相同的差异输入、实际结果和适用身份语义。当前为待裁决疑点，尚未确认违反合同。
 
 ### NEW-002 — Failure 发行时间与 Assessment 时间切片脱节（待 API / 合同复核）
+
+- **相关撤销时序补充（已存在 R1 根因，不另编号）**：[`_effective_adjudication`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1779-L1796) 对 `decided_at/valid_until` 按 `evaluated_at` 判断，但对 `revoked_at` 采用非空即失效；[`_authority_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1552-L1580) 对 Profile Revocation 也采用该口径。现有测试主要使用过去已撤销输入，没有区分“历史 as-of 有效性”与“当前发布权限”。
+- **裁决条件**：过去、当时、未来的撤销时间应按真实 Issuer 的时态语义分别裁决；任何非空就拒绝不自动等于错误，但也不能无依据地把历史可用资格用于当期发布。同步处理 NEW-009/NEW-032 的相邻时序语义。
 
 - **明确源码**：[`_failure_entry`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1284-L1302) 调用 `_optional_datetime(issued_at)` 但只保留字符串；[`_in_scope_failures`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1798-L1845) 根据 Scope/Action/Phase 决定失败是否生效，**没有比较 `failure.issued_at` 与 `evaluated_at`**；同模块 [`_effective_adjudication`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1779-L1796) 却会排除未来 `decided_at`。
 - **条件反例**：在合法且封闭的相同 Assessment 输入中，保留历史合格 PASS 和相同 Scope，把独立失败事实 `issued_at` 改为评估时间之后，观察 `status/blocked_reasons` 是否变化。比较 `issued_at` 早于/等于/晚于 `evaluated_at`，以及旧 Run 与当前 Run 是否支持相同时间解释。
@@ -374,6 +403,8 @@
 
 ### NEW-028 — Publisher Approval 可传入非当前时钟判断有效期
 
+- **审批回调有效期补充（同一 G2 时间根因）**：[`workflow_publish_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L515-L612) 在**创建回调时**验证 `valid_to` 和 `approval_authority`，返回的闭包在每次调用时只核已捕获的身份与 Publication，不重取时钟或撤销状态；但正常 [`authorize_and_publish`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L670) 在**同次调用**创建并立刻消费，不证明正常生产存在过期回调复用。若确实有延迟复用消费者，比较 T0 创建、T1 到期、T2 调用的真实结果；否则下调优先级。
+
 - **源码**：[`normalize_publisher_approval`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L220-L321) 以 `clock = now or datetime.now(UTC)` 对 `valid_from/valid_to` 判断；[`authorize_and_publish`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L669)、`workflow_publish_authority`、`verify_publisher_identity` 均允许调用方传入 `now`。现有 Publisher 测试中 Approval 有效期均为 None，没有覆盖这条差异。
 - **候选反例**：Approval 原始有效期 `valid_to=t1`，当前实际本地时间 `t2>t1`；以 `now=t0<t1` 同时传入发布路径，并保留独立 Approval Authority 接受签发证明、真实 Actions 环境和合法执行者身份。检查其是否按注入时钟放行。若生产调用固定可信时钟、或独立 Authority 也校验当前时间，应按实证降级风险。
 - **时间边界**：测试的可注入时钟与生产可信时钟来源是不同对象。生产调用方对 `now` 的控制、Approval Authority 自身的时间核对，以及真实 Check 发布时的授权窗口尚待验证。
@@ -461,6 +492,115 @@
 - **后续可证伪条件**：历史 Secret 非空已由两次真实执行证明；尚需核实**非管理员/未获凭证使用权限的 PR 作者**是否有办法控制当前被选择的 Dagger 报告函数，以及 ECI Reusable 是否承诺隔离该类 PR 与 Runner Credential Store。若调用方有意授权能修改模块的主体使用此 Token，则当前案例属于合法信任合同。没有证据显示这两次运行产生未授权访问或 Gate 绕过；风险严重性继续待评估。
 若产物真实来自独立批准且不可修改的模块，则可能是合法执行；若同时满足未受信代码和 Secret 条件，则有 Runner Host 执行/来源隔离问题。尚未运行任何带真实凭证的远端反例，风险等级待评估；不与 #61 G2/G3 或 D-G05 的资产 Policy 许可混同。
 
+### NEW-041 — Weaver Terminal 局部 Native Satisfaction 未绑定外层 Terminal Correlation
+
+- **触发与证据等级**：Terminal Live 命令 exit=0，而 Terminal Correlation 整体 failed；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[Weaver Runtime](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/weaver_runtime.py#L829-L859) 保留 Live 原生命令 `exit_code=0`，同时将 Terminal Correlation FAIL 写成 `status=failed,gate_exit_code=1`；这是合理的双层原始观察。
+- **证据补充**：[native_producer.weaver_check](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/native_producer.py#L174-L235) 仅按各 `command.exit_code` 创建 `passed` Native Result，把外层 `gate_status/gate_exit_code` 作为 Evidence；[check_contract 的 weaver_terminal Requirements](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/check_contract.py#L435-L471) 只有 `terminal-live-check`，不要求 Correlation 资格。这会造成局部 Check `satisfied` 与完整 Terminal 结果 `failed` 的语义分离。
+- **证据补充**：既有 [Native Producer 测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_native_producer.py#L122-L127) 验证“原生命令 Exit 0 不应被伪造为失败”，**不是**完整 Terminal Check 已满足的证明。反证是 [Dagger aggregate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L63-L75) 按完整 Report Status 拒绝整体 Gate，当前没有最终 CI/Required 错误放行的证据。
+- **证据补充**：归于 T1 Native Satisfaction→#63 资格的独立合同：保持 Live 原始事实与 Terminal 整体判断各自真实，核对已批准 Terminal Correlation 的可采纳条件。仅验证 Live PASS/Correlation FAIL、双 PASS 两个差异案例和真实消费者，复用已有 Weaver/Dagger，不新增 Checker。
+- **影响与判定**：独立转交/历史复用局部 Check Satisfaction 时可能错认完整 Terminal；未证 #63/R1 生产错误接纳。
+- **区别验证**：同次 Live PASS/Correlation FAIL 与合法双 PASS，验证 Native→Check→Admission 的资格语义。
+
+### NEW-042 — 受保护 Host Hygiene 工具未消费已有 Tool Policy Admission
+
+- **触发与证据等级**：受保护 Vulture/Tach 等 Hygiene 实际进入 Host 原生进程路径；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[Issue #57](https://github.com/dymzz/engineering-ci/issues/57) 的对象是**每次受保护外部工具执行或缓存恢复**。现有 [workflow_analysis 的 Admission](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L1406-L1475) 已复用 [security_policy.decide](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L939-L1005)，属于有效能力。
+- **证据补充**：但 [run_host_check](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L3972-L4045) 仅将 `policy_admission` 传给 Workflow Script，Hygiene 分支直接调用 `_run_hygiene_checks`；[执行器](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L704-L792) 随后进入 [hygiene._run](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hygiene.py#L202-L324) 的真实 `subprocess.run`。正常顶层 `execute` 同样未给 Hygiene 路径注入这项准入。
+- **证据补充**：**已证明的是受保护接口参数与执行路径覆盖差异**；尚未证明某个生产项目真的把该 Hygiene 工具纳入受保护 ToolAccess、也未排除其外层已做等价准入。查一个受控 Vulture/Tach 现行政策拒绝样本及真实进程是否启动，复用既有 `security_policy`；内部纯函数不属于自动强制的外部资产。
+- **影响与判定**：若 #57 明确保护该工具且没有外层同等准入，禁用/撤销的资产可能运行；实际授权越界待 Native 验证。
+- **区别验证**：一个真实受保护工具的撤销/有效配置，分别验证 Host、Dagger 与缓存命中前准入。
+
+### NEW-043 — T1-b Local/Actions Handoff 的 Event/Expected/候选主体未由本层强制绑定
+
+- **触发与证据等级**：T1-b 同 Action×Target×Phase×Check 集合，Consumer Event/Expected/Candidate 身份不同；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[T1-b Consumer Scope](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L412-L445) 保存可选 `event_ref/expected_set_ref/scope_id/candidate_digest`；[`_match_consumer_authorization`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L471-L501) 比较 Action、Target、Phase 与 Check 集合，却不比较 Event/Expected/Candidate。
+- **证据补充**：[`verify_local_handoff`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L526-L747) 同时要求独立执行/授权/Source 回调，且授权回调可以查看完整 Package 与 Consumer Scope，所以**不能断言真实身份全被绕过**。已有样本的 Event Ref 与 Raw Payload Ref 本来属于不同命名空间，不能无依据地强制字符串相等。
+- **证据补充**：归于 D-G02 的 T1-b 受信交接；需要证明当前 Event/Expected/候选与原始 Report/Job Receipt 的**有权映射**由谁验证。仅在受控三种身份差异下核对最终结果，避免再建 Handoff Validator。
+- **影响与判定**：若受信 authorization_authority 或下游 T1-a 未核对，Handoff verified 可能错归属当前 Invocation；真实 Authority 未证。
+- **区别验证**：同授权 Check 集合下修改 Event/Expected/Candidate，确认实际 Issuer 与 T1-a 在何处拒绝。
+
+### NEW-044 — T1-b/R4 授权时间解析接纳无时区值，跨模块时序语义不一致
+
+- **触发与证据等级**：Local Handoff 或 Release evaluated_at 无时区，混合其他 UTC/偏移的有效期、撤销时刻；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[`local_actions_handoff._datetime`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L105-L113) 与 [`required_assessment_release._datetime`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L79-L87) 均只转换 `Z` 并调用 Python `datetime.fromisoformat()`，没有拒绝 `tzinfo=None`。T1-b 的 Producer Grant、`produced_at/executed_at/evaluated_at`，R4 的 Release `evaluated_at` 均受影响。
+- **证据补充**：Python 原生 `datetime.fromisoformat("2026-11-18T04:00:00")` 返回 naive 时间，与 `+00:00` aware 比较可抛 `TypeError`。R4 的 [撤销比较](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L858-L908) 存在这条调用条件；无撤销的场景还可能将 naive 传给 Policy Authority。实际完整 T1-b/R4 API 和真实发布未运行，不称生产误放行。
+- **证据补充**：现有 [R1 有偏移时间解析](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L174-L195)、[Security Policy 时间解析](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L93-L104) 已提供局部一致的成熟合同。两个受影响模块各有明确入口，应针对真实字段分别核对；无需再设计时间服务。
+- **影响与判定**：可能丢失可解释的结构化拒绝，或把无绝对基准的时间交给受信回调；未证真实授权错误放行。
+- **区别验证**：T1-b produced/executed/evaluated/grant 起止撤销、R4 evaluated_at 的无时区/混合输入与合法 Z/偏移正例。
+
+### NEW-045 — G2 底层正式 Check POST 对 failure 缺独立 Publisher 身份硬性前置
+
+- **触发与证据等级**：直接调用公开 publish_check_run(failure)，无已认证 Publisher Authority；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[PR #122 的 G2 合同](https://github.com/dymzz/engineering-ci/pull/122) 要求**成功和失败都验证 Publisher 身份**，仅成功额外验证实际 Evaluator/Policy；[`authorize_and_publish`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L670) 在分支前正确调用 `verify_publisher_identity`，现有 [上层失败发布测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_publish.py#L277-L315) 已证明这一保护。
+- **证据补充**：但实际调用 GitHub `POST check-runs` 的 [`required_assessment_check.publish_check_run`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_check.py#L696-L740) 仅在 `conclusion=="success"` 时要求 `publish_authority`；底层的正式非样本 `failure` 即使无批准也可到 POST Client。**这是下层 API 确定的授权前置不一致**，不是宣称正常 G2 上层失效。
+- **证据补充**：应使用已有上层发布者资格，在最终正式 POST 边界明确两种 Conclusion 的身份要求，并保留 Missing Assessment 的 `completed/failure` 真实发布能力。未执行服务端 POST，也没有证明 CI 已有可达的未授权调用方。
+- **影响与判定**：存在两条公开发布入口的授权前置不一致；真实生产服务端 POST/权限配置未证。
+- **区别验证**：同一个 FakeGitHub 检查 failure 未授权零 POST、合法 failure POST、success 授权两态。
+
+### NEW-046 — G2 显式 allowed_events 收窄仅在 success 路径生效
+
+- **触发与证据等级**：Approval 本身允许 PR/Push，调用方额外 allowed_events 仅 Push，尝试发布 PR failure；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[`authorize_and_publish(...,allowed_events=...)`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L670) 在失败路径只调用 `verify_publisher_identity` 后发布；额外 `allowed_events` 仅传给成功分支的 [`workflow_publish_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L515-L560)。
+- **证据补充**：反证：`verify_publisher_identity` 已通过 `_require_workflow_allowed` 检查 Approval **自身的** Event 白名单。因此这不是“failure 在任何事件均可发布”，而是**调用方追加的更窄事件集合没有进入失败分支**。现有测试未覆盖这个差异组合，生产错误发布未证。
+- **证据补充**：与 NEW-045 同属最终 G2 发布授权层，但本条是 Policy Event 子集，不是底层 POST 发布者身份。应复用同一上层准入并以四格差异输入验证，不新增 Publisher。
+- **影响与判定**：同一调用的附加 Event Policy 对成功/失败不对称；不等于失败支持任意 Event。
+- **区别验证**：Approval 允许 PR/Push，额外仅 Push，分别尝试 failure 与 success，确保合法 failure 保留。
+
+### NEW-047 — G3 Required Context 只核名称，未认证指定 Source App
+
+- **触发与证据等级**：同一个 Required Context 被不同 app_id/integration_id 的来源签发；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：GitHub [Rules REST](https://docs.github.com/en/rest/repos/rules) 的 Required Check 项支持 `integration_id`，而 [Branch Protection](https://docs.github.com/en/rest/branches/branch-protection) 支持 `checks[].app_id`；这是成熟平台原生 Source App 资格。
+- **证据补充**：[G3 Parser](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_protection.py#L100-L151) 只抽取 `context` 名称；[`inspect_server_protection`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_protection.py#L318-L408) 以名称命中返回 `configured`，没有对照合法 G2 Publisher 的 App ID。Branch Rules 原始配置可在 Observation 中保留，**不是所有 App 字段都已丢失**，但当前最终结论并未建立 App 一致性。
+- **证据补充**：当前 ECI main 的公开服务端 Required 配置仍为 off，且 Probe 未执行，不声称服务端已被同名伪造 Check 绕过。应在已实现的 G3 原生 API 观察基础上明确 `Context + Source App` 的证明范围，验收来源与发布者匹配和真实拒绝行为，不造第二套 Ruleset Engine。
+- **影响与判定**：服务端配置存在同名 Check 不足以证明有权 Publisher 来源已受限；未证服务器错误合并。
+- **区别验证**：相同 Context 的正确/错误/无 App 以及 Branch Protection/Ruleset 冲突输入，复用原生 API。
+
+### NEW-048 — Hygiene whitespace 使用工作树而非 Plan 声明的 Head Tree
+
+- **触发与证据等级**：Plan 绑定 Base/Head Tree，但执行目录内容与 Head Commit 不同；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[Plan→ChangeSet](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L377-L415) 传递 `base_commit/head_commit/tree/snapshot`；但 [`hygiene._whitespace`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hygiene.py#L629-L652) 只执行 `git diff --check <base_commit>`，未使用已声明 Head OID。Git [diff 文档](https://git-scm.com/docs/git-diff) 定义单提交比较工作树，双提交比较确切两 Tree。
+- **证据补充**：已有独立原生 Git 反例：Base=`clean\n`，Head=`bad trailing    \n`，工作树回到 Base；`git diff --check base` Exit 0，但 `git diff --check base head` Exit 2。证明这项检查在**Plan 与当前工作树不一致**时可读错对象；正常对齐时不构成错误。
+- **证据补充**：当前 [`selection.index_source_refusal`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L946-L984) 和 [`execution._verify_git_execution_binding`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L277-L301) 已有 Source Guard，故**不能单凭局部 Native Git 行为宣称整个保护链已经漏放**。属于真实输入身份资格，应复用现有 Tree/Source 机制。
+- **影响与判定**：同一 Plan 的原生结果可能对应错误输入字节；已有外层 Source Refusal 是否阻断具体场景待核验。
+- **区别验证**：Base clean、Head trailing whitespace、Worktree clean；对照 git diff --check base 与 base head。
+
+### NEW-049 — Actionlint 期望 JSON，却能在文本回退缺失诊断时标为 clean
+
+- **触发与证据等级**：actionlint 命令声明 JSON 格式、exit=0，但 stdout 为不可匹配文本，raw 为空；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[`actionlint_arguments`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L345-L363) 在 `json_format=True` 时固定 `-format '{{json .}}'`；官方 [Actionlint 1.7.12 Format](https://github.com/rhysd/actionlint/blob/v1.7.12/docs/usage.md#format) 将此视为 JSON 数组输出。
+- **证据补充**：[`_actionlint_facts`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L442-L485) 在输出不以 `[` 开始时直接回退到文本诊断正则；当 `exit=0,stdout="unrecognized textual output",raw=""` 且未匹配时，得到空 Findings/Limitations，分类器可标 `clean/no_workflow_problems`。这是源码可达的**格式证据缺失**，并未证明原生 Actionlint 正常产生此 stdout。
+- **证据补充**：本条是同次 Native stdout/Parser 的真实性，不是要求再运行一次 Actionlint，也不同于旧缓存锁/结果上限问题。现有 Parser 可区分期望格式与真实格式，保留有效 `[]` 无问题正例。
+- **影响与判定**：结构化证据缺失与原生无问题被混淆；未证固定 Actionlint 正常会输出此异形正文。
+- **区别验证**：合法 JSON [] clean、JSON Finding，以及请求 JSON/无 JSON/文本无法匹配时结果不 clean。
+
+### NEW-050 — Pyright/Pylint 原生结构化输出渠道与 Dagger Parser 不一致
+
+- **触发与证据等级**：Pyright --outputjson / Pylint --output-format=json 在 stdout 输出，调用方未提供 native_output 文件；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[Dagger `python_static.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/python_static.py#L244-L284) 对 Pyright/Pylint 选择标准 JSON stdout（`--outputjson` / `--output-format=json`），[Native 解析器](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/python_static.py#L285-L457) 已有对应 JSON 字段分析。
+- **证据补充**：但现有静态 Runner 的 `native_raw` 来源按 `native_output` 文件读取，实际调用路径默认该字段为空；JSON stdout 未交付 Parser，导致 Native Check 结构化证据缺失。Deptry 的 `--json-output` 是文件型报告，**不属于同一缺陷**。
+- **证据补充**：该路径是高可信源码交接不一致，真实 Dagger Engine 本轮未执行；应以原生 Fixture 的同一次 Pyright/Pylint stdout JSON、版本及诊断做定向消费验证。
+- **影响与判定**：Pyright/Pylint 诊断/版本缺失或错误归因为执行失败；未跑真实 Engine Fixture。
+- **区别验证**：固定 ECI 版本的两工具 stdout JSON 与 Deptry 文件型 JSON 对照，不重跑无关工具。
+
+### NEW-051 — Windows PSScriptAnalyzer 多脚本参数契约不一致
+
+- **触发与证据等级**：当前范围内需要分析两个以上 .ps1/.psm1 脚本；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：[`powershell_analysis.select_scripts`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/powershell_analysis.py#L105-L121) 可为目录选出多个文件；[`analyse`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/powershell_analysis.py#L244-L265) 构造单个 `-Path` 再跟全部文件。现有 PowerShell Helper 的参数语义为单值 `-Path`（支持重复出现），因此多脚本存在原生参数绑定冲突。
+- **证据补充**：[Reusable Workflow Windows Job](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L552-L604) 有真实 CLI 入口；不等于已观察真实受检项目多脚本失败。当前非零命令会失败而不是错误 clean，属于合法任务范围的错误拒绝。
+- **证据补充**：使用已有 Helper 的重复 `-Path` 能力或明确多值列表合同即可，保留原生 ScriptAnalyzer 诊断，不创建新的 PowerShell 调度。
+- **影响与判定**：合法多脚本扫描在原生参数绑定处失败，非错误 clean；真实 Windows 多文件生产案例未验。
+- **区别验证**：两个不同脚本和 Native 诊断，比较已支持的重复 -Path 参数形式。
+
+### NEW-052 — Live Capture 敏感隐藏路径因 lstrip 归一化被错误移除
+
+- **触发与证据等级**：PR 只改 .dagger/ 或 .github/ 等敏感路径，Live Capture 选择依赖路径判断；本项“源码行为已观察”不等于已复现生产越权。
+- **源码、合同及反证**：ECI [CI A.1](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/ci.yml#L140-L179) 从 Git Changed Path 文件决定 Live Capture；其选择函数用 Python `str.lstrip("./")` 归一化文件名。对于 `.dagger/src/x.py` 与 `.github/workflows/ci.yml`，这会删除开头的 `.`，导致敏感路径匹配失败。
+- **证据补充**：独立 Python 字符串反例可直接证明输入损坏。另有 Git `--name-only` 在 `core.quotePath` 下的转义，以及将敏感旧路径重命名到非敏感目标时漏掉旧路径的条件；这些是同一增量选择链的其他输入闭包，不必新设三个问题。
+- **证据补充**：影响是可错误选择 `run_live_capture=False,offline_contract_only`；但是离线产物明确 `native_capture_verified=False`，**不能宣称 Native Live 或 Required Gate 已伪造通过**。修订应基于 Git 原生安全路径序列化和变更集合，而非再造选择调度器。
+- **影响与判定**：应执行 Engine Live Capture 却仅运行离线合同回归；离线证据仍声明 native_capture_verified=false。
+- **区别验证**：隐藏路径、Unicode quotePath、跨敏感目录重命名旧路径的实际文件集对照。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -482,7 +622,7 @@
 | A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
 | C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
 | D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
-| 当前台账 | D-F01/D-F02；NEW-001～NEW-040；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 40 个已复现生产 BUG |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-052；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 52 个已复现生产 BUG |
 
 ### C.2 ECI 全仓调查覆盖
 
@@ -491,11 +631,11 @@
 | 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
 | Hook/Lefthook/本地调度 | NEW-015～025/038；**PR #115 已合并** Event→Run/Attempt、Report、Routing、Final/Exit 结构性 API；真实 main 无 Lefthook 配置 | Issue #66 将已交付 Coordinator/Final 标为未交付，实际调度器路由、安装生命周期与已实现能力边界待重新结算；#115 实际运行时与 Lefthook 的职责对照待完整验收 |
 | Dagger、DAG 与工程 CI | Host/Dagger/NEW-039、PR #119 Native Cache、NEW-040 导出 Gate/凭证已查；已有 vesryn 两次真实 PR Run 的非空 Token 认证、管理员作者权限、未改 Module，及固定 ECI Dagger Secret 受限注入/撤销正例 | NEW-040 核心待裁决从“Token 是否存在”缩小为“是否有不受信 PR 实际控制本地 Dagger Module 并访问原本未获授权的 Host Secret”；本地 Gate 与原生 Secret 已有保护需复用，不扩张消费者独立审计 |
-| Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
-| Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | 已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
-| Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
-| OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
-| GitHub Actions / Check / 服务端保护 | 已检查 main 四份 Actions Workflow，未调用最终 R1 Publisher；2026-11-18 公开 [main Branch API](https://api.github.com/repos/dymzz/engineering-ci/branches/main) 报 `protected=false`/Required Status Checks `off`，[Rulesets API](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 返回 `[]` | G2 真实 Publisher/Approval 仍缺生产运行；G3 目前可见服务端配置支持“Required 未启用”，但详细 Branch Protection GET 403，仍需对服务端真实拒绝做独立验收 |
+| Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据；NEW-048～NEW-052 真实原生输入/JSON/Windows/Live Coverage | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
+| Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | Native Terminal、JSON 结构化诊断与 Tool Policy/时间来源需纳入准入证据；已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
+| Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033、NEW-042/043/044 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
+| OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用；NEW-041 Live/Terminal Satisfaction 独立证明分裂 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
+| GitHub Actions / Check / 服务端保护 | NEW-045/046 下层正式 Failure POST 与附加 Event 约束分叉、NEW-047 Context+Source App 认证；已检查 main 四份 Actions Workflow，未调用最终 R1 Publisher；2026-11-18 公开 [main Branch API](https://api.github.com/repos/dymzz/engineering-ci/branches/main) 报 `protected=false`/Required Status Checks `off`，[Rulesets API](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 返回 `[]` | G2 真实 Publisher/Approval 仍缺生产运行；G3 目前可见服务端配置支持“Required 未启用”，但详细 Branch Protection GET 403，仍需对服务端真实拒绝做独立验收 |
 | Release、制品、真实交付 | 已核对 `release.yml` 手动发布及 `verified→publish` 真实 Manifest/Artifact ID；发布入口仍未调用 R4；相关 NEW-003～013/034～037 | R4 授权与当前实际发布消费整合、当期有权 Release Profile 及正确复用历史制品的验证范围；原发行保护有效性单独保留 |
 | 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
 
