@@ -23,6 +23,7 @@
 | 2026-11-18：PR #129 本次续审 | 复核 R1/R5/Release/Publisher/Hook 的实际调用与测试 | 新增 NEW-002、HYP-002；与旧根因去重，**不把在此之后才观察的风险倒记为 PR #128 已发现** |
 | 2026-11-18：PR #129 四项新增排查（本轮） | 逐项对照 R4 `require_reconciliation_manifest`、`check_bindings`、Release/Assessment 时序与 R1 Adjudication 选择 | 新增 NEW-003～NEW-006；均有直接源码/合同条件依据，**尚未运行这些新组合的原生 API 反例；不宣称四个生产漏洞已复现** |
 | 2026-11-18：PR #129 同轮第二批 | 深挖 R4 空映射、R1 裁决类型/时序、Hook Exit 与 Native Result | 新增 NEW-007～NEW-009、HYP-003。代码证据可复核，**未将业务合同待裁决点提升为已复现缺陷** |
+| 2026-11-18：PR #129 继续审阅（本批四项） | #61 G2 发布数据来源、Assessment→GitHub/Release 跨 Scope、R5 Trigger 身份 | 新增 **NEW-010～NEW-013**。四项均定位到消费边界及具体可变输入，尚未执行差异 API，也未确认任何已部署生产链被绕过 |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -35,9 +36,9 @@
 | T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01 | Domain/Phase/时效真实来源未验收；#124 Binder 中的错误解除已复现，但 **不等于 R1 已错** |
 | T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002 | T1/T2→R1 合同断裂已复现；Future-dated failure 采纳仅是待复现时间疑点 |
 | T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006** | Adjudication 多版本/多签发者同时生效时，选择顺序与冲突语义待验证 |
-| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03 | 服务端保护为 forbidden/not_verified；不可因 CI 绿冒充真实阻断 |
-| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005** | 授权位与仅身份检查不得混淆；Check 映射必须有已定义语义；Assessment/Release 时序待对账 |
-| T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、D-G04 | post-only 样本传播遗漏为静态证据；R5 未证明全生命周期 PASS |
+| T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011** | 需要逐层分清授权发布者身份、真实 Assessment PASS 来源及目标 Scope 绑定；服务端保护仍为 forbidden/not_verified |
+| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
+| T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013**、D-G04 | post-only 样本传播及 Trigger Artifact/Attempt 归属未验证；R5 未证明全生命周期 PASS |
 | TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05 | 生产运行环境待证；不能以 Hook Coordinator 源码存在证明安装、选用或受权 |
 
 ### 0.3 缺陷影响半径、证据等级与连锁约束
@@ -60,6 +61,10 @@
 | NEW-008 | 同一 Admission 混合 native_failure/conflict，由单个复合裁决覆盖 | 现有测试直接断言该组合 `status=passed` | #63 签发范围/不同失败类别的独立撤销语义尚待证实 | 不根据 disposition 字符串名称单方面重定义标准 |
 | NEW-009 | 同 Result 的 Adjudication 先于 Failure issued_at | 时间关系未在 R1 过滤条件中被比较 | R1 失败解除的真实因果链、历史/当前接纳时间 | 不自行补造事件时间来源 |
 | HYP-003 | 同 Invocation 有 Failed 与 Passed 组合 Native Result | Hook Exit 只检查 binding/status，没有显式 Failed 集合否决 | 未授权失败是否能够在成功选取后被覆盖，需按 Check/Attempt/重试合同取证 | 不无差别拒绝合法重试 |
+| NEW-010 | Serialized Check Publication `conclusion=success`，将 `assessment_status` 改为 `None`/任意非 blocked 值并重新计算公开摘要 | Validator 未要求成功必须对应 passed；Publisher 的授权层不会取回或校验 R1 原件 | 如果实际入口接收不受信 Publication，可错误发布 Required SUCCESS；目前未证明该入口可被非受信方控制 | 不无依据增设第二种认证 Store；先确定唯一可信 Assessment 来源和边界 |
+| NEW-011 | R1 Assessment 同 SHA，但 `refs/action/target/phase` 与 GitHub Check 目标不同 | G2 的绑定逻辑未读取这些 Assessment 字段，仅从 Summary 展示 | GitHub Required 上下文可能被错 Scope 的 PASS 覆盖；受信工作流是否附加该绑定未知 | 不把不同授权 Target 简化为 SHA 相同就可复用 |
+| NEW-012 | R1 Assessment Commit/Phase 正确，但 Target/Action/Ref 不符合 Release | R4 只比较 Commit/Phase；Profile snapshot 传入 Policy callback 不含 Action/Target/Refs | Release 可能接纳不适用的 R1 PASS；真实 Policy callback 的查证能力和权威结果未证 | 与 NEW-011 联合追查 Scope 源，但保留不同消费者的验收 |
+| NEW-013 | `artifact_available` Trigger Artifact Digest 或 Run Attempt 与候选/真实 Post Evidence 不同 | R5 仅解析 Artifact Digest，回调可见完整 Trigger 而本地未比较；实际 Authority 可能负责验证 | 后置 verified 对应错误 Trigger 的风险，影响后置 disposition 和追溯 | 先确认 Artifact/Run 归属合同与实际 Issuer，避免硬编码无依据的相等关系 |
 
 
 ### 0.4 发现依赖的裁决顺序（**不是立即修复顺序**）
@@ -98,6 +103,10 @@
 | **NEW-008** | 待裁决 | **既有测试确认当前交叉类型裁决行为** | `main@fc0df2a`；#61-R1/#63 | 单种 `failure_superseded` 或 `conflict_resolved` 能解除 Native Failure+Conflict 混合结果 | 需上游授权规则裁决，不能直接称错误 PASS |
 | **NEW-009** | 待裁决 | **源码确认缺少时序对账** | `main@fc0df2a`；#61-R1/#63 | Adjudication 可以早于它宣称解除的 Failure 的 `issued_at`，R1 本地无先后验证 | 待实测及 `issued_at` 语义裁决 |
 | **HYP-003** | 待裁决 | **静态发现，待组合反例** | `main@fc0df2a`；#66 Hook/#52/#66-C | Hook Exit 只检查 Receipt matched，不直接读取未选中的 Failed Native Result；可能涉及合法重试与无效忽略的边界 | 待同 Invocation 多结果验证 |
+| **NEW-010** | **P1 候选** | **源码可达，待序列化差异 API 反例** | `main@fc0df2a`；#61-G2 / GitHub Check Publisher | `validate_publication()` 只禁止 `assessment_status="blocked"` 与 `conclusion="success"`；不要求成功对应 `assessment_status="passed"`，正式 Publisher 的授权仅对发布者/执行身份作证，未重新取得实际 R1 PASS | 未修复；需要核查实际 Publication 来源/可信边界 |
+| **NEW-011** | P1 候选 | **源码确认的身份映射缺口，待 API 反例** | `main@fc0df2a`；#61-G2/R2 | `build_check_publication()` 对 Assessment 与 GitHub target 只绑定 `candidate.commit`（缺省时可用 event_head），未检查 Assessment `action/target/refs/phase` 是否与被发布的受保护 Scope 对应 | 未修复；同 SHA 跨目标消费者仍待验证 |
+| **NEW-012** | P1 候选 | **源码确认的身份映射缺口，待 API 反例** | `main@fc0df2a`；#61-R4/Release | `reconcile_release_assessment()` 只比较 Assessment Commit 与 Phase，没有在 R4 本地核对 Assessment `action/target/refs` 与 Release repository/tag/target 的适用性；Policy 回调所收快照也未包含这些作用域字段 | 未修复；与 NEW-011 同属跨消费者 Scope 漏绑定组，勿重复开发 |
+| **NEW-013** | 待合同裁决 | **源码确认接线验证委托，待 API/Issuer 证明** | `main@fc0df2a`；#61-R5 | R5 Trigger 的 `artifact_digest` 仅格式化后传入 Authority 回调，`run_id/run_attempt` 也没有在本地与 Assessment 所引用的原始 Run 证据关联；若实际 Authority 只核验事件存在，可能把错 Artifact/Attempt 当作合法 Trigger | 未修复；必须先确认 Trigger Issuer/Artifact 归属及 Auth 回调真实实现 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -186,6 +195,30 @@
 - **为何不是已确诊**：合法重试可能允许先前 Failure + 最终成功，且独立 Check/Requirement 的组合选择可能不适合“只要看见一个失败就阻断”的规则。必须先用**同一 eligible Attempt、同一 Check、相同/不同 requirement、failed + passed 两个 Result**重放实际 Reconciliation，再核对 #66 Hook 终态/重试合同；不能擅自一律 fail-closed 禁止有效重试。
 - **潜在影响**：若未获授权的失败结果被当前 Hook Exit 静默忽略，则本地 Commit/Push 可能以 `exit=0` 放行；仅当受控反例确实得到该结果才提升为确认 BUG。此问题与已有“没有 Lefthook 配置/Hook 真实接线未交付”的生产欠账是两种不同问题。
 
+### NEW-010 — 成功发布序列化记录缺少真实 Assessment PASS 证明
+
+- **精确源码**：[`required_assessment_check.validate_publication`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_check.py#L452-L539) 只在 `assessment_status=="blocked"` 时拒绝 `conclusion=="success"`，没有要求 `assessment_status=="passed"`，也不取回 R1 Assessment 重验。 [`publish_check_run`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_check.py#L696-L740) 校验结构、Publication 的身份和外部 `publish_authority`；[`workflow_publish_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L515-L614) 核对 Actions/Approval/Execution/Evaluator/Policy，但没有读取所指向的 R1 Assessment 原始结果。
+- **差异反例**：以 `build_check_publication` 得到合法 passed Publication，单独改为 `assessment_status=None` 或 `"unverified"`，保留 `conclusion=success` 与原 `assessment_ref`，重新计算 `publication_ref`；验证 `validate_publication` 及受控 `publish_check_run` 是否接受。进一步试验指向不存在的 `assessment_ref`，区分可重算的内容摘要与**有权来源签发证明**。
+- **关键限制**：直接构造的正常路径由 `build_check_publication(真实 Assessment)` 验证原件；风险发生在 Publish 作为独立**序列化消费边界**时。即使有真实 Publisher Approval，也不是自动证明该 Assessment 的四事实通过。要查真实调用方是否允许不受信 Envelope 进入；**未声称现在有生产攻击者或已成功绕过 GitHub**。
+
+### NEW-011 — G2 对相同 Commit 的不同授权 Scope 只绑定部分身份
+
+- **代码**：[`_bind_assessment_target`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_check.py#L218-L238) 若 `candidate.commit` 存在，仅检查等于 `head_sha` 然后返回；如不存在，在允许 `event_head/explicit_assessment_target` 时以独立 `target_binding` 通过。后续只将 `assessment.action/target/phase` 写入输出 Summary，**没有对 `assessment.refs` 与实际被治理 Ref/Action 绑定**。
+- **差异条件**：相同 HEAD 上，令合法 R1 Assessment 仅针对 A Ref/Action/Phase，尝试为 B Ref/Action 构造 G2 正式 Check Envelope；与真正 B Scope 的 Assessment 做对照。检查 Published Required Check 被服务端使用时是否可能将不适用的 PASS 当作目标授权。
+- **证据边界**：现有 `tests/test_required_assessment_check.py` 覆盖 SHA、event/run 的 Publication 与 Target Binding 自身一致，却没有覆盖 **Assessment 内部 Ref/Action/Phase** 与该 Binding 的交叉一致性。属于可能错误复用真实 PASS 的身份错配，不是 NEW-010 的“缺失 PASS 来源”。
+
+### NEW-012 — R4 对 Release 仅比较 Assessment Commit/Phase，忽略 Scope
+
+- **代码**：[`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L673-L735) 验证 `candidate.commit=head_sha` 与 `phase`；[`_profile_snapshot`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L331-L357) 传给 `policy_snapshot_authority` 的快照没有包含 Assessment `action/target/refs`，因此这些字段并非 R4 原地约束。Manifest v1 验证的是独立 Release Repository/Tag/HEAD 身份。
+- **条件反例**：同 SHA、同 Phase、合法 Manifest、可信 Provider/Handoff/Policy 回调，但 R1 Assessment 来自不同 Target/Ref/Action；若 R4 仍返回 `release_authorized=True`，即可证明在被消费的 R1 Scope 上缺乏对账。反例必须明确当前合同允许的 Release target/action，不能拿两个本应等价的 Ref 制造假缺陷。
+- **去重**：与 NEW-011 共享 **“相同 Commit ≠ 相同授权 Scope”** 的上游语义问题，但 G2 与 R4 分别是 GitHub Check 与 Release 允许性出口；统一接口裁决，保留两条消费者反例，不据此各自新建映射库。
+
+### NEW-013 — R5 Trigger 的 Artifact/Run Attempt 未被本地消费者关联
+
+- **固定代码**：[`_normalize_trigger`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L382-L406) 将 `artifact_digest` 规范化、Run ID/Attempt 解析；全模块随后没有读取 `trigger["artifact_digest"]` 进行 Candidate/Artifact 关系比对，也没有将 Trigger Run/Attempt 与真实 Assessment 原生 Run 身份直接对账。[`_bind_lifecycle`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L276-L316) 只检验前后 Assessment 的 Context/Action/Target/Refs/Candidate 与 Trigger `target`；[`trigger_authority` 的上下文](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L667-L694) **包含完整 Trigger 和 lifecycle identity**，因此正确的外部有权 Producer 有机会负责关联。
+- **差异条件**：以正常合法 prior/post 和授权 Trigger 为基线，只改变 `artifact_available` 的 Artifact Digest 或 `run_completed` 的 Attempt 身份，保留受控（只检查事件存在）Authority，观察 `status=verified`。然后换真实 Issuer/Verifier 是否建立此关系，判断是 R5 接口合同应明确的验证前提还是消费代码真正缺失。
+- **边界**：不是要求所有事件 Artifact Digest 必须等于 Candidate 的某个单字段；可能是另一受治理产物，需要先确认语义映射。与 D-G04 实际 Producer 未验证关联，**不能把受控回调通过直接说成生产缺陷**。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -206,7 +239,7 @@
 | C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
 | D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
 | Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-009/HYP-001～HYP-003 待复核 | 已完成本轮两批各四项的代码级排查：R4 Check 映射/身份授权、R1 时间及裁决类型、Hook Exit 实际放行。下一轮须基于各合同及真实 API 差异反例确诊并继续找未调查边；**不据此宣布已找到所有 BUG** | 继续 |
+| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-013/HYP-001～HYP-003 待复核 | 新增 G2 序列化 PASS 来源、G2/R4 同 SHA 跨 Ref/Action 绑定、R5 Trigger Artifact/Attempt 关联。NEW-011/012 作为同一 Scope 根因的不同消费者处理；其余必须以实际 API/来源证据确证，不宣称 BUG 已找齐 | 继续 |
 
 **进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
 
