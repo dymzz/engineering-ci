@@ -38,6 +38,8 @@
 | 2026-11-18：NEW-040 消费者及真实 PR Run 复审 | 核对 `vesryn` 的实际 `workflow_call`、Dagger Module/Lock、固定旧版 ECI 0f74b2f Workflow，及 PR #32/#29 对应的成功 Actions `harness / checks`；两个原始 PR Head 均确认相同调用契约 | **实际消费者和真实运行已证**：共享 ECI 依赖固定，但消费者本地 `test_results` 来源于受检仓库；Workflow 显式声明传入可选 Secret。仍未证明 Secret 非空、非授权改动、泄漏或门禁绕过；沿 NEW-040 记录，不重复编号。 |
 | 2026-11-18：NEW-040 实际 Job 日志/PR 作者/原生 Dagger Secret 生命周期复核 | 读取 `vesryn` 两个真实 PR Run 的 `harness / checks` 原始 Job 日志，仅提取认证是否实际输出；复核两份 PR 的作者/仓库权限/Changed Files；阅读已固定 `ECI@0f74b2f` 的 `python_dependency_auth` 和 `python_test_artifacts` Producer | **两次日志均实际打印私有 Git 认证成功和两个 Credential Lookup PASS**，证明当时 Secret **非空且有效**；两次 PR 都由仓库 admin 自同仓提出，均未修改 `.dagger`。固定 ECI 内建 Secret 仅在 uv 同步阶段挂载并在 pytest 前撤销；旧版 `ci.py` 来自固定 ECI `pytest_ci.py`。因此这两次是有权正常运行证据，不是泄漏/未授权修改复现，保持 NEW-040 待评估，不新增编号。 |
 
+| 2026-11-18：117 号独立底稿增量整合 | 相对 87 号底稿新增审计编号 88–117：受控来源、Release Attempt、Native Source、Policy 时间、工具消费/性能统计，含反证与重复根因校正 | **新增 NEW-053～NEW-061（9 项）**；既有 NEW-001、NEW-012、NEW-027 扩证；A26/A70、A13/A69 去重，其他反证不计缺陷；不改变旧候选/真实生产验证等级 |
+
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
 ### 0.2 授权链调查切面（不是全仓范围上限）
@@ -47,12 +49,12 @@
 | 序位 | Producer / 关键事实 | Validator → Consumer | 涉及的发现 | 已证状态 / 待核实 |
 | --- | --- | --- | --- | --- |
 | T0 | 有权 EffectiveProfile、治理/委托闭包、Action×Target×Phase×Ref、Obligations Universe；输入 Source 闭包 | #66-B2/P0 → Expected v2/selection；R1 检查前置权威 | D-F01（共享 Producer）、D-G01、**NEW-031、NEW-032** | 除 Domain/Phase 真实性，还须核对 Universe 与 R1 的求值时点及 Approval 签发先后；#124 Binder 的错误授权并不等于 R1 已错 |
-| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024、NEW-041～NEW-044、NEW-048～NEW-052** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
-| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-002、NEW-006、NEW-026、NEW-030、NEW-043、NEW-044** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
+| T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024、NEW-041～NEW-044、NEW-048～NEW-052、NEW-053、NEW-055、NEW-056、NEW-057、NEW-059** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
+| T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-002、NEW-006、NEW-026、NEW-030、NEW-043、NEW-044、NEW-059** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
 | T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033、NEW-045～NEW-047** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
-| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037** | 尚待核对 Assessment 原 Target/Action/Ref 与 Release 作用域、Manifest 来源及真实消费边界 |
+| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037、NEW-054、NEW-060** | 尚待核对 Assessment 原 Target/Action/Ref 与 Release 作用域、Manifest 来源及真实消费边界 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013、NEW-027、NEW-029**、D-G04 | 重新评估的时间箭头和逾期证据批准的 Assessment 对象身份须独立核实；不代表全生命周期 PASS |
-| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025、NEW-042** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
+| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025、NEW-042、NEW-058** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
 
 ### 0.3 源码事实、条件性影响和反证
 
@@ -201,6 +203,15 @@
 | **NEW-050** | 待评估 | **Pyright/Pylint 原生结构化输出渠道与 Dagger Parser 不一致** | `main@fc0df2a` | Dagger _run_static 解析 native_raw 文件路径但默认为空，stdout JSON 未进入相应结构化诊断 | Pyright/Pylint 诊断/版本缺失或错误归因为执行失败；未跑真实 Engine Fixture |
 | **NEW-051** | 待评估 | **Windows PSScriptAnalyzer 多脚本参数契约不一致** | `main@fc0df2a` | Python CLI 以单个 -Path 后追加多个文件，而 PowerShell Helper 参数按单值解析 | 合法多脚本扫描在原生参数绑定处失败，非错误 clean；真实 Windows 多文件生产案例未验 |
 | **NEW-052** | 待评估 | **Live Capture 敏感隐藏路径因 lstrip 归一化被错误移除** | `main@fc0df2a` | lstrip('./') 把开头 .dagger/ 改为 dagger/，.github/ 改为 github/，导致不匹配 | 应执行 Engine Live Capture 却仅运行离线合同回归；离线证据仍声明 native_capture_verified=false |
+| **NEW-053** | 待评估 | **源码控制流与隔离 Git 退出码反例；实际有权 Plan 故障未验** | main@fc0df2a；Hygiene Forwarding / Native Git Source | `git show` 与 `git cat-file -e` 都失败便跳过检查；对象不存在与新增文件均可能返回非零。 | 可将无法核对 Base 的 Forwarding 检查错误记为 passed；真实 Required 消费未证 |
+| **NEW-054** | 待评估 | **源码和 GitHub 原生 Artifact 字段已核对；跨 Attempt 错用未实证** | main@fc0df2a；#61-R4 / Release Manifest、Verification / Native Artifact | `workflow_jobs` 绑定 Run/Attempt/SHA，`artifact_metadata` 仅绑定 Artifact ID、Run/SHA；Artifact REST 不提供直接 `workflow_run.run_attempt`。 | 在独立后置验证输入旧 Artifact ID 时无法单凭局部接口证明当前 Attempt；正常 Workflow 使用 needs 输出的确切 ID |
+| **NEW-055** | 待评估 | **源码枚举与隔离 Path Symlink 反例；外层 Native/Source Guard 未端到端验证** | main@fc0df2a；Workflow Analysis / Actionlint、ShellCheck、Zizmor Source | 发现路径用 `is_file()`/词法 `relative_to(base)`，未核查 `resolve()` 后的真实 Root 包含关系；Config 检查已经具备外部路径控制。 | 受检对象可能来自未声明仓外字节；未证原生工具已执行或 CI 错误 PASS |
+| **NEW-056** | 待评估 | **源码转换规则已证；完整可接受 uv 多来源 fixture 尚待验证** | main@fc0df2a；Dependency Security / OSV、uv.lock Source | `selected_git` 转成名称集合后，将锁文件中全部同名 `[[package]]` 删除，可能连合法 PyPI 项一起去掉。 | 原生锁输入覆盖错位可能触发 `scan_coverage_gap` 的错误拒绝，不是已证漏洞漏扫后错误 PASS |
+| **NEW-057** | 待评估 | **源码投影已证；不等于漏洞漏检或完全丢失 Git Sources** | main@fc0df2a；Dependency Security / Native Evidence Projection | 原生扫描结果所有 `source` 均被改为 `{'path':'uv.lock','type':'lockfile'}`，其中包含 Git custom-lockfile 来源。 | 导出的 `scanner.json` 来源字段失真；`git_sources` 公共摘要仍有来源线索 |
+| **NEW-058** | 待评估 | **已核验源码时序分支；已认证来源和生产时钟异常未证** | main@fc0df2a；#56 Security Policy Receiver / Publication Authority | `receive()` 检查 `not_before/expires_at`，但不比较 `policy.issued_at`、`publication.published_at` 是否晚于接收时刻。 | 可能接纳来自未来的权威时间声明；真实发布/工具越权未证 |
+| **NEW-059** | 待评估 | **源码级可确定类型转换与拒绝后果；授权错误 PASS 未证且无证据支持** | main@fc0df2a；#63 T1-b / Local→Actions Handoff 输入契约 | 字符串 `check_ids` 在验证为列表之前被 `list()` 拆成字符，后续每项均为 Text，正常 Consumer Check ID 无法匹配。 | 错误输入被归因成没有授权的 Check Set 而非类型错误，导致合法交接可用性问题；不会自动授予 Scope |
+| **NEW-060** | 待评估 | **Git 条件与隔离无 Tag 正例已验证；正式 Release 使用场景待裁定** | main@fc0df2a；Consumer Workflow/Dagger Pinned Update / Release Source | `published_head()` 仅核验分支、干净状态与 origin/{branch} SHA 一致；不查 Release/Tag/Manifest。 | 正式发布后升级用途可能消费未验证 Release 的 main SHA；预发布 Smoke 用途则可能合法 |
+| **NEW-061** | 待评估 | **源码分页与 GitHub REST 契约对照；并发跨 Attempt 实样未观察** | main@fc0df2a；CI Performance Diagnostic / GitHub Native Jobs | 先取 Run，后取 `runs/{id}/jobs` 默认 latest；仅核 `len(jobs)==第一页total_count`，不核 Attempt、重复 ID 或各页计数。 | 可能将不同 Attempt 或重复 Job 的运行秒数合计；明确不参与 Required/Release Gate |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -225,6 +236,8 @@
 - **测试盲区**：[现有 R5 测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_post.py#L442) 只检查“prior 和 post 都是 sample，且显式 sample=True”；没有测试 **prior=False、post=True、显式=False**。
 - **待运行反例**：用测试中现成 `prior_passed(contract_sample=False)`、`post_assessment(passed=True, contract_sample=True)`、合法 Trigger/PhaseOrder/DueWindow 与受控 authority，调用真实 `reconcile_post_stage(..., contract_sample=False)`；验证是否返回 `status=verified,contract_sample=False`。同时测试 prior-only 与 non-sample 的正例，不扩成全生命周期 PASS。
 - **注意**：截至本条记录，API 组合**未执行**；此项只能称“由源码可推导的错误路径”，不能称“已复现生产绕过”。
+
+- **117 号底稿新证据（A69=旧 A13，去重）**：第 100 条复核 `reconcile_post_stage()` 只消费 Prior 的样本位，且既有 [R1 测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment.py#L806-L846) 允许局部 passed Assessment 保持 `inputs.contract_sample=True`。此证据增强对 Post-only 条件可达性的静态判断，但没有新增真实 R5 Pair API 反例；统一归此 NEW-001。已核实 R4 自身拒绝 Assessment Sample、R5 Pair `verified` 不宣布 `all_phases_passed`，不得扩展成完整生命周期/发布授权。第 100 条不能再独立计一项缺陷。
 
 ### HYP-001 — Candidate 身份的无类型值匹配（待语义裁决）
 
@@ -311,6 +324,8 @@
 - **代码**：[`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L673-L735) 验证 `candidate.commit=head_sha` 与 `phase`；[`_profile_snapshot`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L331-L357) 传给 `policy_snapshot_authority` 的快照没有包含 Assessment `action/target/refs`，因此这些字段并非 R4 原地约束。Manifest v1 验证的是独立 Release Repository/Tag/HEAD 身份。
 - **条件反例**：同 SHA、同 Phase、合法 Manifest、可信 Provider/Handoff/Policy 回调，但 R1 Assessment 来自不同 Target/Ref/Action；若 R4 仍返回 `release_authorized=True`，即可证明在被消费的 R1 Scope 上缺乏对账。当前 Release target/action 的实际合同与 Ref 等价关系需要明确定义，否则输入差异不足以证明错误授权。
 - **去重**：与 NEW-011 共享 **“相同 Commit ≠ 相同授权 Scope”** 的上游语义问题，但 G2 与 R4 分别是 GitHub Check 与 Release 允许性出口；统一接口裁决，保留两条消费者反例，不据此各自新建映射库。
+
+- **117 号底稿补充（A66=既有 NEW-012）**：第 90 条进一步核对 [`_normalize_publish_context()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L117-L168) 根本未建立 Assessment `action/target/refs` 的 Release 等价项，[Provider 参数](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L451-L473) 也不接收完整 Assessment，因此不能假定现有 Provider 自然补足绑定。保留 NEW-011 的 G2 评价域与 NEW-012 的 R4 评价域两条不同消费者入口，但 A66 不重复新增。尚未证实真实 Policy Authority 承认跨域 Assessment。
 
 ### NEW-013 — R5 Trigger 的 Artifact/Run Attempt 未被本地消费者关联
 
@@ -400,6 +415,8 @@
 - **源码**：[`_bind_temporal`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L315-L366) 对 `post_at < prior_at` 仅在 Trigger 不等于 `authorized_reevaluation` 时阻断，对 `post_at < trigger.observed_at` 只约束 completed/publication/artifact Trigger。[`_bind_phase_relation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L208-L275) 对重新评估仅要求同 Phase。
 - **现有正例与盲区**：[`test_authorized_reevaluation_requires_same_phase`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_post.py#L407-L440) 确认可 `verified`，但未改变前后 `evaluated_at` 排序。将合法 prior/post 的时间颠倒，在受控回调接受时检查是否仍 `verified`；同时核对 Reevaluation 是否是“重新计算历史时点”的明确授权类型。
 - **待裁决**：如果产品合同允许历史追溯重评估，`post_at>=prior_at` 可能不适用；历史回溯计算与当期新授权应在实际消费者处区分。时间标准、策略来源及实际消费尚未验明，当前不属于已复现生产 BUG。
+
+- **117 号底稿补充（A65=同一 R5 时序根因）**：第 89 条核实 `_bind_temporal()` 检查 `post_at > envelope.evaluated_at`、`trigger.observed_at > envelope.evaluated_at`，但**不检查 `prior_at > envelope.evaluated_at`**；`authorized_reevaluation` 又豁免 Prior→Post 逆序及 Post 早于该 Trigger 的同类事件约束。因此 `prior=T0+1h, post=T0-1h, envelope=T0` 在局部时间条件下不增加阻断理由。与本 NEW-027 统一记录，不独立新增 A65；应先厘清历史回溯和当前重评授权语义，尚未使用真实 R1+Authority 复现整个 Pair `verified`。
 
 ### NEW-028 — Publisher Approval 可传入非当前时钟判断有效期
 
@@ -601,6 +618,60 @@
 - **影响与判定**：应执行 Engine Live Capture 却仅运行离线合同回归；离线证据仍声明 native_capture_verified=false。
 - **区别验证**：隐藏路径、Unicode quotePath、跨敏感目录重命名旧路径的实际文件集对照。
 
+### NEW-053 — Hygiene Forwarding 将 Git 对象查询故障误判为合法新增模块
+
+- **来源、证据等级**：117 号底稿 ECI-A64（编号 88）。[hygiene.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hygiene.py#L655-L694) 的 `_forwarding()` 在 `git show <base>:<path>` 非零后再次运行 `git cat-file -e`；第二次非零直接 `continue`，注释假定这是合法新增模块。
+- **受控原生反例**：隔离 Git 实验中，真实新增路径与未知 Base OID 的 `cat-file -e` 均返回 128；Git 退出码本身不能认证“Base 路径确实不存在”。这是原生 Git 语义反例，并非已复现真实 ECI Plan 经过 Source Validator 仍选择非法 Base。
+- **影响、修订范围**：如受检 Base 读取故障到达这一检查，Forwarding 可被错误标记 passed；复用既有 Base Tree/Source 认证，区分合法缺失路径与无法读取对象，保留 `failed/unknown`，不新建 Git Wrapper。须定向覆盖新增模块、旧模块与 Git 对象故障；不据此宣称生产 Required 放行。
+
+### NEW-054 — Release Artifact 的独立来源验证缺少 Run Attempt 身份边
+
+- **关键发现批次（94–99）**：117 号底稿 ECI-A67（编号 94），标签仅表示本次重点追踪，不升级证据等级。[manifest.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L62-L100) 的 `workflow_jobs()` 核实 `run_attempt`，但 `artifact_metadata()` 仅校验 ID/name/Run ID/Head SHA；[verification.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L234) 独立复核 Artifact 时继续沿用后者。
+- **上游结构性限制**：[GitHub REST Artifacts](https://docs.github.com/en/rest/actions/artifacts) 的 `workflow_run` 元数据没有可直接比较的 `run_attempt` 字段。现有 `release.yml` 从同次 `needs` 输出取得**确切** Artifact ID 并下载，且有 GitHub Job/Step 成功验证，不能说正常发布正在按名称误选旧 Artifact；现有旧制品测试验证枚举，不是针对任意传入 ID 的 Attempt 证明。
+- **合同边界与修订**：同 Run/Head、不同 Attempt、均未过期的旧 Artifact ID 在局部校验中缺独立 Attempt 证明。复用当前 Job/Attempt 与上传步骤原生 ID/执行来源，补足独立校验及历史引用的受信边；不用猜测 GitHub API 不存在的字段，不新建 Artifact Store。尚无真实 Release 错归因或 R4 错误授权反例。
+
+### NEW-055 — Workflow/Shell 受检目标路径可经 Symlink 指向仓库外内容
+
+- **关键发现批次（94–99）**：117 号底稿 ECI-A68（编号 95）。[workflow_analysis.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L152-L207) 的 `discover_workflow_files/discover_shell_files` 与同模块 `extra_paths` 分支允许 `Path.is_file()` 跟随 Symlink，仅通过词法 `relative_to(base)` 记录仓内路径。隔离 `repo/scripts/build.sh → ../outside.sh` 文件实验可进入枚举，真实目标在 Root 外。
+- **已存在的正确机制**：同模块 [`_inspect_config_file()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L962-L1086) 对仓外配置 Symlink 已使用 resolved-path 及 `event_external` + 内容 Digest 的合法路径；此机制是可复用边界，不能概括为 Workflow 所有 Config 均缺来源认证。
+- **修订与影响**：在受检目标发现/实际 Native 输入边界核验 resolved-path 与受信 Source Closure；明确允许的仓外输入复用现有外部来源身份，不凭 symlink 自动允许。区分显式选中、递归枚举、普通文件与合法外部配置。尚未证明 Actions/Native 实际处理仓外字节或最终错误放行。
+
+### NEW-056 — OSV uv.lock Git/PyPI 混合来源被按 Package Name 误删
+
+- **去重来源**：117 号底稿 ECI-A26（编号 30）与 ECI-A70（编号 101）指向**同一根因**，只登记此一项。[dependency_security.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/dependency_security.py#L256-L347) 在分离批准 Git Package 时，先以 `selected_git` 生成包名集合，再按名称删除全部 `[[package]]`，不是仅移除匹配 `(name,version,source)` 的锁实体。
+- **原生行为与可达性**：[uv Resolution](https://docs.astral.sh/uv/concepts/resolution/) 与 [platform-specific sources](https://docs.astral.sh/uv/concepts/projects/dependencies/) 允许按环境选择同名不同来源/版本；但 ECI 上游 `approved_git()` 对某些 root source marker/list 形式本身会拒绝，因此“合法混合锁经当前输入全链进入该分支”尚需固定 uv 版本 fixture 验证。
+- **影响与既有反证**：[dependency_security.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/dependency_security.py#L367-L464) 的 `scanner_result()` 已对来源或 Package 全集差异报 `scan_coverage_gap`，不是静默 clean；主要风险为原生能力不兼容、错拒绝和不准确覆盖说明。按有权 Git source 精确实体分离，复用已有 Native OSV 覆盖校验，不另建 Resolver。
+
+### NEW-057 — OSV Native JSON 脱敏时抹去 Git Custom Lockfile 来源身份
+
+- **来源**：117 号底稿 ECI-A71（编号 102）。[dependency_security.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/dependency_security.py#L367-L389) 的 `scanner_result()` 无条件将每个 `source` 重写成 `uv.lock`；[dependency_security.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/dependency_security.py#L640-L696) 对 Git 实际使用另一个 `osv-scanner` custom-lockfile；写入 `scanner.json` 的是转换后的 `raw_result`，不是原始 Source 投影。
+- **责任界限**：临时绝对路径需要脱敏，这是合理操作；错误在于把不同来源统一声称为 `uv.lock`。按已验证输入身份输出稳定可审计标签（如 `uv.lock` / `approved-git-native-input`），并明确 `scanner.json` 是脱敏映射而非字节原封不动的 Native 原件。
+- **影响**：来源归因/后续调查准确性风险，当前未见因此放行、漏检或敏感路径泄漏的生产证据。
+
+### NEW-058 — 已认证 Security Policy 的签发与发布时间缺接收时点因果核验
+
+- **来源**：117 号底稿 ECI-A72（编号 106）。[security_policy.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L218-L359) 解析 Policy `issued_at` 与 Publication `published_at`；[security_policy.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L684-L739) 的 `receive()` 检查 `now` 是否在 `not_before/expires_at` 内，未拒绝 `issued_at > now` 或 `published_at > now`。因此本地时间合同允许如 11 月 18 日接纳声明 11 月 20 日签发的已认证文档。
+- **有效反证**：[`_authenticate_publication()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L624-L683) 已验证 GitHub Release/Asset 字节和 Digest，Receiver 有持锁原子写入、Revision 防回退和 Snapshot 状态校验；不是“任意自报 Policy 即可授权”，也无需新 Policy FSM。
+- **语义与修订**：先界定 `issued_at/published_at` 是否作为有权事件时间被消费；若是，应与受信 Provider 事件时钟和接收时点做因果校验，避免只相信调用方传的 `now`。保留合法跨时区与回溯策略的明确定义。真实已认证未来时间样本/实际 Tool 执行影响尚未观察。
+
+### NEW-059 — Local Handoff Producer check_ids 原始类型被 list 转换破坏
+
+- **来源**：117 号底稿 ECI-A73（编号 107）。[local_actions_handoff.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L205-L253) 的 `_normalize_producer_authorization()` 首先执行 `list(scope.get('check_ids') or ())`，之后才检查 `isinstance(...,list)`（恒真），且每个字符串字符都满足 Text。单个 Check ID 字符串被拆分为字符。
+- **消费边界反证**：[local_actions_handoff.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/local_actions_handoff.py#L471-L502) 按完整 Consumer Check ID 匹配，缺授权时返回 `producer_authorization_checks_none_granted`；部分授权的 T1-a Raw Materials 已有阻断和测试。不能把这条输入规范化错误说成 Producer 任意授予 Check 的越权路径。
+- **修订**：在转换前检验原始 `check_ids` 为合法字符串序列，明确拒绝 bare string/dict/number，再做去重。只补定向 malformed 输入对照，复用现有授权匹配。
+
+### NEW-060 — Consumer Sync 的 published_head 只证明远端分支一致而非已发布 Release
+
+- **来源**：117 号底稿 ECI-A74（编号 112）。[consumer.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/tools/consumer.py#L64-L80) 的 `published_head()` 仅比较本地分支、工作树与远端 SHA；隔离 Git 仓推送 main 不创建 Tag 也满足全部条件。[consumer.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/tools/consumer.py#L145-L204) 随后可将该 SHA 写入消费者 Workflow 和 Dagger 引用，是否 Commit/Push 受显式参数控制。
+- **两种用途必须区分**：如面向**正式 Release 后生产升级**，应复用现有 [`release.verification.published()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L293-L325) 的真实 Release 资格；若面向 main HEAD 的预发布 Smoke，当前行为可以合法但须准确命名/标注 `release-unverified`。用途与消费者约定尚未最终裁决，不能把“published”名字单独当成越权证明。
+- **已有保障**：引用精确替换、默认 Dry Run、`dagger develop/check` 前置存在；未证真实生产消费者因错误 SHA 更新，亦不等于这些保护全部缺失。
+
+### NEW-061 — CI Performance 统计缺固定 Run Attempt 与跨页 Job 唯一性
+
+- **来源**：117 号底稿 ECI-A75（编号 113）。[performance.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/tools/performance.py#L190-L223) 的 `collect()` 分次请求 Run 与 `runs/{id}/jobs?per_page=100`；[GitHub REST Jobs](https://docs.github.com/en/rest/actions/workflow-jobs) 默认 `latest` 可随 rerun 改变，与固定 `attempts/{N}/jobs` 不是同一快照。现有校验只核第一页 `total_count` 与展开长度；没核各页计数一致、Job ID 唯一、Run/Attempt/Head 绑定。
+- **正确既有复用**：[cicd_telemetry.py](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/cicd_telemetry.py#L2546-L2613) 的 `fetch_attempt_jobs()` 已验证分页计数与 Job ID 唯一；`fetch_github_run_job()` 还有固定 Attempt 入口和遗漏分母记录。性能采集在已有模块中复用这些来源身份原则，不另建 Job Coordinator。
+- **影响分层**：不同 Attempt 竞态或跨页重复会污染 `parallel_runner_seconds` 等指标；此模块是诊断统计，非 R1/Required/Release 决策，不能归纳为 Gate 假 PASS。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -622,7 +693,7 @@
 | A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
 | C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
 | D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
-| 当前台账 | D-F01/D-F02；NEW-001～NEW-052；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 52 个已复现生产 BUG |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-061；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 61 个已复现生产 BUG |
 
 ### C.2 ECI 全仓调查覆盖
 
@@ -631,13 +702,13 @@
 | 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
 | Hook/Lefthook/本地调度 | NEW-015～025/038；**PR #115 已合并** Event→Run/Attempt、Report、Routing、Final/Exit 结构性 API；真实 main 无 Lefthook 配置 | Issue #66 将已交付 Coordinator/Final 标为未交付，实际调度器路由、安装生命周期与已实现能力边界待重新结算；#115 实际运行时与 Lefthook 的职责对照待完整验收 |
 | Dagger、DAG 与工程 CI | Host/Dagger/NEW-039、PR #119 Native Cache、NEW-040 导出 Gate/凭证已查；已有 vesryn 两次真实 PR Run 的非空 Token 认证、管理员作者权限、未改 Module，及固定 ECI Dagger Secret 受限注入/撤销正例 | NEW-040 核心待裁决从“Token 是否存在”缩小为“是否有不受信 PR 实际控制本地 Dagger Module 并访问原本未获授权的 Host Secret”；本地 Gate 与原生 Secret 已有保护需复用，不扩张消费者独立审计 |
-| Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据；NEW-048～NEW-052 真实原生输入/JSON/Windows/Live Coverage | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
+| Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据；NEW-048～NEW-053、NEW-055 真实原生输入/JSON/Windows/Live Coverage 与 Workflow/Shell Source | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
 | Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | Native Terminal、JSON 结构化诊断与 Tool Policy/时间来源需纳入准入证据；已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
-| Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033、NEW-042/043/044 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
+| Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033、NEW-042/043/044/058/059 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
 | OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用；NEW-041 Live/Terminal Satisfaction 独立证明分裂 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
 | GitHub Actions / Check / 服务端保护 | NEW-045/046 下层正式 Failure POST 与附加 Event 约束分叉、NEW-047 Context+Source App 认证；已检查 main 四份 Actions Workflow，未调用最终 R1 Publisher；2026-11-18 公开 [main Branch API](https://api.github.com/repos/dymzz/engineering-ci/branches/main) 报 `protected=false`/Required Status Checks `off`，[Rulesets API](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 返回 `[]` | G2 真实 Publisher/Approval 仍缺生产运行；G3 目前可见服务端配置支持“Required 未启用”，但详细 Branch Protection GET 403，仍需对服务端真实拒绝做独立验收 |
-| Release、制品、真实交付 | 已核对 `release.yml` 手动发布及 `verified→publish` 真实 Manifest/Artifact ID；发布入口仍未调用 R4；相关 NEW-003～013/034～037 | R4 授权与当前实际发布消费整合、当期有权 Release Profile 及正确复用历史制品的验证范围；原发行保护有效性单独保留 |
-| 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
+| Release、制品、真实交付 | 已核对 `release.yml` 手动发布及 `verified→publish` 真实 Manifest/Artifact ID；发布入口仍未调用 R4；相关 NEW-003～013/034～037/054/060 | R4 授权与当前实际发布消费整合、当期有权 Release Profile 及正确复用历史制品的验证范围；原发行保护有效性单独保留 |
+| 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引；NEW-061 Performance 为非 Gate 诊断统计 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果；Performance 固定 Attempt 与跨页 Job 来源 |
 
 ### C.3 本轮反证与已排除的误报方向
 
@@ -646,6 +717,15 @@
 | `selection.full=True` 是否错误遗漏所有 Hygiene Check | [`selection._non_test_check_scopes`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2447-L2479) 确实对 Hygiene 传 `full=False`；但已有 [`test_full_selection_explicitly_marks_tests_only`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_selection.py#L223-L237) 明确把 full 定义为**测试全集**，Hygiene 保持真实增量适用。当前不存在足以认定漏跑的合同反例，暂不另编号；若实际面向用户的 CLI 承诺全工具全量执行，按该入口的独立证据重新评价。 |
 | `execution._execute_with_dependencies` 与 Dagger DAG 是否必然属于重复建设 | [Host `execution.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4083-L4210) 有面向本地命令/Prerequisite 的轻量执行依赖消费；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 说明 Dagger `plan_execution._execute_dag` 面向原生 Function/Container/File/Directory 及 Engine 缓存，Host-only 工作不当然应搬到 Dagger。两条路径职责有差异，**尚未发现仅凭两者共存即可证明的重复调度 BUG**；进一步调查实际 Check 是否在两个路径重复执行及共享 Result 是否真实生效。 |
 | Workflow Analysis 缓存字典共享是否导致并发 Actionlint 重复启动 | [`workflow_analysis.run_workflow_script_suite`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L1516-L1594) 的同键 Actionlint Runner 调用受同一个 `threading.Lock` 保护，且 Shellcheck 版本前置也受锁保护；[Dagger `_execute_dag`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L624-L995) 的 `script_shared_cache` 共享恰好传入上述受控缓存。先前“因为共享 dict 所以缺原子性”的猜测被源码反证，现有具体路径不成立；不同命令键、Dagger 层原生缓存及真实跨 Source 场景仍分别按实际消费者判断。 |
+
+#### 117 号底稿增量反证与去重（审计编号 88–117）
+
+- **重复根因不再次编号**：第 89 条 A65 融入 NEW-027；第 90 条 A66 融入 NEW-012；第 100 条 A69 与旧 A13 融入 NEW-001；第 101 条 A70 与旧 A26 只形成 NEW-056 一项。这里的映射服务于**原台账证据修订**，不维护第二份持续执行索引。
+- **已成立的阻断与来源机制**：Release Dagger `remaining-checks.txt` 依赖真实 Job/Step 成功，不是纯文本自证；R4 已拒绝 Sample Assessment；R5 Pair `verified` 固定不承诺全生命周期 PASS；OSV 缺失覆盖会触发 `scan_coverage_gap`，NEW-056 的风险主要是错误拒绝；Security Policy 接收前已有 GitHub Release/Asset 的来源认证、原子状态写入及防回退机制；部分 Check 授权不能生成 T1-a Ready Raw Materials。
+- **原生工具反证**：[Trivy v0.76 官方配置](https://trivy.dev/docs/v0.76/guide/configuration/) 支持以空 CLI 参数禁用默认配置；[Actionlint 官方文档](https://github.com/rhysd/actionlint/blob/main/docs/usage.md) 确认 `-format '{{json .}}'` 输出 JSON 数组，NEW-049 问题是**缺失 JSON 时允许文本回退进而 clean**，不是正确 JSON Array Parser 的错误；Gitleaks 非祖先范围会降为 `insufficient` 而不是错误 clean；Reconciliation 对跨 Job 重复 Result 已有记录和去重，不能把局部 `matched` 当受信多见证。
+- **受保护入口已有能力**：Workflow/Shell [`_inspect_config_file()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L962-L1086) 对外部 Config Symlink 有 `event_external` + Digest 边界；其 [Tool Policy Admission](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L1337-L1615) 发生在共享缓存命中前。因此 NEW-042 仅针对仍未消费当前准入的其它入口；NEW-055 仅针对**受检目标文件**。独立 Performance 的 NEW-061 可借用 `cicd_telemetry` 固定 Attempt/分页 Job 机制；Consumer Sync 已有精确 Workflow+Dagger SHA 引用和变更前 Dagger 检查，NEW-060 仅涉及 Release Published 资格。
+- **证据限制**：本次没有运行全量 ECI CI、Dagger、Windows 或真实 Release/服务端 Required；未将孤立源码风险提升为生产错误放行。审计编号 94–99 是用户指定的「关键发现批次」，其中 96–99 均为反证，并非四个新增缺陷。
+
 
 ### C.4 已有信息的独立复审：状态漂移、证据分层与系统性未交付（2026-11-18）
 
