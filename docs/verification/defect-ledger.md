@@ -451,7 +451,7 @@
 | --- | --- | --- | --- |
 | D-G01 | 完整治理/委托/继承/排除域、真实 Phase/Universe Producer、有效期与撤销 | #66-B2、#61-R1 | 未验证 |
 | D-G02 | T1/T2/T1-b 受信 Issuer、Local/Actions Receiver、P0 当前授权、跨 Run 复用和 Remaining Work 消费 | #63、#66-P0 | 未验证 |
-| D-G03 | 真实 Required Check 发布主体与 GitHub 服务端强制规则、受控拒绝证明 | #61-G2/G3 | 未验证；历史 GET Branch Protection HTTP401，不能推导保护不存在 |
+| D-G03 | 真实 Required Check 发布者、GitHub 服务端 Required 与受控拒绝证明 | #61-G2/G3 | 当前 `main` Branch API 报 `protected=false`、Required Status Checks `off`；可见 Rulesets 列表为空；直接 Protection GET 因权限 403，故服务端完整配置/真实拒绝尚未做端到端验证。比旧“仅 HTTP401，不知是否有保护”证据更具体 |
 | D-G04 | R4/R5 真正 Release/Post 消费、同候选 Manifest/Artifact/Policy/Trigger/Due | #61-R4/R5、现有 Release | 未验证 |
 | D-G05 | 实际受保护工具、Policy anchor、Source/Revision 与持久授权边界 | 现有 Security Policy/Tool Runtime 集成 | 未验证 |
 
@@ -477,7 +477,7 @@
 | Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | 已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
 | Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
 | OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
-| GitHub Actions / Check / 服务端保护 | G2/G3 合同、D-G03、NEW-010/011/028/033；当前 main 四份 Actions Workflow 已检查，尚未调用 R1 Required 发布 | 实际 G2 Publisher/Approval 的运行入口和适用 Required Context、G3 规则的真实服务器保护及拒绝证据；服务端读取权限不足时状态保持未知 |
+| GitHub Actions / Check / 服务端保护 | 已检查 main 四份 Actions Workflow，未调用最终 R1 Publisher；2026-11-18 公开 [main Branch API](https://api.github.com/repos/dymzz/engineering-ci/branches/main) 报 `protected=false`/Required Status Checks `off`，[Rulesets API](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 返回 `[]` | G2 真实 Publisher/Approval 仍缺生产运行；G3 目前可见服务端配置支持“Required 未启用”，但详细 Branch Protection GET 403，仍需对服务端真实拒绝做独立验收 |
 | Release、制品、真实交付 | 已核对 `release.yml` 手动发布及 `verified→publish` 真实 Manifest/Artifact ID；发布入口仍未调用 R4；相关 NEW-003～013/034～037 | R4 授权与当前实际发布消费整合、当期有权 Release Profile 及正确复用历史制品的验证范围；原发行保护有效性单独保留 |
 | 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
 
@@ -497,7 +497,7 @@
 | --- | --- | --- |
 | **Issue #66 的现行交付表述** | [PR #115](https://github.com/dymzz/engineering-ci/pull/115) 于 2026-11-17 05:52:31 UTC 合并，主仓已有 [`hook_coordinator.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py) 及 [`tests/test_hook_coordinator.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py)；但 [Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 于 12:11:20 UTC 更新后，顶部现行条目仍将外层 Coordinator、Collect、Final Reconciliation、Hook Exit 泛称未交付 | **状态矛盾已确认**：#115 实际交付 Event/Invocation 结构性核对、Run/Attempt、Job 生产/Report 收集、Routing、Final、Exit 的 Python 模块接口；`hook-coordinator` CLI 仅提供 `verify-invocation/finalize`，main 仍无实际 `lefthook.yml`、原生条件调度及安装生命周期。已交付模块接口与真实 Lefthook 生产连接属于不同工作；旧 Issue 混写会诱发重复实施 |
 | **Issue #86 的现行交付表述** | [PR #119](https://github.com/dymzz/engineering-ci/pull/119) 于 2026-11-17 09:01:33 UTC 合并 D.1 在线输入刷新和来源绑定原生缓存；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 于 12:10:12 UTC 更新，现行表仍描述 #119 Draft/Open 和待合并验收；[设计 plan.md](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/design/execution-graph/plan.md#L1-L5) 仍写“候选实施计划，尚未实施” | **状态矛盾已确认**：已合并的 D.1 代码/正反执行证据有效，剩余应是其未覆盖的真实生产场景及变更后差异，而不是同名 PR 再次合并。现行文档和设计状态分层更新存在缺口 |
-| **真实 PR/main Required Publisher** | 当前 main 的 [四份 Actions Workflow](https://github.com/dymzz/engineering-ci/tree/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows) 包括 CI/Release/Telemetry/reusable Python；没有 R1 Required Assessment/Check 发布接线。[#61](https://github.com/dymzz/engineering-ci/issues/61) 已将 G2/G3 合同合并与服务端生效明确分开 | **D-G03 是真实交付缺口**：R1/G2 合同存在，但生产 CI 尚未调用最终受信 Check 发布链；实际 Branch Protection/Ruleset 是否生效依权限读取和服务器拒绝证据，当前仍未知。这一缺口比未证明可达的序列化 Publication 假设更直接 |
+| **真实 PR/main Required Publisher** | 当前四份 [Actions Workflow](https://github.com/dymzz/engineering-ci/tree/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows) 没有最终 R1 Required Check 发布；2026-11-18 读取 [main 分支元数据](https://api.github.com/repos/dymzz/engineering-ci/branches/main) 为 `protected=false`、Required Status Checks `off`，可见 [Rulesets](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 为 `[]`；详细 Protection API 仍因访问权限 403 | D-G03 具有**缺生产发布入口 + 当前公开门禁配置未启用**两项独立证据；不能将 403 当作“服务器有保护”，也没有实际验证服务端拒绝非法合并。当前远端配置证据的时点和权限范围应随新的服务端结果更新 |
 | **真实 Release 与 R4** | [release.yml](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml#L137-L214) 通过 `verified → publish` 和固定 Artifact ID 检查执行来源，且 `publish` 是手动触发受控分支；其命令调用原 [`release.publishing`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py)，不调用 [`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py) | **D-G04 是真实交付缺口**：R4 授权合同与已存在的原生发布保护尚未接线。保留现有 Manifest/Run/Job/Artifact 保障，不因缺 R4 就推断原生 Release 完全无保护，也不把 NEW-034/035 的重复重验推测提升为独立生产漏洞 |
 | **#125 原始 86 边证明级别** | [PR #127 Coverage](authorization-closure/coverage/assessment.md) 明确 13 条已验证合同交接、5 个已知缺口、68 条未调查、**0 条来源认证、0 条生产接线证明**；[PR #128 D Findings](authorization-closure/independent-review/findings.json) 共 82 个受控案例、5 个反例归为 D-F01/D-F02 | **39 条 NEW 不是 39 项已证明运行时缺陷**。有些观察被既有测试直接断言，其余为源码条件、外部 Callback 或合同解释。#125 的 86 边索引也不代表整个 ECI 的覆盖率 |
 | **D-F01 / D-F02 的事实层级** | [#124](https://github.com/dymzz/engineering-ci/pull/124) 至今 Open/Draft、未合并；D-F01 出现在 #124 候选 Binder；D-F02 由 main 的 T1/T2 原生 Admission 直接送 R1 得到 Phase/Kind 合同错误 | D-F01 为已复现的**未合并候选**缺陷，不能写成 main 当前生产绕过；D-F02 为已复现跨模块 **Gate Projection 未交付**，T1-a 的真实失败输入是抛异常，不是被允许。两者均非完整生产服务器放行证据 |
@@ -600,6 +600,35 @@ D-F02 的具体缺口现已追到 Gate Kind/Phase、Admission Ref、受信 Witne
 4. **差异验证对象**：在同一有效 Profile 下分别考察已批准的受保护配置与受检 PR 自行改写的配置，追踪实际使用的基线 SHA、批准主体与当前评估逻辑；对照合法的单项目无委托域、存在委托域及已失效/撤销域。已有字段/Unit Test 可复用，本轮尚未取得真实生产 Issuer 或完成新增组合 API 正反执行。
 
 **审计裁决**：本批证据更准确地支持一个**上游共同缺口**：Profile/规则/Universe 的内容自洽验证已具备，独立的治理批准与域闭包来源证明未在当前已读真实生产链中出现。此缺口由 D-G01 追踪；NEW-032 的批准时间语义、D-F02 的 Gate Projection 以及 D-G03/D-G04 的实际出口仍分别存在，不因“缺签发者”再重复登记同义缺陷。
+
+
+### C.8 受检 PR 与有权策略来源的隔离事实（2026-11-18）
+
+这次沿 [Reusable Python CI](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L630-L692)、[`selection`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py) 和已实现的 [Security Policy 接纳合同](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/docs/architecture/security-policy.md) 核实真实来源。主要问题不是“缺少文件摘要”，而是**摘要证明哪些字节属于哪个 Tree，与哪些字节获得组织/项目批准，属于两个不同谓词**。
+
+| 来源/交接 | 现有源码或成熟机制 | 本轮裁决 |
+| --- | --- | --- |
+| **固定 Helper 版本** | [`reusable-python-ci.yml`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L630-L669) 检查调用者提供的 `selection_source_ref` 是完整 40 位 Commit SHA，并从 `dymzz/engineering-ci` 检出此提交、安装对应的 Selection CLI | Helper 的**内容版本被固定**；由哪一方批准选择该 SHA、它是否属于当期允许范围是另一项来源权威事实。固定 CLI SHA 不能认证调用方 Required Policy |
+| **消费者 Config 的真实来源** | 同一 Workflow 先 [Checkout Selection Target](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L635-L643)，再将 `selection_config` 作为工作区相对路径传给 [`engineering-ci select --root . --config "$SELECTION_CONFIG"`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L670-L688)。[`selection.main`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L4392-L4555) 从指定 `root/config` 加载本地 TOML | 现有输入在**受检仓库的工作区**，并非一个已经证明来自独立受保护 Ref 的治理批准文件；是否有工作流/平台侧配置保护应依据实际消费者的审批和 Ref 权限证明，而非默认推断 |
+| **目标 Tree 文件绑定** | [`selection._ref_config_binding`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2909-L3001) 对 `repo_target_tree` 比较加载文件字节与目标 Ref Tree 的 `git show <tree>:<path>`；[`config_identity`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L684-L770) 保存路径、SHA、规范化配置及 `policy_scope`；[已有漂移测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_expected_checks.py#L1799-L1880) 可阻断与目标 Ref 不一致的本地文件 | **版本/Source 绑定已证明且有效**；但是同一个候选 Tree 内的 Profile 和 Config 即使都被变更且互相一致，也仍属于**同一被审查来源**。仅比较目标 Tree 不足以得出“候选修改得到独立批准”。这是 D-G01 的实际来源层次，不把现有 Ref Drift 拒绝逻辑误判为缺失 |
+| **外部 Config 分类** | [`_policy_file_scope`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L614-L626) 将仓库外的 Config 分类为 `event_external`；[`_ref_config_binding`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2953-L2999) 给外部文件记 SHA 与 `event_shared`，不对目标 Tree 校验同一个文件路径 | 外部位置与内建 Tree 分离已经实现，但 `event_external` + SHA **也不自动等于授权者已签发**；外部来源如何受到实际环境保护，是后续原生接线可验证的具体对象 |
+| **实际 Reusable Workflow 调用层** | 当前 Selection 步骤调用 `select --config`、`execute --plan`，**没有**传 `--effective-profile`；[`selection.main`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L4418-L4522) 仅在显式指定时读取 EffectiveProfile | 这条生产工作流主要运行 Selection/Host Check 现有合同，不等于正在运行完整 EffectiveProfile→Universe→R1。即使 Consumer TOML 有 `[effective_profile]`，它仍不等于完整 Profile/Universe 的实际生产或消费 |
+| **仓库内已实现的受信来源技术** | [`security_policy.receive`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L692-L750) 对工具资产 Policy 使用保护主机提供的 Anchor、真实 [Release/Manifest/Asset 校验](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/security_policy.py#L624-L691)、持久 Revision State 与回滚拒绝；[架构文档](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/docs/architecture/security-policy.md#L103-L175) 明确独立信任根和使用边界 | **来源身份与版本回滚的成熟实现已经存在**；但作用域是资产 Allow/Deny，而非 `org/project EffectiveProfile`、完整委托治理域或 R1 Obligation。可比较其成熟机制与接口复用价值，但没有当前代码证据说明它已经为 D-G01 自动签发政策；也不由此要求新建平行 Policy 服务 |
+
+#### C.8.1 额外服务端证据：#61-G3 的现行配置
+
+2026-11-18 通过 GitHub 公开读取 [`branches/main`](https://api.github.com/repos/dymzz/engineering-ci/branches/main)：`protected=false`，`protection.enabled=false`，`required_status_checks.enforcement_level=off`，`contexts=[]`、`checks=[]`。[Rulesets 列表](https://api.github.com/repos/dymzz/engineering-ci/rulesets) 返回空数组 `[]`；但直接读取 `branches/main/protection` 返回 `403 Resource not accessible by integration`，无法取得管理级详情，也未进行真实无效合并/服务器拒绝验收。
+
+此证据更新了 D-G03 的状态：**已知的 GitHub 对外元数据表明 main 当前未启用 Required Check 保护，且实际 R1 Publisher 没有 Workflow 接线**。它没有证明所有可能的上级权限控制均不存在，也不表示本次审计执行了远端写入。历史“只因详细 GET 403 就完全无法了解保护状态”不是最准确的证据描述。
+
+#### C.8.2 D-G01 的准确归属与可复用事实
+
+本批没有形成新的独立生产授权绕过反例，而是确认了 **受检 Target Tree、受保护 Policy Baseline、Profile 批准者和 ECI Helper 版本四种身份的实际区别**。
+
+- D-G01 继续负责组织/项目真实治理源的批准、域闭包与当前 Evaluation 作用域绑定；现有 `_ref_config_binding`、Content Digest、Phase 投影及 Security Policy 的 Anchor/Revision/Release 成熟能力可作为事实证据与技术比较对象。
+- #66/Reusable Workflow 负责目前已交付的 Source/Selection 真实性，不因“Config 来源不等于批准来源”就推翻已有按 Tree 比对或原生 Source 拒绝功能。
+- D-G03 的 GitHub Required 服务器实际配置得到了更强的只读负面证据；R1 Publisher 接线和独立服务端拒绝验收仍有不同的证明责任。D-G04 的 Release 当前原生保护与 R4 合同消费继续单独记账。
+- 合法受保护配置可以作为可信来源之一；候选 PR 同时控制 Profile 与用于验证它的 Config，则需要受信基线或有权签发者的外部事实才能区分。这是当前合同的关键未知，不是基于猜测设计某种新协调器。
 
 
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
