@@ -471,5 +471,12 @@
 | Release、制品、真实交付 | 原生 Manifest/Verification/Publishing 的部分源码和 NEW-003～013/034～037 | 有权当前 Profile、实际 Build/Package/Asset 下载、Policy/Artifact 及 R4/R5 真实消费 |
 | 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
 
+### C.3 本轮反证与已排除的误报方向
+
+| 调查疑点 | 证据与裁决 |
+| --- | --- |
+| `selection.full=True` 是否错误遗漏所有 Hygiene Check | [`selection._non_test_check_scopes`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2447-L2479) 确实对 Hygiene 传 `full=False`；但已有 [`test_full_selection_explicitly_marks_tests_only`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_selection.py#L223-L237) 明确把 full 定义为**测试全集**，Hygiene 保持真实增量适用。当前不存在足以认定漏跑的合同反例，暂不另编号；若实际面向用户的 CLI 承诺全工具全量执行，按该入口的独立证据重新评价。 |
+| `execution._execute_with_dependencies` 与 Dagger DAG 是否必然属于重复建设 | [Host `execution.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4083-L4210) 有面向本地命令/Prerequisite 的轻量执行依赖消费；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 说明 Dagger `plan_execution._execute_dag` 面向原生 Function/Container/File/Directory 及 Engine 缓存，Host-only 工作不当然应搬到 Dagger。两条路径职责有差异，**尚未发现仅凭两者共存即可证明的重复调度 BUG**；进一步调查实际 Check 是否在两个路径重复执行及共享 Result 是否真实生效。 |
+
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
 
