@@ -1,16 +1,18 @@
 # Engineering CI — 统一缺陷发现台账
 
-> **审计状态：发现进行中；禁止将现有发现清单视为全集。** 本文是后续 ECI 源码/架构审阅的唯一**滚动 Markdown 缺陷记录入口**，跨 Issue 去重并保留完整证据。仍属于一次需要继续枚举与验证的审计，**本文件不签发、撤销或放宽任何运行时权限**。
+> **审计状态：持续进行，当前发现不是全仓缺陷全集。** 本文件集中记录 ECI 的源码观察、原始证据、反例、反证、依赖和结论演进；它既不提供运行时授权，也不承担对未来实现方案的批准或限制职能。
 >
 > 初始版本：2026-11-18。基线：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）。旧候选仍单独记作 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，**不是 main 的一部分**。
 >
-> 记录归属：本仓的全部**实际调查到的**工程缺陷与架构/集成合同问题；本轮优先沿 [#125](https://github.com/dymzz/engineering-ci/issues/125) 的授权关键路径展开，不把未调查模块写成“无缺陷”。
+> **审计范围是 `dymzz/engineering-ci` 全仓。** 包括原始工程目标、架构与成熟工具、重复建设、Hooks/Lefthook、Dagger/Actions、证据/权限、Tool Runtime、OTel/Weaver、Release/GitHub 与历史需求和 Issue/PR。[#125](https://github.com/dymzz/engineering-ci/issues/125) 是授权链调查切面，不构成审计范围上限；未调查的其他领域保留为未知。其他仓库、规范和成熟工具源码只作为核实 ECI 设计选择的证据。
+
+> **2026-11-18 表述纠偏说明：** 保留历史发现 ID、源码/测试链接及既有证据；原 NEW 候选的预估 P1/P2 统一改为“优先级待评估”。代码观察、合同违例、生产可达性和修复方式分开裁决；历史判断仍可由 PR #129 的先前提交追溯。
 
 ## 0. 缺陷编号、时间轴、依赖和影响
 
 ### 0.1 统一编号与记录时序
 
-**编号不可随 PR 号重新编号：** `D-Fxx` 为 PR #128 已确证原生反例；`NEW-xxx` 是 PR #128 以后发现、有直接源码风险但待差异 API 核实的问题；`HYP-xxx` 为待语义裁决疑点；`D-Gxx` 为缺少实际生产验证的边界（不能计作 BUG）。后续新发现沿已有序列递增，重复根因链接既有 ID 而不新增编号。
+**稳定编号与历史可追溯：** `D-Fxx` 为 PR #128 已确证原生反例；`NEW-xxx` 是 PR #128 以后发现、有直接源码风险但待差异 API 核实的问题；`HYP-xxx` 为待语义裁决疑点；`D-Gxx` 为缺少实际生产验证的边界（不能计作 BUG）。后续新发现沿已有序列递增，重复根因链接既有 ID 而不新增编号。
 
 时间分别记录 **发现/证据采集（审计时间）**、**业务事件/评估/有效期（被测时序）**、**代码引入/修复/合并时间（工程时间）**，不能用某一时间冒充另一时间。无原始时间戳时只标日期和来源，不捏造精确时刻。
 
@@ -29,12 +31,11 @@
 | 2026-11-18：PR #129 继续审阅（本批四项） | #52 Report 全局终态、#66-C Check/Plan admissibility、Attempt Qualification 来源、Hook Final 退出码 | 新增 **NEW-022～NEW-025**。逐项区分已证源码分支与真实来源/可利用性，未运行新的实际组合反例，也未将独立 Check PASS 等同整个 Job PASS |
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 序列化 Assessment 时间/样本校验、R5 Reevaluation 时序、G2 Publisher Approval 时钟与 R5 逾期证据授权关联；复核 #63 原始 Issuer Context | 新增 **NEW-026～NEW-029**；其中 026/027/029 是明示的局部校验缺口，028 是调用方时间注入风险。**未执行本轮新增完整 API 反例、未证明生产绕过**；同时给 NEW-019 增加 #63 消费证据 |
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 非 Check Verifier 来源认证、Universe Evaluation 与 Assessment 时钟绑定、Profile ApprovedAt 真实性、G2 实际 Evaluator Revision 身份 | 新增 **NEW-030～NEW-033**。核对 #61 设计原文与实际源码/既有测试；四项分别落在不同 Producer→Consumer 关系，**代码条件确认但尚未运行新增原生 API 差异/生产认证测试** |
-
-| 2026-11-18：PR #129 Release 原生证据审阅 | 对照 Manifest Dagger Policy Check / Tool Version 来源、首次发布过期 Artifact、缺失 Digest 的 Provider 条件及 #61 Release 合同 | 新增 **NEW-034～NEW-037** 四项源码级候选，未运行新增真实模块组合 API；034/035 共用派生事实来源认证根因，不宣称真实发布权限已绕过 |
+| 2026-11-18：PR #129 Release 原生证据审阅 | 对照 Manifest Dagger Policy Check / Tool Version 来源、首次发布过期 Artifact、缺失 Digest 的 Provider 条件及 #61 Release 合同 | NEW-034～NEW-037 为源码差异与合同待确认点；已存在受信 Manifest Artifact 交接，重复验证必要性及异常可达性尚未证明 |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
-### 0.2 授权数据链与顺序约束
+### 0.2 授权链调查切面（不是全仓范围上限）
 
 依赖方向表示 **需要核查的事实流与合同**，不是所有箭头都已在生产环境接通。事件时间至少应区分：`Profile approval/effective/revoke` → `Expected & Source closure (pre-execution)` → `Run/Attempt/Native Result` → `Receipt/Admission` → `R1 evaluated_at` → `GitHub Check/Release` → `post-stage Trigger/Due/evaluated_at`；历史复用单独需要旧事实的来源与**当前**授权。不同 Stage 不允许用后置结果倒填前置 Expected。
 
@@ -44,15 +45,15 @@
 | T1 | Execution Run/Attempt、原生执行事实与历史证据/当前授权 | #52/#66-C/#63 T1/T2 → Admission/Reuse Gate 输入 | D-F02、D-G02、NEW-002、**NEW-014～NEW-017、NEW-022～NEW-024** | 进一步核对 Report-wide 终态、Check-level 可采纳性、Plan 一致性与 Attempt Qualification 的来源；不能从局部 PASS 或自声明资格推导当前授权 |
 | T2 | 归一化 Admission、Scope/Instance、Failure、Adjudication、non-check evidence | #61-R1 → 阶段 Required Assessment | D-F02、HYP-001、HYP-002、**NEW-006、NEW-026、NEW-030** | 新增 Non-Check Verifier 真实签发事实缺少独立核验的问题；不能以相等的 Verifier/Rule Ref 直接当有权真实 Evidence |
 | T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011、NEW-028、NEW-033** | 审批有效期时钟与真实执行的 Evaluator/Policy 身份是不同证明对象；相同 Workflow SHA 不等于实际评估器代码已受信 |
-| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
+| T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012、NEW-034～NEW-037** | 尚待核对 Assessment 原 Target/Action/Ref 与 Release 作用域、Manifest 来源及真实消费边界 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013、NEW-027、NEW-029**、D-G04 | 重新评估的时间箭头和逾期证据批准的 Assessment 对象身份须独立核实；不代表全生命周期 PASS |
 | TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021、NEW-025** | 除激活/签发/实例/Scope 闭包外，结构性 Receipt 能否作为真正的 Git Hook 进程成功依据仍须审计真实输入链和已安装 Hook 配置 |
 
-### 0.3 缺陷影响半径、证据等级与连锁约束
+### 0.3 源码事实、条件性影响和反证
 
-下表把 **实际已证后果** 与 **可能受影响、仍待追踪的消费者**分开。后续每条新增发现都必须补此两列，避免用下游推测扩大 P 级别。
+区分已观察的源码/测试事实、条件性影响与尚缺的合同或原生证据。未知消费者与假设不构成生产错误证明；这里记录调查条件，不规定实现选择。
 
-| ID | 最早确认的边界 / 时间条件 | 已证直接影响 | 潜在依赖与波及（**未证实**） | 不能据此做的修改 |
+| ID | 已观察的边界 / 时间条件 | 源码或受控测试事实 | 条件性影响及未知消费者 | 合同不确定性／反证方向 |
 | --- | --- | --- | --- | --- |
 | D-F01 | #124 Binder 评估时，原 Producer Domain 不闭合且 Terminal/Phase Witness 有效 | Binder 可返回 `authorized=True`、清空 `reasons`；候选实现局部错误放行 | #66 Expected Validator、执行消费者、#63/#61 是否实际消费该候选输出 | 不先把 R1 判为绕过；不先断言必须重新设计 B2 Schema |
 | D-F02 | #63 T1/T2 完成受控 Admission/Reuse 后，交接 R1 同一 Scope | R1 抛 `admission_phase_invalid` / `admission_kind_invalid`，阻断合法互通 | G2、Release 依赖 R1 的后续正例；失败/冲突/复用语义交接 | 不以修改常量、无权转换或让 R1 接受任意 `admitted` 代替真正投影 |
@@ -92,81 +93,79 @@
 | NEW-031 | Universe 自报 `evaluation.evaluated_at=t2`、R1 传 `evaluated_at=t1`，`t1!=t2` | Universe 只存时间字段并校验格式；R1 判定基于 t1，跨时点一致性无显式要求 | 撤销、策略修订或后置义务变化可能被错误套用到另一个时点；生产有权 Universe 签发未验 | 不机械要求所有获取时间完全等于评估时点，先明确“事实的 As-of 与再评估”关系 |
 | NEW-032 | `approved_at=t2>assessed_at=t1` 但 `effective_at<=t1`、Authority 仍 `verified` | R1 没有 Approval-issued-at 与 Assessment 的因果比较 | 若不允许追认，尚未发生的批准可能支持较早的 PASS；真实 Issuer 的授权窗口/回溯规则未证 | 不否定有权来源显式批准的合法回溯，先查审批时间合同 |
 | NEW-033 | 恶意或错误的实际 Evaluator/Policy Version，却将 `execution_identity` 自报为受批准 Ref | G2 只校验自报的 Ref 与批准及 Publication 一致，Workflow SHA 与 GitHub Runtime 匹配 | 有发布权限但未运行批准评估器的 Workflow 可能发布 Required SUCCESS；Approval Authority 是否验证实际执行版本未知 | 不自行新建 Evaluator Registry 或 Coordinator，核对已有 Action/Artifact/真实工作流不可伪造的身份来源 |
-
-
-
-
-
 | NEW-034 | 序列化 Manifest 派生 Dagger 子 Policy Check 从 unavailable 改 passed，而原 Dagger Job 仍 success | 验证器核对成功 Job/Step 字段，未重取独立 Dagger Policy Check 原始证明 | Release 固定 Required 的子 Check 可被未经验证的 Manifest 声明替代；生产篡改来源未证 | 复用原 Manifest facts/Native Provider，不新建 Dagger 执行器 |
 | NEW-035 | Manifest tools 版本字符串被替换为另一合法版本，而原工具文件和成功 Run 未变 | clean_tools 只验证格式/集合；Verification/Publishing 不复核原始 Tool Version 输出 | 工具版本 provenance 可能漂移，是否影响已签发正式 Manifest 待证 | 与 NEW-034 同族、不能各建版本存储或检查器 |
 | NEW-036 | 原 Manifest 在 t0 合格，首次发布前其 Actions Artifact 在 t1 过期 | 新建 Manifest 会拒绝过期项，但首次 publish_release 使用允许过期元数据的 published_evidence | 若发布时要求源 Artifact 仍可取，过期证据可能支持首次发布；合法历史复用另论 | 不把历史已发布 Release 的只读核验一律改为拒绝 |
 | NEW-037 | GitHub Artifact 元数据不提供 digest，但相同 Run/ID/名称均合法 | passed Manifest 接受 digest=None，Provider 仅在声明 Digest 时比较 | 无法仅凭当前 Manifest 完成字节 Digest 证明；API 可达性/当前义务未实测 | 不把不适用的软件制品要求强加给所有 Release |
 
-### 0.4 发现依赖的裁决顺序（**不是立即修复顺序**）
+### 0.4 调查依赖（可并行，不是修改门槛）
 
-1. **上游真实性先裁决**：Profile/Obligations/Phase/Source 真实来源（D-G01）及与 Binder D-F01 的缺口分别证明；不能在未证实治理域闭合时将任何局部 `True` 推成当前授权。
-2. **Producer→Consumer 交接先裁决**：D-F02 所属 #63→R1；同时核对失败 `issued_at`、判决 `decided_at/valid_until/revoked_at` 的时间语义（NEW-002）及全部正常/历史/失败/冲突路径。
-3. **身份与完整性先裁决**：HYP-001/HYP-002 的真正合约边界，不能以“静态未使用”直接定义强制保障，也不能以局部测试通过就宣布全链覆盖。
-4. **允许性出口最后结算**：R1→G2/G3→R4/Release→R5，验证 NEW-001 的 post-only 样本与真实 Trigger/Due；外部权威缺失时保持独立未验证，不据此盲目修改现有服务端/Release。
-5. **将新反例逐条归入稳定 ID**，从原始证据回填时间/身份/消费者关系；一项根因影响多个出口时不拆分成多份相互漂移的改法。
+此处的顺序仅描述 Producer→Validator→Consumer 的事实依赖；并不要求全仓审计或代码修订按统一阶段排队。已有充分证据的独立工程问题可在其原归属模块实施、审阅和验收，持续发现与修复进度分别记账。
 
-以上 1～5 是 **查证/语义裁决的依赖序列**，不是推迟合理架构规划，更不是已完成覆盖的证明。能够独立调查的链可并行，不能让某个未验证来源代替对其他边的代码缺陷调查。
+| 调查面 | 既有基线 | 仍需辨别的事实 |
+| --- | --- | --- |
+| 有权 Profile、治理域、Phase | D-G01、D-F01、#66-B2 | 合法闭域与复合未知、并存原因、真实 Producer 和消费者 |
+| 原生证据、Admission 与 R1 | D-F02、#52/#63/#61 | Gate Projection、受信来源、失败/冲突、真实历史复用 |
+| Scope、身份、时间 | NEW-002/005/006/009/011/012/026/031/032 | 时间基准、重评估、类型身份及消费者契约 |
+| GitHub/Release/Post 出口 | G2/G3、R4/R5、D-G03/D-G04 | 实际授权来源、原生发布入口、服务端拒绝和后置条件 |
+| 其余全仓工程设计 | Hooks/Lefthook、Dagger/Actions、Tool Runtime、Weaver 等 | 原始需求、成熟机制覆盖、重复实现与实际工程收益 |
 
-## 使用口径与状态
+公共根因可能影响多个接口；保留每个已观察差异的来源引用，根据新增证据决定关联、合并或拆分，不预设最终技术方案。
 
-- **已复现**：固定版本真实 API、源码/原生执行证据明确展示与既有合同不一致。**源码证明、待 API 复现**：静态条件足以构造可疑放行路径，但未实际运行受控组合输入；不得当成已复现。**待裁决疑点**：有代码事实，缺少合同/有效反例。**未验证生产依赖**：实际接线或来源缺证据，不自动等同 BUG。
-- 每项固定 **发现 ID（不使用 PR 编号作为 ID）**、严重性、审计快照、事实/原始证据、可复现输入、反例与合法正例、影响的所有已证消费者和未知边、根因、原有 Issue/PR 归属、裁决/修订状态。补充证据时更新同一条，避免在每次 Review 新开平行缺陷。
-- **先继续找，再统一修订**：发现阶段先核对授权出口→生产者的逆向路径和生产者→消费者的正向路径、交叉身份/时间/失败传播、真实来源及动态边。不得因只发现若干 P1 就开始 I01/I02 修订。何时进入修改，依据**已列出口和边的覆盖结算、未知项及反证情况**明确决定；不许以“绝对不可能遗漏”的承诺代替证据。
-- 记录不取代 [#125-D 原始冻结证据](authorization-closure/independent-review/README.md)、[findings.json](authorization-closure/independent-review/findings.json)、[#125-C 边索引](authorization-closure/coverage/README.md)、原有领域 Issue。原冻结证据不修改；本台账引用它们并追加新发现。
-- 修复与验收状态必须依据实际 HEAD/PR/测试更新；文档本身的标记不构成修复事实。不得写 GitHub 自动关闭关键词，不自动合并或关闭任何 Issue。
+## 证据等级、优先级与记录口径
 
-## A. 缺陷与跨模块合同问题
+- **已复现合同错误**：固定代码版本上的实际 API/受控输入已经展示违反既定合同的结果，并标出其适用范围。**源码行为已定位**：具体代码分支和输入条件已观察，但合法合同解释、原生组合结果或授权可达性未完成确认。**来源／生产待核验**：真实 Issuer、原件和外部服务端证据不足。**合法或已排除**：反证成立时保留编号和裁决依据。
+- **严重性与证据分开**：D-F01/D-F02 的受控 P1 结论保留；既有 NEW 的 P1/P2 是审计中形成的风险猜测，现统一标记“待评估”，其历史标签仍留在 Git 提交记录中。真正的严重性根据用户目标、有效合同、实际消费路径、可达条件和影响决定。
+- **发现记录**：保留稳定 ID、原始目标、Commit/SHA、源码或测试事实、反例与合法对照、反证、依赖、实际影响和未知影响、根因关系、原归属及调查/修复状态。复用已有有效证据，核验实际变更和风险；旧审计结论允许被新证据推翻。
+- **实现与调查职责**：台账提供事实与设计比较依据，不预先排除组件复用、重构、替换、扩展或必要的新机制；技术选择按成熟方案的真实能力、原始需求、工程收益与接口职责裁决。独立可修订的问题不因其他未调查模块而冻结；共同上游问题按实际依赖协调修改。
+- **保留原始材料**：[PR #128 原始发现](authorization-closure/independent-review/findings.json)、[受控测试案例](authorization-closure/independent-review/cases.json)、[PR #127 来源/覆盖](authorization-closure/coverage/README.md) 和原有领域 Issue/PR 仍是历史可复核来源。文档状态不是代码已修复、门禁已部署或服务端已启用的证明。
 
-| ID | 严重性 | 状态 | 所属快照与原归属 | 简要事实 | 修复状态 |
+## A. 已复现合同错误与待裁决的源码观察
+
+| ID | 风险优先级 | 证据／合同状态 | 源码快照及原归属 | 已观察事实与条件 | 调查／修复状态 |
 | --- | --- | --- | --- | --- | --- |
 | **D-F01** | P1 | **已复现（受控 API）** | `#124@4a41b4e`；#66-B2、#52-D4/#124 | Domain 未闭合仍被 Terminal/Phase Binder 清除复合缺口，返回 `bound/authorized=True` | 未修复；待统一裁决 |
 | **D-F02** | P1 | **已复现（受控 API）** | `main@adeeb4b`；#63 T1/T2、#61 R1 | 实际 Admission/Reuse 输出直接输入 R1，分别触发 `admission_phase_invalid` / `admission_kind_invalid`；为合法交接缺口，不是越权通过 | 未修复；待统一裁决 |
-| **NEW-001** | 待按反例定级 | **源码证明、待 API 复现** | `main@fc0df2a`；#61-R5 | R5 的 `contract_sample` 汇总检查只看显式参数和 prior Assessment，**漏查 post Assessment 的样本位**；可能将后置样本标记为非样本且返回 `verified` | 未修复；须独立正反例确认 |
-| **HYP-001** | 待裁决 | **待证实疑点** | `main@fc0df2a`；#61-R1 | `candidate_digest` 关联使用 Candidate 字段值集合，可能将不同类型的 Candidate 身份值混同；先核对合同是否授权这种无类型匹配，再构造区分字段的反例 | 未修复，不视作已确诊 |
-| **NEW-002** | 待按反例定级 | **源码证明、待 API 复现** | `main@fc0df2a`；#61-R1 | `failure.issued_at` 仅做格式验证，没有参与评估时间过滤；需要证明过去 Assessment 是否被未来 Native Failure 改写 | 未修复，待 as-of 合同核查 |
+| **NEW-001** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#61-R5 | R5 的 `contract_sample` 汇总检查只看显式参数和 prior Assessment，**漏查 post Assessment 的样本位**；可能将后置样本标记为非样本且返回 `verified` | 待裁决；须独立正反例确认 |
+| **HYP-001** | 待裁决 | **待证实疑点** | `main@fc0df2a`；#61-R1 | `candidate_digest` 关联使用 Candidate 字段值集合，可能将不同类型的 Candidate 身份值混同；先核对合同是否授权这种无类型匹配，再构造区分字段的反例 | 待裁决；尚无确诊的实现缺陷 |
+| **NEW-002** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R1 | `failure.issued_at` 仅做格式验证，没有参与评估时间过滤；需要证明过去 Assessment 是否被未来 Native Failure 改写 | 待裁决；待 as-of 合同核查 |
 | **HYP-002** | 待裁决 | **待证实疑点** | `main@fc0df2a`；#61-R1/#63/#66-C | R1 虽接收 `all_observations_reconciled` 却只校验类型，未用于阶段判定；是否需要该事实取决于 Required 完整性与附加 Observation 的合同语义 | 未修复，不视作确诊 |
-| **NEW-003** | P1 候选，待消费证据 | **源码确认的消费合同缺口，待 API 复现** | `main@fc0df2a`；#61-R4 | `require_reconciliation_manifest()` 名为需检验“授权 Manifest”，实际只验证 Envelope 结构与 Manifest 身份，允许 `release_authorized=False` 的验证阶段 Envelope 通过身份检查 | 未修复；真实生产调用方未证明 |
-| **NEW-004** | 待合同裁决 | **源码可达的错误 Check 绑定，待 API 复现** | `main@fc0df2a`；#61-R4 / Release Manifest v1 | 显式 `check_bindings` 可指向永远 `not_enabled` 的 optional Check；R4 只判断关联 R1 Check 的状态，不判断被绑定的 Manifest Check 状态或 `required` | 未修复；若绑定仅是附加说明则须明确定义，不宣称发布绕过 |
-| **NEW-005** | P1 候选，待反例 | **源码确认时间校验缺失，待 API 复现** | `main@fc0df2a`；#61-R4 | R4 没有要求 `assessment.evaluated_at <= publish_context.evaluated_at`；即使两者逆序，也可能在外部 Policy/Provider 回调接受时 `release_authorized=True` | 未修复；真实外部 Authority 是否自行约束尚未知 |
-| **NEW-006** | 待裁决 | **源码确认顺序敏感，待 API/策略核查** | `main@fc0df2a`；#61-R1、#63 adjudications | 同一 Result 多条同时有效的不同 Adjudication 允许并存，`_effective_adjudication()` 按输入顺序选第一条；缺少同一结果多裁决优先级/冲突判定 | 未修复；已确认来源选择受顺序影响，不等同证实错误 PASS |
-| **NEW-007** | 待裁决 | **源码确认空映射可通行** | `main@fc0df2a`；#61-R4 | `check_bindings=None` 不执行 Assessment Check↔Manifest Check 双向证明；控制测试允许 R4 `release_authorized=True` | 先核对映射是否为强制合同，与 NEW-004 可能同根 |
-| **NEW-008** | 待裁决 | **既有测试确认当前交叉类型裁决行为** | `main@fc0df2a`；#61-R1/#63 | 单种 `failure_superseded` 或 `conflict_resolved` 能解除 Native Failure+Conflict 混合结果 | 需上游授权规则裁决，不能直接称错误 PASS |
-| **NEW-009** | 待裁决 | **源码确认缺少时序对账** | `main@fc0df2a`；#61-R1/#63 | Adjudication 可以早于它宣称解除的 Failure 的 `issued_at`，R1 本地无先后验证 | 待实测及 `issued_at` 语义裁决 |
+| **NEW-003** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#61-R4 | `require_reconciliation_manifest()` 名为需检验“授权 Manifest”，实际只验证 Envelope 结构与 Manifest 身份，允许 `release_authorized=False` 的验证阶段 Envelope 通过身份检查 | 待裁决；真实生产调用方未证明 |
+| **NEW-004** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R4 / Release Manifest v1 | 显式 `check_bindings` 可指向永远 `not_enabled` 的 optional Check；R4 只判断关联 R1 Check 的状态，不判断被绑定的 Manifest Check 状态或 `required` | 待裁决；若绑定仅是附加说明则须明确定义，不宣称发布绕过 |
+| **NEW-005** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R4 | R4 没有要求 `assessment.evaluated_at <= publish_context.evaluated_at`；即使两者逆序，也可能在外部 Policy/Provider 回调接受时 `release_authorized=True` | 待裁决；真实外部 Authority 是否自行约束尚未知 |
+| **NEW-006** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R1、#63 adjudications | 同一 Result 多条同时有效的不同 Adjudication 允许并存，`_effective_adjudication()` 按输入顺序选第一条；缺少同一结果多裁决优先级/冲突判定 | 待裁决；已确认来源选择受顺序影响，不等同证实错误 PASS |
+| **NEW-007** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R4 | `check_bindings=None` 不执行 Assessment Check↔Manifest Check 双向证明；控制测试允许 R4 `release_authorized=True` | 先核对映射是否为强制合同，与 NEW-004 可能同根 |
+| **NEW-008** | 待评估 | **既有测试已覆盖行为；合同是否违反待裁决** | `main@fc0df2a`；#61-R1/#63 | 单种 `failure_superseded` 或 `conflict_resolved` 能解除 Native Failure+Conflict 混合结果 | 需上游授权规则裁决，不能直接称错误 PASS |
+| **NEW-009** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R1/#63 | Adjudication 可以早于它宣称解除的 Failure 的 `issued_at`，R1 本地无先后验证 | 待实测及 `issued_at` 语义裁决 |
 | **HYP-003** | 待裁决 | **静态发现，待组合反例** | `main@fc0df2a`；#66 Hook/#52/#66-C | Hook Exit 只检查 Receipt matched，不直接读取未选中的 Failed Native Result；可能涉及合法重试与无效忽略的边界 | 待同 Invocation 多结果验证 |
-| **NEW-010** | **P1 候选** | **源码可达，待序列化差异 API 反例** | `main@fc0df2a`；#61-G2 / GitHub Check Publisher | `validate_publication()` 只禁止 `assessment_status="blocked"` 与 `conclusion="success"`；不要求成功对应 `assessment_status="passed"`，正式 Publisher 的授权仅对发布者/执行身份作证，未重新取得实际 R1 PASS | 未修复；需要核查实际 Publication 来源/可信边界 |
-| **NEW-011** | P1 候选 | **源码确认的身份映射缺口，待 API 反例** | `main@fc0df2a`；#61-G2/R2 | `build_check_publication()` 对 Assessment 与 GitHub target 只绑定 `candidate.commit`（缺省时可用 event_head），未检查 Assessment `action/target/refs/phase` 是否与被发布的受保护 Scope 对应 | 未修复；同 SHA 跨目标消费者仍待验证 |
-| **NEW-012** | P1 候选 | **源码确认的身份映射缺口，待 API 反例** | `main@fc0df2a`；#61-R4/Release | `reconcile_release_assessment()` 只比较 Assessment Commit 与 Phase，没有在 R4 本地核对 Assessment `action/target/refs` 与 Release repository/tag/target 的适用性；Policy 回调所收快照也未包含这些作用域字段 | 未修复；与 NEW-011 同属跨消费者 Scope 漏绑定组，勿重复开发 |
-| **NEW-013** | 待合同裁决 | **源码确认接线验证委托，待 API/Issuer 证明** | `main@fc0df2a`；#61-R5 | R5 Trigger 的 `artifact_digest` 仅格式化后传入 Authority 回调，`run_id/run_attempt` 也没有在本地与 Assessment 所引用的原始 Run 证据关联；若实际 Authority 只核验事件存在，可能把错 Artifact/Attempt 当作合法 Trigger | 未修复；必须先确认 Trigger Issuer/Artifact 归属及 Auth 回调真实实现 |
-| **NEW-014** | P1 候选 | **既有测试证实允许性行为，风险待裁决** | `main@fc0df2a`；#63 T1-a / #66-C | 同一 Job/Run/Attempt 标签下，跨独立 Report/Receipt 的已认证 Failed Result 保留诊断但 Selected PASS 仍被 `admitted=True` | 未修复；须查是否为同一有效 Attempt 及失败传播规则 |
-| **NEW-015** | 待合同裁决 | **既有测试证实 matched 与重复 Result 并存** | `main@fc0df2a`；#66-C / Hook Exit | 相同不可变 Result ID 在两个 Job Observation 出现时，Receipt `duplicate` 记账却不计入 `unreconciled`；可能保持 `matched` 并由 Hook Exit 放行 | 未修复；须查重复计算复用是否受信且合法 |
-| **NEW-016** | P2 候选 | **源码路径可达，待真实 API 对照** | `main@fc0df2a`；#66-C / Hook | 未路由的额外 Job Observation 若不含 Native Result，`_unexpected_observations()` 不生成记录；失败但零 Native 输出的 Job 可能不影响 `all_observations_reconciled` | 未修复；需独立失败 Report/Job Receipt 的正反例 |
-| **NEW-017** | P2 候选 | **源码确认同身份候选顺序敏感，待 API 复现** | `main@fc0df2a`；#63 T2 | 多个合法 `historical_candidates` 具有相同历史 Scope/Expected Ref 但不同 Result 时，`admitted` 排序只有两项相同键，稳定排序按调用方原始顺序选出不同见证 | 未修复；需确认候选唯一性要求与历史身份归属 |
-| **NEW-018** | P1 候选 | **源码确定同 Job 覆盖行为，待调度 API 复现** | `main@fc0df2a`；#66 Hook Dispatch | `record_job` 不拒绝重复 `job_ref`，第二次直接覆盖前次 Eligibility/Production Ref/Delivery 状态 | 未修复；查合法 Retry 与唯一 Job 身份 |
-| **NEW-019** | P1 候选 | **源码确定事件/Scope 签发缺少来源对账，现有测试提供行为例证** | `main@fc0df2a`；#66 Hook Producer/#63 T1-a | `issue_job_receipt` 从调用方接收 Event/Scope/Expected Set，仅做形状/前缀检查便写 `upstream_verified`，未与本 Invocation 实际 Event/Expected 对照 | 未修复；查原始 Issuer Authority 是否已独立阻断 |
-| **NEW-020** | P2 候选 | **字符串前缀碰撞，真实 Runner 可达性待核对** | `main@fc0df2a`；#52 Native/#66 Hook Collect | `_require_attempt_bound_natives` 用 `startswith` 匹配实例，`job-1-extra` 文字会满足 `job-1` 的前缀 | 未修复；实际 Deliver/Production Ref 另有保护 |
-| **NEW-021** | P1 候选 | **源码确定多余 Scoped 输入未进入计算，待多 Ref API 差异反例** | `main@fc0df2a`；#66 Hook/#66-C | `finalize_invocation` 不拒绝输入字典的未知 Scope key，额外 Observation 直接被忽略，Exit 仅依赖 Expected Scope Receipts | 未修复；先确认额外数据属于本 Invocation |
-| **NEW-022** | P1 候选 | **源码可达 Report-wide 失败与单 Check PASS 分离，待原生组合反例** | `main@fc0df2a`；#52→#66-C/#63 | `_execution_report` 只全局拒绝 `status=not_executed`/显式 Plan 不一致，却未对 `status=failed/blocked`、Report 级 Artifact Delivery/Prerequisite 失败传递否决；符合局部 Check 的 PASS 仍可被选为 matched | 未修复；须区分独立 Check 可复用与整个 Job 的 Required FAIL |
-| **NEW-023** | P2 候选 | **源码确认 ECI Report 缺失一致性断言不拒绝，待真假 Report 对照** | `main@fc0df2a`；#52→#66-C | ECI Report 仅 `plan_declaration_consistent is False` 会被整体拒绝，缺字段/None 不会触发拒绝；同一 Report 内 Checked Native Result 可获 matched | 未修复；实际 Runner 产物通常显式带 True；查是否强制受信原件 |
-| **NEW-024** | P1 候选 | **源码确认 Attempt Qualification 仅按形状接纳，待 Issuer/Dispatch 证据核查** | `main@fc0df2a`；#66-C | `_job_instance` 只要求 eligible 时存在一个合法 `qualification_ref` 对象，不验证其 SHA 与 Job/Run/Attempt/Invocation 内容或有权资格签发；可独立自报 eligible | 未修复；这一级自称 structural，不可推断 #63 已承认来源 |
-| **NEW-025** | P1 候选 | **源码证明结构性 matched 决定 Hook exit=0，合同意图待确认** | `main@fc0df2a`；#66 Hook Final/#66-C/#63 | `hook_exit_code` 将结构性 Receipt `matched` + 闭包标志直接映射进程成功，即使 `required_gate=not_evaluated`、`trusted_evidence_not_admitted`；若外部 Scoped JSON 并非可信 Dispatch 产物，可能错放行 | 未修复；须查实际 Lefthook 调用、输入来源和本地 Gate 目标 |
-| **NEW-026** | P1 候选 | **序列化 Assessment 校验器与原计算器的不变量不等价** | `main@fc0df2a`；#61-R1→G2/R4/R5 | `validate_assessment` 不重检 authority `effective_at/valid_from/evaluated_at` 相对 Assessment 的时间条件，也不校验样本标记与其来源事实/限制语义；重新摘要的通过 Assessment 可能在下游继续被当 PASS | 未修复；需原生重签摘要差异反例及受信来源裁决 |
-| **NEW-027** | P1/P2 待裁决 | **R5 对重新评估显式跳过评估时间单调性** | `main@fc0df2a`；#61-R5 | `_bind_temporal` 当 Trigger=`authorized_reevaluation` 时允许 `post.evaluated_at < prior.evaluated_at`，也不要求 Post Evidence 不早于 Reevaluation 事件 | 未修复；须明确追溯型重算与新判定的时间语义 |
-| **NEW-028** | P1 候选 | **G2 Publisher 的 Approval 有效期时钟可由调用者替换** | `main@fc0df2a`；#61-G2 | `normalize_publisher_approval(...,now=...)` 以参数时间判断过期；`authorize_and_publish/workflow_publish_authority` 原样透传该时间。若独立 Approval Authority 只认证签发而不验证当前时钟，过期审批可能通过 | 未修复；真实接线和外部 Authority 是否重验时钟未证 |
-| **NEW-029** | P1/P2 待裁决 | **R5 Late Evidence 的 Due Authority Context 缺少具体 Assessment 身份** | `main@fc0df2a`；#61-R5 | `due_window_authority` 可签出 `late_evidence_accepted=True`，其 Context 只有时间、Due Window 与 Lifecycle identity，没有 `post_assessment_ref` 或证据内容引用；难以对具体迟到证据做逐件授权 | 未修复；需同一 Scope/时间不同 Post Assessment 的差异反例 |
-| **NEW-030** | **P1 候选** | **源码与合同冲突：R1 仅比对 Verifier 引用，无独立签发核验** | `main@fc0df2a`；#61-R1 Non-Check / D-G05 | `non_check_evidence` 的 `result=satisfied` 与 Obligation 的 Verifier/Authorization/Rule Ref 匹配即可记 `satisfied`；代码只验证引用形状/相等、时间、Candidate Subject，不核实真实 Verifier 是否签发了该 Result | 未修复；查领域 Producer 是否在 R1 前保证受信交接，不能把内容哈希当证明 |
-| **NEW-031** | **P1 候选** | **源码确定两个求值时钟未对账** | `main@fc0df2a`；#66-B2→#61-R1 | `universe.evaluation.evaluated_at` 已作为完整全集求值输入并入摘要，但 `assess_required_obligations(evaluated_at=...)` 独立控制阶段 Assessment；两时刻不比较，可能拿后来求值的 Obligations Universe 评价较早时点 | 未修复；需同源、先后与 As-of 反例及有权 Universe 来源 |
-| **NEW-032** | P1/P2 待语义裁决 | **源码确认 Approval 签发晚于 Assessment 时不被拒绝** | `main@fc0df2a`；#66-B2→#61-R1 | R1 只解析 `authority.approved_at`，`_authority_fact` 核验状态、生效和有效期，但未比较 `approved_at <= assessed_at`；若政策不允许追认，未来才批准的 Profile 可参与过去 Assessment PASS | 未修复；须核对回溯授权与 Approval 有效时间语义 |
-| **NEW-033** | **P1 候选** | **G2 声称实际执行的 Evaluator/Policy 身份仍是调用方提供** | `main@fc0df2a`；#61-G2/G3 | `execution_identity` 的 `workflow_sha` 与 GitHub Runtime 比较，但 Evaluator/Policy Ref 只与 Approval/Publication 的声明比对，没有内置独立执行产物签发证明；一致的自声明仍可能获得发布 Authority | 未修复；查实际运行身份的有权 Producer、Approval Authority 及 Check 发布来源 |
-
-| **NEW-034** | P1 候选 | **Dagger 子 Policy Check 没有独立原生来源重验** | main@fc0df2a；Release Manifest/Verification/Publisher | 生成器要求 Dagger 原始 Check 名称，序列化验证和真实 Publisher 仅重查基础 CHECKS Job/Step | 未修复；需原生差异 API 和真实来源边界 |
-| **NEW-035** | P2/P1 待裁决 | **Release Tool Version 字段未绑定原始版本记录** | main@fc0df2a；Release Manifest/Provider | 版本仅做合法格式、枚举、唯一性检查；未从原生 Producer 复核取值 | 未修复；034/035 同源验证族 |
-| **NEW-036** | P1/P2 待裁决 | **首次 Publish 使用过期 Artifact 的历史核验策略** | main@fc0df2a；Release Publishing | allow_expired=True 不区分历史已发布核验与首次 publish_release | 未修复；依赖当前 Profile 发布时可取用合同 |
-| **NEW-037** | P1/P2 待裁决 | **固定 Release Artifact 缺 Digest 仍能经 Provider 验证** | main@fc0df2a；Manifest/Publishing | Digest=None 可通过固定 Artifact 名称/ID/Run 的 Manifest 验证，Provider 不核对字节摘要 | 未修复；真实 API 及字节义务待验证 |
+| **NEW-010** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#61-G2 / GitHub Check Publisher | `validate_publication()` 只禁止 `assessment_status="blocked"` 与 `conclusion="success"`；不要求成功对应 `assessment_status="passed"`，正式 Publisher 的授权仅对发布者/执行身份作证，未重新取得实际 R1 PASS | 待裁决；需要核查实际 Publication 来源/可信边界 |
+| **NEW-011** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#61-G2/R2 | `build_check_publication()` 对 Assessment 与 GitHub target 只绑定 `candidate.commit`（缺省时可用 event_head），未检查 Assessment `action/target/refs/phase` 是否与被发布的受保护 Scope 对应 | 待裁决；同 SHA 跨目标消费者仍待验证 |
+| **NEW-012** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#61-R4/Release | `reconcile_release_assessment()` 只比较 Assessment Commit 与 Phase，没有在 R4 本地核对 Assessment `action/target/refs` 与 Release repository/tag/target 的适用性；Policy 回调所收快照也未包含这些作用域字段 | 待裁决；与 NEW-011 同属跨消费者 Scope 漏绑定组，勿重复开发 |
+| **NEW-013** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R5 | R5 Trigger 的 `artifact_digest` 仅格式化后传入 Authority 回调，`run_id/run_attempt` 也没有在本地与 Assessment 所引用的原始 Run 证据关联；若实际 Authority 只核验事件存在，可能把错 Artifact/Attempt 当作合法 Trigger | 待裁决；必须先确认 Trigger Issuer/Artifact 归属及 Auth 回调真实实现 |
+| **NEW-014** | 待评估 | **既有测试已覆盖行为；合同是否违反待裁决** | `main@fc0df2a`；#63 T1-a / #66-C | 同一 Job/Run/Attempt 标签下，跨独立 Report/Receipt 的已认证 Failed Result 保留诊断但 Selected PASS 仍被 `admitted=True` | 待裁决；须查是否为同一有效 Attempt 及失败传播规则 |
+| **NEW-015** | 待评估 | **既有测试已覆盖行为；合同是否违反待裁决** | `main@fc0df2a`；#66-C / Hook Exit | 相同不可变 Result ID 在两个 Job Observation 出现时，Receipt `duplicate` 记账却不计入 `unreconciled`；可能保持 `matched` 并由 Hook Exit 放行 | 待裁决；须查重复计算复用是否受信且合法 |
+| **NEW-016** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#66-C / Hook | 未路由的额外 Job Observation 若不含 Native Result，`_unexpected_observations()` 不生成记录；失败但零 Native 输出的 Job 可能不影响 `all_observations_reconciled` | 待裁决；需独立失败 Report/Job Receipt 的正反例 |
+| **NEW-017** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#63 T2 | 多个合法 `historical_candidates` 具有相同历史 Scope/Expected Ref 但不同 Result 时，`admitted` 排序只有两项相同键，稳定排序按调用方原始顺序选出不同见证 | 待裁决；需确认候选唯一性要求与历史身份归属 |
+| **NEW-018** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#66 Hook Dispatch | `record_job` 不拒绝重复 `job_ref`，第二次直接覆盖前次 Eligibility/Production Ref/Delivery 状态 | 待裁决；查合法 Retry 与唯一 Job 身份 |
+| **NEW-019** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#66 Hook Producer/#63 T1-a | `issue_job_receipt` 从调用方接收 Event/Scope/Expected Set，仅做形状/前缀检查便写 `upstream_verified`，未与本 Invocation 实际 Event/Expected 对照 | 待裁决；查原始 Issuer Authority 是否已独立阻断 |
+| **NEW-020** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#52 Native/#66 Hook Collect | `_require_attempt_bound_natives` 用 `startswith` 匹配实例，`job-1-extra` 文字会满足 `job-1` 的前缀 | 待裁决；实际 Deliver/Production Ref 另有保护 |
+| **NEW-021** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#66 Hook/#66-C | `finalize_invocation` 不拒绝输入字典的未知 Scope key，额外 Observation 直接被忽略，Exit 仅依赖 Expected Scope Receipts | 待裁决；先确认额外数据属于本 Invocation |
+| **NEW-022** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#52→#66-C/#63 | `_execution_report` 只全局拒绝 `status=not_executed`/显式 Plan 不一致，却未对 `status=failed/blocked`、Report 级 Artifact Delivery/Prerequisite 失败传递否决；符合局部 Check 的 PASS 仍可被选为 matched | 待裁决；须区分独立 Check 可复用与整个 Job 的 Required FAIL |
+| **NEW-023** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#52→#66-C | ECI Report 仅 `plan_declaration_consistent is False` 会被整体拒绝，缺字段/None 不会触发拒绝；同一 Report 内 Checked Native Result 可获 matched | 待裁决；实际 Runner 产物通常显式带 True；查是否强制受信原件 |
+| **NEW-024** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#66-C | `_job_instance` 只要求 eligible 时存在一个合法 `qualification_ref` 对象，不验证其 SHA 与 Job/Run/Attempt/Invocation 内容或有权资格签发；可独立自报 eligible | 待裁决；这一级自称 structural，不可推断 #63 已承认来源 |
+| **NEW-025** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#66 Hook Final/#66-C/#63 | `hook_exit_code` 将结构性 Receipt `matched` + 闭包标志直接映射进程成功，即使 `required_gate=not_evaluated`、`trusted_evidence_not_admitted`；若外部 Scoped JSON 并非可信 Dispatch 产物，可能错放行 | 待裁决；须查实际 Lefthook 调用、输入来源和本地 Gate 目标 |
+| **NEW-026** | 待评估 | **源码行为已定位；差异反例与合同待核验** | `main@fc0df2a`；#61-R1→G2/R4/R5 | `validate_assessment` 不重检 authority `effective_at/valid_from/evaluated_at` 相对 Assessment 的时间条件，也不校验样本标记与其来源事实/限制语义；重新摘要的通过 Assessment 可能在下游继续被当 PASS | 待裁决；需原生重签摘要差异反例及受信来源裁决 |
+| **NEW-027** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R5 | `_bind_temporal` 当 Trigger=`authorized_reevaluation` 时允许 `post.evaluated_at < prior.evaluated_at`，也不要求 Post Evidence 不早于 Reevaluation 事件 | 待裁决；须明确追溯型重算与新判定的时间语义 |
+| **NEW-028** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-G2 | `normalize_publisher_approval(...,now=...)` 以参数时间判断过期；`authorize_and_publish/workflow_publish_authority` 原样透传该时间。若独立 Approval Authority 只认证签发而不验证当前时钟，过期审批可能通过 | 待裁决；真实接线和外部 Authority 是否重验时钟未证 |
+| **NEW-029** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#61-R5 | `due_window_authority` 可签出 `late_evidence_accepted=True`，其 Context 只有时间、Due Window 与 Lifecycle identity，没有 `post_assessment_ref` 或证据内容引用；难以对具体迟到证据做逐件授权 | 待裁决；需同一 Scope/时间不同 Post Assessment 的差异反例 |
+| **NEW-030** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#61-R1 Non-Check / D-G05 | `non_check_evidence` 的 `result=satisfied` 与 Obligation 的 Verifier/Authorization/Rule Ref 匹配即可记 `satisfied`；代码只验证引用形状/相等、时间、Candidate Subject，不核实真实 Verifier 是否签发了该 Result | 待裁决；查领域 Producer 是否在 R1 前保证受信交接，不能把内容哈希当证明 |
+| **NEW-031** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#66-B2→#61-R1 | `universe.evaluation.evaluated_at` 已作为完整全集求值输入并入摘要，但 `assess_required_obligations(evaluated_at=...)` 独立控制阶段 Assessment；两时刻不比较，可能拿后来求值的 Obligations Universe 评价较早时点 | 待裁决；需同源、先后与 As-of 反例及有权 Universe 来源 |
+| **NEW-032** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | `main@fc0df2a`；#66-B2→#61-R1 | R1 只解析 `authority.approved_at`，`_authority_fact` 核验状态、生效和有效期，但未比较 `approved_at <= assessed_at`；若政策不允许追认，未来才批准的 Profile 可参与过去 Assessment PASS | 待裁决；须核对回溯授权与 Approval 有效时间语义 |
+| **NEW-033** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | `main@fc0df2a`；#61-G2/G3 | `execution_identity` 的 `workflow_sha` 与 GitHub Runtime 比较，但 Evaluator/Policy Ref 只与 Approval/Publication 的声明比对，没有内置独立执行产物签发证明；一致的自声明仍可能获得发布 Authority | 待裁决；查实际运行身份的有权 Producer、Approval Authority 及 Check 发布来源 |
+| **NEW-034** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | main@fc0df2a；Release Manifest/Verification/Publisher | 生成器要求 Dagger 原始 Check 名称，序列化验证和真实 Publisher 仅重查基础 CHECKS Job/Step | 待裁决；需原生差异 API 和真实来源边界 |
+| **NEW-035** | 待评估 | **源码边界已定位；来源与生产可达性待核验** | main@fc0df2a；Release Manifest/Provider | 版本仅做合法格式、枚举、唯一性检查；未从原生 Producer 复核取值 | 待裁决；034/035 同源验证族 |
+| **NEW-036** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | main@fc0df2a；Release Publishing | allow_expired=True 不区分历史已发布核验与首次 publish_release | 待裁决；依赖当前 Profile 发布时可取用合同 |
+| **NEW-037** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | main@fc0df2a；Manifest/Publishing | Digest=None 可通过固定 Artifact 名称/ID/Run 的 Manifest 验证，Provider 不核对字节摘要 | 待裁决；真实 API 及字节义务待验证 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -231,7 +230,7 @@
 - **可重复反例**：同一 `scope_id + expected_check_ref + result_id` 的两条有效 Adjudication，使用不同的 `authority_ref/policy_ref/disposition/decided_at`，调换数组顺序（重新计算合法 Admission Digest），比较 R1 `authenticated_failures[].adjudication` 的归属。当前测试覆盖“单裁决解决双 Failure”“过期/撤销裁决阻断”，但未覆盖**同一 Failure 的重叠双裁决**。
 - **风险边界**：先确认原 #63 是否只允许唯一有效决策、允许后决覆盖前决、还是允许多签并存；如果 #63 源端已禁止重叠，需要记录具体受信前置依据。R1 静态代码本身会产生**来源顺序敏感**，但两条可解除裁决之间未必造成 PASS/FAIL 变化；不得把这条当作已证明的错误发布。
 
-### NEW-007 — R4 允许零 Check Binding，不能证明 Check 域双向覆盖
+### NEW-007 — R4 接受零 Check Binding 时的完整性合同待确定
 
 - **静态事实**：[`_normalize_bindings(None)`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L251-L270) 返回空列表；[`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L750-L820) 只循环显式 Binding，没有把 Assessment 全部 Required Check 与 Manifest 所需执行 Check 做**完整双向配对**。已有 [正例](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_release.py#L179-L244) 使用空绑定也可在受控权限下得到 `release_authorized=True`。
 - **独立性**：NEW-004 是绑定了**错误的未启用 Check**；本项是**不提供任何映射仍可能获得授权**。两项可能同属 R4 Check mapping 完整性根因，待全链证据后去重；不能将 R1 和 Manifest 各自 PASS 自动当作“是同一组 Checks”的证据。
@@ -435,16 +434,31 @@
 | D-G04 | R4/R5 真正 Release/Post 消费、同候选 Manifest/Artifact/Policy/Trigger/Due | #61-R4/R5、现有 Release | 未验证 |
 | D-G05 | 实际受保护工具、Policy anchor、Source/Revision 与持久授权边界 | 现有 Security Policy/Tool Runtime 集成 | 未验证 |
 
-## C. 发现覆盖与“什么时候才能改”的客观门槛
+## C. 全仓调查覆盖与原有授权链结果（非修改门槛）
 
-| 检查面 | 已有证据 | **仍要找什么** | 状态 |
-| --- | --- | --- | --- |
-| A/B 源码出口与双向图 | 93 节点、86 边；两个快照共 254 候选；24 条动态/外部边显式 unresolved | 对新增/动态授权出口追溯真实调用与消费者；不能以静态搜索没找到证明不存在 | 继续 |
-| C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
-| D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
-| Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-037/HYP-001～HYP-003 待复核 | 新增 Release Dagger Policy/Tool Version 来源复核、首次 Publish 过期 Artifact 与缺 Digest 四项独立调查面（034/035 共用根因族）；原有 Non-Check、Universe As-of、Profile Approval、G2 Evaluator 追查仍保留。均已核对权威 Issue/Doc、源码和相关测试；尚未运行新原生 API 或生产签发反例，不宣称已找到所有问题 | 继续 |
+### C.1 #125 授权链现有基线（只代表该切面）
 
-**进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
+| 证据集合 | 已有结果 | 仍未核实的范围 |
+| --- | --- | --- |
+| A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
+| C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
+| D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-037；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的观察或疑点，并非 37 个已复现生产 BUG |
 
-本台账只在新发现/新证据/实际修复时更新：保留 ID，标出首次发现与最近复核版本，链接相应原 Issue/PR 与原始日志。**未开始 I01/I02/NEW-001 的任何运行时代码修复。**
+### C.2 ECI 全仓调查覆盖
+
+| 工程领域 | 已有可复用观察 | 未系统调查或尚未证实 |
+| --- | --- | --- |
+| 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
+| Hook/Lefthook/本地调度 | NEW-015～025 中部分 Hook、Receipt、Exit 的源码观察 | 已安装 Lefthook 实际入口、原生调度能力与现有 Coordinator 的职责重复、真实本地执行链 |
+| Dagger、DAG 与工程 CI | Release Dagger Policy、部分 #86 背景及 Job/Step 关联 | 完整 DAG/Check 真实执行、是否重复实现原生能力、任务失败传播和缓存/增量语义 |
+| Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
+| Source/Expected/Native/Admission | #52/#63/#66 相关发现与 D-F01/D-F02 | 实际 Producer 权威、全执行路径、动态调用与跨 Run 真实性 |
+| Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
+| OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
+| GitHub Actions / Check / 服务端保护 | G2/G3 代码、D-G03、NEW-010/011/028/033 | 真正发布者、受信入口、Branch Protection/Ruleset 权限及服务器拒绝 |
+| Release、制品、真实交付 | 原生 Manifest/Verification/Publishing 的部分源码和 NEW-003～013/034～037 | 有权当前 Profile、实际 Build/Package/Asset 下载、Policy/Artifact 及 R4/R5 真实消费 |
+| 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
+
+每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
+
