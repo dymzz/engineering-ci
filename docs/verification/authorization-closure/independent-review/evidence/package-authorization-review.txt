@@ -1,0 +1,66 @@
+"""Package D evidence and independent crosswalk; not a runtime check registry."""
+import gzip
+import hashlib
+import json
+from pathlib import Path
+
+ROOT=Path.cwd();SOURCE=ROOT/'.artifacts/authorization-review-d'
+DEST=ROOT/'docs/verification/authorization-closure/independent-review'
+EVIDENCE=DEST/'evidence';EVIDENCE.mkdir(parents=True,exist_ok=True)
+def read(path):return json.loads(path.read_text(encoding='utf-8'))
+def write(path,value):path.write_bytes((json.dumps(value,ensure_ascii=False,indent=2)+'\n').encode())
+def packed(path,raw):
+    with path.open('wb') as stream:
+        with gzip.GzipFile(fileobj=stream,mode='wb',mtime=0) as zipped:zipped.write(raw)
+
+for path in sorted(SOURCE.glob('*.json')):
+    packed(EVIDENCE/(path.name+'.gz'),path.read_bytes())
+(EVIDENCE/'mechanical-review.json.gz').write_bytes((SOURCE/'mechanical-review.json.gz').read_bytes())
+for name in ['prepare_authorization_review','authorization_semantics_review','authorization_mechanical_review','authorization_source_review','package_authorization_review']:
+    (EVIDENCE/(name.replace('_','-')+'.txt')).write_bytes((ROOT/'.test-tools'/f'{name}.py').read_bytes())
+
+mechanical=read(SOURCE/'mechanical-summary.json')
+full=json.loads(gzip.decompress((SOURCE/'mechanical-review.json.gz').read_bytes()))
+graph=read(ROOT/'docs/verification/authorization-closure/dependency-map.json')
+symbols={label:{r['id']:r for r in data['symbols']} for label,data in full.items()}
+files={label:{r['path']:r['sha256'] for r in data['files']} for label,data in full.items()}
+crosswalk=[]
+for identifier,node in graph['nodes'].items():
+    label=node['snapshot'];symbol=node.get('symbol');current=symbols[label].get(symbol)
+    external=node.get('kind')=='external' or ':external:' in identifier
+    crosswalk.append({'node':identifier,'historical_commit':node.get('commit'),'d_commit':full[label]['commit'],
+       'symbol_resolved':current is not None,'external':external,
+       'same_source_bytes':files[label].get(node.get('path'))==node.get('sha256') if node.get('path') else None,
+       'd_source':{k:current[k] for k in ['path','line','end_line','body_ast_sha256']} if current else None})
+edge_review=[]
+for edge in graph['edges']:
+    label=edge['from'].split(':',1)[0];before=edge['from'].split(':',1)[1];after=edge['to'].split(':',1)[1]
+    found=[c for c in full[label]['calls'] if c['caller']==after and c['target']==before and c['kind'].startswith('resolved_')]
+    if edge['kind']=='static_call':
+        found=[c for c in full[label]['calls'] if c['caller']==before and c['target']==after and c['kind'].startswith('resolved_')]
+    edge_review.append({'edge':edge['id'],'from':edge['from'],'to':edge['to'],'kind':edge['kind'],
+        'independent_static_call_hits':found,'semantic_proof_from_call':False,
+        'd_overlay':'D-F01' if edge['id'] in ['E002','E077','E078','E079'] else 'D-F02' if edge['id'] in ['E025','E026'] else None})
+write(DEST/'mechanical-reconciliation.json',{'scope':'All 93 A/B nodes and 86 edges are cross-referenced after independent AST discovery; this does not authenticate contract_input/manual/external edges.',
+ 'discovery':{k:v['summary'] for k,v in mechanical.items()},'nodes':crosswalk,'edges':edge_review,
+ 'unresolved_nodes':[n['node'] for n in crosswalk if not n['symbol_resolved'] and not n['external']],
+ 'external_nodes':[n['node'] for n in crosswalk if n['external']],
+ 'existing_unresolved_edges':[e['id'] for e in graph['edges'] if e['kind']=='unresolved'],
+ 'limits':full['main']['limitations']})
+cases=[]
+for label in ['main','pr124']:
+    data=read(SOURCE/(label+'-semantic-results.json'))
+    for case in data['cases']:
+        actual=case.get('actual',{});returned=actual.get('returned',{})
+        cases.append({'case':case['case'],'snapshot':label,'commit':case.get('commit'),'result':case['result'],
+            'input_sha256':case.get('input_sha256'),'input_mutated':case.get('input_mutated'),
+            'status':returned.get('status'),'authorized':returned.get('authorized'),'release_authorized':returned.get('release_authorized'),
+            'raised':actual.get('raised'),'authority_scope':case.get('authority_scope'),
+            'raw_evidence':f'evidence/{label}-semantic-results.json.gz#case={case["case"]}',
+            'finding':'D-F01' if case['result']=='counterexample' and label=='pr124' else 'D-F02' if case['result']=='counterexample' and case['case'].startswith('interop.') else None})
+write(DEST/'cases.json',{'snapshots':{label:full[label]['commit'] for label in full},
+ 'counts':{status:sum(c['result']==status for c in cases) for status in ['conforms','counterexample','probe_error']},
+ 'claims':'Controlled API semantics only. Native Results are models; no real issuer, native tool, server write or full production authorization was exercised.',
+ 'cases':cases})
+print(json.dumps({'packaged_files':len(list(EVIDENCE.iterdir())),'cases':len(cases),'counts':{s:sum(c['result']==s for c in cases) for s in ['conforms','counterexample','probe_error']},
+ 'graph_nodes':len(crosswalk),'graph_edges':len(edge_review),'unresolved_internal_nodes':[n['node'] for n in crosswalk if not n['symbol_resolved'] and not n['external']]}))

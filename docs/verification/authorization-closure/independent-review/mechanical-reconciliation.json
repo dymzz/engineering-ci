@@ -1,0 +1,2575 @@
+{
+  "scope": "All 93 A/B nodes and 86 edges are cross-referenced after independent AST discovery; this does not authenticate contract_input/manual/external edges.",
+  "discovery": {
+    "main": {
+      "files": 70,
+      "symbols": 1392,
+      "calls": 18720,
+      "resolved_calls": 2941,
+      "callback_calls": 2293,
+      "expanded_sink_candidates": 24,
+      "workflow_files": 4
+    },
+    "pr124": {
+      "files": 66,
+      "symbols": 1377,
+      "calls": 18701,
+      "resolved_calls": 2942,
+      "callback_calls": 2333,
+      "expanded_sink_candidates": 24,
+      "workflow_files": 4
+    }
+  },
+  "nodes": [
+    {
+      "node": "main:engineering_ci.selection.plan",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 3651,
+        "end_line": 3894,
+        "body_ast_sha256": "f8c1a3e3d1e79c5c618b3ae31dd7b1f687ef36b9da488c21094fabc1cdfee337"
+      }
+    },
+    {
+      "node": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/expected_checks.py",
+        "line": 1885,
+        "end_line": 2131,
+        "body_ast_sha256": "ff2199d0467bb72b119717d0dceba2beb1b21430e78412b1532257dc962c932d"
+      }
+    },
+    {
+      "node": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/expected_checks.py",
+        "line": 687,
+        "end_line": 761,
+        "body_ast_sha256": "1b61d75ef9aecf65145e03b70868e50e058f5dddfca188d0920e7741ddf8cfe3"
+      }
+    },
+    {
+      "node": "main:engineering_ci.reconciliation.derive_strict_expected",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/reconciliation.py",
+        "line": 890,
+        "end_line": 1013,
+        "body_ast_sha256": "5c5793c00feaf0b1594ddb5c1adb6cad68dcee565d0c0557c5fdf94f4e86116c"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment.py",
+        "line": 2449,
+        "end_line": 2634,
+        "body_ast_sha256": "9c39c6772433466676059a425123add215cf4e90d33d9609673702fe4fdd7019"
+      }
+    },
+    {
+      "node": "main:engineering_ci.expected_checks.validate_projection",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/expected_checks.py",
+        "line": 2874,
+        "end_line": 3238,
+        "body_ast_sha256": "9c7a24a8b86cf4e5ed68976962f03b8859452b5c5a60b219f8fbd5c2d6dfc067"
+      }
+    },
+    {
+      "node": "main:engineering_ci.selection.verify_materialized_source_snapshot",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 3233,
+        "end_line": 3365,
+        "body_ast_sha256": "56ca4ecbeb4da10c9b4ecfa197a4115258a894c246bbdc7def998bc6d4f7690e"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution.execute",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 4682,
+        "end_line": 4915,
+        "body_ast_sha256": "53a55fd9d46d4571b6555711fc46cd22dbf0c2fba672fcb320637740daae068f"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 2754,
+        "end_line": 3027,
+        "body_ast_sha256": "a61188c6caa366d49b2d3c7678fe60936cde30bf6af76d241de731ffdff27ed1"
+      }
+    },
+    {
+      "node": "main:engineering_ci.admission.admit_historical_reuse",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/admission.py",
+        "line": 1527,
+        "end_line": 1848,
+        "body_ast_sha256": "55aeabf15b960f7e67fc5cdbd7da4afd115921f232160972eb69180906edb8ff"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 3030,
+        "end_line": 3210,
+        "body_ast_sha256": "796721f1870a73f03b556b9d16993d90d962ad9d72f0507a8fec4f26aefd88f0"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution.build_source_resolution",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 3362,
+        "end_line": 3495,
+        "body_ast_sha256": "db32d689ad6f95fce359a02867ff3764df8df00384f32363608910240748b690"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution.source_resolution_receipt",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 3498,
+        "end_line": 3521,
+        "body_ast_sha256": "f8918d3079bb231ebd18d4f51d33f9c2f2292b1543677087d20e7a86d7eea86b"
+      }
+    },
+    {
+      "node": "main:engineering_ci.admission.admit_evidence",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/admission.py",
+        "line": 779,
+        "end_line": 951,
+        "body_ast_sha256": "8930f54df91bcb4bf2a4fd5a8195ef69188c7f790b54db3e804b21df4ed8aa11"
+      }
+    },
+    {
+      "node": "main:engineering_ci.check_contract.validate_result",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/check_contract.py",
+        "line": 1053,
+        "end_line": 1161,
+        "body_ast_sha256": "32b10a0810b058e19541f024a29809d009da59ceb3f350c11fbaa5ba830f886f"
+      }
+    },
+    {
+      "node": "main:engineering_ci_module.main.EngineeringCi.plan_execution",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": ".dagger/src/engineering_ci_module/main.py",
+        "line": 273,
+        "end_line": 293,
+        "body_ast_sha256": "3be2f288e045fe99ee7fbfda87df0efc676991eb9dfa9e407b50aa54ea4fb807"
+      }
+    },
+    {
+      "node": "main:engineering_ci_module.plan_execution.execute",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": ".dagger/src/engineering_ci_module/plan_execution.py",
+        "line": 1225,
+        "end_line": 1500,
+        "body_ast_sha256": "12c4d2e22660042b6928114ae63907b2f867ea8a13f513408eca1bb3ae2d25eb"
+      }
+    },
+    {
+      "node": "main:engineering_ci_module.plan_result.PlanExecution.enforce",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": ".dagger/src/engineering_ci_module/plan_result.py",
+        "line": 19,
+        "end_line": 48,
+        "body_ast_sha256": "aa4191bffb58946a37f0125b58a509182e179cb38afb8d653724f613d3cf5597"
+      }
+    },
+    {
+      "node": "main:engineering_ci_module.main.EngineeringCi.execute_plan",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": ".dagger/src/engineering_ci_module/main.py",
+        "line": 296,
+        "end_line": 309,
+        "body_ast_sha256": "d97f13ce95c7a6e441c3de0cb4a1469de89fa4b5af247bf5467c2ef9fcd9d1a0"
+      }
+    },
+    {
+      "node": "main:engineering_ci_module.plan_result.PlanExecution.report",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": ".dagger/src/engineering_ci_module/plan_result.py",
+        "line": 14,
+        "end_line": 16,
+        "body_ast_sha256": "a8f7f2ff50aa18ac295b33b1c50080662dce9dc76dd27a95461f34086570f640"
+      }
+    },
+    {
+      "node": "main:engineering_ci.check_contract.native_result",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/check_contract.py",
+        "line": 927,
+        "end_line": 1050,
+        "body_ast_sha256": "e5bb7ce3359862936b3893034d62b8aaaa9b10de6b44005fa2abbe5c469032f1"
+      }
+    },
+    {
+      "node": "main:engineering_ci.native_producer.test_check",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/native_producer.py",
+        "line": 95,
+        "end_line": 154,
+        "body_ast_sha256": "effce32ec4c08722b22875bf93b50dbcf3d5f5c9a54ea37e0d8da71ef66b33a8"
+      }
+    },
+    {
+      "node": "main:engineering_ci.native_producer.weaver_check",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/native_producer.py",
+        "line": 157,
+        "end_line": 236,
+        "body_ast_sha256": "b3c16ba6108c5348ad931975698f17667b7efb31b3997c01cb8dcd6b386118fd"
+      }
+    },
+    {
+      "node": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/check_contract.py",
+        "line": 1451,
+        "end_line": 1484,
+        "body_ast_sha256": "fc31575569d36dbe4ae15595f245575169b925bb33913be57c960006fbcb2e8c"
+      }
+    },
+    {
+      "node": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/reconciliation.py",
+        "line": 1748,
+        "end_line": 1834,
+        "body_ast_sha256": "6df19a99f52b6e83e837596ee987aadf6cff47a67d4d376d49a95ab5d5b38981"
+      }
+    },
+    {
+      "node": "main:engineering_ci.reconciliation.validate_receipt",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/reconciliation.py",
+        "line": 1984,
+        "end_line": 2186,
+        "body_ast_sha256": "81d97936e36654bd165a689cbb6a3ad77ea4bb8ebe3806b8adfbb0a463860524"
+      }
+    },
+    {
+      "node": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/local_actions_handoff.py",
+        "line": 254,
+        "end_line": 323,
+        "body_ast_sha256": "bcedecea7ddab1767e5c6dbda6ff1bd7aa754afa0303481c068bc838eb408a85"
+      }
+    },
+    {
+      "node": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/local_actions_handoff.py",
+        "line": 326,
+        "end_line": 394,
+        "body_ast_sha256": "d726422f62947520197a277597cc4369c17b67f6f998462d4daec71475232790"
+      }
+    },
+    {
+      "node": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/local_actions_handoff.py",
+        "line": 526,
+        "end_line": 749,
+        "body_ast_sha256": "f55a1d361d248f438ccca8bc6c7aa69e29376f29d1c909213b3be6a7a586b456"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment._validate_admission",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment.py",
+        "line": 1341,
+        "end_line": 1441,
+        "body_ast_sha256": "67b803ac991fc088bf3afd7af5eb1c14818375423e3b7f901804b415c7ce71ce"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment._validate_universe",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment.py",
+        "line": 791,
+        "end_line": 831,
+        "body_ast_sha256": "34d85333876772125f53c8295c38d3cedb50624981e13213f6f9ca16bcd653db"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment.validate_assessment",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment.py",
+        "line": 2637,
+        "end_line": 2826,
+        "body_ast_sha256": "d077af954ecf70a8726b8a8c3ece45dd88cace3b06031343ab0095d443814357"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_check.py",
+        "line": 306,
+        "end_line": 385,
+        "body_ast_sha256": "ba88f9bff0938f2a25a5320c1cd0e43d162ada40bfd57a4ea9198325464d99fb"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_check.py",
+        "line": 696,
+        "end_line": 739,
+        "body_ast_sha256": "2454913de87f0d255665140d954517af0bf86a484383bb239120bb14e6e2b4ce"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_check.py",
+        "line": 388,
+        "end_line": 449,
+        "body_ast_sha256": "56736ff58e87c42aca04a74a4b444162f453cc5c860df9ab0e0abab7653dcab4"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_publish.py",
+        "line": 463,
+        "end_line": 512,
+        "body_ast_sha256": "666961d6c6846cef7590717d980a469120bfbf26a961129f48e978587da35918"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_publish.py",
+        "line": 615,
+        "end_line": 669,
+        "body_ast_sha256": "40ffb19f7c3aca2bcb349524f5887df10db3e2b9443dc51c007532f416f6cdae"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_publish.py",
+        "line": 515,
+        "end_line": 612,
+        "body_ast_sha256": "4f97c138dd71e86263d8d06315016cb61bee74817fe28030af7a22b2ae6b477b"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_protection.py",
+        "line": 257,
+        "end_line": 478,
+        "body_ast_sha256": "ac14d2f0088bcdb966a0734b11aa7e8901f0fbb4c363c85b280dfe9dc641ae86"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_protection.validate_protection_observation",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_protection.py",
+        "line": 481,
+        "end_line": 518,
+        "body_ast_sha256": "09ce26ebcd11b74d9d7ae79bf99ddc89ced6d0c31b3d57df54c552acb7526bce"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_release.py",
+        "line": 673,
+        "end_line": 978,
+        "body_ast_sha256": "cc8ae81a27cef7799ed6b62d3262f600d287746119bf82814d38c8bd8e1db434"
+      }
+    },
+    {
+      "node": "main:engineering_ci.release.manifest.validate",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/release/manifest.py",
+        "line": 340,
+        "end_line": 479,
+        "body_ast_sha256": "90de65849d2ed6932b893e155b2a9ec98bb35d6c1cb9cca271d6587d34530668"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_release.manifest_provider_from_verification",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_release.py",
+        "line": 409,
+        "end_line": 427,
+        "body_ast_sha256": "865d22e234ebaa160862a0c4cb67b013d05e0260e1121245a9b397430f5c275d"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_release.manifest_provider_from_publication",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_release.py",
+        "line": 430,
+        "end_line": 448,
+        "body_ast_sha256": "a61da7ba52606173f57d9f83775e6908801c238cbdf37208af6af3446d8764d9"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_release.py",
+        "line": 981,
+        "end_line": 1001,
+        "body_ast_sha256": "9df5d29601394e66b8dd4757a286b1e257c82cd8ef9c2537369889760c137b34"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_release.py",
+        "line": 242,
+        "end_line": 248,
+        "body_ast_sha256": "74b19d49b2c01f79e04843b022e9079c6c6d880627561522cd0acdc546a10176"
+      }
+    },
+    {
+      "node": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/required_assessment_post.py",
+        "line": 582,
+        "end_line": 841,
+        "body_ast_sha256": "c91334e625bc16c100e9d2108b6c0bf6286ea84db5c84d13fbb76896d609beab"
+      }
+    },
+    {
+      "node": "main:engineering_ci.security_policy.receive",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/security_policy.py",
+        "line": 684,
+        "end_line": 736,
+        "body_ast_sha256": "6eb3d00b001facac0fe57ee80a4b5d372e2fef9ea9ff9c5e3730ca721ef2aece"
+      }
+    },
+    {
+      "node": "main:engineering_ci.security_policy.decide",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/security_policy.py",
+        "line": 814,
+        "end_line": 844,
+        "body_ast_sha256": "c28b3fb0109b3bfe81cdaefced0dd5697994622cd91e2ee18ac0eb54bdcb5376"
+      }
+    },
+    {
+      "node": "main:engineering_ci.execution._build_workflow_admission_fn",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/execution.py",
+        "line": 939,
+        "end_line": 1005,
+        "body_ast_sha256": "89eea717ab1738a52eda07014770856754982b16445e0353d0b04b90f03b83cd"
+      }
+    },
+    {
+      "node": "main:engineering_ci.release.request.dispatch",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/release/request.py",
+        "line": 55,
+        "end_line": 146,
+        "body_ast_sha256": "713464fdaf4d0425f0df52b328f6a7a44f7e166e3842462fa29da59aee8d0bb6"
+      }
+    },
+    {
+      "node": "main:engineering_ci.release.publishing.main",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/release/publishing.py",
+        "line": 336,
+        "end_line": 453,
+        "body_ast_sha256": "8da26eaf559393661257f37274ea3155418ba76f21fb1e73bb401d7050db41f8"
+      }
+    },
+    {
+      "node": "main:engineering_ci.workflow_actions.main",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/workflow_actions.py",
+        "line": 10,
+        "end_line": 28,
+        "body_ast_sha256": "389ec0a7dcb29fe80efe38bcd9451cd16bcad157d75cbf27ec1df13305421b31"
+      }
+    },
+    {
+      "node": "main:engineering_ci.release.publishing.published_evidence",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/release/publishing.py",
+        "line": 114,
+        "end_line": 155,
+        "body_ast_sha256": "5d879e9799dfa3af6abf2db38d4d2189922ecbeaf3279f676528225740262554"
+      }
+    },
+    {
+      "node": "main:engineering_ci.release.publishing.publish_release",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/release/publishing.py",
+        "line": 213,
+        "end_line": 280,
+        "body_ast_sha256": "31c1981f59976f648547900e006806db26dd355196b04dd8d634867f4200165f"
+      }
+    },
+    {
+      "node": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/cicd_telemetry.py",
+        "line": 2646,
+        "end_line": 2794,
+        "body_ast_sha256": "51d7c69158101dfc5b825d542b568431dcdbbdb087cea66b6a6d6afc94b54b63"
+      }
+    },
+    {
+      "node": "main:engineering_ci.cicd_telemetry.produce",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/cicd_telemetry.py",
+        "line": 857,
+        "end_line": 1491,
+        "body_ast_sha256": "b322f87b1bd96b3946b36f0c7910bd478dbce9de41ba28ef1cb27400c542a5e2"
+      }
+    },
+    {
+      "node": "main:engineering_ci.selection.post_completion_plan",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 4048,
+        "end_line": 4171,
+        "body_ast_sha256": "2a909e77a731b5e96fcc5557caffc5d1320dba7f710189c5458d879c00fb56a3"
+      }
+    },
+    {
+      "node": "main:engineering_ci.selection.validate_post_completion_binding",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 4174,
+        "end_line": 4320,
+        "body_ast_sha256": "a557a91ca82c9fcc2bb5264f0f38d8c701ff55df5e50ead8014f0a9937c026cf"
+      }
+    },
+    {
+      "node": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/dagger_telemetry.py",
+        "line": 1649,
+        "end_line": 1810,
+        "body_ast_sha256": "8718daf3b46f3428b4f20558f75586053c756652c2be0197288d01095fdac77e"
+      }
+    },
+    {
+      "node": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/dagger_telemetry.py",
+        "line": 2517,
+        "end_line": 2888,
+        "body_ast_sha256": "0cd521dbabeb60efd7efdddeef4447f6143b14a22b5232b02022e764dc470d6f"
+      }
+    },
+    {
+      "node": "main:engineering_ci.hook_coordinator._require_runner_produced_report",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/hook_coordinator.py",
+        "line": 575,
+        "end_line": 601,
+        "body_ast_sha256": "4000b1b7d4947fc3487cd3263831874d6e9ca9038d8e7ac974a60d9de01794ca"
+      }
+    },
+    {
+      "node": "main:engineering_ci.hook_coordinator.execute_activated_job",
+      "historical_commit": "4bb346c57f99e4767eea78082639f0b367745140",
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/hook_coordinator.py",
+        "line": 713,
+        "end_line": 764,
+        "body_ast_sha256": "cf428e235bdbea7671577518569cbc8df1fa080454bcb0efd975492c5e1a2363"
+      }
+    },
+    {
+      "node": "main:external:governed-profile-and-phase",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:complete-universe-and-non-check-evidence",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:raw-origin-and-resolution-authorities",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:historical-authorities",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:local-controlled-boundary",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:actions-approval-and-execution",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:github-check-transport",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:github-server-enforcement",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:release-authorities",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:release-workflow-server",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:release-api-writes",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:post-authorities",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:policy-anchor-and-provider",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:dagger-engine-source",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:remaining-work-dispatch-consumer",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:r4-actual-publication-consumer",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:same-run-coverage-dispatch",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:server-check-consumer",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:server-deny-enforcement",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "main:external:post-disposition-enforcer",
+      "historical_commit": null,
+      "d_commit": "adeeb4b15e47072c5091a31c048253f60471ff1b",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "pr124:engineering_ci.expected_checks.derive_expected_checks",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/expected_checks.py",
+        "line": 1885,
+        "end_line": 2131,
+        "body_ast_sha256": "ff2199d0467bb72b119717d0dceba2beb1b21430e78412b1532257dc962c932d"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/terminal_expected.py",
+        "line": 1121,
+        "end_line": 1454,
+        "body_ast_sha256": "3a8c22cdc629c5f58606f1a2b3d820f4dfd1ca4897fd9758cde45b9bc36cba22"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.expected_checks.validate_projection",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/expected_checks.py",
+        "line": 2874,
+        "end_line": 3238,
+        "body_ast_sha256": "9c7a24a8b86cf4e5ed68976962f03b8859452b5c5a60b219f8fbd5c2d6dfc067"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.terminal_expected.seal_phase_witness",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/terminal_expected.py",
+        "line": 1086,
+        "end_line": 1118,
+        "body_ast_sha256": "f871cd24b1e4650d1a4140e7f064baed62f72a2ba9e6920e54b83d98351f32f8"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.selection.post_completion_plan",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 4042,
+        "end_line": 4165,
+        "body_ast_sha256": "2a909e77a731b5e96fcc5557caffc5d1320dba7f710189c5458d879c00fb56a3"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/terminal_expected.py",
+        "line": 1457,
+        "end_line": 1515,
+        "body_ast_sha256": "c2d77144662473546ade97bc06478368e884014125056f2cfa21eb9219d3a04e"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/terminal_expected.py",
+        "line": 1518,
+        "end_line": 1553,
+        "body_ast_sha256": "e510e1f7a805ff2289adae9b4cc7466a92a6436156d20e9b793eb1c1635fa7a6"
+      }
+    },
+    {
+      "node": "pr124:engineering_ci.selection.validate_post_completion_binding",
+      "historical_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": true,
+      "external": false,
+      "same_source_bytes": true,
+      "d_source": {
+        "path": "src/engineering_ci/selection.py",
+        "line": 4168,
+        "end_line": 4314,
+        "body_ast_sha256": "a557a91ca82c9fcc2bb5264f0f38d8c701ff55df5e50ead8014f0a9937c026cf"
+      }
+    },
+    {
+      "node": "pr124:external:expected-phase-completed-authorities",
+      "historical_commit": null,
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    },
+    {
+      "node": "pr124:external:terminal-runtime-consumer",
+      "historical_commit": null,
+      "d_commit": "4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5",
+      "symbol_resolved": false,
+      "external": true,
+      "same_source_bytes": null,
+      "d_source": null
+    }
+  ],
+  "edges": [
+    {
+      "edge": "E001",
+      "from": "main:engineering_ci.selection.plan",
+      "to": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "kind": "static_call",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.selection.plan",
+          "expression": "expected_checks.derive_expected_checks",
+          "keywords": [
+            "config_path",
+            "content_binding",
+            "hygiene_config",
+            "hygiene_identity",
+            "sources_config",
+            "sources_identity",
+            "effective_profile",
+            "code_prefixes",
+            "source_prefixes",
+            "weaver_prefixes",
+            "selection_config",
+            "per_ref_scopes",
+            "per_ref_selections",
+            "root",
+            "workflow_config_digests"
+          ],
+          "kind": "resolved_import",
+          "line": 3782,
+          "path": "src/engineering_ci/selection.py",
+          "target": "engineering_ci.expected_checks.derive_expected_checks"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E002",
+      "from": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "to": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.expected_checks.derive_expected_checks",
+          "expression": "_verify_profile_authority",
+          "keywords": [
+            "selection_rule",
+            "hygiene_rule",
+            "sources_rule",
+            "config_policy"
+          ],
+          "kind": "resolved_lexical",
+          "line": 1964,
+          "path": "src/engineering_ci/expected_checks.py",
+          "target": "engineering_ci.expected_checks._verify_profile_authority"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F01"
+    },
+    {
+      "edge": "E003",
+      "from": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "main:engineering_ci.reconciliation.derive_strict_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E004",
+      "from": "main:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E005",
+      "from": "main:engineering_ci.expected_checks.validate_projection",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E006",
+      "from": "main:engineering_ci.selection.verify_materialized_source_snapshot",
+      "to": "main:engineering_ci.execution.execute",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E007",
+      "from": "main:engineering_ci.execution.build_pre_execution_source_proof",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E008",
+      "from": "main:engineering_ci.execution.compare_pre_execution_to_historical_result",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E009",
+      "from": "main:engineering_ci.execution.build_source_resolution",
+      "to": "main:engineering_ci.reconciliation.derive_strict_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E010",
+      "from": "main:engineering_ci.execution.source_resolution_receipt",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E011",
+      "from": "main:engineering_ci.execution.execute",
+      "to": "main:engineering_ci.check_contract.validate_result",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E012",
+      "from": "main:engineering_ci_module.main.EngineeringCi.plan_execution",
+      "to": "main:engineering_ci_module.plan_execution.execute",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E013",
+      "from": "main:engineering_ci_module.plan_execution.execute",
+      "to": "main:engineering_ci_module.plan_result.PlanExecution.enforce",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E014",
+      "from": "main:engineering_ci_module.main.EngineeringCi.execute_plan",
+      "to": "main:engineering_ci_module.plan_result.PlanExecution.report",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E015",
+      "from": "main:engineering_ci.check_contract.native_result",
+      "to": "main:engineering_ci.check_contract.validate_result",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E016",
+      "from": "main:engineering_ci.native_producer.test_check",
+      "to": "main:engineering_ci.check_contract.native_result",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E017",
+      "from": "main:engineering_ci.native_producer.weaver_check",
+      "to": "main:engineering_ci.check_contract.native_result",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E018",
+      "from": "main:engineering_ci.check_contract.validate_result",
+      "to": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E019",
+      "from": "main:engineering_ci.check_contract.evaluate_expected_satisfaction",
+      "to": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E020",
+      "from": "main:engineering_ci.reconciliation.reconcile_expected_results",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E021",
+      "from": "main:engineering_ci.reconciliation.validate_receipt",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.admission.admit_evidence",
+          "expression": "reconciliation.validate_receipt",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 801,
+          "path": "src/engineering_ci/admission.py",
+          "target": "engineering_ci.reconciliation.validate_receipt"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E022",
+      "from": "main:engineering_ci.local_actions_handoff.build_local_handoff_package",
+      "to": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E023",
+      "from": "main:engineering_ci.local_actions_handoff.validate_local_handoff_package",
+      "to": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.local_actions_handoff.verify_local_handoff",
+          "expression": "validate_local_handoff_package",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 549,
+          "path": "src/engineering_ci/local_actions_handoff.py",
+          "target": "engineering_ci.local_actions_handoff.validate_local_handoff_package"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E024",
+      "from": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E025",
+      "from": "main:engineering_ci.admission.admit_evidence",
+      "to": "main:engineering_ci.required_assessment._validate_admission",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F02"
+    },
+    {
+      "edge": "E026",
+      "from": "main:engineering_ci.required_assessment._validate_admission",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment.assess_required_obligations",
+          "expression": "_validate_admission",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 2479,
+          "path": "src/engineering_ci/required_assessment.py",
+          "target": "engineering_ci.required_assessment._validate_admission"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F02"
+    },
+    {
+      "edge": "E027",
+      "from": "main:engineering_ci.reconciliation.validate_receipt",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E028",
+      "from": "main:engineering_ci.required_assessment._validate_universe",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment.assess_required_obligations",
+          "expression": "_validate_universe",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 2477,
+          "path": "src/engineering_ci/required_assessment.py",
+          "target": "engineering_ci.required_assessment._validate_universe"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E029",
+      "from": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "to": "main:engineering_ci.required_assessment.validate_assessment",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E030",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_check.build_check_publication",
+          "expression": "required_assessment.validate_assessment",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 313,
+          "path": "src/engineering_ci/required_assessment_check.py",
+          "target": "engineering_ci.required_assessment.validate_assessment"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E031",
+      "from": "main:engineering_ci.required_assessment_check.build_check_publication",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E032",
+      "from": "main:engineering_ci.required_assessment_check.publication_for_missing_assessment",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E033",
+      "from": "main:engineering_ci.required_assessment_publish.verify_publisher_identity",
+      "to": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "expression": "verify_publisher_identity",
+          "keywords": [
+            "publisher_approval",
+            "approval_authority",
+            "environ",
+            "allowed_workflow_paths",
+            "now"
+          ],
+          "kind": "resolved_lexical",
+          "line": 635,
+          "path": "src/engineering_ci/required_assessment_publish.py",
+          "target": "engineering_ci.required_assessment_publish.verify_publisher_identity"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E034",
+      "from": "main:engineering_ci.required_assessment_publish.workflow_publish_authority",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E035",
+      "from": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "static_call",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "expression": "rac.publish_check_run",
+          "keywords": [
+            "repository",
+            "github"
+          ],
+          "kind": "resolved_import",
+          "line": 644,
+          "path": "src/engineering_ci/required_assessment_publish.py",
+          "target": "engineering_ci.required_assessment_check.publish_check_run"
+        },
+        {
+          "caller": "engineering_ci.required_assessment_publish.authorize_and_publish",
+          "expression": "rac.publish_check_run",
+          "keywords": [
+            "publishing_authorization",
+            "publish_authority",
+            "repository",
+            "github"
+          ],
+          "kind": "resolved_import",
+          "line": 663,
+          "path": "src/engineering_ci/required_assessment_publish.py",
+          "target": "engineering_ci.required_assessment_check.publish_check_run"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E036",
+      "from": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "to": "main:engineering_ci.required_assessment_protection.validate_protection_observation",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E037",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_release.reconcile_release_assessment",
+          "expression": "required_assessment.validate_assessment",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 694,
+          "path": "src/engineering_ci/required_assessment_release.py",
+          "target": "engineering_ci.required_assessment.validate_assessment"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E038",
+      "from": "main:engineering_ci.release.manifest.validate",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E039",
+      "from": "main:engineering_ci.required_assessment_release.manifest_provider_from_verification",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E040",
+      "from": "main:engineering_ci.required_assessment_release.manifest_provider_from_publication",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E041",
+      "from": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "to": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E042",
+      "from": "main:engineering_ci.required_assessment_release.validate_release_reconciliation",
+      "to": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_release.require_reconciliation_manifest",
+          "expression": "validate_release_reconciliation",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 244,
+          "path": "src/engineering_ci/required_assessment_release.py",
+          "target": "engineering_ci.required_assessment_release.validate_release_reconciliation"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E043",
+      "from": "main:engineering_ci.required_assessment.validate_assessment",
+      "to": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.required_assessment_post.reconcile_post_stage",
+          "expression": "required_assessment.validate_assessment",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 604,
+          "path": "src/engineering_ci/required_assessment_post.py",
+          "target": "engineering_ci.required_assessment.validate_assessment"
+        },
+        {
+          "caller": "engineering_ci.required_assessment_post.reconcile_post_stage",
+          "expression": "required_assessment.validate_assessment",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 605,
+          "path": "src/engineering_ci/required_assessment_post.py",
+          "target": "engineering_ci.required_assessment.validate_assessment"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E044",
+      "from": "main:engineering_ci.security_policy.receive",
+      "to": "main:engineering_ci.security_policy.decide",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E045",
+      "from": "main:engineering_ci.security_policy.decide",
+      "to": "main:engineering_ci.execution._build_workflow_admission_fn",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E046",
+      "from": "main:engineering_ci.release.request.dispatch",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E047",
+      "from": "main:engineering_ci.workflow_actions.main",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "manual_dispatch",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E048",
+      "from": "main:engineering_ci.release.manifest.validate",
+      "to": "main:engineering_ci.release.publishing.published_evidence",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.release.publishing.published_evidence",
+          "expression": "validate",
+          "keywords": [],
+          "kind": "resolved_import",
+          "line": 124,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.manifest.validate"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E049",
+      "from": "main:engineering_ci.release.publishing.published_evidence",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "expression": "published_evidence",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 218,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.publishing.published_evidence"
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "expression": "published_evidence",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 227,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.publishing.published_evidence"
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "expression": "published_evidence",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 252,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.publishing.published_evidence"
+        },
+        {
+          "caller": "engineering_ci.release.publishing.publish_release",
+          "expression": "published_evidence",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 266,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.publishing.published_evidence"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E050",
+      "from": "main:engineering_ci.release.publishing.main",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "static_call",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.release.publishing.main",
+          "expression": "publish_release",
+          "keywords": [],
+          "kind": "resolved_lexical",
+          "line": 426,
+          "path": "src/engineering_ci/release/publishing.py",
+          "target": "engineering_ci.release.publishing.publish_release"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E051",
+      "from": "main:engineering_ci.cicd_telemetry.fetch_github_run_job",
+      "to": "main:engineering_ci.cicd_telemetry.produce",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E052",
+      "from": "main:engineering_ci.cicd_telemetry.produce",
+      "to": "main:engineering_ci.selection.post_completion_plan",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E053",
+      "from": "main:engineering_ci.selection.post_completion_plan",
+      "to": "main:engineering_ci.selection.validate_post_completion_binding",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E054",
+      "from": "main:engineering_ci.selection.validate_post_completion_binding",
+      "to": "main:engineering_ci.execution.execute",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E055",
+      "from": "main:engineering_ci.dagger_telemetry.correlate_capture",
+      "to": "main:engineering_ci.dagger_telemetry.verify_a1_suite",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2639,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2649,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2659,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2671,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "expected_session_id",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2681,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture",
+            "artifact_exit_code",
+            "artifact_path"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2696,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture",
+            "artifact_exit_code",
+            "artifact_path"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2713,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture",
+            "artifact_exit_code",
+            "artifact_path"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2730,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture",
+            "artifact_exit_code",
+            "artifact_path"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2747,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2764,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2776,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2788,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2798,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2808,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2818,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2828,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        },
+        {
+          "caller": "engineering_ci.dagger_telemetry.verify_a1_suite",
+          "expression": "correlate_capture",
+          "keywords": [
+            "entry_kind",
+            "target_name",
+            "isolated_capture"
+          ],
+          "kind": "resolved_lexical",
+          "line": 2840,
+          "path": "src/engineering_ci/dagger_telemetry.py",
+          "target": "engineering_ci.dagger_telemetry.correlate_capture"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E056",
+      "from": "main:engineering_ci.hook_coordinator._require_runner_produced_report",
+      "to": "main:engineering_ci.hook_coordinator.execute_activated_job",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E057",
+      "from": "main:external:governed-profile-and-phase",
+      "to": "main:engineering_ci.expected_checks._verify_profile_authority",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E058",
+      "from": "main:external:complete-universe-and-non-check-evidence",
+      "to": "main:engineering_ci.required_assessment.assess_required_obligations",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E059",
+      "from": "main:external:raw-origin-and-resolution-authorities",
+      "to": "main:engineering_ci.admission.admit_evidence",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E060",
+      "from": "main:external:historical-authorities",
+      "to": "main:engineering_ci.admission.admit_historical_reuse",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E061",
+      "from": "main:external:local-controlled-boundary",
+      "to": "main:engineering_ci.local_actions_handoff.verify_local_handoff",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E062",
+      "from": "main:external:actions-approval-and-execution",
+      "to": "main:engineering_ci.required_assessment_publish.authorize_and_publish",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E063",
+      "from": "main:external:github-check-transport",
+      "to": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E064",
+      "from": "main:external:github-server-enforcement",
+      "to": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E065",
+      "from": "main:external:release-authorities",
+      "to": "main:engineering_ci.required_assessment_release.reconcile_release_assessment",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E066",
+      "from": "main:external:release-workflow-server",
+      "to": "main:engineering_ci.release.publishing.main",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E067",
+      "from": "main:external:release-api-writes",
+      "to": "main:engineering_ci.release.publishing.publish_release",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E068",
+      "from": "main:external:post-authorities",
+      "to": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E069",
+      "from": "main:external:policy-anchor-and-provider",
+      "to": "main:engineering_ci.security_policy.receive",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E070",
+      "from": "main:external:dagger-engine-source",
+      "to": "main:engineering_ci_module.plan_execution.execute",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E071",
+      "from": "main:engineering_ci.admission.admit_historical_reuse",
+      "to": "main:external:remaining-work-dispatch-consumer",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E072",
+      "from": "main:engineering_ci.required_assessment_release.require_reconciliation_manifest",
+      "to": "main:external:r4-actual-publication-consumer",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E073",
+      "from": "main:engineering_ci.admission.admit_evidence",
+      "to": "main:external:same-run-coverage-dispatch",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E074",
+      "from": "main:engineering_ci.required_assessment_check.publish_check_run",
+      "to": "main:external:server-check-consumer",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E075",
+      "from": "main:engineering_ci.required_assessment_protection.inspect_server_protection",
+      "to": "main:external:server-deny-enforcement",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E076",
+      "from": "main:engineering_ci.required_assessment_post.reconcile_post_stage",
+      "to": "main:external:post-disposition-enforcer",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E077",
+      "from": "pr124:engineering_ci.expected_checks.derive_expected_checks",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F01"
+    },
+    {
+      "edge": "E078",
+      "from": "pr124:engineering_ci.expected_checks.validate_projection",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F01"
+    },
+    {
+      "edge": "E079",
+      "from": "pr124:engineering_ci.terminal_expected.seal_phase_witness",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": "D-F01"
+    },
+    {
+      "edge": "E080",
+      "from": "pr124:engineering_ci.selection.post_completion_plan",
+      "to": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "expression": "selection.post_completion_plan",
+          "keywords": [
+            "root",
+            "config_path",
+            "weaver_config",
+            "run_id",
+            "attempt",
+            "result",
+            "source_tree_id"
+          ],
+          "kind": "resolved_import",
+          "line": 1485,
+          "path": "src/engineering_ci/terminal_expected.py",
+          "target": "engineering_ci.selection.post_completion_plan"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E081",
+      "from": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "static_call",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "expression": "bind_terminal_expected",
+          "keywords": [
+            "plan",
+            "completed_run",
+            "root",
+            "expected_authority",
+            "completed_run_authority",
+            "phase_witness",
+            "phase_witness_authority",
+            "projection_proof",
+            "projection_git",
+            "expected_plan",
+            "expected_root",
+            "contract_sample"
+          ],
+          "kind": "resolved_lexical",
+          "line": 1501,
+          "path": "src/engineering_ci/terminal_expected.py",
+          "target": "engineering_ci.terminal_expected.bind_terminal_expected"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E082",
+      "from": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "to": "pr124:engineering_ci.terminal_expected.validate_terminal_expected_binding",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E083",
+      "from": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "to": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [
+        {
+          "caller": "engineering_ci.terminal_expected.post_completion_with_expected",
+          "expression": "bind_terminal_expected",
+          "keywords": [
+            "plan",
+            "completed_run",
+            "root",
+            "expected_authority",
+            "completed_run_authority",
+            "phase_witness",
+            "phase_witness_authority",
+            "projection_proof",
+            "projection_git",
+            "expected_plan",
+            "expected_root",
+            "contract_sample"
+          ],
+          "kind": "resolved_lexical",
+          "line": 1501,
+          "path": "src/engineering_ci/terminal_expected.py",
+          "target": "engineering_ci.terminal_expected.bind_terminal_expected"
+        }
+      ],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E084",
+      "from": "pr124:engineering_ci.selection.validate_post_completion_binding",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "contract_input",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E085",
+      "from": "pr124:external:expected-phase-completed-authorities",
+      "to": "pr124:engineering_ci.terminal_expected.bind_terminal_expected",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    },
+    {
+      "edge": "E086",
+      "from": "pr124:engineering_ci.terminal_expected.post_completion_with_expected",
+      "to": "pr124:external:terminal-runtime-consumer",
+      "kind": "unresolved",
+      "independent_static_call_hits": [],
+      "semantic_proof_from_call": false,
+      "d_overlay": null
+    }
+  ],
+  "unresolved_nodes": [],
+  "external_nodes": [
+    "main:external:governed-profile-and-phase",
+    "main:external:complete-universe-and-non-check-evidence",
+    "main:external:raw-origin-and-resolution-authorities",
+    "main:external:historical-authorities",
+    "main:external:local-controlled-boundary",
+    "main:external:actions-approval-and-execution",
+    "main:external:github-check-transport",
+    "main:external:github-server-enforcement",
+    "main:external:release-authorities",
+    "main:external:release-workflow-server",
+    "main:external:release-api-writes",
+    "main:external:post-authorities",
+    "main:external:policy-anchor-and-provider",
+    "main:external:dagger-engine-source",
+    "main:external:remaining-work-dispatch-consumer",
+    "main:external:r4-actual-publication-consumer",
+    "main:external:same-run-coverage-dispatch",
+    "main:external:server-check-consumer",
+    "main:external:server-deny-enforcement",
+    "main:external:post-disposition-enforcer",
+    "pr124:external:expected-phase-completed-authorities",
+    "pr124:external:terminal-runtime-consumer"
+  ],
+  "existing_unresolved_edges": [
+    "E024",
+    "E046",
+    "E057",
+    "E058",
+    "E059",
+    "E060",
+    "E061",
+    "E062",
+    "E063",
+    "E064",
+    "E065",
+    "E066",
+    "E067",
+    "E068",
+    "E069",
+    "E070",
+    "E071",
+    "E072",
+    "E073",
+    "E074",
+    "E075",
+    "E076",
+    "E085",
+    "E086"
+  ],
+  "limits": [
+    "AST symbol resolution is syntactic; no execution/authority authentication.",
+    "Assignments, returned closures, provider dispatch, receiver types, getattr, imported star aliases and external services remain unresolved.",
+    "Candidate key search expands review scope; it is neither complete business semantics nor a registry of all authorizations.",
+    "An absent statically resolved caller is not proof that a public API has no external consumer."
+  ]
+}

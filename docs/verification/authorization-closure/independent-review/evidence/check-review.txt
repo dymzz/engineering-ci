@@ -1,0 +1,124 @@
+"""Check the retained #125-D evidence only; no network or project hooks."""
+import ast
+import datetime
+import gzip
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+ROOT=Path.cwd().resolve()
+D=ROOT/'docs/verification/authorization-closure/independent-review'
+E=D/'evidence'
+def read(path):return json.loads(path.read_text(encoding='utf-8'))
+def zipped(name):return json.loads(gzip.decompress((E/name).read_bytes()))
+def sha(raw):return hashlib.sha256(raw).hexdigest()
+checks={}
+lines=(E/'SHA256SUMS').read_text(encoding='utf-8').splitlines()
+listed=set()
+for line in lines:
+    digest,path=line.split('  ',1);target=(D/path).resolve()
+    assert target.is_relative_to(D),path
+    assert sha(target.read_bytes())==digest,path
+    assert path not in listed,path
+    listed.add(path)
+expected_files={p.relative_to(D).as_posix() for p in D.rglob('*') if p.is_file() and p.name not in ['SHA256SUMS','validation.json']}
+assert listed==expected_files,(listed^expected_files)
+checks['bundle_sha256_files']=len(listed)
+for path in E.glob('*.json.gz'):json.loads(gzip.decompress(path.read_bytes()))
+for path in E.glob('*.txt'):ast.parse(path.read_text(encoding='utf-8'),filename=str(path))
+checks['retained_gzip_and_script_syntax']='valid'
+
+manifest=zipped('snapshot-manifest.json.gz')
+assert manifest['main']['commit']=='adeeb4b15e47072c5091a31c048253f60471ff1b'
+assert manifest['pr124']['commit']=='4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5'
+requests=[(label,item) for label,spec in manifest.items() for item in spec['files']]
+objects=''.join(manifest[label]['commit']+':'+item['path']+'\n' for label,item in requests)
+native=subprocess.run(['git','-c','core.hooksPath=NUL','cat-file','--batch'],input=objects.encode(),capture_output=True,check=False)
+assert native.returncode==0,native.stderr.decode(errors='replace')
+offset=0
+for label,item in requests:
+    end=native.stdout.index(b'\n',offset);header=native.stdout[offset:end].decode().split()
+    assert len(header)==3 and header[1]=='blob',(label,item['path'],header)
+    size=int(header[2]);offset=end+1;raw=native.stdout[offset:offset+size];offset+=size+1
+    assert sha(raw)==item['sha256'],(label,item['path'])
+assert offset==len(native.stdout)
+checks['pinned_git_blob_sha256']=len(requests)
+
+mechanical=zipped('mechanical-review.json.gz')
+graph=read(D.parent/'dependency-map.json');cross=read(D/'mechanical-reconciliation.json')
+assert {n['node'] for n in cross['nodes']}==set(graph['nodes'])
+assert {e['edge'] for e in cross['edges']}=={e['id'] for e in graph['edges']}
+assert len(cross['nodes'])==93 and len(cross['edges'])==86
+assert not cross['unresolved_nodes']
+assert set(cross['existing_unresolved_edges'])=={e['id'] for e in graph['edges'] if e['kind']=='unresolved'}
+symbols={label:{row['id']:row for row in data['symbols']} for label,data in mechanical.items()}
+for node in cross['nodes']:
+    if node['external']:continue
+    assert node['same_source_bytes'] is True,node['node']
+checks['mechanical_nodes']=93;checks['mechanical_edges']=86;checks['retained_external_dynamic_edges']=len(cross['existing_unresolved_edges'])
+
+findings=read(D/'findings.json');case_index=read(D/'cases.json')
+all_cases={}
+for label in ['main','pr124']:
+    raw=zipped(label+'-semantic-results.json.gz')
+    assert raw['commit']==manifest[label]['commit']
+    pinned={r['path']:r['sha256'] for r in manifest[label]['files']}
+    for module in raw['source_modules']:assert module['sha256']==pinned[module['path']]
+    for case in raw['cases']:
+        assert case['case'] not in all_cases
+        assert case['result']!='probe_error'
+        assert case.get('input_mutated') is False,case['case']
+        expected_hash=sha(json.dumps(case['inputs'],sort_keys=True,separators=(',',':')).encode())
+        assert case['input_sha256']==expected_hash,case['case']
+        all_cases[case['case']]=case
+expected_counterexamples={'terminal.compound_open_domain','terminal.compound_original_declared_domain','interop.t1_pass_to_r1','interop.t1_fail_to_r1','interop.t2_pass_to_r1'}
+assert {n for n,c in all_cases.items() if c['result']=='counterexample'}==expected_counterexamples
+assert len(all_cases)==82 and case_index['counts']=={'conforms':77,'counterexample':5,'probe_error':0}
+assert {c['case'] for c in case_index['cases']}==set(all_cases)
+for item in case_index['cases']:
+    case=all_cases[item['case']]
+    for key in ['snapshot','commit','result','input_sha256','input_mutated','authority_scope']:assert item[key]==case[key]
+for name in ['terminal.valid','terminal.compound_closed_domain']:
+    case=all_cases[name];assert case['actual']['returned']['authorized'] is True
+    parent=case['inputs']['expected'] if name=='terminal.valid' else case['actual']['returned']['producer_expected']
+    assert parent['effective_profile']['domain_complete'] is True
+    assert parent['definitions_status']=='domain_complete'
+for name in ['terminal.compound_open_domain','terminal.compound_original_declared_domain']:
+    case=all_cases[name];assert case['actual']['returned']['authorized'] is True
+    assert case['actual']['returned']['producer_expected']['definitions_status']=='requested_names_complete'
+for name,code in [('interop.t1_pass_to_r1','admission_phase_invalid'),('interop.t1_fail_to_r1','admission_phase_invalid'),('interop.t2_pass_to_r1','admission_kind_invalid')]:
+    case=all_cases[name];assert case['actual']['raised']['code']==code
+    if name!='interop.t1_fail_to_r1':assert case['inputs']['producer_output']['status']=='admitted'
+for finding in findings['findings']:
+    for name in finding['reproducible_cases']:assert all_cases[name]['result']=='counterexample'
+    for name in finding['positive_cases']:assert all_cases[name]['result']=='conforms'
+    for source in finding['source']:
+        symbol=symbols[source['snapshot']][source['symbol']]
+        assert source['path']==symbol['path'] and symbol['line']<=source['line']<=symbol['end_line'],source
+    assert set(finding['edges'])<=set(e['id'] for e in graph['edges'])
+assert len(findings['findings'])==2 and len(findings['known_gaps'])==5
+checks['api_cases']=82;checks['expected_counterexamples']=5;checks['deduplicated_findings']=2
+
+live=zipped('live-server-observation.json.gz')
+assert live['code_commit']==manifest['main']['commit']
+assert live['code_sha256']==next(f['sha256'] for f in manifest['main']['files'] if f['path']=='src/engineering_ci/required_assessment_protection.py')
+assert live['result']['enforcement']['status']=='not_verified' and live['result']['enforcement']['probe']=='not_performed'
+assert all(c['method']=='GET' for c in live['calls'])
+assert live['calls'][-1]['raised']['http_status']==401
+checks['server_get_only_observation']='not_verified / not_performed; HTTP 401'
+for checksum,base in [(D.parent/'coverage/evidence/SHA256SUMS',D.parent/'coverage'),(D.parent/'evidence/SHA256SUMS',D.parent)]:
+    for line in checksum.read_text(encoding='utf-8').splitlines():
+        digest,path=line.split('  ',1);assert sha((base/path).read_bytes())==digest,(checksum,path)
+checks['historical_AB_C_checksums']='valid; only parent navigation digest refreshed for D link'
+
+for path in D.rglob('*.md'):
+    for link in re.findall(r'\]\(([^)]+)\)',path.read_text(encoding='utf-8')):
+        if link.startswith(('https://','http://')):continue
+        target=(path.parent/link.split('#',1)[0]).resolve()
+        assert target.is_relative_to(ROOT) and target.exists(),(path,link)
+checks['local_document_links']='valid'
+output={'checked_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'passed','scope':'D audit evidence integrity only; no production authorization or runtime repair acceptance','checks':checks}
+(E/'validation.json').write_bytes((json.dumps(output,ensure_ascii=False,indent=2)+'\n').encode('utf-8'))
+print(json.dumps(output,ensure_ascii=True))
