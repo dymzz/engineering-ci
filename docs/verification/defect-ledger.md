@@ -12,7 +12,7 @@
 
 ### 0.1 统一编号与记录时序
 
-**稳定编号与历史可追溯：** `D-Fxx` 为 PR #128 已确证原生反例；`NEW-xxx` 是 PR #128 以后发现、有直接源码风险但待差异 API 核实的问题；`HYP-xxx` 为待语义裁决疑点；`D-Gxx` 为缺少实际生产验证的边界（不能计作 BUG）。后续新发现沿已有序列递增，重复根因链接既有 ID 而不新增编号。
+**稳定编号与历史可追溯：** `D-Fxx` 为 PR #128 受控 API 已复现的合同问题（D-F01 位于未合并 #124 候选；D-F02 位于 main 的跨模块交接）；`NEW-xxx` 是 PR #128 以后发现、有直接源码风险但待差异 API 核实的问题；`HYP-xxx` 为待语义裁决疑点；`D-Gxx` 为缺少实际生产验证的边界（不能计作 BUG）。后续新发现沿已有序列递增，重复根因链接既有 ID 而不新增编号。
 
 时间分别记录 **发现/证据采集（审计时间）**、**业务事件/评估/有效期（被测时序）**、**代码引入/修复/合并时间（工程时间）**，不能用某一时间冒充另一时间。无原始时间戳时只标日期和来源，不捏造精确时刻。
 
@@ -464,21 +464,21 @@
 | A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
 | C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
 | D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
-| 当前台账 | D-F01/D-F02；NEW-001～NEW-039；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的观察或疑点，并非 37 个已复现生产 BUG |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-039；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 39 个已复现生产 BUG |
 
 ### C.2 ECI 全仓调查覆盖
 
 | 工程领域 | 已有可复用观察 | 未系统调查或尚未证实 |
 | --- | --- | --- |
 | 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
-| Hook/Lefthook/本地调度 | NEW-015～025、NEW-038；现有 Hook Coordinator、CLI 与完整 main 文件树已查 | Lefthook 实际配置/安装/激活和合并配置身份、成熟调度器能力与现有 Coordinator 的职责、真实本地端到端验证 |
-| Dagger、DAG 与工程 CI | Release Dagger Policy、#86 Host/Dagger 分支、NEW-039 Runner 异常边界及既有测试已对读 | 真实原生命令副作用后的异常传播、数据前置完整性、各入口真实执行/结果共享与缓存失效 |
+| Hook/Lefthook/本地调度 | NEW-015～025/038；**PR #115 已合并** Event→Run/Attempt、Report、Routing、Final/Exit 结构性 API；真实 main 无 Lefthook 配置 | Issue #66 将已交付 Coordinator/Final 标为未交付，实际调度器路由、安装生命周期与已实现能力边界待重新结算；#115 实际运行时与 Lefthook 的职责对照待完整验收 |
+| Dagger、DAG 与工程 CI | Release Dagger Policy、#86 Host/Dagger 分支/NEW-039；**PR #119 已合并** D.1 Native Input Cache；已有 `asyncio`/Host 路径的合法适用范围与锁证据 | Issue #86 当前表格仍将 #119 列为 Draft/Open 并指向重复集成验收；设计 `plan.md` 顶部仍写尚未实施；额外生产实例及边界据真实 Native Run 判定 |
 | Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
 | Source/Expected/Native/Admission | #52/#63/#66 相关发现与 D-F01/D-F02 | 实际 Producer 权威、全执行路径、动态调用与跨 Run 真实性 |
 | Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
 | OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
-| GitHub Actions / Check / 服务端保护 | G2/G3 代码、D-G03、NEW-010/011/028/033 | 真正发布者、受信入口、Branch Protection/Ruleset 权限及服务器拒绝 |
-| Release、制品、真实交付 | 原生 Manifest/Verification/Publishing 的部分源码和 NEW-003～013/034～037 | 有权当前 Profile、实际 Build/Package/Asset 下载、Policy/Artifact 及 R4/R5 真实消费 |
+| GitHub Actions / Check / 服务端保护 | G2/G3 合同、D-G03、NEW-010/011/028/033；当前 main 四份 Actions Workflow 已检查，尚未调用 R1 Required 发布 | 实际 G2 Publisher/Approval 的运行入口和适用 Required Context、G3 规则的真实服务器保护及拒绝证据；服务端读取权限不足时状态保持未知 |
+| Release、制品、真实交付 | 已核对 `release.yml` 手动发布及 `verified→publish` 真实 Manifest/Artifact ID；发布入口仍未调用 R4；相关 NEW-003～013/034～037 | R4 授权与当前实际发布消费整合、当期有权 Release Profile 及正确复用历史制品的验证范围；原发行保护有效性单独保留 |
 | 文档、证据与工程过程 | PR #126～129 的部分文档/依赖索引 | 历史设计/实施偏差、错误验收口径及多轮 Review 的实际纠错效果 |
 
 ### C.3 本轮反证与已排除的误报方向
@@ -487,7 +487,41 @@
 | --- | --- |
 | `selection.full=True` 是否错误遗漏所有 Hygiene Check | [`selection._non_test_check_scopes`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2447-L2479) 确实对 Hygiene 传 `full=False`；但已有 [`test_full_selection_explicitly_marks_tests_only`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_selection.py#L223-L237) 明确把 full 定义为**测试全集**，Hygiene 保持真实增量适用。当前不存在足以认定漏跑的合同反例，暂不另编号；若实际面向用户的 CLI 承诺全工具全量执行，按该入口的独立证据重新评价。 |
 | `execution._execute_with_dependencies` 与 Dagger DAG 是否必然属于重复建设 | [Host `execution.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4083-L4210) 有面向本地命令/Prerequisite 的轻量执行依赖消费；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 说明 Dagger `plan_execution._execute_dag` 面向原生 Function/Container/File/Directory 及 Engine 缓存，Host-only 工作不当然应搬到 Dagger。两条路径职责有差异，**尚未发现仅凭两者共存即可证明的重复调度 BUG**；进一步调查实际 Check 是否在两个路径重复执行及共享 Result 是否真实生效。 |
-| Workflow Analysis 缓存字典共享是否导致并发 Actionlint 重复启动 | [`workflow_analysis.run_workflow_script_suite`](${base}src/engineering_ci/workflow_analysis.py#L1516-L1594) 的同键 Actionlint Runner 调用受同一个 `threading.Lock` 保护，且 Shellcheck 版本前置也受锁保护；[Dagger `_execute_dag`](${base}.dagger/src/engineering_ci_module/plan_execution.py#L624-L995) 的 `script_shared_cache` 共享恰好传入上述受控缓存。先前“因为共享 dict 所以缺原子性”的猜测被源码反证，现有具体路径不成立；不同命令键、Dagger 层原生缓存及真实跨 Source 场景仍分别按实际消费者判断。 |
+| Workflow Analysis 缓存字典共享是否导致并发 Actionlint 重复启动 | [`workflow_analysis.run_workflow_script_suite`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/workflow_analysis.py#L1516-L1594) 的同键 Actionlint Runner 调用受同一个 `threading.Lock` 保护，且 Shellcheck 版本前置也受锁保护；[Dagger `_execute_dag`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L624-L995) 的 `script_shared_cache` 共享恰好传入上述受控缓存。先前“因为共享 dict 所以缺原子性”的猜测被源码反证，现有具体路径不成立；不同命令键、Dagger 层原生缓存及真实跨 Source 场景仍分别按实际消费者判断。 |
+
+### C.4 已有信息的独立复审：状态漂移、证据分层与系统性未交付（2026-11-18）
+
+本节重新核对 **PR #115/#119 的合并事实、Issue #66/#86 的现行状态、四个实际 GitHub Actions Workflow、#125-C/D 的原始证据级别** 和 NEW-001～039 已记录的源码发现。不是新一轮按编号寻找风险；本节的结果继续接受新的原生运行和反证。
+
+| 重审对象 | 固定原始证据 | 更新后的裁决与影响 |
+| --- | --- | --- |
+| **Issue #66 的现行交付表述** | [PR #115](https://github.com/dymzz/engineering-ci/pull/115) 于 2026-11-17 05:52:31 UTC 合并，主仓已有 [`hook_coordinator.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py) 及 [`tests/test_hook_coordinator.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py)；但 [Issue #66](https://github.com/dymzz/engineering-ci/issues/66) 于 12:11:20 UTC 更新后，顶部现行条目仍将外层 Coordinator、Collect、Final Reconciliation、Hook Exit 泛称未交付 | **状态矛盾已确认**：#115 实际交付 Event/Invocation 结构性核对、Run/Attempt、Job 生产/Report 收集、Routing、Final、Exit 的 Python 模块接口；`hook-coordinator` CLI 仅提供 `verify-invocation/finalize`，main 仍无实际 `lefthook.yml`、原生条件调度及安装生命周期。已交付模块接口与真实 Lefthook 生产连接属于不同工作；旧 Issue 混写会诱发重复实施 |
+| **Issue #86 的现行交付表述** | [PR #119](https://github.com/dymzz/engineering-ci/pull/119) 于 2026-11-17 09:01:33 UTC 合并 D.1 在线输入刷新和来源绑定原生缓存；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 于 12:10:12 UTC 更新，现行表仍描述 #119 Draft/Open 和待合并验收；[设计 plan.md](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/design/execution-graph/plan.md#L1-L5) 仍写“候选实施计划，尚未实施” | **状态矛盾已确认**：已合并的 D.1 代码/正反执行证据有效，剩余应是其未覆盖的真实生产场景及变更后差异，而不是同名 PR 再次合并。现行文档和设计状态分层更新存在缺口 |
+| **真实 PR/main Required Publisher** | 当前 main 的 [四份 Actions Workflow](https://github.com/dymzz/engineering-ci/tree/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows) 包括 CI/Release/Telemetry/reusable Python；没有 R1 Required Assessment/Check 发布接线。[#61](https://github.com/dymzz/engineering-ci/issues/61) 已将 G2/G3 合同合并与服务端生效明确分开 | **D-G03 是真实交付缺口**：R1/G2 合同存在，但生产 CI 尚未调用最终受信 Check 发布链；实际 Branch Protection/Ruleset 是否生效依权限读取和服务器拒绝证据，当前仍未知。这一缺口比未证明可达的序列化 Publication 假设更直接 |
+| **真实 Release 与 R4** | [release.yml](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml#L137-L214) 通过 `verified → publish` 和固定 Artifact ID 检查执行来源，且 `publish` 是手动触发受控分支；其命令调用原 [`release.publishing`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py)，不调用 [`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py) | **D-G04 是真实交付缺口**：R4 授权合同与已存在的原生发布保护尚未接线。保留现有 Manifest/Run/Job/Artifact 保障，不因缺 R4 就推断原生 Release 完全无保护，也不把 NEW-034/035 的重复重验推测提升为独立生产漏洞 |
+| **#125 原始 86 边证明级别** | [PR #127 Coverage](authorization-closure/coverage/assessment.md) 明确 13 条已验证合同交接、5 个已知缺口、68 条未调查、**0 条来源认证、0 条生产接线证明**；[PR #128 D Findings](authorization-closure/independent-review/findings.json) 共 82 个受控案例、5 个反例归为 D-F01/D-F02 | **39 条 NEW 不是 39 项已证明运行时缺陷**。有些观察被既有测试直接断言，其余为源码条件、外部 Callback 或合同解释。#125 的 86 边索引也不代表整个 ECI 的覆盖率 |
+| **D-F01 / D-F02 的事实层级** | [#124](https://github.com/dymzz/engineering-ci/pull/124) 至今 Open/Draft、未合并；D-F01 出现在 #124 候选 Binder；D-F02 由 main 的 T1/T2 原生 Admission 直接送 R1 得到 Phase/Kind 合同错误 | D-F01 为已复现的**未合并候选**缺陷，不能写成 main 当前生产绕过；D-F02 为已复现跨模块 **Gate Projection 未交付**，T1-a 的真实失败输入是抛异常，不是被允许。两者均非完整生产服务器放行证据 |
+
+#### C.4.1 对 39 条 NEW 的证据再分类
+
+| 调查簇 / 原有 ID | 当前可成立的事实 | 影响后续裁决的最小区别证据 |
+| --- | --- | --- |
+| **R1 身份、裁决与时钟**：002、006、008、009、026、030、031、032；HYP-001/002 | 局部 API/序列化校验行为及部分既有测试存在；多数并非生产授权来源受信结论 | 上游 Issuer、真正评价时间、追认/撤销合同、原始 R1 Producer 与实际消费者 |
+| **G2/G3 发布身份**：010、011、028、033 | 公开 Publisher/Publication 的输入校验差异成立，主 CI 尚无真实 G2 最终发布接线 | 当前 Publisher 取得的 R1 原件/身份、Approval Authority 与服务端保护的实际运行 |
+| **R4 Release**：003、004、005、007、012、034～037 | Manifest、映射、时序和可选 Digest 的具体处理方式可定位；发布端已有独立原生保护但 R4 未接通 | 当前 Release Profile、已验签 Manifest 的不可变交接、真正受信发布入口和 Release 对各证明字段的义务 |
+| **R5 后置**：001、013、027、029 | 源码中的 Trigger/Due/时间/样本组合可疑条件已明确 | 受信 Trigger/Due Issuer、当前与历史重评价合同和具体后置消费者 |
+| **T1/T2/Native Result 与失败保留**：014、017、022、023 | 有些测试已验证局部隔离或排序行为，生产 Report/Attempt/Issuer 关系不完整 | 相同实例的合法重试、原生失败何时属于共享 Required 前置、真实 Producer 数据 |
+| **#66 Hook/Receipt/调度**：015、016、018～021、024、025、038；HYP-003 | 本地结构性 Receipt 与部分 Hook API 已存在；#115 的模块能力不能代替真实 Lefthook Job 激活和 Effective Config | 已安装 Hook 的真实执行来源、Job/Attempt 原件、#63 Admission 与当前 Hook Exit 的实际契约。NEW-038 的默认 `lefthook` 字符串属**未绑定元数据**，在 Receipt `trusted=False` 下尚非独立受信授权错误 |
+| **Host Runner**：039 | `_run_command` 以捕获 `TypeError` 选择第二次 Runner 调用确有条件重复执行路径 | 实际被注入 Runner 的参数合同、是否存在首次命令产生副作用后抛 TypeError 的合法/生产执行情况 |
+
+以上恰好覆盖 39 项 NEW；其中 NEW-008、014、015 等已有测试观察，与 NEW-039 这样的未执行条件反例证据等级不同。NEW-034/035/038 保留原编号，但当前证据主要证明来源或部署边界，**未建立独立于既有 D-G02/D-G04/#66 Hook 缺口的生产授权失败**。本轮没有基于这批材料新增编号。
+
+#### C.4.2 工程后果与调查优先级
+
+现有明确的交付缺口依次是 **真正有权 Profile/Obligations 生产链**（D-G01）、**T1/T2 受信来源与 R1 Gate Projection**（D-F02/D-G02）、**实际 PR/main G2 最终 Check 与 G3 服务端保护**（D-G03）、**真实 Release 对 R4 的消费**（D-G04）、**Lefthook 原生调度/ECI 接线与 #115 已交付职责边界**（#66、NEW-038）、以及 **Tool Runtime 与环境 Policy 的实际授权来源**（D-G05）。这些是有具体原始需求与缺少实际生产证据的系统性事项，其真实影响并不由 NEW 数量衡量。
+
+已合并模块、已保存 Native Run、测试可覆盖的合法场景继续按现有证据使用。跨模块变更按真实依赖组织；Issue/设计文档的“现行状态”需要以实际 PR 合并/源代码结算，避免后续执行者依据过时任务重复实施或在错误入口修复。
+
 
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
 
