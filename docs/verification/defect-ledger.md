@@ -35,6 +35,7 @@
 | 2026-11-18：全仓 Hook/Lefthook 接线复核 | `main@fc0df2a` 文件树、Hook Coordinator/CLI、Reconciliation、Issue #66/PR #72 及既有模块正例 | **NEW-038**：Routing 默认把 Lefthook 2.2.2/固定配置标签写为调度来源，但无本次 Lefthook/合成配置真实证据。仅证结构性声明差异；Receipt `trusted=False`，未证生产权限绕过。实际 Hook 配置/安装缺口已在 #66 登记，不重复记作新 BUG。 |
 | 2026-11-18：Host/Dagger 依赖执行与缓存复审 | Host 前置命令 Runner 参数适配、Dagger 两路径执行、Workflow Analysis 共享缓存/Lock、实际 Plan/测试 | 新增 **NEW-039**：前置原生命令 Runner 的内部 TypeError 会被当作签名不匹配后重新调用；源码条件确认，真实内置 Runner 生产发生率和后果未证。确认同次 PlanExecution 二选一执行分支，Actionlint 共享缓存已有锁，均不据此立重复建设 BUG。 |
 | 2026-11-18：Reusable Dagger 报告与私有 Token 边界审计 | Workflow 可选 Secret→Host Git Credential Store→Dagger 函数导出 `ci.py`→Runner 执行 `plan/gate`；核对 ECI 当前 Release 调用、可信 `pytest_ci.py` 及 GitHub Secrets/Checks 原生机制 | **NEW-040**：导出脚本的可执行来源没有独立认证；可选 Secret 在 Host 运行期可用。源码交接路径成立，但真实受检 PR 是否控制导出脚本、调用方是否传入 Secret 均未证；本仓 Release 未传 Secret、fork PR 默认拿不到普通 Secret。G2 本身有可复用 GitHub App 形式的 `GITHUB_TOKEN`，不必先造新 App。 |
+| 2026-11-18：NEW-040 消费者及真实 PR Run 复审 | 核对 `vesryn` 的实际 `workflow_call`、Dagger Module/Lock、固定旧版 ECI 0f74b2f Workflow，及 PR #32/#29 对应的成功 Actions `harness / checks`；两个原始 PR Head 均确认相同调用契约 | **实际消费者和真实运行已证**：共享 ECI 依赖固定，但消费者本地 `test_results` 来源于受检仓库；Workflow 显式声明传入可选 Secret。仍未证明 Secret 非空、非授权改动、泄漏或门禁绕过；沿 NEW-040 记录，不重复编号。 |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -102,7 +103,7 @@
 | NEW-037 | GitHub Artifact 元数据不提供 digest，但相同 Run/ID/名称均合法 | passed Manifest 接受 digest=None，Provider 仅在声明 Digest 时比较 | 无法仅凭当前 Manifest 完成字节 Digest 证明；API 可达性/当前义务未实测 | GitHub API 缺 Digest 的真实可达性及当期 Profile 对字节完整性的适用性待验证。 |
 | NEW-038 | 未执行 Lefthook 调度，但调用本地 `record_job` 与默认 `build_routing` | Routing 中写入固定 Lefthook 调度器身份与 `hook-job:1` 配置标签，`_normalize_routing` 只验证字段为字典并在 Receipt 中保留 | 若有消费者将此标签解释为实际调度、过滤或生效配置证明，可能发生来源错归属；当前没有全链受信消费证据 | 真实 Scheduler activation / effective merged config / Event 关联、下游受信规则待核实；NEW-024/025 涉及其他属性 |
 | NEW-039 | 指定具有合法二参/三参 Runner，当 Runner 开始执行副作用后抛出 `TypeError` | `_run_command()` 会在 `except TypeError` 里以三个位置参数重新调用同一个 Runner；真实错误上下文可能被覆盖，命令可能被第二次执行 | Pre-execution Command 的生成产物、远端副作用或 Report 准确性受影响；现有内置 `_run` 及真实 Host/Dagger 中是否可达此后置异常未证 | 需要区分签名不兼容与 Runner 内部异常；用带调用次数/副作用的受控二参/三参 Runner、实际 PREREQ Provider 验证 |
-| NEW-040 | `ENGINEERING_CI_READ_TOKEN` 非空且受检 PR 可控制被选中 Dagger 函数的报告目录 | 真实 Workflow 直接执行 Dagger 导出的 `ci.py plan`，并在后续 Gate/summary 执行同脚本；Git Credential Store 持续到 Job 结束 | 条件满足时可能改变 Check 选择/门禁结果并访问 Runner 凭证；尚无 Secret+可控模块真实组合证据 | Dagger 模块与报告函数的来源批准、Caller 传 Secret 的真实条件、Host 环境与凭证范围；现有合法 ECI Producer 是反证 |
+| NEW-040 | `vesryn` 实际 Consumer 的 PR Workflow 使用受检仓库本地 Dagger Module、固定 ECI Reusable 旧版，并显式传私有 Secret 表达式；若配置非空且本地函数被未经授权修改 | ECI Reusable 在 Host 执行 Dagger 报告 `ci.py plan/gate`，Git Credential Store 可在执行期间使用；两次真实 PR Run 的 `harness / checks` 与 Gate 成功 | 满足未知的 Secret/不可信代码组合后可能误选 Check 或访问 Host 凭证；真实凭证存在性与越权行为尚无证据 | 已验证 PR #32/#29 Head 配置与 Actions Run，后续查 Secret 元数据、Caller 信任模型及受保护 Module 来源 |
 
 ### 0.4 调查依赖（可并行，不是修改门槛）
 
@@ -174,7 +175,7 @@
 | **NEW-037** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | main@fc0df2a；Manifest/Publishing | Digest=None 可通过固定 Artifact 名称/ID/Run 的 Manifest 验证，Provider 不核对字节摘要 | 待裁决；真实 API 及字节义务待验证 |
 | **NEW-038** | 待评估 | **源码声明行为已确认；真实调度来源与消费者待核验** | `main@fc0df2a`；#66 Hook/Lefthook → #66-C Routing | 未调用 Lefthook 的模块级执行和对账中，`scheduler_ref` 自动写 Lefthook 2.2.2，`effective_config_ref` 自动写 `hook-job:1` | 原生来源/生产授权影响未证；与 NEW-024/025 关联 |
 | **NEW-039** | 待评估 | **源码级重调条件确认；原生 Runner 异常复现与生产可达性待验证** | `main@fc0df2a`；#86 Host Prerequisite / Dagger Module-local command | `_run_command` 把 Runner 内部抛出的 `TypeError` 当作参数签名失败，可能重复调用已开始执行的原生命令 | 没有提交原生复现、没有证明真实受保护发布/门禁错误 |
-| **NEW-040** | 待评估 | **宿主代码交接已证；不受信产物与 Secret 同时可达待验证** | `main@fc0df2a`；Reusable Python CI / Dagger Report / Host Gate | 可选 Token 出现在 Host Dagger 步骤环境；该步骤把函数导出的 `ci.py` 当作 Python Gate 代码执行，无独立来源验签 | 未证当前 ECI Release 泄漏或生产 Gate 绕过，需实际 Caller/模块来源证据 |
+| **NEW-040** | 待评估 | **已证外部 Consumer 与真实 PR Run；Secret 是否存在/越权未证** | ECI `main@fc0df2a` + 旧版 Workflow `@0f74b2f`；vesryn PR #32/#29 | Consumer 的本地 Dagger Module 可由其 PR 代码修改，`workflow_call` 显式传可选 Secret；ECI 固定旧版在 Host 执行它导出的 `ci.py`；两个真实 Run 均完成 Gate | 代码交接路径真实运行，但未证明凭证实际非空、发生泄漏或 Consumer 非授权执行 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -451,6 +452,8 @@
 - **完整执行链**：[Reusable Python CI](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L145-L195) 在可选私有 `ENGINEERING_CI_READ_TOKEN` 非空时将其存入 Host Git Credential Helper（`credential.useHttpPath=false`），而 [Run Dagger Checks](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L229-L315) 在携带同一 Secret 的步骤环境中执行 `dagger api call ... export` 返回的 `ci.py plan`；同一个导出的 `ci.py` 由 [后续 Gate/summary](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L316-L356) 继续执行。导出目录的脚本没有在 Host 执行前与独立批准的 Helper SHA/来源关联。
 - **独立于 Dagger Engine 是否继承环境变量**：风险路径发生在 Host 原生 Python，而非必需依靠 Dagger 容器读取 Secret。导出 `ci.py plan` 还能控制 `remaining-selectors.txt`，所以除凭证边界外还涉及剩余 Check 的选择与 Gate 退出值。自行配置的全局 Git Credential Store 直到 [Cleanup](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/reusable-python-ci.yml#L452-L463) 才移除；Git [credential.useHttpPath](https://git-scm.com/docs/git-credential) 关闭时同主机的不同仓库路径不参与凭证定位。
 - **合法正例与有力反证**：ECI 自身 [`_pytest_bundle`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/main.py#L1401-L1435) 从受信模块文件 [`pytest_ci.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/pytest_ci.py) 写出 `ci.py`，既有 [测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_pytest_ci.py) 覆盖其正常行为。[当前 Release `complete-ci` 调用](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml#L63-L83) **没有传入** `ENGINEERING_CI_READ_TOKEN`；GitHub [可复用工作流](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) 需要调用方传递/继承 Secrets，且 [fork PR](https://docs.github.com/en/code-security/reference/secret-security/secret-types) 默认无普通仓库 Secret。这些情况下不能声称凭证遭到泄漏。
+- **消费者与固定版实证更新（2026-11-18）**：[vesryn 实际 CI](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/.github/workflows/ci.yml#L1-L20) 在 PR 事件使用固定 ECI Reusable `@0f74b2f...`，启用 `pytest_report_function=test-results`，并显式声明传递 `secrets.ENGINEERING_CI_READ_TOKEN`；[消费者 `dagger.toml`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/dagger.toml) 的入口 Module 为 `source="."`，同时声明 `gitToken` 来源于该环境变量。[消费者本地 `test_results`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/.dagger/src/vesryn_ci/main.py#L65-L74) 是受检仓库内的函数，虽然 [`dagger.json`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/dagger.json) 把共享 ECI 依赖钉到 `0f74b2f`，却**没有钉住可随 PR 改动的本地函数代码**。已核对[固定旧版 ECI Reusable](https://github.com/dymzz/engineering-ci/blob/0f74b2f776796b9db83f7a61c0849e504afdbea0/.github/workflows/reusable-python-ci.yml#L87-L260)，同样在 Host 执行导出的 `ci.py plan/gate/summary`，说明 NEW-040 不是只有当前 ECI main 才存在的未被采用路径。
+- **运行证明及边界**：读取 [vesryn PR #32](https://github.com/dymzz/vesryn/pull/32) 的 [Run 39994772068](https://github.com/dymzz/vesryn/actions/runs/39994772068)、[PR #29](https://github.com/dymzz/vesryn/pull/29) 的 [Run 39721728911](https://github.com/dymzz/vesryn/actions/runs/39721728911)：`harness / checks` 以及凭证设置、Run Dagger Checks、pytest Gate 步骤均成功；两个 PR Head 的 Workflow/Dagger 配置分别与现有调用合同一致。但凭证设置步骤遇到 Secret 空值也返回 success，故成功运行**不能证明 Secret 实际非空**。未获得仓库 Secret 的元数据、Scope，也未执行有凭证的攻击反例。该仓是私有 Consumer，仅作为 ECI 交付链证据，不是新增审计对象。
 - **待证可达性/归属**：需要实际 Caller 的 Dagger Module/Lock 来源、报告函数返回目录可修改性、Secret 非空、当前 PR 代码控制范围及凭证权限。若产物真实来自独立批准且不可修改的模块，则可能是合法执行；若同时满足未受信代码和 Secret 条件，则有 Runner Host 执行/来源隔离问题。尚未运行任何带真实凭证的远端反例，风险等级待评估；不与 #61 G2/G3 或 D-G05 的资产 Policy 许可混同。
 
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
@@ -474,7 +477,7 @@
 | A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
 | C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
 | D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
-| 当前台账 | D-F01/D-F02；NEW-001～NEW-040；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 39 个已复现生产 BUG |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-040；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的源码观察或疑点，并非 40 个已复现生产 BUG |
 
 ### C.2 ECI 全仓调查覆盖
 
@@ -482,7 +485,7 @@
 | --- | --- | --- |
 | 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
 | Hook/Lefthook/本地调度 | NEW-015～025/038；**PR #115 已合并** Event→Run/Attempt、Report、Routing、Final/Exit 结构性 API；真实 main 无 Lefthook 配置 | Issue #66 将已交付 Coordinator/Final 标为未交付，实际调度器路由、安装生命周期与已实现能力边界待重新结算；#115 实际运行时与 Lefthook 的职责对照待完整验收 |
-| Dagger、DAG 与工程 CI | Host/Dagger/NEW-039、PR #119 Native Cache 与 NEW-040 可选 Secret/导出 Python Gate 的源码链已调查 | #86 已合并状态、真实 Dagger 函数来源及 Host 凭证隔离、实际条件化 Check 执行/失效及缓存行为继续分别追踪 |
+| Dagger、DAG 与工程 CI | Host/Dagger/NEW-039、PR #119 Native Cache、NEW-040 导出 Gate/凭证已核；追加 vesryn 固定 ECI 旧版与两个 PR Run 的真实交付证据 | 区分已固定 ECI 依赖与可随 PR 修改的消费者 Module、Secret 是否实际存在、PR 作者信任边界及所需原生隔离；不扩张独立审计对象 |
 | Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
 | Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | 已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
 | Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
@@ -676,6 +679,21 @@ D-F02 的具体缺口现已追到 Gate Kind/Phase、Admission Ref、受信 Witne
 | GitHub 原生 Secret 规则 | [Reusable Workflow Secrets](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) 明确需调用方传递或继承；[GitHub Secret Types](https://docs.github.com/en/code-security/reference/secret-security/secret-types) 明确 fork PR 默认没有普通 Secrets | 真实触发条件必须包含调用方授权和适用事件；不同 PR 来源的合法对照不可省略 |
 | Checks App 的成熟选择 | [GitHub `GITHUB_TOKEN`](https://docs.github.com/en/actions/concepts/security/github_token) 本来是 GitHub App Installation Token；[Actions Job `permissions`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax) 原生支持 `checks: write`，[Checks API](https://docs.github.com/en/rest/checks/runs) 要求相应 App 写权限 | #61-G2 缺的是**可真实运行的受信发布者**及 R1/批准/Scope 到 Check 的完整绑定，不能以“Checks API 必须 App”为由强制再造一个新 App；现有 PR Check Job 只读隔离应保留 |
 | 根因与状态 | NEW-040 属于 Dagger 报告产物→Host Python/Secret 的新边界；D-G03 属于最终 Check 发布工作流；NEW-033 属于实际 Evaluator 代码身份 | 这三项作用域不同，不以条件性 Token 风险替代 G2 实际门禁未交付，也不把 G2 失败混同 Host 凭证已泄露 |
+
+
+### C.11 NEW-040：从源码条件风险到实际固定版消费者与 PR Run（2026-11-18）
+
+本节使用 `dymzz/vesryn` 的只读信息验证 ECI Reusable 的真实消费；**审计对象仍仅 ECI**。
+
+| 证据 | 原始观察 | 重新裁决 |
+| --- | --- | --- |
+| Consumer 调用 | [vesryn CI](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/.github/workflows/ci.yml#L1-L20) 触发 PR，固定 ECI Reusable `@0f74b2f...`，设置 `test-results` 和 `vesryn-ci:tests`，显式传递 `secrets.ENGINEERING_CI_READ_TOKEN` | 已找到实际消费者；声明传 Secret 不等于它已在该仓库配置、非空或获授权 |
+| 共享依赖与本地函数 | [vesryn `dagger.json`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/dagger.json) 将共享 ECI Module 固定到 0f74b2f；[`dagger.toml`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/dagger.toml) 指定本地入口 `source="."` 及 `gitToken` 环境来源；[本地函数 `test_results`](https://github.com/dymzz/vesryn/blob/f3446915e64f0a2f6d8a997e3aee6fbfbbde77b6/.dagger/src/vesryn_ci/main.py#L65-L74) 调用共享 `python_test_artifacts` | **固定 ECI 依赖不等于固定消费者本地 Dagger 代码**。当前函数委托共享实现是合法正例，候选 PR 对本地函数的变更可能改变导出脚本来源 |
+| 固定旧版仍存在原路径 | [ECI 0f74b2f Reusable Workflow](https://github.com/dymzz/engineering-ci/blob/0f74b2f776796b9db83f7a61c0849e504afdbea0/.github/workflows/reusable-python-ci.yml#L87-L260) 也在 `checks` Job 配置 Host Git Credential Store、向 Dagger 步骤传 Secret、导出报告后直接执行 `ci.py plan/gate` | NEW-040 的代码执行交接不是 ECI 当前 main 才出现的变化，而是有消费者实际采用的固定旧版既有能力 |
+| PR 事件真实执行 | [PR #32 / Run 39994772068](https://github.com/dymzz/vesryn/actions/runs/39994772068)、[PR #29 / Run 39721728911](https://github.com/dymzz/vesryn/actions/runs/39721728911) 的 `harness / checks`、凭证 Setup、Dagger、pytest Gate 都成功；分别读取原始 PR Head 版本的 Workflow、Dagger 配置与函数 | **原生执行路径确实跑过**，不再只是静态猜测。Setup 在 Token 为空时同样成功，无法从 Job 成功推断 Secret 非空或已经泄漏 |
+| 受信界限与风险等级 | [GitHub PR 事件文档](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) 区分 PR Merge Ref 与 fork Secret 限制；[Reusable Secrets](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) 由 Caller 控制传递 | 如果所有有权修改同仓 Dagger Module 的贡献者也获准使用该 Secret，可能是合法信任合同；如果目标是安全执行不受信 PR 而保护 Token，当前证据没有证明 Host 可执行产物与令牌隔离。**未确认真实凭证存在及非授权访问** |
+
+本轮进一步确认 **Workflow Commit、共享 Dagger Dependency Pin、消费者本地 Module、导出 `ci.py`、Host Secret** 是五个不同的身份与权限对象。NEW-040 的“实际调用方是否存在”已获得正证，剩余问题转向“Secret 是否非空、哪些 PR 作者受信、真正的模块来源审批与代码执行边界”。不凭引用 Secret 的 YAML 文本认定已发生凭证泄露，也不以此决定新增框架或重做成熟的 Dagger Gate。
 
 
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
