@@ -474,7 +474,7 @@
 | Hook/Lefthook/本地调度 | NEW-015～025/038；**PR #115 已合并** Event→Run/Attempt、Report、Routing、Final/Exit 结构性 API；真实 main 无 Lefthook 配置 | Issue #66 将已交付 Coordinator/Final 标为未交付，实际调度器路由、安装生命周期与已实现能力边界待重新结算；#115 实际运行时与 Lefthook 的职责对照待完整验收 |
 | Dagger、DAG 与工程 CI | Release Dagger Policy、#86 Host/Dagger 分支/NEW-039；**PR #119 已合并** D.1 Native Input Cache；已有 `asyncio`/Host 路径的合法适用范围与锁证据 | Issue #86 当前表格仍将 #119 列为 Draft/Open 并指向重复集成验收；设计 `plan.md` 顶部仍写尚未实施；额外生产实例及边界据真实 Native Run 判定 |
 | Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
-| Source/Expected/Native/Admission | #52/#63/#66 相关发现与 D-F01/D-F02 | 实际 Producer 权威、全执行路径、动态调用与跨 Run 真实性 |
+| Source/Expected/Native/Admission | #52/#63/#66 原始接口及 D-F01/D-F02；已核对 T1/T2 输出与 R1 的 Kind/Phase/身份/Failure 字段不兼容；带 Phase 的 R1 当前总会阻断 | 已确认缺失 Gate Projection、Phase Producer/有权验证和完整 Universe 交接；实际 Issuer/受信历史复用/当前 Required 生产仍须按真实消费者验证 |
 | Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
 | OTel、Weaver、Telemetry 与 Terminal | #52 D4、#74/#75 相关授权链引用 | 原生 SemConv/Weaver 行为、Collector/协议、真实根/任务关联与终态 Gate |
 | GitHub Actions / Check / 服务端保护 | G2/G3 合同、D-G03、NEW-010/011/028/033；当前 main 四份 Actions Workflow 已检查，尚未调用 R1 Required 发布 | 实际 G2 Publisher/Approval 的运行入口和适用 Required Context、G3 规则的真实服务器保护及拒绝证据；服务端读取权限不足时状态保持未知 |
@@ -521,6 +521,40 @@
 现有明确的交付缺口依次是 **真正有权 Profile/Obligations 生产链**（D-G01）、**T1/T2 受信来源与 R1 Gate Projection**（D-F02/D-G02）、**实际 PR/main G2 最终 Check 与 G3 服务端保护**（D-G03）、**真实 Release 对 R4 的消费**（D-G04）、**Lefthook 原生调度/ECI 接线与 #115 已交付职责边界**（#66、NEW-038）、以及 **Tool Runtime 与环境 Policy 的实际授权来源**（D-G05）。这些是有具体原始需求与缺少实际生产证据的系统性事项，其真实影响并不由 NEW 数量衡量。
 
 已合并模块、已保存 Native Run、测试可覆盖的合法场景继续按现有证据使用。跨模块变更按真实依赖组织；Issue/设计文档的“现行状态”需要以实际 PR 合并/源代码结算，避免后续执行者依据过时任务重复实施或在错误入口修复。
+
+
+### C.5 下一阶段：逐生产者到消费者的实证追踪（2026-11-18）
+
+本轮固定当前 `main@fc0df2a`，对已登记的 D-F02/D-G01/#66-P0/#86-B 追查原始代码和已有测试，不用组件同时存在、字段不一致或缺少重复校验直接推导生产安全漏洞。本轮不增加 NEW 编号。
+
+#### C.5.1 #63 T1/T2 → #61 R1：精确交接差异
+
+| 证明对象 | 实际上游对象 | 当前 R1 消费合同 | 实际结论 |
+| --- | --- | --- | --- |
+| Kind/Phase | [`admission.admit_evidence`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/admission.py#L779-L951) 输出 `engineering-ci-evidence-admission`，但无 `phase`；[`admit_historical_reuse`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/admission.py#L1527-L1849) 输出 `engineering-ci-historical-reuse-admission`，无当前 Gate Phase | [`required_assessment._validate_admission`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1341-L1443) 仅接受 Gate Kind、`schema_version=1`、`phase=post_run_evidence_to_gate_projection` | T1 进入 R1 抛 `admission_phase_invalid`；T2 抛 `admission_kind_invalid`；D-F02 的原生受控反例已经证明 |
+| Receipt/摘要身份 | T1 保留 `receipt_ref`、原始 `report_refs/job_receipt_refs/result_ids`，T2 合法历史接纳 `receipt_ref=None` | R1 需要可重算的 `admission_ref`，且历史复用必须维持原 Result/来源身份 | 交接缺的并非普通字段默认值：Gate 对应的身份、授权范围和认证来源需要实际证明 |
+| 逐实例成功 Witness | T1 `accepted_coverage_by_instance` 含 `admitted/result_ids/origin_status/integrity_status/native_outcome`；T2 含历史 `result_origins/equivalence_basis` | R1 的 [`_coverage_entry`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1231-L1283) 使用 `witness_result_id/raw_result_verified/issuer_verified/origin_trace/applicable_to/source_kind` 等，且要求已接纳项具备 Witness 与来源 Trace | 现有成功 Witness/历史等价性应由可追溯的受信投影携带，R1 单独 Fixture 构造的这些字段不等于真实 Producer 已交付 |
+| 可信失败/冲突 | T1 输出 `verified_native_facts/rejected_evidence/unverified_evidence/remaining_work`，T2 保留被授权历史候选及不满足原因 | R1 将 `authenticated_failures_by_instance` 和 `adjudications` 与同一 Expected 实例的成功覆盖并列消费（[`_validate_admission`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1395-L1442)） | 这是一条**失败传播和有权裁决**交接边；仅有 `admitted=True` 或 `remaining_work=[]` 无法表达完整已认证失败事实 |
+| 完整 Required 结论 | T1/T2 显式 `required_gate=not_evaluated` | R1 [`assess_required_obligations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2449-L2530) 还消费有权 Universe、Expected 与各领域 Non-Check，分别判断四项独立事实 | #63 合同切片可以成立，却仍不能产出可被 R1 原样接受的完整 Gate 证据；D-F02 继续保持已复现跨模块合同错误 |
+
+#### C.5.2 合法 Phase 闭包：已确认的全路径阻断
+
+- [`expected_checks._derive_v2_from_profile`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L1548-L1884) 对含 Phase 的 EffectiveProfile 仍产生 `phase_status="unverified"`，同时把治理 Domain、Definition、Rule、Appplicability 的多项缺口压缩至单一状态/原因。
+- [`required_assessment._check_domain_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1565-L1599) 对任何 `scope.phase is not None` 均产生 Phase 证明缺失原因：若为 `unverified`，写 `expected_phase_unverified`；即使传入 `phase_status="verified"`，仍写 `expected_phase_proof_unverified`。当前函数没有认证真实 lifecycle Phase Producer 后接纳合法证明的分支。
+- [现有测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment.py#L1562-L1628) **显式断言此行为**：一个 Check 已满足、Universe 的匹配 Phase 和完整义务已验证，仍因 Phase 来源未证而导致 R1 Overall `blocked`。这不是测试遗漏或用户要求的常态阻断；它是 Phase Producer/Consumer 联合接口尚未交付时的刻意安全界限。
+- **裁决**：在当前代码里，任何带 Phase 的合法 Required Assessment 尚无法达到真正完整四事实 PASS。此为 D-G01 的**已证明生产能力缺口**，和 D-F01 的 #124 Binder 错误授权属于不同执行边；已经存在的有效 Check/历史原生结果不因此失效。真实有权 Phase 生产、认证以及 R1 接纳位置均在既有 #66-B2/#61 职责内核对；不能把任意调用者自称 `verified` 视为证明。
+
+#### C.5.3 已确认的 Source/执行反证
+
+| 先前疑点 | 实际源码及既有保护 | 本轮结论 |
+| --- | --- | --- |
+| Index 执行是否用 Worktree 当前内容冒充 Staged Tree | [`selection.index_source_refusal`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L946-L984) 在当前 Index Tree 验证后，另查与 Worktree 的差异、未跟踪文件、skip-worktree 和 assume-unchanged 异常；[`selection.run_tests`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L4323-L4387) 运行前再次执行此拒绝逻辑；[`execution._verify_git_execution_binding`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L277-L301) 使用相同入口 | **“Index 只核树 ID，所以 Worktree 不同也会 PASS”被源码反证**。#66-P0 的真实闭包仍针对更深层工具依赖、环境和未来 Source Handoff 审计，已有 Index Source refusal 保护保留 |
+| Dagger 调用 Host 是否重复执行同一批 Tests | [`plan_execution._host_adapter_plan`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L598-L623) 清空 Host Adapter 的 `selection.tests`、限定其 CheckScope；Dagger [_native_results](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L289-L359) 将 Tests 作为独立原生计算，Host 仅执行确实委托的 Check/Prerequisites | **单次执行中必然二次运行测试的怀疑不成立**。仍可追查跨 Plan/缓存/不同 Source 的真实重复工作，但以原生执行记录判定 |
+| Dagger Host/Native 路径为什么共存 | [Dagger execute](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L1376-L1435) 根据 `pre_execution_edges` 选择原生 DAG 或普通独立分支/Host Adapter；[`execution.execute`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4682-L4832) 对前置依赖亦走自己的受控消费入口 | 二者代表不同执行上下文，当前没有确认同一次调用必然重复某 Check 的证据；已有 #86-B/#119 的 Native Result Sharing 与 Source Cache 证据继续在其原范围有效 |
+
+#### C.5.4 对后续实施范围的直接影响
+
+D-F02 的具体缺口现已追到 Gate Kind/Phase、Admission Ref、受信 Witness 来源、独立失败/冲突和历史复用五类必须分别保存的事实。D-G01 则进一步表明 **#66-B2 即使生产 Phase 声明，R1 目前仍没有受信 Phase Proof 的消费成功路径**；二者都会妨碍真实 G2/R4 与已验收合同的正确连接。与之相比，Host/Dagger 重复测试和 Index 读错内容这两条泛化猜测已经有原始源码反证；继续在同样前提上要求重构不会增加工程收益。
 
 
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
