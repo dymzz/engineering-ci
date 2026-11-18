@@ -25,6 +25,7 @@
 | 2026-11-18：PR #129 同轮第二批 | 深挖 R4 空映射、R1 裁决类型/时序、Hook Exit 与 Native Result | 新增 NEW-007～NEW-009、HYP-003。代码证据可复核，**未将业务合同待裁决点提升为已复现缺陷** |
 | 2026-11-18：PR #129 继续审阅（本批四项） | #61 G2 发布数据来源、Assessment→GitHub/Release 跨 Scope、R5 Trigger 身份 | 新增 **NEW-010～NEW-013**。四项均定位到消费边界及具体可变输入，尚未执行差异 API，也未确认任何已部署生产链被绕过 |
 | 2026-11-18：PR #129 继续审阅（本批四项） | #63 T1-a 的 Report 失败隔离、#66-C 重复 Result/空 Observation、#63 T2 历史候选排序 | 新增 **NEW-014～NEW-017**。其中 014/015 的相关行为已有既有测试，016/017 是确定代码路径；四项的**违规合同与生产后果仍待独立反例** |
+| 2026-11-18：PR #129 继续审阅（本批四项） | #66 Hook 同 Job 重复激活、Job Receipt 事件与 Scope 签发、Native Result Attempt 字符串身份、multi-ref Final Reconciliation 输入全集 | 新增 **NEW-018～NEW-021**；源码给出明确可达条件，尚未运行原生组合反例或确证生产权限绕过 |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -40,7 +41,7 @@
 | T3 | 经 R1 认可的阶段判定 + Approved Workflow/Execution identity | #61-G2/G3 → GitHub Check → 服务端 Required | D-G03、**NEW-010、NEW-011** | 需要逐层分清授权发布者身份、真实 Assessment PASS 来源及目标 Scope 绑定；服务端保护仍为 forbidden/not_verified |
 | T4 | R1、当前 Policy、Manifest/Artifact、Provider/Handoff、Run/Attempt | #61-R4 → 真实 Release 发布消费方 | D-G04、**NEW-003～NEW-005、NEW-012** | 除 Check/时序外，必须核对 Assessment 原 Target/Action/Ref 与 Release 权限作用域 |
 | T5 | 已完成 Run、有效 Trigger/Due、相同 Candidate/Phase/Policy、前后 R1 Assessment | #61-R5 → Post-stage disposition/后续消费 | NEW-001、**NEW-013**、D-G04 | post-only 样本传播及 Trigger Artifact/Attempt 归属未验证；R5 未证明全生命周期 PASS |
-| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05 | 生产运行环境待证；不能以 Hook Coordinator 源码存在证明安装、选用或受权 |
+| TX | Tool/Hook 执行权限、批准锚点、真实 Policy revision 和持久状态 | Native Tool Runtime / ECI Security Policy / Hook 路径 | D-G05、**NEW-018～NEW-021** | 同 Job 再激活身份、Receipt 签发 Scope、Attempt Native 实例分界、Final 输入闭包尚未形成全链证明 |
 
 ### 0.3 缺陷影响半径、证据等级与连锁约束
 
@@ -70,6 +71,11 @@
 | NEW-015 | 两个 Job Observation 重复相同 Result ID，均合法参与当前 Scope | 已有 Reconciliation 测试证明 `binding_status=matched` 且 `duplicate` 非空，聚合不计重复为 `unreconciled` | 若重复是错误执行归属或独立 Witness 伪造，Hook `exit=0` 的证据资格可能受影响 | 不禁止合法的同一次计算跨 Job 共享，先检查资格和分发证据 |
 | NEW-016 | 同一 Invocation 外多余未路由 Job 产生零 Native Result 的有效失败 Report | `_unexpected_observations` 只逐 Result 记录；空列表不会生成 `unexpected` | Hook 对失败 Job 的遗漏、`all_observations_reconciled` 语义不完整；仍需看 Report 状态/Job 资格 | 不默认要求所有无结果 Job 阻断，需查它是否为已激活且当前 Required 受检对象 |
 | NEW-017 | 两条不同成功历史候选共享 `historical_scope_id` 和 `historical_expected_check_ref` | T2 对 admitted 列表按仅这两字段排序，平键依赖初始顺序选取 `result_ids` | 相同历史输入集合变更顺序可产生不同 Evidence Identity/Cache provenance，难以稳定追溯 | 不把多个合法等价 Witness 人为判失败；先裁决同键是否应该唯一或有明确 tie-breaker |
+| NEW-018 | 同一 `run_ref/attempt_ref/job_ref` 再次 `record_job`，尤其首次 Report Delivered 后 | `jobs[job_ref]=entry` 丢失前次 Production Ref/Delivery，历史激活记录在对象内不可追溯 | Final Reconciliation/Attempt Qualification 可能引用新身份而掩盖旧运行事实 | 不新增 Coordinator/FSM；先检查真实调度是否允许重复声明 |
+| NEW-019 | Invocation A 已收集真实 Report，却以 Event/Expected B 的声明调用 Receipt 签发 | 本地仍可将未对账字段写入 `upstream_verified` Receipt | 若后续消费仅比较 Receipt 和 Expected B，会发生来源错归属；外部权威是否防止未知 | 不把 `sha256:` 前缀或自重算 Digest 当签发认证 |
+| NEW-020 | 两个同 Run/Attempt Job Ref 一个是另一个字符串前缀 | Attempt 前缀检查不能区分 `job-1` 与 `job-1-extra` 的 `result_instance` | 如错误 Result 进入有权 Delivered Report，Collect 的本地 Job 实例判断可错接 | 当前受控生产链未证可越过 Delivered Report 保护 |
+| NEW-021 | 多 Ref 真实 Expected 完全覆盖 Invocation，但 `observations_by_scope` 多一个未知 Scope | Extra Scope 从未送入 `reconcile_expected_results`，不影响已生成 Receipt 与 Exit | 当前 Invocation 的实际失败若被错标 Scope，可能被 Final 静默丢弃 | 区分外来无关数据与真正已分发的受检 Job |
+
 
 
 ### 0.4 发现依赖的裁决顺序（**不是立即修复顺序**）
@@ -116,6 +122,10 @@
 | **NEW-015** | 待合同裁决 | **既有测试证实 matched 与重复 Result 并存** | `main@fc0df2a`；#66-C / Hook Exit | 相同不可变 Result ID 在两个 Job Observation 出现时，Receipt `duplicate` 记账却不计入 `unreconciled`；可能保持 `matched` 并由 Hook Exit 放行 | 未修复；须查重复计算复用是否受信且合法 |
 | **NEW-016** | P2 候选 | **源码路径可达，待真实 API 对照** | `main@fc0df2a`；#66-C / Hook | 未路由的额外 Job Observation 若不含 Native Result，`_unexpected_observations()` 不生成记录；失败但零 Native 输出的 Job 可能不影响 `all_observations_reconciled` | 未修复；需独立失败 Report/Job Receipt 的正反例 |
 | **NEW-017** | P2 候选 | **源码确认同身份候选顺序敏感，待 API 复现** | `main@fc0df2a`；#63 T2 | 多个合法 `historical_candidates` 具有相同历史 Scope/Expected Ref 但不同 Result 时，`admitted` 排序只有两项相同键，稳定排序按调用方原始顺序选出不同见证 | 未修复；需确认候选唯一性要求与历史身份归属 |
+| **NEW-018** | P1 候选 | **源码确定同 Job 覆盖行为，待调度 API 复现** | `main@fc0df2a`；#66 Hook Dispatch | `record_job` 不拒绝重复 `job_ref`，第二次直接覆盖前次 Eligibility/Production Ref/Delivery 状态 | 未修复；查合法 Retry 与唯一 Job 身份 |
+| **NEW-019** | P1 候选 | **源码确定事件/Scope 签发缺少来源对账，现有测试提供行为例证** | `main@fc0df2a`；#66 Hook Producer/#63 T1-a | `issue_job_receipt` 从调用方接收 Event/Scope/Expected Set，仅做形状/前缀检查便写 `upstream_verified`，未与本 Invocation 实际 Event/Expected 对照 | 未修复；查原始 Issuer Authority 是否已独立阻断 |
+| **NEW-020** | P2 候选 | **字符串前缀碰撞，真实 Runner 可达性待核对** | `main@fc0df2a`；#52 Native/#66 Hook Collect | `_require_attempt_bound_natives` 用 `startswith` 匹配实例，`job-1-extra` 文字会满足 `job-1` 的前缀 | 未修复；实际 Deliver/Production Ref 另有保护 |
+| **NEW-021** | P1 候选 | **源码确定多余 Scoped 输入未进入计算，待多 Ref API 差异反例** | `main@fc0df2a`；#66 Hook/#66-C | `finalize_invocation` 不拒绝输入字典的未知 Scope key，额外 Observation 直接被忽略，Exit 仅依赖 Expected Scope Receipts | 未修复；先确认额外数据属于本 Invocation |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -251,6 +261,28 @@
 - **最小反例**：同一历史 Scope/Expected Ref，构造两个不同 Result/Report 的有效、等价、权威接受且都 `admitted` 的 Candidate，仅交换输入顺序；预期当前代码选择不同 `result_ids` 而 `status` 同为 admitted。需要原生 T2 API 实测，并确认上游 Historical Candidate Provider 是否保证这两项身份绝对唯一；若上游已证明唯一，则这项应降级为边界前置约束而非运行时 BUG。
 - **影响**：证据身份/Provenance 不稳定可能扰动缓存键和审计确定性；它和 NEW-006 的 Adjudication 排序同属“不充分的裁决全序”，但不是同一个消费者或策略规则。
 
+### NEW-018 — 重复 Job 激活覆盖先前生产事实
+
+- **位置**：[`RunBinding.record_job`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L129-L177)。验证名称、资格、Mapping 后，无条件 `self.jobs[job_ref]=entry`；若为 eligible，`production_ref` 含新的随机 nonce。没有重复 Job 身份拒绝或状态沿革。
+- **触发时序**：激活 Job → `execute_activated_job` 记录 `delivered_report_ref` → 同 Job 再激活 → 前次 Delivery/Production Ref 从 Job Map 消失。改变 Eligibility 还可能改变后续 Routing 的归属和资格。
+- **影响/不确定**：已证原地覆盖，未证最终 Hook 错误放行。检查真正 Dispatch 是否可能重复激活同 Attempt 的相同 Job；合法 Retry 应按现有 Run/Attempt 身份语义判定，不自行新增调度框架。
+
+### NEW-019 — Job Receipt 的 Event/Expected Scope 未锚定真实 Invocation
+
+- **位置**：[`issue_job_receipt`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L812-L890)。Report 已 Collected/Attempt 已验证之后，调用方传入的 `event_ref` 仅检查为 dict，`scope_id/expected_set_ref` 只检查 `sha256:` 前缀，未与 `run_binding.binding.event` 或实际 Expected 相等校验；Receipt 仍写 `verification_status=upstream_verified`。
+- **已有测试例证**：[`test_precommit_execute_requires_captured_index_source`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py#L927-L947) 以构造的 Event Ref、任意示例 Scope/Expected Digest 签发 Receipt，断言上游验证标志成立。
+- **依赖关系**：#66-C `_attribution_problem` 会核对 Receipt **声明**与当前 Expected，但不能单凭该检查证明 Receipt 的声明与真实 Invocation 同源。#63 外部 Issuer Authority 可能补足来源认证。下轮应以“Invocation A 的真实执行结果被赋予 B Scope”做组合反例，不直接宣称生产越权。
+
+### NEW-020 — Native Result Attempt 实例匹配缺少 Job 分隔边界
+
+- **位置**：[`_require_attempt_bound_natives`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L604-L617) 使用 `instance.startswith(expected_prefix)`，其中 `expected_prefix=run_ref/attempt_ref/job_ref`；#52 [`_native_results`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L3680-L3805) 的正确结果再接 `:origin:index:check:access_id`。
+- **条件反例**：`job_ref=job-1` 的校验会接受文本 `run/123/attempt/1/job-1-extra:host:0:...` 的错误实例。实际 `collect_job_report` 还需要 `delivered_report_ref`、`production_ref` 和 Report Digest，与本地字符串判断不同；应复核有权 Runner 是否真的可能提供该值。当前仅认定边界语法缺陷。
+
+### NEW-021 — 多 Ref Final Reconciliation 静默丢弃未知 Scoped 数据
+
+- **位置**：[`finalize_invocation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1022-L1101) 先验证 Expected 覆盖 Invocation，但只循环 `_iter_scopes(expected)` 的 key，从三个 `*_by_scope` 映射中取对应条目；额外未知 key 从未检测或进入 Reconciliation，`hook_exit_code` 只检查已产生 Receipts。
+- **差异反例**：复用 [multi-ref Final 正例](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_hook_coordinator.py#L1186-L1336) 的两个合法 Scope/成功 Job，添加 `observations_by_scope[unknown]=[来自本 Invocation 的 Failed Job Observation]`，观察 `exit_code`/Receipt 是否完全不变。要进一步证明真实故障，应确认该额外 Job 的激活、Assignment 与上游 Scoped key 来源，不能把故意提供的无关数据当真实当前失败。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -271,7 +303,7 @@
 | C 逐边证明层次 | 13 条受控交接合同有直接证据，5 条已知缺口，68 条未调查 | 按受影响的允许性出口核对直接来源、交接、身份、时间和失败路径 | 继续 |
 | D 独立三视角 | 82 个定向 API 案例，77 符合预期、5 个反例归并 D-F01/F02 | 新发现 NEW-001/HYP-001 的差异反例；扩大真实边/实际消费路径；别把 82 当穷尽 | 继续 |
 | Runtime / Native / Server | 本次只读 GitHub Run/Check/Artifact 与 G3 可见性；无生产授权 PASS 证据 | 实际 Publisher、Release、受信 Issuer 与完整 Required Gate 的真实边界 | 继续 |
-| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-017/HYP-001～HYP-003 待复核 | 本轮新发现 T1-a 跨 Report 失败隔离、#66-C 重复 Result/无 Native 额外 Observation、T2 历史候选选择顺序。须以真实 Producer/Attempt/合同确认风险，再覆盖未调查边，不宣称审计完成 | 继续 |
+| 跨模块整体根因 | 2 个已复现根因 + NEW-001～NEW-021/HYP-001～HYP-003 待复核 | 新增 Hook Job 重复激活覆盖、Receipt 实际 Event/Expected Scope 缺少生产者锚定、Native Attempt 字符串前缀碰撞、多 Ref 未知 Scope 静默忽略。均需基于真实 Producer/Dispatch 的组合反例确诊；继续审阅其他授权边，不宣称所有 BUG 已找到 | 继续 |
 
 **进入集中修改的条件**：本轮已发现的授权关键出口/入边及其待调查项有可核对的结算；每个根因有受影响全部消费者的枚举、正反例、证据级别和接口边界；彼此冲突的方案已统一裁决。对于仍无法访问的真实服务端/外部来源，记录阻断与权限事实，不虚构“零未知”；也不要求为每次增量修改重新跑无关全仓测试。
 
