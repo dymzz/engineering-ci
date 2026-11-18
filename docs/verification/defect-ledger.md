@@ -557,5 +557,27 @@
 D-F02 的具体缺口现已追到 Gate Kind/Phase、Admission Ref、受信 Witness 来源、独立失败/冲突和历史复用五类必须分别保存的事实。D-G01 则进一步表明 **#66-B2 即使生产 Phase 声明，R1 目前仍没有受信 Phase Proof 的消费成功路径**；二者都会妨碍真实 G2/R4 与已验收合同的正确连接。与之相比，Host/Dagger 重复测试和 Index 读错内容这两条泛化猜测已经有原始源码反证；继续在同样前提上要求重构不会增加工程收益。
 
 
+### C.6 有权 Profile/Phase/Obligations 的生产边界（2026-11-18）
+
+本轮在当前 `main@fc0df2a` 上对照 [Issue #66-B2](https://github.com/dymzz/engineering-ci/issues/66)、[Issue #61-R1](https://github.com/dymzz/engineering-ci/issues/61)、Source/Selection、R1 源码及阶段/批准来源测试。结论将局部 Phase 适用性、Profile 内容一致性、独立批准认证、完整治理 Universe 和 R1 阶段消费分开记账；不增加 NEW 编号。
+
+| 证明对象 | 已读的原始源码及测试 | 裁决与影响 |
+| --- | --- | --- |
+| **已有 Phase 过滤** | [`_obligation_matches_scope`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L773-L794) 已按 `phases` 列表过滤当前 Phase；[`_parse_profile_obligations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L839-L938) 将当前 Profile Phase 应用于 Check/Non-Check/Advisory；[阶段正反测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_expected_checks.py#L2375-L2474) 验证 pre_publish 与 post_publish 的不同投影 | **Issue #66-B2/#61 当前“仅处理 target_refs/actions”的现状描述过期**。已有 Phase 规则过滤不等于独立有权 Phase 求值；真正缺口是源认证、治理域闭包与消费证明，而不是再实现一套列表筛选器 |
+| **Profile 局部一致性** | [`build_effective_profile`/`validate_effective_profile`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L264-L420) 计算 Profile/Approval Digest；[`_verify_profile_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L687-L762) 核对 Profile 的标志、Selection Config Policy 和 Governed Rule refs；[原测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_expected_checks.py#L1382-L1505) 在本地 Config 写入与 Profile 相同的 `approval_digest` 后获得 `authority_status=verified` 与 `status=complete` | **已证仓库内 Profile/Rule/Config 的内容一致性**；该测试同时构造 Profile 与配置，并没有独立验证组织/项目实际批准者身份。若消费者将此 `verified` 单独理解为签名批准，就会越过当前证据范围；真实受信来源是否另有保护应通过实际部署/Issuer 核对 |
+| **Approval 摘要的 Phase 覆盖** | [`_approval_digest`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L172-L199) 的摘要输入包括 Action/Target/Required/Domain，但**不包含当前 Phase**；[`build_effective_profile`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L264-L329) 将 Phase 写进 `approval_binding.target_scope`，完整 [`profile_digest`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L200-L226) 则包含 Phase；[`_verify_profile_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L696-L710) 另外用 Config Policy Phase 比较 | 相同授权义务定义、不同当前 Phase 的两个 Profile 可共享 `approval_digest`，但完整 Profile SHA 不同。若批准范围只凭 Approval Digest 判断，无法区别 Phase；若独立受保护 Policy Phase 或完整签发范围也被验证，则可提供额外保障。**跨 Phase 错误放行尚未证明**，在 D-G01 记录身份绑定边界 |
+| **完整 Obligations Universe** | [R1 `_validate_universe`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L791-L833) 检查来件的结构、条目唯一性、自洽哈希；[`_normalize_authority`/`_normalize_governance`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L457-L547) 规范化已声明 Status/批准时刻/委托域；[`assess_required_obligations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2449-L2530) 接收调用者提供的 Universe | R1 当前是外部有权 Universe 消费者，不承担真实批准/签发。已查看的 Source、R1/R4/G2 入口与现有四个 Actions Workflow 没有展现组织/项目完整治理域的实际签发闭环；不因此推断所有外部项目都不存在合法 Producer |
+| **R1 受信 Phase 消费** | [`_check_domain_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1565-L1598) 对任意带 Phase 的 Expected Scope 都写入 `expected_phase_unverified` 或 `expected_phase_proof_unverified`；[现有测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment.py#L1562-L1628) 即使 Check 和 Universe 局部证据成立也保持阶段 Gate 阻断 | Phase 来源未认证时的当前阻断是有意行为；但**真实受信 Phase Producer 即使补充数据，R1 仍缺少合法接纳成功路径**。属于 D-G01 生产能力缺口，不能误报为当前生产权限绕过 |
+
+#### C.6.1 根因与已有证据的关系
+
+- **D-G01**：已有 Phase 过滤、Profile 的内容摘要及 Config Policy 一致性验证，不等于有权 Profile 的签发者认证、委托域完整枚举与 R1 对阶段证明的合法接纳；`approval_digest` 与 Phase/完整 Profile 身份的关系是具体调查边界。
+- **D-F02**：T1/T2 Native Admission 与 R1 Gate Projection 仍有 Kind/Phase、Admission Ref、成功 Witness、真实 FAIL/冲突和历史结果身份的交接差异。独立 Phase 来源补齐不会自动修复该接口断裂。
+- **D-G03/D-G04**：真实 GitHub 最终 Check 与 Release 发布入口的消费证据继续单独验证；源端自洽摘要、Fixture PASS 或 Scope 字段变化不能代替服务端/发布时授权。
+- **当前可复用的正例**：已交付的按 Phase 区分 Check/Non-Check 投影、配置/来源摘要校验与受控负例均保留。对 Issue 现状文字的纠正不会推翻这些已核验结果，也不预先限制必要的架构调整。
+
+**本轮证据等级**：Phase 过滤、Approval Digest 不含 Phase、Repo Config 通过局部一致性使 Expected authority_status=verified，以及 R1 带 Phase 的确定性阻断，都有源码或已有测试支持；真实外部 Issuer、跨域审批签发、跨 Phase 生产放行未获新运行证据。
+
+
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
 
