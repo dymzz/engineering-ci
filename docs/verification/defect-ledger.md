@@ -579,5 +579,28 @@ D-F02 的具体缺口现已追到 Gate Kind/Phase、Admission Ref、受信 Witne
 **本轮证据等级**：Phase 过滤、Approval Digest 不含 Phase、Repo Config 通过局部一致性使 Expected authority_status=verified，以及 R1 带 Phase 的确定性阻断，都有源码或已有测试支持；真实外部 Issuer、跨域审批签发、跨 Phase 生产放行未获新运行证据。
 
 
+### C.7 治理批准来源是否真正独立：从代码标志追踪到可信根（2026-11-18）
+
+本轮针对 **D-G01 的源认证部分**，对照 [#66-B2](https://github.com/dymzz/engineering-ci/issues/66)、[#61-R1/G2](https://github.com/dymzz/engineering-ci/issues/61) 和当前 `main@fc0df2a`。调查目标是判断哪里证明**对象内容相互一致**、哪里证明**组织/项目确实批准**、哪里证明**当前授权范围没有缺失**。沿用既有 D-G01，不新增同义的 NEW 编号。
+
+| 边界 | 原始代码或既有测试事实 | 结论与有效反证 |
+| --- | --- | --- |
+| **批准来源标识** | [`expected_checks.AUTHORITATIVE_APPROVAL_SOURCES`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L33-L37) 是允许字符串集合 `org-governance/project-governance/governance-signed`；[`validate_effective_profile`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L512-L551) 验证字符串属于集合、`authority_verified` 为布尔、摘要自洽 | 当前 Schema 对**批准来源名称**有枚举约束，对**批准者身份/权限**没有在此函数内进行外部认证。这是结构准入和真实 Issuer 认证两个不同层次 |
+| **本地 Policy 匹配产生 Authority Verified** | [`_verify_profile_authority`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L687-L761) 返回条件为 `profile.authority_verified is True`、同一 Selection Config Policy 的 ProfileRef/Revision/ApprovalSource/ApprovalDigest/可选 Phase 等一致，及适用的 Governed Rule refs；[`test_p1_1_authority_provenance_default_unverified_and_config_policy`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_expected_checks.py#L1382-L1505) 把测试生成的 `approval_digest` 写入临时仓库 `ci-selection.toml`，即得到 `authority_status=verified`、Expected `status=complete` | **“配置/规则一致”是可复现正例**，但此测试没有独立组织批准者签发。若 Config 是受保护、经批准且与受检 PR 分离的权威文件，可成为更大来源认证链的一部分；若 Config 与 Profile 同时受同一不受信候选控制，则二者相等并不足以证明外部批准 |
+| **配置文件所属 Source** | [`selection._policy_file_scope`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L624-L638) 把位于仓库根目录内的 Config 标注为 `repo_target_tree`，外部文件标注 `event_external`；[`selection.config_identity`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L684-L736) 绑定文件字节与规范化内容 | 文件归属 Target Tree 和内容 Digest 能证明“读的是哪份文件”，不自动证明“该文件是被组织批准的权威基线”。真实执行环境可以用受保护 Ref/授权 Source 解决，但当前所读代码没有在上述局部接口展示这层验证 |
+| **完整 Profile 摘要的来源** | [`_approval_digest`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L172-L199) 是可由持有人重算的规范化 SHA 摘要；[`profile_digest`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L200-L226) 把 Profile 的 Phase 和 `approval_binding` 也绑定进整体内容；[`build_effective_profile`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/expected_checks.py#L264-L341) 可由普通调用方构造载荷 | 这些摘要证明相应声明**内容身份**，不证明自称 `governance-signed` 的来源获得批准。上一节 C.6 已确认 Approval Digest 不直接包含当前 Phase；另有 Policy Phase/完整 Profile SHA 保护，不能只凭单个摘要遗漏就断言跨 Phase 放行 |
+| **R1 对完整治理 Universe 的认可** | [`required_assessment._validate_universe`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L791-L833) 校验结构、重复实例与由传入内容重算的 `universe_ref`；[`_normalize_authority` / `_normalize_governance`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L457-L547) 接受并规范化来件中标为 `verified/closed` 的 Status、证明引用和时间；[`_authority_fact`/`_universe_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1540-L1631) 检查状态、时间与闭包标志 | **R1 在这里消费有权事实的声明，不独立验证组织签发者或从外部枚举受管域**。但 [`_cross_check_universe`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L936-L1170) 已把 Universe 与现有 EffectiveProfile、当前 Action/Target/Phase、Expected Check 及 Non-Check 逐项交叉核对，不能反过来声称 R1 完全不检查义务内容 |
+| **当前真实出口** | [当前 CI Workflow](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/ci.yml#L1-L100) 接受 PR 事件，检出代码后运行原生 Dagger Checks，但没有调用 Profile/Universe/R1 最终授权；[Release Workflow](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml) 继续采用已有 Manifest/Artifact 原生保护，R4 未接线 | 目前没有生产 G2/R4 路径把上述自洽声明直接变成有权最终 PASS 的证据。事实结论是 **D-G01 签发与认证闭包未交付，D-G03/D-G04 消费入口也尚未接通**，而不是已实证 PR 通过伪造审批发布了 Required 成功 |
+
+#### C.7.1 对原任务要求的修正
+
+1. **有效的已交付层**：Profile/Config/规则身份、规范化摘要、局部 Phase 适用性和 Expected/Universe 的跨对象成员关系均有真实代码与测试；这些是后续受信来源交接可复用的契约。
+2. **未闭合的源认证层**：实际受信治理根、批准权限、受控 Profile/委托域/排除事实的完整取得、版本/有效性及 Evaluation Context×Action×Target×Phase×Ref 的真实签发与失效依据，需要对应的来源证据。对这层的身份约束应从实际审批/受保护 Workflow/受信配置等现存能力比较，而不是预设独立 Policy 微服务。
+3. **消费层**：#66-B2 的闭合治理源接入、#63 的证据接纳、R1 的 Phase Proof 成功验证及 G2/R4 真实受控出口是不同接口。局部 `authority_status=verified` 不能替代整个门禁已部署的事实；现有 Phase 阻断仍维持真实未认证时的安全边界。
+4. **差异验证对象**：在同一有效 Profile 下分别考察已批准的受保护配置与受检 PR 自行改写的配置，追踪实际使用的基线 SHA、批准主体与当前评估逻辑；对照合法的单项目无委托域、存在委托域及已失效/撤销域。已有字段/Unit Test 可复用，本轮尚未取得真实生产 Issuer 或完成新增组合 API 正反执行。
+
+**审计裁决**：本批证据更准确地支持一个**上游共同缺口**：Profile/规则/Universe 的内容自洽验证已具备，独立的治理批准与域闭包来源证明未在当前已读真实生产链中出现。此缺口由 D-G01 追踪；NEW-032 的批准时间语义、D-F02 的 Gate Projection 以及 D-G03/D-G04 的实际出口仍分别存在，不因“缺签发者”再重复登记同义缺陷。
+
+
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
 
