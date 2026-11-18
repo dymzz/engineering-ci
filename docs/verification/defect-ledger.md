@@ -33,6 +33,7 @@
 | 2026-11-18：PR #129 继续审阅（本批四项） | R1 非 Check Verifier 来源认证、Universe Evaluation 与 Assessment 时钟绑定、Profile ApprovedAt 真实性、G2 实际 Evaluator Revision 身份 | 新增 **NEW-030～NEW-033**。核对 #61 设计原文与实际源码/既有测试；四项分别落在不同 Producer→Consumer 关系，**代码条件确认但尚未运行新增原生 API 差异/生产认证测试** |
 | 2026-11-18：PR #129 Release 原生证据审阅 | 对照 Manifest Dagger Policy Check / Tool Version 来源、首次发布过期 Artifact、缺失 Digest 的 Provider 条件及 #61 Release 合同 | NEW-034～NEW-037 为源码差异与合同待确认点；已存在受信 Manifest Artifact 交接，重复验证必要性及异常可达性尚未证明 |
 | 2026-11-18：全仓 Hook/Lefthook 接线复核 | `main@fc0df2a` 文件树、Hook Coordinator/CLI、Reconciliation、Issue #66/PR #72 及既有模块正例 | **NEW-038**：Routing 默认把 Lefthook 2.2.2/固定配置标签写为调度来源，但无本次 Lefthook/合成配置真实证据。仅证结构性声明差异；Receipt `trusted=False`，未证生产权限绕过。实际 Hook 配置/安装缺口已在 #66 登记，不重复记作新 BUG。 |
+| 2026-11-18：Host/Dagger 依赖执行与缓存复审 | Host 前置命令 Runner 参数适配、Dagger 两路径执行、Workflow Analysis 共享缓存/Lock、实际 Plan/测试 | 新增 **NEW-039**：前置原生命令 Runner 的内部 TypeError 会被当作签名不匹配后重新调用；源码条件确认，真实内置 Runner 生产发生率和后果未证。确认同次 PlanExecution 二选一执行分支，Actionlint 共享缓存已有锁，均不据此立重复建设 BUG。 |
 
 审计快照始终保留 commit。`#124@4a41b4e` 独立于 `main@fc0df2a`，不是可在同一生产执行中直接拼接的身份。
 
@@ -99,6 +100,7 @@
 | NEW-036 | 原 Manifest 在 t0 合格，首次发布前其 Actions Artifact 在 t1 过期 | 新建 Manifest 会拒绝过期项，但首次 publish_release 使用允许过期元数据的 published_evidence | 若发布时要求源 Artifact 仍可取，过期证据可能支持首次发布；合法历史复用另论 | 首次发行与历史复用对 Artifact 可获取性要求是否相同待明确。 |
 | NEW-037 | GitHub Artifact 元数据不提供 digest，但相同 Run/ID/名称均合法 | passed Manifest 接受 digest=None，Provider 仅在声明 Digest 时比较 | 无法仅凭当前 Manifest 完成字节 Digest 证明；API 可达性/当前义务未实测 | GitHub API 缺 Digest 的真实可达性及当期 Profile 对字节完整性的适用性待验证。 |
 | NEW-038 | 未执行 Lefthook 调度，但调用本地 `record_job` 与默认 `build_routing` | Routing 中写入固定 Lefthook 调度器身份与 `hook-job:1` 配置标签，`_normalize_routing` 只验证字段为字典并在 Receipt 中保留 | 若有消费者将此标签解释为实际调度、过滤或生效配置证明，可能发生来源错归属；当前没有全链受信消费证据 | 真实 Scheduler activation / effective merged config / Event 关联、下游受信规则待核实；NEW-024/025 涉及其他属性 |
+| NEW-039 | 指定具有合法二参/三参 Runner，当 Runner 开始执行副作用后抛出 `TypeError` | `_run_command()` 会在 `except TypeError` 里以三个位置参数重新调用同一个 Runner；真实错误上下文可能被覆盖，命令可能被第二次执行 | Pre-execution Command 的生成产物、远端副作用或 Report 准确性受影响；现有内置 `_run` 及真实 Host/Dagger 中是否可达此后置异常未证 | 需要区分签名不兼容与 Runner 内部异常；用带调用次数/副作用的受控二参/三参 Runner、实际 PREREQ Provider 验证 |
 
 ### 0.4 调查依赖（可并行，不是修改门槛）
 
@@ -169,6 +171,7 @@
 | **NEW-036** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | main@fc0df2a；Release Publishing | allow_expired=True 不区分历史已发布核验与首次 publish_release | 待裁决；依赖当前 Profile 发布时可取用合同 |
 | **NEW-037** | 待评估 | **源码行为已定位；合法合同与影响待裁决** | main@fc0df2a；Manifest/Publishing | Digest=None 可通过固定 Artifact 名称/ID/Run 的 Manifest 验证，Provider 不核对字节摘要 | 待裁决；真实 API 及字节义务待验证 |
 | **NEW-038** | 待评估 | **源码声明行为已确认；真实调度来源与消费者待核验** | `main@fc0df2a`；#66 Hook/Lefthook → #66-C Routing | 未调用 Lefthook 的模块级执行和对账中，`scheduler_ref` 自动写 Lefthook 2.2.2，`effective_config_ref` 自动写 `hook-job:1` | 原生来源/生产授权影响未证；与 NEW-024/025 关联 |
+| **NEW-039** | 待评估 | **源码级重调条件确认；原生 Runner 异常复现与生产可达性待验证** | `main@fc0df2a`；#86 Host Prerequisite / Dagger Module-local command | `_run_command` 把 Runner 内部抛出的 `TypeError` 当作参数签名失败，可能重复调用已开始执行的原生命令 | 没有提交原生复现、没有证明真实受保护发布/门禁错误 |
 
 ### D-F01 — Terminal/Phase 误清除未闭合 Domain
 
@@ -433,6 +436,13 @@
 - **实际链路边界**：main 文件树没有 `lefthook.yml`；Hook CLI 只有 Event 捕获、`verify-invocation`、`finalize`，没有完整 Hook 安装/调度入口；此交付缺口在 Issue #66 已有记录。#66-C Receipt 明确 `trusted=False/required=False`，因此当前并无 #63 Trusted 或 GitHub/Release 错误放行的证明。NEW-024 是 Attempt Qualification 自报，NEW-025 是本地退出码，两者与本项的 Scheduler/Config Provenance 各有不同证明对象。
 - **待裁决**：当前字段是否仅为测试/参考名称，或有真实消费者以此作为调度来源证明；实际 Lefthook 版本、合并配置、Job 激活、Event 关联和过滤结果由哪个受信入口提供。修订方案应依据真实原生调度能力、原始目标和受影响消费者判定，而非预设新增机制。
 
+### NEW-039 — 前置 Command 的 Runner 内部 TypeError 触发隐式再次执行
+
+- **源码行为**：[`execution._run_command`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L1212-L1250) 在传入 `runner` 时先调用 `runner(list(rendered),root)`，将**整个 Runner 调用过程**包在 `except TypeError` 中；任何从 Runner 内部传播的 `TypeError` 都被当成参数签名不兼容，再次调用 `runner(list(rendered),root,None)`。[`run_prerequisite_action`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L1475-L1606) 的 `type=command` 路径调用此接口，并可生产后续 `data/pre_execution_pass` 边的原生前置证据。对于本就接受两个参数、但执行过程中在不可逆操作后抛出 `TypeError` 的 Runner，第二次调用可能重复该操作，且原异常被第二次调用的输出或异常覆盖。
+- **可区分性复现**：提供接受 `argv,root,data=None` 的受控 Runner，第一次已记录副作用后抛 `TypeError`，第二次返回成功或另一个失败；观察调用次数、真实输出与 `run_prerequisite_action` 的 Result。再对照仅接受第三个必需参数的 Runner：其首次 TypeError 发生于函数绑定、未实际调用，三参回退应只有一次真实原生执行。当前仅固定源码和调用关系；本轮**未执行新增 Runner 注入/原生 Host 反例**。
+- **实际风险边界**：[Dagger `_execute_dag`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.dagger/src/engineering_ci_module/plan_execution.py#L865-L910) 的模块本地命令走 `run_prerequisite_action` 且常为 `runner=None`；此时使用直接 `subprocess.run`，不经过该双调用分支。Host API 显式支持 Runner 适配器（[既有测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_plan_contract.py#L675-L730)），但目前没有证据表明正式内置 Runner 在真实命令已经启动后会触发内部 TypeError。需要根据真实调用端与副作用性质评估严重性。
+- **工程判断**：根因是用异常类型猜测调用签名，未区分参数绑定失败和执行期错误。现有 Runner 可能具有二参或三参形式，修订时应以其真实公共契约和调用证据确定适配方式；不因这个局部异常分支推断整个 Dagger/Host DAG 重复建设。
+
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
 源自已合并 [D 阶段去重证据](authorization-closure/independent-review/findings.json) 的 `D-G01..D-G05`。这些都是**权威来源/真实交接/服务端事实尚未证明**，不是“已经证明实现错误”：
@@ -454,7 +464,7 @@
 | A/B 依赖图 | 93 节点、86 条边；两份快照共 254 个候选，24 条动态/外部边未解析 | 动态调用与真正受信消费者；这些数字不是全仓覆盖率 |
 | C 来源/覆盖 | 13 条受控交接合同、5 个已知缺口、68 条尚未调查 | 合同证明与生产证明的差异 |
 | D 独立案例 | 82 个受控 API 案例、77 例符合受控预期、5 例反例归为 D-F01/D-F02 | 受控 API 结论不能替代真实原生/部署链 |
-| 当前台账 | D-F01/D-F02；NEW-001～NEW-038；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的观察或疑点，并非 37 个已复现生产 BUG |
+| 当前台账 | D-F01/D-F02；NEW-001～NEW-039；HYP-001～HYP-003；D-G01～D-G05 | NEW 是分级中的观察或疑点，并非 37 个已复现生产 BUG |
 
 ### C.2 ECI 全仓调查覆盖
 
@@ -462,7 +472,7 @@
 | --- | --- | --- |
 | 原始需求、架构演变、Issue/PR Review | #125 与 #61/#63/#66 部分合同、历史切片链接 | 全仓需求与实现逐项对账、被错误收缩的需求、旧 Review 遮蔽的错误结论 |
 | Hook/Lefthook/本地调度 | NEW-015～025、NEW-038；现有 Hook Coordinator、CLI 与完整 main 文件树已查 | Lefthook 实际配置/安装/激活和合并配置身份、成熟调度器能力与现有 Coordinator 的职责、真实本地端到端验证 |
-| Dagger、DAG 与工程 CI | Release Dagger Policy、部分 #86 背景及 Job/Step 关联 | 完整 DAG/Check 真实执行、是否重复实现原生能力、任务失败传播和缓存/增量语义 |
+| Dagger、DAG 与工程 CI | Release Dagger Policy、#86 Host/Dagger 分支、NEW-039 Runner 异常边界及既有测试已对读 | 真实原生命令副作用后的异常传播、数据前置完整性、各入口真实执行/结果共享与缓存失效 |
 | Hygiene、Tach、选择器和工具依赖 | #66 Expected、部分 Native Check 的授权证据 | 真实文件/项目级调度、成熟工具职责、检查与配置的重复实现及实际 Coverage |
 | Source/Expected/Native/Admission | #52/#63/#66 相关发现与 D-F01/D-F02 | 实际 Producer 权威、全执行路径、动态调用与跨 Run 真实性 |
 | Tool Runtime、安全 Policy 与权限 | D-G05、NEW-024/030/033 的身份/来源疑点 | Tool Catalog/Binding/Admission 及实际部署权限隔离、重复实现和消费者闭包 |
@@ -477,6 +487,7 @@
 | --- | --- |
 | `selection.full=True` 是否错误遗漏所有 Hygiene Check | [`selection._non_test_check_scopes`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/selection.py#L2447-L2479) 确实对 Hygiene 传 `full=False`；但已有 [`test_full_selection_explicitly_marks_tests_only`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_selection.py#L223-L237) 明确把 full 定义为**测试全集**，Hygiene 保持真实增量适用。当前不存在足以认定漏跑的合同反例，暂不另编号；若实际面向用户的 CLI 承诺全工具全量执行，按该入口的独立证据重新评价。 |
 | `execution._execute_with_dependencies` 与 Dagger DAG 是否必然属于重复建设 | [Host `execution.py`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/execution.py#L4083-L4210) 有面向本地命令/Prerequisite 的轻量执行依赖消费；[Issue #86](https://github.com/dymzz/engineering-ci/issues/86) 说明 Dagger `plan_execution._execute_dag` 面向原生 Function/Container/File/Directory 及 Engine 缓存，Host-only 工作不当然应搬到 Dagger。两条路径职责有差异，**尚未发现仅凭两者共存即可证明的重复调度 BUG**；进一步调查实际 Check 是否在两个路径重复执行及共享 Result 是否真实生效。 |
+| Workflow Analysis 缓存字典共享是否导致并发 Actionlint 重复启动 | [`workflow_analysis.run_workflow_script_suite`](${base}src/engineering_ci/workflow_analysis.py#L1516-L1594) 的同键 Actionlint Runner 调用受同一个 `threading.Lock` 保护，且 Shellcheck 版本前置也受锁保护；[Dagger `_execute_dag`](${base}.dagger/src/engineering_ci_module/plan_execution.py#L624-L995) 的 `script_shared_cache` 共享恰好传入上述受控缓存。先前“因为共享 dict 所以缺原子性”的猜测被源码反证，现有具体路径不成立；不同命令键、Dagger 层原生缓存及真实跨 Source 场景仍分别按实际消费者判断。 |
 
 每个领域的“尚未系统调查”表示调查状态，既不是缺陷成立也不是缺陷不存在。发现新证据时原 ID/链接持续更新；实际修订的测试由变更范围与风险决定，有效既有证据继续使用。该覆盖表不规定实现方案、PR 数量、模块修改权限或统一修复顺序。
 
