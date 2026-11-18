@@ -171,16 +171,16 @@
 
 - **证据与输入**：[#125-D assessment](authorization-closure/independent-review/assessment.md)、[findings.json](authorization-closure/independent-review/findings.json)（`D-F01`）；原始案例 `terminal.compound_open_domain` 与 `terminal.compound_original_declared_domain`，详见 [cases.json](authorization-closure/independent-review/cases.json) 与保存的 `pr124-semantic-results.json.gz`。
 - **实际结果**：`selection.plan()` 真正导出 `status=unknown`、`effective_profile.domain_complete=False`、`definitions_status=requested_names_complete`，与合法 Terminal/Phase 见证同时出现时，Binder 返回 `bound/authorized=True` 且 `reasons=[]`。合法闭域对照 `terminal.compound_closed_domain` 也应允许 `bound`。
-- **定位**：[Producer `expected_checks._derive_v2_from_profile`](https://github.com/dymzz/engineering-ci/blob/adeeb4b15e47072c5091a31c048253f60471ff1b/src/engineering_ci/expected_checks.py#L1770)、[#124 `terminal_expected._terminal_applicability_is_sole_unknown`](https://github.com/dymzz/engineering-ci/blob/4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5/src/engineering_ci/terminal_expected.py#L261) 与 `_partial_is_phase_only`。现有 Producer 已保存部分并存事实，**尚未证实必须重写 B2 Schema**。
+- **定位**：[Producer `expected_checks._derive_v2_from_profile`](https://github.com/dymzz/engineering-ci/blob/adeeb4b15e47072c5091a31c048253f60471ff1b/src/engineering_ci/expected_checks.py#L1770)、[#124 `terminal_expected._terminal_applicability_is_sole_unknown`](https://github.com/dymzz/engineering-ci/blob/4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5/src/engineering_ci/terminal_expected.py#L261) 与 `_partial_is_phase_only`。现有 Producer 已保存部分并存事实，B2 Schema 是否需要调整尚无充分证据。
 - **影响**：已证明仅候选 Binder 的错误授权；共享上游 Expected v2 其他消费者需要查受影响子图，不能直接外推“生产 Gate 已放行”。外部 Issuer/Completed Run/Phase 回调仍为受控替身。
-- **后续发现要求**：枚举所有独立缺口（governance/check-domain、definition/rule、applicability、Phase、authority、source、time、Ref）；按合法单域、空域、Phase-only、复合缺口构造反例，核对 #66-B2 Validator 和每个实际消费者，**先决定原始证明对象是否充分，后决定 I01 的改动位置**。
+- **未结证据**：governance/check-domain、definition/rule、applicability、Phase、authority、source、time、Ref 的并存事实，以及合法单域、空域、Phase-only、复合缺口案例与各真实消费者。I01 的改动位置和合同范围仍依赖这组证据。
 
 ### D-F02 — T1/T2 Producer → R1 接线合同断裂
 
 - **证据与输入**：[D-F02](authorization-closure/independent-review/findings.json)；`interop.t1_pass_to_r1`、`interop.t1_fail_to_r1`、`interop.t2_pass_to_r1`。真实 T1/T2 模块的 API 被调用，原生 Result 是受控模型，Issuer/verifier 回调为替身。
 - **实际结果**：T1-a admitted → R1 `admission_phase_invalid`；T2 admitted → R1 `admission_kind_invalid`；认证失败的 T1 也卡在输入形状，**未观察到 Native FAIL 被错误转成 PASS**。
 - **定位**：[#63 `admission.admit_evidence`](https://github.com/dymzz/engineering-ci/blob/adeeb4b15e47072c5091a31c048253f60471ff1b/src/engineering_ci/admission.py#L779)、`admit_historical_reuse` 与 [#61 `_validate_admission`](https://github.com/dymzz/engineering-ci/blob/adeeb4b15e47072c5091a31c048253f60471ff1b/src/engineering_ci/required_assessment.py#L1341) 的 Gate 投影不同。
-- **后续发现要求**：在改 R1 或 #63 前确认原生产对象、结构 Receipt、受信 Gate Projection、Non-Check、历史身份、失败/冲突/Remaining Work 在所有消费者上的对应关系。不得只修改 kind/phase 或凭 `admitted=True` 自造可信字段；须证明合法 T2 复用无需当前 Native 执行。
+- **待核实接口关系**：R1/#63 的原生产对象、结构 Receipt、受信 Gate Projection、Non-Check、历史身份、失败/冲突/Remaining Work 对应关系。当前已复现 kind/phase 形状不兼容；其他类型化身份、来源认证和 T2 合法复用仍属于必要的合同区别。
 
 ### NEW-001 — R5 对 post-only 合同样本的漏检（新发现，待 API 复现）
 
@@ -193,7 +193,7 @@
 
 - [`required_assessment._applicable_to_matches`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1188) 使用 `set((universe["evaluation"].get("candidate") or {}).values())` 比对单个 `applicable_to.candidate_digest`；[`_cross_check_universe`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L936) 也对 Obligation candidate digest 做值集合检查。候选类型允许 `commit/tree/artifact_digest/source_digest`。
 - **未知**：`candidate_digest` 合同是否有意表示“任一已授权候选身份”，还是应该绑定明确的 digest 类型、对象与作用域。现有 version/tag 错配用例不覆盖 artifact/source 摘要碰巧相等或错类型身份。
-- **后续**：先读 #61 身份合同，再以两类不同标识但字符串相同的输入运行差异反例；**没有合同证明与实际错误允许性输出前，不标为确认 BUG**。
+- **待核对证据**：#61 身份合同、两类不同标识但字符串相同的差异输入、实际结果和适用身份语义。当前为待裁决疑点，尚未确认违反合同。
 
 ### NEW-002 — Failure 发行时间与 Assessment 时间切片脱节（待 API / 合同复核）
 
@@ -204,19 +204,19 @@
 ### HYP-002 — `all_observations_reconciled` 收到但未参与 Required 消费（待裁决）
 
 - **实际源码**：[`_validate_admission`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1431-L1437) 接收且核查布尔类型；R1 其他位置没有读取该字段。相应 Receipt 也记录 `all_observations_reconciled`，但本阶段四事实只基于实际列举的 Required/Scope/证据。
-- **待裁决**：如果它涵盖尚未列举的**当前必需**观察，R1 的 `passed` 可能缺全局执行闭包；如果只是额外不适用的运行数据，直接阻断会误拒合法范围。需从 #66-C Receipt、#63 Admission 的原始定义出发，以“当前 Required 完全满足但存在非 Required 未关联 Observation”与“确有 Required 未对账 Observation”两组对照区分，不能凭一个布尔字段自行扩张门禁要求。
+- **待裁决**：如果它涵盖尚未列举的**当前必需**观察，R1 的 `passed` 可能缺全局执行闭包；如果只是额外不适用的运行数据，直接阻断会误拒合法范围。#66-C Receipt、#63 Admission 的原始定义及“非 Required 未关联 Observation”与“当前 Required 未对账 Observation”两组对照可区分此语义。
 
 ### NEW-003 — R4 Manifest 消费 API 只检查身份、不检查授权位
 
 - **固定代码**：[`require_reconciliation_manifest()`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L242-L250) 先调用 `validate_release_reconciliation(envelope)`，再计算 `bind_manifest_identity` 并比较 `manifest_identity`，**没有 `release_authorized is True` 或 `status/mode` 检查**。
 - **已有正证**：[`test_validation_mode_is_verified_but_does_not_authorize_publication`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_release.py#L207-L222) 证明一个合法 R4 Envelope 可 `status=verified` 且 `release_authorized=False`；现有 `require_reconciliation_manifest` 测试只用真正 `authorized` 的例子，未覆盖这个差异。
-- **候选差异 API 反例**：对同一合法验证阶段 Manifest，调用 `reconcile(...,publish_context.mode=validation)` 得 `release_authorized=False`，再传入 `require_reconciliation_manifest`；对照 true 的 Publication Envelope。**身份匹配与可发布权限是两个不同谓词**。必须先枚举实际调用方是否把本接口作为发布保护，否则仅能确认公开 API 的语义模糊，不能报告生产权限被越过。
+- **候选差异 API 反例**：对同一合法验证阶段 Manifest，调用 `reconcile(...,publish_context.mode=validation)` 得 `release_authorized=False`，再传入 `require_reconciliation_manifest`；对照 true 的 Publication Envelope。**身份匹配与可发布权限是两个不同谓词**。实际调用方是否把本接口用作发布保护仍待核查；当前已知的是公开 API 的身份检查与发布授权并不等价，生产权限绕过未证。
 
 ### NEW-004 — Check 绑定可指向固定未启用的 Manifest Check
 
 - **固定代码**：[`release.manifest`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L290-L300) 强制两个 optional 记录 `required=False,status=not_enabled`；[`manifest.validate`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L393-L410) 允许该固定形态。[`_normalize_bindings`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L251-L271) 不限制 key 到 Required；[`reconcile_release_assessment` 绑定循环](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L772-L815) 只要求关联 R1 Row 的 `status` 属于 `satisfied/not_applicable/not_yet_due`，**不使用已读出的 `manifest_status` 进行判断**。
 - **可触发合同路径**：已有 Passed R1 + v1 Passed Manifest + `check_bindings=[{manifest_check_key:"core_coverage_threshold",expected_check_ref:<satisfied-check>}]`，在受控 authority 接受下不会触发该绑定的 `not_enabled` 失败。现有唯一绑定测试只验证 **R1 blocked** 被阻断，不能证明实际 Manifest Check 对账。
-- **裁决边界**：若 `check_bindings` 本意是“此 Check 的真正原生/Manifest 执行关联”，当前关联不成立；若只是对外的描述性映射，则需明确 **不构成执行证明**，并检查任何下游是否把它当授权事实。不能将固定 optional 项错误改为 Required 以掩盖映射错误。
+- **合同区分**：如果 `check_bindings` 表示原生/Manifest 执行关联，当前映射缺少对应执行证明；如果只是描述性关联，需以真实消费端判断其是否承担授权语义。固定 optional Check 与 Profile Required 的适用性是另一独立属性。
 
 ### NEW-005 — R4 没有验证 Assessment 与 Release 的因果顺序
 
@@ -228,19 +228,19 @@
 
 - **固定代码**：[`_validate_admission`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1397-L1406) 将所有 Adjudication 按 `expected_check_ref` 原顺序收集，不拒绝对同一 Result 的多重重叠决策；[`_effective_adjudication`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1779-L1796) 找到第一个时间有效、未撤销、非 `unresolved` 的记录即返回；[`_in_scope_failures`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1798-L1845) 用该记录的 Disposition/Authority/Policy 解除 Failure。
 - **可重复反例**：同一 `scope_id + expected_check_ref + result_id` 的两条有效 Adjudication，使用不同的 `authority_ref/policy_ref/disposition/decided_at`，调换数组顺序（重新计算合法 Admission Digest），比较 R1 `authenticated_failures[].adjudication` 的归属。当前测试覆盖“单裁决解决双 Failure”“过期/撤销裁决阻断”，但未覆盖**同一 Failure 的重叠双裁决**。
-- **风险边界**：先确认原 #63 是否只允许唯一有效决策、允许后决覆盖前决、还是允许多签并存；如果 #63 源端已禁止重叠，需要记录具体受信前置依据。R1 静态代码本身会产生**来源顺序敏感**，但两条可解除裁决之间未必造成 PASS/FAIL 变化；不得把这条当作已证明的错误发布。
+- **合同与反证**：#63 是否要求唯一有效决策、后决覆盖前决或允许多签并存尚待确认；源端是否已提供唯一性证明也不明。R1 来源选择的顺序敏感是代码事实，两项有效解除裁决并存并不必然改变 PASS/FAIL，真实发布影响未证。
 
 ### NEW-007 — R4 接受零 Check Binding 时的完整性合同待确定
 
 - **静态事实**：[`_normalize_bindings(None)`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L251-L270) 返回空列表；[`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L750-L820) 只循环显式 Binding，没有把 Assessment 全部 Required Check 与 Manifest 所需执行 Check 做**完整双向配对**。已有 [正例](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_release.py#L179-L244) 使用空绑定也可在受控权限下得到 `release_authorized=True`。
-- **独立性**：NEW-004 是绑定了**错误的未启用 Check**；本项是**不提供任何映射仍可能获得授权**。两项可能同属 R4 Check mapping 完整性根因，待全链证据后去重；不能将 R1 和 Manifest 各自 PASS 自动当作“是同一组 Checks”的证据。
+- **独立性**：NEW-004 是绑定了未启用的 Check；本项是空映射情况下也可获得 R4 授权。两项可能属于相同的 Check 映射完整性问题，但当前 R1 PASS 与 Manifest PASS 只证明各自集合满足，并未建立二者实际 Check 实例一一对应。
 - **待裁决合同**：若 R4 规定两个系统只要求各自独立全量通过，零绑定可能是合法设计；若声称 Manifest 各 Check 证明了当前 Profile 的 Required，必须有有权映射/完整性证据。当前只证明空绑定允许授权，不证明生产绕过。
 
 ### NEW-008 — R1 Adjudication Disposition 不区分被消除的失败类型
 
 - **固定代码**：[`_in_scope_failures`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1798-L1845) 对 `failure_kind=native_failure/conflict` 都只要求某个非 `unresolved` 的有效裁决，**没有检查 `failure_superseded` 是否用于 Native Failure、`conflict_resolved` 是否用于 Conflict**。
 - **现有测试明确接受这种行为**：[`test_two_conflicting_failures_require_an_explicit_resolution`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment.py#L2053-L2090) 同时包含 `native_failure` 和 `conflict`，只用一种 Disposition 覆盖两个 Result，参数 `failure_superseded/conflict_resolved` 均断言 `assessment.status=passed`。所以不是测试缺失，而是**被测试固化的当前合同**。
-- **待裁决**：先读 #63 的 Adjudication 实际许可语义：是否允许一个授权结果显式覆盖两种失败性质，还是必须按结果类型分别证明。若当前设计有意允许复合处置，这条不能仅凭名称判断为 BUG；若不允许，则影响 R1 失败传播和历史复用授权。归入 R1/#63 权威裁决组，**不直接修改测试**。
+- **待裁决**：#63 Adjudication 的真实许可语义尚待查证：一个有权结果是否可以覆盖两类失败，或不同失败性质分别需要额外证明。当前既有测试记录了复合处置行为；是否违反 R1 失败传播/历史复用合同仍未证明。
 
 ### NEW-009 — 未来才发生的 Failure 可被更早 Adjudication 消除
 
@@ -251,7 +251,7 @@
 ### HYP-003 — Hook Exit 是否允许一次 Invocation 中失败结果与成功 Witness 并存
 
 - **代码事实**：[`hook_exit_code`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L986-L1020) 只要求 Receipt `status=matched`、`all_observations_reconciled=True`、entry `binding_status=matched/not_applicable`；不直接读 `native_status`。`reconciliation` 的 `matched` 依据 [`native_satisfaction.status=satisfied`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L1599-L1618)，选中的 Result 必须为 Passed；多个观察值中其余 Failed 是否仍导致阻断取决于原生工具需求、Attempt 资格和重试语义。
-- **为何不是已确诊**：合法重试可能允许先前 Failure + 最终成功，且独立 Check/Requirement 的组合选择可能不适合“只要看见一个失败就阻断”的规则。必须先用**同一 eligible Attempt、同一 Check、相同/不同 requirement、failed + passed 两个 Result**重放实际 Reconciliation，再核对 #66 Hook 终态/重试合同；不能擅自一律 fail-closed 禁止有效重试。
+- **反证方向**：合法重试可能包含此前 Failure 与最终成功；独立 Check/Requirement 的满足语义也可能区别于 Job 全局状态。同一 eligible Attempt、相同/不同 Requirement 的 PASS/FAILED 组合和 #66 Hook 终态/重试合同可区分这两种情形。
 - **潜在影响**：若未获授权的失败结果被当前 Hook Exit 静默忽略，则本地 Commit/Push 可能以 `exit=0` 放行；仅当受控反例确实得到该结果才提升为确认 BUG。此问题与已有“没有 Lefthook 配置/Hook 真实接线未交付”的生产欠账是两种不同问题。
 
 ### NEW-010 — 成功发布序列化记录缺少真实 Assessment PASS 证明
@@ -269,20 +269,20 @@
 ### NEW-012 — R4 对 Release 仅比较 Assessment Commit/Phase，忽略 Scope
 
 - **代码**：[`reconcile_release_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L673-L735) 验证 `candidate.commit=head_sha` 与 `phase`；[`_profile_snapshot`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L331-L357) 传给 `policy_snapshot_authority` 的快照没有包含 Assessment `action/target/refs`，因此这些字段并非 R4 原地约束。Manifest v1 验证的是独立 Release Repository/Tag/HEAD 身份。
-- **条件反例**：同 SHA、同 Phase、合法 Manifest、可信 Provider/Handoff/Policy 回调，但 R1 Assessment 来自不同 Target/Ref/Action；若 R4 仍返回 `release_authorized=True`，即可证明在被消费的 R1 Scope 上缺乏对账。反例必须明确当前合同允许的 Release target/action，不能拿两个本应等价的 Ref 制造假缺陷。
+- **条件反例**：同 SHA、同 Phase、合法 Manifest、可信 Provider/Handoff/Policy 回调，但 R1 Assessment 来自不同 Target/Ref/Action；若 R4 仍返回 `release_authorized=True`，即可证明在被消费的 R1 Scope 上缺乏对账。当前 Release target/action 的实际合同与 Ref 等价关系需要明确定义，否则输入差异不足以证明错误授权。
 - **去重**：与 NEW-011 共享 **“相同 Commit ≠ 相同授权 Scope”** 的上游语义问题，但 G2 与 R4 分别是 GitHub Check 与 Release 允许性出口；统一接口裁决，保留两条消费者反例，不据此各自新建映射库。
 
 ### NEW-013 — R5 Trigger 的 Artifact/Run Attempt 未被本地消费者关联
 
 - **固定代码**：[`_normalize_trigger`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L382-L406) 将 `artifact_digest` 规范化、Run ID/Attempt 解析；全模块随后没有读取 `trigger["artifact_digest"]` 进行 Candidate/Artifact 关系比对，也没有将 Trigger Run/Attempt 与真实 Assessment 原生 Run 身份直接对账。[`_bind_lifecycle`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L276-L316) 只检验前后 Assessment 的 Context/Action/Target/Refs/Candidate 与 Trigger `target`；[`trigger_authority` 的上下文](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_post.py#L667-L694) **包含完整 Trigger 和 lifecycle identity**，因此正确的外部有权 Producer 有机会负责关联。
 - **差异条件**：以正常合法 prior/post 和授权 Trigger 为基线，只改变 `artifact_available` 的 Artifact Digest 或 `run_completed` 的 Attempt 身份，保留受控（只检查事件存在）Authority，观察 `status=verified`。然后换真实 Issuer/Verifier 是否建立此关系，判断是 R5 接口合同应明确的验证前提还是消费代码真正缺失。
-- **边界**：不是要求所有事件 Artifact Digest 必须等于 Candidate 的某个单字段；可能是另一受治理产物，需要先确认语义映射。与 D-G04 实际 Producer 未验证关联，**不能把受控回调通过直接说成生产缺陷**。
+- **语义待定**：Trigger Artifact Digest 可能引用独立受治理产物，而非 Candidate 的某一个固定字段。其类型化身份映射和 D-G04 所属真实 Producer 尚待验证；受控回调的通过仅证明 API 条件可达。
 
 ### NEW-014 — T1-a 对同一 Job/Run/Attempt 的独立 Report Failed 视为诊断
 
 - **既有测试直接证明**：[`test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_admission.py#L742-L764) 构造相同 `job_ref/run_ref/attempt_ref` 标签、但不同 Report/Job Receipt 的 PASS/FAILED；最后断言 `entry["admitted"] is True`、`observed_diagnostics` 非空。该行为被测试固化，不能假称测试未覆盖。
 - **代码链**：[`_same_observed_scope`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/admission.py#L471-L480) 只按 Report 摘要或 Receipt 身份共享判断，不比较 Run/Attempt；[`_entry_admission_v2`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/admission.py#L617-L751) 在选中 PASS 可信且 `contaminated=False` 时仍可 admitted，虽对全部已验证 FAILED 写入 `native_failed` 原始 reasons。
-- **待裁决**：相同 Job/Run/Attempt 是否依法允许多份有权 Report、对应不同独立执行/最终 Attempt？用真实 Producer 的 Report/Receipt 签发流程、Attempt 终态和 #63 失败投影核对；反例必须保持 Report/Receipt 原生正确，不能只改紧凑 JSON 就推论生产绕过。与 D-F02 同在 #63→R1 影响链，但 **D-F02 是输入不兼容**，本项是 **Admission 选择/失败传播策略**。
+- **待裁决**：同一 Job/Run/Attempt 下是否允许多份有权 Report，以及对应的独立执行/最终 Attempt 语义尚不明确。真实 Producer 的 Report/Receipt、Attempt 终态与 #63 失败投影是区分性证据。D-F02 已证明输入不兼容，本项调查 Admission 选择/失败传播，两者结论不同。
 
 ### NEW-015 — #66-C 重复 Result 记账未参与完整对账与 Hook Exit
 
@@ -293,7 +293,7 @@
 ### NEW-016 — 额外 Job 的空 Native Report 可能在对账中不可见
 
 - **固定源码**：[`_normalize_observations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L727-L845) 允许 `native_results=[]` 的 Observation；[`_unexpected_observations`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L1629-L1687) 对未路由 Job 仅 `for result in observation["native_results"]` 追加 Unexpected，**空列表没有 Job 级事件记录**；[`_receipt_aggregates`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L1717-L1745) 只看 resulting unexpected/rejected 项。
-- **待运行差异组合**：先生成完整 matched Expected/已验证合法 Report；额外增加一个未路由 Job 的已存在且 digest 验证的失败 Execution Report（无 Native Result），核对 `summary.unexpected/status/all_observations_reconciled` 是否保持不变。对照该 Job 包含 Failed Native Result 的情形。不能把“无 Native Result 的无关 Job”与“应当阻断的 Failed Required 执行”混同，必须核对 Job activation 与原生 Report 归属。
+- **区分性案例**：在完整 matched Expected 与合法 Report 的基础上，分别增加未路由但受信的失败 Execution Report（零 Native Result）及包含 Failed Native Result 的对照组，记录 `summary.unexpected/status/all_observations_reconciled` 的变化。Job activation 与当前 Required Scope 的真实归属决定其是否属于需要传播的失败。
 
 ### NEW-017 — T2 相同历史身份的成功候选未形成稳定全序
 
@@ -347,13 +347,13 @@
 
 - **实际调用**：[`finalize_invocation`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1022-L1101) 在 Reconciliation 后直接调用 `hook_exit_code`，输出 `trusted=False, required=False`；[`hook_exit_code`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L986-L1020) 用结构性 `status=matched`、`all_observations_reconciled`、Expected completeness 算 `0`；[`main finalize`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/hook_coordinator.py#L1137-L1222) 接受 JSON Routing/Resolution/Observation 路径后直接返回此 Exit Code。 [#66-C Receipt](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/reconciliation.py#L1788-L1827) 自述 `trusted_evidence_not_admitted`、`required_gate_not_evaluated`。
 - **边界**：零退出的本地 Git Hook 可能只表示“所声明的 Native Checks 全部匹配”，无需等同 R1/G2 发布授权；但是，如果用户的原始要求是**本地 Hook 必须执行真实 Native、不能接受任意自填的 Report/Eligibility 证据**，那么 `main finalize` 的外部 JSON 输入链是否受信就成为必要的事实。该项不是 NEW-019 的 Event/Scope 签发错配，而是**消费阶段将何种结论提升为允许 Git 操作**。
-- **待审查**：实际 Lefthook 配置的可执行入口、谁生成/保护这些 JSON、是否仅消费 `execute_activated_job`/Collect 已交付结果、真实 Native FAIL 是否导致非 0；不得借此又建 Hook Coordinator/FSM，亦不能以本地进程 exit 0 断言生产 GitHub/Release 权限已经开放。
+- **待核查工程事实**：真实 Lefthook 可执行入口、JSON 原始生产与保护、`execute_activated_job`/Collect 交付及 Native FAIL 到退出码的传播，以及当前 Hook Coordinator 与 Lefthook 的职责对照。进程 Exit=0 只记录本地执行结果，GitHub/Release 是否实际放行另有证据层次。
 
 ### NEW-026 — R1 重新验证的 Assessment 不等同原 R1 计算合同
 
 - **实际差异**：[`_authority_fact`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L1540-L1563) 计算原始 PASS 时强制 `evaluated_at >= authority.evaluated_at/effective_at/valid_from`、不过期且未撤销；[`validate_assessment`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment.py#L2637-L2827) 对 PASS 只验证 `authority.status`、`revoked_at` 和 `valid_until`，没有重新核对前三个时间。它也只检查 `inputs.contract_sample` 为布尔值，不验证与其他来源/限制一致。
 - **最小差异**：用既有 R1 合法 PASS Assessment，保持四事实/Rows 不变；更改 `inputs.authority.evaluated_at` 到 `assessment.evaluated_at` 之后、或将 `inputs.contract_sample=True` 改为 False，重新计算 `assessment_ref`；比较 `validate_assessment` 及 R4/R5 下游结果。注意：**能自算 SHA 摘要不是取得受信签发身份**；真正风险取决于这些消费者是否有额外受信原件约束。
-- **依赖**：与 NEW-010 的 Publication 层“成功不绑定真实 PASS”不同，本项是 **R1 Assessment 证据自身的局部一致性验证与 Producer 原判定不等价**。先核实谁负责签发/读取有效 Assessment；不用自行再建验证状态机。
+- **依赖**：与 NEW-010 的 Publication 层“成功不绑定真实 PASS”不同，本项涉及 **R1 Assessment 序列化校验与 Producer 原判定不等价**；实际签发者、原件读取方式、当前消费者是否具备来源证明均待核实。
 
 ### NEW-027 — R5 Authorized Reevaluation 可使 Assessment 时间倒退
 
@@ -365,7 +365,7 @@
 
 - **源码**：[`normalize_publisher_approval`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L220-L321) 以 `clock = now or datetime.now(UTC)` 对 `valid_from/valid_to` 判断；[`authorize_and_publish`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_publish.py#L615-L669)、`workflow_publish_authority`、`verify_publisher_identity` 均允许调用方传入 `now`。现有 Publisher 测试中 Approval 有效期均为 None，没有覆盖这条差异。
 - **候选反例**：Approval 原始有效期 `valid_to=t1`，当前实际本地时间 `t2>t1`；以 `now=t0<t1` 同时传入发布路径，并保留独立 Approval Authority 接受签发证明、真实 Actions 环境和合法执行者身份。检查其是否按注入时钟放行。若生产调用固定可信时钟、或独立 Authority 也校验当前时间，应按实证降级风险。
-- **不能误修**：不删除用于固定时钟测试的能力；须明确生产 Clock/Authority 责任，不额外引入计划外的协调层。
+- **时间边界**：测试的可注入时钟与生产可信时钟来源是不同对象。生产调用方对 `now` 的控制、Approval Authority 自身的时间核对，以及真实 Check 发布时的授权窗口尚待验证。
 
 ### NEW-029 — R5 Due Authority 无法直接绑定被接受的具体晚到 Assessment
 
@@ -398,29 +398,29 @@
 - **现有测试**：[`test_workflow_publish_authority_rejects_mismatched_actual_evaluator`](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_required_assessment_publish.py#L205-L220) 仅模拟调用方把 `execution_identity.evaluator_ref` 置为不受批准版本，从而拒绝；它没有模拟 **实际运行错误版本、但向 Authority 申报受批准版本** 的对抗输入。
 - **信任边界**：外部 `approval_authority` 能收到 `execution_identity` 并自行交叉验证真实执行 Artifact/Attestation，当前仓库缺少对应生产证据。不可将“Workflow 版本得到 GitHub Runtime 证明”偷换成“本次真正运行的 Evaluator/Policy 版本已认证”。与 NEW-010 的 Assessment PASS 原件来源不同，也与 NEW-028 的时钟注入不同，属于执行代码来源绑定风险。
 
-### NEW-034 — Release Dagger Policy Check 的派生 PASS 未在独立消费端复核
+### NEW-034 — Dagger Policy 子 Check 的原始证明与 Manifest 交接边界
 
-- **源码**：[Manifest facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 要求原始 remaining-checks.txt 中具备 registry.DAGGER_POLICY_CHECKS 的两个子 Check 名称；[Manifest 构造](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L274-L334) 据此将 coverage/python_matrix 设置为 passed 或 unavailable。[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L393-L447) 对序列化子 Check 只验证名称、Job/Step 字段、状态合法性；[Verification](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) 和 [Publisher](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 只重取 CHECKS 的原始 Job/Step 结果，不重新验证这两个 Dagger 子 Check 的原始事实。
-- **差异反例条件**：以已有 [缺子检查生成器测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py#L190-L202) 的失败 Manifest 为起点，保持真实 Dagger Job/Step 成功且不改变其他来源，将派生 coverage/python_matrix 由 unavailable 改为 passed、聚合 result 改 passed，再比较 validate、verification.evidence、publishing.published_evidence 的结果。应再增加原生 Runtime 的合法正例，不能使用自造 Job PASS 证明受信签发。**本次尚未执行此组合 API**。
-- **根因与边界**：这是 Manifest 生成事实与独立序列化消费者重验证不等价，不同于 NEW-004 的 R4 optional Check Mapping。实际 Release Workflow 已通过固定 Artifact ID 交付 Manifest，真实被篡改可达性未证明；复用现有 facts/Provider，不另造第二套 Dagger Checker。
+- **已观察事实**：[Manifest facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 要求 `remaining-checks.txt` 的 Dagger 子检查名称；[Manifest 构造](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L274-L334) 据此与 Dagger 基础 Job 生成 `coverage/python_matrix`；[validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L393-L447) 检查派生行结构和聚合状态；[Verification](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) / [Publisher](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 重取基础 `CHECKS` Job/Step，不在发布端单独读取 Dagger 子检查原件。
+- **已有证据边界**：[release.yml](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml#L132-L211) 由 `verified` Job 生成并上传 Manifest，`publish` Job 按精确 Artifact ID 下载；该交接可能已经为派生字段提供完整可信来源。现有 [生成器测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py#L190-L202) 验证缺子检查时新 Manifest 不通过；它与“已受信签发 Manifest 被替换”的情况不是同一证明对象。
+- **待裁决**：以未包含 Dagger 子 Check 的原始事实和篡改后的序列化 Manifest 构造差异案例，结合真实 Artifact 访问/替换能力、消费者及发布策略，判断是否有实际来源漏洞。仅因下游没有重复执行同一校验，还不足以确认违规；重复验证的必要性、方式与收益尚待证明。
 
-### NEW-035 — Release Tool Version 声明没有独立校验实际生产值
+### NEW-035 — Tool Version 记录与 Manifest 来源可信度的关系
 
-- **源码**：[facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 从 core/ruff tool-versions.json、Dagger 和 OSV 原始文件取得版本；[clean_tools](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L141-L160) 仅验证工具允许集合、字符串格式、去重/排序；[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L440-L450) 及 [Publishing Provider](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 没有把保存的 tools[].version 与相同 Run 的原始版本文件/独立受信实现版本重新对账。
-- **差异反例条件**：保留真实成功 Run、同一 Artifact ID 与其他 Manifest 项，仅将一个 tools[].version 替换为不同但合法的版本；再用实际 verification/published_evidence 核对，观察是否与原值等价接受。需确认 Tool Version 是否属于当前 Release 授权前提、真实 Manifest 的交付保护及原生 Provider 能否取得版本原件。
-- **去重**：与 NEW-034 是同一“衍生事实未在消费边界关联原件”的根因族，但 034 是 Dagger 子 Check 结果，035 是版本来源属性；合并设计修复，不创建平行版本注册表。未证正式发布可被外部篡改。
+- **已观察事实**：[facts](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L162-L193) 收集原始版本文件；[clean_tools](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L141-L160) 检查版本格式、工具集合、排序与唯一性；[Provider](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 不重新读取工具版本原始文件比对 Manifest 中的字符串。
+- **可信边界与合法对照**：原生 Facts 由 `evidence`→`verified` 交付，再以固定 Manifest Artifact 提供给 Publisher。合法、未被修改的受信 Manifest 可以合理继承生产者的验证结论；Tool Version 是审计属性还是发布授权的强制前提也需对照当前合同。
+- **待裁决**：版本字段被替换但其他原始事实不变时，是否存在真实可达的未受信写入路径，后续消费者是否把其作为未经认证的授权依据。与 NEW-034 存在共同来源调查面，但是否为同一个必须修复的缺陷尚未证明。
 
-### NEW-036 — 首次 Release Publish 与已发布历史核验共用 Artifact 过期宽容
+### NEW-036 — 首次 Publish 对过期 Artifact 的复用合同
 
-- **源码**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 默认遇 expired=True 返回 None，故新 [manifest()](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L306-L334) 无法将其构造成完整 PASSED；[published_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 却用 allow_expired=True 接受此元数据；[publish_release](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L213-L282) 在首次创建 Tag/Release 前也调用 published_evidence。现有 [过期 Artifact 测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py) 只证明生成器阻断和历史元数据可检索。
-- **反例**：在 t0 经原生 API 创建正常 PASSED Manifest；t1 Artifact 过期、其他 Run/Job/Digest/Tag/Commit 保持合法；t1 首次尝试 publish_release。比较已发布 Release 历史只读核验、首次新发布、可用性要求明确的 Profile 三种情形。**未执行新增原生差异/外部写操作**。
-- **裁决边界**：当前 Profile 如果允许以有效历史不可变证据发布，不能机械拒绝过期；若要求可获取的发行制品或发布时实时证据，则不能把历史检索宽容直接作为首次授权。保留原生 Release 发布程序，不引入新的 Coordinator。
+- **已观察事实**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 默认对过期 Artifact 返回 None；[published_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 使用 `allow_expired=True` 检查原始元数据；[publish_release](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L213-L282) 首次发布和历史已发布 Release 核验均调用此函数。现有 [过期行为测试](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/tests/test_release_manifest.py) 覆盖新 Manifest 构造与历史元数据可读取性。
+- **差异条件**：t0 有权生成 Passed Manifest，t1 Artifact 到期，其原始 Run/Attempt/Commit/Digest 仍可核对，t1 再进行首次发布。比较历史只读核验、首次发布与恢复/重试三种路径的现行策略。
+- **待裁决**：当期 Profile 对发布时资产可下载性和历史证明有效性的要求、Artifact 类型以及原生 Release 出口的实际消费者。过期本身只确认可访问性状态变化，历史证明是否失效需要合同与独立证据支持。
 
-### NEW-037 — Release Manifest 固定 Artifact 缺 Digest 时的字节证明缺口
+### NEW-037 — 固定 Artifact 缺 Digest 的能力边界
 
-- **源码**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 返回 GitHub Metadata 的可选 digest；[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L448-L475) 即使所有固定 Artifact 名称和 ID 齐全、result=passed 也允许 digest=None；[verification.evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) 和 [published_evidence](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 只在 Manifest 提供 Digest 时与 Metadata 比较，因此在没有 Digest 的条件下不能建立字节摘要对账。
-- **差异反例条件**：构造真实合法 Run/Attempt/所有固定 Artifact ID 与原生 Check 成功，但令其中一份 Artifact Metadata 不含 digest；对照正常具 Digest 的输入。使用真实 manifest、verification.evidence、published_evidence API 核对，确认 GitHub 当前生产 API 是否真的存在 None。官方 [Actions Artifact REST API](https://docs.github.com/en/rest/actions/artifacts?apiVersion=2026-03-10) 展示 Run 身份和 SHA-256，但示例存在不等于所有实际响应都有 Digest。
-- **上下游限制**：R4 [reconcile_release_assessment](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L822-L868) 在 publication 且某 Artifact 明确被授权列为当前 obligation 时，会因缺 Digest 阻断；但 D-G04 已证明实际 Release Publisher 还未接入这一 R4 消费。不能宣称当前生产发行软件包被错误签发；先查当前真正要求字节校验的 Artifact/Release Profile。
+- **已观察事实**：[artifact_metadata](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L74-L100) 返回可选 Digest；[Manifest validate](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/manifest.py#L448-L475) 对固定 Artifact 的名称/ID/URL 及聚合 Check 形状验证，即使 Digest 为 None 也可通过；[Verification](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/verification.py#L172-L197) 与 [Publisher](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/release/publishing.py#L114-L156) 仅比较已声明的 Digest。
+- **相邻验证**：[R4 消费](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/src/engineering_ci/required_assessment_release.py#L822-L868) 对 publication 且确实适用的 Artifact Obligation 缺 Digest 情况有独立约束；当前 [release.yml](https://github.com/dymzz/engineering-ci/blob/fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83/.github/workflows/release.yml#L132-L211) 没有证明 R4 已成为实际发行前置。
+- **待裁决**：真实 GitHub Artifact API 在当前行为下是否会缺失 Digest、当期 Profile 是否要求这些具体 Artifact 字节一致性、真实消费链能否达到该组合。固定 ID/Run/Commit 证明来源身份，Digest 证明字节完整性；两类证明的适用性由现实合同决定。
 
 ## B. 未验证的真实来源与生产接线（**不计作已发现 BUG**）
 
