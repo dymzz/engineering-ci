@@ -142,6 +142,24 @@ verified separately.
 
 ### Forwarding across Host and Dagger (NEW-053)
 
+**Delivery status (2026-11-19).** [PR #132](https://github.com/dymzz/engineering-ci/pull/132)
+merged as `b10dce6ae39595d3422182bf73dfc545f77ffc10` (reviewed HEAD
+`6757c2e3f6c157be4db5222a3d4b8aff7723e5b8`), completing the
+NEW-053 Host Git Source/ODB false-pass, deletion-applicability, and internal-link
+source-diagnostic repair slice. This is not a claim that #66-P0 historical Blob
+readiness, independent linked-input Source closure, #86 positive Dagger/Host
+Result handoff, or #63 Trusted Admission has been delivered.
+
+[PR #139](https://github.com/dymzz/engineering-ci/pull/139) is the separate
+#66 Forwarding AST migration-semantics change: `__all__` assignment handling,
+package `__init__.py` exclusion, Base AST substance, and Check Definition v2.
+It is not a prerequisite to #132's completed Git Source slice. Integrate #139
+against the merged #132 code, retaining both sets of behavior after resolving
+conflicts and running targeted combined verification. Until that integration,
+the Forwarding AST implementation below reflects the #132 merged baseline,
+not the pending #139 semantics.
+
+
 The Host path reads the Base Commit and Tree in the checkout's Git context.
 It uses exact Tree membership to distinguish a new path from an existing path
 whose Blob is unreadable. A substantive module that becomes a pure re-export
