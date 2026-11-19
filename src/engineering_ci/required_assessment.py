@@ -1338,6 +1338,330 @@ def _adjudication_entry(value, *, scope_id, expected_refs):
     }
 
 
+
+def project_t1_t2_gate_admission(
+    source,
+    *,
+    expected,
+    current_authorization,
+    source_authority,
+    receipt=None,
+    contract_sample=False,
+    ref_scope_id=None,
+):
+    """Project an independently authenticated #63 T1-a/T2 result to R1.
+
+    This is a scope-preserving data contract, not a source authenticator.
+    The caller supplies an independent verifier of the original, complete
+    admission object.  Native failure, missing proof and remaining work never
+    become admitted coverage solely because a digest can be computed.
+    """
+    from . import admission as evidence_admission
+
+    code = "admission_projection_invalid"
+    if not isinstance(source, dict):
+        raise RequiredAssessmentError(code)
+    kind = source.get("kind")
+    if kind not in {
+        evidence_admission.ADMISSION_KIND,
+        evidence_admission.HISTORICAL_REUSE_KIND,
+    } or source.get("schema_version") != 1:
+        raise RequiredAssessmentError("admission_projection_kind_invalid")
+    if source.get("evidence_admission") != "evaluated" or (
+        source.get("required_gate") != "not_evaluated"
+    ):
+        raise RequiredAssessmentError(code)
+
+    scope = _select_expected_scope(expected, ref_scope_id)
+    checks = _verify_expected_scope(scope)
+    scope_id = scope["scope_id"]
+    expected_set_ref = scope["expected_set_ref"]
+    if (
+        source.get("scope_id") != scope_id
+        or source.get("expected_set_ref") != expected_set_ref
+    ):
+        raise RequiredAssessmentError("admission_scope_mismatch")
+
+    if not isinstance(current_authorization, dict):
+        raise RequiredAssessmentError("admission_projection_context_invalid")
+    authorization = {
+        "target_ref": _text(
+            current_authorization.get("target_ref"),
+            "admission_projection_context_invalid",
+        ),
+        "phase": _text(
+            current_authorization.get("phase"),
+            "admission_projection_context_invalid",
+        ),
+        "action": _text(
+            current_authorization.get("action"),
+            "admission_projection_context_invalid",
+        ),
+        "candidate_digest": _optional_internal_ref(
+            current_authorization.get("candidate_digest"),
+            "admission_projection_context_invalid",
+        ),
+    }
+    historical = kind == evidence_admission.HISTORICAL_REUSE_KIND
+    if historical:
+        declared = source.get("current_authorization")
+        if not isinstance(declared, dict) or any(
+            declared.get(k) != authorization[k] for k in authorization
+        ):
+            raise RequiredAssessmentError("admission_authorization_mismatch")
+        expected_profile = (scope.get("effective_profile") or {}).get(
+            "profile_sha256"
+        )
+        if declared.get("profile_sha256") != expected_profile:
+            raise RequiredAssessmentError("admission_authorization_mismatch")
+        if source.get("receipt_ref") is not None:
+            raise RequiredAssessmentError(code)
+    elif receipt is not None:
+        if not isinstance(receipt, dict) or (
+            source.get("receipt_ref") != receipt.get("receipt_ref")
+        ):
+            raise RequiredAssessmentError("admission_receipt_scope_mismatch")
+
+    if not callable(source_authority):
+        raise RequiredAssessmentError("admission_source_authority_missing")
+    verification = {
+        "source_admission": copy.deepcopy(source),
+        "current_authorization": copy.deepcopy(authorization),
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+    }
+    try:
+        authenticated = source_authority(verification)
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        raise RequiredAssessmentError("admission_source_authority_error") from None
+    if authenticated is not True:
+        raise RequiredAssessmentError("admission_source_authority_unverified")
+
+    source_entries = source.get("entries")
+    if not isinstance(source_entries, list):
+        raise RequiredAssessmentError(code)
+    check_by_ref = {check["expected_check_ref"]: check for check in checks}
+    indexed = {}
+    for entry in source_entries:
+        if not isinstance(entry, dict):
+            raise RequiredAssessmentError(code)
+        ref = entry.get("expected_check_ref")
+        if (
+            ref not in check_by_ref
+            or ref in indexed
+            or entry.get("scope_id") != scope_id
+        ):
+            raise RequiredAssessmentError("admission_projection_entry_mismatch")
+        indexed[ref] = entry
+    if set(indexed) != set(check_by_ref):
+        raise RequiredAssessmentError("admission_projection_entry_mismatch")
+
+    raw_coverage = source.get("accepted_coverage_by_instance")
+    if not isinstance(raw_coverage, dict) or set(raw_coverage) != {
+        f"{scope_id}/{ref}" for ref in check_by_ref
+    }:
+        raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+
+    source_ref = _digest(source)
+    profile_sha256 = (scope.get("effective_profile") or {}).get("profile_sha256")
+    coverage = {}
+    failures = {}
+    remaining = []
+    for ref, check in check_by_ref.items():
+        entry = indexed[ref]
+        key = f"{scope_id}/{ref}"
+        record = raw_coverage[key]
+        if not isinstance(record, dict) or (
+            record.get("admission_status") != entry.get("status")
+        ):
+            raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+        admitted = entry.get("admitted") is True
+        if admitted != (entry.get("status") == "admitted"):
+            raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+        if admitted and (
+            entry.get("origin_status") != "verified"
+            or entry.get("obligation_status") != "satisfied"
+        ):
+            raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+        ids = entry.get("result_ids")
+        if not isinstance(ids, list) or len(ids) != len(set(ids)):
+            raise RequiredAssessmentError("admission_projection_result_invalid")
+        if record.get("result_ids") != ids:
+            raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+        applicable_to = {
+            **authorization,
+            "rule_ref": copy.deepcopy(check.get("rule_ref")),
+            "profile_sha256": profile_sha256,
+        }
+        witness = None
+        trace = None
+        basis = None
+        if historical:
+            origins = entry.get("result_origins")
+            if not isinstance(origins, list):
+                raise RequiredAssessmentError("admission_projection_origin_invalid")
+            by_id = {}
+            for origin in origins:
+                if not isinstance(origin, dict):
+                    raise RequiredAssessmentError(
+                        "admission_projection_origin_invalid"
+                    )
+                result_id = _internal_ref(
+                    origin.get("result_id"),
+                    "admission_projection_origin_invalid",
+                )
+                if result_id in by_id:
+                    raise RequiredAssessmentError(
+                        "admission_projection_origin_invalid"
+                    )
+                by_id[result_id] = origin
+            basis = entry.get("equivalence_basis")
+            if admitted and (
+                not ids
+                or set(ids) != set(by_id)
+                or not isinstance(basis, dict)
+                or basis.get("verified") is not True
+                or basis.get("check_satisfaction_status") != "satisfied"
+            ):
+                raise RequiredAssessmentError("admission_equivalence_missing")
+            if admitted:
+                witness = sorted(ids)[0]
+                trace = _origin_trace(
+                    by_id[witness], "admission_projection_origin_invalid"
+                )
+        else:
+            facts = entry.get("facts")
+            if not isinstance(facts, list):
+                raise RequiredAssessmentError("admission_projection_result_invalid")
+            selected = {}
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    raise RequiredAssessmentError(
+                        "admission_projection_result_invalid"
+                    )
+                result_id = _internal_ref(
+                    fact.get("result_id"), "admission_projection_result_invalid"
+                )
+                if fact.get("selected") is True:
+                    if result_id in selected:
+                        raise RequiredAssessmentError(
+                            "admission_projection_result_invalid"
+                        )
+                    selected[result_id] = fact
+                if (
+                    fact.get("status") == "failed"
+                    and fact.get("integrity_status") == "verified"
+                    and fact.get("issuer_status") == "verified"
+                ):
+                    failures.setdefault(key, []).append(
+                        {
+                            "result_id": result_id,
+                            "failure_kind": "native_failure",
+                            "native_status": "failed",
+                            "origin_trace": _origin_trace(
+                                fact, "admission_projection_origin_invalid"
+                            ),
+                            "applicable_to": copy.deepcopy(applicable_to),
+                            "issued_at": None,
+                            "reason": "authenticated_native_failure",
+                        }
+                    )
+            if admitted:
+                if (
+                    not ids
+                    or set(ids) != set(selected)
+                    or entry.get("integrity_status") != "verified"
+                    or entry.get("resolution_status") != "verified"
+                    or any(
+                        fact.get("status") != "passed"
+                        or fact.get("integrity_status") != "verified"
+                        or fact.get("issuer_status") != "verified"
+                        or fact.get("implementation_status") != "approved"
+                        for fact in selected.values()
+                    )
+                ):
+                    raise RequiredAssessmentError(
+                        "admission_projection_result_invalid"
+                    )
+                witness = sorted(ids)[0]
+                trace = _origin_trace(
+                    selected[witness], "admission_projection_origin_invalid"
+                )
+
+        reasons = entry.get("reasons") or []
+        if not isinstance(reasons, list) or any(
+            not isinstance(reason, str) for reason in reasons
+        ):
+            raise RequiredAssessmentError(code)
+        result = {
+            "scope_id": scope_id,
+            "expected_check_ref": ref,
+            "check_name": check.get("name"),
+            "admission_status": "admitted" if admitted else "unverified",
+            "source_kind": "historical_reuse"
+            if historical and admitted
+            else "current_run"
+            if admitted
+            else None,
+            "witness_result_id": witness,
+            "raw_result_verified": admitted,
+            "issuer_verified": admitted,
+            "origin_trace": trace,
+            "applicable_to": applicable_to,
+            "receipt_binding_status": (
+                (next(
+                    (
+                        row.get("binding_status")
+                        for row in (receipt or {}).get("entries", [])
+                        if row.get("expected_check_ref") == ref
+                    ),
+                    None,
+                ))
+                if not historical
+                else None
+            ),
+            "equivalence_basis": copy.deepcopy(basis) if admitted else None,
+            "reason": reasons[0] if reasons else None,
+        }
+        coverage[key] = result
+        if not admitted and entry.get("obligation_status") != "not_applicable":
+            remaining.append(
+                {
+                    "scope_id": scope_id,
+                    "expected_check_ref": ref,
+                    "reason": reasons[0] if reasons else "coverage_not_admitted",
+                }
+            )
+    projection = {
+        "kind": ADMISSION_KIND,
+        "schema_version": ADMISSION_VERSION,
+        "phase": ADMISSION_PHASE,
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+        "source_admission_ref": source_ref,
+        "expected_completeness": scope.get("consumer_completeness"),
+        "contract_sample": _flag(
+            contract_sample, "admission_projection_sample_invalid"
+        ),
+        "all_observations_reconciled": False,
+        "accepted_coverage_by_instance": coverage,
+        "authenticated_failures_by_instance": failures,
+        "adjudications": [],
+        "remaining_work": remaining,
+        "required_gate_ready": False,
+        "required_gate_block_reason": "required_assessment_not_evaluated",
+    }
+    projection["admission_ref"] = _digest(projection)
+    return projection
+
+
+def _origin_trace(value, code):
+    return {
+        key: _text(value.get(key), code)
+        for key in ("run_ref", "attempt_ref", "runner_ref", "result_origin")
+    }
+
+
 def _validate_admission(admission, scope, checks):
     """Validate the #63 trusted admission projection for this exact scope."""
     if not isinstance(admission, dict):
@@ -2455,6 +2779,9 @@ def assess_required_obligations(
     receipt=None,
     non_check_evidence=None,
     ref_scope_id=None,
+    admission_source_authority=None,
+    admission_current_authorization=None,
+    admission_contract_sample=False,
 ):
     """Assess the complete current Required Obligations for one staged scope.
 
@@ -2475,6 +2802,24 @@ def assess_required_obligations(
     scope = _select_expected_scope(expected, ref_scope_id)
     checks = _verify_expected_scope(scope)
     normalized_universe = _validate_universe(universe)
+    if (
+        isinstance(admission, dict)
+        and admission.get("phase") is None
+        and admission.get("kind")
+        in {
+            "engineering-ci-evidence-admission",
+            "engineering-ci-historical-reuse-admission",
+        }
+    ):
+        admission = project_t1_t2_gate_admission(
+            admission,
+            expected=expected,
+            current_authorization=admission_current_authorization,
+            source_authority=admission_source_authority,
+            receipt=receipt,
+            contract_sample=admission_contract_sample,
+            ref_scope_id=ref_scope_id,
+        )
     admission_facts = (
         _validate_admission(admission, scope, checks) if admission is not None else None
     )
