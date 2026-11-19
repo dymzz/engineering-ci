@@ -97,6 +97,50 @@ An unavailable step log is not a producer mismatch and is not accepted from Arti
 to equal top-level `validation_identity` for `validation_to_publication`, and
 rejects a top-level Validation identity under `same_run`.
 
+## Serialized envelope and provider trust boundary
+
+`reconciliation_ref` binds the serialized envelope's contents; recomputing it
+does **not** authenticate the writer or prove that a native Provider read
+occurred. `validate_release_reconciliation()` checks structure, digest and
+authorization consistency, rather than independently re-reading GitHub.
+
+In particular, for `release_authorized=false` a deliberately modified
+`status=verified` validation-mode envelope with
+`authorization_basis=provider_verified` and
+`provider_evidence.availability=accepted` may pass structural validation after
+its `reconciliation_ref` is recomputed. The normal
+`reconcile_release_assessment()` producer does not emit that combination.
+It does not turn `release_authorized` true: that stronger claim requires a
+native `live` Provider basis and the remaining publication conditions.
+Consumers must not derive permission to publish from `status=verified`,
+`authorization_basis`, or the content digest alone. This false-authorization
+serialization edge remains a nonblocking follow-up observation under #61,
+not evidence of a demonstrated production publication bypass.
+
+## Native execution evidence and remaining integration scope
+
+The real [validation-only Run 44455217421](https://github.com/dymzz/engineering-ci/actions/runs/44455217421)
+on earlier candidate `f659429` completed two Attempts with a successful
+`verified` Job and a native `release-manifest` upload. Both Attempts skipped
+`publish`. The historical v0.7.0 Release artifacts provide partial provenance,
+but some original Artifact metadata is no longer readable after retention.
+These facts establish neither a live dynamic Required Release decision nor a
+real Tag/Release publication followed by Draft recovery.
+
+For the R4 code at `d9020b5`, [PR CI 44490530299](https://github.com/dymzz/engineering-ci/actions/runs/44490530299)
+completed four Jobs successfully and the targeted Release tests passed. Those
+are code/test evidence, not a new native publish-and-recover execution. Issue #61
+continues to own the larger real Provider → Required assessment → publishing
+and recovery end-to-end acceptance; merging this slice does not close #61.
+
+GitHub [documents a per-step Job log endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#download-step-logs-for-a-workflow-run-job),
+but [public reports of 404 for otherwise readable Jobs](https://github.com/github/rest-api-description/issues/7369)
+mean its availability for an actual Release Attempt cannot be inferred from the
+API description or controlled tests. An unreadable Step log remains
+`unverified/unavailable`, not a proven Artifact mismatch and never a release
+grant. Any production-readiness claim for this native Provider path requires
+successful observed access to the exact Job/Step/Artifact identity.
+
 ## Artifact obligations
 
 Caller supplies an authorized Profile Artifact set:
