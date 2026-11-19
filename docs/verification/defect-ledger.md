@@ -2,7 +2,7 @@
 
 > **审计状态：持续进行，当前发现不是全仓缺陷全集。** 本文件集中记录 ECI 的源码观察、原始证据、反例、反证、依赖和结论演进；它既不提供运行时授权，也不承担对未来实现方案的批准或限制职能。
 >
-> 初始版本：2026-11-18。基线：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）。旧候选仍单独记作 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，**不是 main 的一部分**。
+> 初始审计快照（2026-11-18）：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）；当时的旧候选为 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，彼时尚不在 main。**当前结算快照为 2026-11-19 `main@e3ec016bef5cdbe158783197d41b6fc3ccd0ce47`：#124 已合并，D-F01/D-F02 等修复状态以紧随其后的最新结算及 §0A 为准，不能以初始快照否定后续修复。**
 >
 > **审计范围是 `dymzz/engineering-ci` 全仓。** 包括原始工程目标、架构与成熟工具、重复建设、Hooks/Lefthook、Dagger/Actions、证据/权限、Tool Runtime、OTel/Weaver、Release/GitHub 与历史需求和 Issue/PR。[#125](https://github.com/dymzz/engineering-ci/issues/125) 是授权链调查切面，不构成审计范围上限；未调查的其他领域保留为未知。其他仓库、规范和成熟工具源码只作为核实 ECI 设计选择的证据。
 
