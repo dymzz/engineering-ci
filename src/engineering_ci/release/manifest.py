@@ -146,11 +146,17 @@ def artifact_upload_id(api, name, head, run_id, attempt, *, jobs=None):
         match = UPLOAD_RESULT.fullmatch(line)
         if match and match[1] == name:
             ids.append(int(match[2]))
-    if len(ids) != 1:
-        raise ValueError(
-            f"Artifact ID unavailable or ambiguous in the upload step: {name}"
-        )
-    return ids[0]
+    unique = set(ids)
+    if len(unique) == 1:
+        return unique.pop()
+    # A readable log with no recognized ID, or several different IDs, does not
+    # prove a conflicting producer. A single parsed ID that later disagrees with
+    # the Manifest is a contradiction in artifact_metadata.
+    raise ReleaseEvidenceUnavailable(
+        f"Artifact upload step log does not prove one ID: {name}",
+        error_class="ValueError",
+        http_status=None,
+    )
 
 
 def artifact_metadata(

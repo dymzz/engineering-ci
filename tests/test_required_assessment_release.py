@@ -230,12 +230,21 @@ def reconcile(assessment, manifest=None, **changes):
     )
 
 
+def native_verification(api=None):
+    return rar.manifest_provider_from_verification(api or R4ManifestGitHub())
+
+
 def authorize(assessment, **changes):
-    """Publication-stage authorization using a validation→publication handoff."""
+    """Publication-stage authorization using a validation→publication handoff.
+
+    The default provider is the native verification adapter. A boolean callback
+    cannot mint ``release_authorized``.
+    """
     kwargs = {
         "manifest": make_v1_manifest(mode="validation"),
         "publish_context": publication_handoff_context(),
         "handoff_authority": accept_provider,
+        "manifest_provider_authority": native_verification(),
     }
     kwargs.update(changes)
     return reconcile(assessment, **kwargs)
@@ -246,7 +255,8 @@ def test_validation_mode_is_verified_but_does_not_authorize_publication():
     manifest = make_v1_manifest(mode="validation")
     result = reconcile(assessment, manifest)
     assert result["status"] == "verified"
-    assert result["authorization_basis"] == "provider_verified"
+    assert result["authorization_basis"] == "structural_fixture"
+    assert result["provider_evidence"]["availability"] == "accepted"
     assert result["publish_context"]["mode"] == "validation"
     assert result["release_authorized"] is False
     assert result["policy_snapshot_status"] == "authorized"
@@ -274,6 +284,7 @@ def test_publication_same_run_context_can_authorize():
         assessment,
         manifest,
         publish_context=publication_same_run_context(),
+        manifest_provider_authority=native_verification(),
     )
     assert result["status"] == "verified"
     assert result["release_authorized"] is True
@@ -351,12 +362,15 @@ def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding()
     }
 
 
-def test_callback_acceptance_is_not_native_live_proof():
+def test_callback_acceptance_cannot_mint_production_authorization():
     assessment, _ = passed_assessment(contract_sample=False)
-    result = authorize(assessment)
-    assert result["release_authorized"] is True
+    result = authorize(assessment, manifest_provider_authority=accept_provider)
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is False
+    assert result["authorization_basis"] == "structural_fixture"
     assert result["provider_evidence"]["availability"] == "accepted"
     assert result["provider_evidence"]["source"] is None
+    assert "release_provider_callback_not_native_proof" in result["reasons"]
 
 
 def test_provider_rejects_same_name_wrong_artifact_digest():
@@ -452,6 +466,70 @@ def test_wrong_upload_step_artifact_id_is_an_observed_contradiction():
     assert result["release_authorized"] is False
     assert result["provider_evidence"]["availability"] == "contradicted"
     assert "release_provider_authority_rejected" in result["reasons"]
+
+
+def test_upload_log_without_an_id_is_unverified():
+    class NoUploadId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            name, _asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return super().job_step_log(job_id, step_number)
+            return "log readable but upload record absent\n"
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            NoUploadId()
+        ),
+    )
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "unavailable"
+    assert "release_provider_authority_rejected" not in result["reasons"]
+
+
+def test_upload_log_with_several_ids_is_unverified():
+    class SeveralIds(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            name, asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return text
+            return text + text.replace(
+                f"Artifact ID is {asset_id}", "Artifact ID is 100"
+            )
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            SeveralIds()
+        ),
+    )
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "unavailable"
+
+
+def test_repeated_same_upload_id_still_verifies():
+    class RepeatedId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            return text + text
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    api = RepeatedId()
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(api=api),
+        manifest_provider_authority=rar.manifest_provider_from_verification(api),
+    )
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is True
+    assert result["provider_evidence"]["availability"] == "live"
 
 
 def test_invalid_v1_artifact_digest_format_is_rejected():
@@ -598,6 +676,7 @@ def test_validation_to_publication_handoff_requires_distinct_run_and_authorities
         validation,
         publish_context=context,
         handoff_authority=accept_provider,
+        manifest_provider_authority=native_verification(),
     )
     assert ok["status"] == "verified"
     assert ok["authorization_basis"] == "provider_verified"
@@ -1033,6 +1112,7 @@ def test_validate_rejects_inconsistent_validation_identity():
         assessment,
         make_v1_manifest(mode="publication"),
         publish_context=publication_same_run_context(),
+        manifest_provider_authority=native_verification(),
     )
     assert same_run["release_authorized"] is True
     assert same_run["validation_identity"] is None

@@ -43,7 +43,12 @@ _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-_INFORMATIONAL_REASONS = frozenset({"contract_sample_inputs_not_production_release"})
+_INFORMATIONAL_REASONS = frozenset(
+    {
+        "contract_sample_inputs_not_production_release",
+        "release_provider_callback_not_native_proof",
+    }
+)
 
 
 class RequiredAssessmentReleaseError(ValueError):
@@ -560,9 +565,14 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
     accepted = provider_authority(provider_context)
     if isinstance(accepted, _NativeProviderRead):
         evidence = _provider_evidence("live", source=accepted.source)
+        verified_basis = "provider_verified"
+        acceptance_reasons = []
     elif accepted is True:
-        # Callback acceptance is not an observed Job/Step/Artifact read.
+        # A boolean callback can support a structural fixture. It cannot mint
+        # production publication permission.
         evidence = _provider_evidence("accepted")
+        verified_basis = "structural_fixture"
+        acceptance_reasons = ["release_provider_callback_not_native_proof"]
     elif isinstance(accepted, dict) and accepted.get("status") == "unverified":
         error = accepted.get("provider_error") or {}
         error_class = error.get("class")
@@ -590,16 +600,16 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
         if handoff_authority is None:
             return (
                 "structural_fixture",
-                ["release_handoff_authority_missing"],
+                ["release_handoff_authority_missing", *acceptance_reasons],
                 evidence,
             )
         if handoff_authority(provider_context) is not True:
             return (
                 "structural_fixture",
-                ["release_handoff_authority_rejected"],
+                ["release_handoff_authority_rejected", *acceptance_reasons],
                 evidence,
             )
-    return "provider_verified", [], evidence
+    return verified_basis, acceptance_reasons, evidence
 
 
 def _blocking_reasons(reasons):
@@ -834,11 +844,8 @@ def _authorization_consistent(envelope):
         )
     ):
         errors.append("release_provider_evidence_invalid")
-    elif authorized is True and evidence.get("availability") not in {
-        "live",
-        "accepted",
-    }:
-        errors.append("release_authorized_requires_provider_acceptance")
+    elif authorized is True and evidence.get("availability") != "live":
+        errors.append("release_authorized_requires_native_provider_evidence")
     elif "release_provider_evidence_unavailable" in reasons and (
         evidence.get("availability") != "unavailable" or status == "rejected"
     ):
@@ -1075,6 +1082,7 @@ def reconcile_release_assessment(
         status == "verified"
         and not contract_sample
         and authorization_basis == "provider_verified"
+        and provider_evidence.get("availability") == "live"
         and context["mode"] == "publication"
         and assessment.get("status") == "passed"
         and artifact_status == "authorized"
