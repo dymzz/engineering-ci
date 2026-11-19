@@ -1439,6 +1439,21 @@ def project_t1_t2_gate_admission(
         raise RequiredAssessmentError("admission_source_authority_unverified")
 
     source_entries = source.get("entries")
+    source_remaining = source.get("remaining_work")
+    if not isinstance(source_remaining, list):
+        raise RequiredAssessmentError("admission_projection_remaining_invalid")
+    indexed_remaining = {}
+    for item in source_remaining:
+        if not isinstance(item, dict):
+            raise RequiredAssessmentError("admission_projection_remaining_invalid")
+        ref = item.get("expected_check_ref")
+        if (
+            item.get("scope_id") != scope_id
+            or not isinstance(ref, str)
+            or ref in indexed_remaining
+        ):
+            raise RequiredAssessmentError("admission_projection_remaining_invalid")
+        indexed_remaining[ref] = item
     if not isinstance(source_entries, list):
         raise RequiredAssessmentError(code)
     check_by_ref = {check["expected_check_ref"]: check for check in checks}
@@ -1485,10 +1500,16 @@ def project_t1_t2_gate_admission(
         ):
             raise RequiredAssessmentError("admission_projection_coverage_mismatch")
         ids = entry.get("result_ids")
-        if not isinstance(ids, list) or len(ids) != len(set(ids)):
+        if (
+            not isinstance(ids, list)
+            or any(not isinstance(value, str) for value in ids)
+            or len(ids) != len(set(ids))
+        ):
             raise RequiredAssessmentError("admission_projection_result_invalid")
         if record.get("result_ids") != ids:
             raise RequiredAssessmentError("admission_projection_coverage_mismatch")
+        if admitted and ref in indexed_remaining:
+            raise RequiredAssessmentError("admission_admitted_but_remaining")
         applicable_to = {
             **authorization,
             "rule_ref": copy.deepcopy(check.get("rule_ref")),
@@ -1551,6 +1572,7 @@ def project_t1_t2_gate_admission(
                     selected[result_id] = fact
                 if (
                     fact.get("status") == "failed"
+                    and fact.get("selected") is True
                     and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
@@ -1626,13 +1648,21 @@ def project_t1_t2_gate_admission(
         }
         coverage[key] = result
         if not admitted and entry.get("obligation_status") != "not_applicable":
+            native_remaining = indexed_remaining.get(ref) or {}
+            native_reason = native_remaining.get("reason")
+            if native_reason is not None and not isinstance(native_reason, str):
+                raise RequiredAssessmentError("admission_projection_remaining_invalid")
             remaining.append(
                 {
                     "scope_id": scope_id,
                     "expected_check_ref": ref,
-                    "reason": reasons[0] if reasons else "coverage_not_admitted",
+                    "reason": native_reason or reasons[0]
+                    if reasons or native_reason
+                    else "coverage_not_admitted",
                 }
             )
+    if set(indexed_remaining) - set(check_by_ref):
+        raise RequiredAssessmentError("admission_projection_remaining_invalid")
     projection = {
         "kind": ADMISSION_KIND,
         "schema_version": ADMISSION_VERSION,
@@ -1643,7 +1673,7 @@ def project_t1_t2_gate_admission(
         "expected_completeness": scope.get("consumer_completeness"),
         "contract_sample": _flag(
             contract_sample, "admission_projection_sample_invalid"
-        ),
+        ) or _flag(source.get("contract_sample", False), "admission_projection_sample_invalid"),
         "all_observations_reconciled": False,
         "accepted_coverage_by_instance": coverage,
         "authenticated_failures_by_instance": failures,
