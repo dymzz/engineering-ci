@@ -22,6 +22,9 @@ from test_required_assessment import (
     non_check_expected,
     non_check_obligation,
 )
+from test_required_assessment import (
+    EVALUATED_AT as PRIOR_EVALUATED_AT,
+)
 
 from engineering_ci import required_assessment_post as rap
 
@@ -77,7 +80,11 @@ def reconcile(prior, post, **changes):
 
 
 def prior_passed(
-    *, contract_sample=False, candidate_commit="2" * 40, phase="pre_publish"
+    *,
+    contract_sample=False,
+    candidate_commit="2" * 40,
+    phase="pre_publish",
+    evaluated_at=PRIOR_EVALUATED_AT,
 ):
     profile = make_profile()
     entry = make_entry()
@@ -96,7 +103,7 @@ def prior_passed(
         coverage_entries=[(entry, historical_coverage(projection, entry))],
         contract_sample=contract_sample,
     )
-    return assess(universe, projection, admission=admission)
+    return assess(universe, projection, admission=admission, evaluated_at=evaluated_at)
 
 
 def prior_blocked():
@@ -439,12 +446,109 @@ def test_authorized_reevaluation_requires_same_phase():
     assert result["lifecycle_all_phases_passed"] is False
 
 
-def test_contract_sample_cannot_claim_verified_lifecycle():
-    prior = prior_passed(contract_sample=True)
-    post = post_assessment(passed=True, contract_sample=True)
-    result = reconcile(prior, post, contract_sample=True)
+@pytest.mark.parametrize(
+    "prior_sample,post_sample,explicit_sample",
+    [(True, False, False), (False, True, False), (True, True, True)],
+)
+def test_contract_sample_cannot_claim_verified_lifecycle(
+    prior_sample, post_sample, explicit_sample
+):
+    prior = prior_passed(contract_sample=prior_sample)
+    post = post_assessment(contract_sample=post_sample)
+    assert prior["status"] == post["status"] == "passed"
+    result = reconcile(prior, post, contract_sample=explicit_sample)
     assert result["status"] != "verified"
     assert result["contract_sample"] is True
+    assert "contract_sample_inputs_not_production_post_stage" in result["reasons"]
+
+
+@pytest.mark.parametrize(
+    "prior_at,post_at,reason",
+    [
+        (AFTER, BEFORE, "post_prior_assessment_evaluated_in_future"),
+        (PRIOR_EVALUATED_AT, AFTER, "post_assessment_evaluated_in_future"),
+    ],
+)
+def test_reevaluation_rejects_future_assessment(prior_at, post_at, reason):
+    prior = prior_passed(evaluated_at=prior_at)
+    post = post_assessment(phase="pre_publish", evaluated_at=post_at)
+    assert prior["status"] == post["status"] == "passed"
+    result = reconcile(
+        prior, post, trigger_event=trigger(kind="authorized_reevaluation")
+    )
+    assert result["status"] != "verified"
+    assert reason in result["reasons"]
+
+
+@pytest.mark.parametrize("kind", ["run_completed", "authorized_reevaluation"])
+def test_post_before_prior_requires_authorized_historical_reevaluation(kind):
+    prior = prior_passed(evaluated_at=EVALUATED_AT)
+    phase = "pre_publish" if kind == "authorized_reevaluation" else "post_publish"
+    post = post_assessment(phase=phase, evaluated_at=BEFORE)
+    result = reconcile(prior, post, trigger_event=trigger(kind=kind))
+    assert result["status"] != "verified"
+    assert "post_assessment_before_prior_assessment" in result["reasons"]
+
+
+def test_reevaluation_post_before_event_requires_explicit_historical_authorization():
+    prior = prior_passed()
+    post = post_assessment(phase="pre_publish", evaluated_at=BEFORE)
+    result = reconcile(
+        prior, post, trigger_event=trigger(kind="authorized_reevaluation")
+    )
+    assert result["status"] != "verified"
+    assert "post_assessment_before_trigger_event" in result["reasons"]
+
+
+def test_historical_reevaluation_binds_trigger_and_assessment_identities():
+    prior = prior_passed(evaluated_at=EVALUATED_AT)
+    post = post_assessment(phase="pre_publish", evaluated_at=BEFORE)
+    event = trigger(kind="authorized_reevaluation", historical_as_of=BEFORE)
+
+    def authorize_history(context):
+        if (
+            context["trigger_event"] != event
+            or context["prior_assessment_ref"] != prior["assessment_ref"]
+            or context["post_assessment_ref"] != post["assessment_ref"]
+            or context["prior_phase"] != "pre_publish"
+            or context["post_phase"] != "pre_publish"
+            or context["evaluated_at"] != EVALUATED_AT
+        ):
+            return False
+        return {**accept(context), "historical_reevaluation_accepted": True}
+
+    result = reconcile(
+        prior, post, trigger_event=event, trigger_authority=authorize_history
+    )
+    assert result["status"] == "verified"
+    assert result["trigger_event"]["historical_as_of"] == BEFORE
+    assert result["lifecycle_all_phases_passed"] is False
+    assert rap.validate_post_stage(result) is result
+
+    generic_acceptance = reconcile(prior, post, trigger_event=event)
+    assert generic_acceptance["status"] != "verified"
+    assert "post_historical_reevaluation_unproven" in generic_acceptance["reasons"]
+
+    wrong_attempt = reconcile(
+        prior,
+        post,
+        trigger_event={**event, "run_attempt": 2},
+        trigger_authority=authorize_history,
+    )
+    assert wrong_attempt["status"] != "verified"
+    assert "post_trigger_authority_rejected" in wrong_attempt["reasons"]
+
+    wrong_time = reconcile(
+        prior,
+        post,
+        trigger_event={**event, "historical_as_of": EARLIEST},
+        trigger_authority=lambda context: {
+            **accept(context),
+            "historical_reevaluation_accepted": True,
+        },
+    )
+    assert wrong_time["status"] != "verified"
+    assert "post_historical_reevaluation_time_mismatch" in wrong_time["reasons"]
 
 
 def test_validate_rejects_forged_lifecycle_all_phases_true():
