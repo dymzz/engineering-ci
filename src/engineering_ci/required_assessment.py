@@ -1656,9 +1656,10 @@ def project_t1_t2_gate_admission(
                 {
                     "scope_id": scope_id,
                     "expected_check_ref": ref,
-                    "reason": native_reason or reasons[0]
-                    if reasons or native_reason
-                    else "coverage_not_admitted",
+                    "reason": (
+                        native_reason
+                        or (reasons[0] if reasons else "coverage_not_admitted")
+                    ),
                 }
             )
     if set(indexed_remaining) - set(check_by_ref):
@@ -1671,9 +1672,13 @@ def project_t1_t2_gate_admission(
         "expected_set_ref": expected_set_ref,
         "source_admission_ref": source_ref,
         "expected_completeness": scope.get("consumer_completeness"),
-        "contract_sample": _flag(
-            contract_sample, "admission_projection_sample_invalid"
-        ) or _flag(source.get("contract_sample", False), "admission_projection_sample_invalid"),
+        "contract_sample": (
+            _flag(contract_sample, "admission_projection_sample_invalid")
+            or _flag(
+                source.get("contract_sample", False),
+                "admission_projection_sample_invalid",
+            )
+        ),
         "all_observations_reconciled": False,
         "accepted_coverage_by_instance": coverage,
         "authenticated_failures_by_instance": failures,
