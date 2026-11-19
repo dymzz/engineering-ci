@@ -397,8 +397,8 @@ raw results and remaining handoffs are in the
 [dependency inventory](../verification/plan-dependencies/README.md).
 
 The [Forwarding handoff](hygiene.md#forwarding-across-host-and-dagger-new-053)
-records the remaining #66-P0/#86 A.1 work to deliver authorized historical
-inputs alongside the candidate Directory.
+records the remaining #66-P0/#86 A.1 work to consume verified Host Results or
+deliver verified historical inputs when Dagger must execute Forwarding.
 
 The read-only Dagger API may exit 0 while returning a non-passed Report.
 `PlanExecution.enforce` now consumes Report status and its original aggregate

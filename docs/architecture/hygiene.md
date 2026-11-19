@@ -167,34 +167,57 @@ OID for raw Git Blob identity and the text digest for the comparison input.
 In Dagger, `plan_execution(plan, source)` accepts the Plan and the current
 Directory. Its `source_handoff` records the original Plan Git identity and the
 exported Directory's content identity. The Git runner can query objects
-available inside that view. The #66-P0 Host proof records a Baseline reference
-from the Commit and Tree, and `git_commit_present` checks presence in the Host
-ODB. The Dagger entry still needs a producer to supply historical Blob bytes.
-The existing [#86 Data edges](selection.md#native-plan-result-object-86-b-delivery--v2-dependency-closure)
-can deliver verified artifacts when a producer exists. The repository currently
-has no Forwarding producer that delivers authorized historical inputs bound
-to the current Candidate, Directory and Baseline. The export fixture without a
-matching Git context demonstrates the `not_executed`/blocked behavior.
+available inside that view. The export fixture without a matching Git context
+demonstrates the `not_executed`/blocked behavior. Positive Forwarding handoff
+remains open under [#66-P0](https://github.com/dymzz/engineering-ci/issues/66)
+and [#86 A.1](https://github.com/dymzz/engineering-ci/issues/86).
 
-The positive Dagger path remains tracked under [#66-P0 Source](https://github.com/dymzz/engineering-ci/issues/66)
-and [#86 A.1 Git ODB and Source handoff](https://github.com/dymzz/engineering-ci/issues/86).
+Choose the handoff according to the Check policy, the actual consumer, Engine
+and Source availability, and the cost of execution and caching. Prefer the
+verified result when it satisfies the consumer and an authorized producer can
+deliver it. Run in Dagger when the consumer requires that execution context.
 
-- [#66-P0](https://github.com/dymzz/engineering-ci/issues/66) owns the Source
-  producer in the authorized Git context. Its handoff must bind the selected
-  scope and target Candidate/Directory to the Baseline Commit and Tree, the
-  exact selected paths, and verified Blob identities and bytes or proven
-  absence. The consumer needs the historical input itself and its provenance.
-- [#86 A.1](https://github.com/dymzz/engineering-ci/issues/86) owns delivery of
-  that prerequisite to the Forwarding consumer through the existing Plan
-  Source/Data handoff. Verify the received payload and its scope, Candidate,
-  Directory and Baseline bindings before comparison. The selected Forwarding
-  check remains blocked when the required history is unavailable or mismatched.
-- To accept the positive path, run a Dagger Plan with an authorized historical
-  input and a current file whose Base was substantive. Verify the advisory,
-  exact historical Blob and current-file identities, and the Native Result
-  carried through Report/Artifact and #66-C. Also verify that an already
-  forwarding Base can pass, and that a mismatched Candidate, Directory or
-  Baseline cannot supply historical input for a passing Check.
+- **Consume an executed Forwarding Result.** The #66 Source/Host producer
+  runs Forwarding in the authorized ODB and delivers the verifiable Native
+  Result, its `source_ref`, Baseline and Rule, and Report/Artifact with the
+  actual Origin, Run and Attempt. #86 consumes it through the applicable Plan
+  Data or PASS dependency and preserves the Host Origin. #66-C reconciles
+  the structural binding. #63 performs any required Trusted Admission.
+- **Execute Forwarding in Dagger.** If the consumer requires Dagger
+  execution, #66-P0 provides verified historical objects or equivalent
+  content bound to the selected paths, Ref, Candidate, Directory and Baseline
+  Commit/Tree. #86 verifies and delivers that input through the existing Plan
+  Source/Data handoff and captures the Dagger Native Result and its actual
+  Origin. History that is unavailable or bound to a different Source blocks
+  the dependent Check.
+
+For the selected route, verify the Candidate/Directory/Ref and Baseline,
+the input bytes or the authenticated Native Result, its actual Origin, and the
+required Report/Artifact, #66-C and #63 consumption. Exercise an advisory for
+a substantive Base, a passing comparison for an already-forwarding Base,
+and rejection of a mismatched binding. Check that native failure propagates
+to the dependent Check or gate. The accepted Host failure Receipt can supply
+the Host evidence for that case.
+
+### Historical inputs in the pre-execution proof (#66-P0)
+
+`build_pre_execution_source_proof()` can report `verified_candidate_inputs`
+and `check_input_closure` for Forwarding while a selected historical Blob is
+unreadable. In a disposable Git repository, removing only the loose Blob
+left the proof identical while `git cat-file -e` exited 1. The
+`baseline_source_ref` identifies the resolved Commit and Tree. Local read
+readiness needs separate evidence for the selected Blob members.
+
+The [#66-P0 pre-execution follow-up](https://github.com/dymzz/engineering-ci/issues/66)
+owns that proof boundary. Readiness for a new native execution needs proof of
+the selected historical entries and their readable contents or verified
+absence. Record an unverified readiness state when a required object is
+unavailable. Cross-run equivalence can use authenticated historical read
+evidence and immutable Git object identities without re-reading Blob bytes
+in the current ODB. #63 T2 must verify that evidence against the current
+Expected, Source, Baseline, Check, Rule, Tool, Environment, policy and
+freshness. The existing comparison helper evaluates one Result's input
+equivalence.
 
 ## Verification
 
