@@ -465,6 +465,14 @@ def test_osv_260_capture_binds_groups_before_sanitizing():
         "--all-packages"
     )
     assert invocation["report"]["scanner_exit_code"] == capture["native_exit_code"]
+    published = (root / "capture.json").read_text(encoding="utf-8")
+    assert "Users/" not in published and "AppData" not in published
+    assert "trimmed replay" in capture["document_limits"]
+    assert "only id" in capture["document_limits"]
+    assert all(
+        path.startswith("C:/Temp/engineering-ci-security-zkg19icg/")
+        for path in invocation["observed_source_paths"]
+    )
     _expected, unsupported, scanner_lock, selected = security.lock_inventory(
         tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")),
         (root / "uv.lock").read_bytes().replace(b"\r\n", b"\n").decode(),

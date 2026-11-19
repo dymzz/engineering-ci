@@ -29,9 +29,10 @@
     ],
     "temp_directory": "engineering-ci-security-zkg19icg",
     "observed_source_paths": [
-      "C:/Users/Aurola/AppData/Local/Temp/engineering-ci-security-zkg19icg/osv-scanner.json",
-      "C:/Users/Aurola/AppData/Local/Temp/engineering-ci-security-zkg19icg/uv.lock"
+      "C:/Temp/engineering-ci-security-zkg19icg/osv-scanner.json",
+      "C:/Temp/engineering-ci-security-zkg19icg/uv.lock"
     ],
+    "path_redaction": "The live scan wrote both inputs under the user temporary directory. This public record keeps the directory name engineering-ci-security-zkg19icg and replaces the user-profile prefix with C:/Temp. The replay document uses C:/scan-input for that same directory.",
     "observed_packages": [
       ["GIT", "https://github.com/kjd/idna.git", "", "729225d8b0c58bc66bb38d1d0faf281a757ece59"],
       ["PyPI", "idna", "3.10", null]
@@ -44,7 +45,7 @@
       "gate_exit_code": 1
     }
   },
-  "note": "One osv-scanner 2.6.0 dual-input scan of the uv 0.12.23 mixed lock. The replay document replaces that temporary directory with C:/scan-input and keeps the forward-slash form OSV wrote. scanner.json in a bundle is the sanitized projection, not this file.",
+  "document_limits": "This file is a trimmed replay, not the unmodified scanner.json. document.results[].packages[].vulnerabilities keeps only id; affected ranges, aliases, summaries and every other OSV vulnerability field were not saved. Source paths are replaced as path_redaction describes. The original scanner output bytes were not retained, so this sample cannot be checked byte-for-byte against that output. The invocation, exit code, input digests and package entities remain the evidence.",
   "document": {
     "results": [
       {
