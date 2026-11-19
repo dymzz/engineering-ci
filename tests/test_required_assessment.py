@@ -3757,6 +3757,7 @@ def test_df02_t1_authenticated_native_failure_is_unmet_not_pass():
 def test_df02_t2_historical_result_binding_and_no_current_receipt():
     universe, expected, entry, key = _df02_scope()
     result_id = RESULT_ID
+    additional_id = "sha256:" + "e" * 64
     authorization = {
         **_df02_current_authorization(),
         "profile_sha256": expected["effective_profile"]["profile_sha256"],
@@ -3774,7 +3775,7 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
         "admitted": True,
         "origin_status": "verified",
         "obligation_status": "satisfied",
-        "result_ids": [result_id],
+        "result_ids": [result_id, additional_id],
         "result_origins": [
             {
                 "result_id": result_id,
@@ -3782,7 +3783,14 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
                 "attempt_ref": ATTEMPT_REF,
                 "runner_ref": RUNNER_REF,
                 "result_origin": "host",
-            }
+            },
+            {
+                "result_id": additional_id,
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "result_origin": "host",
+            },
         ],
         "equivalence_basis": basis,
         "reasons": [],
@@ -3800,7 +3808,7 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
         "accepted_coverage_by_instance": {
             key: {
                 "admission_status": "admitted",
-                "result_ids": [result_id],
+                "result_ids": [result_id, additional_id],
             },
         },
         "remaining_work": [],
@@ -3817,6 +3825,8 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
     row = check_row(result, entry)
     assert row["status"] == "satisfied"
     assert row["admission"]["source_kind"] == "historical_reuse"
+    assert row["admission"]["witness_result_ids"] == [result_id, additional_id]
+    assert row["evidence_refs"] == [result_id, additional_id]
     assert row["structural"]["status"] == "not_supplied"
 
     changed = copy.deepcopy(original)
