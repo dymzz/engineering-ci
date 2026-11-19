@@ -85,8 +85,9 @@ The verification and publication adapters reuse the existing Release Provider.
 
 | Availability | Meaning | Reconciliation status |
 | --- | --- | --- |
-| `live` | The upload step log and Artifact identity were read and agreed | May be `verified` |
-| `contradicted` | A completed read disagreed on Artifact ID, Attempt, Job, or digest | `rejected` |
+| `live` | `manifest_provider_from_verification` or `manifest_provider_from_publication` completed the existing native read | May be `verified` |
+| `accepted` | A caller callback returned true. This is not a native Job/Step/Artifact read | May be `verified` for a contract fixture |
+| `contradicted` | The existing verifier observed a failed or missing upload step, or an ID/Attempt/digest disagreement | `rejected` |
 | `unavailable` | The API or step log could not be read (401/403/404, empty log, expired origin no longer accessible) | `unverified` |
 | `not_consulted` | No provider authority was supplied | `unverified` |
 

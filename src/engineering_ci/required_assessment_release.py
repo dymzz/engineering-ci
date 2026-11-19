@@ -448,23 +448,41 @@ def _artifact_set_authorized(obligations, *, authority, snapshot):
     raise RequiredAssessmentReleaseError("artifact_obligation_authority_result_invalid")
 
 
-def _provider_evidence(availability, *, error_class=None, http_status=None):
+class _NativeProviderRead:
+    """Provenance minted only by the verification and publication adapters."""
+
+    def __init__(self, source):
+        self.source = source
+
+
+def _provider_evidence(
+    availability, *, error_class=None, http_status=None, source=None
+):
     return {
         "availability": availability,
         "error_class": error_class,
         "http_status": http_status,
+        "source": source,
     }
 
 
 def _provider_failure(exc):
-    """Separate an observed identity contradiction from evidence that cannot be read.
+    """Classify provider failures by exception type, not by message text.
 
-    A successful native read that disagrees on Artifact ID, Attempt, Job, or
-    digest stays a rejection. HTTP failures, missing step logs, and other
-    unreadable inputs stay unverified and keep the original error class/status.
-    Missing logs are not treated as a producer mismatch and are not accepted
-    from name, HEAD, and Run alone.
+    ``ReleaseEvidenceUnavailable`` and ``ApiError`` mean the native read did not
+    return evidence. Any other ``ValueError`` from the existing verifier is an
+    observed Job, Step, Attempt, ID, or digest failure.
     """
+    if isinstance(exc, release_manifest.ReleaseEvidenceUnavailable):
+        return {
+            "accepted": False,
+            "status": "unverified",
+            "reason": "release_provider_evidence_unavailable",
+            "provider_error": {
+                "class": exc.error_class,
+                "status": exc.http_status,
+            },
+        }
     if isinstance(exc, ApiError):
         return {
             "accepted": False,
@@ -473,26 +491,7 @@ def _provider_failure(exc):
             "provider_error": {"class": "ApiError", "status": exc.status},
         }
     if isinstance(exc, ValueError):
-        text = str(exc)
-        contradicted = any(
-            token in text
-            for token in (
-                "does not match",
-                "mismatch",
-                "another Run",
-                "another attempt",
-                "stale",
-                "did not complete",
-            )
-        )
-        if contradicted:
-            return False
-        return {
-            "accepted": False,
-            "status": "unverified",
-            "reason": "release_provider_evidence_unavailable",
-            "provider_error": {"class": "ValueError", "status": None},
-        }
+        return False
     raise exc
 
 
@@ -512,7 +511,7 @@ def manifest_provider_from_verification(api):
             )
         except (ApiError, ValueError) as exc:
             return _provider_failure(exc)
-        return True
+        return _NativeProviderRead("verification.evidence")
 
     return authority
 
@@ -533,7 +532,7 @@ def manifest_provider_from_publication(api):
             )
         except (ApiError, ValueError) as exc:
             return _provider_failure(exc)
-        return True
+        return _NativeProviderRead("publishing.published_evidence")
 
     return authority
 
@@ -559,7 +558,12 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
         "publish_context": copy.deepcopy(context),
     }
     accepted = provider_authority(provider_context)
-    if isinstance(accepted, dict) and accepted.get("status") == "unverified":
+    if isinstance(accepted, _NativeProviderRead):
+        evidence = _provider_evidence("live", source=accepted.source)
+    elif accepted is True:
+        # Callback acceptance is not an observed Job/Step/Artifact read.
+        evidence = _provider_evidence("accepted")
+    elif isinstance(accepted, dict) and accepted.get("status") == "unverified":
         error = accepted.get("provider_error") or {}
         error_class = error.get("class")
         http_status = error.get("status")
@@ -576,7 +580,7 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
                 http_status=http_status,
             ),
         )
-    if accepted is not True:
+    else:
         return (
             "structural_fixture",
             ["release_provider_authority_rejected"],
@@ -587,15 +591,15 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
             return (
                 "structural_fixture",
                 ["release_handoff_authority_missing"],
-                _provider_evidence("live"),
+                evidence,
             )
         if handoff_authority(provider_context) is not True:
             return (
                 "structural_fixture",
                 ["release_handoff_authority_rejected"],
-                _provider_evidence("live"),
+                evidence,
             )
-    return "provider_verified", [], _provider_evidence("live")
+    return "provider_verified", [], evidence
 
 
 def _blocking_reasons(reasons):
@@ -809,18 +813,32 @@ def _authorization_consistent(envelope):
     evidence = envelope.get("provider_evidence")
     if (
         not isinstance(evidence, dict)
-        or set(evidence) != {"availability", "error_class", "http_status"}
+        or set(evidence) != {"availability", "error_class", "http_status", "source"}
         or evidence.get("availability")
-        not in {"live", "unavailable", "contradicted", "not_consulted"}
+        not in {"live", "accepted", "unavailable", "contradicted", "not_consulted"}
         or evidence.get("error_class") not in {None, "ApiError", "ValueError"}
+        or evidence.get("source")
+        not in {None, "verification.evidence", "publishing.published_evidence"}
+        or (
+            evidence.get("availability") == "live"
+            and evidence.get("source")
+            not in {"verification.evidence", "publishing.published_evidence"}
+        )
+        or (
+            evidence.get("availability") != "live"
+            and evidence.get("source") is not None
+        )
         or (
             evidence.get("http_status") is not None
             and type(evidence.get("http_status")) is not int
         )
     ):
         errors.append("release_provider_evidence_invalid")
-    elif authorized is True and evidence.get("availability") != "live":
-        errors.append("release_authorized_requires_live_provider_evidence")
+    elif authorized is True and evidence.get("availability") not in {
+        "live",
+        "accepted",
+    }:
+        errors.append("release_authorized_requires_provider_acceptance")
     elif "release_provider_evidence_unavailable" in reasons and (
         evidence.get("availability") != "unavailable" or status == "rejected"
     ):

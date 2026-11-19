@@ -10,6 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from ..github_cli import ApiError
 from . import RELEASE_CONFIG
 from .registry import (
     ARTIFACT_NAMES,
@@ -33,6 +34,33 @@ UPLOAD_RESULT = re.compile(
     r"Final size is [0-9]+ bytes\. Artifact ID is ([1-9][0-9]*)"
 )
 # These are the actual v0.4.8 release jobs/steps, not a new execution plan.
+
+
+class ReleaseEvidenceUnavailable(ValueError):
+    """A native Release read did not return evidence. This is not a mismatch."""
+
+    def __init__(self, message, *, error_class, http_status=None):
+        super().__init__(message)
+        self.error_class = error_class
+        self.http_status = http_status
+
+
+def _read_upload_step_log(api, job_id, step_number):
+    """Read one upload step log. Transport and empty-log failures stay unavailable."""
+    try:
+        return api.job_step_log(job_id, step_number)
+    except ApiError as exc:
+        raise ReleaseEvidenceUnavailable(
+            "Artifact upload step log is unreadable",
+            error_class="ApiError",
+            http_status=exc.status,
+        ) from exc
+    except ValueError as exc:
+        raise ReleaseEvidenceUnavailable(
+            "Artifact upload step log is unreadable",
+            error_class="ValueError",
+            http_status=None,
+        ) from exc
 
 
 def dagger_cli_version(output):
@@ -114,7 +142,7 @@ def artifact_upload_id(api, name, head, run_id, attempt, *, jobs=None):
     if type(step_number) is not int or step_number <= 0:
         raise ValueError(f"Artifact upload step number unavailable: {name}")
     ids = []
-    for line in api.job_step_log(job_id, step_number).splitlines():
+    for line in _read_upload_step_log(api, job_id, step_number).splitlines():
         match = UPLOAD_RESULT.fullmatch(line)
         if match and match[1] == name:
             ids.append(int(match[2]))

@@ -347,7 +347,16 @@ def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding()
         "availability": "live",
         "error_class": None,
         "http_status": None,
+        "source": "verification.evidence",
     }
+
+
+def test_callback_acceptance_is_not_native_live_proof():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(assessment)
+    assert result["release_authorized"] is True
+    assert result["provider_evidence"]["availability"] == "accepted"
+    assert result["provider_evidence"]["source"] is None
 
 
 def test_provider_rejects_same_name_wrong_artifact_digest():
@@ -393,30 +402,56 @@ def test_unreadable_upload_step_log_stays_unverified(status_code):
         "availability": "unavailable",
         "error_class": "ApiError",
         "http_status": status_code,
+        "source": None,
     }
 
 
-def test_ambiguous_upload_step_log_is_unavailable_not_a_mismatch():
-    class Ambiguous(R4ManifestGitHub):
-        def job_step_log(self, job_id, step_number):
-            raise ValueError(
-                "Artifact ID unavailable or ambiguous in the upload step: "
-                "release-manifest"
-            )
+def test_failed_upload_step_is_an_observed_contradiction():
+    class FailedUpload(R4ManifestGitHub):
+        def __init__(self):
+            super().__init__()
+            for job in self.jobs:
+                for step in job["steps"]:
+                    key = (job["id"], step.get("number"))
+                    recorded = self.upload_ids.get(key)
+                    if recorded and recorded[0] == "pytest-report":
+                        step["conclusion"] = "failure"
 
     assessment, _ = passed_assessment(contract_sample=False)
     result = authorize(
         assessment,
         manifest=make_v1_manifest(),
         manifest_provider_authority=rar.manifest_provider_from_verification(
-            Ambiguous()
+            FailedUpload()
         ),
     )
-    assert result["status"] == "unverified"
+    assert result["status"] == "rejected"
     assert result["release_authorized"] is False
-    assert result["provider_evidence"]["availability"] == "unavailable"
-    assert result["provider_evidence"]["error_class"] == "ValueError"
-    assert "release_provider_authority_rejected" not in result["reasons"]
+    assert result["provider_evidence"]["availability"] == "contradicted"
+    assert "release_provider_evidence_unavailable" not in result["reasons"]
+
+
+def test_wrong_upload_step_artifact_id_is_an_observed_contradiction():
+    class WrongUploadId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            name, asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return text
+            return text.replace(f"Artifact ID is {asset_id}", "Artifact ID is 99999")
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            WrongUploadId()
+        ),
+    )
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "contradicted"
+    assert "release_provider_authority_rejected" in result["reasons"]
 
 
 def test_invalid_v1_artifact_digest_format_is_rejected():
