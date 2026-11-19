@@ -1,12 +1,16 @@
 """Exact Git identity and native advisory-query failures remain blocking."""
 
 import ast
+import hashlib
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 from test_dependency_security import FakeRunner, native, run
 from test_dependency_security import project as base_project
+
+from engineering_ci import dependency_security as security
 
 project = base_project
 
@@ -62,15 +66,27 @@ def policy(project, *, commit=SHA, repository=REPO):
 
 def git_native(*ids):
     result = native()
-    result["results"][0]["packages"].append(
+    result["results"].append(
         {
-            "package": {"name": REPO, "version": "", "ecosystem": "GIT", "commit": SHA},
-            "vulnerabilities": [
+            "source": {"path": "/tmp/osv-scanner.json", "type": "lockfile"},
+            "packages": [
                 {
-                    "id": item,
-                    "affected": [{"package": {"ecosystem": "GIT", "name": REPO}}],
+                    "package": {
+                        "name": REPO,
+                        "version": "",
+                        "ecosystem": "GIT",
+                        "commit": SHA,
+                    },
+                    "vulnerabilities": [
+                        {
+                            "id": item,
+                            "affected": [
+                                {"package": {"ecosystem": "GIT", "name": REPO}}
+                            ],
+                        }
+                        for item in ids
+                    ],
                 }
-                for item in ids
             ],
         }
     )
@@ -176,7 +192,7 @@ def test_unapproved_or_inconsistent_git_never_queries(project, change):
 def test_native_git_coverage_and_api_failures_are_not_a_pass(project, kind):
     path = prepare(project)
     result, code = git_native(), 0
-    package = result["results"][0]["packages"][-1]["package"]
+    package = result["results"][1]["packages"][0]["package"]
     if kind == "missing_git":
         result = native()
     elif kind == "wrong_commit":
@@ -242,9 +258,389 @@ def test_git_only_inventory_is_actually_scanned(project):
     root = lock.read_text().split('[[package]]\nname = "idna"')[0]
     lock.write_text(root + GIT)
     value = git_native()
-    value["results"][0]["packages"] = value["results"][0]["packages"][-1:]
+    value["results"] = value["results"][1:]
     report, _, fake = run(project, GitRunner(value), git_policy_path=path)
     assert report["status"] == "passed" and report["dependencies_scanned"] == 1
     flags = next(args for args in fake.requested if "scan" in args)
     assert len([arg for arg in flags if arg.startswith("--lockfile=")]) == 1
     assert any(arg.startswith("--lockfile=osv-scanner:") for arg in flags)
+
+
+# uv 0.12.23 `lock --check` accepted this shape: idna 3.10 from PyPI on
+# non-Windows and the same version from an exact Git rev on Windows.
+IDNA_REPO = "https://github.com/kjd/idna.git"
+IDNA_SHA = "729225d8b0c58bc66bb38d1d0faf281a757ece59"
+
+
+def mixed_lock(project):
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="sample"\nversion="0.1.0"\ndependencies=["idna"]\n\n'
+        "[tool.uv.sources]\n"
+        "idna = { git = "
+        f'"{IDNA_REPO}", rev = "{IDNA_SHA}", '
+        "marker = \"sys_platform == 'win32'\" }\n",
+        encoding="utf-8",
+    )
+    (project / "uv.lock").write_text(
+        "version = 1\n"
+        '[[package]]\nname = "sample"\nversion = "0.1.0"\n'
+        'source = { virtual = "." }\n'
+        '[[package]]\nname = "idna"\nversion = "3.10"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        '[[package]]\nname = "idna"\nversion = "3.10"\n'
+        f'source = {{ git = "{IDNA_REPO}?rev={IDNA_SHA}#{IDNA_SHA}" }}\n',
+        encoding="utf-8",
+    )
+    location = project / "git-policy.toml"
+    location.write_text(
+        "schema_version = 1\n[[git_sources]]\n"
+        f'package = "idna"\nrepository = "{IDNA_REPO}"\ncommit = "{IDNA_SHA}"\n',
+        encoding="utf-8",
+    )
+    return location
+
+
+def mixed_native(*, registry=True, git_source="osv-scanner.json"):
+    results = []
+    if registry:
+        results.append(
+            {
+                "source": {
+                    "path": r"C:\Temp\engineering-ci-security-\uv.lock",
+                    "type": "lockfile",
+                },
+                "packages": [
+                    {
+                        "package": {
+                            "name": "idna",
+                            "version": "3.10",
+                            "ecosystem": "PyPI",
+                        },
+                        "vulnerabilities": [],
+                    }
+                ],
+            }
+        )
+    results.append(
+        {
+            "source": {
+                "path": f"/tmp/engineering-ci-security-/{git_source}",
+                "type": "lockfile",
+            },
+            "packages": [
+                {
+                    "package": {
+                        "name": IDNA_REPO,
+                        "version": "",
+                        "ecosystem": "GIT",
+                        "commit": IDNA_SHA,
+                    },
+                    "vulnerabilities": [],
+                }
+            ],
+        }
+    )
+    return {"results": results}
+
+
+def test_same_name_registry_entity_stays_when_git_entity_is_split(project):
+    path = mixed_lock(project)
+    report, raw, fake = run(project, GitRunner(mixed_native()), git_policy_path=path)
+    assert report["status"] == "passed"
+    assert report["dependencies_scanned"] == 2
+    assert IDNA_SHA not in fake.lock
+    assert 'registry = "https://pypi.org/simple"' in fake.lock
+    assert [item["source"]["path"] for item in raw["results"]] == [
+        "uv.lock",
+        "approved-git-native-input",
+    ]
+    assert "engineering-ci-security" not in json.dumps(raw["results"])
+    assert fake.git_input["results"][0]["packages"][0]["package"] == {
+        "name": IDNA_REPO,
+        "commit": IDNA_SHA,
+    }
+
+
+def test_missing_registry_sibling_is_a_coverage_gap(project):
+    path = mixed_lock(project)
+    report, _, fake = run(
+        project, GitRunner(mixed_native(registry=False)), git_policy_path=path
+    )
+    assert report["status"] == "error"
+    assert report["diagnostics"] == ["scan_coverage_gap"]
+    assert "scan" in fake.requested[-1]
+
+
+def test_git_result_is_not_relabeled_as_uv_lock(project):
+    path = mixed_lock(project)
+    report, raw, _ = run(
+        project,
+        GitRunner(mixed_native(registry=False, git_source="other.lock")),
+        git_policy_path=path,
+    )
+    assert report["diagnostics"] == ["scan_source_mismatch"]
+    assert raw is None
+
+
+def test_git_entity_in_registry_group_is_rejected(project):
+    path = mixed_lock(project)
+    swapped = mixed_native()
+    swapped["results"] = [swapped["results"][0]]
+    package = swapped["results"][0]["packages"][0]["package"]
+    package.update(ecosystem="GIT", name=IDNA_REPO, version="", commit=IDNA_SHA)
+    report, raw, _ = run(project, GitRunner(swapped), git_policy_path=path)
+    assert report["diagnostics"] == ["scan_source_mismatch"]
+    assert raw is None
+
+
+def test_registry_entity_in_git_group_is_rejected(project):
+    path = mixed_lock(project)
+    swapped = mixed_native()
+    swapped["results"] = [swapped["results"][1]]
+    package = swapped["results"][0]["packages"][0]["package"]
+    package.clear()
+    package.update(ecosystem="PyPI", name="idna", version="3.10")
+    report, raw, _ = run(project, GitRunner(swapped), git_policy_path=path)
+    assert report["diagnostics"] == ["scan_source_mismatch"]
+    assert raw is None
+
+
+def test_uv_01223_lock_keeps_the_registry_sibling():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    policy = {
+        "idna": {
+            "repository": "https://github.com/kjd/idna.git",
+            "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+        }
+    }
+    expected, unsupported, scanner_lock, selected = security.lock_inventory(
+        project,
+        (root / "uv.lock").read_text(encoding="utf-8"),
+        ["https://mirrors.aliyun.com/pypi/simple"],
+        policy,
+    )
+    parsed = tomllib.loads(scanner_lock)
+    idna = [item for item in parsed["package"] if item["name"] == "idna"]
+    assert unsupported == []
+    assert expected == {("idna", "3.10")}
+    assert len(idna) == 1 and idna[0]["source"]["registry"].startswith("https://")
+    assert selected[0]["commit"] == policy["idna"]["commit"]
+    recorded = (root / "uv.lock").read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(recorded).hexdigest() == (
+        "5eb6c0c02c960d11c7f4c252f38ed398721ce177d4ec4be18cc2501946a4a0a0"
+    )
+
+
+def test_osv_260_capture_binds_groups_before_sanitizing():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    capture = json.loads((root / "capture.json").read_text(encoding="utf-8"))
+    parsed, projected = security.scanner_result(
+        json.dumps(capture["document"]).encode(),
+        {("idna", "3.10")},
+        capture["native_exit_code"],
+        100,
+        (
+            {
+                "repository": "https://github.com/kjd/idna.git",
+                "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+            },
+        ),
+        source_inputs={
+            r"C:\scan-input\uv.lock": "pypi",
+            r"C:\scan-input\osv-scanner.json": "git",
+        },
+    )
+    assert parsed["status"] == "failed"
+    assert parsed["dependencies_scanned"] == 2
+    assert {item["id"] for item in parsed["vulnerabilities"]} == set(
+        capture["vulnerability_ids"]
+    )
+    assert [item["source"]["path"] for item in projected["results"]] == [
+        "approved-git-native-input",
+        "uv.lock",
+    ]
+    invocation = capture["native_invocation"]
+    assert invocation["argv"][invocation["argv"].index("--format=json") + 1] == (
+        "--all-packages"
+    )
+    assert invocation["report"]["scanner_exit_code"] == capture["native_exit_code"]
+    published = (root / "capture.json").read_text(encoding="utf-8")
+    assert "Users/" not in published and "AppData" not in published
+    assert "trimmed replay" in capture["document_limits"]
+    assert "only id" in capture["document_limits"]
+    assert all(
+        path.startswith("C:/Temp/engineering-ci-security-zkg19icg/")
+        for path in invocation["observed_source_paths"]
+    )
+    _expected, unsupported, scanner_lock, selected = security.lock_inventory(
+        tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")),
+        (root / "uv.lock").read_bytes().replace(b"\r\n", b"\n").decode(),
+        [invocation["public_index"]],
+        {
+            "idna": {
+                "repository": "https://github.com/kjd/idna.git",
+                "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+            }
+        },
+    )
+    git_input = {
+        "results": [
+            {
+                "packages": [
+                    {
+                        "package": {
+                            "name": item["repository"],
+                            "commit": item["commit"],
+                        }
+                    }
+                    for item in selected
+                ]
+            }
+        ]
+    }
+    assert unsupported == []
+    assert (
+        hashlib.sha256(scanner_lock.encode()).hexdigest()
+        == (capture["inputs"]["generated_pypi_lock"])
+    )
+    assert (
+        hashlib.sha256(json.dumps(git_input).encode()).hexdigest()
+        == (capture["inputs"]["generated_git_custom_lockfile"])
+    )
+
+
+def _replay(document, source_inputs, *, git=True):
+    return security.scanner_result(
+        json.dumps(document).encode(),
+        {("idna", "3.10")},
+        1,
+        100,
+        (
+            (
+                {
+                    "repository": "https://github.com/kjd/idna.git",
+                    "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+                },
+            )
+            if git
+            else ()
+        ),
+        source_inputs=source_inputs,
+    )
+
+
+def test_windows_source_paths_match_across_slash_and_case():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"][1]["source"]["path"] = "c:/scan-input/uv.lock"
+    parsed, _projected = _replay(
+        document,
+        {
+            r"C:\Scan-Input\uv.lock": "pypi",
+            r"C:\scan-input\osv-scanner.json": "git",
+        },
+    )
+    assert parsed["dependencies_scanned"] == 2
+
+
+def test_same_filename_in_another_directory_is_not_this_input():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"][1]["source"]["path"] = "C:/other-dir/uv.lock"
+    with pytest.raises(security.SecurityError) as error:
+        _replay(
+            document,
+            {
+                r"C:\scan-input\uv.lock": "pypi",
+                r"C:\scan-input\osv-scanner.json": "git",
+            },
+        )
+    assert error.value.category == "scan_source_mismatch"
+
+
+def test_posix_source_path_case_is_distinct():
+    document = {
+        "results": [
+            {
+                "source": {"path": "/tmp/Foo/uv.lock", "type": "lockfile"},
+                "packages": [
+                    {
+                        "package": {
+                            "name": "idna",
+                            "version": "3.10",
+                            "ecosystem": "PyPI",
+                        },
+                        "vulnerabilities": [{"id": "GHSA-65pc-fj4g-8rjx"}],
+                    }
+                ],
+            }
+        ]
+    }
+    with pytest.raises(security.SecurityError) as error:
+        security.scanner_result(
+            json.dumps(document).encode(),
+            {("idna", "3.10")},
+            1,
+            100,
+            (),
+            source_inputs={"/tmp/foo/uv.lock": "pypi"},
+        )
+    assert error.value.category == "scan_source_mismatch"
+    parsed, projected = security.scanner_result(
+        json.dumps(document).encode(),
+        {("idna", "3.10")},
+        1,
+        100,
+        (),
+        source_inputs={"/tmp/Foo/uv.lock": "pypi"},
+    )
+    assert parsed["dependencies_scanned"] == 1
+    assert projected["results"][0]["source"]["path"] == "uv.lock"
+
+
+def test_duplicate_result_group_for_one_input_is_rejected():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"].append(json.loads(json.dumps(document["results"][1])))
+    with pytest.raises(security.SecurityError) as error:
+        _replay(
+            document,
+            {
+                r"C:\scan-input\uv.lock": "pypi",
+                r"C:\scan-input\osv-scanner.json": "git",
+            },
+        )
+    assert error.value.category == "scan_source_mismatch"
+
+
+def test_missing_or_mistyped_source_is_not_a_pass(project):
+    path = mixed_lock(project)
+    missing = mixed_native()
+    del missing["results"][0]["source"]
+    report, raw, _ = run(project, GitRunner(missing), git_policy_path=path)
+    assert report["diagnostics"] == ["scanner_response_invalid"] and raw is None
+    mistyped = mixed_native()
+    mistyped["results"][1]["source"]["type"] = "sbom"
+    report, raw, _ = run(project, GitRunner(mistyped), git_policy_path=path)
+    assert report["diagnostics"] == ["scanner_response_invalid"] and raw is None
+
+
+def test_tag_query_is_not_an_approved_mixed_source(project):
+    path = mixed_lock(project)
+    lock = project / "uv.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace("?rev=" + IDNA_SHA, "?tag=v3.10"),
+        encoding="utf-8",
+    )
+    report, raw, fake = run(project, GitRunner(mixed_native()), git_policy_path=path)
+    assert report["status"] == "error"
+    assert raw is None
+    assert not any("scan" in args for args in fake.requested)
+    assert report["unsupported_dependency_count"] == 1

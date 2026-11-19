@@ -1,0 +1,8 @@
+[project]
+name = "mixsrc"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["idna"]
+
+[tool.uv.sources]
+idna = { git = "https://github.com/kjd/idna.git", rev = "729225d8b0c58bc66bb38d1d0faf281a757ece59", marker = "sys_platform == 'win32'" }

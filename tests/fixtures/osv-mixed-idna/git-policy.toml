@@ -1,0 +1,5 @@
+schema_version = 1
+[[git_sources]]
+package = "idna"
+repository = "https://github.com/kjd/idna.git"
+commit = "729225d8b0c58bc66bb38d1d0faf281a757ece59"

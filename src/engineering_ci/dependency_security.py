@@ -228,6 +228,32 @@ def git_policy(path):
         raise SecurityError("git_policy_invalid") from None
 
 
+def _root_git_declaration_matches(declared, repository, commit):
+    """Accept one exact pin, including uv's marker-qualified exact rev.
+
+    This is the single approved Git repository/commit plus a registry sibling.
+    A platform marker does not change that pin. Tags, branches, source lists
+    and a second Git pin stay unapproved.
+    """
+    if declared is None:
+        return True
+    if not isinstance(declared, dict):
+        return False
+    keys = set(declared)
+    if keys == {"git", "rev", "marker"}:
+        marker = declared.get("marker")
+        if (
+            not isinstance(marker, str)
+            or not marker.strip()
+            or len(marker) > 512
+            or any(character in marker for character in "\0\r\n")
+        ):
+            return False
+    elif keys != {"git", "rev"}:
+        return False
+    return declared.get("git") == repository and declared.get("rev") == commit
+
+
 def approved_git(name, source, project, policy):
     """Match the actual lock identity and any root declaration to the explicit pin."""
     if (
@@ -247,10 +273,7 @@ def approved_git(name, source, project, policy):
     ):
         return False
     declared = project.get("tool", {}).get("uv", {}).get("sources", {}).get(name)
-    return declared is None or declared == {
-        "git": repository,
-        "rev": expected["commit"],
-    }
+    return _root_git_declaration_matches(declared, repository, expected["commit"])
 
 
 def lock_inventory(project, lock_text, public_indexes=(), git_sources=None):
@@ -326,18 +349,29 @@ def lock_inventory(project, lock_text, public_indexes=(), git_sources=None):
             raise SecurityError("local_project_exclusion_unavailable")
     if selected_git:
         # Native uv output labels Git entries PyPI; use explicit Git identities.
-        # Move only approved Git entries to the native custom-lockfile input.
-        names = {item["package"] for item in selected_git}
+        # Remove only the approved entity. uv 0.12.23 can lock the same name and
+        # version twice, once from a registry and once from an exact Git rev.
         parsed = tomllib.loads(lock_text)
+
+        def selected_entity(package):
+            source = package.get("source")
+            if not isinstance(source, dict):
+                return False
+            name = _name(package["name"])
+            version = package.get("version")
+            return any(
+                item["package"] == name and item["version"] == version
+                for item in selected_git
+            ) and approved_git(name, source, project, git_sources)
+
         blocks = lock_text.split("[[package]]")
         lock_text = blocks[0] + "".join(
             "[[package]]" + block
             for block in blocks[1:]
-            if _name(tomllib.loads("[[package]]" + block)["package"][0]["name"])
-            not in names
+            if not selected_entity(tomllib.loads("[[package]]" + block)["package"][0])
         )
         parsed["package"] = [
-            item for item in parsed["package"] if _name(item["name"]) not in names
+            item for item in parsed["package"] if not selected_entity(item)
         ]
         if tomllib.loads(lock_text) != parsed:
             raise SecurityError("git_scan_input_invalid")
@@ -364,7 +398,41 @@ def _json(data):
         raise SecurityError("scanner_response_invalid") from None
 
 
-def scanner_result(raw, expected, exit_code, max_findings, git_sources=()):
+def _input_key(path):
+    """Identity of one scan input path, independent of the host OS.
+
+    OSV 2.6.0 on Windows writes the same absolute path back with forward
+    slashes. Drive and UNC paths are case-insensitive; POSIX paths stay
+    case-sensitive. Matching uses the whole path, not the file name.
+    """
+    text = str(path).strip().replace("\\", "/")
+    if re.fullmatch(r"[A-Za-z]:/.*", text) or text.startswith("//"):
+        return text.casefold()
+    return text
+
+
+def _bound_scan_source(native, allowed, seen):
+    """Require this result group to be one of this invocation's lock inputs."""
+    if not isinstance(native, dict):
+        raise SecurityError("scanner_response_invalid")
+    path, kind = native.get("path"), native.get("type")
+    if (
+        kind != "lockfile"
+        or not isinstance(path, str)
+        or not path.strip()
+        or any(character in path for character in "\0\r\n")
+    ):
+        raise SecurityError("scanner_response_invalid")
+    key = _input_key(path)
+    if key not in allowed or key in seen:
+        raise SecurityError("scan_source_mismatch")
+    seen.add(key)
+    return allowed[key]
+
+
+def scanner_result(
+    raw, expected, exit_code, max_findings, git_sources=(), source_inputs=None
+):
     """Interpret the pinned all-packages contract, not terminal output."""
     if exit_code not in (0, 1):
         raise SecurityError(
@@ -383,13 +451,27 @@ def scanner_result(raw, expected, exit_code, max_findings, git_sources=()):
         raise SecurityError("scanner_response_invalid")
     actual, findings, actual_git = set(), {}, set()
     expected_git = {(item["repository"], item["commit"]) for item in git_sources}
+    allowed, seen = {}, set()
+    if source_inputs is not None:
+        for path, kind in source_inputs.items():
+            if kind not in {"pypi", "git"} or not isinstance(path, str) or not path:
+                raise SecurityError("scanner_response_invalid")
+            allowed[_input_key(path)] = kind
+    labels = {"pypi": "uv.lock", "git": "approved-git-native-input"}
     for source in data["results"]:
         if not isinstance(source, dict) or not isinstance(source.get("packages"), list):
             raise SecurityError("scanner_response_invalid")
-        source["source"] = {"path": "uv.lock", "type": "lockfile"}
+        if source_inputs is None:
+            raise SecurityError("scanner_response_invalid")
+        group_kind = _bound_scan_source(source.get("source"), allowed, seen)
+        # scanner.json is a sanitized projection: the label replaces the
+        # temporary native path after the group has been bound to this input.
+        source["source"] = {"path": labels[group_kind], "type": "lockfile"}
         for item in source["packages"]:
             package = item["package"]
             is_git = package.get("ecosystem") == "GIT"
+            if is_git != (group_kind == "git"):
+                raise SecurityError("scan_source_mismatch")
             if is_git:
                 identity = (package.get("name"), package.get("commit"))
                 if identity not in expected_git or package.get("version", "") != "":
@@ -638,9 +720,12 @@ def scan(
                     (temp / "osv-scanner.toml").write_text(
                         native_config, encoding="utf-8"
                     )
-                    lockfiles = (
-                        ["--lockfile=" + str(temp / "uv.lock")] if expected else []
-                    )
+                    source_inputs = {}
+                    lockfiles = []
+                    if expected:
+                        pypi_input = temp / "uv.lock"
+                        source_inputs[str(pypi_input)] = "pypi"
+                        lockfiles.append("--lockfile=" + str(pypi_input))
                     if git_sources:
                         native_git = {
                             "results": [
@@ -662,12 +747,10 @@ def scan(
                                 }
                             ]
                         }
-                        (temp / "osv-scanner.json").write_text(
-                            json.dumps(native_git), encoding="utf-8"
-                        )
-                        lockfiles.append(
-                            "--lockfile=osv-scanner:" + str(temp / "osv-scanner.json")
-                        )
+                        git_input = temp / "osv-scanner.json"
+                        git_input.write_text(json.dumps(native_git), encoding="utf-8")
+                        source_inputs[str(git_input)] = "git"
+                        lockfiles.append("--lockfile=osv-scanner:" + str(git_input))
                     stage = time.perf_counter()
                     phase = "vulnerability_query"
                     for item in report.get("git_sources", []):
@@ -703,6 +786,7 @@ def scan(
                         result.returncode,
                         max_findings,
                         git_sources,
+                        source_inputs,
                     )
                     report.update(parsed)
                     report["scanner"]["status"] = "complete"
@@ -820,7 +904,7 @@ def summary(report):
     omitted = report["vulnerability_records"] - min(20, len(report["vulnerabilities"]))
     if omitted:
         lines.append(
-            f"- {omitted} additional records omitted here; see scanner.json for full native results."
+            f"- {omitted} additional records omitted here; scanner.json is the sanitized projection of the result groups, not an unmodified scanner file."
         )
     for diagnostic in report["diagnostics"]:
         lines.append(f"- Diagnostic: {safe(diagnostic)}")
