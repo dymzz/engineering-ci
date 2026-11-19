@@ -1243,15 +1243,28 @@ def _coverage_entry(key, value):
     source_kind = value.get("source_kind")
     if source_kind is not None and source_kind not in SOURCE_KINDS:
         raise RequiredAssessmentError(code)
+    primary_witness = _optional_internal_ref(
+        value.get("witness_result_id"), code
+    )
+    witnesses = value.get("witness_result_ids")
+    if witnesses is None:
+        witnesses = [primary_witness] if primary_witness is not None else []
+    elif not isinstance(witnesses, list):
+        raise RequiredAssessmentError(code)
+    else:
+        witnesses = [_internal_ref(item, code) for item in witnesses]
+    if len(witnesses) != len(set(witnesses)) or (
+        primary_witness is not None and primary_witness not in witnesses
+    ):
+        raise RequiredAssessmentError(code)
     record = {
         "scope_id": scope_id,
         "expected_check_ref": expected_check_ref,
         "check_name": _optional_text(value.get("check_name"), code),
         "admission_status": admission_status,
         "source_kind": source_kind,
-        "witness_result_id": _optional_internal_ref(
-            value.get("witness_result_id"), code
-        ),
+        "witness_result_id": primary_witness,
+        "witness_result_ids": witnesses,
         "raw_result_verified": _flag(value.get("raw_result_verified", False), code),
         "issuer_verified": _flag(value.get("issuer_verified", False), code),
         "origin_trace": _origin_trace(value.get("origin_trace"), code, required=False),
@@ -1627,6 +1640,7 @@ def project_t1_t2_gate_admission(
             if admitted
             else None,
             "witness_result_id": witness,
+            "witness_result_ids": list(ids) if admitted else [],
             "raw_result_verified": admitted,
             "issuer_verified": admitted,
             "origin_trace": trace,
@@ -2225,8 +2239,17 @@ def _receipt_problems(receipt, ref, coverage):
     reasons = []
     if entry.get("binding_status") != "matched":
         reasons.append("receipt_entry_not_matched")
-    if coverage["witness_result_id"] not in (entry.get("selected_result_ids") or []):
-        reasons.append("receipt_witness_missing")
+    selected = set(entry.get("selected_result_ids") or [])
+    witnesses = set(coverage["witness_result_ids"])
+    if witnesses != selected:
+        # A current-run admission may require multiple native Results to satisfy
+        # one Check. Require the same complete selected set, not one member.
+        if len(witnesses) > 1 or (
+            witnesses and not witnesses.issubset(selected)
+        ):
+            reasons.append("receipt_witness_missing")
+        elif coverage["witness_result_id"] not in selected:
+            reasons.append("receipt_witness_missing")
     declared = coverage.get("receipt_binding_status")
     if declared is not None and declared != entry.get("binding_status"):
         reasons.append("receipt_binding_status_mismatch")
@@ -2422,13 +2445,14 @@ def _instance_row(
             "status": coverage["admission_status"],
             "source_kind": coverage["source_kind"],
             "witness_result_id": coverage["witness_result_id"],
+            "witness_result_ids": list(coverage["witness_result_ids"]),
             "origin_trace": coverage["origin_trace"],
             "receipt_binding_status": coverage["receipt_binding_status"],
             "reason": coverage["reason"],
         }
     evidence_refs = []
-    if coverage is not None and coverage["witness_result_id"] is not None:
-        evidence_refs.append(coverage["witness_result_id"])
+    if coverage is not None:
+        evidence_refs.extend(coverage["witness_result_ids"])
     return {
         "scope_id": scope_id,
         "expected_check_ref": entry["expected_check_ref"],
