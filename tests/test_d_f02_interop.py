@@ -3,6 +3,13 @@
 import copy
 
 import pytest
+from test_historical_reuse import (
+    admit as admit_historical,
+)
+from test_historical_reuse import (
+    historical_candidate,
+    pre_proof_for,
+)
 from test_required_assessment import (
     ATTEMPT_QUALIFICATION_REF,
     ATTEMPT_REF,
@@ -207,3 +214,54 @@ def test_native_t1_source_requires_independent_authority():
         match="admission_source_authority_unverified",
     ):
         _assess(source, universe, expected, receipt, authority=lambda _: False)
+
+
+def test_native_t2_producer_reuse_reaches_r1_with_no_current_receipt():
+    """Test the actual historical pre-execution comparator and current authority."""
+    profile = make_profile()
+    entry = make_entry()
+    expected = make_projection(profile, [entry])
+    universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    pre_proof = pre_proof_for(entry, source=SOURCE)
+    pre_proof["scope_id"] = expected["scope_id"]
+    old_result = native_result(entry)
+    candidate = historical_candidate(entry, old_result)
+    authorization = {
+        "phase": "pre_publish",
+        "action": "publish",
+        "target_ref": "refs/heads/main",
+        "candidate_digest": None,
+        "profile_sha256": expected["effective_profile"]["profile_sha256"],
+    }
+    t2 = admit_historical(
+        expected,
+        pre_proof,
+        candidate,
+        current_authorization=authorization,
+    )
+    assert t2["kind"] == admission.HISTORICAL_REUSE_KIND
+    assert t2["status"] == "admitted"
+    assert t2["receipt_ref"] is None
+    outcome = required_assessment.assess_required_obligations(
+        universe=universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=t2,
+        admission_source_authority=lambda ctx: ctx["source_admission"] == t2,
+        admission_current_authorization={
+            "phase": "pre_publish",
+            "action": "publish",
+            "target_ref": "refs/heads/main",
+            "candidate_digest": None,
+        },
+        admission_contract_sample=True,
+    )
+    assert outcome["status"] == "passed"
+    row = check_row(outcome, entry)
+    assert row["admission"]["source_kind"] == "historical_reuse"
+    assert row["structural"]["status"] == "not_supplied"
+
