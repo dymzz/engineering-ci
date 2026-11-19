@@ -3,7 +3,26 @@
 import copy
 
 import pytest
-import test_required_assessment as r1
+from test_required_assessment import (
+    ATTEMPT_QUALIFICATION_REF,
+    ATTEMPT_REF,
+    EVALUATED_AT,
+    JOB_ISSUER_REF,
+    RULE_SOURCE_REF,
+    RULE_TACH,
+    RUNNER_REF,
+    RUN_REF,
+    SOURCE,
+    SOURCE_RECEIPT_REF,
+    check_obligation,
+    check_row,
+    make_entry,
+    make_profile,
+    make_projection,
+    make_universe,
+    native_result,
+    report_ref_for,
+)
 
 from engineering_ci import (
     admission,
@@ -21,15 +40,15 @@ IMPLEMENTATION = {
 
 
 def _real_t1_source(*, status="passed"):
-    profile = r1.make_profile()
-    entry = r1.make_entry()
-    expected = r1.make_projection(profile, [entry])
-    universe = r1.make_universe(
+    profile = make_profile()
+    entry = make_entry()
+    expected = make_projection(profile, [entry])
+    universe = make_universe(
         profile,
         expected,
-        [r1.check_obligation("o/tach", [entry["expected_check_ref"]])],
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
     )
-    result = r1.native_result(entry, status=status)
+    result = native_result(entry, status=status)
     report = {
         "kind": reconciliation.EXECUTION_REPORT_KIND,
         "schema_version": 1,
@@ -41,16 +60,16 @@ def _real_t1_source(*, status="passed"):
             }
         ],
     }
-    report_ref = r1.report_ref_for(report)
+    report_ref = report_ref_for(report)
     job_receipt = {
         "kind": reconciliation.JOB_RECEIPT_KIND,
         "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
         "job_ref": "job/release",
-        "run_ref": r1.RUN_REF,
-        "attempt_ref": r1.ATTEMPT_REF,
-        "runner_ref": r1.RUNNER_REF,
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
         "report_ref": copy.deepcopy(report_ref),
-        "issuer_ref": copy.deepcopy(r1.JOB_ISSUER_REF),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
         "verification_status": "upstream_verified",
     }
     observation = {
@@ -69,12 +88,12 @@ def _real_t1_source(*, status="passed"):
         "job_instances": [
             {
                 "job_ref": "job/release",
-                "run_ref": r1.RUN_REF,
-                "attempt_ref": r1.ATTEMPT_REF,
-                "runner_ref": r1.RUNNER_REF,
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
                 "attempt_eligibility": "eligible",
                 "qualification_ref": copy.deepcopy(
-                    r1.ATTEMPT_QUALIFICATION_REF
+                    ATTEMPT_QUALIFICATION_REF
                 ),
                 "report_ref": copy.deepcopy(report_ref),
             }
@@ -86,11 +105,11 @@ def _real_t1_source(*, status="passed"):
     }
     resolution = {
         "expected_check_ref": entry["expected_check_ref"],
-        "rule_ref": copy.deepcopy(r1.RULE_TACH),
-        "source_ref": copy.deepcopy(r1.SOURCE),
+        "rule_ref": copy.deepcopy(RULE_TACH),
+        "source_ref": copy.deepcopy(SOURCE),
         "baseline_ref": None,
-        "rule_source_ref": copy.deepcopy(r1.RULE_SOURCE_REF),
-        "source_receipt_ref": copy.deepcopy(r1.SOURCE_RECEIPT_REF),
+        "rule_source_ref": copy.deepcopy(RULE_SOURCE_REF),
+        "source_receipt_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
     }
     receipt = reconciliation.reconcile_expected_results(
         expected,
@@ -100,7 +119,7 @@ def _real_t1_source(*, status="passed"):
     )
     definition = check_contract.definition_for(entry["name"])
     policy = {
-        "trusted_issuers": [copy.deepcopy(r1.JOB_ISSUER_REF)],
+        "trusted_issuers": [copy.deepcopy(JOB_ISSUER_REF)],
         "approved_implementations": [
             {
                 "check_id": entry["check_id"],
@@ -116,13 +135,13 @@ def _real_t1_source(*, status="passed"):
         job_receipts=[job_receipt],
         policy=policy,
         authority=lambda context: (
-            context["issuer_ref"] == r1.JOB_ISSUER_REF
+            context["issuer_ref"] == JOB_ISSUER_REF
             and context["implementation"] == IMPLEMENTATION
         ),
         resolutions=[resolution],
         resolution_authority=lambda context: (
             context["resolution"]["source_receipt_ref"]
-            == r1.SOURCE_RECEIPT_REF
+            == SOURCE_RECEIPT_REF
         ),
     )
     return original, universe, expected, entry, receipt, result["result_id"]
@@ -132,7 +151,7 @@ def _assess(source, universe, expected, receipt, *, authority):
     return required_assessment.assess_required_obligations(
         universe=universe,
         expected=expected,
-        evaluated_at=r1.EVALUATED_AT,
+        evaluated_at=EVALUATED_AT,
         admission=source,
         receipt=receipt,
         admission_source_authority=authority,
@@ -158,7 +177,7 @@ def test_native_t1_producer_pass_reaches_r1_without_forged_gate_fields():
         authority=lambda ctx: ctx["source_admission"] == source,
     )
     assert outcome["status"] == "passed"
-    row = r1.check_row(outcome, entry)
+    row = check_row(outcome, entry)
     assert row["status"] == "satisfied"
     assert row["structural"]["selected_result_ids"] == [result_id]
     assert row["admission"]["source_kind"] == "current_run"
@@ -178,7 +197,7 @@ def test_native_t1_producer_failure_still_blocks_r1():
         authority=lambda ctx: ctx["source_admission"] == source,
     )
     assert outcome["status"] == "blocked"
-    assert r1.check_row(outcome, entry)["status"] != "satisfied"
+    assert check_row(outcome, entry)["status"] != "satisfied"
 
 
 def test_native_t1_source_requires_independent_authority():
