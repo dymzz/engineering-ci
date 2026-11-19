@@ -231,6 +231,90 @@ def test_forwarding_new_module_is_not_a_failure(repo):
     result = report(path, base, checks=("forwarding",))
     assert result["status"] == "passed"
     assert by_name(result)["forwarding"]["status"] == "passed"
+    assert by_name(result)["forwarding"]["reason"] is None
+
+
+def test_forwarding_missing_base_commit_fails(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    value = changes(path, base)
+    value = dataclasses.replace(value, base_commit=None)
+    result = hygiene.run(
+        value, config(path, ("forwarding",)), root=path, runner=FakeRunner()
+    )
+    assert result["status"] == "failed"
+    assert by_name(result)["forwarding"]["reason"] == "base_commit_missing"
+    assert result["git"]["base_commit"] is None
+
+
+def test_forwarding_unavailable_base_odb_fails(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    value = changes(path, base)
+    missing = "0123456789abcdef0123456789abcdef01234567"
+    value = dataclasses.replace(value, base_commit=missing)
+    result = hygiene.run(
+        value, config(path, ("forwarding",)), root=path, runner=FakeRunner()
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["reason"] == "base_odb_unavailable"
+    assert check["exit_code"] != 0
+    assert check["executable"] == "git"
+    assert result["git"]["base_commit"] == missing
+
+
+def test_forwarding_unreadable_base_tree_fails(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+
+    def runner(argv, root, data=None):
+        if argv[:3] == ["git", "cat-file", "-e"] and len(argv) == 4:
+            target = argv[3]
+            if ":" not in target and "^{" not in target:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["git", "rev-parse", "--verify"] and argv[3].endswith("^{tree}"):
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: not a valid object name"
+            )
+        if argv[0] == "git":
+            return hygiene._run(argv, root, data)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = hygiene.run(
+        changes(path, base), config(path, ("forwarding",)), root=path, runner=runner
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["reason"] == "base_tree_unavailable"
+    assert check["exit_code"] == 128
+    assert check["executable"] == "git"
+    assert result["git"]["base_commit"] == base
+
+
+def test_forwarding_base_content_unavailable_propagates_native_failure(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    real_tree = run(path, "rev-parse", f"{base}^{{tree}}").strip()
+
+    def runner(argv, root, data=None):
+        if argv[:2] == ["git", "show"] and argv[2].startswith(f"{real_tree}:"):
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: path exists but content unreadable"
+            )
+        if argv[0] == "git":
+            return hygiene._run(argv, root, data)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = hygiene.run(
+        changes(path, base), config(path, ("forwarding",)), root=path, runner=runner
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["reason"] == "base_content_unavailable"
+    assert check["exit_code"] == 128
+    assert "unreadable" in check["stderr"]
+    assert check["executable"] == "git"
 
 
 def test_report_records_git_identity_and_changes(repo):

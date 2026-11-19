@@ -652,6 +652,59 @@ def _whitespace(changes, root, runner, paths=None):
     )
 
 
+def _forwarding_base_tree(changes, root, runner):
+    """Resolve a readable base tree before treating path absence as a new file.
+
+    ``git show`` + ``git cat-file -e`` both failing for ``base:path`` is ambiguous
+    until the base Commit/Tree is proven present in the Git ODB. Only then is a
+    missing path a legitimate addition rather than an unavailable Source/ODB.
+    """
+    base = getattr(changes, "base_commit", None)
+    if not isinstance(base, str) or not base.strip():
+        return None, _result(
+            "forwarding",
+            "failed",
+            reason="base_commit_missing",
+            executable="git",
+        )
+    base = base.strip()
+    present = runner(["git", "cat-file", "-e", base], root)
+    if present.returncode != 0:
+        return None, _result(
+            "forwarding",
+            "failed",
+            exit_code=present.returncode,
+            reason="base_odb_unavailable",
+            stdout=present.stdout,
+            stderr=present.stderr,
+            executable="git",
+        )
+    tree = runner(["git", "rev-parse", "--verify", f"{base}^{{tree}}"], root)
+    tree_id = tree.stdout.strip() if tree.returncode == 0 else ""
+    if tree.returncode != 0 or not tree_id:
+        return None, _result(
+            "forwarding",
+            "failed",
+            exit_code=tree.returncode,
+            reason="base_tree_unavailable",
+            stdout=tree.stdout,
+            stderr=tree.stderr,
+            executable="git",
+        )
+    readable = runner(["git", "cat-file", "-e", tree_id], root)
+    if readable.returncode != 0:
+        return None, _result(
+            "forwarding",
+            "failed",
+            exit_code=readable.returncode,
+            reason="base_tree_unavailable",
+            stdout=readable.stdout,
+            stderr=readable.stderr,
+            executable="git",
+        )
+    return tree_id, None
+
+
 def _forwarding(paths, changes, root, runner, config):
     candidates = [
         path
@@ -662,21 +715,26 @@ def _forwarding(paths, changes, root, runner, config):
     ]
     if not candidates:
         return _result("forwarding", "not_applicable", reason="no_python_changes")
+    base_tree, base_failure = _forwarding_base_tree(changes, root, runner)
+    if base_failure is not None:
+        return base_failure
     findings = []
     for path in candidates:
-        previous = runner(["git", "show", f"{changes.base_commit}:{path}"], root)
+        # Path membership is decided against the proven base tree; only that
+        # proof distinguishes a new path from an unavailable Git Source/ODB.
+        exists = runner(["git", "cat-file", "-e", f"{base_tree}:{path}"], root)
+        if exists.returncode != 0:
+            continue
+        previous = runner(["git", "show", f"{base_tree}:{path}"], root)
         if previous.returncode:
-            exists = runner(
-                ["git", "cat-file", "-e", f"{changes.base_commit}:{path}"], root
-            )
-            if exists.returncode:
-                # A newly added module has no base object; it is not a regression.
-                continue
             return _result(
                 "forwarding",
                 "failed",
                 exit_code=previous.returncode,
                 reason="base_content_unavailable",
+                stdout=previous.stdout,
+                stderr=previous.stderr,
+                executable="git",
             )
         try:
             previous_is_forwarder = _pure_reexport(previous.stdout)
@@ -690,8 +748,13 @@ def _forwarding(paths, changes, root, runner, config):
                 f"{path} became a pure re-export; review the forwarding module"
             )
     if findings:
-        return _result("forwarding", "advisory", findings=findings)
-    return _result("forwarding", "passed")
+        return _result(
+            "forwarding",
+            "advisory",
+            findings=findings,
+            executable="git",
+        )
+    return _result("forwarding", "passed", executable="git")
 
 
 def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
