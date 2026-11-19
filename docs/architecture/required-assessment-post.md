@@ -93,6 +93,45 @@ Optional `disposition_authority` may record authorized follow-ups
 - Digest integrity is not authorization.
 - No CLI / Actions / server-protection wiring in this slice.
 
+## NEW-001 / NEW-027 scope and evidence
+
+This R5 contract repair addresses two defects tracked under [#61](https://github.com/dymzz/engineering-ci/issues/61)
+and the [#129 defect ledger](https://github.com/dymzz/engineering-ci/pull/129):
+
+- **NEW-001 — Contract Sample propagation:** the envelope's `contract_sample`
+  is the logical OR of the explicit reconciliation flag and both validated
+  R1 Assessments' `inputs.contract_sample`. In particular, a production-looking
+  Prior and explicit `false` cannot hide a sample-marked Post. R1's own native
+  and obligation verdicts are preserved; R5 does not promote a sample pair to
+  production `verified`.
+- **NEW-027 — Temporal and historical causality:** a Trigger, Prior Assessment
+  and Post Assessment must not be later than envelope `evaluated_at`.
+  Normal progression and current same-phase reevaluation require Post at or
+  after Prior and Trigger. For a same-phase historical reevaluation, an explicit
+  `historical_as_of` must equal the Post assessment time, be no later than
+  Trigger observation, and be explicitly accepted for the same Trigger, Phase,
+  Candidate and Assessment references by the Trigger Authority. The referenced
+  Prior must already exist at the Trigger time. This permits authorized
+  historical appraisal without silently accepting reversed current causality.
+
+**What the directed tests establish:** R1→R5 reconciliation using real
+evaluator code and controlled Authority callbacks, including Post-only sample,
+future Prior/Post, reversed chronology, accepted/rejected historical instant
+and an authority-rejected wrong Run Attempt. They demonstrate the **contract
+and its refusal behavior**, not independently authenticated production Trigger,
+GitHub Run/Attempt/Artifact, or Policy/Phase/Due issuer facts. A callback
+returning `authorized` in a fixture is not a production trust credential.
+
+**Remaining #61 acceptance:** authenticate and connect actual Trigger/Provider
+and Artifact/Run/Attempt ownership; evaluate post-run/post-publish evidence at
+the authorized due window, including delayed and missing evidence; and
+aggregate an independently verified complete Phase/Obligation set before
+claiming full lifecycle success. The pair envelope deliberately remains
+`lifecycle_coverage=unverified` and
+`lifecycle_all_phases_passed=false`, even for an otherwise `verified` pair.
+No production publication, server gate or full lifecycle is established by
+this code repair or by the passing unit/CI tests.
+
 ## Directed acceptance
 
 `tests/test_required_assessment_post.py` covers in-window PASS, not-yet-due
