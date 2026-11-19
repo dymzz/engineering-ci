@@ -19,6 +19,7 @@ from test_required_assessment import (
 )
 
 from engineering_ci import required_assessment_release as rar
+from engineering_ci.github_cli import ApiError
 from engineering_ci.release import manifest as release_manifest
 from engineering_ci.release import registry as release_registry
 
@@ -342,6 +343,11 @@ def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding()
     assert result["status"] == "verified"
     assert result["authorization_basis"] == "provider_verified"
     assert result["release_authorized"] is True
+    assert result["provider_evidence"] == {
+        "availability": "live",
+        "error_class": None,
+        "http_status": None,
+    }
 
 
 def test_provider_rejects_same_name_wrong_artifact_digest():
@@ -358,8 +364,59 @@ def test_provider_rejects_same_name_wrong_artifact_digest():
         manifest_provider_authority=rar.manifest_provider_from_verification(api),
     )
     assert result["release_authorized"] is False
+    assert result["status"] == "rejected"
     assert result["authorization_basis"] == "structural_fixture"
     assert "release_provider_authority_rejected" in result["reasons"]
+    assert result["provider_evidence"]["availability"] == "contradicted"
+
+
+@pytest.mark.parametrize("status_code", [403, 404])
+def test_unreadable_upload_step_log_stays_unverified(status_code):
+    class Unreadable(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            raise ApiError(status_code)
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    manifest = make_v1_manifest()
+    result = authorize(
+        assessment,
+        manifest=manifest,
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            Unreadable()
+        ),
+    )
+    assert result["release_authorized"] is False
+    assert result["status"] == "unverified"
+    assert "release_provider_authority_rejected" not in result["reasons"]
+    assert "release_provider_evidence_unavailable" in result["reasons"]
+    assert result["provider_evidence"] == {
+        "availability": "unavailable",
+        "error_class": "ApiError",
+        "http_status": status_code,
+    }
+
+
+def test_ambiguous_upload_step_log_is_unavailable_not_a_mismatch():
+    class Ambiguous(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            raise ValueError(
+                "Artifact ID unavailable or ambiguous in the upload step: "
+                "release-manifest"
+            )
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            Ambiguous()
+        ),
+    )
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "unavailable"
+    assert result["provider_evidence"]["error_class"] == "ValueError"
+    assert "release_provider_authority_rejected" not in result["reasons"]
 
 
 def test_invalid_v1_artifact_digest_format_is_rejected():
@@ -379,6 +436,7 @@ def test_structural_fixture_without_provider_is_not_production_authorization():
     assert result["authorization_basis"] == "structural_fixture"
     assert result["release_authorized"] is False
     assert "release_provider_authority_missing" in result["reasons"]
+    assert result["provider_evidence"]["availability"] == "not_consulted"
 
 
 def test_invalid_v1_passed_manifest_missing_tools_is_rejected():

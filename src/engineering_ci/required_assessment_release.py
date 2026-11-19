@@ -448,6 +448,54 @@ def _artifact_set_authorized(obligations, *, authority, snapshot):
     raise RequiredAssessmentReleaseError("artifact_obligation_authority_result_invalid")
 
 
+def _provider_evidence(availability, *, error_class=None, http_status=None):
+    return {
+        "availability": availability,
+        "error_class": error_class,
+        "http_status": http_status,
+    }
+
+
+def _provider_failure(exc):
+    """Separate an observed identity contradiction from evidence that cannot be read.
+
+    A successful native read that disagrees on Artifact ID, Attempt, Job, or
+    digest stays a rejection. HTTP failures, missing step logs, and other
+    unreadable inputs stay unverified and keep the original error class/status.
+    Missing logs are not treated as a producer mismatch and are not accepted
+    from name, HEAD, and Run alone.
+    """
+    if isinstance(exc, ApiError):
+        return {
+            "accepted": False,
+            "status": "unverified",
+            "reason": "release_provider_evidence_unavailable",
+            "provider_error": {"class": "ApiError", "status": exc.status},
+        }
+    if isinstance(exc, ValueError):
+        text = str(exc)
+        contradicted = any(
+            token in text
+            for token in (
+                "does not match",
+                "mismatch",
+                "another Run",
+                "another attempt",
+                "stale",
+                "did not complete",
+            )
+        )
+        if contradicted:
+            return False
+        return {
+            "accepted": False,
+            "status": "unverified",
+            "reason": "release_provider_evidence_unavailable",
+            "provider_error": {"class": "ValueError", "status": None},
+        }
+    raise exc
+
+
 def manifest_provider_from_verification(api):
     """Adapter: reuse ``verification.evidence`` — do not invent a second verifier."""
 
@@ -462,8 +510,8 @@ def manifest_provider_from_verification(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except (ApiError, ValueError):
-            return False
+        except (ApiError, ValueError) as exc:
+            return _provider_failure(exc)
         return True
 
     return authority
@@ -483,8 +531,8 @@ def manifest_provider_from_publication(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except (ApiError, ValueError):
-            return False
+        except (ApiError, ValueError) as exc:
+            return _provider_failure(exc)
         return True
 
     return authority
@@ -495,23 +543,59 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
 
     Production callers should pass ``manifest_provider_from_verification`` /
     ``manifest_provider_from_publication`` so Artifact ID/digest/Run linkage is
-    checked by the existing Release Provider path.
+    checked by the existing Release Provider path. A live re-read of the upload
+    step log is fresh proof. A still-readable expired Artifact plus that same
+    log is retained proof. An unreadable log or Artifact is unavailable proof,
+    not a contradicted producer.
     """
     if provider_authority is None:
-        return "structural_fixture", ["release_provider_authority_missing"]
+        return (
+            "structural_fixture",
+            ["release_provider_authority_missing"],
+            _provider_evidence("not_consulted"),
+        )
     provider_context = {
         "manifest": copy.deepcopy(manifest),
         "publish_context": copy.deepcopy(context),
     }
     accepted = provider_authority(provider_context)
+    if isinstance(accepted, dict) and accepted.get("status") == "unverified":
+        error = accepted.get("provider_error") or {}
+        error_class = error.get("class")
+        http_status = error.get("status")
+        if error_class not in {None, "ApiError", "ValueError"} or (
+            http_status is not None and type(http_status) is not int
+        ):
+            raise RequiredAssessmentReleaseError("release_provider_evidence_invalid")
+        return (
+            "structural_fixture",
+            ["release_provider_evidence_unavailable"],
+            _provider_evidence(
+                "unavailable",
+                error_class=error_class,
+                http_status=http_status,
+            ),
+        )
     if accepted is not True:
-        return "structural_fixture", ["release_provider_authority_rejected"]
+        return (
+            "structural_fixture",
+            ["release_provider_authority_rejected"],
+            _provider_evidence("contradicted"),
+        )
     if context["manifest_binding"] == "validation_to_publication":
         if handoff_authority is None:
-            return "structural_fixture", ["release_handoff_authority_missing"]
+            return (
+                "structural_fixture",
+                ["release_handoff_authority_missing"],
+                _provider_evidence("live"),
+            )
         if handoff_authority(provider_context) is not True:
-            return "structural_fixture", ["release_handoff_authority_rejected"]
-    return "provider_verified", []
+            return (
+                "structural_fixture",
+                ["release_handoff_authority_rejected"],
+                _provider_evidence("live"),
+            )
+    return "provider_verified", [], _provider_evidence("live")
 
 
 def _blocking_reasons(reasons):
@@ -527,6 +611,7 @@ def _derive_status(blocking, *, policy_status, artifact_status):
         "artifact_obligation_authority_missing",
         "artifact_obligation_unverified",
         "release_provider_authority_missing",
+        "release_provider_evidence_unavailable",
         "release_handoff_authority_missing",
     }
     if (
@@ -721,6 +806,25 @@ def _authorization_consistent(envelope):
         errors.append("release_candidate_tag_mismatch")
     if candidate.get("repository") != context.get("repository"):
         errors.append("release_candidate_repository_mismatch")
+    evidence = envelope.get("provider_evidence")
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"availability", "error_class", "http_status"}
+        or evidence.get("availability")
+        not in {"live", "unavailable", "contradicted", "not_consulted"}
+        or evidence.get("error_class") not in {None, "ApiError", "ValueError"}
+        or (
+            evidence.get("http_status") is not None
+            and type(evidence.get("http_status")) is not int
+        )
+    ):
+        errors.append("release_provider_evidence_invalid")
+    elif authorized is True and evidence.get("availability") != "live":
+        errors.append("release_authorized_requires_live_provider_evidence")
+    elif "release_provider_evidence_unavailable" in reasons and (
+        evidence.get("availability") != "unavailable" or status == "rejected"
+    ):
+        errors.append("release_provider_unavailable_must_stay_unverified")
     return errors
 
 
@@ -934,7 +1038,7 @@ def reconcile_release_assessment(
     if policy_reason:
         reasons.append(policy_reason)
 
-    authorization_basis, provider_reasons = _provider_basis(
+    authorization_basis, provider_reasons, provider_evidence = _provider_basis(
         normalized_manifest,
         context,
         provider_authority=manifest_provider_authority,
@@ -986,6 +1090,7 @@ def reconcile_release_assessment(
         "profile_snapshot": snapshot,
         "policy_snapshot_status": policy_status,
         "policy_scope": policy_scope,
+        "provider_evidence": provider_evidence,
         "artifact_obligation_status": artifact_status,
         "artifact_obligations": artifacts,
         "fixed_manifest_checks": {
@@ -1012,6 +1117,8 @@ def reconcile_release_assessment(
             "same_candidate_sha_does_not_preserve_policy_authorization",
             "fixture_authorities_are_not_production_trust_roots",
             "structural_fixture_is_not_provider_verification",
+            "step_log_or_artifact_unavailable_is_not_a_producer_mismatch",
+            "name_head_and_run_alone_do_not_bind_attempt",
             "reconciliation_digest_is_not_authorization_proof",
         ],
         "reconciliation_ref": None,

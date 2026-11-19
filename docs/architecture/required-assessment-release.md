@@ -78,6 +78,20 @@ Consumers compare with the same rule via `bind_manifest_identity` /
 `require_reconciliation_manifest`. Changing a valid Artifact ID or Digest
 changes both the Manifest identity and `reconciliation_ref`.
 
+## Provider evidence availability
+
+The verification and publication adapters reuse the existing Release Provider.
+`provider_evidence.availability` records which kind of proof that read produced:
+
+| Availability | Meaning | Reconciliation status |
+| --- | --- | --- |
+| `live` | The upload step log and Artifact identity were read and agreed | May be `verified` |
+| `contradicted` | A completed read disagreed on Artifact ID, Attempt, Job, or digest | `rejected` |
+| `unavailable` | The API or step log could not be read (401/403/404, empty log, expired origin no longer accessible) | `unverified` |
+| `not_consulted` | No provider authority was supplied | `unverified` |
+
+An unavailable step log is not a producer mismatch and is not accepted from Artifact name, HEAD, and Run alone. A still-readable expired Artifact remains proof only when that same Attempt's upload step log still binds the exact ID. Green CI and a validation-only Run do not by themselves prove a full publish or historical recovery cycle.
+
 `validate_release_reconciliation` also requires `publish_context.validation_identity`
 to equal top-level `validation_identity` for `validation_to_publication`, and
 rejects a top-level Validation identity under `same_run`.
