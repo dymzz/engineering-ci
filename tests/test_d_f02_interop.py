@@ -698,6 +698,33 @@ def _alternate_same_selection_receipt(receipt):
     return alternate
 
 
+def test_missing_t1_receipt_stays_a_blocked_assessment():
+    source, universe, expected, entry, receipt, _result_id = _real_t1_source()
+    projection = _issued_projection(source, universe, expected, receipt)
+
+    def absent(admission, authority):
+        outcome = required_assessment.assess_required_obligations(
+            universe=universe,
+            expected=expected,
+            evaluated_at=EVALUATED_AT,
+            admission=admission,
+            receipt=None,
+            admission_source_authority=authority,
+            admission_current_authorization=_df02_current_authorization(),
+            admission_contract_sample=True,
+        )
+        assert outcome["status"] == "blocked"
+        assert "receipt_missing_for_current_run" in check_row(outcome, entry)["reasons"]
+        required_assessment.validate_assessment(outcome)
+        return outcome
+
+    absent(source, df02_source_authority(source, universe))
+    absent(
+        projection,
+        _issued_consumer(source, universe, projection["admission_ref"]),
+    )
+
+
 def test_t1_assessment_rejects_a_different_valid_receipt():
     source, universe, expected, entry, receipt, result_id = _real_t1_source()
     alternate = _alternate_same_selection_receipt(receipt)

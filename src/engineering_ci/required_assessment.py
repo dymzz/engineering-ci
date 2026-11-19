@@ -1607,6 +1607,9 @@ def _require_source_receipt_identity(admission_facts, receipt_facts):
         return
     if proof.get("source_kind") != evidence_admission.ADMISSION_KIND:
         return
+    # Absence is not a different document. R1 reports receipt_missing_for_current_run.
+    if consumed is None:
+        return
     if source_receipt != consumed:
         raise RequiredAssessmentError("admission_receipt_mismatch")
 
@@ -2949,7 +2952,7 @@ def validate_assessment(assessment):
                 if inputs["receipt_ref"] != source_receipt:
                     raise RequiredAssessmentError(code)
                 _flag(reconciled, code)
-            elif reconciled is not None:
+            elif status == "passed" and reconciled is not None:
                 raise RequiredAssessmentError(code)
         elif source_receipt is not None or reconciled is not None:
             raise RequiredAssessmentError(code)
