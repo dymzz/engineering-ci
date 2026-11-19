@@ -2244,11 +2244,11 @@ def _receipt_problems(receipt, ref, coverage):
     if witnesses != selected:
         # A current-run admission may require multiple native Results to satisfy
         # one Check. Require the same complete selected set, not one member.
-        if len(witnesses) > 1 or (
-            witnesses and not witnesses.issubset(selected)
+        if (
+            len(witnesses) > 1
+            or (witnesses and not witnesses.issubset(selected))
+            or coverage["witness_result_id"] not in selected
         ):
-            reasons.append("receipt_witness_missing")
-        elif coverage["witness_result_id"] not in selected:
             reasons.append("receipt_witness_missing")
     declared = coverage.get("receipt_binding_status")
     if declared is not None and declared != entry.get("binding_status"):
