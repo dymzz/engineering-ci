@@ -134,9 +134,10 @@ continues to own the larger real Provider → Required assessment → publishing
 and recovery end-to-end acceptance; merging this slice does not close #61.
 
 GitHub [documents a per-step Job log endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#download-step-logs-for-a-workflow-run-job),
-but [public reports of 404 for otherwise readable Jobs](https://github.com/github/rest-api-description/issues/7369)
-mean its availability for an actual Release Attempt cannot be inferred from the
-API description or controlled tests. An unreadable Step log remains
+and [prior 404 reports later confirmed working on 2026-11-12](https://github.com/github/rest-api-description/issues/7369)
+show that historical deployment and token access differed. The endpoint's
+successful availability for this Release Attempt cannot be inferred from
+documentation, third-party examples or controlled tests. An unreadable Step log remains
 `unverified/unavailable`, not a proven Artifact mismatch and never a release
 grant. Any production-readiness claim for this native Provider path requires
 successful observed access to the exact Job/Step/Artifact identity.
