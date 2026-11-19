@@ -1,0 +1,56 @@
+{
+  "captured_at": "2026-11-19",
+  "uv": "0.12.23",
+  "osv_scanner": "2.6.0",
+  "osv_commit": "e840a6e8adb14b7777c78e26cfbf6e2abc1d1fc6",
+  "scanner_sha256": "e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6",
+  "native_exit_code": 1,
+  "dependencies_scanned": 2,
+  "vulnerability_ids": ["GHSA-65pc-fj4g-8rjx", "PYSEC-2026-215"],
+  "inputs": {
+    "uv.lock": "5eb6c0c02c960d11c7f4c252f38ed398721ce177d4ec4be18cc2501946a4a0a0",
+    "pyproject.toml": "bc884f6a09267f79d0080257d4be8d6a63a5541bcf34230836282c599e694adb",
+    "git-policy.toml": "ad8a1277f4686602389ea1ed3ae5b32f17ac9841e18cc35e507a098e5bb664f6"
+  },
+  "note": "Replay of one osv-scanner 2.6.0 dual-input scan. source.path uses the forward-slash form OSV wrote; the temporary directory is replaced by C:/scan-input. scanner.json in a bundle is the sanitized projection of this output.",
+  "document": {
+    "results": [
+      {
+        "source": {
+          "path": "C:/scan-input/osv-scanner.json",
+          "type": "lockfile"
+        },
+        "packages": [
+          {
+            "package": {
+              "name": "https://github.com/kjd/idna.git",
+              "version": "",
+              "ecosystem": "GIT",
+              "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59"
+            },
+            "vulnerabilities": []
+          }
+        ]
+      },
+      {
+        "source": {
+          "path": "C:/scan-input/uv.lock",
+          "type": "lockfile"
+        },
+        "packages": [
+          {
+            "package": {
+              "name": "idna",
+              "version": "3.10",
+              "ecosystem": "PyPI"
+            },
+            "vulnerabilities": [
+              {"id": "GHSA-65pc-fj4g-8rjx"},
+              {"id": "PYSEC-2026-215"}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

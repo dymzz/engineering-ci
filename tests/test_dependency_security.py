@@ -24,6 +24,32 @@ source = { registry = "https://pypi.org/simple" }
 """
 
 
+def _lockfile_path(args, name):
+    for arg in args:
+        if not arg.startswith("--lockfile="):
+            continue
+        path = arg.split("=", 1)[1]
+        if path.startswith("osv-scanner:"):
+            path = path.removeprefix("osv-scanner:")
+        if path.replace("\\", "/").rsplit("/", 1)[-1] == name:
+            return path
+    return None
+
+
+def _bind_result_paths(result, args):
+    """Point fixture groups at the lockfiles this scan actually passed."""
+    bound = json.loads(json.dumps(result))
+    for group in bound.get("results") or []:
+        source = group.get("source")
+        if not isinstance(source, dict) or not isinstance(source.get("path"), str):
+            continue
+        name = source["path"].replace("\\", "/").rsplit("/", 1)[-1]
+        actual = _lockfile_path(args, name)
+        if actual:
+            source["path"] = actual
+    return bound
+
+
 def native(*ids, package="idna", version="3.11"):
     vulnerabilities = [
         {
@@ -84,20 +110,20 @@ class FakeRunner:
         self.config = Path(
             next(x.split("=", 1)[1] for x in args if x.startswith("--config="))
         ).read_text(encoding="utf-8")
-        self.lock = Path(
-            next(x.split("=", 1)[1] for x in args if x.startswith("--lockfile="))
-        ).read_text()
-        self.lock_bytes = Path(
-            next(x.split("=", 1)[1] for x in args if x.startswith("--lockfile="))
-        ).read_bytes()
+        lock_path = _lockfile_path(args, "uv.lock") or _lockfile_path(
+            args, "osv-scanner.json"
+        )
+        self.lock = Path(lock_path).read_text(encoding="utf-8")
+        self.lock_bytes = Path(lock_path).read_bytes()
         if self.code == "timeout":
             raise subprocess.TimeoutExpired(args, timeout)
         output = Path(
             next(x.split("=", 1)[1] for x in args if x.startswith("--output-file="))
         )
-        output.write_text(
-            self.result if isinstance(self.result, str) else json.dumps(self.result)
-        )
+        payload = self.result
+        if not isinstance(payload, str):
+            payload = json.dumps(_bind_result_paths(payload, args))
+        output.write_text(payload)
         return subprocess.CompletedProcess(
             args, self.code, "", "token=DO_NOT_PERSIST secret-index-password"
         )

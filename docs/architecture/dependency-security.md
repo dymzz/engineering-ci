@@ -121,9 +121,12 @@ identity and any root declaration; it does not authenticate the author or
 audit repository code. Dependency installation still verifies its actual source
 through the existing Git/uv path and requires separate Contents read permission.
 
-Only approved Git entries are moved from an ephemeral uv-lock copy to the
+Only the approved Git entity is moved from an ephemeral uv-lock copy to the
 official native [Custom Lockfile](https://google.github.io/osv-scanner/supported-languages-and-lockfiles/#custom-lockfiles)
-format. The pinned OSV-Scanner processes both inputs in one invocation:
+format. A registry entry with the same package name stays in the uv.lock
+input. The current policy is one repository and commit per package name,
+optionally marker-qualified on the root pin. Source lists and a second Git
+pin are not accepted. The pinned OSV-Scanner processes both inputs in one invocation:
 public PyPI name/version queries plus Git Commit queries. The original uv.lock
 is unchanged, finite advisory exceptions still use the native scanner, and
 `--all-packages` output must cover every expected registry and Git identity.
@@ -184,15 +187,16 @@ GitHub Artifact (default `dependency-security`, retention 7 days):
 | File | Evidence |
 |---|---|
 | `report.json` | Schema v1, scope, original exits, independent verdicts, gate, bounded findings, exceptions, coverage gaps, timings |
-| `scanner.json` | Full native JSON with normalized source path, or explicit unavailable reason |
+| `scanner.json` | Sanitized projection of the native result groups. Each `source.path` is `uv.lock` or `approved-git-native-input` after the group is bound to this invocation's input. It is not a byte-for-byte copy of the scanner file |
 | `diagnostics.json` | Fixed categories, exits and timings; no raw stderr |
 | `summary.md` | Bounded human view of the same result |
 
 Findings identify package, locked version, advisory ID and only fixed versions
 supplied for that package by OSV. Counts describe advisory records; aliases may
-represent one issue. JSON/Markdown omission counts are explicit. Full native
-results are retained up to 10 MiB; oversized inputs/results fail closed with a
-size diagnostic. Lockfiles are bounded to 5 MiB / 10,000 package entries.
+represent one issue. JSON/Markdown omission counts are explicit. The
+sanitized result-group projection is retained up to 10 MiB; oversized
+inputs/results fail closed with a size diagnostic. Lockfiles are bounded to
+5 MiB / 10,000 package entries. The native process exit is kept on the report.
 
 Delivery does not determine the verdict. Enforce exits nonzero before the
 always-run Summary/Artifact steps; successful delivery cannot turn failure green.

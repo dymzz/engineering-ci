@@ -1,12 +1,16 @@
 """Exact Git identity and native advisory-query failures remain blocking."""
 
 import ast
+import hashlib
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 from test_dependency_security import FakeRunner, native, run
 from test_dependency_security import project as base_project
+
+from engineering_ci import dependency_security as security
 
 project = base_project
 
@@ -62,15 +66,27 @@ def policy(project, *, commit=SHA, repository=REPO):
 
 def git_native(*ids):
     result = native()
-    result["results"][0]["packages"].append(
+    result["results"].append(
         {
-            "package": {"name": REPO, "version": "", "ecosystem": "GIT", "commit": SHA},
-            "vulnerabilities": [
+            "source": {"path": "/tmp/osv-scanner.json", "type": "lockfile"},
+            "packages": [
                 {
-                    "id": item,
-                    "affected": [{"package": {"ecosystem": "GIT", "name": REPO}}],
+                    "package": {
+                        "name": REPO,
+                        "version": "",
+                        "ecosystem": "GIT",
+                        "commit": SHA,
+                    },
+                    "vulnerabilities": [
+                        {
+                            "id": item,
+                            "affected": [
+                                {"package": {"ecosystem": "GIT", "name": REPO}}
+                            ],
+                        }
+                        for item in ids
+                    ],
                 }
-                for item in ids
             ],
         }
     )
@@ -176,7 +192,7 @@ def test_unapproved_or_inconsistent_git_never_queries(project, change):
 def test_native_git_coverage_and_api_failures_are_not_a_pass(project, kind):
     path = prepare(project)
     result, code = git_native(), 0
-    package = result["results"][0]["packages"][-1]["package"]
+    package = result["results"][1]["packages"][0]["package"]
     if kind == "missing_git":
         result = native()
     elif kind == "wrong_commit":
@@ -242,7 +258,7 @@ def test_git_only_inventory_is_actually_scanned(project):
     root = lock.read_text().split('[[package]]\nname = "idna"')[0]
     lock.write_text(root + GIT)
     value = git_native()
-    value["results"][0]["packages"] = value["results"][0]["packages"][-1:]
+    value["results"] = value["results"][1:]
     report, _, fake = run(project, GitRunner(value), git_policy_path=path)
     assert report["status"] == "passed" and report["dependencies_scanned"] == 1
     flags = next(args for args in fake.requested if "scan" in args)
@@ -362,8 +378,99 @@ def test_git_result_is_not_relabeled_as_uv_lock(project):
         GitRunner(mixed_native(registry=False, git_source="other.lock")),
         git_policy_path=path,
     )
-    assert report["diagnostics"] == ["scanner_response_invalid"]
+    assert report["diagnostics"] == ["scan_source_mismatch"]
     assert raw is None
+
+
+def test_git_entity_in_registry_group_is_rejected(project):
+    path = mixed_lock(project)
+    swapped = mixed_native()
+    swapped["results"] = [swapped["results"][0]]
+    package = swapped["results"][0]["packages"][0]["package"]
+    package.update(ecosystem="GIT", name=IDNA_REPO, version="", commit=IDNA_SHA)
+    report, raw, _ = run(project, GitRunner(swapped), git_policy_path=path)
+    assert report["diagnostics"] == ["scan_source_mismatch"]
+    assert raw is None
+
+
+def test_registry_entity_in_git_group_is_rejected(project):
+    path = mixed_lock(project)
+    swapped = mixed_native()
+    swapped["results"] = [swapped["results"][1]]
+    package = swapped["results"][0]["packages"][0]["package"]
+    package.clear()
+    package.update(ecosystem="PyPI", name="idna", version="3.10")
+    report, raw, _ = run(project, GitRunner(swapped), git_policy_path=path)
+    assert report["diagnostics"] == ["scan_source_mismatch"]
+    assert raw is None
+
+
+def test_uv_01223_lock_keeps_the_registry_sibling():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    policy = {
+        "idna": {
+            "repository": "https://github.com/kjd/idna.git",
+            "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+        }
+    }
+    expected, unsupported, scanner_lock, selected = security.lock_inventory(
+        project,
+        (root / "uv.lock").read_text(encoding="utf-8"),
+        ["https://mirrors.aliyun.com/pypi/simple"],
+        policy,
+    )
+    parsed = tomllib.loads(scanner_lock)
+    idna = [item for item in parsed["package"] if item["name"] == "idna"]
+    assert unsupported == []
+    assert expected == {("idna", "3.10")}
+    assert len(idna) == 1 and idna[0]["source"]["registry"].startswith("https://")
+    assert selected[0]["commit"] == policy["idna"]["commit"]
+    assert hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest() == (
+        "5eb6c0c02c960d11c7f4c252f38ed398721ce177d4ec4be18cc2501946a4a0a0"
+    )
+
+
+def test_osv_260_capture_binds_groups_before_sanitizing():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    capture = json.loads((root / "capture.json").read_text(encoding="utf-8"))
+    parsed, projected = security.scanner_result(
+        json.dumps(capture["document"]).encode(),
+        {("idna", "3.10")},
+        capture["native_exit_code"],
+        100,
+        (
+            {
+                "repository": "https://github.com/kjd/idna.git",
+                "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+            },
+        ),
+        source_inputs={
+            r"C:\scan-input\uv.lock": "pypi",
+            r"C:\scan-input\osv-scanner.json": "git",
+        },
+    )
+    assert parsed["status"] == "failed"
+    assert parsed["dependencies_scanned"] == 2
+    assert {item["id"] for item in parsed["vulnerabilities"]} == set(
+        capture["vulnerability_ids"]
+    )
+    assert [item["source"]["path"] for item in projected["results"]] == [
+        "approved-git-native-input",
+        "uv.lock",
+    ]
+
+
+def test_missing_or_mistyped_source_is_not_a_pass(project):
+    path = mixed_lock(project)
+    missing = mixed_native()
+    del missing["results"][0]["source"]
+    report, raw, _ = run(project, GitRunner(missing), git_policy_path=path)
+    assert report["diagnostics"] == ["scanner_response_invalid"] and raw is None
+    mistyped = mixed_native()
+    mistyped["results"][1]["source"]["type"] = "sbom"
+    report, raw, _ = run(project, GitRunner(mistyped), git_policy_path=path)
+    assert report["diagnostics"] == ["scanner_response_invalid"] and raw is None
 
 
 def test_tag_query_is_not_an_approved_mixed_source(project):
