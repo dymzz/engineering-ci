@@ -96,6 +96,23 @@ class GitHub:
             raise ValueError("Validation Manifest archive exceeds limit or is empty")
         return result.stdout
 
+    def job_step_log(self, job_id, step_number):
+        """Read just the native log for an identified Actions job step."""
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                self.prefix + f"actions/jobs/{job_id}/steps/{step_number}/logs",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        require_api_success(result)
+        if not 0 < len(result.stdout) <= 1024 * 1024:
+            raise ValueError("Actions step log exceeds limit or is empty")
+        return result.stdout.decode("utf-8-sig", errors="replace")
+
     def run_info(self, run_id):
         """Read one exact Run; an API read works without gh watch's checks scope."""
         value = self(f"actions/runs/{run_id}")

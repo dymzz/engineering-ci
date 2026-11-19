@@ -7,6 +7,7 @@ import copy
 import pytest
 from test_release_manifest import IDS, ManifestGitHub, facts
 from test_required_assessment import (
+    EVENT,
     assess,
     check_obligation,
     historical_coverage,
@@ -18,6 +19,7 @@ from test_required_assessment import (
 )
 
 from engineering_ci import required_assessment_release as rar
+from engineering_ci.github_cli import ApiError
 from engineering_ci.release import manifest as release_manifest
 from engineering_ci.release import registry as release_registry
 
@@ -66,13 +68,23 @@ def make_v1_manifest(*, mode="validation", api=None, ids=None, source=None):
     return value
 
 
-def passed_assessment(*, contract_sample=False, candidate_commit=HEAD):
+def passed_assessment(
+    *,
+    contract_sample=False,
+    candidate_commit=HEAD,
+    action="publish",
+    target="candidate",
+    target_ref="refs/heads/main",
+):
     # Keep profile phase-less (R1/R2 pattern) while universe evaluation carries
     # the Release pre_publish phase used by R4 publish_context.
-    profile = make_profile()
-    entry = make_entry()
-    projection = make_projection(profile, [entry])
-    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    profile = make_profile(action=action, target=target)
+    event = {**EVENT, "base_ref": target_ref}
+    entry = make_entry(event=event)
+    projection = make_projection(profile, [entry], event=event)
+    obligation = check_obligation(
+        "o/tach", [entry["expected_check_ref"]], action=action, target_ref=target_ref
+    )
     universe = make_universe(
         profile,
         projection,
@@ -80,10 +92,20 @@ def passed_assessment(*, contract_sample=False, candidate_commit=HEAD):
         contract_sample=contract_sample,
         phase="pre_publish",
         candidate={"commit": candidate_commit},
+        action=action,
+        target=target,
+        refs=[{"target_ref": target_ref, "ref_action": "update"}],
     )
     admission = make_admission(
         projection,
-        coverage_entries=[(entry, historical_coverage(projection, entry))],
+        coverage_entries=[
+            (
+                entry,
+                historical_coverage(
+                    projection, entry, action=action, target_ref=target_ref
+                ),
+            )
+        ],
         contract_sample=contract_sample,
     )
     return assess(universe, projection, admission=admission), entry
@@ -160,6 +182,21 @@ def accept(_context):
     return {"accepted": True, "status": "authorized"}
 
 
+def accept_policy(_context, *, target="candidate"):
+    return {
+        "accepted": True,
+        "status": "authorized",
+        "assessment_scope": {
+            "context": "release",
+            "action": "publish",
+            "target": target,
+            "phase": "pre_publish",
+            "refs": [{"target_ref": "refs/heads/main", "ref_action": "update"}],
+            "candidate": {"commit": HEAD},
+        },
+    }
+
+
 def reject_policy(_context):
     return {"accepted": False, "status": "revoked"}
 
@@ -179,7 +216,7 @@ def reject_provider(_context):
 def reconcile(assessment, manifest=None, **changes):
     kwargs = {
         "publish_context": publish_context(),
-        "policy_snapshot_authority": accept,
+        "policy_snapshot_authority": accept_policy,
         "artifact_obligations": empty_artifact_obligations(),
         "artifact_obligation_authority": accept,
         "manifest_provider_authority": accept_provider,
@@ -193,12 +230,21 @@ def reconcile(assessment, manifest=None, **changes):
     )
 
 
+def native_verification(api=None):
+    return rar.manifest_provider_from_verification(api or R4ManifestGitHub())
+
+
 def authorize(assessment, **changes):
-    """Publication-stage authorization using a validation→publication handoff."""
+    """Publication-stage authorization using a validation→publication handoff.
+
+    The default provider is the native verification adapter. A boolean callback
+    cannot mint ``release_authorized``.
+    """
     kwargs = {
         "manifest": make_v1_manifest(mode="validation"),
         "publish_context": publication_handoff_context(),
         "handoff_authority": accept_provider,
+        "manifest_provider_authority": native_verification(),
     }
     kwargs.update(changes)
     return reconcile(assessment, **kwargs)
@@ -209,7 +255,8 @@ def test_validation_mode_is_verified_but_does_not_authorize_publication():
     manifest = make_v1_manifest(mode="validation")
     result = reconcile(assessment, manifest)
     assert result["status"] == "verified"
-    assert result["authorization_basis"] == "provider_verified"
+    assert result["authorization_basis"] == "structural_fixture"
+    assert result["provider_evidence"]["availability"] == "accepted"
     assert result["publish_context"]["mode"] == "validation"
     assert result["release_authorized"] is False
     assert result["policy_snapshot_status"] == "authorized"
@@ -237,9 +284,62 @@ def test_publication_same_run_context_can_authorize():
         assessment,
         manifest,
         publish_context=publication_same_run_context(),
+        manifest_provider_authority=native_verification(),
     )
     assert result["status"] == "verified"
     assert result["release_authorized"] is True
+
+
+@pytest.mark.parametrize(
+    "different_scope",
+    [
+        {"action": "validate"},
+        {"target": "other-candidate"},
+        {"target_ref": "refs/heads/another-release-branch"},
+    ],
+)
+def test_same_commit_and_phase_do_not_authorize_a_different_assessment_scope(
+    different_scope,
+):
+    assessment, _ = passed_assessment(**different_scope)
+    assert assessment["status"] == "passed", assessment["blocked_reasons"]
+    assert assessment["candidate"] == {"commit": HEAD}
+    assert assessment["phase"] == "pre_publish"
+    result = authorize(assessment)
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert "release_assessment_scope_mismatch" in result["reasons"]
+
+
+def test_release_policy_authorizes_an_explicit_target_representation():
+    assessment, _ = passed_assessment(target="release-distribution")
+    assert assessment["status"] == "passed"
+    context = publication_handoff_context()
+
+    def policy(request):
+        assert request["publish_context"] == {
+            **context,
+            "validation_identity": {
+                "mode": "validation",
+                **context["validation_identity"],
+            },
+        }
+        outcome = accept_policy(request, target="release-distribution")
+        assert request["snapshot"]["assessment_scope"] == outcome["assessment_scope"]
+        return outcome
+
+    result = authorize(assessment, policy_snapshot_authority=policy)
+    assert result["release_authorized"] is True
+    assert result["policy_scope"] == result["profile_snapshot"]["assessment_scope"]
+    assert rar.validate_release_reconciliation(result) is result
+
+
+def test_release_policy_acceptance_without_scope_is_unverified():
+    assessment, _ = passed_assessment()
+    result = authorize(assessment, policy_snapshot_authority=accept)
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert "release_policy_scope_missing" in result["reasons"]
 
 
 def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding():
@@ -254,6 +354,23 @@ def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding()
     assert result["status"] == "verified"
     assert result["authorization_basis"] == "provider_verified"
     assert result["release_authorized"] is True
+    assert result["provider_evidence"] == {
+        "availability": "live",
+        "error_class": None,
+        "http_status": None,
+        "source": "verification.evidence",
+    }
+
+
+def test_callback_acceptance_cannot_mint_production_authorization():
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(assessment, manifest_provider_authority=accept_provider)
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is False
+    assert result["authorization_basis"] == "structural_fixture"
+    assert result["provider_evidence"]["availability"] == "accepted"
+    assert result["provider_evidence"]["source"] is None
+    assert "release_provider_callback_not_native_proof" in result["reasons"]
 
 
 def test_provider_rejects_same_name_wrong_artifact_digest():
@@ -270,8 +387,149 @@ def test_provider_rejects_same_name_wrong_artifact_digest():
         manifest_provider_authority=rar.manifest_provider_from_verification(api),
     )
     assert result["release_authorized"] is False
+    assert result["status"] == "rejected"
     assert result["authorization_basis"] == "structural_fixture"
     assert "release_provider_authority_rejected" in result["reasons"]
+    assert result["provider_evidence"]["availability"] == "contradicted"
+
+
+@pytest.mark.parametrize("status_code", [403, 404])
+def test_unreadable_upload_step_log_stays_unverified(status_code):
+    class Unreadable(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            raise ApiError(status_code)
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    manifest = make_v1_manifest()
+    result = authorize(
+        assessment,
+        manifest=manifest,
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            Unreadable()
+        ),
+    )
+    assert result["release_authorized"] is False
+    assert result["status"] == "unverified"
+    assert "release_provider_authority_rejected" not in result["reasons"]
+    assert "release_provider_evidence_unavailable" in result["reasons"]
+    assert result["provider_evidence"] == {
+        "availability": "unavailable",
+        "error_class": "ApiError",
+        "http_status": status_code,
+        "source": None,
+    }
+
+
+def test_failed_upload_step_is_an_observed_contradiction():
+    class FailedUpload(R4ManifestGitHub):
+        def __init__(self):
+            super().__init__()
+            for job in self.jobs:
+                for step in job["steps"]:
+                    key = (job["id"], step.get("number"))
+                    recorded = self.upload_ids.get(key)
+                    if recorded and recorded[0] == "pytest-report":
+                        step["conclusion"] = "failure"
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            FailedUpload()
+        ),
+    )
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "contradicted"
+    assert "release_provider_evidence_unavailable" not in result["reasons"]
+
+
+def test_wrong_upload_step_artifact_id_is_an_observed_contradiction():
+    class WrongUploadId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            name, asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return text
+            return text.replace(f"Artifact ID is {asset_id}", "Artifact ID is 99999")
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            WrongUploadId()
+        ),
+    )
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "contradicted"
+    assert "release_provider_authority_rejected" in result["reasons"]
+
+
+def test_upload_log_without_an_id_is_unverified():
+    class NoUploadId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            name, _asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return super().job_step_log(job_id, step_number)
+            return "log readable but upload record absent\n"
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            NoUploadId()
+        ),
+    )
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "unavailable"
+    assert "release_provider_authority_rejected" not in result["reasons"]
+
+
+def test_upload_log_with_several_ids_is_unverified():
+    class SeveralIds(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            name, asset_id = self.upload_ids[job_id, step_number]
+            if name != "pytest-report":
+                return text
+            return text + text.replace(
+                f"Artifact ID is {asset_id}", "Artifact ID is 100"
+            )
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(),
+        manifest_provider_authority=rar.manifest_provider_from_verification(
+            SeveralIds()
+        ),
+    )
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert result["provider_evidence"]["availability"] == "unavailable"
+
+
+def test_repeated_same_upload_id_still_verifies():
+    class RepeatedId(R4ManifestGitHub):
+        def job_step_log(self, job_id, step_number):
+            text = super().job_step_log(job_id, step_number)
+            return text + text
+
+    assessment, _ = passed_assessment(contract_sample=False)
+    api = RepeatedId()
+    result = authorize(
+        assessment,
+        manifest=make_v1_manifest(api=api),
+        manifest_provider_authority=rar.manifest_provider_from_verification(api),
+    )
+    assert result["status"] == "verified"
+    assert result["release_authorized"] is True
+    assert result["provider_evidence"]["availability"] == "live"
 
 
 def test_invalid_v1_artifact_digest_format_is_rejected():
@@ -291,6 +549,7 @@ def test_structural_fixture_without_provider_is_not_production_authorization():
     assert result["authorization_basis"] == "structural_fixture"
     assert result["release_authorized"] is False
     assert "release_provider_authority_missing" in result["reasons"]
+    assert result["provider_evidence"]["availability"] == "not_consulted"
 
 
 def test_invalid_v1_passed_manifest_missing_tools_is_rejected():
@@ -417,6 +676,7 @@ def test_validation_to_publication_handoff_requires_distinct_run_and_authorities
         validation,
         publish_context=context,
         handoff_authority=accept_provider,
+        manifest_provider_authority=native_verification(),
     )
     assert ok["status"] == "verified"
     assert ok["authorization_basis"] == "provider_verified"
@@ -594,6 +854,21 @@ def _recompute(envelope):
     }
     envelope["reconciliation_ref"] = rar._digest(payload)
     return envelope
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_validate_requires_release_scope_in_authorized_envelopes(missing):
+    assessment, _ = passed_assessment()
+    result = authorize(assessment)
+    if missing:
+        del result["policy_scope"]
+    else:
+        result["profile_snapshot"]["assessment_scope"]["target"] = "different-target"
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_verified_requires_assessment_scope_alignment",
+    ):
+        rar.validate_release_reconciliation(_recompute(result))
 
 
 def test_validate_rejects_recomputed_authorized_inconsistent_envelope():
@@ -837,6 +1112,7 @@ def test_validate_rejects_inconsistent_validation_identity():
         assessment,
         make_v1_manifest(mode="publication"),
         publish_context=publication_same_run_context(),
+        manifest_provider_authority=native_verification(),
     )
     assert same_run["release_authorized"] is True
     assert same_run["validation_identity"] is None

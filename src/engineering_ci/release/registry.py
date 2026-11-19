@@ -77,3 +77,14 @@ ARTIFACT_OUTPUTS = {
 }
 
 ARTIFACT_NAMES = set(ARTIFACT_OUTPUTS)
+
+ARTIFACT_UPLOAD_STEPS = {
+    "pytest-report": (CHECKS["tests"][0], "Upload pytest evidence"),
+    "dependency-security": (
+        CHECKS["dependency_security"][0],
+        "Upload dependency security evidence",
+    ),
+    "core-tests": (CHECKS["core_tests"][0], "Upload core release evidence"),
+    "release-tools-ruff": (CHECKS["ruff_lint"][0], "Run actions/upload-artifact@"),
+    "release-manifest": ("verified", "Preserve validation Manifest"),
+}

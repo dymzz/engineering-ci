@@ -110,10 +110,12 @@ Ruff、核心 pytest、版本锁一致性、安全 enforce、Dagger 与原始 py
 scope 区分执行环境；不把根工具版本当作 Dagger 容器内部的版本。
 Artifact 条目仅保留原生 ID、可用 digest 和 API 元数据链接。
 Artifact API 不提供 attempt，因此证据下载使用本次生产步骤的原生
-`artifact-id`，经 job / reusable workflow outputs 传递；不按同名文件猜测，
-不枚举整个 Run 后选最新条目。API 另行核对 Artifact ID、名称、Run 与 SHA，
-Jobs API 核对当前 attempt 和 SHA。facts、Manifest 也用精确 ID 下载。
-当前 attempt 缺少必需检查或原生输出时拒绝发布，不借用其他 attempt 的通过记录。
+`artifact-id`，经 job / reusable workflow outputs 传递。独立验证使用 Manifest
+所记 Run 与 Attempt 的 Jobs API 找到确切 Producer Job 和成功的上传步骤，
+通过 GitHub 的步骤日志核对原生 Artifact ID，再用 Artifact API 验证名称、Run、SHA
+及可用的 Digest。验证命令通过 `verified` Job 的上传步骤选择确切的 Manifest ID。
+恢复 Draft 时，根据已保存 Manifest 所记的原始 Attempt 核对原始证据。
+上传步骤缺失、输出歧义或证据已不可读时，验证拒绝通过。
 验证 Artifact 有保留期；正式 Release 的 Manifest Asset
 提供持续追溯入口。重复发布还需要原始 Actions 元数据；历史记录删除导致
 无法核验时明确拒绝，不修改已发布版本。

@@ -239,17 +239,16 @@ class ManualReleaseTests(unittest.TestCase):
         )
 
     def test_main_advance_after_tag_does_not_create_release(self):
-        api = FakeGitHub()
-        original = api.__call__
+        class MovingMain(FakeGitHub):
+            def __call__(self, path, method="GET", data=None):
+                result = super().__call__(path, method, data)
+                if path == "git/refs":
+                    self.main = OTHER
+                return result
 
-        def move(path, method="GET", data=None):
-            result = original(path, method, data)
-            if path == "git/refs":
-                api.main = OTHER
-            return result
-
+        api = MovingMain()
         with self.assertRaises(ValueError):
-            publish(move)
+            publish(api)
         self.assertEqual([c[0] for c in api.writes], ["git/refs"])
         self.assertIsNone(api.published)
 
@@ -489,6 +488,22 @@ class ManualReleaseTests(unittest.TestCase):
         api.calls.clear()
         from engineering_ci.release.manifest import manifest
 
+        fresh_ids = {name: asset_id + 100 for name, asset_id in IDS.items()}
+        api.artifacts += [
+            {
+                **item,
+                "id": item["id"] + 100,
+                "url": item["url"].removesuffix(str(item["id"]))
+                + str(item["id"] + 100),
+            }
+            for item in api.artifacts
+        ]
+        api.upload_ids.update(
+            {
+                (job_id + 100, number): (name, asset_id + 100)
+                for (job_id, number), (name, asset_id) in api.upload_ids.items()
+            }
+        )
         fresh = manifest(
             api,
             "example/ci",
@@ -504,12 +519,15 @@ class ManualReleaseTests(unittest.TestCase):
                     "validation:fixture-python-matrix",
                 ],
             },
-            ids=IDS,
+            ids=fresh_ids,
         )
         publish(api, fresh)
         self.assertEqual([c[0] for c in api.writes], ["releases/10"])
         self.assertEqual(api.saved, saved)
         self.assertEqual(api.saved["workflow"]["run_attempt"], 1)
+        self.assertEqual(
+            {item["id"] for item in fresh["artifacts"]}, set(fresh_ids.values())
+        )
 
     def test_annotated_tag_is_peeled(self):
         def api(path):

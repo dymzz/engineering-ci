@@ -175,24 +175,7 @@ def evidence(api, value, repository, tag, head):
         raise ValueError("Required release verification did not pass")
     workflow = value["workflow"]
     completed_run(api, repository, head, workflow["run_id"], workflow["run_attempt"])
-    jobs = manifest.workflow_jobs(
-        api, workflow["run_id"], workflow["run_attempt"], head
-    )
-    for key, source in manifest.CHECKS.items():
-        if manifest.check_record(jobs, *source) != value["checks"][key]:
-            raise ValueError("Manifest does not match original Actions results")
-    for item in value["artifacts"]:
-        current = manifest.artifact_metadata(
-            api,
-            repository,
-            item["name"],
-            item["id"],
-            head,
-            workflow["run_id"],
-            allow_expired=True,
-        )
-        if item["digest"] is not None and item["digest"] != current["digest"]:
-            raise ValueError("Manifest Artifact digest mismatch")
+    manifest.verify_original_evidence(api, value, repository, head)
     return value
 
 
@@ -238,13 +221,10 @@ def validation(api, repository, identity, run_id):
     run = api(f"actions/runs/{run_id}")
     attempt = run["run_attempt"]
     completed_run(api, repository, head, run_id, attempt, ref=identity["ref"])
-    items = manifest.pages(api, f"actions/runs/{run_id}/artifacts", "artifacts")
-    items = [item for item in items if item.get("name") == "release-manifest"]
-    if len(items) != 1:
-        raise ValueError(
-            "Validation Manifest missing or ambiguous for this Run and attempt"
-        )
-    value = manifest_artifact(api, repository, head, run_id, items[0]["id"])
+    asset_id = manifest.artifact_upload_id(
+        api, "release-manifest", head, run_id, attempt
+    )
+    value = manifest_artifact(api, repository, head, run_id, asset_id)
     if (
         value.get("workflow", {}).get("run_id") != run_id
         or value["workflow"].get("run_attempt") != attempt
