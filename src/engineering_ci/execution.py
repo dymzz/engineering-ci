@@ -1086,6 +1086,7 @@ def _run_workflow_script_checks(
     generated_input_refs=(),
     check_omitted=True,
     shared_cache=None,
+    admitted_external_targets=None,
 ):
     wanted = [item for item in selected if item.get("name") in _WORKFLOW_SCRIPT_CHECKS]
     omitted_entries = (
@@ -1173,6 +1174,10 @@ def _run_workflow_script_checks(
         inline_shellcheck_requested=("workflow_shellcheck" in all_selected_names),
         inline_shellcheck_inputs=inline_shellcheck_inputs,
         admitted_external_configs=admitted_ext,
+        admitted_external_targets=admitted_external_targets,
+        validate_target_source=_workflow_target_validator(
+            plan, root, generated_input_refs
+        ),
     )
     results = []
     any_failed = False
@@ -1190,12 +1195,61 @@ def _run_workflow_script_checks(
         entry.setdefault("plan_authorized", True)
         if entry.get("status") == "failed" or (
             entry.get("status") == "not_executed"
-            and str(entry.get("reason") or "").startswith("workflow_config_")
+            and str(entry.get("reason") or "").startswith(
+                ("workflow_config_", "workflow_target_")
+            )
         ):
             any_failed = True
         results.append(entry)
     results.extend(omitted_entries)
     return results, any_failed
+
+
+def _workflow_target_validator(plan, root, generated_inputs):
+    """Check observed digests against the independently declared source, when present."""
+    git = plan["git"]
+    declared = (git.get("content_binding") or {}).get("paths") or {}
+    tree = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    immutable = git.get("snapshot") in {"commit", "push", "pr_merge", "index"}
+    git_available = immutable and selection._resolve_git_dir(root) is not None
+    generated = {item["path"]: item for item in generated_inputs}
+    verified_directories = {}
+
+    def validate(target):
+        if target["policy_scope"] == "event_external":
+            return (
+                None  # The runtime grant, not the repository tree, binds these bytes.
+            )
+        path, resolved, digest = (
+            target["path"],
+            target["resolved_path"],
+            target["sha256"],
+        )
+        for name, item in generated.items():
+            if item["input_kind"] == "file" and name == path:
+                if path != resolved or digest != item["sha256"]:
+                    return "workflow_target_generated_input_mismatch"
+                return None
+            if item["input_kind"] == "directory" and path.startswith(name + "/"):
+                if not resolved.startswith(name + "/"):
+                    return "workflow_target_generated_input_mismatch"
+                if name not in verified_directories:
+                    verified_directories[name] = verify_artifact_output(
+                        root,
+                        {"kind": "directory", "path": name, "sha256": item["sha256"]},
+                    )["ok"]
+                if not verified_directories[name]:
+                    return "workflow_target_generated_input_mismatch"
+                return None
+        if path in declared and declared[path] != digest:
+            return "workflow_target_plan_digest_mismatch"
+        if git_available and _is_git_oid(tree):
+            blob = selection._git_bytes(root, "cat-file", "blob", f"{tree}:{resolved}")
+            if blob.returncode or hashlib.sha256(blob.stdout).hexdigest() != digest:
+                return "workflow_target_tree_mismatch"
+        return None
+
+    return validate
 
 
 def _prerequisite_actions(plan, override):
@@ -1396,24 +1450,37 @@ def producer_artifact_root(artifact_root, producer_ref):
 def build_consumer_view(source_root, artifacts):
     """Copy source into an isolated view and overlay verified producer files."""
     temporary = tempfile.TemporaryDirectory(prefix="eci-consumer-")
-    view = Path(temporary.name) / "source"
-    shutil.copytree(source_root, view)
+    view = Path(temporary.name).resolve() / "source"
+
+    def skip_junctions(directory, names):
+        return [name for name in names if (Path(directory) / name).is_junction()]
+
+    shutil.copytree(source_root, view, symlinks=True, ignore=skip_junctions)
     for item in artifacts:
         if len(item) == 3:
             producer_root, rel, kind = item
         else:
             producer_root, rel = item
             kind = "file"
+        target = view / rel
+        source = Path(producer_root) / rel
+        destinations = [target]
+        if kind == "directory":
+            destinations.extend(
+                target / path.relative_to(source) for path in source.rglob("*")
+            )
+        if any(path.resolve() != path for path in destinations):
+            temporary.cleanup()
+            raise ExecutionError("data_artifact_target_symlink")
         if kind == "directory":
             shutil.copytree(
-                Path(producer_root) / rel,
-                view / rel,
+                source,
+                target,
                 dirs_exist_ok=True,
             )
             continue
-        target = view / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(producer_root) / rel, target)
+        shutil.copy2(source, target)
     return temporary, view
 
 
@@ -3552,6 +3619,8 @@ def _check_evidence(item, name):
             "shared_actionlint",
             "native_json",
             "input_paths",
+            "target_sources",
+            "target_source_problem",
             "admission",
         ):
             if key in item and item[key] is not None:
@@ -3786,7 +3855,7 @@ def _native_results(
     native = check_contract.native_result(
         definition,
         source=source,
-        status=item.get("status", "not_executed"),
+        status=item.get("native_status", item.get("status", "not_executed")),
         native_exit_code=item.get("exit_code"),
         result_origin=origin,
         runner_ref=resolved_runner,
@@ -3800,6 +3869,39 @@ def _native_results(
         reason=item.get("reason"),
     )
     return [native]
+
+
+def _workflow_target_source(item, fallback):
+    """Use the observed target bytes without claiming a full input closure."""
+    sources = item["target_sources"]
+    metadata = {
+        key: fallback[key]
+        for key in (
+            "declared_target_tree",
+            "actual_execution_source",
+            "head_commit",
+            "index_tree",
+        )
+        if key in fallback
+    }
+    if item.get("target_source_problem"):
+        return check_contract.source_ref(fallback["snapshot"], **metadata)
+    if any(source["policy_scope"] == "event_external" for source in sources):
+        metadata["actual_execution_source"] = "worktree_with_event_external"
+    identity = {
+        source["path"]: (
+            source["sha256"] if source["path"] == source["resolved_path"] else source
+        )
+        for source in sources
+    }
+    return check_contract.source_ref(
+        fallback["snapshot"],
+        **metadata,
+        content_digest=hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        verified_scope=identity,
+    )
 
 
 def _decorate_checks(
@@ -3865,6 +3967,8 @@ def _decorate_checks(
             if root is not None
             else None
         ) or fallback_source
+        if name in _WORKFLOW_SCRIPT_CHECKS and item.get("target_sources"):
+            source = _workflow_target_source(item, fallback_source)
         if item.get("execution_started") is False:
             # ``execution_started`` describes the Check's own verdict process
             # (for docs: the Lychee scan). A prerequisite tool that already ran
@@ -3957,7 +4061,7 @@ def _decorate_checks(
         item["check_contract"] = {
             "kind": check_contract.CHECK_CONTRACT_KIND,
             "schema_version": check_contract.CONTRACT_VERSION,
-            "status": "valid",
+            "status": item.get("target_source_problem") or "valid",
         }
         primary = native_results[-1] if name == "docs" else native_results[0]
         item["native_result"] = primary
@@ -3985,6 +4089,7 @@ def run_host_check(
     generated_input_refs=(),
     shared_cache=None,
     profile_ref=None,
+    admitted_external_targets=None,
 ):
     """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
@@ -4034,6 +4139,7 @@ def run_host_check(
             generated_input_refs=generated_input_refs,
             check_omitted=False,
             shared_cache=shared_cache,
+            admitted_external_targets=admitted_external_targets,
         )
         raw = results or [
             {
@@ -4096,6 +4202,7 @@ def _execute_with_dependencies(
     expected_tree,
     report,
     profile_ref=None,
+    admitted_external_targets=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -4272,7 +4379,22 @@ def _execute_with_dependencies(
                     profile_ref=profile_ref,
                 )
             elif files:
-                temporary, consumer_root = build_consumer_view(root, files)
+                try:
+                    temporary, consumer_root = build_consumer_view(root, files)
+                except ExecutionError as error:
+                    entry = _decorated_blocked_check(
+                        plan,
+                        name,
+                        item.get("status"),
+                        error.code,
+                        [],
+                        execution_context=execution_context,
+                        run_instance=run_instance,
+                        root=root,
+                        profile_ref=profile_ref,
+                    )
+                    check_cache[name] = entry
+                    return entry
                 try:
                     entry = run_host_check(
                         _rebased_consumer_plan(plan, root),
@@ -4289,6 +4411,7 @@ def _execute_with_dependencies(
                         generated_input_refs=generated_refs,
                         shared_cache=script_cache,
                         profile_ref=profile_ref,
+                        admitted_external_targets=admitted_external_targets,
                     )
                 finally:
                     temporary.cleanup()
@@ -4306,6 +4429,7 @@ def _execute_with_dependencies(
                     run_instance=run_instance,
                     shared_cache=script_cache,
                     profile_ref=profile_ref,
+                    admitted_external_targets=admitted_external_targets,
                 )
             check_cache[name] = entry
             return entry
@@ -4693,7 +4817,9 @@ def execute(
     runner=None,
     run_instance=None,
     profile_ref=None,
+    admitted_external_targets=None,
 ):
+    """Execute a Plan. External Workflow/Shell grants come from the runtime caller."""
     try:
         validate_plan(plan)
         if (
@@ -4785,6 +4911,7 @@ def execute(
             expected_tree=expected_tree,
             report=report,
             profile_ref=profile_ref,
+            admitted_external_targets=admitted_external_targets,
         )
         if early is not None:
             return early
@@ -4875,6 +5002,7 @@ def execute(
         runner=runner,
         selection_config=selection_config,
         policy_admission=policy_admission,
+        admitted_external_targets=admitted_external_targets,
     )
     native_checks = [*hygiene_results, *workflow_script_results]
     if source_result is not None:

@@ -14,7 +14,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
 # Single authority for pinned workflow/shell/security tool versions.
@@ -41,6 +43,7 @@ ZIZMOR_CONFIG_FILES = frozenset(
 )
 
 _SKIP_DISCOVERY_PARTS = frozenset({".git", ".venv", ".tmp", "__pycache__"})
+_TARGET_STAGING_PREFIX = ".eci-workflow-"
 
 _ACTIONLINT_LINE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+)(?:[:-]\d+)?(?:[:-]\d+)?: "
@@ -152,57 +155,155 @@ def is_shell_file(
 def discover_workflow_files(
     root: Path,
     workflow_prefixes: tuple[str, ...] = (".github/workflows/",),
+    *,
+    problems: dict | None = None,
+    admitted_external_targets: dict | None = None,
 ) -> list[str]:
-    base = Path(root)
-    if not base.is_dir():
-        return []
-    found: set[str] = set()
-    for prefix in workflow_prefixes:
-        clean = prefix.replace("\\", "/").strip("/")
-        candidate = base / clean if clean else base
-        if candidate.is_file():
-            rel = candidate.relative_to(base).as_posix()
-            if is_workflow_file(rel, workflow_prefixes):
-                found.add(rel)
-        elif candidate.is_dir():
-            for item in candidate.rglob("*"):
-                if not item.is_file():
-                    continue
-                if any(part in _SKIP_DISCOVERY_PARTS for part in item.parts):
-                    continue
-                rel = item.relative_to(base).as_posix()
-                if is_workflow_file(rel, workflow_prefixes):
-                    found.add(rel)
-    return sorted(found)
+    return _discover_targets(
+        root,
+        workflow_prefixes,
+        lambda path: is_workflow_file(path, workflow_prefixes),
+        problems=problems,
+        admitted_external_targets=admitted_external_targets,
+    )
 
 
 def discover_shell_files(
     root: Path,
     shell_prefixes: tuple[str, ...] = (),
+    *,
+    problems: dict | None = None,
+    admitted_external_targets: dict | None = None,
 ) -> list[str]:
-    base = Path(root)
+    return _discover_targets(
+        root,
+        shell_prefixes,
+        lambda path: is_shell_file(path, shell_prefixes),
+        problems=problems,
+        admitted_external_targets=admitted_external_targets,
+    )
+
+
+def _skip_target_part(part):
+    name = part.casefold()
+    return name in _SKIP_DISCOVERY_PARTS or name.startswith(_TARGET_STAGING_PREFIX)
+
+
+def _target_path(path: str) -> str:
+    path = _relative_path("workflow target", path).replace("\\", "/")
+    relative = PurePosixPath(path).as_posix()
+    if (
+        relative.startswith("-")
+        or ":" in path
+        or any(_skip_target_part(part) for part in PurePosixPath(path).parts)
+    ):
+        raise ValueError("invalid workflow target path")
+    return relative
+
+
+def _inspect_target(root, path, admitted, *, hash_bytes=True):
+    """Resolve a target and read bytes only within the supplied Source scope."""
+    try:
+        logical = _target_path(path)
+    except ValueError:
+        return None, "workflow_target_path_invalid"
+    try:
+        target = (root / logical).resolve(strict=True)
+        internal = target.is_relative_to(root)
+        resolved = target.relative_to(root).as_posix() if internal else str(target)
+        if internal:
+            _target_path(resolved)
+        grant = (
+            None
+            if internal
+            else _admitted_external_entry(admitted, logical, target, exact_path=True)
+        )
+        if not internal and grant is None:
+            return None, "workflow_target_outside_root"
+        if not target.is_file():
+            return None, "workflow_target_not_file"
+        digest = _file_sha256(target) if hash_bytes or grant is not None else None
+        if grant is not None and digest != grant["sha256"]:
+            return None, "workflow_target_digest_mismatch"
+    except FileNotFoundError:
+        return None, "workflow_target_missing"
+    except (OSError, RuntimeError, ValueError):
+        return None, "workflow_target_unreadable"
+    return {
+        "path": logical,
+        "resolved_path": resolved,
+        "sha256": digest,
+        "policy_scope": "repo_target_tree" if internal else "event_external",
+    }, None
+
+
+def _file_sha256(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _discover_targets(root, prefixes, matches, *, problems, admitted_external_targets):
+    base = Path(root).resolve()
     if not base.is_dir():
         return []
-    found: set[str] = set()
-    roots = (
-        [base / p.replace("\\", "/").strip("/") for p in shell_prefixes]
-        if shell_prefixes
-        else [base]
-    )
-    for entry in roots:
-        if entry.is_file():
-            rel = entry.relative_to(base).as_posix()
-            if is_shell_file(rel, shell_prefixes):
-                found.add(rel)
-        elif entry.is_dir():
-            for item in entry.rglob("*"):
-                if not item.is_file():
-                    continue
-                if any(part in _SKIP_DISCOVERY_PARTS for part in item.parts):
-                    continue
-                rel = item.relative_to(base).as_posix()
-                if is_shell_file(rel, shell_prefixes):
-                    found.add(rel)
+    found = set()
+
+    def inspect(path):
+        if matches(path):
+            record, reason = _inspect_target(
+                base, path, admitted_external_targets, hash_bytes=False
+            )
+            if record is not None:
+                found.add(path)
+            elif problems is not None:
+                problems[path] = reason
+
+    for prefix in prefixes or (".",):
+        try:
+            relative = _target_path(prefix)
+        except ValueError:
+            if problems is not None:
+                problems[prefix] = "workflow_target_path_invalid"
+            continue
+        candidate = base / relative
+        if matches(relative):
+            if candidate.is_symlink() or candidate.exists():
+                inspect(relative)
+            continue
+        try:
+            directory = candidate.resolve(strict=True)
+            if not directory.is_relative_to(base):
+                if problems is not None:
+                    problems[relative] = "workflow_target_outside_root"
+                continue
+            _target_path(directory.relative_to(base).as_posix())
+            if not directory.is_dir():
+                continue
+        except FileNotFoundError:
+            if candidate.is_symlink() and problems is not None:
+                problems[relative] = "workflow_target_missing"
+            continue
+        except (OSError, RuntimeError, ValueError):
+            if problems is not None:
+                problems[relative] = "workflow_target_unreadable"
+            continue
+
+        def walk_error(_error, relative=relative):
+            if problems is not None:
+                problems[relative] = "workflow_target_unreadable"
+
+        for current, dirs, files in os.walk(directory, onerror=walk_error):
+            parent = Path(current)
+            dirs[:] = [
+                name
+                for name in dirs
+                if not _skip_target_part(name)
+                and not (parent / name).is_symlink()
+                and not (parent / name).is_junction()
+            ]
+            alias = Path(relative) / parent.relative_to(directory)
+            for name in files:
+                inspect((alias / name).as_posix())
     return sorted(found)
 
 
@@ -930,14 +1031,16 @@ def _is_hex64(value: object) -> bool:
     )
 
 
-def _admitted_external_config_entry(
-    admitted_external_configs: dict | None,
+def _admitted_external_entry(
+    admitted_entries: dict | None,
     rel_path: str,
     resolved_target: Path,
+    *,
+    exact_path: bool = False,
 ) -> dict | None:
-    if not isinstance(admitted_external_configs, dict):
+    if not isinstance(admitted_entries, dict):
         return None
-    declared = admitted_external_configs.get(rel_path)
+    declared = admitted_entries.get(rel_path)
     if (
         not isinstance(declared, dict)
         or declared.get("policy_scope") != "event_external"
@@ -950,7 +1053,9 @@ def _admitted_external_config_entry(
     if not declared_path.is_absolute():
         return None
     try:
-        if declared_path.resolve() != resolved_target:
+        if (
+            declared_path if exact_path else declared_path.resolve()
+        ) != resolved_target:
             return None
     except OSError:
         return None
@@ -1019,9 +1124,7 @@ def _inspect_config_file(
             "reason": "workflow_config_unverified",
         }
     if not in_root or raw.is_absolute():
-        admitted = _admitted_external_config_entry(
-            admitted_external_configs, rel_path, target
-        )
+        admitted = _admitted_external_entry(admitted_external_configs, rel_path, target)
         if admitted is None or not target.is_file():
             return {
                 "path": rel_path,
@@ -1356,9 +1459,15 @@ def run_workflow_script_suite(
     inline_shellcheck_requested: bool = False,
     inline_shellcheck_inputs: tuple[str, ...] | None = None,
     admitted_external_configs: dict | None = None,
+    admitted_external_targets: dict | None = None,
+    validate_target_source=None,
 ) -> dict[str, dict]:
-    """Run selected actionlint, shellcheck and zizmor checks once with shared facts."""
-    root = Path(root)
+    """Run selected checks on resolved targets.
+
+    External grants are supplied by the runtime caller after admission. Each
+    logical path requires an event_external grant for the exact path and bytes.
+    """
+    root = Path(root).resolve()
     config_problems = workflow_config_problems(
         root=root,
         actionlint_config=actionlint_config,
@@ -1367,57 +1476,110 @@ def run_workflow_script_suite(
         admitted_external_configs=admitted_external_configs,
     )
     cache = shared_cache if shared_cache is not None else {}
-    extra_workflows = sorted(
-        {
-            _norm_rel_path(p)
-            for p in extra_paths
-            if is_workflow_file(p, workflow_prefixes) and (root / p).is_file()
-        }
-    )
-    extra_shells = sorted(
-        {
-            _norm_rel_path(p)
-            for p in extra_paths
-            if is_shell_file(p, shell_prefixes) and (root / p).is_file()
-        }
-    )
-    discovered_workflows: list[str] | None = None
-    discovered_shells: list[str] | None = None
+    extras = {
+        "workflow": [p for p in extra_paths if is_workflow_file(p, workflow_prefixes)],
+        "shell": [p for p in extra_paths if is_shell_file(p, shell_prefixes)],
+    }
+    target_sources = {}
+    target_problems = {}
 
-    def all_workflows() -> list[str]:
-        nonlocal discovered_workflows
-        if discovered_workflows is None:
-            discovered_workflows = sorted(
-                set(discover_workflow_files(root, workflow_prefixes))
-                | set(extra_workflows)
-            )
-        return discovered_workflows
-
-    def all_shells() -> list[str]:
-        nonlocal discovered_shells
-        if discovered_shells is None:
-            discovered_shells = sorted(
-                set(discover_shell_files(root, shell_prefixes)) | set(extra_shells)
-            )
-        return discovered_shells
-
-    def target_files(check_name: str, *, kind: str) -> list[str]:
+    def target_files(check_name: str, *, kind: str, declared=None) -> list[str]:
         sel = selected_by_name.get(check_name) or {}
-        declared = sel.get("inputs")
-        # Scan only the Check's declared scoped inputs when available; fall back to
-        # discovery only when inputs are omitted or selection status is unknown.
-        if isinstance(declared, list) and (
-            sel.get("status") != "unknown" or bool(declared)
+        if declared is None:
+            declared = sel.get("inputs")
+        problems = {}
+        if not isinstance(declared, (list, tuple)) or (
+            sel.get("status") == "unknown" and not declared
         ):
-            extra = extra_workflows if kind == "workflow" else extra_shells
-            resolved = [
-                norm
-                for p in declared
-                for norm in (_norm_rel_path(p),)
-                if (root / norm).is_file()
-            ]
-            return sorted(set(resolved) | set(extra))
-        return all_workflows() if kind == "workflow" else all_shells()
+            discover, prefixes = (
+                (discover_workflow_files, workflow_prefixes)
+                if kind == "workflow"
+                else (discover_shell_files, shell_prefixes)
+            )
+            declared = discover(
+                root,
+                prefixes,
+                problems=problems,
+                admitted_external_targets=admitted_external_targets,
+            )
+        records = {}
+        for path in (*declared, *extras[kind]):
+            record, reason = _inspect_target(root, path, admitted_external_targets)
+            if record is not None and validate_target_source is not None:
+                reason = validate_target_source(record)
+            if reason is None:
+                records[record["path"]] = record
+            else:
+                problems[path] = reason
+        if problems:
+            target_problems[check_name] = problems
+            return []
+        paths = sorted(records)
+        inputs = tuple(records[path] for path in paths)
+        if target_sources.setdefault(tuple(paths), inputs) != inputs:
+            target_problems[check_name] = {
+                path: "workflow_target_changed_before_execution" for path in paths
+            }
+            return []
+        return paths
+
+    def unchanged(sources):
+        return all(
+            _inspect_target(root, source["path"], admitted_external_targets)[0]
+            == source
+            for source in sources
+        )
+
+    def scan_targets(policy, arguments, prefix, paths):
+        sources = target_sources[tuple(paths)]
+        # Give the tools the resolved names. In particular, a discovered alias
+        # cannot be followed a second time by the native tool.
+        if not unchanged(sources):
+            return None, "workflow_target_changed_before_execution"
+        argv = arguments(policy)[: -len(paths)]
+        with ExitStack() as cleanup:
+            staged_root = None
+            for source in sources:
+                if source["policy_scope"] != "event_external":
+                    argv.append(source["resolved_path"])
+                    continue
+                # Actionlint finds the project from each input filename. Give
+                # it verified bytes inside this project, away from the external
+                # target's neighboring configs and other project files.
+                try:
+                    if staged_root is None:
+                        staged_root = Path(
+                            cleanup.enter_context(
+                                tempfile.TemporaryDirectory(
+                                    prefix=_TARGET_STAGING_PREFIX, dir=root
+                                )
+                            )
+                        )
+                    content = Path(source["resolved_path"]).read_bytes()
+                    if hashlib.sha256(content).hexdigest() != source["sha256"]:
+                        return None, "workflow_target_changed_before_execution"
+                    staged = staged_root / source["path"]
+                    staged.parent.mkdir(parents=True, exist_ok=True)
+                    staged.write_bytes(content)
+                    argv.append(staged.relative_to(root).as_posix())
+                except OSError:
+                    return None, "workflow_target_materialization_failed"
+            completed = _invoke(runner, [*prefix, *argv], root)
+        return completed, None if unchanged(
+            sources
+        ) else "workflow_target_changed_during_execution"
+
+    def target_refusal(check_name, access_id, reason):
+        return {
+            "name": check_name,
+            "selected": selected_by_name[check_name].get("status"),
+            "status": "not_executed",
+            "exit_code": None,
+            "reason": reason,
+            "execution_started": False,
+            "execution_kind": "not_started",
+            "access_id": access_id,
+        }
 
     def admit_tools(
         check_name: str,
@@ -1513,16 +1675,23 @@ def run_workflow_script_suite(
     def ensure_actionlint_run(
         target_workflows: tuple[str, ...], want_inline_shellcheck: bool
     ) -> dict:
+        sources = target_sources[target_workflows]
         cache_key = (
             "actionlint",
-            target_workflows,
+            root,
+            tuple(tuple(source.values()) for source in sources),
             bool(want_inline_shellcheck),
             actionlint_config,
         )
         lock = cache.setdefault("_lock", threading.Lock())
+        stale = {
+            "prepared": False,
+            "reason": "workflow_target_changed_before_execution",
+            "detail": "",
+        }
         with lock:
             if cache_key in cache:
-                return cache[cache_key]
+                return cache[cache_key] if unchanged(sources) else stale
         sc_ok = False
         sc_ver = None
         sc_detail = ""
@@ -1532,7 +1701,7 @@ def run_workflow_script_suite(
             use_shellcheck = sc_ok
         with lock:
             if cache_key in cache:
-                return cache[cache_key]
+                return cache[cache_key] if unchanged(sources) else stale
             prefix, exe_label = _resolve_tool_prefix(
                 "actionlint+shellcheck" if use_shellcheck else "actionlint"
             )
@@ -1561,8 +1730,11 @@ def run_workflow_script_suite(
                 json_format=True,
                 debug=use_shellcheck,
             )
-            argv = [*prefix, *actionlint_arguments(policy)]
-            completed = _invoke(runner, argv, root)
+            completed, source_problem = scan_targets(
+                policy, actionlint_arguments, prefix, target_workflows
+            )
+            if completed is None:
+                return {**stale, "reason": source_problem}
             raw_stdout = getattr(completed, "stdout", "") or ""
             raw_stderr = getattr(completed, "stderr", "") or ""
             sc_debug = (
@@ -1588,8 +1760,10 @@ def run_workflow_script_suite(
                 "shellcheck_detail": sc_detail,
                 "shellcheck_enabled": use_shellcheck,
                 "shellcheck_debug": sc_debug,
+                "target_source_problem": source_problem,
             }
-            cache[cache_key] = res
+            if source_problem is None:
+                cache[cache_key] = res
             return res
 
     out: dict[str, dict] = {}
@@ -1625,20 +1799,15 @@ def run_workflow_script_suite(
         inline_target_tuple = tuple(wf_sc_workflows)
     elif inline_shellcheck_inputs is not None:
         inline_target_tuple = tuple(
-            sorted(
-                {
-                    norm
-                    for p in inline_shellcheck_inputs
-                    for norm in (_norm_rel_path(p),)
-                    if (root / norm).is_file()
-                }
-                | set(extra_workflows)
+            target_files(
+                "_inline_shellcheck", kind="workflow", declared=inline_shellcheck_inputs
             )
         )
     want_inline_for_al = (
         bool(shellcheck_inline)
         and ("workflow_shellcheck" in selected_by_name or inline_shellcheck_requested)
         and inline_blocked is None
+        and inline_adm_key not in target_problems
         and (inline_target_tuple is None or inline_target_tuple == tuple(al_workflows))
     )
 
@@ -1659,6 +1828,12 @@ def run_workflow_script_suite(
             }
         elif blocked is not None:
             out["actionlint"] = blocked
+        elif "actionlint" in target_problems:
+            out["actionlint"] = target_refusal(
+                "actionlint",
+                "actionlint/check",
+                next(iter(target_problems["actionlint"].values())),
+            )
         elif not al_workflows:
             out["actionlint"] = {
                 "name": "actionlint",
@@ -1692,6 +1867,7 @@ def run_workflow_script_suite(
                 # own genuine native exit code and verdict.
                 if (
                     al_run["shellcheck_enabled"]
+                    and not al_run["target_source_problem"]
                     and rep["exit_code"] != 0
                     and not rep["actionlint_findings"]
                     and rep["shellcheck_findings"]
@@ -1739,6 +1915,7 @@ def run_workflow_script_suite(
                         "tool_version": al_run["tool_version"],
                         "access_id": "actionlint/check",
                         "input_paths": list(al_workflows),
+                        "target_source_problem": al_run["target_source_problem"],
                         "coverage": {
                             "workflows_scanned": len(al_workflows),
                             "workflow_files": list(al_workflows),
@@ -1784,6 +1961,12 @@ def run_workflow_script_suite(
                 "access_id": "actionlint/shellcheck-inline",
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
+        elif "workflow_shellcheck" in target_problems:
+            out["workflow_shellcheck"] = target_refusal(
+                "workflow_shellcheck",
+                "actionlint/shellcheck-inline",
+                next(iter(target_problems["workflow_shellcheck"].values())),
+            )
         elif not wf_sc_workflows:
             out["workflow_shellcheck"] = {
                 "name": "workflow_shellcheck",
@@ -1890,6 +2073,7 @@ def run_workflow_script_suite(
                         "tool_version": sc_ver if inline_exe else None,
                         "access_id": "actionlint/shellcheck-inline",
                         "input_paths": list(wf_sc_workflows),
+                        "target_source_problem": al_run["target_source_problem"],
                         "actionlint_exit_code": al_rep["exit_code"],
                         "shared_actionlint": bool("actionlint" in out),
                         "coverage": {
@@ -1930,6 +2114,12 @@ def run_workflow_script_suite(
             }
         elif blocked is not None:
             out["shellcheck"] = blocked
+        elif "shellcheck" in target_problems:
+            out["shellcheck"] = target_refusal(
+                "shellcheck",
+                "shellcheck/check",
+                next(iter(target_problems["shellcheck"].values())),
+            )
         elif not sc_shells:
             out["shellcheck"] = {
                 "name": "shellcheck",
@@ -1956,12 +2146,17 @@ def run_workflow_script_suite(
                     "access_id": "shellcheck/check",
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
-            else:
+            if sc_ok:
                 sc_prefix, standalone_exe = _resolve_tool_prefix("shellcheck")
                 sc_pol = shellcheck_policy(sc_shells, config=shellcheck_config)
-                sc_completed = _invoke(
-                    runner, [*sc_prefix, *shellcheck_arguments(sc_pol)], root
+                sc_completed, sc_problem = scan_targets(
+                    sc_pol, shellcheck_arguments, sc_prefix, sc_shells
                 )
+                if sc_completed is None:
+                    out["shellcheck"] = target_refusal(
+                        "shellcheck", "shellcheck/check", sc_problem
+                    )
+            if sc_ok and sc_completed is not None:
                 sc_stdout = getattr(sc_completed, "stdout", "") or ""
                 sc_stderr = getattr(sc_completed, "stderr", "") or ""
                 standalone_rep = script_report(
@@ -1994,6 +2189,7 @@ def run_workflow_script_suite(
                     "tool_version": sc_ver,
                     "access_id": "shellcheck/check",
                     "input_paths": list(sc_shells),
+                    "target_source_problem": sc_problem,
                     "coverage": {
                         "standalone_shell": standalone_status == "passed",
                         "standalone_status": standalone_status,
@@ -2029,6 +2225,10 @@ def run_workflow_script_suite(
             }
         elif blocked is not None:
             out["zizmor"] = blocked
+        elif "zizmor" in target_problems:
+            out["zizmor"] = target_refusal(
+                "zizmor", "zizmor/check", next(iter(target_problems["zizmor"].values()))
+            )
         elif not zz_workflows:
             out["zizmor"] = {
                 "name": "zizmor",
@@ -2058,16 +2258,19 @@ def run_workflow_script_suite(
                     "access_id": "zizmor/check",
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
-            else:
+            if ok_zz:
                 zz_pol = zizmor_policy(
                     zz_workflows,
                     config=zizmor_config,
                     persona=zizmor_persona,
                     offline=zizmor_offline,
                 )
-                zz_completed = _invoke(
-                    runner, [*zz_prefix, *zizmor_arguments(zz_pol)], root
+                zz_completed, zz_problem = scan_targets(
+                    zz_pol, zizmor_arguments, zz_prefix, zz_workflows
                 )
+                if zz_completed is None:
+                    out["zizmor"] = target_refusal("zizmor", "zizmor/check", zz_problem)
+            if ok_zz and zz_completed is not None:
                 zz_stdout = getattr(zz_completed, "stdout", "") or ""
                 zz_stderr = getattr(zz_completed, "stderr", "") or ""
                 zz_rep = script_report(
@@ -2092,6 +2295,7 @@ def run_workflow_script_suite(
                     "tool_version": obs_zz,
                     "access_id": "zizmor/check",
                     "input_paths": list(zz_workflows),
+                    "target_source_problem": zz_problem,
                     "coverage": {
                         "workflows_scanned": len(zz_workflows),
                         "workflow_files": list(zz_workflows),
@@ -2110,6 +2314,17 @@ def run_workflow_script_suite(
                 }
 
     for check_name, entry in out.items():
+        if check_name in target_problems:
+            entry["target_problems"] = target_problems[check_name]
+        paths = entry.get("input_paths")
+        if paths:
+            entry["target_sources"] = list(target_sources[tuple(paths)])
+        if entry.get("target_source_problem") is None:
+            entry.pop("target_source_problem", None)
+        elif entry["status"] != "failed":
+            entry["native_status"] = entry["status"]
+            entry["status"] = "unknown"
+            entry["reason"] = entry["target_source_problem"]
         if check_name in config_problems:
             entry.pop("rule_ref", None)
             continue
