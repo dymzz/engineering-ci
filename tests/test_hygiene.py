@@ -236,7 +236,7 @@ def test_forwarding_new_module_is_not_a_failure(repo):
     assert by_name(result)["forwarding"]["reason"] is None
 
 
-def test_forwarding_missing_base_commit_fails(repo):
+def test_forwarding_without_base_commit_is_blocked(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
     value = changes(path, base)
@@ -244,8 +244,12 @@ def test_forwarding_missing_base_commit_fails(repo):
     result = hygiene.run(
         value, config(path, ("forwarding",)), root=path, runner=FakeRunner()
     )
-    assert result["status"] == "failed"
-    assert by_name(result)["forwarding"]["reason"] == "base_commit_missing"
+    assert result["status"] == "blocked"
+    check = by_name(result)["forwarding"]
+    assert check["reason"] == "base_commit_missing"
+    assert check["status"] == "not_executed"
+    assert check["execution_started"] is False
+    assert check["observation"]["probes"] == []
     assert result["git"]["base_commit"] is None
 
 
@@ -261,7 +265,8 @@ def test_forwarding_unavailable_base_odb_fails(repo):
     check = by_name(result)["forwarding"]
     assert result["status"] == "failed"
     assert check["reason"] == "base_odb_unavailable"
-    assert check["exit_code"] != 0
+    assert check["exit_code"] is None
+    assert check["observation"]["probes"][-1]["exit_code"] != 0
     assert check["executable"] == "git"
     assert result["git"]["base_commit"] == missing
 
@@ -271,11 +276,9 @@ def test_forwarding_unreadable_base_tree_fails(repo):
     (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
 
     def runner(argv, root, data=None):
-        if argv[:3] == ["git", "cat-file", "-e"] and len(argv) == 4:
-            target = argv[3]
-            if ":" not in target and "^{" not in target:
-                return subprocess.CompletedProcess(argv, 0, "", "")
-        if argv[:3] == ["git", "rev-parse", "--verify"] and argv[3].endswith("^{tree}"):
+        if argv[:3] == ["git", "rev-parse", "--verify"] and argv[-1].endswith(
+            "^{tree}"
+        ):
             return subprocess.CompletedProcess(
                 argv, 128, "", "fatal: not a valid object name"
             )
@@ -289,7 +292,8 @@ def test_forwarding_unreadable_base_tree_fails(repo):
     check = by_name(result)["forwarding"]
     assert result["status"] == "failed"
     assert check["reason"] == "base_tree_unavailable"
-    assert check["exit_code"] == 128
+    assert check["exit_code"] is None
+    assert check["observation"]["probes"][-1]["exit_code"] == 128
     assert check["executable"] == "git"
     assert result["git"]["base_commit"] == base
 
@@ -314,8 +318,10 @@ def test_forwarding_base_content_unavailable_propagates_native_failure(repo):
     check = by_name(result)["forwarding"]
     assert result["status"] == "failed"
     assert check["reason"] == "base_content_unavailable"
-    assert check["exit_code"] == 128
-    assert "unreadable" in check["stderr"]
+    assert check["exit_code"] is None
+    probe = check["observation"]["probes"][-1]
+    assert probe["exit_code"] == 128
+    assert "unreadable" in probe["stderr"]
     assert check["executable"] == "git"
 
 
@@ -405,7 +411,8 @@ def test_forwarding_tree_entry_with_missing_blob_is_not_a_new_path(repo):
     assert result["status"] == "failed"
     assert check["status"] == "failed"
     assert check["reason"] == "base_content_unavailable"
-    assert check["exit_code"] == exists.returncode
+    assert check["exit_code"] is None
+    assert check["observation"]["probes"][-1]["exit_code"] == exists.returncode
     assert check["executable"] == "git"
     assert result["git"]["base_commit"] == base
 
@@ -430,7 +437,8 @@ def test_forwarding_tree_oid_base_is_not_a_commit(repo):
     check = by_name(result)["forwarding"]
     assert result["status"] == "failed"
     assert check["reason"] == "base_not_commit"
-    assert check["exit_code"] == peeled.returncode
+    assert check["exit_code"] is None
+    assert check["observation"]["probes"][-2]["exit_code"] == peeled.returncode
     assert check["executable"] == "git"
     assert result["git"]["base_commit"] == tree
 
@@ -454,8 +462,10 @@ def test_forwarding_tree_query_failure_is_explicit(repo):
     check = by_name(result)["forwarding"]
     assert result["status"] == "failed"
     assert check["reason"] == "base_tree_unavailable"
-    assert check["exit_code"] == 128
-    assert "not a tree object" in check["stderr"]
+    assert check["exit_code"] is None
+    probe = check["observation"]["probes"][-1]
+    assert probe["exit_code"] == 128
+    assert "not a tree object" in probe["stderr"]
     assert check["executable"] == "git"
 
 

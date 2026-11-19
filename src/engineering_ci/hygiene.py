@@ -656,18 +656,6 @@ def _whitespace(changes, root, runner, paths=None):
 _GIT_OID = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
 
-def _git_failed(reason, result):
-    return _result(
-        "forwarding",
-        "failed",
-        exit_code=result.returncode,
-        reason=reason,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        executable="git",
-    )
-
-
 def _parse_ls_tree_z(stdout):
     """Map each full path from ``git ls-tree -r -z`` to ``(type, oid)``.
 
@@ -675,6 +663,8 @@ def _parse_ls_tree_z(stdout):
     matches that path exactly; a listed blob oid can still be missing from the
     object database.
     """
+    if stdout and not stdout.endswith("\0"):
+        raise ValueError("ls-tree listing is not NUL-terminated")
     entries = {}
     for record in stdout.split("\0"):
         if not record:
@@ -694,7 +684,7 @@ def _parse_ls_tree_z(stdout):
     return entries
 
 
-def _forwarding_base_tree(changes, root, runner):
+def _forwarding_base_tree(base, probe, observation):
     """Resolve a commit-typed base to a readable tree.
 
     ``^{tree}`` also succeeds for a raw tree object. Forwarding accepts that
@@ -702,48 +692,31 @@ def _forwarding_base_tree(changes, root, runner):
     the direct ``hygiene.run`` contract when no upstream commit identity is
     supplied. A missing object stays ``base_odb_unavailable``.
     """
-    base = getattr(changes, "base_commit", None)
-    if not isinstance(base, str) or not base.strip():
-        return None, _result(
-            "forwarding",
-            "failed",
-            reason="base_commit_missing",
-            executable="git",
-        )
-    base = base.strip()
-    peeled = runner(["git", "rev-parse", "--verify", f"{base}^{{commit}}"], root)
+    peeled = probe("rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
     commit_id = peeled.stdout.strip() if peeled.returncode == 0 else ""
     if peeled.returncode != 0 or not _GIT_OID.fullmatch(commit_id):
-        present = runner(["git", "cat-file", "-e", base], root)
+        present = probe("cat-file", "-e", "--", base)
         if present.returncode != 0:
-            return None, _git_failed("base_odb_unavailable", present)
-        return None, _git_failed("base_not_commit", peeled)
-    tree = runner(["git", "rev-parse", "--verify", f"{commit_id}^{{tree}}"], root)
+            return None, "base_odb_unavailable"
+        return None, "base_not_commit"
+    observation["base_commit"] = commit_id
+    tree = probe("rev-parse", "--verify", "--end-of-options", f"{commit_id}^{{tree}}")
     tree_id = tree.stdout.strip() if tree.returncode == 0 else ""
     if tree.returncode != 0 or not _GIT_OID.fullmatch(tree_id):
-        return None, _git_failed("base_tree_unavailable", tree)
-    readable = runner(["git", "cat-file", "-e", tree_id], root)
-    if readable.returncode != 0:
-        return None, _git_failed("base_tree_unavailable", readable)
+        return None, "base_tree_unavailable"
+    observation["base_tree"] = tree_id
     return tree_id, None
 
 
-def _forwarding_tree_entries(tree_id, root, runner):
-    listed = runner(["git", "ls-tree", "-r", "-z", tree_id], root)
+def _forwarding_tree_entries(tree_id, probe, observation):
+    listed = probe("ls-tree", "-r", "-z", tree_id)
     if listed.returncode != 0:
-        return None, _git_failed("base_tree_unavailable", listed)
+        return None, "base_tree_unavailable"
     try:
         return _parse_ls_tree_z(listed.stdout), None
-    except ValueError:
-        return None, _result(
-            "forwarding",
-            "failed",
-            exit_code=listed.returncode,
-            reason="base_tree_unavailable",
-            stdout=listed.stdout,
-            stderr=listed.stderr or "malformed git ls-tree listing",
-            executable="git",
-        )
+    except ValueError as error:
+        observation["tree_parse_error"] = str(error)
+        return None, "base_tree_listing_invalid"
 
 
 def _forwarding(paths, changes, root, runner, config):
@@ -756,54 +729,96 @@ def _forwarding(paths, changes, root, runner, config):
     ]
     if not candidates:
         return _result("forwarding", "not_applicable", reason="no_python_changes")
-    base_tree, base_failure = _forwarding_base_tree(changes, root, runner)
+    base = getattr(changes, "base_commit", None)
+    observation = {
+        "kind": "git_forwarding_source",
+        "requested_base": base,
+        "git_context": "unverified",
+        "probes": [],
+        "paths": [],
+    }
+
+    def probe(*args):
+        argv = ["git", *args]
+        completed = runner(argv, root)
+        record = {
+            "argv": argv,
+            "exit_code": completed.returncode,
+            "stderr": _bounded(completed.stderr),
+        }
+        native_observation = getattr(completed, "observation", None)
+        if isinstance(native_observation, dict):
+            record["observation"] = native_observation
+        observation["probes"].append(record)
+        return completed
+
+    def result(status, reason=None, *, findings=()):
+        entry = _result(
+            "forwarding",
+            status,
+            reason=reason,
+            findings=findings,
+            executable="git",
+            observation=observation,
+        )
+        if status == "not_executed":
+            entry.update(execution_started=False, execution_kind="not_started")
+        return entry
+
+    if not isinstance(base, str) or not base.strip():
+        return result("not_executed", "base_commit_missing")
+    context = probe("rev-parse", "--is-inside-work-tree", "--show-prefix")
+    if context.returncode != 0 or context.stdout.strip() != "true":
+        observation["git_context"] = "unavailable"
+        observation["git_context_output"] = _bounded(context.stdout)
+        return result("not_executed", "forwarding_git_context_unavailable")
+    observation["git_context"] = "worktree_root"
+
+    base_tree, base_failure = _forwarding_base_tree(base.strip(), probe, observation)
     if base_failure is not None:
-        return base_failure
-    entries, tree_failure = _forwarding_tree_entries(base_tree, root, runner)
+        return result("failed", base_failure)
+    entries, tree_failure = _forwarding_tree_entries(base_tree, probe, observation)
     if tree_failure is not None:
-        return tree_failure
+        return result("failed", tree_failure)
     findings = []
     for path in candidates:
         # Exact tree-path membership. ``cat-file -e <tree>:<path>`` also fails
         # when the entry exists and its blob is missing, so that exit is not
         # proof of a new module.
         entry = entries.get(path)
+        compared = {"path": path, "base_entry": "absent" if entry is None else entry[0]}
+        observation["paths"].append(compared)
         if entry is None:
             continue
         kind, oid = entry
+        compared["base_object_oid"] = oid
         if kind != "blob":
-            return _result(
-                "forwarding",
-                "failed",
-                reason="base_content_unavailable",
-                stderr=f"{path}: tree entry is not a blob",
-                executable="git",
-            )
-        present = runner(["git", "cat-file", "-e", oid], root)
+            return result("failed", "base_content_unavailable")
+        present = probe("cat-file", "-e", oid)
         if present.returncode != 0:
-            return _git_failed("base_content_unavailable", present)
-        previous = runner(["git", "cat-file", "-p", oid], root)
+            return result("failed", "base_content_unavailable")
+        previous = probe("cat-file", "-p", oid)
         if previous.returncode != 0:
-            return _git_failed("base_content_unavailable", previous)
+            return result("failed", "base_content_unavailable")
+        compared["base_compared_text_sha256"] = hashlib.sha256(
+            previous.stdout.encode("utf-8")
+        ).hexdigest()
         try:
+            current = (root / path).read_bytes()
+            compared["worktree_file_sha256"] = hashlib.sha256(current).hexdigest()
             previous_is_forwarder = _pure_reexport(previous.stdout)
-            current_is_forwarder = _pure_reexport(
-                (root / path).read_text(encoding="utf-8")
-            )
+            current_is_forwarder = _pure_reexport(current.decode("utf-8"))
         except (SyntaxError, UnicodeError):
-            return _result("forwarding", "failed", reason="module_unparsable")
+            return result("failed", "module_unparsable")
+        except OSError:
+            return result("failed", "forwarding_worktree_file_unreadable")
         if current_is_forwarder and not previous_is_forwarder:
             findings.append(
                 f"{path} became a pure re-export; review the forwarding module"
             )
     if findings:
-        return _result(
-            "forwarding",
-            "advisory",
-            findings=findings,
-            executable="git",
-        )
-    return _result("forwarding", "passed", executable="git")
+        return result("advisory", findings=findings)
+    return result("passed")
 
 
 def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
@@ -982,6 +997,8 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     statuses = {item["status"] for item in results}
     if "failed" in statuses:
         report["status"] = "failed"
+    elif "not_executed" in statuses:
+        report["status"] = "blocked"
     elif statuses and statuses <= {"not_applicable"}:
         report["status"] = "not_applicable"
     else:
@@ -1029,7 +1046,7 @@ def main(argv=None):
         print(f"status: {report['status']}")
         for item in report["checks"]:
             print(f"{item['name']}: {item['status']} ({item['reason'] or 'ok'})")
-    return 1 if report["status"] == "failed" else 0
+    return 1 if report["status"] in {"failed", "blocked"} else 0
 
 
 if __name__ == "__main__":

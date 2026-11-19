@@ -61,6 +61,11 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
 - `forwarding` reports changed `src` modules that became pure re-exports while
   the base version was substantive. This is an advisory review item, matching
   the original native diagnostic; it does not fail the run.
+- Forwarding proves the Git worktree context and the base Commit and Tree before
+  classifying a path as new. A listed but unavailable Blob fails the Internal
+  check. Its observation records the Git probe command, exit code, diagnostics,
+  and available object IDs. The Internal Result's own exit code stays empty.
+  An export without the relevant Git context blocks the check before analysis.
 - Vulture exit `3` remains `advisory`, not `passed`; the report preserves the
   exit code, bounded output and findings. Other exits are failures.
 - Each check executes at most once; no summary re-runs a scanner.
@@ -73,11 +78,12 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
 | --- | --- |
 | `passed` | All executed checks passed or were advisory/not applicable |
 | `failed` | At least one check failed, was unavailable or could not run |
+| `blocked` | A selected check could not start because a required input or Git context was unavailable |
 | `not_applicable` | Every configured check had no applicable input |
 
 A `not_applicable` report is not a success claim for a protected check: the
-caller/config must decide whether the check is required. The CLI exits `1` only
-for `failed`; `not_applicable` exits `0` but is labelled.
+caller/config must decide whether the check is required. The CLI exits `1` for
+`failed` or `blocked`. A `not_applicable` report exits `0`.
 
 ## Native tool acquisition (no image pulls)
 

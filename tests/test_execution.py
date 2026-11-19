@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import check_contract, execution, hygiene, selection
+from engineering_ci import (
+    check_contract,
+    execution,
+    hygiene,
+    reconciliation,
+    selection,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/selection-app"
@@ -324,37 +330,61 @@ def test_forwarding_execution_compares_committed_blob_bytes(repo):
     ).stdout
     assert expected == "VALUE = 1\n"
     assert (path / relative).read_text(encoding="utf-8") != expected
-    seen = {}
-
-    def runner(argv, root, data=None):
-        result = hygiene._run(argv, root, data)
-        if argv == ["git", "ls-tree", "-r", "-z", tree]:
-            seen["tree"] = argv[4]
-        if argv == ["git", "cat-file", "-p", oid]:
-            seen["bytes"] = result.stdout
-        return result
-
     value = forwarding_plan(base)
     report = execution.execute(
         value,
         root=path,
         hygiene_config=path / "ci-hygiene.toml",
-        runner=runner,
     )
     check = report["checks"][0]
-    assert value["git"]["base_commit"] == base
-    assert seen["tree"] == tree
-    assert seen["bytes"] == expected
-    assert check["native_result"]["status"] == "advisory"
+    native = check["native_result"]
+    observed = native["evidence"]["observation"]
+    assert observed["base_commit"] == commit
+    assert observed["base_tree"] == tree
+    assert observed["paths"] == [
+        {
+            "path": relative,
+            "base_entry": "blob",
+            "base_object_oid": oid,
+            "base_compared_text_sha256": hashlib.sha256(expected.encode()).hexdigest(),
+            "worktree_file_sha256": hashlib.sha256(
+                (path / relative).read_bytes()
+            ).hexdigest(),
+        }
+    ]
+    assert native["status"] == "advisory"
     assert any(relative in item for item in check["findings"])
 
 
 def test_forwarding_execution_missing_blob_is_source_failure(repo):
+    from test_reconciliation import make_observation, make_routing
+
     path, base = repo
     relative = "src/pkg/sub.py"
     (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
     tree = run(path, "rev-parse", "--verify", f"{base}^{{commit}}^{{tree}}").strip()
     oid = _tree_blob(path, tree, relative)
+    config_path = path / "ci-hygiene.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["forwarding"]\n', encoding="utf-8"
+    )
+    selection_path = path / "ci-selection.toml"
+    selection_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\n', encoding="utf-8"
+    )
+    value = selection.plan(
+        selection.Selection(
+            changeset=selection.changeset(path, base=base, mode="worktree"),
+            tests=(),
+            checks=("hygiene",),
+            status="selected",
+            escalated=False,
+        ),
+        config=selection.load_config(selection_path),
+        config_path=selection_path,
+        root=path,
+    )
+    expected = value["expected_checks"]
     loose = path / ".git" / "objects" / oid[:2] / oid[2:]
     assert loose.is_file()
     os.chmod(loose, stat.S_IWRITE)
@@ -368,21 +398,133 @@ def test_forwarding_execution_missing_blob_is_source_failure(repo):
         encoding="utf-8",
     )
     assert missing.returncode != 0
-    value = forwarding_plan(base)
+    resolution = execution.build_source_resolution(value, "forwarding", root=path)
     report = execution.execute(
         value,
         root=path,
         hygiene_config=path / "ci-hygiene.toml",
-        runner=FakeRunner(),
     )
-    check = report["checks"][0]
-    # The plan still echoes base_commit. The failure is the blob read, not that field.
-    assert value["git"]["base_commit"] == base
-    assert report["status"] == "failed"
+    assert report["status"] == "failed", report
+    check = next(item for item in report["checks"] if item["name"] == "forwarding")
     assert report["reason"] == "checks_failed"
     assert check["status"] == "failed"
     assert check["reason"] == "base_content_unavailable"
-    assert check["exit_code"] == missing.returncode
+    native = _failed_forwarding_native(check)
+    source = native["evidence"]["observation"]
+    assert source["base_commit"] == base
+    assert source["base_tree"] == tree
+    assert source["paths"] == [
+        {"path": relative, "base_entry": "blob", "base_object_oid": oid}
+    ]
+    assert source["probes"][-1] == {
+        "argv": ["git", "cat-file", "-e", oid],
+        "exit_code": missing.returncode,
+        "stderr": missing.stderr,
+    }
+    assert native["source_ref"] == resolution["source_ref"]
+    assert relative in native["source_ref"]["verified_input_scope"]
+
+    observation = make_observation(
+        "forwarding-host", (), runner_ref=native["runner_ref"], report=report
+    )
+    del observation["native_results"]  # Extract membership from the actual report.
+    routing = make_routing(
+        next(item for item in expected["checks"] if item["name"] == "forwarding"),
+        jobs=("forwarding-host",),
+        runner_ref=native["runner_ref"],
+    )
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[observation],
+    )
+    reconciliation.validate_receipt(receipt)
+    entry = next(item for item in receipt["entries"] if item["name"] == "forwarding")
+    assert entry["native_status"] == "failed"
+    assert entry["binding_status"] == "insufficient", entry
+    assert entry["native_satisfaction"]["status"] == "unsatisfied", entry
+    assert entry["reason"] == "result_not_passed"
+    assert entry["observed_result_ids"] == [native["result_id"]]
+    assert entry["selected_result_ids"] == []
+    evidence = entry["observed_results"][0]
+    assert evidence["run_ref"] == observation["run_ref"]
+    assert evidence["attempt_ref"] == observation["attempt_ref"]
+    assert evidence["runner_ref"] == native["runner_ref"]
+    assert evidence["native_exit_code"] is None
+    assert evidence["report_ref"] == observation["report_ref"]
+
+
+def _failed_forwarding_native(check):
+    assert check["exit_code"] is None
+    assert check["check_contract"]["status"] == "valid"
+    native = check["native_result"]
+    check_contract.validate_result(native)
+    assert native["status"] == "failed"
+    assert native["native_exit_code"] is None
+    assert check["result_id"] == native["result_id"]
+    satisfaction = check["native_satisfaction"]
+    assert satisfaction["status"] == "not_applicable"
+    assert satisfaction["reason"] == "no_tool_requirements"
+    assert satisfaction["result_ids"] == [native["result_id"]]
+    assert satisfaction["selected_result_ids"] == []
+    return native
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("tree", "base_tree_unavailable"),
+        ("commit", "base_odb_unavailable"),
+        ("listing", "base_tree_listing_invalid"),
+    ],
+)
+def test_forwarding_source_failures_keep_internal_result(repo, kind, reason):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    if kind != "listing":
+        oid = run(path, "rev-parse", f"{base}^{{{kind}}}").strip()
+        loose = path / ".git" / "objects" / oid[:2] / oid[2:]
+        os.chmod(loose, stat.S_IWRITE)
+        loose.unlink()
+
+    def runner(argv, root):
+        if kind == "listing" and argv[:2] == ["git", "ls-tree"]:
+            return subprocess.CompletedProcess(argv, 0, "truncated listing", "")
+        return hygiene._run(argv, root)
+
+    report = execution.execute(forwarding_plan(base), root=path, runner=runner)
+    assert report["status"] == "failed"
+    check = report["checks"][0]
+    assert check["reason"] == reason
+    native = _failed_forwarding_native(check)
+    probe = native["evidence"]["observation"]["probes"][-1]
+    if kind == "listing":
+        assert probe["exit_code"] == 0
+        assert probe["stderr"] == ""
+        assert native["evidence"]["observation"]["tree_parse_error"]
+    else:
+        assert probe["exit_code"] != 0
+
+
+def test_forwarding_dagger_export_without_git_context_is_not_started(repo, tmp_path):
+    path, base = repo
+    root = tmp_path / "export"
+    shutil.copytree(path, root, ignore=shutil.ignore_patterns(".git"))
+    (root / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    report = execution.execute(
+        forwarding_plan(base), root=root, execution_context="dagger_export"
+    )
+    assert report["status"] == "blocked"
+    check = report["checks"][0]
+    assert check["execution_context"] == "dagger_export"
+    assert check["reason"] == "forwarding_git_context_unavailable"
+    assert check["status"] == "not_executed"
+    assert check["execution_started"] is False
+    assert check["check_contract"]["status"] == "not_started"
+    assert "native_result" not in check
+    assert check["observation"]["git_context"] == "unavailable"
+    assert len(check["observation"]["probes"]) == 1
 
 
 def test_config_failure_is_not_started_and_has_no_native_result(repo):
