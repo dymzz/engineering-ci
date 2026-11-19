@@ -1587,6 +1587,30 @@ def _validate_admission(admission, scope, checks, *, projected=False, issued=Fal
     }
 
 
+def _require_source_receipt_identity(admission_facts, receipt_facts):
+    """The consumed Receipt must be the one named by the verified T1 source.
+
+    A second structurally valid Receipt for the same Expected scope and the
+    same selected results is still a different document. T2 historical reuse
+    has no current-run Receipt and must stay that way.
+    """
+    if not admission_facts or not isinstance(
+        admission_facts.get("source_verification"), dict
+    ):
+        return
+    proof = admission_facts["source_verification"]
+    source_receipt = proof.get("source_receipt_ref")
+    consumed = None if receipt_facts is None else receipt_facts["receipt_ref"]
+    if proof.get("source_kind") == evidence_admission.HISTORICAL_REUSE_KIND:
+        if source_receipt is not None or consumed is not None:
+            raise RequiredAssessmentError("admission_receipt_mismatch")
+        return
+    if proof.get("source_kind") != evidence_admission.ADMISSION_KIND:
+        return
+    if source_receipt != consumed:
+        raise RequiredAssessmentError("admission_receipt_mismatch")
+
+
 def _validate_receipt(receipt, scope):
     """Validate the #66-C structural receipt and index its entries by instance."""
     try:
@@ -2693,6 +2717,7 @@ def assess_required_obligations(
         else None
     )
     receipt_facts = _validate_receipt(receipt, scope) if receipt is not None else None
+    _require_source_receipt_identity(admission_facts, receipt_facts)
     evidence_facts = (
         _validate_non_check_evidence(non_check_evidence)
         if non_check_evidence is not None

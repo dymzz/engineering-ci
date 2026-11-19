@@ -679,6 +679,68 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
     assert any("profile_expired" in reason for reason in expired["blocked_reasons"])
 
 
+def _alternate_same_selection_receipt(receipt):
+    """A second valid Receipt: same scope and selected results, different identity."""
+    alternate = copy.deepcopy(receipt)
+    alternate["limitations"] = [
+        *alternate.get("limitations", []),
+        "alternate_receipt_identity",
+    ]
+    alternate.pop("receipt_ref", None)
+    alternate["receipt_ref"] = reconciliation._digest(alternate)
+    reconciliation.validate_receipt(alternate)
+    assert alternate["receipt_ref"] != receipt["receipt_ref"]
+    assert alternate["scope_id"] == receipt["scope_id"]
+    assert (
+        alternate["entries"][0]["selected_result_ids"]
+        == receipt["entries"][0]["selected_result_ids"]
+    )
+    return alternate
+
+
+def test_t1_assessment_rejects_a_different_valid_receipt():
+    source, universe, expected, entry, receipt, result_id = _real_t1_source()
+    alternate = _alternate_same_selection_receipt(receipt)
+    projection = _issued_projection(source, universe, expected, receipt)
+    issued = _consume(
+        projection,
+        universe,
+        expected,
+        receipt,
+        authority=_issued_consumer(source, universe, projection["admission_ref"]),
+    )
+    assert issued["status"] == "passed"
+    assert issued["inputs"]["receipt_ref"] == receipt["receipt_ref"]
+    assert (
+        issued["inputs"]["admission_source_verification"]["source_receipt_ref"]
+        == receipt["receipt_ref"]
+    )
+    assert check_row(issued, entry)["structural"]["selected_result_ids"] == [result_id]
+    required_assessment.validate_assessment(issued)
+
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError, match="admission_receipt_mismatch"
+    ):
+        _consume(
+            projection,
+            universe,
+            expected,
+            alternate,
+            authority=_issued_consumer(source, universe, projection["admission_ref"]),
+        )
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_receipt_scope_mismatch",
+    ):
+        _assess(
+            source,
+            universe,
+            expected,
+            alternate,
+            authority=df02_source_authority(source, universe),
+        )
+
+
 def test_issued_t2_projection_keeps_unknown_receipt_closure():
     profile = make_profile()
     entry = make_entry()
