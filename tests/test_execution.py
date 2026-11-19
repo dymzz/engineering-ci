@@ -882,6 +882,131 @@ def test_forwarding_rejects_a_link_into_git_metadata(repo):
     assert "worktree_file_sha256" not in observed
 
 
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("link_cycle", "forwarding_link_cycle"),
+        ("link_depth_exceeded", "forwarding_link_depth_exceeded"),
+        ("non_regular", "forwarding_worktree_file_unreadable"),
+        ("forwarding_current_link_unbound", "forwarding_current_link_unbound"),
+    ],
+)
+def test_forwarding_records_the_inner_link_error_in_native_result(
+    repo, monkeypatch, kind, reason
+):
+    from engineering_ci._paths import SourcePathError
+
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    failed_at = "src/pkg/nested.py"
+    original_stat = hygiene.stat_source_file
+
+    def first_link(root, selected):
+        if selected == relative:
+            raise SourcePathError("link", Path(relative))
+        return original_stat(root, selected)
+
+    def interrupted_chain(root, selected, *, validate_link, validate_target):
+        validate_link(selected, b"alias.py")
+        validate_link("src/pkg/alias.py", b"nested.py")
+        raise SourcePathError(kind, Path(failed_at))
+
+    monkeypatch.setattr(hygiene, "stat_source_file", first_link)
+    monkeypatch.setattr(hygiene, "read_internal_linked_source", interrupted_chain)
+    report = execution.execute(forwarding_plan(base), root=path)
+    assert report["status"] == "failed"
+    check = report["checks"][0]
+    assert check["reason"] == reason
+    native = _failed_forwarding_native(check)
+    observed = native["evidence"]["observation"]["paths"][0]
+    assert observed["link_error"] == {"kind": kind, "component": failed_at}
+    assert [link["path"] for link in observed["current_links"]] == [
+        relative,
+        "src/pkg/alias.py",
+    ]
+    assert "worktree_file_sha256" not in observed
+
+
+@pytest.mark.parametrize("kind", ["cycle", "depth"])
+def test_forwarding_reports_real_link_chain_failure(repo, kind):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    source = path / relative
+    source.unlink()
+    if kind == "cycle":
+        _source_symlink(source, "alias.py")
+        _source_symlink(source.parent / "alias.py", source.name)
+        expected_kind = "link_cycle"
+        expected_component = relative
+        expected_chain = [relative, "src/pkg/alias.py"]
+    else:
+        _source_symlink(source, "link_00.py")
+        for index in range(40):
+            _source_symlink(
+                source.parent / f"link_{index:02d}.py", f"link_{index + 1:02d}.py"
+            )
+        expected_kind = "link_depth_exceeded"
+        expected_component = "src/pkg/link_39.py"
+        expected_chain = [relative] + [
+            f"src/pkg/link_{index:02d}.py" for index in range(39)
+        ]
+
+    report = execution.execute(forwarding_plan(base), root=path)
+    assert report["status"] == "failed"
+    check = report["checks"][0]
+    assert check["reason"] == f"forwarding_{expected_kind}"
+    native = _failed_forwarding_native(check)
+    observed = native["evidence"]["observation"]["paths"][0]
+    assert observed["link_error"] == {
+        "kind": expected_kind,
+        "component": expected_component,
+    }
+    assert [link["path"] for link in observed["current_links"]] == expected_chain
+    assert "worktree_file_sha256" not in observed
+
+
+def test_forwarding_unbound_nested_git_link_records_the_failed_component(repo):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    source = path / relative
+    alias = source.with_name("alias.py")
+    source.unlink()
+    _source_symlink(source, alias.name)
+    _source_symlink(alias, "target.py")
+    (source.parent / "target.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source.parent / "other.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run(path, "config", "core.symlinks", "true")
+    run(path, "add", "--", "src/pkg")
+    run(path, "commit", "-qm", "record nested links")
+    head = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    first_oid = run(path, "rev-parse", f"HEAD:{relative}").strip()
+    second_oid = run(path, "rev-parse", "HEAD:src/pkg/alias.py").strip()
+
+    # Exercise the native check after a link changes from the selected Tree,
+    # as it could between a snapshot preflight and the actual file read.
+    alias.unlink()
+    _source_symlink(alias, "other.py")
+    value = forwarding_plan(base)
+    value["git"].update(
+        snapshot="commit", head_commit=head, tree=tree, execution_tree=tree
+    )
+    check = execution.run_host_check(
+        value, {"name": "forwarding", "status": "selected"}, root=path
+    )
+    assert check["reason"] == "forwarding_current_link_unbound"
+    native = _failed_forwarding_native(check)
+    observed = native["evidence"]["observation"]["paths"][0]
+    assert observed["link_error"] == {
+        "kind": "forwarding_current_link_unbound",
+        "component": "src/pkg/alias.py",
+    }
+    assert observed["current_links"][0]["tree_object_oid"] == first_oid
+    assert observed["current_links"][1]["path"] == "src/pkg/alias.py"
+    assert observed["current_links"][1]["worktree_object_oid"] != second_oid
+    assert "worktree_file_sha256" not in observed
+
+
 def test_forwarding_commit_internal_link_binds_both_git_objects(repo, monkeypatch):
     from engineering_ci import _paths
 

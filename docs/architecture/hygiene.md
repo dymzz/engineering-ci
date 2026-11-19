@@ -167,9 +167,17 @@ invalidates the Plan even if the replacement target has identical bytes.
 Links outside the Source, into Git metadata, dangling links, cycles and links
 whose identities cannot be verified fail with Source evidence. A checkout that
 represents Git mode `120000` as a plain file still preserves the link mode.
+For a `SourcePathError` during link resolution, the observation retains the
+traversed links and the actual failure kind and component. Cycles and depth
+limits have distinct `forwarding_link_cycle` and
+`forwarding_link_depth_exceeded` reasons.
 Linked inputs remain in `unverified_paths`, so the Native Result does not
 claim a complete Source closure and #66-C cannot treat them as fully resolved.
 The Base link case still requires its own Git-object target binding.
+The #66-P0 follow-up must establish the link chain, Git entries, target Blob
+and inspected bytes as an input closure before an internal-link `passed`
+Result can reach an independent Source Resolution and #66-C `matched` Receipt.
+Unrelated unverified Tree members must still prevent full Source closure.
 The immutable snapshot lists every selected Git member before inspecting the
 filesystem. A missing file or dangling link remains in that list and prevents
 Execution from issuing `full_input_closure` / `byte_tree` for the snapshot.

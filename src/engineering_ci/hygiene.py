@@ -944,12 +944,19 @@ def _forwarding(candidates, changes, root, runner):
                     validate_target=validate_target,
                 )
             except SourcePathError as link_error:
+                compared["link_error"] = {
+                    "kind": link_error.kind,
+                    "component": link_error.component.as_posix(),
+                }
                 if link_error.kind in {
                     "forwarding_current_link_unbound",
                     "forwarding_target_source_mismatch",
                     "current_content_unavailable",
                 }:
                     return result("failed", link_error.kind)
+                if link_error.kind in {"link_cycle", "link_depth_exceeded"}:
+                    compared["worktree_path_status"] = link_error.kind
+                    return result("failed", f"forwarding_{link_error.kind}")
                 if link_error.kind == "link_outside_source":
                     compared.update(
                         worktree_path_status="link",
@@ -964,7 +971,7 @@ def _forwarding(candidates, changes, root, runner):
                     )
                     return result("failed", "forwarding_link_changed")
                 return result(
-                    "failed", _observe_forwarding_path_error(root, compared, error)
+                    "failed", _observe_forwarding_path_error(root, compared, link_error)
                 )
             except (FileNotFoundError, NotADirectoryError):
                 compared.update(
