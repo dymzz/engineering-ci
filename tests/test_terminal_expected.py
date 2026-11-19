@@ -924,7 +924,14 @@ def test_live_expected_v2_phase_unverified_and_terminal_plan_rejected(tmp_path):
         action="worktree",
         target="HEAD",
         phase=check_contract.POST_COMPLETION_PHASE,
-        declared_checks=["whitespace", "docs", "weaver_terminal"],
+        declared_checks=[
+            "docs",
+            "forwarding",
+            "tach",
+            "vulture",
+            "weaver_terminal",
+            "whitespace",
+        ],
         required_obligations=[
             {
                 "obligation_ref": "ob/term",
@@ -1044,7 +1051,14 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
         action="worktree",
         target="HEAD",
         phase=check_contract.POST_COMPLETION_PHASE,
-        declared_checks=["whitespace", "docs", "weaver_terminal"],
+        declared_checks=[
+            "docs",
+            "forwarding",
+            "tach",
+            "vulture",
+            "weaver_terminal",
+            "whitespace",
+        ],
         required_obligations=[
             {
                 "obligation_ref": "ob/term",
@@ -1182,3 +1196,153 @@ def test_weaver_terminal_v2_authorizes_when_subjects_correlate(tmp_path):
     )
     assert wrong_content["authorized"] is False
     assert "terminal_subject_run_plan_content_id_mismatch" in wrong_content["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("domain_complete", "declared_checks"),
+    [
+        (
+            False,
+            [
+                "docs",
+                "forwarding",
+                "tach",
+                "vulture",
+                "weaver_terminal",
+                "whitespace",
+            ],
+        ),
+        (
+            True,
+            ["whitespace", "docs", "weaver_terminal"],
+        ),
+    ],
+    ids=["compound_open_domain", "compound_incomplete_declared_domain"],
+)
+def test_terminal_and_phase_witness_do_not_erase_coexisting_domain_gaps(
+    tmp_path, domain_complete, declared_checks
+):
+    """D-F01: clearing Terminal applicability and Phase witness preserves Domain gaps."""
+    import subprocess
+
+    selection_fixture = ROOT / "tests/fixtures/selection-app"
+    if not selection_fixture.is_dir() or not FIXTURE.is_dir():
+        pytest.skip("fixtures unavailable")
+    path = tmp_path / "repo"
+    shutil.copytree(selection_fixture, path)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "terminal@example.invalid")
+    git("config", "user.name", "Terminal Test")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+
+    profile = expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.terminal", "version": "1.0.0"},
+        profile_revision=PROFILE_REVISION,
+        approval_source="governance-signed",
+        authority_verified=True,
+        effective_at="2026-11-17T00:00:00Z",
+        evaluated_at="2026-11-17T01:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        phase=check_contract.POST_COMPLETION_PHASE,
+        declared_checks=declared_checks,
+        required_obligations=[
+            {
+                "obligation_ref": "ob/term",
+                "kind": "check",
+                "check_names": ["weaver_terminal"],
+                "allow_inapplicable": True,
+            }
+        ],
+        advisory_checks=[],
+        allowed_inapplicability=[],
+        domain_complete=domain_complete,
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=path / "ci-selection.toml"
+        ),
+    )
+    profile.pop("governed_rules", None)
+    declared_domain = (profile.get("approval_binding") or {}).get("declared_domain")
+    if isinstance(declared_domain, dict):
+        declared_domain.pop("governed_rules", None)
+    cfg = _attach_phase_profile_policy(path, profile)
+    git("add", "ci-selection.toml")
+    git("commit", "-q", "-m", "attach phase profile")
+    base = git("rev-parse", "HEAD").strip()
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    chosen = selection.select(changes, cfg, root=path)
+    expected_plan = selection.plan(
+        chosen,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    parent = expected_plan["expected_checks"]
+    assert parent["status"] == "unknown"
+    assert parent["reason"] == "applicability_or_changeset_incomplete"
+    assert parent["definitions_status"] == "requested_names_complete"
+    entry = next(item for item in parent["checks"] if item["name"] == "weaver_terminal")
+
+    binder_parent = copy.deepcopy(parent)
+    binder_parent["profile_ref"] = copy.deepcopy(profile["profile_ref"])
+    binder_parent["profile_revision"] = profile["profile_revision"]
+
+    terminal_root = tmp_path / "terminal-src"
+    shutil.copytree(FIXTURE, terminal_root)
+    plan_content_id = selection.directory_content_id(terminal_root)
+    terminal_plan = selection.post_completion_plan(
+        root=terminal_root,
+        config_path=terminal_root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+        source_tree_id=plan_content_id,
+    )
+    run = completed_run(
+        subject=matching_run_subject(
+            entry,
+            binder_parent,
+            source_content_id=plan_content_id,
+        )
+    )
+    binding = te.bind_terminal_expected(
+        binder_parent,
+        plan=terminal_plan,
+        completed_run=run,
+        root=terminal_root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(binder_parent),
+        phase_witness_authority=accept,
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=path,
+    )
+    assert binding["projection_verification"] == "validate_projection"
+    assert binding["subject_correlated"] is True
+    assert binding["phase_witness_verified"] is True
+    assert "terminal_expected_terminal_applicability_unknown" not in binding["reasons"]
+    assert "terminal_expected_phase_unverified" not in binding["reasons"]
+    assert "terminal_expected_upstream_partial" in binding["reasons"]
+    assert binding["status"] == "unverified"
+    assert binding["authorized"] is False
+    assert any(
+        gap.get("reason") == "upstream_partial"
+        and gap.get("upstream_reason") == "effective_profile_domain_incomplete"
+        for gap in binding["gaps"]
+    )

@@ -238,21 +238,63 @@ def _check_app_status(check):
     return applicability.get("status")
 
 
+def _parent_domain_is_closed(parent):
+    """True when parent Expected check domain and per-ref container are closed."""
+    if not isinstance(parent, dict):
+        return False
+    if parent.get("consumer_completeness") == "per_ref_container_only":
+        return False
+    per_ref = parent.get("per_ref")
+    if isinstance(per_ref, list) and any(
+        not isinstance(item, dict) or item.get("status") != "complete"
+        for item in per_ref
+    ):
+        return False
+    definitions_status = parent.get("definitions_status")
+    if definitions_status not in {None, "domain_complete"}:
+        return False
+    effective_profile = parent.get("effective_profile")
+    if isinstance(effective_profile, dict):
+        if effective_profile.get("domain_complete") is not True:
+            return False
+        if not isinstance(effective_profile.get("declared_checks"), list):
+            return False
+        if definitions_status != "domain_complete":
+            return False
+    return True
+
+
+def _parent_has_coexisting_partial_gap(parent):
+    """True when parent carries non-Phase / non-Terminal partial incompleteness."""
+    if not isinstance(parent, dict):
+        return True
+    if parent.get("missing"):
+        return True
+    if parent.get("authority_status") == "unverified":
+        return True
+    if not _parent_domain_is_closed(parent):
+        return True
+    for check in parent.get("checks") or []:
+        if not isinstance(check, dict) or _is_terminal_check(check):
+            continue
+        if check.get("rule_status") in {"unknown", "unresolved"}:
+            return True
+    return False
+
+
 def _partial_is_phase_only(parent):
     """True when partial incompleteness is only undeclared Phase verification."""
     if parent.get("status") != "partial":
         return False
     if parent.get("reason") not in _PHASE_ONLY_PARTIAL_REASONS:
         return False
-    if parent.get("conflicts") or parent.get("missing"):
+    if parent.get("conflicts"):
         return False
-    if parent.get("authority_status") == "unverified":
+    if _parent_has_coexisting_partial_gap(parent):
         return False
     for check in parent.get("checks") or []:
         if not isinstance(check, dict) or _is_terminal_check(check):
             continue
-        if check.get("rule_status") in {"unknown", "unresolved"}:
-            return False
         if _check_app_status(check) in _UNRESOLVED_APP:
             return False
     return True
@@ -264,9 +306,9 @@ def _terminal_applicability_is_sole_unknown(parent):
         return False
     if parent.get("reason") not in _TERMINAL_UNKNOWN_REASONS:
         return False
-    if parent.get("conflicts") or parent.get("missing"):
+    if parent.get("conflicts"):
         return False
-    if parent.get("authority_status") == "unverified":
+    if _parent_has_coexisting_partial_gap(parent):
         return False
     terminal_unresolved = False
     for check in parent.get("checks") or []:
@@ -284,12 +326,31 @@ def _terminal_applicability_is_sole_unknown(parent):
     return terminal_unresolved
 
 
+def _terminal_has_unresolved_applicability(parent):
+    for check in parent.get("checks") or []:
+        if not isinstance(check, dict) or not _is_terminal_check(check):
+            continue
+        if _check_app_status(check) in _UNRESOLVED_APP | {"not_applicable"}:
+            return True
+    return False
+
+
+def _non_terminal_has_unresolved_applicability(parent):
+    for check in parent.get("checks") or []:
+        if not isinstance(check, dict) or _is_terminal_check(check):
+            continue
+        if _check_app_status(check) in _UNRESOLVED_APP:
+            return True
+    return False
+
+
 def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
     """Attribute Expected unknown/partial causes without inventing a second engine.
 
-    Only Terminal applicability unknown (sole cause) and Phase-only partial are
-    clearable by this Binder's Terminal Plan / Phase Witness evidence. All other
-    upstream incompleteness remains blocking.
+    Only Terminal applicability unknown and Phase-only partial are clearable by
+    this Binder's Terminal Plan / Phase Witness evidence. Coexisting domain,
+    authority, definition, rule, or non-terminal applicability gaps are recorded
+    independently so clearing Terminal or Phase never erases them.
     """
     reasons = []
     gaps = []
@@ -297,7 +358,16 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
     upstream_reason = parent.get("reason")
 
     if status == "unknown":
-        if _terminal_applicability_is_sole_unknown(parent):
+        has_terminal_unknown = (
+            upstream_reason in _TERMINAL_UNKNOWN_REASONS
+            and _terminal_has_unresolved_applicability(parent)
+        )
+        has_other_unknown = (
+            upstream_reason not in _TERMINAL_UNKNOWN_REASONS
+            or _non_terminal_has_unresolved_applicability(parent)
+            or not has_terminal_unknown
+        )
+        if has_terminal_unknown:
             reasons.append("terminal_expected_terminal_applicability_unknown")
             gaps.append(
                 {
@@ -307,7 +377,7 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                     "upstream_reason": upstream_reason,
                 }
             )
-        else:
+        if has_other_unknown:
             reasons.append("terminal_expected_upstream_unknown")
             gaps.append(
                 {
@@ -315,6 +385,20 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                     "ref": scope_id,
                     "reason": "upstream_unknown",
                     "upstream_reason": upstream_reason,
+                }
+            )
+        if _parent_has_coexisting_partial_gap(parent):
+            reasons.append("terminal_expected_upstream_partial")
+            gaps.append(
+                {
+                    "kind": "expected_scope",
+                    "ref": scope_id,
+                    "reason": "upstream_partial",
+                    "upstream_reason": (
+                        "effective_profile_domain_incomplete"
+                        if not _parent_domain_is_closed(parent)
+                        else upstream_reason
+                    ),
                 }
             )
     elif status == "partial":
@@ -325,7 +409,12 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                     "kind": "expected_scope",
                     "ref": scope_id,
                     "reason": "upstream_partial",
-                    "upstream_reason": upstream_reason,
+                    "upstream_reason": (
+                        "effective_profile_domain_incomplete"
+                        if not _parent_domain_is_closed(parent)
+                        and upstream_reason in _PHASE_ONLY_PARTIAL_REASONS
+                        else upstream_reason
+                    ),
                 }
             )
     elif status not in {"complete", None}:
@@ -335,6 +424,20 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                 "kind": "expected_scope",
                 "ref": scope_id,
                 "reason": f"scope_status_{status}",
+            }
+        )
+    elif _parent_has_coexisting_partial_gap(parent):
+        reasons.append("terminal_expected_upstream_partial")
+        gaps.append(
+            {
+                "kind": "expected_scope",
+                "ref": scope_id,
+                "reason": "upstream_partial",
+                "upstream_reason": (
+                    "effective_profile_domain_incomplete"
+                    if not _parent_domain_is_closed(parent)
+                    else upstream_reason
+                ),
             }
         )
 
