@@ -698,7 +698,7 @@ def report_ref_for(report):
     }
 
 
-def native_result(entry, *, status="passed"):
+def native_result(entry, *, status="passed", result_instance="run-1"):
     definition = check_contract.definition_for(entry["name"])
     exit_code = 0 if status == "passed" else 1 if status == "failed" else None
     return check_contract.native_result(
@@ -706,7 +706,7 @@ def native_result(entry, *, status="passed"):
         source=copy.deepcopy(SOURCE),
         status=status,
         result_origin="host",
-        result_instance="run-1",
+        result_instance=result_instance,
         native_exit_code=exit_code,
         evidence={"stdout": ""},
         rule_ref=copy.deepcopy(RULE_TACH),
@@ -3601,3 +3601,279 @@ def test_validate_assessment_rejects_rehashed_contradictions():
         match="assessment_ref_mismatch",
     ):
         required_assessment.validate_assessment(missing_ref)
+
+
+# ---------------------------------------------------------------------------
+# D-F02: original #63 T1/T2 admission -> #61 R1 authorized projection
+# ---------------------------------------------------------------------------
+
+
+def _df02_scope():
+    profile = make_profile()
+    entry = make_entry()
+    expected = make_projection(profile, [entry])
+    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    universe = make_universe(profile, expected, [obligation])
+    scope = expected["scope_id"]
+    ref = entry["expected_check_ref"]
+    return universe, expected, entry, f"{scope}/{ref}"
+
+
+def _df02_current_authorization():
+    return {
+        "phase": "pre_publish",
+        "action": "publish",
+        "target_ref": "refs/heads/main",
+        "candidate_digest": None,
+    }
+
+
+def df02_source_authority(source, universe, authorization=None):
+    expected_source = copy.deepcopy(source)
+    universe_ref = universe["universe_ref"]
+    current_authorization = authorization or _df02_current_authorization()
+
+    def verify(request):
+        if (
+            request["source_admission"] != expected_source
+            or request["current_evaluation"]["universe_ref"] != universe_ref
+            or request["current_authorization"] != current_authorization
+        ):
+            return None
+        return {
+            "status": "verified",
+            "source_admission_ref": request["source_admission_ref"],
+            "current_authorization_ref": request["current_authorization_ref"],
+            "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+            "verification_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+        }
+
+    return verify
+
+
+def _df02_t1_source(expected, entry, key, *, admitted=True):
+    receipt, result_id = make_receipt(expected, entry)
+    fact = {
+        "result_id": result_id,
+        "status": "passed" if admitted else "failed",
+        "selected": True,
+        "integrity_status": "verified",
+        "issuer_status": "verified",
+        "implementation_status": "approved",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "result_origin": "host",
+    }
+    status = "admitted" if admitted else "unsatisfied"
+    item = {
+        "scope_id": expected["scope_id"],
+        "expected_check_ref": entry["expected_check_ref"],
+        "status": status,
+        "admitted": admitted,
+        "origin_status": "verified",
+        "integrity_status": "verified",
+        "resolution_status": "verified",
+        "obligation_status": "satisfied" if admitted else "unsatisfied",
+        "result_ids": [result_id],
+        "facts": [fact],
+        "reasons": [] if admitted else ["native_failed"],
+    }
+    source = {
+        "kind": "engineering-ci-evidence-admission",
+        "schema_version": 1,
+        "scope_id": expected["scope_id"],
+        "expected_set_ref": expected["expected_set_ref"],
+        "receipt_ref": receipt["receipt_ref"],
+        "evidence_admission": "evaluated",
+        "required_gate": "not_evaluated",
+        "entries": [item],
+        "accepted_coverage_by_instance": {
+            key: {
+                "admission_status": status,
+                "result_ids": [result_id],
+            },
+        },
+        "remaining_work": [],
+    }
+    return source, receipt
+
+
+def test_t1_t2_original_admission_projection_current_pass_and_reject():
+    universe, expected, entry, key = _df02_scope()
+    original, receipt = _df02_t1_source(expected, entry, key)
+    authorization = _df02_current_authorization()
+    assessment = assess(
+        universe,
+        expected,
+        admission=original,
+        receipt=receipt,
+        admission_current_authorization=authorization,
+        admission_source_authority=df02_source_authority(original, universe),
+        admission_contract_sample=True,
+    )
+    assert assessment["status"] == "passed"
+    row = check_row(assessment, entry)
+    assert row["status"] == "satisfied"
+    assert row["admission"]["source_kind"] == "current_run"
+    assert assessment["inputs"]["contract_sample"] is True
+    assert assessment["inputs"]["admission_ref"].startswith("sha256:")
+    verification = assessment["inputs"]["admission_source_verification"]
+    assert verification["source_admission_ref"] == required_assessment._digest(original)
+    assert verification["source_receipt_ref"] == receipt["receipt_ref"]
+    assert verification["issuer_ref"] == JOB_ISSUER_REF
+    assert verification["verification_ref"] == SOURCE_RECEIPT_REF
+    assert (
+        assessment["inputs"]["admission_observations_reconciled"]
+        is receipt["all_observations_reconciled"]
+    )
+    required_assessment.validate_assessment(assessment)
+
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_source_authority_unverified",
+    ):
+        assess(
+            universe,
+            expected,
+            admission=original,
+            receipt=receipt,
+            admission_current_authorization=authorization,
+            admission_source_authority=lambda _facts: True,
+        )
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_source_authority_missing",
+    ):
+        assess(
+            universe,
+            expected,
+            admission=original,
+            receipt=receipt,
+            admission_current_authorization=authorization,
+        )
+
+    out_of_scope = copy.deepcopy(original)
+    out_of_scope["scope_id"] = "sha256:" + "0" * 64
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_scope_mismatch",
+    ):
+        assess(
+            universe,
+            expected,
+            admission=out_of_scope,
+            receipt=receipt,
+            admission_current_authorization=authorization,
+            admission_source_authority=lambda _facts: True,
+        )
+
+
+def test_df02_t1_authenticated_native_failure_is_unmet_not_pass():
+    universe, expected, entry, key = _df02_scope()
+    original, receipt = _df02_t1_source(expected, entry, key, admitted=False)
+    assessment = assess(
+        universe,
+        expected,
+        admission=original,
+        receipt=receipt,
+        admission_current_authorization=_df02_current_authorization(),
+        admission_source_authority=df02_source_authority(original, universe),
+        admission_contract_sample=True,
+    )
+    assert assessment["status"] == "blocked"
+    row = check_row(assessment, entry)
+    assert row["status"] == "unmet"
+    assert "authenticated_native_failure" in row["reasons"]
+    assert row["admission"]["source_disposition"]["status"] == "unsatisfied"
+
+
+def test_df02_t2_historical_result_binding_and_no_current_receipt():
+    universe, expected, entry, key = _df02_scope()
+    result_id = RESULT_ID
+    additional_id = "sha256:" + "e" * 64
+    authorization = {
+        **_df02_current_authorization(),
+        "profile_sha256": expected["effective_profile"]["profile_sha256"],
+    }
+    basis = {
+        "verified": True,
+        "check_satisfaction_status": "satisfied",
+        "closed_source_scope_kind": "check_input_closure",
+        "issuer_verified": True,
+        "selected_result_ids": [result_id, additional_id],
+    }
+    record = {
+        "scope_id": expected["scope_id"],
+        "expected_check_ref": entry["expected_check_ref"],
+        "status": "admitted",
+        "admitted": True,
+        "origin_status": "verified",
+        "obligation_status": "satisfied",
+        "result_ids": [result_id, additional_id],
+        "result_origins": [
+            {
+                "result_id": result_id,
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "result_origin": "host",
+            },
+            {
+                "result_id": additional_id,
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "result_origin": "host",
+            },
+        ],
+        "equivalence_basis": basis,
+        "reasons": [],
+    }
+    original = {
+        "kind": "engineering-ci-historical-reuse-admission",
+        "schema_version": 1,
+        "scope_id": expected["scope_id"],
+        "expected_set_ref": expected["expected_set_ref"],
+        "receipt_ref": None,
+        "current_authorization": authorization,
+        "evidence_admission": "evaluated",
+        "required_gate": "not_evaluated",
+        "entries": [record],
+        "accepted_coverage_by_instance": {
+            key: {
+                "admission_status": "admitted",
+                "result_ids": [result_id, additional_id],
+            },
+        },
+        "remaining_work": [],
+    }
+    result = assess(
+        universe,
+        expected,
+        admission=original,
+        admission_current_authorization=_df02_current_authorization(),
+        admission_source_authority=df02_source_authority(original, universe),
+        admission_contract_sample=True,
+    )
+    assert result["status"] == "passed"
+    row = check_row(result, entry)
+    assert row["status"] == "satisfied"
+    assert row["admission"]["source_kind"] == "historical_reuse"
+    assert row["admission"]["witness_result_ids"] == [result_id, additional_id]
+    assert row["evidence_refs"] == [result_id, additional_id]
+    assert row["structural"]["status"] == "not_supplied"
+
+    changed = copy.deepcopy(original)
+    changed["current_authorization"]["target_ref"] = "refs/heads/other"
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_authorization_mismatch",
+    ):
+        assess(
+            universe,
+            expected,
+            admission=changed,
+            admission_current_authorization=_df02_current_authorization(),
+            admission_source_authority=lambda _facts: True,
+        )

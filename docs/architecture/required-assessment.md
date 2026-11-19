@@ -14,6 +14,36 @@ evaluate a later stage by itself (#61 R5; see
 obligations (#66-B2), admit trusted evidence or prove historical reuse (#63),
 or rebuild the structural Binding/Reconciliation receipt (#66-C).
 
+## D-F02 — #63 T1-a/T2 admission to #61 R1 Gate Projection
+
+#63 owns Gate Projection issuance in
+`admission.project_t1_t2_gate_admission()`. It projects the original T1-a or
+T2 admission decision after an integration-supplied verifier authenticates the
+original admission and the current evaluation. The verifier receives the
+Expected scope and the current universe, action, target, phase, refs and
+candidate. It returns a verified decision with the matching source admission
+and current authorization refs, the issuer ref and a verification evidence
+ref. The integration resolves those refs against its authority records.
+
+R1 consumes the projection and checks the admitted T1-a witness set against
+the complete selected set in the original #66-C Receipt. The legacy
+scalar-only Gate input uses Receipt membership. T2 uses the successful IDs
+selected by #63's native satisfaction evaluation and keeps the other
+historical origins as diagnostics. The Assessment preserves the original
+admission disposition, reasons, source and verifier refs, and the derived
+projection ref. T1-a reports the supplied Receipt's observation reconciliation
+fact. A missing Receipt or T2 reuse yields `null` for that fact. R1 judges
+Required coverage per instance.
+
+`assess_required_obligations()` accepts an original T1-a or T2 object with
+`admission_source_authority` and `admission_current_authorization`. It
+invokes the #63 issuer using the validated evaluation context. The new
+projection's verification fields are accepted through that call. Existing
+direct Gate inputs keep the legacy trust boundary. The integration tests
+invoke the #63 producer APIs with controlled authority decisions. Production
+issuer and current authorization verification remain integration work.
+
+
 ## Position
 
 ```text
