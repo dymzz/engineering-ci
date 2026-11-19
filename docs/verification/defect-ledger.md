@@ -85,7 +85,7 @@
 | ID | 修订主责 | 在途实施与必备验收 |
 | --- | --- | --- |
 | D-F01 | [#52](https://github.com/dymzz/engineering-ci/issues/52) 终态 Binder，[#66](https://github.com/dymzz/engineering-ci/issues/66) B2 Producer 协作 | [PR #124](https://github.com/dymzz/engineering-ci/pull/124) 为未合并候选；修复并存 Open Domain + 合法 Phase Witness 错误清除的授权位，对照真正闭域正例。当前证据不证明 main 生产授权已绕过 |
-| D-F02 | [#61](https://github.com/dymzz/engineering-ci/issues/61) R1 Consumer，[#63](https://github.com/dymzz/engineering-ci/issues/63) T1/T2 原生 Producer 协作 | 已复现 T1/T2→R1 phase/kind 不兼容；在原接口修复有权 Gate Projection，需新建/挂接实际代码 PR 并验证合法 PASS、失败/冲突/历史复用 |
+| D-F02 | [#61](https://github.com/dymzz/engineering-ci/issues/61) R1 Consumer，[#63](https://github.com/dymzz/engineering-ci/issues/63) T1/T2 原生 Producer 协作 | 已复现 T1/T2→R1 phase/kind 不兼容；[Draft PR #138](https://github.com/dymzz/engineering-ci/pull/138) 已建立类型化映射及受控/T1-a 原生 API 联合测试。仍待 CI、独立 Review 和 T2 真实 Producer/受信来源验收；不能计为完成 |
 
 ### 0A.3 其他发现的处置类别
 
