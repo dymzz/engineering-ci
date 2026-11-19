@@ -54,14 +54,21 @@ source is unavailable. It stages the verified target bytes under the current
 project and maps diagnostics back to the logical paths. Native output and exit
 codes retain their original values.
 
-Host runtimes can supply `admitted_external_targets` with a
-`workflow_source_authority` that authenticates each claim. The authority gets
-the Plan digest, Git event, Check name, logical path, resolved path and digest.
-The CLI and Dagger Directory entry points operate within their supplied source
-and lack the external grant authority. Immutable Git inputs require the
-original tree bytes or a materialization approved by the runtime authority.
-A native result carries each check's `scan_target` inputs separately from its
-Source reference. Full closure requires a verified complete Git materialization.
+Host runtimes can pass `admitted_external_targets` and a
+`workflow_source_authority` to both execution and `build_source_resolution()`.
+Each path authenticates the handoff for the original Plan digest, Git event and
+Check. External claims name the logical path, resolved path and SHA-256.
+Git-free materialization claims name the Git Tree and Directory digest. The
+resolver verifies the supplied bytes independently and binds the observed
+`scan_target` inputs to its receipt. The CLI and direct Dagger functions use
+their supplied source without an external grant issuer.
+
+A verified complete Git materialization can establish `full_input_closure`.
+If it is supplemented by authorized external scan targets, the repository
+digest and those target digests establish `check_input_closure` instead.
+Worktree observations keep `changed_paths` Source coverage. Native results
+retain the actual scan outcome, and strict reconciliation still requires a
+closed Source.
 
 Actionlint's inline ShellCheck integration is opt-in. The actionlint command
 sets the configured ShellCheck behavior explicitly and disables pyflakes.

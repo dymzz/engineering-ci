@@ -1,9 +1,11 @@
 """Source boundaries for the Workflow and Shell files passed to native tools."""
 
 import hashlib
+import shutil
 import subprocess
 
 import pytest
+from test_reconciliation import make_observation, make_routing
 from test_workflow_security_checks import (
     UNPINNED_VALID_ACTIONLINT_WORKFLOW,
     _build_plan_and_expected,
@@ -11,7 +13,7 @@ from test_workflow_security_checks import (
     _init_repo,
 )
 
-from engineering_ci import execution, selection
+from engineering_ci import execution, reconciliation, selection
 from engineering_ci import workflow_analysis as workflow
 
 
@@ -42,6 +44,18 @@ def _external_authority(plan, alias, target, digest, checks):
         )
 
     return authorize
+
+
+def _reconciled_check(plan, name, native, resolution):
+    expected = plan["expected_checks"]
+    entry = next(item for item in expected["checks"] if item["name"] == name)
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[make_routing(entry)],
+        resolutions=[resolution] if resolution is not None else [],
+        observations=[make_observation("job-1", [native])],
+    )
+    return next(item for item in receipt["entries"] if item["name"] == name)
 
 
 @pytest.mark.parametrize(
@@ -98,8 +112,16 @@ def test_discovery_does_not_walk_external_prefix(tmp_path):
     assert problems == {"scripts": "workflow_target_outside_root"}
 
 
-def test_external_source_authorization_and_native_failure(tmp_path):
-    body = b"#!/bin/sh\necho $UNQUOTED\n"
+@pytest.mark.parametrize(
+    ("snapshot", "has_findings"),
+    [("worktree", True), ("commit", True), ("commit", False)],
+)
+def test_external_source_handoff_reaches_independent_resolution(
+    tmp_path, snapshot, has_findings
+):
+    body = (
+        b"#!/bin/sh\necho $UNQUOTED\n" if has_findings else b"#!/bin/sh\necho clean\n"
+    )
     outside = tmp_path / "outside.sh"
     outside.write_bytes(body)
     root, _ = _init_repo(
@@ -109,7 +131,10 @@ def test_external_source_authorization_and_native_failure(tmp_path):
     )
     alias = "scripts/external.sh"
     _symlink(root / alias, outside)
-    plan, _ = _build_plan_and_expected(root, [alias])
+    if snapshot == "commit":
+        _git(root, "add", alias)
+        _git(root, "commit", "-qm", "record external target link")
+    plan, _ = _build_plan_and_expected(root, [alias], snapshot=snapshot)
     calls = []
 
     def native(argv, cwd):
@@ -139,23 +164,25 @@ def test_external_source_authorization_and_native_failure(tmp_path):
     )
     assert untrusted["status"] == "blocked"
     assert not any(any("shellcheck" in arg for arg in argv) for argv in calls)
+    authority = _external_authority(
+        plan, alias, outside, external[alias]["sha256"], {"shellcheck"}
+    )
     admitted = execution.execute(
         plan,
         root=root,
         runner=native,
         admitted_external_targets=external,
-        workflow_source_authority=_external_authority(
-            plan, alias, outside, external[alias]["sha256"], {"shellcheck"}
-        ),
+        workflow_source_authority=authority,
     )
     result = next(item for item in admitted["checks"] if item["name"] == "shellcheck")
-    assert admitted["status"] == "failed"
+    assert admitted["status"] == ("failed" if has_findings else "passed")
     raw = result["native_result"]
-    assert raw["status"] == "failed" and raw["native_exit_code"] == 1
+    assert raw["status"] == admitted["status"]
+    assert raw["native_exit_code"] == (1 if has_findings else 0)
     assert (
         raw["source_ref"]["actual_execution_source"] == "worktree_with_event_external"
     )
-    assert raw["source_ref"]["verified_input_scope"] == [alias]
+    assert alias in raw["source_ref"]["verified_input_scope"]
     assert raw["evidence"]["target_sources"] == [
         {
             "path": alias,
@@ -166,7 +193,69 @@ def test_external_source_authorization_and_native_failure(tmp_path):
     ]
     assert any("--format=json1" in argv for argv in calls)
     assert not any(argv[-1] == str(outside.resolve()) for argv in calls)
-    assert any(finding["rule"] == "SC2086" for finding in result["findings"])
+    assert (
+        any(finding["rule"] == "SC2086" for finding in result["findings"])
+        is has_findings
+    )
+
+    def resolve(grant=external, verify=authority):
+        return execution.source_resolution_receipt(
+            plan,
+            "shellcheck",
+            root=root,
+            admitted_external_targets=grant,
+            workflow_source_authority=verify,
+        )
+
+    resolved = resolve()
+    assert resolved["source_ref"] == raw["source_ref"]
+    assert [ref for ref in resolved["input_refs"] if ref["kind"] == "scan_target"] == [
+        {"kind": "scan_target", **raw["evidence"]["target_sources"][0]}
+    ]
+    entry = _reconciled_check(plan, "shellcheck", raw, resolved)
+    if snapshot == "worktree":
+        assert resolved["source_ref"]["scope_kind"] == "changed_paths"
+        assert (entry["binding_status"], entry["reason"]) == (
+            "unknown",
+            "expected_source_scope_insufficient",
+        )
+    else:
+        assert resolved["source_ref"]["scope_kind"] == "check_input_closure"
+        assert resolved["source_ref"]["binding_status"] == "content_digest"
+        assert entry["resolved_expected"]["source_ref"] == resolved["source_ref"]
+        assert not entry["rejected_results"]
+        assert entry["native_satisfaction"]["status"] == (
+            "unsatisfied" if has_findings else "satisfied"
+        )
+        assert (entry["binding_status"] == "matched") is not has_findings
+
+    wrong_grant = {alias: {**external[alias], "sha256": "0" * 64}}
+    for grant, verifier in (
+        (None, authority),
+        (external, None),
+        (external, lambda request: False),
+        (wrong_grant, authority),
+        (
+            external,
+            _external_authority(
+                plan, alias, outside, external[alias]["sha256"], {"actionlint"}
+            ),
+        ),
+    ):
+        with pytest.raises(
+            execution.ExecutionError, match="workflow_target_outside_root"
+        ):
+            resolve(grant, verifier)
+    unmatched = _reconciled_check(plan, "shellcheck", raw, None)
+    assert (unmatched["binding_status"], unmatched["reason"]) == (
+        "unknown",
+        "resolution_missing",
+    )
+    outside.write_bytes(b"#!/bin/sh\necho changed\n")
+    with pytest.raises(
+        execution.ExecutionError, match="workflow_target_digest_mismatch"
+    ):
+        resolve()
 
 
 def test_workflow_and_shell_native_inputs_have_independent_sources(tmp_path):
@@ -198,6 +287,16 @@ def test_workflow_and_shell_native_inputs_have_independent_sources(tmp_path):
         )
         target_refs = [ref for ref in raw["input_refs"] if ref["kind"] == "scan_target"]
         assert [ref["path"] for ref in target_refs] == [path]
+        resolved = execution.build_source_resolution(plan, check, root=root)
+        assert resolved["source_ref"] == raw["source_ref"]
+        assert [
+            ref for ref in resolved["input_refs"] if ref["kind"] == "scan_target"
+        ] == target_refs
+        entry = _reconciled_check(plan, check, raw, resolved)
+        assert (entry["binding_status"], entry["reason"]) == (
+            "unknown",
+            "expected_source_scope_insufficient",
+        )
 
 
 def test_extra_paths_and_changed_bytes_are_checked_at_execution(tmp_path):
@@ -276,46 +375,97 @@ def test_git_source_rejects_bytes_from_another_tree(tmp_path):
     assert validate({**target, "sha256": "a" * 64}) == "workflow_target_tree_mismatch"
 
 
-def test_git_free_directory_needs_independent_tree_materialization_proof(tmp_path):
+def test_git_free_tree_handoff_reaches_independent_resolution(tmp_path):
     path = "scripts/check.sh"
-    script = tmp_path / path
-    script.parent.mkdir()
-    script.write_bytes(b"#!/bin/sh\necho original\n")
-    tree = "a" * 40
-    content_id = selection.directory_content_id(tmp_path)
-    plan = {
-        "git": {
-            "snapshot": "commit",
-            "execution_tree": tree,
-            "source_tree_id": content_id,
-        }
-    }
-    record, problem = workflow._inspect_target(tmp_path, path, None)
-    assert problem is None
-    assert (
-        execution._workflow_target_validator(plan, tmp_path, ())(record)
-        == "workflow_target_tree_unverified"
+    repo, _ = _init_repo(
+        tmp_path / "original",
+        checks=("shellcheck",),
+        workflows={},
+        shells={path: "#!/bin/sh\necho original\n"},
     )
+    plan, _ = _build_plan_and_expected(
+        repo, [path], snapshot="commit", with_baseline=False
+    )
+    plan = execution._rebased_consumer_plan(plan, repo)
+    git = plan["git"]
+    approved_plan = execution._canonical_sha256(plan)
+    content_id = git["source_tree_id"]
+    directory = tmp_path / "materialized"
+    shutil.copytree(repo, directory, ignore=shutil.ignore_patterns(".git"))
+    assert selection._resolve_git_dir(directory) is None
+    assert selection.directory_content_id(directory) == content_id
 
-    def authority(kind, check, proof):
+    def authority(request):
         return (
-            kind == "tree_materialization"
-            and check == "shellcheck"
-            and proof == {"tree": tree, "source_tree_id": content_id}
+            request["kind"] == "tree_materialization"
+            and request["plan_ref"] == approved_plan
+            and request["check"] == "shellcheck"
+            and request["event"]["snapshot"] == "commit"
+            and request["event"]["head_commit"] == git["head_commit"]
+            and request["event"]["execution_tree"] == git["execution_tree"]
+            and request["source"]
+            == {"tree": git["execution_tree"], "source_tree_id": content_id}
         )
 
-    validate = execution._workflow_target_validator(
-        plan, tmp_path, (), authority=authority
+    def resolve(document, verify=None):
+        return execution.build_source_resolution(
+            document, "shellcheck", root=directory, workflow_source_authority=verify
+        )
+
+    with pytest.raises(
+        execution.ExecutionError, match="workflow_target_tree_unverified"
+    ):
+        resolve(plan)
+    report = execution.execute(
+        plan, root=directory, workflow_source_authority=authority
     )
-    assert validate(record, check_name="shellcheck") is None
-    script.write_bytes(b"#!/bin/sh\necho different\n")
-    changed, _ = workflow._inspect_target(tmp_path, path, None)
-    validate = execution._workflow_target_validator(
-        plan, tmp_path, (), authority=authority
-    )
+    result = next(item for item in report["checks"] if item["name"] == "shellcheck")
+    assert result["status"] == "passed", report
+    native = result["native_result"]
+    assert native["native_exit_code"] == 0
+    resolved = resolve(plan, authority)
+    assert resolved["source_ref"] == native["source_ref"]
+    assert resolved["source_ref"]["actual_execution_source"] == "materialized_directory"
+    assert resolved["source_ref"]["materialization_ref"] == f"sha256:{content_id}"
+    assert resolved["source_ref"]["binding_status"] == "byte_tree"
+    assert resolved["source_ref"]["scope_kind"] == "full_input_closure"
+    observed = next(ref for ref in native["input_refs"] if ref["kind"] == "scan_target")
     assert (
-        validate(changed, check_name="shellcheck") == "workflow_target_tree_unverified"
+        observed["sha256"]
+        == hashlib.sha256((directory / path).read_bytes()).hexdigest()
     )
+    assert observed in resolved["input_refs"]
+    assert (
+        _reconciled_check(plan, "shellcheck", native, resolved)["binding_status"]
+        == "matched"
+    )
+
+    # A plan for a different Git Tree can repeat the Directory's digest, but
+    # the runtime grant still binds the original Tree and Plan.
+    (repo / path).write_bytes(b"#!/bin/sh\necho different tree\n")
+    _git(repo, "commit", "-qam", "create another source tree")
+    wrong_tree, _ = _build_plan_and_expected(
+        repo, [path], snapshot="commit", with_baseline=False
+    )
+    wrong_tree = execution._rebased_consumer_plan(wrong_tree, repo)
+    assert wrong_tree["git"]["execution_tree"] != git["execution_tree"]
+    wrong_tree["git"]["source_tree_id"] = content_id
+    with pytest.raises(
+        execution.ExecutionError, match="workflow_target_tree_unverified"
+    ):
+        resolve(wrong_tree, authority)
+    denied = execution.execute(
+        wrong_tree, root=directory, workflow_source_authority=authority
+    )
+    denied_check = next(
+        item for item in denied["checks"] if item["name"] == "shellcheck"
+    )
+    assert denied_check["reason"] == "workflow_target_tree_unverified"
+    assert "native_result" not in denied_check
+
+    (directory / path).write_bytes(b"#!/bin/sh\necho changed materialization\n")
+    with pytest.raises(execution.ExecutionError, match="source_tree_mismatch"):
+        resolve(plan, authority)
 
 
 @pytest.mark.parametrize("extra", [False, True])
@@ -394,21 +544,22 @@ def test_approved_external_workflow_uses_project_rules_for_real_tools(tmp_path):
     external.write_bytes(content)
     _symlink(root / alias, external)
     digest = hashlib.sha256(content).hexdigest()
-    plan, _ = _build_plan_and_expected(root, [alias])
-    report = execution.execute(
-        plan,
-        root=root,
-        admitted_external_targets={
+    _git(root, "add", ".github")
+    _git(root, "commit", "-qm", "record Workflow link and project rules")
+    plan, _ = _build_plan_and_expected(root, [alias], snapshot="commit")
+    handoff = {
+        "admitted_external_targets": {
             alias: {
-                "path": str(external),
+                "path": str(external.resolve()),
                 "sha256": digest,
                 "policy_scope": "event_external",
             }
         },
-        workflow_source_authority=_external_authority(
+        "workflow_source_authority": _external_authority(
             plan, alias, external, digest, {"actionlint", "zizmor"}
         ),
-    )
+    }
+    report = execution.execute(plan, root=root, **handoff)
     results = {item["name"]: item for item in report["checks"]}
     assert results["actionlint"]["native_result"]["native_exit_code"] == 0, results[
         "actionlint"
@@ -416,8 +567,28 @@ def test_approved_external_workflow_uses_project_rules_for_real_tools(tmp_path):
     assert results["zizmor"]["native_result"]["status"] == "failed", results["zizmor"]
     assert any("unpinned" in str(finding) for finding in results["zizmor"]["findings"])
     for name in ("actionlint", "zizmor"):
-        observed = results[name]["native_result"]["evidence"]["target_sources"]
+        native = results[name]["native_result"]
+        observed = native["evidence"]["target_sources"]
         assert observed[0]["path"] == alias and observed[0]["sha256"] == digest
+        resolved = execution.build_source_resolution(plan, name, root=root, **handoff)
+        assert resolved["source_ref"] == native["source_ref"]
+        assert {"kind": "scan_target", **observed[0]} in resolved["input_refs"]
+        entry = _reconciled_check(plan, name, native, resolved)
+        assert not entry["rejected_results"]
+        assert entry["native_satisfaction"]["status"] == (
+            "satisfied" if name == "actionlint" else "unsatisfied"
+        )
+    wrong_expected = next(
+        item["expected_check_ref"]
+        for item in plan["expected_checks"]["checks"]
+        if item["name"] == "zizmor"
+    )
+    with pytest.raises(
+        execution.ExecutionError, match="source_resolution_expected_mismatch"
+    ):
+        execution.build_source_resolution(
+            plan, "actionlint", root=root, expected_check_ref=wrong_expected, **handoff
+        )
 
 
 @pytest.mark.parametrize("kind", ["file", "directory"])

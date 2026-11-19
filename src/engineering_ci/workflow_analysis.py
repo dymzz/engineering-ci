@@ -1148,6 +1148,29 @@ def _admitted_external_entry(
     return declared
 
 
+def _authorized_external_targets(entries, check_name, authorize):
+    """Accept only exact target claims authenticated for this Check."""
+    admitted = {}
+    if not callable(authorize) or not isinstance(entries, dict):
+        return admitted
+    for logical, claim in entries.items():
+        if not isinstance(logical, str) or not isinstance(claim, dict):
+            continue
+        resolved = claim.get("path")
+        if not isinstance(resolved, str) or not _admitted_external_entry(
+            entries, logical, Path(resolved), exact_path=True
+        ):
+            continue
+        request = {
+            "path": logical,
+            "resolved_path": resolved,
+            "sha256": claim["sha256"],
+        }
+        if authorize(check_name, request) is True:
+            admitted[logical] = dict(claim)
+    return admitted
+
+
 def _inspect_config_file(
     root: Path | None,
     rel_path: str,
@@ -1584,23 +1607,9 @@ def run_workflow_script_suite(
         claim_check = (
             "workflow_shellcheck" if check_name == "_inline_shellcheck" else check_name
         )
-        admitted = {}
-        if authorize_external_target and isinstance(admitted_external_targets, dict):
-            for logical, claim in admitted_external_targets.items():
-                if not isinstance(logical, str) or not isinstance(claim, dict):
-                    continue
-                resolved = claim.get("path")
-                if not isinstance(resolved, str) or not _admitted_external_entry(
-                    admitted_external_targets, logical, Path(resolved), exact_path=True
-                ):
-                    continue
-                request = {
-                    "path": logical,
-                    "resolved_path": resolved,
-                    "sha256": claim["sha256"],
-                }
-                if authorize_external_target(claim_check, request) is True:
-                    admitted[logical] = dict(claim)
+        admitted = _authorized_external_targets(
+            admitted_external_targets, claim_check, authorize_external_target
+        )
         if declared is None:
             declared = sel.get("inputs")
         problems = {}

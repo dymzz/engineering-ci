@@ -196,6 +196,7 @@ def _build_plan_and_expected(
     effective_profile: dict | None = None,
     full: bool = False,
     snapshot: str = "worktree",
+    with_baseline: bool = True,
 ):
     cfg_path = repo / "ci-selection.toml"
     cfg = selection.load_config(cfg_path)
@@ -207,7 +208,7 @@ def _build_plan_and_expected(
         root=repo,
         base_ref="origin/main",
         head_ref="HEAD",
-        base_commit=head_commit,
+        base_commit=head_commit if with_baseline else None,
         head_commit=head_commit,
         tree=head_tree,
         paths=tuple(changed),
