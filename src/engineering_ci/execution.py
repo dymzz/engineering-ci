@@ -3706,6 +3706,12 @@ def build_source_resolution(
     )
     if matched_expected.get("name") != check_name:
         raise ExecutionError("source_resolution_expected_mismatch")
+    workflow_check = check_name in _WORKFLOW_SCRIPT_CHECKS
+    if workflow_check and any(
+        edge["dependency_kind"] == "data"
+        for edge in pre_execution_edges(plan).get(("check", check_name), ())
+    ):
+        raise ExecutionError("source_resolution_generated_inputs_unproven")
     rule_ref, rule_source_ref, cfg_input = _independent_rule_for_check(
         plan,
         check_name,
@@ -3722,7 +3728,6 @@ def build_source_resolution(
         ),
         {"name": check_name, "inputs": []},
     )
-    workflow_check = check_name in _WORKFLOW_SCRIPT_CHECKS
     authority = _workflow_source_authorizer(plan, workflow_source_authority)
     snapshots = _prepare_source_snapshots(
         plan,

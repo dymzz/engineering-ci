@@ -49,6 +49,8 @@ before invoking the native tool. Their reports include the Directory digest,
 logical targets, resolved paths and SHA-256 digests. Callers gate on `outcome`.
 
 Selection keeps rejected discovery candidates in the affected Check scope.
+During discovery for a full or rule-triggered scan, an explicit file prefix
+must resolve to a file. An empty directory prefix contributes no targets.
 Host execution reports a refusal before the native process starts if a selected
 source is unavailable. It stages the verified target bytes under the current
 project and maps diagnostics back to the logical paths. Native output and exit
@@ -69,6 +71,18 @@ digest and those target digests establish `check_input_closure` instead.
 Worktree observations keep `changed_paths` Source coverage. Native results
 retain the actual scan outcome, and strict reconciliation still requires a
 closed Source.
+
+Data edges can supply generated files to a native scan through the verified
+Producer output and Consumer View. The result records the generated input and
+scan digest. Independent Resolution reports
+`source_resolution_generated_inputs_unproven` for the affected Check until it
+can verify the original Producer output. The #86 Data Dependency handoff
+supplies the retained File or Directory and its Producer, Consumer and output
+identity. The #66-P0/#66-C Source and Resolution handoff must verify those
+bytes and reconstruct the Consumer View for that Check. The new proof needs
+to match a real native scan and reject missing or mismatched Producer output.
+See [#86](https://github.com/dymzz/engineering-ci/issues/86) and
+[#66](https://github.com/dymzz/engineering-ci/issues/66).
 
 Actionlint's inline ShellCheck integration is opt-in. The actionlint command
 sets the configured ShellCheck behavior explicitly and disables pyflakes.

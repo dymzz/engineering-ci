@@ -266,8 +266,7 @@ def _discover_targets(root, prefixes, matches, *, problems, admitted_external_ta
             continue
         candidate = base / relative
         if matches(relative):
-            if candidate.is_symlink() or candidate.exists():
-                inspect(relative)
+            inspect(relative)
             continue
         try:
             directory = candidate.resolve(strict=True)

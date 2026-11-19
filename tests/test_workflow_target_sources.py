@@ -1,12 +1,15 @@
 """Source boundaries for the Workflow and Shell files passed to native tools."""
 
 import hashlib
+import json
 import shutil
 import subprocess
+import sys
 
 import pytest
 from test_reconciliation import make_observation, make_routing
 from test_workflow_security_checks import (
+    CLEAN_ZIZMOR_WORKFLOW,
     UNPINNED_VALID_ACTIONLINT_WORKFLOW,
     _build_plan_and_expected,
     _git,
@@ -527,6 +530,108 @@ def test_discovery_problem_blocks_selected_native_workflow_checks(tmp_path, prob
     ):
         assert result["status"] == "not_executed" and "native_result" not in result
         assert result["target_problems"] == {logical: reason}
+
+
+def test_explicit_workflow_file_prefix_keeps_missing_file_in_scope(tmp_path):
+    path = ".github/workflows/release.yml"
+    root, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint",),
+        workflows={path: CLEAN_ZIZMOR_WORKFLOW},
+        workflow_checks_extra=f'[check_scope]\nworkflow_prefixes = ["{path}"]',
+    )
+    plan, _ = _build_plan_and_expected(root, [], full=True)
+    report = execution.execute(plan, root=root)
+    result = next(row for row in report["checks"] if row["name"] == "actionlint")
+    assert result["native_result"]["native_exit_code"] == 0
+    assert [target["path"] for target in result["target_sources"]] == [path]
+
+    (root / path).unlink()
+    plan, expected = _build_plan_and_expected(root, [], full=True)
+    scope = next(row for row in plan["check_scope"] if row["name"] == "actionlint")
+    assert scope["status"] == "selected"
+    assert scope["inputs"] == [path]
+    check = next(row for row in expected["checks"] if row["name"] == "actionlint")
+    assert {"kind": "changed_path", "path": path} in check["input_refs"]
+    report = execution.execute(plan, root=root)
+    result = next(row for row in report["checks"] if row["name"] == "actionlint")
+    assert report["status"] == "blocked"
+    assert result["status"] == "not_executed" and "native_result" not in result
+    assert result["target_problems"] == {path: "workflow_target_missing"}
+
+
+def test_empty_workflow_directory_prefix_remains_not_applicable(tmp_path):
+    prefix = ".github/empty-workflows"
+    root, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint",),
+        workflow_checks_extra=f'[check_scope]\nworkflow_prefixes = ["{prefix}/"]',
+    )
+    (root / prefix).mkdir(parents=True)
+    plan, _ = _build_plan_and_expected(root, [], full=True)
+    scope = next(row for row in plan["check_scope"] if row["name"] == "actionlint")
+    assert scope["status"] == "not_applicable"
+    assert scope["reason"] == "no_workflow_files"
+    assert scope["inputs"] == []
+
+
+def test_generated_scan_result_needs_independent_producer_handoff(tmp_path):
+    generated = "scripts/generated.sh"
+    content = b"#!/bin/sh\necho generated\n"
+    digest = hashlib.sha256(content).hexdigest()
+    writer = (
+        "import os; from pathlib import Path; "
+        f"target = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / {generated!r}; "
+        f"target.parent.mkdir(parents=True); target.write_bytes({content!r})"
+    )
+    path = ".github/workflows/ci.yml"
+    root, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint", "shellcheck"),
+        workflows={path: CLEAN_ZIZMOR_WORKFLOW},
+        shells={"scripts/check.sh": "#!/bin/sh\necho checked\n"},
+        workflow_checks_extra=f"""\
+[prerequisite_actions.generate]
+type = "command"
+argv = {json.dumps([sys.executable, "-c", writer])}
+
+[[dependency_edges]]
+producer_ref = {{ kind = "prerequisite_action", name = "generate" }}
+consumer_ref = {{ kind = "check", name = "shellcheck" }}
+dependency_kind = "data"
+requires_pass = true
+output_ref = {{ kind = "file", path = "{generated}", sha256 = "{digest}" }}
+""",
+    )
+    plan, _ = _build_plan_and_expected(
+        root, [path, "scripts/check.sh"], snapshot="commit"
+    )
+    report = execution.execute(plan, root=root)
+    assert report["status"] == "passed", report
+    assert report["artifact_closure"][0]["verified"]
+    native = next(
+        row["native_result"] for row in report["checks"] if row["name"] == "shellcheck"
+    )
+    assert native["native_exit_code"] == 0
+    assert native["source_ref"]["scope_kind"] == "changed_paths"
+    assert {
+        (ref["kind"], ref["path"], ref["sha256"])
+        for ref in native["input_refs"]
+        if ref["kind"] in {"generated_input", "scan_target"}
+        and ref["path"] == generated
+    } == {("generated_input", generated, digest), ("scan_target", generated, digest)}
+    assert not (root / generated).exists()
+    with pytest.raises(
+        execution.ExecutionError, match="source_resolution_generated_inputs_unproven"
+    ):
+        execution.build_source_resolution(plan, "shellcheck", root=root)
+    unresolved = _reconciled_check(plan, "shellcheck", native, None)
+    assert (unresolved["binding_status"], unresolved["reason"]) == (
+        "unknown",
+        "resolution_missing",
+    )
+    resolved = execution.build_source_resolution(plan, "actionlint", root=root)
+    assert resolved["source_ref"]["scope_kind"] == "full_input_closure"
 
 
 def test_approved_external_workflow_uses_project_rules_for_real_tools(tmp_path):
