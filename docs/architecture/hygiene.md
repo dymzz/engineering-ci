@@ -148,6 +148,12 @@ whose Blob is unreadable. A substantive module that becomes a pure re-export
 produces an advisory. The Host also uses the existing Plan Source checks for
 Index, Commit and Push snapshots before running the selected checks.
 
+For an immutable snapshot, applicability uses the resolved deletion list or
+exact membership in the target Tree. A failed Tree listing leaves the input
+selected for native diagnostics. Forwarding verifies the target Blob can be
+read and records `current_content_unavailable` when the lookup fails, including
+when the checkout still contains the file. A proven deletion is inapplicable.
+
 Forwarding compares regular Python files. It retains the historical and
 selected Git modes and checks each current path component before reading.
 Git link entries and linked filesystem components fail with Source evidence.
@@ -157,6 +163,9 @@ would need a binding to its resolved target bytes before Forwarding could use
 it. A checkout that represents Git mode `120000` as a plain file still
 preserves the link mode. Worktree bindings record unresolved files as
 `unverified_paths`, and Execution retains a limited Source reference.
+The immutable snapshot lists every selected Git member before inspecting the
+filesystem. A missing file or dangling link remains in that list and prevents
+Execution from issuing `full_input_closure` / `byte_tree` for the snapshot.
 
 The [Host evidence in PR #132](https://github.com/dymzz/engineering-ci/pull/132#pullrequestreview-5969567897)
 includes an actual Plan with a missing historical Blob. The Execution Report

@@ -1056,8 +1056,8 @@ def _tree_of(root, commit):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def worktree_content_binding(root, paths):
-    """Bind regular worktree bytes and record unresolved source paths."""
+def worktree_content_binding(root, paths, *, require_files=False):
+    """Bind regular bytes, requiring each listed member for an immutable snapshot."""
     root = Path(root)
     entries = {}
     unverified_paths = []
@@ -1066,6 +1066,8 @@ def worktree_content_binding(root, paths):
             entries[path] = hashlib.sha256(read_source_file(root, path)).hexdigest()
         except (FileNotFoundError, NotADirectoryError):
             entries[path] = None
+            if require_files:
+                unverified_paths.append(path)
         except OSError:
             entries[path] = None
             unverified_paths.append(path)

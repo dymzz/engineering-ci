@@ -377,6 +377,8 @@ def _verify_git_execution_binding(plan, root, *, execution_context="host"):
 
 def _changeset_from_plan(plan, root, *, extra_paths=()):
     git = plan["git"]
+    target_tree = git.get("execution_tree")
+    snapshot = str(git.get("snapshot") or ("commit" if target_tree else "worktree"))
     paths = tuple(git.get("changed_paths") or ())
     deleted = tuple(git.get("deleted_paths") or ())
     generated = tuple(
@@ -397,15 +399,18 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
         head_ref=str(git.get("head_ref") or "HEAD"),
         base_commit=git.get("base_commit"),
         head_commit=git.get("head_commit"),
-        tree=git.get("tree"),
+        tree=git.get("tree")
+        or (target_tree if snapshot in {"commit", "push"} else None),
         paths=paths,
         worktree_dirty=bool(git.get("worktree_dirty")),
         complete=complete,
         error=None if complete else "incomplete_plan_git",
-        snapshot=str(git.get("snapshot") or "worktree"),
-        index_tree=git.get("index_tree"),
+        snapshot=snapshot,
+        index_tree=git.get("index_tree")
+        or (target_tree if snapshot == "index" else None),
         index_file=git.get("index_file"),
-        merge_tree=git.get("merge_tree"),
+        merge_tree=git.get("merge_tree")
+        or (target_tree if snapshot == "pr_merge" else None),
         base_tip=git.get("base_tip"),
         deleted_paths=deleted,
         generated_paths=generated,
@@ -1941,12 +1946,9 @@ def _tree_files_for_snapshot(plan, root, execution_context):
             else None
         )
         listed = selection._git(root, "ls-files", "-z", env=env)
-        if listed.returncode == 0:
-            return sorted(
-                p
-                for p in listed.stdout.split("\0")
-                if p and source_file_present(root, p)
-            )
+        if listed.returncode != 0:
+            return None
+        return sorted({p for p in listed.stdout.split("\0") if p})
     if (
         execution_context == "host"
         and snapshot in {"commit", "push", "pr_merge"}
@@ -1955,9 +1957,9 @@ def _tree_files_for_snapshot(plan, root, execution_context):
         tree_oid = git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
         listed = selection._git(root, "ls-tree", "-r", "--name-only", "-z", tree_oid)
         if listed.returncode == 0:
-            return sorted(
-                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
-            )
+            return sorted(p for p in listed.stdout.split("\0") if p)
+        if selection._resolve_git_dir(root) is not None:
+            return None
     if git.get("source_tree_id"):
         return sorted(_relative_existing_files(root, "."))
     return None
@@ -1978,7 +1980,9 @@ def _prepare_source_snapshots(
     if snapshot in {"index", "commit", "push", "pr_merge"}:
         tree_files = _tree_files_for_snapshot(plan, root, execution_context)
         if tree_files:
-            binding = selection.worktree_content_binding(root, tree_files)
+            binding = selection.worktree_content_binding(
+                root, tree_files, require_files=True
+            )
             return {
                 "kind": "full",
                 "files": tree_files,
@@ -2077,7 +2081,7 @@ def _verified_check_source_ref(
         elif execution_context == "dagger_export" and git.get("source_tree_id"):
             if selection.directory_content_id(root) != git["source_tree_id"]:
                 return None
-        after = selection.worktree_content_binding(root, files)
+        after = selection.worktree_content_binding(root, files, require_files=True)
         if after != before:
             return None
         mat_digest = (

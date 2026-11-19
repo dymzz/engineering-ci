@@ -1,5 +1,6 @@
 """Selection-plan execution: native tests, snapshot refusal, report status."""
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -467,6 +468,113 @@ def _forwarding_failure_receipt(
     return entry
 
 
+def test_forwarding_commit_resolves_real_deleted_path_from_tree(repo):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    run(path, "rm", "--", relative)
+    run(path, "commit", "-qm", "delete module")
+    changes = selection.changeset(path, base=base, mode="commit")
+    assert changes.deleted_paths == (relative,)
+    config = dataclasses.replace(
+        hygiene.load_config(path / "ci-hygiene.toml"), checks=("forwarding",)
+    )
+    # Plans with an unresolved deletion list can derive exact absence from Git.
+    changes = dataclasses.replace(
+        changes, deleted_paths=(), deleted_paths_resolved=False
+    )
+    scope = hygiene.check_applicability(changes, config, root=path)["forwarding"]
+    assert scope["status"] == "not_applicable"
+    assert scope["inputs"] == []
+    result = hygiene.run(changes, config, root=path)["checks"][0]
+    assert result["status"] == "not_applicable"
+    assert result["reason"] == "no_python_changes"
+
+
+@pytest.mark.parametrize("missing", ["blob", "tree"])
+def test_forwarding_commit_target_object_unavailable_remains_applicable(repo, missing):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    selection_path = path / "ci-selection.toml"
+    selection_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\n', encoding="utf-8"
+    )
+    config_path = path / "ci-hygiene.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["forwarding"]\n', encoding="utf-8"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "record forwarding target")
+    changes = selection.changeset(path, base=base, mode="commit")
+    assert changes.deleted_paths == ()
+    plan_value = selection.plan(
+        selection.Selection(changes, (), ("hygiene",), "selected", False),
+        config=selection.load_config(selection_path),
+        config_path=selection_path,
+        root=path,
+    )
+    selected = next(
+        row for row in plan_value["check_scope"] if row["name"] == "forwarding"
+    )
+    assert selected["status"] == "selected"
+    tree = changes.execution_tree
+    blob = _tree_blob(path, tree, relative)
+    oid = blob if missing == "blob" else tree
+    loose = path / ".git" / "objects" / oid[:2] / oid[2:]
+    os.chmod(loose, stat.S_IWRITE)
+    loose.unlink()
+
+    config = hygiene.load_config(config_path)
+    scope = hygiene.check_applicability(changes, config, root=path)["forwarding"]
+    assert scope["status"] == "selected"
+    assert scope["inputs"] == [relative]
+    if missing == "tree":
+        argv = ["git", "ls-tree", "-r", "-z", tree]
+        probe = hygiene._run(argv, path)
+        assert probe.returncode != 0
+        result = hygiene.run(changes, config, root=path)["checks"][0]
+        assert result["status"] == "failed"
+        assert result["reason"] == "current_tree_unavailable"
+        assert result["observation"]["probes"][-1] == {
+            "argv": argv,
+            "exit_code": probe.returncode,
+            "stderr": probe.stderr,
+        }
+        snapshots = execution._prepare_source_snapshots(
+            plan_value, [selected], root=path, execution_context="host"
+        )
+        assert snapshots == {"kind": "unproven"}
+        report = execution.execute(plan_value, root=path)
+        assert report["status"] == "not_executed", report
+        assert report["exit_code"] == 4
+        assert not report.get("checks")
+        return
+
+    assert _tree_blob(path, tree, relative) == blob
+    argv = ["git", "cat-file", "blob", blob]
+    probe = hygiene._run(argv, path)
+    assert probe.returncode != 0
+    resolution = execution.build_source_resolution(plan_value, "forwarding", root=path)
+    report = execution.execute(plan_value, root=path)
+    assert report["status"] == "failed", report
+    check = next(row for row in report["checks"] if row["name"] == "forwarding")
+    assert check["reason"] == "current_content_unavailable"
+    native = _failed_forwarding_native(check)
+    observed = native["evidence"]["observation"]
+    assert observed["paths"][0]["current_object_oid"] == blob
+    assert observed["probes"][-1] == {
+        "argv": argv,
+        "exit_code": probe.returncode,
+        "stderr": probe.stderr,
+    }
+    assert native["source_ref"] == resolution["source_ref"]
+    entry = _forwarding_failure_receipt(
+        plan_value["expected_checks"], resolution, report, native
+    )
+    assert entry["reason"] == "result_not_passed"
+    assert entry["native_satisfaction"]["status"] == "unsatisfied"
+
+
 def _source_symlink(link, target, *, directory=False):
     try:
         link.symlink_to(target, target_is_directory=directory)
@@ -474,6 +582,62 @@ def _source_symlink(link, target, *, directory=False):
         if getattr(error, "winerror", None) == 1314:
             pytest.skip("Windows requires privilege to create symlinks")
         raise
+
+
+@pytest.mark.parametrize("snapshot", ["index", "commit", "push", "pr_merge"])
+def test_immutable_source_snapshot_retains_unmaterialized_git_link_member(
+    repo, snapshot
+):
+    path, base = repo
+    relative = "src/pkg/absent.py"
+    oid = run(path, "rev-parse", "HEAD:src/pkg/sub.py").strip()
+    run(path, "update-index", "--add", "--cacheinfo", f"120000,{oid},{relative}")
+    tree = run(path, "write-tree").strip()
+    assert not (path / relative).exists()
+    assert _tree_blob(path, tree, relative) == oid
+    value = forwarding_plan(base)
+    value["git"].update(snapshot=snapshot, execution_tree=tree)
+    proof = execution._prepare_source_snapshots(
+        value, [], root=path, execution_context="host"
+    )
+    assert proof["kind"] == "full"
+    assert relative in proof["files"]
+    assert proof["binding"]["paths"][relative] is None
+    assert proof["binding"]["unverified_paths"] == [relative]
+
+
+def test_forwarding_commit_dangling_link_limits_full_source_proof(repo):
+    path, _ = repo
+    link = "src/pkg/unrelated.py"
+    _source_symlink(path / link, "missing.py")
+    run(path, "config", "core.symlinks", "true")
+    run(path, "add", "--", link)
+    run(path, "commit", "-qm", "record unrelated link")
+    base = run(path, "rev-parse", "HEAD").strip()
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    run(path, "add", "--", relative)
+    run(path, "commit", "-qm", "record forwarding change")
+    head = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    value = forwarding_plan(base)
+    value["git"].update(
+        snapshot="commit", head_commit=head, tree=tree, execution_tree=tree
+    )
+
+    source = execution._prepare_source_snapshots(
+        value, [], root=path, execution_context="host"
+    )
+    assert source["binding"]["unverified_paths"] == [link]
+    assert source["binding"]["paths"][relative]
+    report = execution.execute(value, root=path)
+    assert report["status"] == "passed", report
+    native = report["checks"][0]["native_result"]
+    assert native["status"] == "advisory"
+    assert native["source_ref"]["scope_kind"] == "changed_paths"
+    assert native["source_ref"]["binding_status"] == "identity_only"
+    proof = execution.build_pre_execution_source_proof(value, "forwarding", root=path)
+    assert proof["status"] == "unverified"
 
 
 @pytest.mark.parametrize(

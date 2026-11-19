@@ -495,26 +495,26 @@ def _is_dependency_input(path):
 
 
 def _deleted_paths(changes, paths, root):
-    if getattr(changes, "deleted_paths_resolved", False):
-        return {
-            str(item).replace("\\", "/")
-            for item in getattr(changes, "deleted_paths", ())
-        }
     explicit = getattr(changes, "deleted_paths", ())
-    if explicit:
+    if explicit or getattr(changes, "deleted_paths_resolved", False):
         return {str(item).replace("\\", "/") for item in explicit}
     snapshot = getattr(changes, "snapshot", "worktree")
+    if snapshot == "worktree":
+        return {path for path in paths if not source_file_present(root, path)}
     target_tree = getattr(changes, "execution_tree", None) or getattr(
         changes, "tree", None
     )
-    if snapshot != "worktree" and target_tree:
-        deleted = set()
-        for path in paths:
-            probe = _run(["git", "cat-file", "-e", f"{target_tree}:{path}"], root)
-            if probe.returncode != 0:
-                deleted.add(path)
-        return deleted
-    return {path for path in paths if not source_file_present(root, path)}
+    if (
+        not paths
+        or not isinstance(target_tree, str)
+        or not _GIT_OID.fullmatch(target_tree)
+    ):
+        return set()
+    entries, _ = _forwarding_tree_entries(
+        target_tree, lambda *args: _run(["git", *args], root), {}, side="current"
+    )
+    # An unresolved listing leaves the inputs selected for native diagnostics.
+    return set(paths).difference(entries) if entries is not None else set()
 
 
 def check_applicability(changes, config, *, root=None, full=False, code_prefixes=None):
@@ -833,6 +833,13 @@ def _forwarding(candidates, changes, root, runner):
     if tree_failure is not None:
         return result("failed", tree_failure)
     current_tree = getattr(changes, "execution_tree", None)
+    if current_tree is None and getattr(changes, "snapshot", None) in {
+        "commit",
+        "index",
+        "push",
+        "pr_merge",
+    }:
+        return result("failed", "current_tree_unavailable")
     current_entries = None
     index_links = set()
     if current_tree:
@@ -880,6 +887,10 @@ def _forwarding(candidates, changes, root, runner):
             current_mode and current_mode not in _REGULAR_GIT_MODES
         ) or path in index_links:
             return result("failed", "forwarding_current_git_mode_unsupported")
+        if current_entries is not None:
+            current_blob = probe("cat-file", "blob", current_oid)
+            if current_blob.returncode != 0:
+                return result("failed", "current_content_unavailable")
         if entry is None:
             continue
         if mode not in _REGULAR_GIT_MODES:
