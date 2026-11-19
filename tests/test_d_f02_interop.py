@@ -3,6 +3,7 @@
 import copy
 
 import pytest
+import test_required_assessment as r1
 
 from engineering_ci import (
     admission,
@@ -10,7 +11,6 @@ from engineering_ci import (
     reconciliation,
     required_assessment,
 )
-import test_required_assessment as r1
 
 
 IMPLEMENTATION = {
