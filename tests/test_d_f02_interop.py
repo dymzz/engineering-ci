@@ -5,8 +5,6 @@ import copy
 import pytest
 from test_historical_reuse import (
     admit as admit_historical,
-)
-from test_historical_reuse import (
     historical_candidate,
     pre_proof_for,
 )
