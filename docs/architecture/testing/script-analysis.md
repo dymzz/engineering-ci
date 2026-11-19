@@ -43,13 +43,49 @@ surfaces as a red check that prints the observed value, not as a silent pass.
 ## Workflow analysis
 
 `actionlint_workflows` takes a source Directory, `scan_paths` defaulting to
-`.github/workflows`, and an optional `config`. It returns a JSON report and
-does not gate CI; callers raise on `outcome`.
+`.github/workflows`, and an optional `config`. The direct Dagger functions for
+actionlint, ShellCheck and zizmor resolve each target in the mounted Directory
+before invoking the native tool. Their reports include the Directory digest,
+logical targets, resolved paths and SHA-256 digests. Callers gate on `outcome`.
 
-ShellCheck and pyflakes are passed as explicitly empty, so the analysed scope
-never changes with whatever happens to be present in the image. Only Workflow
-structure is checked: inline scripts that were not analysed are never reported
-as passing.
+Selection keeps rejected discovery candidates in the affected Check scope.
+During discovery for a full or rule-triggered scan, an explicit file prefix
+must resolve to a file. An empty directory prefix contributes no targets.
+Host execution reports a refusal before the native process starts if a selected
+source is unavailable. It stages the verified target bytes under the current
+project and maps diagnostics back to the logical paths. Native output and exit
+codes retain their original values.
+
+Host runtimes can pass `admitted_external_targets` and a
+`workflow_source_authority` to both execution and `build_source_resolution()`.
+Each path authenticates the handoff for the original Plan digest, Git event and
+Check. External claims name the logical path, resolved path and SHA-256.
+Git-free materialization claims name the Git Tree and Directory digest. The
+resolver verifies the supplied bytes independently and binds the observed
+`scan_target` inputs to its receipt. The CLI and direct Dagger functions use
+their supplied source without an external grant issuer.
+
+A verified complete Git materialization can establish `full_input_closure`.
+If it is supplemented by authorized external scan targets, the repository
+digest and those target digests establish `check_input_closure` instead.
+Worktree observations keep `changed_paths` Source coverage. Native results
+retain the actual scan outcome, and strict reconciliation still requires a
+closed Source.
+
+Data edges can supply generated files to a native scan through the verified
+Producer output and Consumer View. The result records the generated input and
+scan digest. Independent Resolution reports
+`source_resolution_generated_inputs_unproven` for the affected Check until it
+can verify the original Producer output. The #86 Data Dependency handoff
+supplies the retained File or Directory and its Producer, Consumer and output
+identity. The #66-P0/#66-C Source and Resolution handoff must verify those
+bytes and reconstruct the Consumer View for that Check. The new proof needs
+to match a real native scan and reject missing or mismatched Producer output.
+See [#86](https://github.com/dymzz/engineering-ci/issues/86) and
+[#66](https://github.com/dymzz/engineering-ci/issues/66).
+
+Actionlint's inline ShellCheck integration is opt-in. The actionlint command
+sets the configured ShellCheck behavior explicitly and disables pyflakes.
 
 ## PowerShell analysis on Windows
 

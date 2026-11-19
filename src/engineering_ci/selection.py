@@ -934,11 +934,12 @@ def _hidden_worktree_refusal(
             continue
         blob = _git_bytes(root, "cat-file", "blob", f"{target_prefix}{path}", env=env)
         file = Path(root) / path
-        if (
-            blob.returncode != 0
-            or not file.is_file()
-            or file.read_bytes() != blob.stdout
-        ):
+        content = None
+        if file.is_symlink():
+            content = os.fsencode(os.readlink(file))
+        elif file.resolve().is_relative_to(Path(root).resolve()) and file.is_file():
+            content = file.read_bytes()
+        if blob.returncode != 0 or content != blob.stdout:
             return skip_reason if tag == "S" else assume_reason
     return None
 
@@ -1056,14 +1057,17 @@ def _tree_of(root, commit):
 
 def worktree_content_binding(root, paths):
     """Digest of selected paths' current worktree bytes; None means missing."""
-    root = Path(root)
+    root = Path(root).resolve()
     entries = {}
     for path in sorted({str(item).replace("\\", "/") for item in paths}):
-        file = root / path
-        if file.is_file():
-            entries[path] = hashlib.sha256(file.read_bytes()).hexdigest()
-        else:
-            entries[path] = None
+        try:
+            file = (root / path).resolve(strict=True)
+            if file.is_relative_to(root) and file.is_file():
+                entries[path] = hashlib.sha256(file.read_bytes()).hexdigest()
+                continue
+        except (OSError, RuntimeError):
+            pass
+        entries[path] = None
     digest = hashlib.sha256(
         json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1071,20 +1075,25 @@ def worktree_content_binding(root, paths):
 
 
 def directory_content_id(root):
-    """Stable content id over a directory tree (path + file bytes)."""
-    root = Path(root)
+    """Hash regular file bytes and symbolic link entries without following links."""
+    root = Path(root).resolve()
     digest = hashlib.sha256()
     for path in sorted(
         root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
     ):
-        if not path.is_file():
-            continue
         relative = path.relative_to(root).as_posix()
         if relative == ".git" or relative.startswith(".git/"):
             continue
+        if path.is_symlink():
+            digest.update(b"\0symlink\0")
+            data = os.fsencode(os.readlink(path))
+        else:
+            if not path.resolve().is_relative_to(root) or not path.is_file():
+                continue
+            data = path.read_bytes()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(data)
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -2678,10 +2687,13 @@ def workflow_script_check_scopes(
             cfg_problems = workflow_analysis.workflow_config_problems(
                 config, root=repo_root
             )
+            workflow_problems, shell_problems = {}, {}
             repo_workflows = workflow_analysis.discover_workflow_files(
-                repo_root, wf_prefixes
-            )
-            repo_shells = workflow_analysis.discover_shell_files(repo_root, sh_prefixes)
+                repo_root, wf_prefixes, problems=workflow_problems
+            ) + list(workflow_problems)
+            repo_shells = workflow_analysis.discover_shell_files(
+                repo_root, sh_prefixes, problems=shell_problems
+            ) + list(shell_problems)
             triggers = _workflow_config_triggers(
                 changes,
                 config,
@@ -2693,14 +2705,20 @@ def workflow_script_check_scopes(
             changed_wf = [
                 p
                 for p in paths
-                if workflow_analysis.is_workflow_file(p, wf_prefixes)
-                and (repo_root / p).is_file()
+                if (
+                    workflow_analysis.is_workflow_file(p, wf_prefixes)
+                    or p in workflow_problems
+                )
+                and p not in changes.deleted_paths
             ]
             changed_sh = [
                 p
                 for p in paths
-                if workflow_analysis.is_shell_file(p, sh_prefixes)
-                and (repo_root / p).is_file()
+                if (
+                    workflow_analysis.is_shell_file(p, sh_prefixes)
+                    or p in shell_problems
+                )
+                and p not in changes.deleted_paths
             ]
             al_cfg_changed = any(
                 workflow_analysis.is_workflow_config(p, wf_cfg.actionlint_config)
