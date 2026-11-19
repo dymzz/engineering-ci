@@ -33,6 +33,7 @@ from . import (
     sources,
     workflow_analysis,
 )
+from ._paths import source_file_present
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -139,6 +140,59 @@ def _rebased_consumer_plan(plan, source_root):
     if new_inputs is None:
         return plan
     return {**plan, "inputs": new_inputs}
+
+
+def _consumer_view_binding_matches(binding, source_root, view_root, actual):
+    """Allow only the absolute-link rewrite performed when copying a Source."""
+    paths = binding.get("paths")
+    if not isinstance(paths, dict):
+        return False
+    source_root = Path(source_root).resolve()
+    view_root = Path(view_root).resolve()
+    if selection.worktree_content_binding(source_root, paths) != binding:
+        return False
+    for key in ("algorithm", "paths", "unverified_paths"):
+        if actual.get(key) != binding.get(key):
+            return False
+    planned_links = binding.get("link_bindings") or {}
+    actual_links = actual.get("link_bindings") or {}
+    if planned_links.keys() != actual_links.keys():
+        return False
+    for path, planned in planned_links.items():
+        observed = actual_links[path]
+        if planned.get("target_path") != observed.get("target_path"):
+            return False
+        planned_components = planned.get("components", [])
+        observed_components = observed.get("components", [])
+        if len(planned_components) != len(observed_components):
+            return False
+        for before, after in zip(planned_components, observed_components, strict=True):
+            component = before.get("path")
+            if component != after.get("path"):
+                return False
+            if before.get("sha256") == after.get("sha256"):
+                continue
+            try:
+                source_target = os.readlink(source_root / component)
+                view_target = os.readlink(view_root / component)
+                target = Path(os.path.normpath(source_target))
+                if not target.is_absolute() or not target.is_relative_to(source_root):
+                    return False
+                expected = os.path.relpath(
+                    view_root / target.relative_to(source_root),
+                    (view_root / component).parent,
+                )
+                if (
+                    hashlib.sha256(os.fsencode(source_target)).hexdigest()
+                    != before.get("sha256")
+                    or hashlib.sha256(os.fsencode(view_target)).hexdigest()
+                    != after.get("sha256")
+                    or os.fsencode(view_target) != os.fsencode(expected)
+                ):
+                    return False
+            except (OSError, TypeError, ValueError):
+                return False
+    return True
 
 
 def _stored_rule_path(config_path, root):
@@ -377,6 +431,8 @@ def _verify_git_execution_binding(plan, root, *, execution_context="host"):
 
 def _changeset_from_plan(plan, root, *, extra_paths=()):
     git = plan["git"]
+    target_tree = git.get("execution_tree")
+    snapshot = str(git.get("snapshot") or ("commit" if target_tree else "worktree"))
     paths = tuple(git.get("changed_paths") or ())
     deleted = tuple(git.get("deleted_paths") or ())
     generated = tuple(
@@ -397,15 +453,18 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
         head_ref=str(git.get("head_ref") or "HEAD"),
         base_commit=git.get("base_commit"),
         head_commit=git.get("head_commit"),
-        tree=git.get("tree"),
+        tree=git.get("tree")
+        or (target_tree if snapshot in {"commit", "push"} else None),
         paths=paths,
         worktree_dirty=bool(git.get("worktree_dirty")),
         complete=complete,
         error=None if complete else "incomplete_plan_git",
-        snapshot=str(git.get("snapshot") or "worktree"),
-        index_tree=git.get("index_tree"),
+        snapshot=snapshot,
+        index_tree=git.get("index_tree")
+        or (target_tree if snapshot == "index" else None),
         index_file=git.get("index_file"),
-        merge_tree=git.get("merge_tree"),
+        merge_tree=git.get("merge_tree")
+        or (target_tree if snapshot == "pr_merge" else None),
         base_tip=git.get("base_tip"),
         deleted_paths=deleted,
         generated_paths=generated,
@@ -1089,6 +1148,7 @@ def _run_workflow_script_checks(
     shared_cache=None,
     admitted_external_targets=None,
     workflow_authority=None,
+    consumer_source_root=None,
 ):
     wanted = [item for item in selected if item.get("name") in _WORKFLOW_SCRIPT_CHECKS]
     omitted_entries = (
@@ -1156,12 +1216,13 @@ def _run_workflow_script_checks(
     binding = plan["git"].get("content_binding")
 
     def binding_current():
-        return (
-            not isinstance(binding, dict)
-            or not binding.get("digest")
-            or (
-                selection.worktree_content_binding(root, binding.get("paths") or ())
-                == binding
+        if not isinstance(binding, dict) or not binding.get("digest"):
+            return True
+        actual = selection.worktree_content_binding(root, binding.get("paths") or ())
+        return actual == binding or (
+            consumer_source_root is not None
+            and _consumer_view_binding_matches(
+                binding, consumer_source_root, root, actual
             )
         )
 
@@ -1838,10 +1899,11 @@ def _source_reference(plan, execution_context):
     scope = []
     content_digest = None
     if isinstance(binding, dict):
-        content_digest = binding.get("digest")
         paths = binding.get("paths")
         if isinstance(paths, dict):
             scope = sorted(str(path) for path in paths)
+        if not binding.get("unverified_paths"):
+            content_digest = binding.get("digest")
     declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
     if content_digest and scope:
         status = "content_digest"
@@ -2068,13 +2130,13 @@ def _closure_paths_for_check(
         return None
     paths: set[str] = set()
     for p in (plan.get("git") or {}).get("changed_paths") or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
     for p in (item or {}).get("inputs") or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
     for p in artifact_paths or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
 
     def add_rel_file(candidate):
@@ -2148,10 +2210,9 @@ def _tree_files_for_snapshot(plan, root, execution_context):
             else None
         )
         listed = selection._git(root, "ls-files", "-z", env=env)
-        if listed.returncode == 0:
-            return sorted(
-                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
-            )
+        if listed.returncode != 0:
+            return None
+        return sorted({p for p in listed.stdout.split("\0") if p})
     if (
         execution_context == "host"
         and snapshot in {"commit", "push", "pr_merge"}
@@ -2160,9 +2221,9 @@ def _tree_files_for_snapshot(plan, root, execution_context):
         tree_oid = git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
         listed = selection._git(root, "ls-tree", "-r", "--name-only", "-z", tree_oid)
         if listed.returncode == 0:
-            return sorted(
-                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
-            )
+            return sorted(p for p in listed.stdout.split("\0") if p)
+        if selection._resolve_git_dir(root) is not None:
+            return None
     if git.get("source_tree_id"):
         return sorted(_relative_existing_files(root, "."))
     return None
@@ -2184,7 +2245,9 @@ def _prepare_source_snapshots(
     if snapshot in {"index", "commit", "push", "pr_merge"}:
         tree_files = _tree_files_for_snapshot(plan, root, execution_context)
         if tree_files:
-            binding = selection.worktree_content_binding(root, tree_files)
+            binding = selection.worktree_content_binding(
+                root, tree_files, require_files=True
+            )
             snapshots = {
                 "kind": "full",
                 "files": tree_files,
@@ -2317,6 +2380,13 @@ def _verified_check_source_ref(
     if source_snapshots.get("kind") == "full":
         files = source_snapshots["files"]
         before = source_snapshots["binding"]
+        # Workflow source authority separately proves the selected external
+        # targets, while workflow_tree binds the literal repository link entries.
+        authorized_external = (
+            {target["path"] for target in external_targets} if workflow_tree else set()
+        )
+        if set(before.get("unverified_paths") or ()) - authorized_external:
+            return None
         if workflow_materialization:
             if execution_context == "host":
                 actual = "materialized_directory"
@@ -2343,7 +2413,7 @@ def _verified_check_source_ref(
             and selection.directory_content_id(root) != git["source_tree_id"]
         ):
             return None
-        after = selection.worktree_content_binding(root, files)
+        after = selection.worktree_content_binding(root, files, require_files=True)
         if after != before:
             return None
         mat_digest = workflow_tree or (
@@ -2391,6 +2461,8 @@ def _verified_check_source_ref(
         return None
     before_files = entry["files"]
     before = entry["binding"]
+    if before.get("unverified_paths"):
+        return None
     if name == "docs" and isinstance((item or {}).get("inventory"), dict):
         # Also include any discovered inventory files that did not exist under '.' scan.
         final_files = _closure_paths_for_check(
@@ -3816,14 +3888,16 @@ def build_source_resolution(
     }
     if resolved_profile is not None:
         item["profile_ref"] = resolved_profile
-    changed_digest = (git.get("content_binding") or {}).get("digest")
+    changed_binding = git.get("content_binding") or {}
+    changed_digest = changed_binding.get("digest")
     if isinstance(changed_digest, str) and changed_digest:
         current_changed = selection.worktree_content_binding(
             resolved_root, git.get("changed_paths") or ()
         )
         if current_changed.get("digest") != changed_digest:
             raise ExecutionError("source_resolution_changed_paths_stale")
-        item["changed_paths_content_digest"] = changed_digest
+        if not current_changed.get("unverified_paths"):
+            item["changed_paths_content_digest"] = changed_digest
     if baseline is not None:
         base_commit = str(baseline.get("base_commit") or "")
         odb_tree = selection._git(
@@ -4423,6 +4497,7 @@ def run_host_check(
             shared_cache=shared_cache,
             admitted_external_targets=admitted_external_targets,
             workflow_authority=workflow_authority,
+            consumer_source_root=_consumer_source_root,
         )
         raw = results or [
             {

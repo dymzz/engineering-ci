@@ -251,6 +251,30 @@ def malformed_consumer_cases():
     return cases
 
 
+@pytest.mark.parametrize(
+    "deleted_paths",
+    [
+        None,
+        "src/x.py",
+        [None],
+        [""],
+        ["/abs.py"],
+        ["../x.py"],
+        ["src/./x.py"],
+        ["src//x.py"],
+        ["src/../x.py"],
+        ["src\\x.py"],
+        ["C:/x.py"],
+        ["src/x.py\0"],
+    ],
+)
+def test_plan_rejects_malformed_deleted_paths(deleted_paths):
+    value = policy_plan()
+    value["git"]["deleted_paths"] = deleted_paths
+    with pytest.raises(execution.ExecutionError, match="git_deleted_paths_invalid"):
+        execution.validate_plan(value)
+
+
 @pytest.mark.parametrize("change,reason", invalid_cases() + malformed_consumer_cases())
 def test_all_host_entry_points_refuse_before_a_consumer_starts(
     tmp_path, monkeypatch, capsys, change, reason

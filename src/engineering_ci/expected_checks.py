@@ -105,6 +105,7 @@ def _source_ref(changeset, content_binding=None):
     if (
         isinstance(content_binding, dict)
         and content_binding.get("digest")
+        and not content_binding.get("unverified_paths")
         and source["verified_input_scope"]
     ):
         source["content_digest"] = content_binding["digest"]
@@ -3132,12 +3133,10 @@ def validate_projection(
         if target and declared != target:
             raise ExpectedError("expected_source_mismatch")
     content = git.get("content_binding")
-    if (
-        isinstance(content, dict)
-        and content.get("digest")
-        and source.get("content_digest") != content["digest"]
-    ):
-        raise ExpectedError("expected_content_binding_mismatch")
+    if isinstance(content, dict) and content.get("digest"):
+        expected_digest = None if content.get("unverified_paths") else content["digest"]
+        if source.get("content_digest") != expected_digest:
+            raise ExpectedError("expected_content_binding_mismatch")
     changed = sorted(git.get("changed_paths") or [])
     scope_paths = sorted(source.get("verified_input_scope") or [])
     if scope_paths != changed:
