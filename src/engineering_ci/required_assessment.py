@@ -1547,7 +1547,7 @@ def project_t1_t2_gate_admission(
             ):
                 raise RequiredAssessmentError("admission_equivalence_missing")
             if admitted:
-                witness = sorted(ids)[0]
+                witness = min(ids)
                 trace = _origin_trace(
                     by_id[witness], "admission_projection_origin_invalid"
                 )
@@ -1606,7 +1606,7 @@ def project_t1_t2_gate_admission(
                     raise RequiredAssessmentError(
                         "admission_projection_result_invalid"
                     )
-                witness = sorted(ids)[0]
+                witness = min(ids)
                 trace = _origin_trace(
                     selected[witness], "admission_projection_origin_invalid"
                 )
