@@ -460,6 +460,156 @@ def test_osv_260_capture_binds_groups_before_sanitizing():
         "approved-git-native-input",
         "uv.lock",
     ]
+    invocation = capture["native_invocation"]
+    assert invocation["argv"][invocation["argv"].index("--format=json") + 1] == (
+        "--all-packages"
+    )
+    assert invocation["report"]["scanner_exit_code"] == capture["native_exit_code"]
+    _expected, unsupported, scanner_lock, selected = security.lock_inventory(
+        tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")),
+        (root / "uv.lock").read_bytes().replace(b"\r\n", b"\n").decode(),
+        [invocation["public_index"]],
+        {
+            "idna": {
+                "repository": "https://github.com/kjd/idna.git",
+                "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+            }
+        },
+    )
+    git_input = {
+        "results": [
+            {
+                "packages": [
+                    {
+                        "package": {
+                            "name": item["repository"],
+                            "commit": item["commit"],
+                        }
+                    }
+                    for item in selected
+                ]
+            }
+        ]
+    }
+    assert unsupported == []
+    assert (
+        hashlib.sha256(scanner_lock.encode()).hexdigest()
+        == (capture["inputs"]["generated_pypi_lock"])
+    )
+    assert (
+        hashlib.sha256(json.dumps(git_input).encode()).hexdigest()
+        == (capture["inputs"]["generated_git_custom_lockfile"])
+    )
+
+
+def _replay(document, source_inputs, *, git=True):
+    return security.scanner_result(
+        json.dumps(document).encode(),
+        {("idna", "3.10")},
+        1,
+        100,
+        (
+            (
+                {
+                    "repository": "https://github.com/kjd/idna.git",
+                    "commit": "729225d8b0c58bc66bb38d1d0faf281a757ece59",
+                },
+            )
+            if git
+            else ()
+        ),
+        source_inputs=source_inputs,
+    )
+
+
+def test_windows_source_paths_match_across_slash_and_case():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"][1]["source"]["path"] = "c:/scan-input/uv.lock"
+    parsed, _projected = _replay(
+        document,
+        {
+            r"C:\Scan-Input\uv.lock": "pypi",
+            r"C:\scan-input\osv-scanner.json": "git",
+        },
+    )
+    assert parsed["dependencies_scanned"] == 2
+
+
+def test_same_filename_in_another_directory_is_not_this_input():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"][1]["source"]["path"] = "C:/other-dir/uv.lock"
+    with pytest.raises(security.SecurityError) as error:
+        _replay(
+            document,
+            {
+                r"C:\scan-input\uv.lock": "pypi",
+                r"C:\scan-input\osv-scanner.json": "git",
+            },
+        )
+    assert error.value.category == "scan_source_mismatch"
+
+
+def test_posix_source_path_case_is_distinct():
+    document = {
+        "results": [
+            {
+                "source": {"path": "/tmp/Foo/uv.lock", "type": "lockfile"},
+                "packages": [
+                    {
+                        "package": {
+                            "name": "idna",
+                            "version": "3.10",
+                            "ecosystem": "PyPI",
+                        },
+                        "vulnerabilities": [{"id": "GHSA-65pc-fj4g-8rjx"}],
+                    }
+                ],
+            }
+        ]
+    }
+    with pytest.raises(security.SecurityError) as error:
+        security.scanner_result(
+            json.dumps(document).encode(),
+            {("idna", "3.10")},
+            1,
+            100,
+            (),
+            source_inputs={"/tmp/foo/uv.lock": "pypi"},
+        )
+    assert error.value.category == "scan_source_mismatch"
+    parsed, projected = security.scanner_result(
+        json.dumps(document).encode(),
+        {("idna", "3.10")},
+        1,
+        100,
+        (),
+        source_inputs={"/tmp/Foo/uv.lock": "pypi"},
+    )
+    assert parsed["dependencies_scanned"] == 1
+    assert projected["results"][0]["source"]["path"] == "uv.lock"
+
+
+def test_duplicate_result_group_for_one_input_is_rejected():
+    root = Path(__file__).resolve().parents[1] / "tests/fixtures/osv-mixed-idna"
+    document = json.loads((root / "capture.json").read_text(encoding="utf-8"))[
+        "document"
+    ]
+    document["results"].append(json.loads(json.dumps(document["results"][1])))
+    with pytest.raises(security.SecurityError) as error:
+        _replay(
+            document,
+            {
+                r"C:\scan-input\uv.lock": "pypi",
+                r"C:\scan-input\osv-scanner.json": "git",
+            },
+        )
+    assert error.value.category == "scan_source_mismatch"
 
 
 def test_missing_or_mistyped_source_is_not_a_pass(project):

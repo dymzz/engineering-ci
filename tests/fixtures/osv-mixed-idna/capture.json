@@ -10,9 +10,41 @@
   "inputs": {
     "uv.lock": "5eb6c0c02c960d11c7f4c252f38ed398721ce177d4ec4be18cc2501946a4a0a0",
     "pyproject.toml": "bc884f6a09267f79d0080257d4be8d6a63a5541bcf34230836282c599e694adb",
-    "git-policy.toml": "ad8a1277f4686602389ea1ed3ae5b32f17ac9841e18cc35e507a098e5bb664f6"
+    "git-policy.toml": "ad8a1277f4686602389ea1ed3ae5b32f17ac9841e18cc35e507a098e5bb664f6",
+    "generated_pypi_lock": "86625eb577e67356a491306d8b7d6f6c78d53e24fab9a1bf7a68cc6e3ad54607",
+    "generated_git_custom_lockfile": "27b5a0e3aa5ee2c3b40c672e97df002dfba9a54b79c733a0cd9638817587c084"
   },
-  "note": "Replay of one osv-scanner 2.6.0 dual-input scan. source.path uses the forward-slash form OSV wrote; the temporary directory is replaced by C:/scan-input. scanner.json in a bundle is the sanitized projection of this output.",
+  "native_invocation": {
+    "public_index": "https://mirrors.aliyun.com/pypi/simple",
+    "argv": [
+      "osv-scanner",
+      "scan",
+      "source",
+      "--lockfile=<temp>/uv.lock",
+      "--lockfile=osv-scanner:<temp>/osv-scanner.json",
+      "--config=<temp>/osv-scanner.toml",
+      "--format=json",
+      "--all-packages",
+      "--output-file=<temp>/scanner.json"
+    ],
+    "temp_directory": "engineering-ci-security-zkg19icg",
+    "observed_source_paths": [
+      "C:/Users/Aurola/AppData/Local/Temp/engineering-ci-security-zkg19icg/osv-scanner.json",
+      "C:/Users/Aurola/AppData/Local/Temp/engineering-ci-security-zkg19icg/uv.lock"
+    ],
+    "observed_packages": [
+      ["GIT", "https://github.com/kjd/idna.git", "", "729225d8b0c58bc66bb38d1d0faf281a757ece59"],
+      ["PyPI", "idna", "3.10", null]
+    ],
+    "report": {
+      "mode": "enforce",
+      "status": "failed",
+      "scanner_exit_code": 1,
+      "dependencies_scanned": 2,
+      "gate_exit_code": 1
+    }
+  },
+  "note": "One osv-scanner 2.6.0 dual-input scan of the uv 0.12.23 mixed lock. The replay document replaces that temporary directory with C:/scan-input and keeps the forward-slash form OSV wrote. scanner.json in a bundle is the sanitized projection, not this file.",
   "document": {
     "results": [
       {

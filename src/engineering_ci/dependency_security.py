@@ -399,12 +399,16 @@ def _json(data):
 
 
 def _input_key(path):
-    """Compare the path we passed with the path OSV 2.6.0 writes back.
+    """Identity of one scan input path, independent of the host OS.
 
-    On Windows the scanner rewrites backslashes to forward slashes. The
-    comparison is the normalized path, not a basename guess.
+    OSV 2.6.0 on Windows writes the same absolute path back with forward
+    slashes. Drive and UNC paths are case-insensitive; POSIX paths stay
+    case-sensitive. Matching uses the whole path, not the file name.
     """
-    return os.path.normcase(str(Path(path)))
+    text = str(path).strip().replace("\\", "/")
+    if re.fullmatch(r"[A-Za-z]:/.*", text) or text.startswith("//"):
+        return text.casefold()
+    return text
 
 
 def _bound_scan_source(native, allowed, seen):
