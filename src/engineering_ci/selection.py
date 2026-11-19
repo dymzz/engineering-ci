@@ -28,7 +28,12 @@ from engineering_ci import (
     sources,
     workflow_analysis,
 )
-from engineering_ci._paths import SourcePathError, read_source_entry, read_source_file
+from engineering_ci._paths import (
+    SourcePathError,
+    read_internal_linked_source,
+    read_source_entry,
+    read_source_file,
+)
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -1059,6 +1064,7 @@ def worktree_content_binding(root, paths, *, require_files=False):
     root = Path(root).resolve()
     entries = {}
     unverified_paths = []
+    link_bindings = {}
     for path in sorted({str(item).replace("\\", "/") for item in paths}):
         try:
             entries[path] = hashlib.sha256(read_source_file(root, path)).hexdigest()
@@ -1069,12 +1075,30 @@ def worktree_content_binding(root, paths, *, require_files=False):
         except SourcePathError as error:
             entries[path] = None
             unverified_paths.append(path)
-            if error.kind == "link" and not require_files:
+            if error.kind == "link":
                 try:
-                    target = (root / path).resolve(strict=True)
-                    if target.is_relative_to(root):
-                        content = read_source_file(root, target.relative_to(root))
+                    raw = os.fsencode(os.readlink(root / error.component))
+                    link_bindings[path] = {
+                        "components": [
+                            {
+                                "path": error.component.as_posix(),
+                                "sha256": hashlib.sha256(raw).hexdigest(),
+                            }
+                        ]
+                    }
+                    if not require_files:
+                        content, target, links = read_internal_linked_source(root, path)
                         entries[path] = hashlib.sha256(content).hexdigest()
+                        link_bindings[path] = {
+                            "components": [
+                                {
+                                    "path": component,
+                                    "sha256": hashlib.sha256(raw_target).hexdigest(),
+                                }
+                                for component, raw_target in links
+                            ],
+                            "target_path": target,
+                        }
                 except (OSError, RuntimeError):
                     pass
         except OSError:
@@ -1085,12 +1109,16 @@ def worktree_content_binding(root, paths, *, require_files=False):
         if unverified_paths
         else entries
     )
+    if link_bindings:
+        payload["link_bindings"] = link_bindings
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     binding = {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
     if unverified_paths:
         binding["unverified_paths"] = unverified_paths
+    if link_bindings:
+        binding["link_bindings"] = link_bindings
     return binding
 
 

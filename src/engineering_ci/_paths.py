@@ -75,3 +75,66 @@ def read_source_entry(root, relative):
         if error.kind != "link" or error.component != Path(relative):
             raise
         return os.fsencode(os.readlink(Path(root) / relative)), True
+
+
+def read_internal_linked_source(
+    root, relative, *, validate_link=None, validate_target=None
+):
+    """Read an internal target and retain the links used to reach it."""
+    root = Path(root).resolve()
+    current = Path(relative)
+    links = []
+    seen = set()
+    for _ in range(40):
+        try:
+            stat_source_file(root, current)
+        except SourcePathError as error:
+            if error.kind != "link":
+                raise
+            component = error.component
+            if component in seen:
+                raise SourcePathError("link_cycle", component) from None
+            seen.add(component)
+            link_path = root / component
+            before = link_path.lstat()
+            target = os.readlink(link_path)
+            raw_target = os.fsencode(target)
+            if validate_link is not None:
+                validate_link(component.as_posix(), raw_target)
+            if os.name == "nt" and target.startswith("\\\\?\\"):
+                target = target[4:]
+                if target.startswith("UNC\\"):
+                    target = "\\\\" + target[4:]
+            absolute = Path(os.path.abspath(link_path.parent / target))
+            try:
+                target_path = absolute.relative_to(root)
+            except ValueError:
+                raise SourcePathError("link_outside_source", component) from None
+            suffix = current.relative_to(component)
+            current = target_path / suffix
+            if any(part.lower() == ".git" for part in current.parts):
+                raise SourcePathError("link_outside_source", component)
+            links.append((component, raw_target, before))
+        else:
+            if validate_target is not None:
+                validate_target(current.as_posix())
+            content = read_source_file(root, current)
+            for component, raw_target, before in links:
+                link_path = root / component
+                after = link_path.lstat()
+                if (
+                    not os.path.samestat(before, after)
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or before.st_ctime_ns != after.st_ctime_ns
+                    or os.fsencode(os.readlink(link_path)) != raw_target
+                ):
+                    raise SourcePathError("path_changed", component)
+            return (
+                content,
+                current.as_posix(),
+                [
+                    (component.as_posix(), raw_target)
+                    for component, raw_target, _ in links
+                ],
+            )
+    raise SourcePathError("link_depth_exceeded", current)

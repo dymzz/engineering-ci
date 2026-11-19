@@ -156,15 +156,20 @@ Forwarding verifies the target Blob can be read and records
 `current_content_unavailable` when the lookup fails, including when the
 checkout still contains the file. A proven deletion is inapplicable.
 
-Forwarding compares regular Python files. It retains the historical and
-selected Git modes and checks each current path component before reading.
-Git link entries and linked filesystem components fail with Source evidence.
-Current links carry the observed component and whether its target is inside
-the Source, outside it, missing inside it, or unverified. An internal link
-would need a binding to its resolved target bytes before Forwarding could use
-it. A checkout that represents Git mode `120000` as a plain file still
-preserves the link mode. Worktree bindings record unresolved files as
-`unverified_paths`, and Execution retains a limited Source reference.
+The [original Knowledge check](https://github.com/dymzz/engineering-knowledge/blob/main/scripts/check_repo_hygiene.py#L103)
+and earlier ECI followed links to existing Python files. Forwarding now
+checks every link component and reads an internal target with its actual link
+and file identities recorded. In an immutable snapshot, the link and target
+must match their Git Tree entries and readable Blob objects. Worktree bindings
+retain the link chain, resolved path and target digest, so changing the link
+invalidates the Plan even if the replacement target has identical bytes.
+
+Links outside the Source, into Git metadata, dangling links, cycles and links
+whose identities cannot be verified fail with Source evidence. A checkout that
+represents Git mode `120000` as a plain file still preserves the link mode.
+Linked inputs remain in `unverified_paths`, so the Native Result does not
+claim a complete Source closure and #66-C cannot treat them as fully resolved.
+The Base link case still requires its own Git-object target binding.
 The immutable snapshot lists every selected Git member before inspecting the
 filesystem. A missing file or dangling link remains in that list and prevents
 Execution from issuing `full_input_closure` / `byte_tree` for the snapshot.
