@@ -684,7 +684,13 @@ def test_forwarding_selected_link_fails_with_receipt(repo, target_kind, target_s
     )
     binding = value["git"]["content_binding"]
     assert binding["unverified_paths"] == [relative]
-    assert binding["paths"][relative] is None
+    if target_kind == "internal":
+        assert (
+            binding["paths"][relative]
+            == hashlib.sha256((source.parent / target).read_bytes()).hexdigest()
+        )
+    else:
+        assert binding["paths"][relative] is None
     if target_kind == "external":
         directory_id = selection.directory_content_id(path)
         target.write_text("VALUE = 2\n", encoding="utf-8")

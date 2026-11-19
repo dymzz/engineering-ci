@@ -65,3 +65,13 @@ def read_source_file(root, relative):
         ) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise SourcePathError("path_changed", Path(relative))
     return content
+
+
+def read_source_entry(root, relative):
+    """Read regular bytes or the literal target of a direct link entry."""
+    try:
+        return read_source_file(root, relative), False
+    except SourcePathError as error:
+        if error.kind != "link" or error.component != Path(relative):
+            raise
+        return os.fsencode(os.readlink(Path(root) / relative)), True

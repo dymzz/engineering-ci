@@ -28,7 +28,7 @@ from engineering_ci import (
     sources,
     workflow_analysis,
 )
-from engineering_ci._paths import SourcePathError, read_source_file
+from engineering_ci._paths import SourcePathError, read_source_entry, read_source_file
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -935,12 +935,10 @@ def _hidden_worktree_refusal(
             continue
         blob = _git_bytes(root, "cat-file", "blob", f"{target_prefix}{path}", env=env)
         try:
-            matches = (
-                blob.returncode == 0 and read_source_file(root, path) == blob.stdout
-            )
+            content, _ = read_source_entry(root, path)
         except OSError:
-            matches = False
-        if not matches:
+            content = None
+        if blob.returncode != 0 or content != blob.stdout:
             return skip_reason if tag == "S" else assume_reason
     return None
 
@@ -1058,7 +1056,7 @@ def _tree_of(root, commit):
 
 def worktree_content_binding(root, paths, *, require_files=False):
     """Bind regular bytes, requiring each listed member for an immutable snapshot."""
-    root = Path(root)
+    root = Path(root).resolve()
     entries = {}
     unverified_paths = []
     for path in sorted({str(item).replace("\\", "/") for item in paths}):
@@ -1068,6 +1066,17 @@ def worktree_content_binding(root, paths, *, require_files=False):
             entries[path] = None
             if require_files:
                 unverified_paths.append(path)
+        except SourcePathError as error:
+            entries[path] = None
+            unverified_paths.append(path)
+            if error.kind == "link" and not require_files:
+                try:
+                    target = (root / path).resolve(strict=True)
+                    if target.is_relative_to(root):
+                        content = read_source_file(root, target.relative_to(root))
+                        entries[path] = hashlib.sha256(content).hexdigest()
+                except (OSError, RuntimeError):
+                    pass
         except OSError:
             entries[path] = None
             unverified_paths.append(path)
@@ -1087,9 +1096,8 @@ def worktree_content_binding(root, paths, *, require_files=False):
 
 def directory_content_id(root):
     """Bind file bytes and literal link entries in a materialized Source."""
-    root = Path(root)
+    root = Path(root).resolve()
     digest = hashlib.sha256()
-    links = {}
     paths = []
     for directory, subdirs, names in root.walk():
         if directory == root:
@@ -1102,27 +1110,18 @@ def directory_content_id(root):
         paths.extend((directory / name).relative_to(root).as_posix() for name in names)
     for relative in sorted(paths):
         try:
-            content = read_source_file(root, relative)
+            content, link = read_source_entry(root, relative)
         except SourcePathError as error:
             if error.kind == "non_regular":
                 continue
-            if error.kind != "link" or error.component != Path(relative):
-                raise
-            link = os.fsencode(os.readlink(root / relative))
-            links[relative] = hashlib.sha256(link).hexdigest()
-            continue
+            raise
+        if link:
+            digest.update(b"\0symlink\0")
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(content)
         digest.update(b"\0")
-    file_digest = digest.hexdigest()
-    if not links:
-        return file_digest
-    return hashlib.sha256(
-        json.dumps({"files": file_digest, "links": links}, sort_keys=True).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    return digest.hexdigest()
 
 
 ZERO_OID = "0" * 40
@@ -2714,10 +2713,13 @@ def workflow_script_check_scopes(
             cfg_problems = workflow_analysis.workflow_config_problems(
                 config, root=repo_root
             )
+            workflow_problems, shell_problems = {}, {}
             repo_workflows = workflow_analysis.discover_workflow_files(
-                repo_root, wf_prefixes
-            )
-            repo_shells = workflow_analysis.discover_shell_files(repo_root, sh_prefixes)
+                repo_root, wf_prefixes, problems=workflow_problems
+            ) + list(workflow_problems)
+            repo_shells = workflow_analysis.discover_shell_files(
+                repo_root, sh_prefixes, problems=shell_problems
+            ) + list(shell_problems)
             triggers = _workflow_config_triggers(
                 changes,
                 config,
@@ -2729,14 +2731,20 @@ def workflow_script_check_scopes(
             changed_wf = [
                 p
                 for p in paths
-                if workflow_analysis.is_workflow_file(p, wf_prefixes)
-                and (repo_root / p).is_file()
+                if (
+                    workflow_analysis.is_workflow_file(p, wf_prefixes)
+                    or p in workflow_problems
+                )
+                and p not in changes.deleted_paths
             ]
             changed_sh = [
                 p
                 for p in paths
-                if workflow_analysis.is_shell_file(p, sh_prefixes)
-                and (repo_root / p).is_file()
+                if (
+                    workflow_analysis.is_shell_file(p, sh_prefixes)
+                    or p in shell_problems
+                )
+                and p not in changes.deleted_paths
             ]
             al_cfg_changed = any(
                 workflow_analysis.is_workflow_config(p, wf_cfg.actionlint_config)
