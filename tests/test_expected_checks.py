@@ -1432,12 +1432,30 @@ def test_p1_1_authority_provenance_default_unverified_and_config_policy(repo):
             {"status": "complete", "consumer_completeness": "expected_domain_complete"}
         ),
         lambda p: p["expected_checks"].update({"authority_status": "verified"}),
+        lambda p: p["expected_checks"].update({"authority_status": None}),
+        lambda p: p["expected_checks"].pop("authority_status", None),
         lambda p: p["expected_checks"].update({"trusted_admission_status": "admitted"}),
     ):
         forged = json.loads(json.dumps(unproven_plan))
         mutate(forged)
         with pytest.raises(plan_contract.PlanError):
             plan_contract.validate(forged)
+
+    for mutate in (
+        lambda exp: exp.update({"authority_status": None}),
+        lambda exp: exp.pop("authority_status", None),
+        lambda exp: exp.update({"authority_status": "verified"}),
+    ):
+        tampered_exp = json.loads(json.dumps(uexp))
+        mutate(tampered_exp)
+        with pytest.raises(expected_checks.ExpectedError):
+            expected_checks.validate_projection(
+                tampered_exp,
+                unproven_plan["git"],
+                unproven_plan["check_scope"],
+                plan=unproven_plan,
+                root=path,
+            )
 
     # 2. Mismatched governed_rules digest fails validation.
     bad_gov = expected_checks.governed_domain_rules(

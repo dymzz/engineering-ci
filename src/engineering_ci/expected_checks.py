@@ -2928,7 +2928,7 @@ def validate_projection(
             "not_applicable",
         }:
             raise ExpectedError("effective_profile_phase_untrusted")
-        sel_cfg, _tach_graph, _all_tests = _selection_for_validation(plan)
+        sel_cfg, _tach_graph, _all_tests = _selection_for_validation(plan, root=root)
         authority_proven = _verify_profile_authority(
             profile,
             selection_rule=expected.get("selection_rule_ref"),
@@ -2939,7 +2939,7 @@ def validate_projection(
         if expected.get("trusted_admission_status", "not_evaluated") != "not_evaluated":
             raise ExpectedError("expected_trusted_admission_unproven")
         auth_status = expected.get("authority_status")
-        if auth_status not in {None, "verified", "unverified"}:
+        if auth_status not in {"verified", "unverified"}:
             raise ExpectedError("effective_profile_authority_untrusted")
         phase_status = expected.get("phase_status")
         if phase_status not in {None, "not_applicable", "unverified"}:

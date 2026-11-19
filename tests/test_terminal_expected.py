@@ -1346,3 +1346,258 @@ def test_terminal_and_phase_witness_do_not_erase_coexisting_domain_gaps(
         and gap.get("upstream_reason") == "effective_profile_domain_incomplete"
         for gap in binding["gaps"]
     )
+
+
+@pytest.mark.parametrize(
+    (
+        "authority_mode",
+        "self_claimed",
+        "expect_authorized",
+        "expect_status",
+        "expect_reason",
+    ),
+    [
+        (
+            "unverified",
+            False,
+            False,
+            "unverified",
+            "terminal_expected_upstream_partial",
+        ),
+        ("none", False, False, "unverified", "terminal_expected_upstream_partial"),
+        ("omitted", False, False, "unverified", "terminal_expected_upstream_partial"),
+        (
+            "forged_verified",
+            False,
+            False,
+            "unverified",
+            "terminal_projection_validation_expected_complete_unproven",
+        ),
+        (
+            "none",
+            True,
+            False,
+            "unverified",
+            "terminal_projection_validation_effective_profile_authority_untrusted",
+        ),
+        (
+            "forged_verified",
+            True,
+            False,
+            "rejected",
+            "terminal_projection_validation_expected_complete_unproven",
+        ),
+        ("verified", True, True, "bound", None),
+    ],
+)
+def test_live_expected_v2_authority_status_unverified_none_omitted_and_verified(
+    tmp_path,
+    authority_mode,
+    self_claimed,
+    expect_authorized,
+    expect_status,
+    expect_reason,
+):
+    """P1: missing/None/unverified B2 Authority never clears via Terminal/Phase witnesses."""
+    import subprocess
+
+    selection_fixture = ROOT / "tests/fixtures/selection-app"
+    if not selection_fixture.is_dir() or not FIXTURE.is_dir():
+        pytest.skip("fixtures unavailable")
+    path = tmp_path / "repo"
+    shutil.copytree(selection_fixture, path)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "terminal@example.invalid")
+    git("config", "user.name", "Terminal Test")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+
+    declared = [
+        "docs",
+        "forwarding",
+        "tach",
+        "vulture",
+        "weaver_terminal",
+        "whitespace",
+    ]
+    is_verified = authority_mode == "verified"
+    profile = expected_checks.build_effective_profile(
+        profile_ref={"name": "consumer.terminal", "version": "1.0.0"},
+        profile_revision=PROFILE_REVISION,
+        approval_source="governance-signed",
+        authority_verified=(is_verified or self_claimed),
+        effective_at="2026-11-17T00:00:00Z",
+        evaluated_at="2026-11-17T01:00:00Z",
+        context="worktree",
+        action="worktree",
+        target="HEAD",
+        phase=check_contract.POST_COMPLETION_PHASE,
+        declared_checks=declared,
+        required_obligations=[
+            {
+                "obligation_ref": "ob/term",
+                "kind": "check",
+                "check_names": ["weaver_terminal"],
+                "allow_inapplicable": True,
+            }
+        ],
+        advisory_checks=[],
+        allowed_inapplicability=[],
+        domain_complete=True,
+    )
+    if is_verified:
+        cfg = _attach_phase_profile_policy(path, profile)
+        git("add", "ci-selection.toml")
+        git("commit", "-q", "-m", "attach phase profile")
+    else:
+        cfg = selection.load_config(path / "ci-selection.toml")
+
+    base = git("rev-parse", "HEAD").strip()
+    (path / "docs/guide.md").write_text("# docs\n", encoding="utf-8")
+    changes = selection.changeset(path, base=base, mode="worktree")
+    chosen = selection.select(changes, cfg, root=path)
+    expected_plan = selection.plan(
+        chosen,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        effective_profile=profile,
+    )
+    parent = expected_plan["expected_checks"]
+    assert parent["status"] == "unknown"
+    assert parent["reason"] == "applicability_or_changeset_incomplete"
+    assert parent["definitions_status"] == "domain_complete"
+    assert parent["authority_status"] == ("verified" if is_verified else "unverified")
+
+    binder_parent = copy.deepcopy(parent)
+    binder_parent["profile_ref"] = copy.deepcopy(profile["profile_ref"])
+    binder_parent["profile_revision"] = profile["profile_revision"]
+    if authority_mode == "none":
+        binder_parent["authority_status"] = None
+    elif authority_mode == "omitted":
+        binder_parent.pop("authority_status", None)
+    elif authority_mode == "forged_verified":
+        binder_parent["authority_status"] = "verified"
+
+    entry = next(item for item in parent["checks"] if item["name"] == "weaver_terminal")
+    terminal_root = tmp_path / "terminal-src"
+    shutil.copytree(FIXTURE, terminal_root)
+    plan_content_id = selection.directory_content_id(terminal_root)
+    terminal_plan = selection.post_completion_plan(
+        root=terminal_root,
+        config_path=terminal_root / "ci-selection.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="controlled-42/1",
+        attempt=1,
+        result="success",
+        source_tree_id=plan_content_id,
+    )
+    run = completed_run(
+        subject=matching_run_subject(
+            entry,
+            binder_parent,
+            source_content_id=plan_content_id,
+        )
+    )
+    binding = te.bind_terminal_expected(
+        binder_parent,
+        plan=terminal_plan,
+        completed_run=run,
+        root=terminal_root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(binder_parent),
+        phase_witness_authority=accept,
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=path,
+    )
+    assert binding["subject_correlated"] is True
+    assert binding["phase_witness_verified"] is True
+    assert binding["authorized"] is expect_authorized
+    assert binding["status"] == expect_status
+    if expect_authorized:
+        assert binding["projection_verification"] == "validate_projection"
+        assert binding["reasons"] == []
+        assert binding["gaps"] == []
+    else:
+        assert (
+            "terminal_expected_terminal_applicability_unknown" not in binding["reasons"]
+        )
+        assert "terminal_expected_phase_unverified" not in binding["reasons"]
+        assert expect_reason in binding["reasons"]
+        if authority_mode in {"none", "omitted"}:
+            assert (
+                "terminal_projection_validation_effective_profile_authority_untrusted"
+                in binding["reasons"]
+            )
+            assert "terminal_expected_upstream_partial" in binding["reasons"]
+            assert any(
+                gap.get("reason") == "upstream_partial"
+                and gap.get("upstream_reason")
+                == "effective_profile_authority_unverified"
+                for gap in binding["gaps"]
+            )
+
+
+@pytest.mark.parametrize("authority_value", [None, "omitted", "unverified", "other"])
+def test_structural_parent_missing_null_or_unverified_authority_stays_blocked(
+    tmp_path, authority_value
+):
+    """P1: without live validate_projection, missing/None/unverified authority never clears."""
+    root, plan = make_plan(tmp_path)
+    expected = make_parent_expected(status="unknown")
+    expected["reason"] = "applicability_or_changeset_incomplete"
+    expected["consumer_completeness"] = "unknown"
+    expected["checks"][0]["applicability"] = {
+        "status": "unknown",
+        "reason": "check_scope_missing",
+    }
+    expected["checks"][0]["expected_check_ref"] = expected_checks.entry_identity(
+        {
+            key: value
+            for key, value in expected["checks"][0].items()
+            if key != "expected_check_ref"
+        }
+    )
+    expected["expected_set_ref"] = expected_checks.set_identity(
+        expected["checks"], schema_version=expected_checks.EXPECTED_V2
+    )
+    if authority_value == "omitted":
+        expected.pop("authority_status", None)
+    else:
+        expected["authority_status"] = authority_value
+
+    binding = te.bind_terminal_expected(
+        expected,
+        plan=plan,
+        completed_run=completed_run(
+            subject=matching_run_subject(expected["checks"][0], expected)
+        ),
+        root=root,
+        expected_authority=accept,
+        completed_run_authority=accept_run_with_subject,
+        phase_witness=sealed_phase_witness(expected),
+        phase_witness_authority=accept,
+        projection_proof=self_attested_projection_proof(expected),
+    )
+    assert binding["authorized"] is False
+    assert binding["status"] == "unverified"
+    assert "terminal_expected_terminal_applicability_unknown" not in binding["reasons"]
+    assert "terminal_expected_phase_unverified" not in binding["reasons"]
+    assert "terminal_expected_upstream_partial" in binding["reasons"]
+    assert any(
+        gap.get("reason") == "upstream_partial"
+        and gap.get("upstream_reason") == "effective_profile_authority_unverified"
+        for gap in binding["gaps"]
+    )

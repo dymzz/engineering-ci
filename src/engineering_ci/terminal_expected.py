@@ -264,22 +264,48 @@ def _parent_domain_is_closed(parent):
     return True
 
 
-def _parent_has_coexisting_partial_gap(parent):
-    """True when parent carries non-Phase / non-Terminal partial incompleteness."""
+def _parent_authority_is_verified(parent):
+    """True only when parent Expected v2 affirmatively proves verified Authority."""
     if not isinstance(parent, dict):
-        return True
-    if parent.get("missing"):
-        return True
-    if parent.get("authority_status") == "unverified":
-        return True
+        return False
+    if parent.get("schema_version", expected_checks.EXPECTED_VERSION) != (
+        expected_checks.EXPECTED_V2
+    ):
+        return False
+    if parent.get("projection_source") != "effective_profile":
+        return False
+    if parent.get("authority_status") != "verified":
+        return False
+    effective_profile = parent.get("effective_profile")
+    return not (
+        isinstance(effective_profile, dict)
+        and effective_profile.get("authority_verified") is not True
+    )
+
+
+def _coexisting_partial_upstream_reasons(parent):
+    """Return independent non-Phase / non-Terminal partial causes on parent."""
+    if not isinstance(parent, dict):
+        return ["terminal_expected_parent_invalid"]
+    reasons = []
     if not _parent_domain_is_closed(parent):
-        return True
+        reasons.append("effective_profile_domain_incomplete")
+    if not _parent_authority_is_verified(parent):
+        reasons.append("effective_profile_authority_unverified")
+    if parent.get("missing"):
+        reasons.append("expected_domain_or_definitions_incomplete")
     for check in parent.get("checks") or []:
         if not isinstance(check, dict) or _is_terminal_check(check):
             continue
         if check.get("rule_status") in {"unknown", "unresolved"}:
-            return True
-    return False
+            reasons.append("check_rule_unresolved")
+            break
+    return reasons
+
+
+def _parent_has_coexisting_partial_gap(parent):
+    """True when parent carries non-Phase / non-Terminal partial incompleteness."""
+    return bool(_coexisting_partial_upstream_reasons(parent))
 
 
 def _partial_is_phase_only(parent):
@@ -356,6 +382,19 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
     gaps = []
     status = parent.get("status")
     upstream_reason = parent.get("reason")
+    coexisting_partial = _coexisting_partial_upstream_reasons(parent)
+
+    def _record_partial_gap(partial_reason):
+        if "terminal_expected_upstream_partial" not in reasons:
+            reasons.append("terminal_expected_upstream_partial")
+        gaps.append(
+            {
+                "kind": "expected_scope",
+                "ref": scope_id,
+                "reason": "upstream_partial",
+                "upstream_reason": partial_reason,
+            }
+        )
 
     if status == "unknown":
         has_terminal_unknown = (
@@ -387,36 +426,20 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                     "upstream_reason": upstream_reason,
                 }
             )
-        if _parent_has_coexisting_partial_gap(parent):
-            reasons.append("terminal_expected_upstream_partial")
-            gaps.append(
-                {
-                    "kind": "expected_scope",
-                    "ref": scope_id,
-                    "reason": "upstream_partial",
-                    "upstream_reason": (
-                        "effective_profile_domain_incomplete"
-                        if not _parent_domain_is_closed(parent)
-                        else upstream_reason
-                    ),
-                }
-            )
+        for partial_reason in coexisting_partial:
+            _record_partial_gap(partial_reason)
     elif status == "partial":
         if not _partial_is_phase_only(parent):
-            reasons.append("terminal_expected_upstream_partial")
-            gaps.append(
-                {
-                    "kind": "expected_scope",
-                    "ref": scope_id,
-                    "reason": "upstream_partial",
-                    "upstream_reason": (
-                        "effective_profile_domain_incomplete"
-                        if not _parent_domain_is_closed(parent)
-                        and upstream_reason in _PHASE_ONLY_PARTIAL_REASONS
-                        else upstream_reason
-                    ),
-                }
-            )
+            recorded_reasons = list(coexisting_partial)
+            if (
+                upstream_reason not in _PHASE_ONLY_PARTIAL_REASONS
+                and upstream_reason not in recorded_reasons
+            ):
+                recorded_reasons.insert(0, upstream_reason)
+            if not recorded_reasons:
+                recorded_reasons.append(upstream_reason)
+            for partial_reason in recorded_reasons:
+                _record_partial_gap(partial_reason)
     elif status not in {"complete", None}:
         reasons.append("terminal_expected_scope_incomplete")
         gaps.append(
@@ -426,20 +449,9 @@ def _attribute_upstream_incompleteness(parent, entry, *, scope_id):
                 "reason": f"scope_status_{status}",
             }
         )
-    elif _parent_has_coexisting_partial_gap(parent):
-        reasons.append("terminal_expected_upstream_partial")
-        gaps.append(
-            {
-                "kind": "expected_scope",
-                "ref": scope_id,
-                "reason": "upstream_partial",
-                "upstream_reason": (
-                    "effective_profile_domain_incomplete"
-                    if not _parent_domain_is_closed(parent)
-                    else upstream_reason
-                ),
-            }
-        )
+    else:
+        for partial_reason in coexisting_partial:
+            _record_partial_gap(partial_reason)
 
     if parent.get("conflicts"):
         reasons.append("terminal_expected_upstream_conflicts")
