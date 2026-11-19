@@ -35,6 +35,7 @@ entry.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -1654,12 +1655,6 @@ def project_t1_t2_gate_admission(
     projection["admission_ref"] = _digest(projection)
     return projection
 
-
-def _origin_trace(value, code):
-    return {
-        key: _text(value.get(key), code)
-        for key in ("run_ref", "attempt_ref", "runner_ref", "result_origin")
-    }
 
 
 def _validate_admission(admission, scope, checks):
