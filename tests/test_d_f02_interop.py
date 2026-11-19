@@ -440,14 +440,15 @@ def _issued_projection(source, universe, expected, receipt, authorization=None):
     )
 
 
-def _issued_consumer(source, universe, authorization=None):
-    """Confirm the issuer refs independently of the projection's own digest."""
+def _issued_consumer(source, universe, issued_ref, authorization=None):
+    """Confirm the exact projection the issuer recorded, not the request hash."""
     authorization = authorization or _df02_current_authorization()
     source_ref = admission._digest(source)
 
     def verify(request):
         if (
-            request.get("source_admission_ref") != source_ref
+            request.get("issued_gate_projection_ref") != issued_ref
+            or request.get("source_admission_ref") != source_ref
             or request.get("issuer_ref") != JOB_ISSUER_REF
             or request.get("verification_ref") != SOURCE_RECEIPT_REF
             or request["current_evaluation"]["universe_ref"] != universe["universe_ref"]
@@ -456,6 +457,7 @@ def _issued_consumer(source, universe, authorization=None):
             return None
         return {
             "status": "verified",
+            "issued_gate_projection_ref": issued_ref,
             "source_admission_ref": source_ref,
             "current_authorization_ref": request["current_authorization_ref"],
             "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
@@ -499,7 +501,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
         universe,
         expected,
         receipt,
-        authority=_issued_consumer(source, universe),
+        authority=_issued_consumer(source, universe, projection["admission_ref"]),
     )
     assert outcome["status"] == "passed"
     proof = outcome["inputs"]["admission_source_verification"]
@@ -519,7 +521,9 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
         )
 
     def wrong_issuer(request):
-        decision = _issued_consumer(source, universe)(request)
+        decision = _issued_consumer(source, universe, projection["admission_ref"])(
+            request
+        )
         if isinstance(decision, dict):
             decision["issuer_ref"] = {
                 "name": "other-issuer",
@@ -547,7 +551,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
             universe,
             expected,
             receipt,
-            authority=_issued_consumer(source, universe),
+            authority=_issued_consumer(source, universe, projection["admission_ref"]),
         )
 
     tampered = copy.deepcopy(projection)
@@ -567,7 +571,30 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
             universe,
             expected,
             receipt,
-            authority=_issued_consumer(source, universe),
+            authority=_issued_consumer(source, universe, projection["admission_ref"]),
+        )
+
+    rehashed = copy.deepcopy(projection)
+    rehashed["remaining_work"] = [
+        *rehashed["remaining_work"],
+        {
+            "scope_id": expected["scope_id"],
+            "expected_check_ref": entry["expected_check_ref"],
+            "reason": "rehashed",
+        },
+    ]
+    rehashed.pop("admission_ref")
+    rehashed["admission_ref"] = admission._digest(rehashed)
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_source_authority_unverified",
+    ):
+        _consume(
+            rehashed,
+            universe,
+            expected,
+            receipt,
+            authority=_issued_consumer(source, universe, projection["admission_ref"]),
         )
 
     moved = copy.deepcopy(universe)
@@ -585,7 +612,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
             moved,
             expected,
             receipt,
-            authority=_issued_consumer(source, moved),
+            authority=_issued_consumer(source, moved, projection["admission_ref"]),
             authorization={
                 **_df02_current_authorization(),
                 "target_ref": "refs/heads/other",
@@ -600,7 +627,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
             universe,
             expected,
             receipt,
-            authority=_issued_consumer(source, universe),
+            authority=_issued_consumer(source, universe, projection["admission_ref"]),
             authorization={
                 **_df02_current_authorization(),
                 "candidate_digest": "sha256:" + "8" * 64,
@@ -612,7 +639,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
         universe,
         expected,
         receipt,
-        authority=_issued_consumer(source, universe),
+        authority=_issued_consumer(source, universe, projection["admission_ref"]),
         evaluated_at="2026-11-16T03:00:00Z",
     )
     assert later["status"] == "passed"
@@ -623,7 +650,7 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
         universe,
         expected,
         receipt,
-        authority=_issued_consumer(source, universe),
+        authority=_issued_consumer(source, universe, projection["admission_ref"]),
         evaluated_at="2026-11-15T00:00:00Z",
     )
     assert early["status"] == "blocked"
@@ -644,7 +671,90 @@ def test_issued_gate_projection_is_consumed_without_inline_reprojection():
         expired_universe,
         expected,
         receipt,
-        authority=_issued_consumer(source, expired_universe),
+        authority=_issued_consumer(
+            source, expired_universe, expired_projection["admission_ref"]
+        ),
     )
     assert expired["status"] == "blocked"
     assert any("profile_expired" in reason for reason in expired["blocked_reasons"])
+
+
+def test_issued_t2_projection_keeps_unknown_receipt_closure():
+    profile = make_profile()
+    entry = make_entry()
+    expected = make_projection(profile, [entry])
+    universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    pre_proof = pre_proof_for(entry, source=SOURCE)
+    pre_proof["scope_id"] = expected["scope_id"]
+    old_results = [native_result(entry), native_result(entry, result_instance="run-2")]
+    candidate = historical_candidate(entry, old_results)
+    authorization = {
+        "phase": "pre_publish",
+        "action": "publish",
+        "target_ref": "refs/heads/main",
+        "candidate_digest": None,
+        "profile_sha256": expected["effective_profile"]["profile_sha256"],
+    }
+    t2 = admit_historical(
+        expected,
+        pre_proof,
+        candidate,
+        current_authorization=authorization,
+    )
+    current = {
+        "phase": "pre_publish",
+        "action": "publish",
+        "target_ref": "refs/heads/main",
+        "candidate_digest": None,
+    }
+    projection = _issued_projection(t2, universe, expected, None, current)
+    assert projection["all_observations_reconciled"] is None
+    assert projection["source_verification"]["source_receipt_ref"] is None
+    outcome = _consume(
+        projection,
+        universe,
+        expected,
+        None,
+        authority=_issued_consumer(t2, universe, projection["admission_ref"], current),
+        authorization=current,
+    )
+    assert outcome["status"] == "passed"
+    assert outcome["inputs"]["admission_observations_reconciled"] is None
+    assert outcome["inputs"]["receipt_ref"] is None
+    row = check_row(outcome, entry)
+    assert (
+        row["evidence_refs"]
+        == t2["entries"][0]["equivalence_basis"]["selected_result_ids"]
+    )
+    assert set(row["admission"]["nonselected_origins"])
+    required_assessment.validate_assessment(outcome)
+
+    altered = copy.deepcopy(projection)
+    altered["remaining_work"] = [
+        *altered["remaining_work"],
+        {
+            "scope_id": expected["scope_id"],
+            "expected_check_ref": entry["expected_check_ref"],
+            "reason": "altered-t2",
+        },
+    ]
+    altered.pop("admission_ref")
+    altered["admission_ref"] = admission._digest(altered)
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_source_authority_unverified",
+    ):
+        _consume(
+            altered,
+            universe,
+            expected,
+            None,
+            authority=_issued_consumer(
+                t2, universe, projection["admission_ref"], current
+            ),
+            authorization=current,
+        )

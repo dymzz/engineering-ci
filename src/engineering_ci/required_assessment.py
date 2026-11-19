@@ -1449,6 +1449,7 @@ def _accept_issued_gate_projection(
     if (
         not isinstance(decision, dict)
         or decision.get("status") != "verified"
+        or decision.get("issued_gate_projection_ref") != stored_ref
         or decision.get("source_admission_ref") != proof.get("source_admission_ref")
         or decision.get("current_authorization_ref") != authorization_ref
         or decision.get("issuer_ref") != proof.get("issuer_ref")
@@ -1549,8 +1550,25 @@ def _validate_admission(admission, scope, checks, *, projected=False, issued=Fal
             value.get("reason"), "admission_remaining_invalid"
         )
 
-    reconciled = admission.get("all_observations_reconciled", False)
-    if not projected or reconciled is not None:
+    if "all_observations_reconciled" in admission:
+        reconciled = admission.get("all_observations_reconciled")
+    else:
+        reconciled = None if projected or issued else False
+    source_kind = (
+        source_verification.get("source_kind")
+        if isinstance(source_verification, dict)
+        else None
+    )
+    if source_kind == evidence_admission.HISTORICAL_REUSE_KIND:
+        # T2 has no current-run Receipt. None means unknown, not a false closure.
+        if reconciled is not None:
+            raise RequiredAssessmentError("admission_observations_invalid")
+    elif source_kind == evidence_admission.ADMISSION_KIND:
+        if reconciled is not None:
+            _flag(reconciled, "admission_observations_invalid")
+    elif not projected or reconciled is not None:
+        if reconciled is None:
+            reconciled = False
         _flag(reconciled, "admission_invalid")
     return {
         "admission_ref": stored_ref,

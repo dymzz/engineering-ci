@@ -1879,14 +1879,16 @@ def _gate_origin(value, code):
     status = value.get("status")
     if status is not None:
         origin["native_status"] = _text(status, code)
-    reason = value.get("reason")
-    if reason is not None:
-        origin["reason"] = _text(reason, code)
-    exit_code = value.get("exit_code")
+    reasons = value.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        origin["reasons"] = [_text(item, code) for item in reasons]
+    elif value.get("reason") is not None:
+        origin["reason"] = _text(value.get("reason"), code)
+    exit_code = value.get("native_exit_code", value.get("exit_code"))
     if exit_code is not None:
         if type(exit_code) is not int:
             raise AdmissionError(code)
-        origin["exit_code"] = exit_code
+        origin["native_exit_code"] = exit_code
     return origin
 
 
