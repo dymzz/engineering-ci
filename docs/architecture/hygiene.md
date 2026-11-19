@@ -148,11 +148,13 @@ whose Blob is unreadable. A substantive module that becomes a pure re-export
 produces an advisory. The Host also uses the existing Plan Source checks for
 Index, Commit and Push snapshots before running the selected checks.
 
-For an immutable snapshot, applicability uses the resolved deletion list or
-exact membership in the target Tree. A failed Tree listing leaves the input
-selected for native diagnostics. Forwarding verifies the target Blob can be
-read and records `current_content_unavailable` when the lookup fails, including
-when the checkout still contains the file. A proven deletion is inapplicable.
+For an immutable snapshot, applicability uses exact membership in the target
+Tree. Deletion claims are checked against the actual worktree or target Tree
+before a path is removed from Forwarding scope.
+A failed Tree listing leaves the input selected for native diagnostics.
+Forwarding verifies the target Blob can be read and records
+`current_content_unavailable` when the lookup fails, including when the
+checkout still contains the file. A proven deletion is inapplicable.
 
 Forwarding compares regular Python files. It retains the historical and
 selected Git modes and checks each current path component before reading.

@@ -8,7 +8,7 @@ and `data` dependency edges enforced consistently before affected consumers run.
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 PLAN_KIND = "engineering-ci-selection-plan"
 PLAN_VERSION = 2
@@ -319,6 +319,16 @@ def _validate_consumer_fields(value, chosen, git):
         raise PlanError("index_source_identity_mismatch")
     if "changed_paths" in git and not _string_list(git["changed_paths"]):
         raise PlanError("git_invalid")
+    if "deleted_paths" in git:
+        deleted = git["deleted_paths"]
+        if not _string_list(deleted) or any(
+            "\\" in path
+            or "\0" in path
+            or PureWindowsPath(path).drive
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            for path in deleted
+        ):
+            raise PlanError("git_deleted_paths_invalid")
     content = git.get("content_binding")
     if content is not None and (
         not isinstance(content, dict)

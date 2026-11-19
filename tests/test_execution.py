@@ -468,6 +468,79 @@ def _forwarding_failure_receipt(
     return entry
 
 
+@pytest.mark.parametrize("snapshot", ["worktree", "commit"])
+def test_forwarding_does_not_trust_forged_deleted_path(repo, snapshot):
+    from test_reconciliation import make_observation, make_routing
+
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    selection_path = path / "ci-selection.toml"
+    selection_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\n', encoding="utf-8"
+    )
+    config_path = path / "ci-hygiene.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["forwarding"]\n', encoding="utf-8"
+    )
+    if snapshot == "commit":
+        run(path, "add", "-A")
+        run(path, "commit", "-qm", "record target")
+    changes = selection.changeset(path, base=base, mode=snapshot)
+    value = selection.plan(
+        selection.Selection(changes, (), ("hygiene",), "selected", False),
+        config=selection.load_config(selection_path),
+        config_path=selection_path,
+        root=path,
+    )
+    expected = value["expected_checks"]
+    expected_entry = next(
+        item for item in expected["checks"] if item["name"] == "forwarding"
+    )
+    assert expected_entry["applicability"]["status"] == "selected"
+    value["git"]["deleted_paths"] = [relative]
+    execution.validate_plan(value)
+    claimed = dataclasses.replace(
+        changes, deleted_paths=(relative,), deleted_paths_resolved=True
+    )
+    scope = hygiene.check_applicability(
+        claimed, hygiene.load_config(config_path), root=path
+    )
+    assert scope["forwarding"]["status"] == "selected"
+    assert scope["forwarding"]["inputs"] == [relative]
+
+    resolution = execution.build_source_resolution(value, "forwarding", root=path)
+    report = execution.execute(value, root=path)
+    check = next(item for item in report["checks"] if item["name"] == "forwarding")
+    assert check["status"] == "advisory", check
+    native = check["native_result"]
+    check_contract.validate_result(native)
+    assert native["status"] == "advisory"
+    assert native["native_exit_code"] is None
+    assert native["source_ref"] == resolution["source_ref"]
+    observation = make_observation(
+        "forwarding-host", (), runner_ref=native["runner_ref"], report=report
+    )
+    del observation["native_results"]
+    routing = make_routing(
+        expected_entry, jobs=("forwarding-host",), runner_ref=native["runner_ref"]
+    )
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[routing],
+        resolutions=[resolution],
+        observations=[observation],
+    )
+    reconciliation.validate_receipt(receipt)
+    entry = next(item for item in receipt["entries"] if item["name"] == "forwarding")
+    assert entry["binding_status"] == "insufficient"
+    assert entry["reason"] == "result_not_passed"
+    assert entry["native_satisfaction"]["status"] == "unsatisfied"
+    assert entry["observed_results"][0]["status"] == "advisory"
+    assert entry["selected_result_ids"] == []
+    assert entry["observed_result_ids"] == [native["result_id"]]
+
+
 def test_forwarding_commit_resolves_real_deleted_path_from_tree(repo):
     path, base = repo
     relative = "src/pkg/sub.py"
@@ -517,6 +590,11 @@ def test_forwarding_commit_target_object_unavailable_remains_applicable(repo, mi
         row for row in plan_value["check_scope"] if row["name"] == "forwarding"
     )
     assert selected["status"] == "selected"
+    # A forged deletion must not hide an unavailable target Tree or Blob.
+    plan_value["git"]["deleted_paths"] = [relative]
+    changes = dataclasses.replace(
+        changes, deleted_paths=(relative,), deleted_paths_resolved=True
+    )
     tree = changes.execution_tree
     blob = _tree_blob(path, tree, relative)
     oid = blob if missing == "blob" else tree

@@ -495,9 +495,6 @@ def _is_dependency_input(path):
 
 
 def _deleted_paths(changes, paths, root):
-    explicit = getattr(changes, "deleted_paths", ())
-    if explicit or getattr(changes, "deleted_paths_resolved", False):
-        return {str(item).replace("\\", "/") for item in explicit}
     snapshot = getattr(changes, "snapshot", "worktree")
     if snapshot == "worktree":
         return {path for path in paths if not source_file_present(root, path)}
