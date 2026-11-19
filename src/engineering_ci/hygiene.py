@@ -13,6 +13,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -652,12 +653,54 @@ def _whitespace(changes, root, runner, paths=None):
     )
 
 
-def _forwarding_base_tree(changes, root, runner):
-    """Resolve a readable base tree before treating path absence as a new file.
+_GIT_OID = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
-    ``git show`` + ``git cat-file -e`` both failing for ``base:path`` is ambiguous
-    until the base Commit/Tree is proven present in the Git ODB. Only then is a
-    missing path a legitimate addition rather than an unavailable Source/ODB.
+
+def _git_failed(reason, result):
+    return _result(
+        "forwarding",
+        "failed",
+        exit_code=result.returncode,
+        reason=reason,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        executable="git",
+    )
+
+
+def _parse_ls_tree_z(stdout):
+    """Map each full path from ``git ls-tree -r -z`` to ``(type, oid)``.
+
+    Membership is the tree record itself. A path is absent only when no record
+    matches that path exactly; a listed blob oid can still be missing from the
+    object database.
+    """
+    entries = {}
+    for record in stdout.split("\0"):
+        if not record:
+            continue
+        meta, separator, path = record.partition("\t")
+        if not separator or not path:
+            raise ValueError("ls-tree record missing path")
+        pieces = meta.split(" ")
+        if len(pieces) != 3:
+            raise ValueError("ls-tree record missing mode/type/oid")
+        _mode, kind, oid = pieces
+        if kind not in {"blob", "commit"} or not _GIT_OID.fullmatch(oid):
+            raise ValueError("ls-tree record is not a blob or gitlink")
+        if path in entries:
+            raise ValueError("ls-tree duplicate path")
+        entries[path] = (kind, oid)
+    return entries
+
+
+def _forwarding_base_tree(changes, root, runner):
+    """Resolve a commit-typed base to a readable tree.
+
+    ``^{tree}`` also succeeds for a raw tree object. Forwarding accepts that
+    object only after ``^{commit}`` proves the base peels to a commit, which is
+    the direct ``hygiene.run`` contract when no upstream commit identity is
+    supplied. A missing object stays ``base_odb_unavailable``.
     """
     base = getattr(changes, "base_commit", None)
     if not isinstance(base, str) or not base.strip():
@@ -668,41 +711,39 @@ def _forwarding_base_tree(changes, root, runner):
             executable="git",
         )
     base = base.strip()
-    present = runner(["git", "cat-file", "-e", base], root)
-    if present.returncode != 0:
-        return None, _result(
-            "forwarding",
-            "failed",
-            exit_code=present.returncode,
-            reason="base_odb_unavailable",
-            stdout=present.stdout,
-            stderr=present.stderr,
-            executable="git",
-        )
-    tree = runner(["git", "rev-parse", "--verify", f"{base}^{{tree}}"], root)
+    peeled = runner(["git", "rev-parse", "--verify", f"{base}^{{commit}}"], root)
+    commit_id = peeled.stdout.strip() if peeled.returncode == 0 else ""
+    if peeled.returncode != 0 or not _GIT_OID.fullmatch(commit_id):
+        present = runner(["git", "cat-file", "-e", base], root)
+        if present.returncode != 0:
+            return None, _git_failed("base_odb_unavailable", present)
+        return None, _git_failed("base_not_commit", peeled)
+    tree = runner(["git", "rev-parse", "--verify", f"{commit_id}^{{tree}}"], root)
     tree_id = tree.stdout.strip() if tree.returncode == 0 else ""
-    if tree.returncode != 0 or not tree_id:
-        return None, _result(
-            "forwarding",
-            "failed",
-            exit_code=tree.returncode,
-            reason="base_tree_unavailable",
-            stdout=tree.stdout,
-            stderr=tree.stderr,
-            executable="git",
-        )
+    if tree.returncode != 0 or not _GIT_OID.fullmatch(tree_id):
+        return None, _git_failed("base_tree_unavailable", tree)
     readable = runner(["git", "cat-file", "-e", tree_id], root)
     if readable.returncode != 0:
+        return None, _git_failed("base_tree_unavailable", readable)
+    return tree_id, None
+
+
+def _forwarding_tree_entries(tree_id, root, runner):
+    listed = runner(["git", "ls-tree", "-r", "-z", tree_id], root)
+    if listed.returncode != 0:
+        return None, _git_failed("base_tree_unavailable", listed)
+    try:
+        return _parse_ls_tree_z(listed.stdout), None
+    except ValueError:
         return None, _result(
             "forwarding",
             "failed",
-            exit_code=readable.returncode,
+            exit_code=listed.returncode,
             reason="base_tree_unavailable",
-            stdout=readable.stdout,
-            stderr=readable.stderr,
+            stdout=listed.stdout,
+            stderr=listed.stderr or "malformed git ls-tree listing",
             executable="git",
         )
-    return tree_id, None
 
 
 def _forwarding(paths, changes, root, runner, config):
@@ -718,24 +759,32 @@ def _forwarding(paths, changes, root, runner, config):
     base_tree, base_failure = _forwarding_base_tree(changes, root, runner)
     if base_failure is not None:
         return base_failure
+    entries, tree_failure = _forwarding_tree_entries(base_tree, root, runner)
+    if tree_failure is not None:
+        return tree_failure
     findings = []
     for path in candidates:
-        # Path membership is decided against the proven base tree; only that
-        # proof distinguishes a new path from an unavailable Git Source/ODB.
-        exists = runner(["git", "cat-file", "-e", f"{base_tree}:{path}"], root)
-        if exists.returncode != 0:
+        # Exact tree-path membership. ``cat-file -e <tree>:<path>`` also fails
+        # when the entry exists and its blob is missing, so that exit is not
+        # proof of a new module.
+        entry = entries.get(path)
+        if entry is None:
             continue
-        previous = runner(["git", "show", f"{base_tree}:{path}"], root)
-        if previous.returncode:
+        kind, oid = entry
+        if kind != "blob":
             return _result(
                 "forwarding",
                 "failed",
-                exit_code=previous.returncode,
                 reason="base_content_unavailable",
-                stdout=previous.stdout,
-                stderr=previous.stderr,
+                stderr=f"{path}: tree entry is not a blob",
                 executable="git",
             )
+        present = runner(["git", "cat-file", "-e", oid], root)
+        if present.returncode != 0:
+            return _git_failed("base_content_unavailable", present)
+        previous = runner(["git", "cat-file", "-p", oid], root)
+        if previous.returncode != 0:
+            return _git_failed("base_content_unavailable", previous)
         try:
             previous_is_forwarder = _pure_reexport(previous.stdout)
             current_is_forwarder = _pure_reexport(

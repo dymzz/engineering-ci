@@ -2,7 +2,9 @@
 
 import dataclasses
 import json
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -295,12 +297,12 @@ def test_forwarding_unreadable_base_tree_fails(repo):
 def test_forwarding_base_content_unavailable_propagates_native_failure(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
-    real_tree = run(path, "rev-parse", f"{base}^{{tree}}").strip()
+    blob = run(path, "rev-parse", f"{base}:src/pkg/sub.py").strip()
 
     def runner(argv, root, data=None):
-        if argv[:2] == ["git", "show"] and argv[2].startswith(f"{real_tree}:"):
+        if argv == ["git", "cat-file", "-p", blob]:
             return subprocess.CompletedProcess(
-                argv, 128, "", "fatal: path exists but content unreadable"
+                argv, 128, "", "fatal: blob exists but content unreadable"
             )
         if argv[0] == "git":
             return hygiene._run(argv, root, data)
@@ -314,6 +316,146 @@ def test_forwarding_base_content_unavailable_propagates_native_failure(repo):
     assert check["reason"] == "base_content_unavailable"
     assert check["exit_code"] == 128
     assert "unreadable" in check["stderr"]
+    assert check["executable"] == "git"
+
+
+def _ls_tree_blob(repo, tree, path):
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", tree],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    for record in listing.split("\0"):
+        if not record:
+            continue
+        meta, _separator, name = record.partition("\t")
+        if name != path:
+            continue
+        _mode, kind, oid = meta.split(" ")
+        assert kind == "blob"
+        return oid
+    raise AssertionError(path)
+
+
+def _drop_loose_blob(repo, oid):
+    loose = Path(repo) / ".git" / "objects" / oid[:2] / oid[2:]
+    assert loose.is_file()
+    os.chmod(loose, stat.S_IWRITE)
+    loose.unlink()
+    missing = subprocess.run(
+        ["git", "cat-file", "-e", oid],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert missing.returncode != 0
+
+
+def test_forwarding_tree_entry_with_missing_blob_is_not_a_new_path(repo):
+    """Commit, tree and ls-tree entry stay; deleting the blob must not pass.
+
+    ``git cat-file -e <tree>:<path>`` exits 1 and ``git show`` exits 128 in this
+    state. Those exits do not mean the path is absent.
+    """
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    tree = run(path, "rev-parse", "--verify", f"{base}^{{commit}}^{{tree}}").strip()
+    blob = _ls_tree_blob(path, tree, relative)
+    _drop_loose_blob(path, blob)
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", tree, "--", relative],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    assert listed.split("\t", 1)[1].split("\0", 1)[0] == relative
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{tree}:{relative}"],
+        cwd=path,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    shown = subprocess.run(
+        ["git", "show", f"{tree}:{relative}"],
+        cwd=path,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert exists.returncode == 1
+    assert shown.returncode == 128
+    result = hygiene.run(
+        changes(path, base),
+        config(path, ("forwarding",)),
+        root=path,
+        runner=FakeRunner(),
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["status"] == "failed"
+    assert check["reason"] == "base_content_unavailable"
+    assert check["exit_code"] == exists.returncode
+    assert check["executable"] == "git"
+    assert result["git"]["base_commit"] == base
+
+
+def test_forwarding_tree_oid_base_is_not_a_commit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+    tree = run(path, "rev-parse", "--verify", f"{base}^{{tree}}").strip()
+    peeled = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{tree}^{{commit}}"],
+        cwd=path,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert peeled.returncode != 0
+    value = dataclasses.replace(changes(path, base), base_commit=tree)
+    result = hygiene.run(
+        value, config(path, ("forwarding",)), root=path, runner=FakeRunner()
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["reason"] == "base_not_commit"
+    assert check["exit_code"] == peeled.returncode
+    assert check["executable"] == "git"
+    assert result["git"]["base_commit"] == tree
+
+
+def test_forwarding_tree_query_failure_is_explicit(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("from .other import VALUE\n", encoding="utf-8")
+
+    def runner(argv, root, data=None):
+        if argv[:4] == ["git", "ls-tree", "-r", "-z"]:
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: not a tree object"
+            )
+        if argv[0] == "git":
+            return hygiene._run(argv, root, data)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = hygiene.run(
+        changes(path, base), config(path, ("forwarding",)), root=path, runner=runner
+    )
+    check = by_name(result)["forwarding"]
+    assert result["status"] == "failed"
+    assert check["reason"] == "base_tree_unavailable"
+    assert check["exit_code"] == 128
+    assert "not a tree object" in check["stderr"]
     assert check["executable"] == "git"
 
 

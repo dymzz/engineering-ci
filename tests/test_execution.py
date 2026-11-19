@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -283,6 +284,105 @@ def test_forwarding_parse_failure_stays_failed_and_valid(repo):
     assert check["reason"] == "module_unparsable"
     assert check["check_contract"]["status"] == "valid"
     assert check["native_result"]["status"] == "failed"
+
+
+def _tree_blob(repo, tree, relative):
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", tree],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    for record in listing.split("\0"):
+        if not record:
+            continue
+        meta, _separator, name = record.partition("\t")
+        if name == relative:
+            _mode, kind, oid = meta.split(" ")
+            assert kind == "blob"
+            return oid
+    raise AssertionError(relative)
+
+
+def test_forwarding_execution_compares_committed_blob_bytes(repo):
+    """Plan base_commit echo is not the bytes the forwarding check compared."""
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    commit = run(path, "rev-parse", "--verify", f"{base}^{{commit}}").strip()
+    tree = run(path, "rev-parse", "--verify", f"{commit}^{{tree}}").strip()
+    oid = _tree_blob(path, tree, relative)
+    expected = subprocess.run(
+        ["git", "cat-file", "-p", oid],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    assert expected == "VALUE = 1\n"
+    assert (path / relative).read_text(encoding="utf-8") != expected
+    seen = {}
+
+    def runner(argv, root, data=None):
+        result = hygiene._run(argv, root, data)
+        if argv == ["git", "ls-tree", "-r", "-z", tree]:
+            seen["tree"] = argv[4]
+        if argv == ["git", "cat-file", "-p", oid]:
+            seen["bytes"] = result.stdout
+        return result
+
+    value = forwarding_plan(base)
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
+    )
+    check = report["checks"][0]
+    assert value["git"]["base_commit"] == base
+    assert seen["tree"] == tree
+    assert seen["bytes"] == expected
+    assert check["native_result"]["status"] == "advisory"
+    assert any(relative in item for item in check["findings"])
+
+
+def test_forwarding_execution_missing_blob_is_source_failure(repo):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    tree = run(path, "rev-parse", "--verify", f"{base}^{{commit}}^{{tree}}").strip()
+    oid = _tree_blob(path, tree, relative)
+    loose = path / ".git" / "objects" / oid[:2] / oid[2:]
+    assert loose.is_file()
+    os.chmod(loose, stat.S_IWRITE)
+    loose.unlink()
+    missing = subprocess.run(
+        ["git", "cat-file", "-e", oid],
+        cwd=path,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert missing.returncode != 0
+    value = forwarding_plan(base)
+    report = execution.execute(
+        value,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    check = report["checks"][0]
+    # The plan still echoes base_commit. The failure is the blob read, not that field.
+    assert value["git"]["base_commit"] == base
+    assert report["status"] == "failed"
+    assert report["reason"] == "checks_failed"
+    assert check["status"] == "failed"
+    assert check["reason"] == "base_content_unavailable"
+    assert check["exit_code"] == missing.returncode
 
 
 def test_config_failure_is_not_started_and_has_no_native_result(repo):
