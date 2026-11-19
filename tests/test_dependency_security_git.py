@@ -426,7 +426,8 @@ def test_uv_01223_lock_keeps_the_registry_sibling():
     assert expected == {("idna", "3.10")}
     assert len(idna) == 1 and idna[0]["source"]["registry"].startswith("https://")
     assert selected[0]["commit"] == policy["idna"]["commit"]
-    assert hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest() == (
+    recorded = (root / "uv.lock").read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(recorded).hexdigest() == (
         "5eb6c0c02c960d11c7f4c252f38ed398721ce177d4ec4be18cc2501946a4a0a0"
     )
 
