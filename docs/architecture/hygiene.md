@@ -140,6 +140,62 @@ Report/Artifact bundle. #66 target Source verification, #63 admission and
 implemented in `engineering_ci.sources`; its Knowledge configuration is
 verified separately.
 
+### Forwarding across Host and Dagger (NEW-053)
+
+The Host path reads the Base Commit and Tree in the checkout's Git context.
+It uses exact Tree membership to distinguish a new path from an existing path
+whose Blob is unreadable. A substantive module that becomes a pure re-export
+produces an advisory. The Host also uses the existing Plan Source checks for
+Index, Commit and Push snapshots before running the selected checks.
+
+The [Host evidence in PR #132](https://github.com/dymzz/engineering-ci/pull/132#pullrequestreview-5969567897)
+includes an actual Plan with a missing historical Blob. The Execution Report
+retains the failed Internal Result. #66-C Reconciliation records the same
+Result and its Report, Run and Attempt references with an `insufficient`
+binding and `unsatisfied` Expected satisfaction. The fixture
+supplies the routing and Job Receipt attribution. Forwarding has no tool
+requirements, so the local tool-requirement summary can be `not_applicable`
+alongside an actual failed Result. The Expected-scoped Receipt carries the
+satisfaction decision. Trusted Admission remains [#63](https://github.com/dymzz/engineering-ci/issues/63).
+
+The `worktree_root` observation comes from Git's worktree and empty-prefix
+probe. Plan/Expected Source authority comes from the upstream Source binding.
+`base_object_oid` identifies the Git object. `base_compared_text_sha256` covers
+the text passed to the parser after decoding and re-encoding. Use the object
+OID for raw Git Blob identity and the text digest for the comparison input.
+
+In Dagger, `plan_execution(plan, source)` accepts the Plan and the current
+Directory. Its `source_handoff` records the original Plan Git identity and the
+exported Directory's content identity. The Git runner can query objects
+available inside that view. The #66-P0 Host proof records a Baseline reference
+from the Commit and Tree, and `git_commit_present` checks presence in the Host
+ODB. The Dagger entry still needs a producer to supply historical Blob bytes.
+The existing [#86 Data edges](selection.md#native-plan-result-object-86-b-delivery--v2-dependency-closure)
+can deliver verified artifacts when a producer exists. The repository currently
+has no Forwarding producer that delivers authorized historical inputs bound
+to the current Candidate, Directory and Baseline. The export fixture without a
+matching Git context demonstrates the `not_executed`/blocked behavior.
+
+The positive Dagger path remains tracked under [#66-P0 Source](https://github.com/dymzz/engineering-ci/issues/66)
+and [#86 A.1 Git ODB and Source handoff](https://github.com/dymzz/engineering-ci/issues/86).
+
+- [#66-P0](https://github.com/dymzz/engineering-ci/issues/66) owns the Source
+  producer in the authorized Git context. Its handoff must bind the selected
+  scope and target Candidate/Directory to the Baseline Commit and Tree, the
+  exact selected paths, and verified Blob identities and bytes or proven
+  absence. The consumer needs the historical input itself and its provenance.
+- [#86 A.1](https://github.com/dymzz/engineering-ci/issues/86) owns delivery of
+  that prerequisite to the Forwarding consumer through the existing Plan
+  Source/Data handoff. Verify the received payload and its scope, Candidate,
+  Directory and Baseline bindings before comparison. The selected Forwarding
+  check remains blocked when the required history is unavailable or mismatched.
+- To accept the positive path, run a Dagger Plan with an authorized historical
+  input and a current file whose Base was substantive. Verify the advisory,
+  exact historical Blob and current-file identities, and the Native Result
+  carried through Report/Artifact and #66-C. Also verify that an already
+  forwarding Base can pass, and that a mismatched Candidate, Directory or
+  Baseline cannot supply historical input for a passing Check.
+
 ## Verification
 
 `tests/test_hygiene.py` covers each check with a fake native runner while Git
