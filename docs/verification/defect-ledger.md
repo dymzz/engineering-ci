@@ -8,6 +8,91 @@
 
 > **2026-11-18 表述纠偏说明：** 保留历史发现 ID、源码/测试链接及既有证据；原 NEW 候选的预估 P1/P2 统一改为“优先级待评估”。代码观察、合同违例、生产可达性和修复方式分开裁决；历史判断仍可由 PR #129 的先前提交追溯。
 
+## 0A. 逐项责任与实施追踪（2026-11-19）
+
+本节只维护**稳定缺陷 ID → 单一主责 Issue → 现存代码 PR/待启动状态**，实施验收和修法在各原 Issue/代码 PR；调查结论留在本台账。单一主责不排除跨模块原子实现与 Producer/Consumer 协作；各项仍以其原证据等级为准。这里的已分发表示任务已写入 Issue，**不表示缺陷已确诊、代码已验收、真实生产覆盖已闭合**。每项由实际变更对应的代码 PR 独立验收，不用数量强制划分 PR。
+
+### 0A.1 逐 NEW 编号与责任
+
+| 缺陷 ID | 主责 Issue | 当前实施入口 / 状态 |
+| --- | --- | --- |
+| [NEW-001](#new-001) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #134](https://github.com/dymzz/engineering-ci/pull/134)（Open/Draft，待独立验收） |
+| [NEW-002](#new-002) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-003](#new-003) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-004](#new-004) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-005](#new-005) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-006](#new-006) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-007](#new-007) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-008](#new-008) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-009](#new-009) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-010](#new-010) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-011](#new-011) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-012](#new-012) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136)（Open/Draft，待独立验收） |
+| [NEW-013](#new-013) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-014](#new-014) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-015](#new-015) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-016](#new-016) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-017](#new-017) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-018](#new-018) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-019](#new-019) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-020](#new-020) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-021](#new-021) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-022](#new-022) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-023](#new-023) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-024](#new-024) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-025](#new-025) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-026](#new-026) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-027](#new-027) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #134](https://github.com/dymzz/engineering-ci/pull/134)（Open/Draft，待独立验收） |
+| [NEW-028](#new-028) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-029](#new-029) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-030](#new-030) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-031](#new-031) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-032](#new-032) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-033](#new-033) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-034](#new-034) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-035](#new-035) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-036](#new-036) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-037](#new-037) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-038](#new-038) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-039](#new-039) | [#86](https://github.com/dymzz/engineering-ci/issues/86) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-040](#new-040) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-041](#new-041) | [#74](https://github.com/dymzz/engineering-ci/issues/74) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-042](#new-042) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-043](#new-043) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-044](#new-044) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-045](#new-045) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-046](#new-046) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-047](#new-047) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-048](#new-048) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-049](#new-049) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-050](#new-050) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-051](#new-051) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-052](#new-052) | [#87](https://github.com/dymzz/engineering-ci/issues/87) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-053](#new-053) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | [PR #132](https://github.com/dymzz/engineering-ci/pull/132)（Open/Draft，待独立验收） |
+| [NEW-054](#new-054) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136)（Open/Draft，待独立验收） |
+| [NEW-055](#new-055) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #135](https://github.com/dymzz/engineering-ci/pull/135)（Open/Draft，待独立验收） |
+| [NEW-056](#new-056) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137)（Open/Draft，待独立验收） |
+| [NEW-057](#new-057) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137)（Open/Draft，待独立验收） |
+| [NEW-058](#new-058) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-059](#new-059) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-060](#new-060) | [#130](https://github.com/dymzz/engineering-ci/issues/130) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+| [NEW-061](#new-061) | [#131](https://github.com/dymzz/engineering-ci/issues/131) | 已分发定向验证/必要修复；具体 PR 待成立及实施 |
+
+**NEW-055 重叠实现**：除 PR #135 外，现有 [PR #133](https://github.com/dymzz/engineering-ci/pull/133) 也在实现同一源文件与 Source 准入目标。两者应保留独有正反例和有效代码，收敛为一个经审阅的交付，不把两个 Draft 计作两项独立完成。**NEW-053** 的 PR #132 与 #66 最近的 Source/ODB 合同修订为在途工作，并非已验收。**NEW-056/057** 的 PR #137 在途，#51 已有最新受控范围与 Review。
+
+### 0A.2 已复现合同差异与跨责任交接
+
+| ID | 修订主责 | 在途实施与必备验收 |
+| --- | --- | --- |
+| D-F01 | [#52](https://github.com/dymzz/engineering-ci/issues/52) 终态 Binder，[#66](https://github.com/dymzz/engineering-ci/issues/66) B2 Producer 协作 | [PR #124](https://github.com/dymzz/engineering-ci/pull/124) 为未合并候选；修复并存 Open Domain + 合法 Phase Witness 错误清除的授权位，对照真正闭域正例。当前证据不证明 main 生产授权已绕过 |
+| D-F02 | [#61](https://github.com/dymzz/engineering-ci/issues/61) R1 Consumer，[#63](https://github.com/dymzz/engineering-ci/issues/63) T1/T2 原生 Producer 协作 | 已复现 T1/T2→R1 phase/kind 不兼容；在原接口修复有权 Gate Projection，需新建/挂接实际代码 PR 并验证合法 PASS、失败/冲突/历史复用 |
+
+### 0A.3 其他发现的处置类别
+
+**HYP-001～003** 继续分别由 #61-R1、#61/#63/#66-C、#66 Hook/#52 的真实语义裁决，不在证据不充分时启动虚构的 Bug 修复。**D-G01～05** 是实际生产授权链/Source/发布缺证的调查与交付差距；由 #125 跨链核验原有 #66/#52/#63/#61 与实际 Provider，不假装已经变成已复现代码 Bug。审计可持续发现新根因，但既有原始合同与真实原生证据优先复用。
+
+---
+
 ## 0. 缺陷编号、时间轴、依赖和影响
 
 ### 0.1 统一编号与记录时序
