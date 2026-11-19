@@ -47,11 +47,10 @@ still belong to the authorized order.
 | `overdue` | After `due_at`; missing/failed post evidence cannot verify. Overdue + PASS still needs `due_window_authority` to accept late evidence (`late_evidence_accepted=true`) |
 | `not_applicable` | Derived only from a **passed** post Assessment whose rows are all `not_applicable` (or empty). A blocked post cannot claim N/A |
 
-Temporal checks reject a future trigger, a post Assessment after envelope
-evaluation, progression with post before prior, and — for
-`run_completed` / `publication_completed` / `artifact_available` — a post
-Assessment that predates the claimed trigger event. `run_completed` must be
-explicit. Timestamps are UTC-aware (`datetime.UTC`).
+The trigger and both Assessments must be at or before envelope evaluation.
+For progression and current reevaluation, the post Assessment must be at or
+after both the prior Assessment and the trigger. Reevaluation references a
+prior Assessment that exists at trigger time. Timestamps are normalized to UTC.
 
 ## Triggers
 
@@ -59,6 +58,15 @@ explicit. Timestamps are UTC-aware (`datetime.UTC`).
 `authorized_reevaluation`, bound to `run_id` / `run_attempt` / `target`
 (optional `artifact_digest`). An incomplete Run (`run_completed=false`) must
 not force the original Workflow to wait on its own Terminal.
+
+`authorized_reevaluation` may carry `historical_as_of`. For a historical
+reevaluation, the post Assessment's evaluation time must equal this requested
+instant, which must be at or before the trigger. The trigger authority must
+authorize the exact event, Phase, and Assessment references and return
+`historical_reevaluation_accepted=true` with its accepted result. The phase
+authority receives the same event and Assessment times. A verified historical
+envelope applies to the recorded instant. The due window is evaluated at the
+envelope's own `evaluated_at`.
 
 ## Lifecycle coverage
 
@@ -69,6 +77,9 @@ A later #61 integration must consume the versioned full Phase/Obligation set
 and per-phase R1 Assessments for the same Candidate before a lawful
 `lifecycle_all_phases_passed=true` is reachable. This pair API must not delete,
 rename, or invent a parallel policy source for that field.
+
+The envelope carries `contract_sample=true` if either Assessment or the caller
+marks the input as a contract sample. Sample envelopes cannot be `verified`.
 
 ## Disposition
 
