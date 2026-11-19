@@ -792,7 +792,10 @@ def test_forwarding_selected_link_checks_target_source(
     report = execution.execute(value, root=path)
     check = next(item for item in report["checks"] if item["name"] == "forwarding")
     if target_kind == "internal":
-        assert report["status"] == "passed", report
+        # The changed selection configuration also selects an unwired test
+        # entry; the Forwarding Native Result remains independently observable.
+        assert report["status"] == "blocked", report
+        assert report["reason"] == "required_checks_not_executed"
         assert check["status"] == "advisory"
         native = check["native_result"]
         check_contract.validate_result(native)

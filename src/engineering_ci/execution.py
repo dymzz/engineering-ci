@@ -142,6 +142,59 @@ def _rebased_consumer_plan(plan, source_root):
     return {**plan, "inputs": new_inputs}
 
 
+def _consumer_view_binding_matches(binding, source_root, view_root, actual):
+    """Allow only the absolute-link rewrite performed when copying a Source."""
+    paths = binding.get("paths")
+    if not isinstance(paths, dict):
+        return False
+    source_root = Path(source_root).resolve()
+    view_root = Path(view_root).resolve()
+    if selection.worktree_content_binding(source_root, paths) != binding:
+        return False
+    for key in ("algorithm", "paths", "unverified_paths"):
+        if actual.get(key) != binding.get(key):
+            return False
+    planned_links = binding.get("link_bindings") or {}
+    actual_links = actual.get("link_bindings") or {}
+    if planned_links.keys() != actual_links.keys():
+        return False
+    for path, planned in planned_links.items():
+        observed = actual_links[path]
+        if planned.get("target_path") != observed.get("target_path"):
+            return False
+        planned_components = planned.get("components", [])
+        observed_components = observed.get("components", [])
+        if len(planned_components) != len(observed_components):
+            return False
+        for before, after in zip(planned_components, observed_components, strict=True):
+            component = before.get("path")
+            if component != after.get("path"):
+                return False
+            if before.get("sha256") == after.get("sha256"):
+                continue
+            try:
+                source_target = os.readlink(source_root / component)
+                view_target = os.readlink(view_root / component)
+                target = Path(os.path.normpath(source_target))
+                if not target.is_absolute() or not target.is_relative_to(source_root):
+                    return False
+                expected = os.path.relpath(
+                    view_root / target.relative_to(source_root),
+                    (view_root / component).parent,
+                )
+                if (
+                    hashlib.sha256(os.fsencode(source_target)).hexdigest()
+                    != before.get("sha256")
+                    or hashlib.sha256(os.fsencode(view_target)).hexdigest()
+                    != after.get("sha256")
+                    or os.fsencode(view_target) != os.fsencode(expected)
+                ):
+                    return False
+            except (OSError, TypeError, ValueError):
+                return False
+    return True
+
+
 def _stored_rule_path(config_path, root):
     resolved = Path(config_path).resolve()
     resolved_root = Path(root).resolve()
@@ -1095,6 +1148,7 @@ def _run_workflow_script_checks(
     shared_cache=None,
     admitted_external_targets=None,
     workflow_authority=None,
+    consumer_source_root=None,
 ):
     wanted = [item for item in selected if item.get("name") in _WORKFLOW_SCRIPT_CHECKS]
     omitted_entries = (
@@ -1162,12 +1216,13 @@ def _run_workflow_script_checks(
     binding = plan["git"].get("content_binding")
 
     def binding_current():
-        return (
-            not isinstance(binding, dict)
-            or not binding.get("digest")
-            or (
-                selection.worktree_content_binding(root, binding.get("paths") or ())
-                == binding
+        if not isinstance(binding, dict) or not binding.get("digest"):
+            return True
+        actual = selection.worktree_content_binding(root, binding.get("paths") or ())
+        return actual == binding or (
+            consumer_source_root is not None
+            and _consumer_view_binding_matches(
+                binding, consumer_source_root, root, actual
             )
         )
 
@@ -4442,6 +4497,7 @@ def run_host_check(
             shared_cache=shared_cache,
             admitted_external_targets=admitted_external_targets,
             workflow_authority=workflow_authority,
+            consumer_source_root=_consumer_source_root,
         )
         raw = results or [
             {

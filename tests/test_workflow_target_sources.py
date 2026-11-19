@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from test_reconciliation import make_observation, make_routing
@@ -773,6 +775,7 @@ def test_consumer_view_rebases_internal_absolute_symlinks_with_overlay(tmp_path,
             spec,
             root=view,
             artifact_paths=(generated,),
+            _consumer_source_root=root,
         )
         assert result["status"] == "passed", (result.get("reason"), result)
         inputs = {entry["path"]: entry["sha256"] for entry in result["target_sources"]}
@@ -783,6 +786,62 @@ def test_consumer_view_rebases_internal_absolute_symlinks_with_overlay(tmp_path,
             generated: hashlib.sha256(content).hexdigest(),
         }
         assert not (root / generated).exists()
+        (root / alias).unlink()
+        _symlink(root / alias, "original.sh")
+        stale = execution.run_host_check(
+            execution._rebased_consumer_plan(plan, root),
+            spec,
+            root=view,
+            artifact_paths=(generated,),
+            _consumer_source_root=root,
+        )
+        assert stale["status"] == "not_executed"
+        assert stale["reason"] == "workflow_target_plan_digest_mismatch"
+
+
+def test_consumer_view_binding_requires_the_exact_internal_link_rewrite(
+    tmp_path, monkeypatch
+):
+    source, view = tmp_path / "source", tmp_path / "view"
+    source.mkdir()
+    view.mkdir()
+    alias = "scripts/alias.sh"
+    source_target = str(source / "scripts/original.sh")
+    view_target = "original.sh"
+
+    def link_binding(target):
+        return {
+            "components": [
+                {
+                    "path": alias,
+                    "sha256": hashlib.sha256(os.fsencode(target)).hexdigest(),
+                }
+            ],
+            "target_path": "scripts/original.sh",
+        }
+
+    planned = {
+        "algorithm": "sha256-paths",
+        "digest": "original",
+        "paths": {alias: "file-digest"},
+        "unverified_paths": [alias],
+        "link_bindings": {alias: link_binding(source_target)},
+    }
+    actual = {
+        **planned,
+        "digest": "rebased",
+        "link_bindings": {alias: link_binding(view_target)},
+    }
+    targets = {source / alias: source_target, view / alias: view_target}
+    monkeypatch.setattr(selection, "worktree_content_binding", lambda *_: planned)
+    monkeypatch.setattr(os, "readlink", lambda path: targets[Path(path)])
+    assert execution._consumer_view_binding_matches(planned, source, view, actual)
+
+    targets[view / alias] = "different.sh"
+    changed = {**actual, "link_bindings": {alias: link_binding("different.sh")}}
+    assert not execution._consumer_view_binding_matches(planned, source, view, changed)
+    monkeypatch.setattr(selection, "worktree_content_binding", lambda *_: changed)
+    assert not execution._consumer_view_binding_matches(planned, source, view, actual)
 
 
 def test_directory_scan_guard_reports_resolved_bytes_and_blocks_escape(tmp_path):
