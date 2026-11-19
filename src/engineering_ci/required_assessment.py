@@ -1383,7 +1383,81 @@ def _adjudication_entry(value, *, scope_id, expected_refs):
     }
 
 
-def _validate_admission(admission, scope, checks, *, projected=False):
+def _projection_evaluation(universe):
+    """Evaluation bytes shared by #63 issuance and #61 consumption."""
+    evaluation = dict(universe["evaluation"])
+    evaluated = evaluation["evaluated_at"]
+    if hasattr(evaluated, "isoformat"):
+        evaluation["evaluated_at"] = evaluated.isoformat()
+    evaluation["universe_ref"] = universe["universe_ref"]
+    evaluation["authority_ref"] = universe["authority"]["source_ref"]
+    return evaluation
+
+
+def _accept_issued_gate_projection(
+    admission, scope, universe, current_authorization, source_authority
+):
+    """Consume a Gate Projection that #63 already issued.
+
+    The projection digest is necessary but not sufficient. The consumer
+    recomputes the current authorization ref and requires the original issuer
+    to confirm the stored source, issuer and verification identities.
+    """
+    proof = admission.get("source_verification")
+    if not isinstance(proof, dict) or proof.get("status") != "verified":
+        raise RequiredAssessmentError("admission_source_authority_missing")
+    if not callable(source_authority):
+        raise RequiredAssessmentError("admission_source_authority_missing")
+    stored_ref = _internal_ref(admission.get("admission_ref"), "admission_ref_invalid")
+    payload = {key: value for key, value in admission.items() if key != "admission_ref"}
+    if _digest(payload) != stored_ref:
+        raise RequiredAssessmentError("admission_ref_mismatch")
+    if (
+        proof.get("scope_id") != scope["scope_id"]
+        or proof.get("expected_set_ref") != scope["expected_set_ref"]
+        or proof.get("universe_ref") != universe["universe_ref"]
+    ):
+        raise RequiredAssessmentError("admission_scope_mismatch")
+    evaluation = _projection_evaluation(universe)
+    try:
+        _authorization, authorization_ref = (
+            evidence_admission.bind_projection_authorization(
+                current_authorization, evaluation
+            )
+        )
+    except evidence_admission.AdmissionError as error:
+        raise RequiredAssessmentError(
+            error.code, native_code=error.native_code
+        ) from None
+    if proof.get("current_authorization_ref") != authorization_ref:
+        raise RequiredAssessmentError("admission_authorization_mismatch")
+    context = {
+        "issued_gate_projection_ref": stored_ref,
+        "source_admission_ref": proof.get("source_admission_ref"),
+        "current_authorization_ref": authorization_ref,
+        "current_authorization": _authorization,
+        "current_evaluation": evaluation,
+        "issuer_ref": copy.deepcopy(proof.get("issuer_ref")),
+        "verification_ref": copy.deepcopy(proof.get("verification_ref")),
+        "scope_id": scope["scope_id"],
+        "expected_set_ref": scope["expected_set_ref"],
+    }
+    try:
+        decision = source_authority(context)
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        raise RequiredAssessmentError("admission_source_authority_error") from None
+    if (
+        not isinstance(decision, dict)
+        or decision.get("status") != "verified"
+        or decision.get("source_admission_ref") != proof.get("source_admission_ref")
+        or decision.get("current_authorization_ref") != authorization_ref
+        or decision.get("issuer_ref") != proof.get("issuer_ref")
+        or decision.get("verification_ref") != proof.get("verification_ref")
+    ):
+        raise RequiredAssessmentError("admission_source_authority_unverified")
+
+
+def _validate_admission(admission, scope, checks, *, projected=False, issued=False):
     """Validate the #63 trusted admission projection for this exact scope."""
     if not isinstance(admission, dict):
         raise RequiredAssessmentError("admission_invalid")
@@ -1408,8 +1482,10 @@ def _validate_admission(admission, scope, checks, *, projected=False):
     if _digest(payload) != stored_ref:
         raise RequiredAssessmentError("admission_ref_mismatch")
     source_verification = admission.get("source_verification")
-    if not projected and (
-        source_verification is not None or "source_admission_ref" in admission
+    if (
+        not projected
+        and not issued
+        and (source_verification is not None or "source_admission_ref" in admission)
     ):
         raise RequiredAssessmentError("admission_source_authority_missing")
 
@@ -2560,11 +2636,13 @@ def assess_required_obligations(
             evidence_admission.HISTORICAL_REUSE_KIND,
         }
     )
+    issued = (
+        isinstance(admission, dict)
+        and admission.get("phase") == ADMISSION_PHASE
+        and isinstance(admission.get("source_verification"), dict)
+    )
     if projected:
-        evaluation = dict(normalized_universe["evaluation"])
-        evaluation["evaluated_at"] = evaluation["evaluated_at"].isoformat()
-        evaluation["universe_ref"] = normalized_universe["universe_ref"]
-        evaluation["authority_ref"] = normalized_universe["authority"]["source_ref"]
+        evaluation = _projection_evaluation(normalized_universe)
         try:
             admission = evidence_admission.project_t1_t2_gate_admission(
                 admission,
@@ -2580,8 +2658,19 @@ def assess_required_obligations(
             raise RequiredAssessmentError(
                 error.code, native_code=error.native_code
             ) from None
+        issued = False
+    elif issued:
+        _accept_issued_gate_projection(
+            admission,
+            scope,
+            normalized_universe,
+            admission_current_authorization,
+            admission_source_authority,
+        )
     admission_facts = (
-        _validate_admission(admission, scope, checks, projected=projected)
+        _validate_admission(
+            admission, scope, checks, projected=projected, issued=issued
+        )
         if admission is not None
         else None
     )
@@ -2596,6 +2685,14 @@ def assess_required_obligations(
     authority_verified, authority_reasons = _authority_fact(
         normalized_universe, assessed_at
     )
+    if admission_facts is not None and admission_facts["source_verification"]:
+        authorized_at = normalized_universe["evaluation"]["evaluated_at"]
+        if assessed_at < authorized_at:
+            authority_reasons = [
+                *authority_reasons,
+                "admission_before_authorized_evaluation",
+            ]
+            authority_verified = False
     check_domain_verified, check_domain_reasons = _check_domain_fact(scope, checks)
     universe_verified, universe_reasons = _universe_fact(
         normalized_universe, cross_check_reasons

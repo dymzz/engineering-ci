@@ -1866,7 +1866,7 @@ def _projection_flag(value, code):
 
 
 def _gate_origin(value, code):
-    return {
+    origin = {
         **{
             key: _text(value.get(key), code)
             for key in ("run_ref", "attempt_ref", "runner_ref", "result_origin")
@@ -1874,6 +1874,54 @@ def _gate_origin(value, code):
         "report_ref": copy.deepcopy(value.get("report_ref")),
         "job_receipt_ref": value.get("job_receipt_ref"),
     }
+    # Keep native observation facts for diagnosis. They do not by themselves
+    # become a Required Gate failure; selected failures are recorded separately.
+    status = value.get("status")
+    if status is not None:
+        origin["native_status"] = _text(status, code)
+    reason = value.get("reason")
+    if reason is not None:
+        origin["reason"] = _text(reason, code)
+    exit_code = value.get("exit_code")
+    if exit_code is not None:
+        if type(exit_code) is not int:
+            raise AdmissionError(code)
+        origin["exit_code"] = exit_code
+    return origin
+
+
+def bind_projection_authorization(current_authorization, evaluation):
+    """Bind a requested evaluation to the normalized authorization identity.
+
+    The returned ref is the same value stored on an issued Gate Projection.
+    Callers compare it with that stored ref instead of trusting a self-hash.
+    """
+    code = "admission_projection_context_invalid"
+    if not isinstance(current_authorization, dict) or not isinstance(evaluation, dict):
+        raise AdmissionError(code)
+    authorization = {
+        "target_ref": _text(current_authorization.get("target_ref"), code),
+        "phase": _text(current_authorization.get("phase"), code),
+        "action": _text(current_authorization.get("action"), code),
+        "candidate_digest": _projection_optional_ref(
+            current_authorization.get("candidate_digest"), code
+        ),
+    }
+    refs = evaluation.get("refs")
+    candidate = evaluation.get("candidate") or {}
+    if (
+        authorization["phase"] != evaluation.get("phase")
+        or authorization["action"] != evaluation.get("action")
+        or not isinstance(refs, list)
+        or authorization["target_ref"] not in {item.get("target_ref") for item in refs}
+        or (
+            authorization["candidate_digest"] is not None
+            and authorization["candidate_digest"] not in candidate.values()
+        )
+    ):
+        raise AdmissionError("admission_authorization_mismatch")
+    ref = _digest({"authorization": authorization, "evaluation": evaluation})
+    return authorization, ref
 
 
 def _gate_source_verification(source, authorization, evaluation, verify):
@@ -1964,38 +2012,9 @@ def project_t1_t2_gate_admission(
     ):
         raise AdmissionError("admission_scope_mismatch")
 
-    if not isinstance(current_authorization, dict):
-        raise AdmissionError("admission_projection_context_invalid")
-    authorization = {
-        "target_ref": _text(
-            current_authorization.get("target_ref"),
-            "admission_projection_context_invalid",
-        ),
-        "phase": _text(
-            current_authorization.get("phase"),
-            "admission_projection_context_invalid",
-        ),
-        "action": _text(
-            current_authorization.get("action"),
-            "admission_projection_context_invalid",
-        ),
-        "candidate_digest": _projection_optional_ref(
-            current_authorization.get("candidate_digest"),
-            "admission_projection_context_invalid",
-        ),
-    }
-    if (
-        authorization["phase"] != evaluation["phase"]
-        or authorization["action"] != evaluation["action"]
-        or authorization["target_ref"]
-        not in {item["target_ref"] for item in evaluation["refs"]}
-        or (
-            authorization["candidate_digest"] is not None
-            and authorization["candidate_digest"]
-            not in (evaluation["candidate"] or {}).values()
-        )
-    ):
-        raise AdmissionError("admission_authorization_mismatch")
+    authorization, _authorization_ref = bind_projection_authorization(
+        current_authorization, evaluation
+    )
     profile_sha256 = (scope.get("effective_profile") or {}).get("profile_sha256")
     historical = kind == HISTORICAL_REUSE_KIND
     receipt_entries = {}
