@@ -698,7 +698,7 @@ def report_ref_for(report):
     }
 
 
-def native_result(entry, *, status="passed"):
+def native_result(entry, *, status="passed", result_instance="run-1"):
     definition = check_contract.definition_for(entry["name"])
     exit_code = 0 if status == "passed" else 1 if status == "failed" else None
     return check_contract.native_result(
@@ -706,7 +706,7 @@ def native_result(entry, *, status="passed"):
         source=copy.deepcopy(SOURCE),
         status=status,
         result_origin="host",
-        result_instance="run-1",
+        result_instance=result_instance,
         native_exit_code=exit_code,
         evidence={"stdout": ""},
         rule_ref=copy.deepcopy(RULE_TACH),
@@ -3628,6 +3628,29 @@ def _df02_current_authorization():
     }
 
 
+def df02_source_authority(source, universe, authorization=None):
+    expected_source = copy.deepcopy(source)
+    universe_ref = universe["universe_ref"]
+    current_authorization = authorization or _df02_current_authorization()
+
+    def verify(request):
+        if (
+            request["source_admission"] != expected_source
+            or request["current_evaluation"]["universe_ref"] != universe_ref
+            or request["current_authorization"] != current_authorization
+        ):
+            return None
+        return {
+            "status": "verified",
+            "source_admission_ref": request["source_admission_ref"],
+            "current_authorization_ref": request["current_authorization_ref"],
+            "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+            "verification_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+        }
+
+    return verify
+
+
 def _df02_t1_source(expected, entry, key, *, admitted=True):
     receipt, result_id = make_receipt(expected, entry)
     fact = {
@@ -3686,7 +3709,7 @@ def test_t1_t2_original_admission_projection_current_pass_and_reject():
         admission=original,
         receipt=receipt,
         admission_current_authorization=authorization,
-        admission_source_authority=lambda _facts: True,
+        admission_source_authority=df02_source_authority(original, universe),
         admission_contract_sample=True,
     )
     assert assessment["status"] == "passed"
@@ -3695,6 +3718,16 @@ def test_t1_t2_original_admission_projection_current_pass_and_reject():
     assert row["admission"]["source_kind"] == "current_run"
     assert assessment["inputs"]["contract_sample"] is True
     assert assessment["inputs"]["admission_ref"].startswith("sha256:")
+    verification = assessment["inputs"]["admission_source_verification"]
+    assert verification["source_admission_ref"] == required_assessment._digest(original)
+    assert verification["source_receipt_ref"] == receipt["receipt_ref"]
+    assert verification["issuer_ref"] == JOB_ISSUER_REF
+    assert verification["verification_ref"] == SOURCE_RECEIPT_REF
+    assert (
+        assessment["inputs"]["admission_observations_reconciled"]
+        is receipt["all_observations_reconciled"]
+    )
+    required_assessment.validate_assessment(assessment)
 
     with pytest.raises(
         required_assessment.RequiredAssessmentError,
@@ -3706,7 +3739,7 @@ def test_t1_t2_original_admission_projection_current_pass_and_reject():
             admission=original,
             receipt=receipt,
             admission_current_authorization=authorization,
-            admission_source_authority=lambda _facts: False,
+            admission_source_authority=lambda _facts: True,
         )
     with pytest.raises(
         required_assessment.RequiredAssessmentError,
@@ -3745,13 +3778,14 @@ def test_df02_t1_authenticated_native_failure_is_unmet_not_pass():
         admission=original,
         receipt=receipt,
         admission_current_authorization=_df02_current_authorization(),
-        admission_source_authority=lambda _facts: True,
+        admission_source_authority=df02_source_authority(original, universe),
         admission_contract_sample=True,
     )
     assert assessment["status"] == "blocked"
     row = check_row(assessment, entry)
     assert row["status"] == "unmet"
     assert "authenticated_native_failure" in row["reasons"]
+    assert row["admission"]["source_disposition"]["status"] == "unsatisfied"
 
 
 def test_df02_t2_historical_result_binding_and_no_current_receipt():
@@ -3767,6 +3801,7 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
         "check_satisfaction_status": "satisfied",
         "closed_source_scope_kind": "check_input_closure",
         "issuer_verified": True,
+        "selected_result_ids": [result_id, additional_id],
     }
     record = {
         "scope_id": expected["scope_id"],
@@ -3818,7 +3853,7 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
         expected,
         admission=original,
         admission_current_authorization=_df02_current_authorization(),
-        admission_source_authority=lambda _facts: True,
+        admission_source_authority=df02_source_authority(original, universe),
         admission_contract_sample=True,
     )
     assert result["status"] == "passed"
@@ -3842,4 +3877,3 @@ def test_df02_t2_historical_result_binding_and_no_current_receipt():
             admission_current_authorization=_df02_current_authorization(),
             admission_source_authority=lambda _facts: True,
         )
-

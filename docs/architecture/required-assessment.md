@@ -14,38 +14,34 @@ evaluate a later stage by itself (#61 R5; see
 obligations (#66-B2), admit trusted evidence or prove historical reuse (#63),
 or rebuild the structural Binding/Reconciliation receipt (#66-C).
 
-## D-F02 — #63 T1-a/T2 admission to #61 R1 Gate projection (Draft implementation)
+## D-F02 — #63 T1-a/T2 admission to #61 R1 Gate Projection
 
-The native T1-a `engineering-ci-evidence-admission` and T2
-`engineering-ci-historical-reuse-admission` objects are **not** R1
-`post_run_evidence_to_gate_projection` objects. T1-a is an authenticated
-current-run evidence assessment; T2 represents independently admitted
-historical equivalence under current authorization. Neither is by itself a
-Required Gate decision. Consequently simply changing the R1 kind/phase
-validator would lose the boundary between evidence admission and Required
-authorization.
+#63 owns Gate Projection issuance in
+`admission.project_t1_t2_gate_admission()`. It projects the original T1-a or
+T2 admission decision after an integration-supplied verifier authenticates the
+original admission and the current evaluation. The verifier receives the
+Expected scope and the current universe, action, target, phase, refs and
+candidate. It returns a verified decision with the matching source admission
+and current authorization refs, the issuer ref and a verification evidence
+ref. The integration resolves those refs against its authority records.
 
-`project_t1_t2_gate_admission(...)` accepts an original #63 result and
-requires an independent `source_authority` to validate that entire original
-object and its provenance, plus explicit current action/target/phase/candidate
-context and exact Expected scope. It converts already-authenticated native
-fact identities, T2 equivalence and current-run selected native failures into
-an R1-validated `ADMISSION_PHASE` projection and derives a new content
-reference. It keeps source and Gate identities distinct; a local digest alone
-is **not** evidence origin authentication. Native T1-a current-run coverage
-requires the #66-C structural Receipt, whereas T2 reuse does not fabricate a
-current-run Receipt or Run/Attempt. Missing source authority, scope mismatch,
-incomplete/untrusted evidence and unresolved work cannot become admission
-PASS by conversion.
+R1 consumes the projection and checks the admitted T1-a witness set against
+the complete selected set in the original #66-C Receipt. The legacy
+scalar-only Gate input uses Receipt membership. T2 uses the successful IDs
+selected by #63's native satisfaction evaluation and keeps the other
+historical origins as diagnostics. The Assessment preserves the original
+admission disposition, reasons, source and verifier refs, and the derived
+projection ref. T1-a reports the supplied Receipt's observation reconciliation
+fact. A missing Receipt or T2 reuse yields `null` for that fact. R1 judges
+Required coverage per instance.
 
-The R1 `assess_required_obligations` entry point can project an original
-T1-a/T2 object when passed `admission_source_authority`,
-`admission_current_authorization` and the original `admission`. Direct
-R1 Gate Projection input keeps the existing validation path unchanged. A
-controlled-contract test must use `admission_contract_sample=True`; it is
-**not** a claim that real native issuers, Current Authorization, GitHub Checks,
-or Release have been production-validated. The Source/Policy/Issuer proof and
-real T1/T2 API replay remain separate acceptance requirements.
+`assess_required_obligations()` accepts an original T1-a or T2 object with
+`admission_source_authority` and `admission_current_authorization`. It
+invokes the #63 issuer using the validated evaluation context. The new
+projection's verification fields are accepted through that call. Existing
+direct Gate inputs keep the legacy trust boundary. The integration tests
+invoke the #63 producer APIs with controlled authority decisions. Production
+issuer and current authorization verification remain integration work.
 
 
 ## Position
