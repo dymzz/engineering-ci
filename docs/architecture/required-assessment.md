@@ -14,6 +14,40 @@ evaluate a later stage by itself (#61 R5; see
 obligations (#66-B2), admit trusted evidence or prove historical reuse (#63),
 or rebuild the structural Binding/Reconciliation receipt (#66-C).
 
+## D-F02 — #63 T1-a/T2 admission to #61 R1 Gate projection (Draft implementation)
+
+The native T1-a `engineering-ci-evidence-admission` and T2
+`engineering-ci-historical-reuse-admission` objects are **not** R1
+`post_run_evidence_to_gate_projection` objects. T1-a is an authenticated
+current-run evidence assessment; T2 represents independently admitted
+historical equivalence under current authorization. Neither is by itself a
+Required Gate decision. Consequently simply changing the R1 kind/phase
+validator would lose the boundary between evidence admission and Required
+authorization.
+
+`project_t1_t2_gate_admission(...)` accepts an original #63 result and
+requires an independent `source_authority` to validate that entire original
+object and its provenance, plus explicit current action/target/phase/candidate
+context and exact Expected scope. It converts already-authenticated native
+fact identities, T2 equivalence and current-run selected native failures into
+an R1-validated `ADMISSION_PHASE` projection and derives a new content
+reference. It keeps source and Gate identities distinct; a local digest alone
+is **not** evidence origin authentication. Native T1-a current-run coverage
+requires the #66-C structural Receipt, whereas T2 reuse does not fabricate a
+current-run Receipt or Run/Attempt. Missing source authority, scope mismatch,
+incomplete/untrusted evidence and unresolved work cannot become admission
+PASS by conversion.
+
+The R1 `assess_required_obligations` entry point can project an original
+T1-a/T2 object when passed `admission_source_authority`,
+`admission_current_authorization` and the original `admission`. Direct
+R1 Gate Projection input keeps the existing validation path unchanged. A
+controlled-contract test must use `admission_contract_sample=True`; it is
+**not** a claim that real native issuers, Current Authorization, GitHub Checks,
+or Release have been production-validated. The Source/Policy/Issuer proof and
+real T1/T2 API replay remain separate acceptance requirements.
+
+
 ## Position
 
 ```text
