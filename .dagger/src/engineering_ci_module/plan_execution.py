@@ -476,7 +476,7 @@ def _make_hygiene_runner(
     """Delegate missing Lychee / read-only Git / pinned workflow calls to Dagger containers."""
     from engineering_ci import hygiene
 
-    _readonly_git = {"ls-files", "diff", "show", "cat-file"}
+    _readonly_git = {"ls-files", "diff", "show", "cat-file", "rev-parse", "ls-tree"}
     _workflow_tools = {"actionlint", "shellcheck", "zizmor"}
 
     def _is_pinned_workflow_uvx(argv_list):

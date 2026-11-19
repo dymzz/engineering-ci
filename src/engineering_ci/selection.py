@@ -28,6 +28,12 @@ from engineering_ci import (
     sources,
     workflow_analysis,
 )
+from engineering_ci._paths import (
+    SourcePathError,
+    read_internal_linked_source,
+    read_source_entry,
+    read_source_file,
+)
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -933,12 +939,10 @@ def _hidden_worktree_refusal(
         if tag != "S" and not tag.islower():
             continue
         blob = _git_bytes(root, "cat-file", "blob", f"{target_prefix}{path}", env=env)
-        file = Path(root) / path
-        content = None
-        if file.is_symlink():
-            content = os.fsencode(os.readlink(file))
-        elif file.resolve().is_relative_to(Path(root).resolve()) and file.is_file():
-            content = file.read_bytes()
+        try:
+            content, _ = read_source_entry(root, path)
+        except OSError:
+            content = None
         if blob.returncode != 0 or content != blob.stdout:
             return skip_reason if tag == "S" else assume_reason
     return None
@@ -1055,45 +1059,95 @@ def _tree_of(root, commit):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def worktree_content_binding(root, paths):
-    """Digest of selected paths' current worktree bytes; None means missing."""
+def worktree_content_binding(root, paths, *, require_files=False):
+    """Bind regular bytes, requiring each listed member for an immutable snapshot."""
     root = Path(root).resolve()
     entries = {}
+    unverified_paths = []
+    link_bindings = {}
     for path in sorted({str(item).replace("\\", "/") for item in paths}):
         try:
-            file = (root / path).resolve(strict=True)
-            if file.is_relative_to(root) and file.is_file():
-                entries[path] = hashlib.sha256(file.read_bytes()).hexdigest()
-                continue
-        except (OSError, RuntimeError):
-            pass
-        entries[path] = None
+            entries[path] = hashlib.sha256(read_source_file(root, path)).hexdigest()
+        except (FileNotFoundError, NotADirectoryError):
+            entries[path] = None
+            if require_files:
+                unverified_paths.append(path)
+        except SourcePathError as error:
+            entries[path] = None
+            unverified_paths.append(path)
+            if error.kind == "link":
+                try:
+                    raw = os.fsencode(os.readlink(root / error.component))
+                    link_bindings[path] = {
+                        "components": [
+                            {
+                                "path": error.component.as_posix(),
+                                "sha256": hashlib.sha256(raw).hexdigest(),
+                            }
+                        ]
+                    }
+                    if not require_files:
+                        content, target, links = read_internal_linked_source(root, path)
+                        entries[path] = hashlib.sha256(content).hexdigest()
+                        link_bindings[path] = {
+                            "components": [
+                                {
+                                    "path": component,
+                                    "sha256": hashlib.sha256(raw_target).hexdigest(),
+                                }
+                                for component, raw_target in links
+                            ],
+                            "target_path": target,
+                        }
+                except (OSError, RuntimeError):
+                    pass
+        except OSError:
+            entries[path] = None
+            unverified_paths.append(path)
+    payload = (
+        {"paths": entries, "unverified_paths": unverified_paths}
+        if unverified_paths
+        else entries
+    )
+    if link_bindings:
+        payload["link_bindings"] = link_bindings
     digest = hashlib.sha256(
-        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
+    binding = {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
+    if unverified_paths:
+        binding["unverified_paths"] = unverified_paths
+    if link_bindings:
+        binding["link_bindings"] = link_bindings
+    return binding
 
 
 def directory_content_id(root):
-    """Hash regular file bytes and symbolic link entries without following links."""
+    """Bind file bytes and literal link entries in a materialized Source."""
     root = Path(root).resolve()
     digest = hashlib.sha256()
-    for path in sorted(
-        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
-    ):
-        relative = path.relative_to(root).as_posix()
-        if relative == ".git" or relative.startswith(".git/"):
-            continue
-        if path.is_symlink():
-            digest.update(b"\0symlink\0")
-            data = os.fsencode(os.readlink(path))
-        else:
-            if not path.resolve().is_relative_to(root) or not path.is_file():
+    paths = []
+    for directory, subdirs, names in root.walk():
+        if directory == root:
+            subdirs[:] = [name for name in subdirs if name != ".git"]
+            names = [name for name in names if name != ".git"]
+        for name in subdirs[:]:
+            if (directory / name).is_junction():
+                subdirs.remove(name)
+                names.append(name)
+        paths.extend((directory / name).relative_to(root).as_posix() for name in names)
+    for relative in sorted(paths):
+        try:
+            content, link = read_source_entry(root, relative)
+        except SourcePathError as error:
+            if error.kind == "non_regular":
                 continue
-            data = path.read_bytes()
+            raise
+        if link:
+            digest.update(b"\0symlink\0")
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(data)
+        digest.update(content)
         digest.update(b"\0")
     return digest.hexdigest()
 

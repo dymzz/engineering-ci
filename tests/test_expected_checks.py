@@ -205,6 +205,12 @@ def test_expected_worktree_content_binding_changes_identity(repo):
         plan_contract.validate(tampered)
     assert raised.value.code == "expected_content_binding_mismatch"
 
+    tampered = json.loads(json.dumps(first))
+    tampered["git"]["content_binding"]["unverified_paths"] = ["docs/guide.md"]
+    with pytest.raises(plan_contract.PlanError) as raised:
+        plan_contract.validate(tampered)
+    assert raised.value.code == "expected_content_binding_mismatch"
+
 
 def test_expected_multi_ref_must_match_plan_references(repo):
     path, base = repo

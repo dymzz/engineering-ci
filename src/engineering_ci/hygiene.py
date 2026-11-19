@@ -13,11 +13,20 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+from ._paths import (
+    SourcePathError,
+    read_internal_linked_source,
+    read_source_file,
+    source_file_present,
+    stat_source_file,
+)
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-hygiene-report"
@@ -487,28 +496,23 @@ def _is_dependency_input(path):
 
 
 def _deleted_paths(changes, paths, root):
-    if getattr(changes, "deleted_paths_resolved", False):
-        return {
-            str(item).replace("\\", "/")
-            for item in getattr(changes, "deleted_paths", ())
-        }
-    explicit = getattr(changes, "deleted_paths", ())
-    if explicit:
-        return {str(item).replace("\\", "/") for item in explicit}
     snapshot = getattr(changes, "snapshot", "worktree")
     if snapshot == "worktree":
-        return {path for path in paths if not (root / path).exists()}
+        return {path for path in paths if not source_file_present(root, path)}
     target_tree = getattr(changes, "execution_tree", None) or getattr(
         changes, "tree", None
     )
-    if target_tree:
-        deleted = set()
-        for path in paths:
-            probe = _run(["git", "cat-file", "-e", f"{target_tree}:{path}"], root)
-            if probe.returncode != 0:
-                deleted.add(path)
-        return deleted
-    return {path for path in paths if not (root / path).exists()}
+    if (
+        not paths
+        or not isinstance(target_tree, str)
+        or not _GIT_OID.fullmatch(target_tree)
+    ):
+        return set()
+    entries, _ = _forwarding_tree_entries(
+        target_tree, lambda *args: _run(["git", *args], root), {}, side="current"
+    )
+    # An unresolved listing leaves the inputs selected for native diagnostics.
+    return set(paths).difference(entries) if entries is not None else set()
 
 
 def check_applicability(changes, config, *, root=None, full=False, code_prefixes=None):
@@ -652,46 +656,393 @@ def _whitespace(changes, root, runner, paths=None):
     )
 
 
-def _forwarding(paths, changes, root, runner, config):
-    candidates = [
-        path
-        for path in paths
-        if path.startswith(config.forwarding.source_prefix)
-        and path.endswith(".py")
-        and (root / path).is_file()
-    ]
+_GIT_OID = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
+_REGULAR_GIT_MODES = frozenset({"100644", "100755"})
+
+
+def _git_blob_oid(content, object_id_length):
+    header = f"blob {len(content)}\0".encode("ascii")
+    if object_id_length == 40:
+        return hashlib.sha1(header + content, usedforsecurity=False).hexdigest()
+    return hashlib.sha256(header + content).hexdigest()
+
+
+def _parse_ls_tree_z(stdout):
+    """Map each full path from ``git ls-tree -r -z`` to ``(mode, type, oid)``.
+
+    Membership is the tree record itself. A path is absent only when no record
+    matches that path exactly; a listed blob oid can still be missing from the
+    object database.
+    """
+    if stdout and not stdout.endswith("\0"):
+        raise ValueError("ls-tree listing is not NUL-terminated")
+    entries = {}
+    for record in stdout.split("\0"):
+        if not record:
+            continue
+        meta, separator, path = record.partition("\t")
+        if not separator or not path:
+            raise ValueError("ls-tree record missing path")
+        pieces = meta.split(" ")
+        if len(pieces) != 3:
+            raise ValueError("ls-tree record missing mode/type/oid")
+        mode, kind, oid = pieces
+        if kind not in {"blob", "commit"} or not _GIT_OID.fullmatch(oid):
+            raise ValueError("ls-tree record is not a blob or gitlink")
+        modes = _REGULAR_GIT_MODES | {"120000"} if kind == "blob" else {"160000"}
+        if mode not in modes:
+            raise ValueError("ls-tree mode does not match the entry type")
+        if path in entries:
+            raise ValueError("ls-tree duplicate path")
+        entries[path] = (mode, kind, oid)
+    return entries
+
+
+def _forwarding_base_tree(base, probe, observation):
+    """Resolve a commit-typed base to a readable tree.
+
+    ``^{tree}`` also succeeds for a raw tree object. Forwarding accepts that
+    object only after ``^{commit}`` proves the base peels to a commit, which is
+    the direct ``hygiene.run`` contract when no upstream commit identity is
+    supplied. A missing object stays ``base_odb_unavailable``.
+    """
+    peeled = probe("rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
+    commit_id = peeled.stdout.strip() if peeled.returncode == 0 else ""
+    if peeled.returncode != 0 or not _GIT_OID.fullmatch(commit_id):
+        present = probe("cat-file", "-e", "--", base)
+        if present.returncode != 0:
+            return None, "base_odb_unavailable"
+        return None, "base_not_commit"
+    observation["base_commit"] = commit_id
+    tree = probe("rev-parse", "--verify", "--end-of-options", f"{commit_id}^{{tree}}")
+    tree_id = tree.stdout.strip() if tree.returncode == 0 else ""
+    if tree.returncode != 0 or not _GIT_OID.fullmatch(tree_id):
+        return None, "base_tree_unavailable"
+    observation["base_tree"] = tree_id
+    return tree_id, None
+
+
+def _forwarding_tree_entries(tree_id, probe, observation, *, side="base"):
+    listed = probe("ls-tree", "-r", "-z", tree_id)
+    if listed.returncode != 0:
+        return None, f"{side}_tree_unavailable"
+    try:
+        return _parse_ls_tree_z(listed.stdout), None
+    except ValueError as error:
+        observation["tree_parse_error"] = str(error)
+        return None, f"{side}_tree_listing_invalid"
+
+
+def _forwarding_index_links(probe):
+    """Keep tracked symlink mode even on checkouts with core.symlinks=false."""
+    result = probe("ls-files", "--stage", "-z")
+    if result.returncode != 0 or (result.stdout and not result.stdout.endswith("\0")):
+        return None
+    links = {}
+    for record in result.stdout.split("\0")[:-1]:
+        meta, separator, path = record.partition("\t")
+        pieces = meta.split(" ")
+        if not separator or not path or len(pieces) != 3:
+            return None
+        mode, oid, stage = pieces
+        if mode not in _REGULAR_GIT_MODES | {"120000", "160000", "040000"} or (
+            not _GIT_OID.fullmatch(oid) or stage not in {"0", "1", "2", "3"}
+        ):
+            return None
+        if mode == "120000":
+            links[path] = oid
+    return links
+
+
+def _observe_forwarding_path_error(root, observation, error):
+    observation["worktree_path_status"] = getattr(error, "kind", "unreadable")
+    if not isinstance(error, SourcePathError) or error.kind != "link":
+        return "forwarding_worktree_file_unreadable"
+    observation["link_component"] = error.component.as_posix()
+    try:
+        target = os.readlink(root / error.component)
+        if os.name == "nt" and target.startswith("\\\\?\\"):
+            target = target[4:]
+            if target.startswith("UNC\\"):
+                target = "\\\\" + target[4:]
+        target = Path(os.path.abspath(root / error.component.parent / target))
+        relative = target.relative_to(Path(os.path.abspath(root)))
+    except ValueError:
+        observation["link_target_status"] = "outside_source"
+    except OSError:
+        observation["link_target_status"] = "unverified"
+    else:
+        if any(part.lower() == ".git" for part in relative.parts):
+            observation["link_target_status"] = "outside_source"
+        else:
+            try:
+                stat_source_file(root, relative)
+            except (FileNotFoundError, NotADirectoryError):
+                observation["link_target_status"] = "missing"
+            except OSError:
+                observation["link_target_status"] = "unverified"
+            else:
+                observation["link_target_status"] = "inside_source"
+    return "forwarding_worktree_link_unsupported"
+
+
+def _forwarding(candidates, changes, root, runner):
     if not candidates:
         return _result("forwarding", "not_applicable", reason="no_python_changes")
+    base = getattr(changes, "base_commit", None)
+    observation = {
+        "kind": "git_forwarding_source",
+        "requested_base": base,
+        "git_context": "unverified",
+        "probes": [],
+        "paths": [],
+    }
+
+    def probe(*args):
+        argv = ["git", *args]
+        completed = runner(argv, root)
+        record = {
+            "argv": argv,
+            "exit_code": completed.returncode,
+            "stderr": _bounded(completed.stderr),
+        }
+        native_observation = getattr(completed, "observation", None)
+        if isinstance(native_observation, dict):
+            record["observation"] = native_observation
+        observation["probes"].append(record)
+        return completed
+
+    def result(status, reason=None, *, findings=()):
+        entry = _result(
+            "forwarding",
+            status,
+            reason=reason,
+            findings=findings,
+            executable="git",
+            observation=observation,
+        )
+        if status == "not_executed":
+            entry.update(execution_started=False, execution_kind="not_started")
+        return entry
+
+    if not isinstance(base, str) or not base.strip():
+        return result("not_executed", "base_commit_missing")
+    context = probe("rev-parse", "--is-inside-work-tree", "--show-prefix")
+    if context.returncode != 0 or context.stdout.strip() != "true":
+        observation["git_context"] = "unavailable"
+        observation["git_context_output"] = _bounded(context.stdout)
+        return result("not_executed", "forwarding_git_context_unavailable")
+    observation["git_context"] = "worktree_root"
+
+    base_tree, base_failure = _forwarding_base_tree(base.strip(), probe, observation)
+    if base_failure is not None:
+        return result("failed", base_failure)
+    entries, tree_failure = _forwarding_tree_entries(base_tree, probe, observation)
+    if tree_failure is not None:
+        return result("failed", tree_failure)
+    current_tree = getattr(changes, "execution_tree", None)
+    if current_tree is None and getattr(changes, "snapshot", None) in {
+        "commit",
+        "index",
+        "push",
+        "pr_merge",
+    }:
+        return result("failed", "current_tree_unavailable")
+    current_entries = None
+    index_links = {}
+    if current_tree:
+        if not isinstance(current_tree, str) or not _GIT_OID.fullmatch(current_tree):
+            return result("failed", "forwarding_current_tree_invalid")
+        observation["current_tree"] = current_tree
+        current_entries, tree_failure = _forwarding_tree_entries(
+            current_tree, probe, observation, side="current"
+        )
+        if tree_failure is not None:
+            return result("failed", tree_failure)
+    else:
+        index_links = _forwarding_index_links(probe)
+        if index_links is None:
+            return result("failed", "forwarding_index_listing_unavailable")
     findings = []
     for path in candidates:
-        previous = runner(["git", "show", f"{changes.base_commit}:{path}"], root)
-        if previous.returncode:
-            exists = runner(
-                ["git", "cat-file", "-e", f"{changes.base_commit}:{path}"], root
+        # Exact tree-path membership. ``cat-file -e <tree>:<path>`` also fails
+        # when the entry exists and its blob is missing, so that exit is not
+        # proof of a new module.
+        entry = entries.get(path)
+        compared = {"path": path, "base_entry": "absent"}
+        observation["paths"].append(compared)
+        if entry is not None:
+            mode, kind, oid = entry
+            compared.update(base_entry=kind, base_mode=mode, base_object_oid=oid)
+        current_mode = None
+        if current_entries is not None:
+            current_entry = current_entries.get(path)
+            if current_entry is None:
+                return result("failed", "forwarding_current_tree_path_missing")
+            current_mode, _, current_oid = current_entry
+            compared.update(
+                current_git_mode=current_mode, current_object_oid=current_oid
             )
-            if exists.returncode:
-                # A newly added module has no base object; it is not a regression.
-                continue
-            return _result(
-                "forwarding",
-                "failed",
-                exit_code=previous.returncode,
-                reason="base_content_unavailable",
-            )
+        elif path in index_links:
+            compared["index_mode"] = "120000"
+        linked_content = None
         try:
-            previous_is_forwarder = _pure_reexport(previous.stdout)
-            current_is_forwarder = _pure_reexport(
-                (root / path).read_text(encoding="utf-8")
+            stat_source_file(root, path)
+        except SourcePathError as error:
+            if error.kind != "link":
+                return result(
+                    "failed", _observe_forwarding_path_error(root, compared, error)
+                )
+
+            target_identity = {}
+            link_observations = []
+            compared["current_links"] = link_observations
+
+            def validate_link(component, raw_target, *, observations=link_observations):
+                link_oid = _git_blob_oid(raw_target, len(base_tree))
+                observed = {"path": component, "worktree_object_oid": link_oid}
+                observations.append(observed)
+                if current_entries is not None:
+                    tree_link = current_entries.get(component)
+                    if (
+                        tree_link is None
+                        or tree_link[:2] != ("120000", "blob")
+                        or tree_link[2] != link_oid
+                    ):
+                        raise SourcePathError(
+                            "forwarding_current_link_unbound", Path(component)
+                        )
+                    if probe("cat-file", "-e", tree_link[2]).returncode != 0:
+                        raise SourcePathError(
+                            "current_content_unavailable", Path(component)
+                        )
+                    observed["tree_object_oid"] = tree_link[2]
+                elif component in index_links:
+                    observed["index_object_oid"] = index_links[component]
+
+            def validate_target(target, *, identity=target_identity):
+                if current_entries is None:
+                    return
+                target_entry = current_entries.get(target)
+                if (
+                    target_entry is None
+                    or target_entry[0] not in _REGULAR_GIT_MODES
+                    or target_entry[1] != "blob"
+                ):
+                    raise SourcePathError(
+                        "forwarding_target_source_mismatch", Path(target)
+                    )
+                if probe("cat-file", "blob", target_entry[2]).returncode != 0:
+                    raise SourcePathError("current_content_unavailable", Path(target))
+                identity["oid"] = target_entry[2]
+
+            try:
+                linked_content, target, links = read_internal_linked_source(
+                    root,
+                    path,
+                    validate_link=validate_link,
+                    validate_target=validate_target,
+                )
+            except SourcePathError as link_error:
+                compared["link_error"] = {
+                    "kind": link_error.kind,
+                    "component": link_error.component.as_posix(),
+                }
+                if link_error.kind in {
+                    "forwarding_current_link_unbound",
+                    "forwarding_target_source_mismatch",
+                    "current_content_unavailable",
+                }:
+                    return result("failed", link_error.kind)
+                if link_error.kind in {"link_cycle", "link_depth_exceeded"}:
+                    compared["worktree_path_status"] = link_error.kind
+                    return result("failed", f"forwarding_{link_error.kind}")
+                if link_error.kind == "link_outside_source":
+                    compared.update(
+                        worktree_path_status="link",
+                        link_component=link_error.component.as_posix(),
+                        link_target_status="outside_source",
+                    )
+                    return result("failed", "forwarding_worktree_link_unsupported")
+                if link_error.kind == "path_changed":
+                    compared.update(
+                        worktree_path_status="path_changed",
+                        link_component=link_error.component.as_posix(),
+                    )
+                    return result("failed", "forwarding_link_changed")
+                return result(
+                    "failed", _observe_forwarding_path_error(root, compared, link_error)
+                )
+            except (FileNotFoundError, NotADirectoryError):
+                compared.update(
+                    worktree_path_status="link",
+                    link_component=error.component.as_posix(),
+                    link_target_status="missing",
+                )
+                return result("failed", "forwarding_worktree_link_unsupported")
+            except OSError:
+                return result(
+                    "failed", _observe_forwarding_path_error(root, compared, error)
+                )
+            if not links:
+                return result("failed", "forwarding_link_changed")
+            compared["resolved_target_path"] = target
+            compared["worktree_file_sha256"] = hashlib.sha256(
+                linked_content
+            ).hexdigest()
+            if current_entries is not None:
+                target_oid = _git_blob_oid(linked_content, len(base_tree))
+                if target_identity.get("oid") != target_oid:
+                    return result("failed", "forwarding_target_source_mismatch")
+                compared["target_object_oid"] = target_oid
+        except OSError as error:
+            return result(
+                "failed", _observe_forwarding_path_error(root, compared, error)
             )
+        if linked_content is None and (
+            (current_mode and current_mode not in _REGULAR_GIT_MODES)
+            or path in index_links
+        ):
+            return result("failed", "forwarding_current_git_mode_unsupported")
+        if current_entries is not None and linked_content is None:
+            current_blob = probe("cat-file", "blob", current_oid)
+            if current_blob.returncode != 0:
+                return result("failed", "current_content_unavailable")
+        if entry is None:
+            continue
+        if mode not in _REGULAR_GIT_MODES:
+            return result("failed", "forwarding_base_git_mode_unsupported")
+        present = probe("cat-file", "-e", oid)
+        if present.returncode != 0:
+            return result("failed", "base_content_unavailable")
+        previous = probe("cat-file", "-p", oid)
+        if previous.returncode != 0:
+            return result("failed", "base_content_unavailable")
+        compared["base_compared_text_sha256"] = hashlib.sha256(
+            previous.stdout.encode("utf-8")
+        ).hexdigest()
+        try:
+            current = (
+                linked_content
+                if linked_content is not None
+                else read_source_file(root, path)
+            )
+            compared["worktree_file_sha256"] = hashlib.sha256(current).hexdigest()
+            previous_is_forwarder = _pure_reexport(previous.stdout)
+            current_is_forwarder = _pure_reexport(current.decode("utf-8"))
         except (SyntaxError, UnicodeError):
-            return _result("forwarding", "failed", reason="module_unparsable")
+            return result("failed", "module_unparsable")
+        except OSError as error:
+            return result(
+                "failed", _observe_forwarding_path_error(root, compared, error)
+            )
         if current_is_forwarder and not previous_is_forwarder:
             findings.append(
                 f"{path} became a pure re-export; review the forwarding module"
             )
     if findings:
-        return _result("forwarding", "advisory", findings=findings)
-    return _result("forwarding", "passed")
+        return result("advisory", findings=findings)
+    return result("passed")
 
 
 def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
@@ -846,7 +1197,9 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
         if name == "whitespace":
             results.append(_whitespace(changes, root, runner, None if full else paths))
         elif name == "forwarding":
-            results.append(_forwarding(paths, changes, root, runner, config))
+            results.append(
+                _forwarding(applicability[name]["inputs"], changes, root, runner)
+            )
         elif name == "docs":
             results.append(
                 _docs(
@@ -870,6 +1223,8 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
     statuses = {item["status"] for item in results}
     if "failed" in statuses:
         report["status"] = "failed"
+    elif "not_executed" in statuses:
+        report["status"] = "blocked"
     elif statuses and statuses <= {"not_applicable"}:
         report["status"] = "not_applicable"
     else:
@@ -917,7 +1272,7 @@ def main(argv=None):
         print(f"status: {report['status']}")
         for item in report["checks"]:
             print(f"{item['name']}: {item['status']} ({item['reason'] or 'ok'})")
-    return 1 if report["status"] == "failed" else 0
+    return 1 if report["status"] in {"failed", "blocked"} else 0
 
 
 if __name__ == "__main__":
