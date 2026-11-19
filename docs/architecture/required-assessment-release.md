@@ -51,6 +51,20 @@ A future publish boundary must still recheck policy authorization and exact
 current Run/Attempt/Artifact evidence; this module does not perform Tag/Release
 publication.
 
+## Release policy scope
+
+`policy_snapshot_authority` receives the R1 Profile snapshot with its actual
+`assessment_scope` and the requested `publish_context`, including Repository,
+Tag, mode, Head, Phase, Run and Attempt. An accepted response must supply an
+`assessment_scope` independently derived from the authorized Profile for that
+Release. It must match the R1 `context`, `action`, `target`, `refs` including
+Ref actions, `phase`, and full `candidate` identity. The authority can map an
+authorized Release Target or Ref representation to the R1 representation.
+Reconciliation compares the result exactly.
+
+The envelope records both scopes. Existing envelopes without that binding
+require fresh reconciliation before they can establish verified scope.
+
 ## Manifest identity binding
 
 R4 output records `manifest_identity` for the Manifest that passed
@@ -89,7 +103,7 @@ Profile projection. A bare name list without that authority cannot authorize.
   `manifest_provider_from_verification(api)` /
   `manifest_provider_from_publication(api)`, which call existing
   `verification.evidence` / `publishing.published_evidence` for Artifact
-  ID/digest/Run linkage — R4 does not invent a second remote verifier. |
+  ID/digest linkage to the upload step of the Manifest's Run and Attempt. |
 
 Digest integrity is **not** authorization. `validate_release_reconciliation()`
 recomputes `reconciliation_ref` **and** re-checks pure authorization-consistency

@@ -7,6 +7,7 @@ import copy
 import pytest
 from test_release_manifest import IDS, ManifestGitHub, facts
 from test_required_assessment import (
+    EVENT,
     assess,
     check_obligation,
     historical_coverage,
@@ -66,13 +67,23 @@ def make_v1_manifest(*, mode="validation", api=None, ids=None, source=None):
     return value
 
 
-def passed_assessment(*, contract_sample=False, candidate_commit=HEAD):
+def passed_assessment(
+    *,
+    contract_sample=False,
+    candidate_commit=HEAD,
+    action="publish",
+    target="candidate",
+    target_ref="refs/heads/main",
+):
     # Keep profile phase-less (R1/R2 pattern) while universe evaluation carries
     # the Release pre_publish phase used by R4 publish_context.
-    profile = make_profile()
-    entry = make_entry()
-    projection = make_projection(profile, [entry])
-    obligation = check_obligation("o/tach", [entry["expected_check_ref"]])
+    profile = make_profile(action=action, target=target)
+    event = {**EVENT, "base_ref": target_ref}
+    entry = make_entry(event=event)
+    projection = make_projection(profile, [entry], event=event)
+    obligation = check_obligation(
+        "o/tach", [entry["expected_check_ref"]], action=action, target_ref=target_ref
+    )
     universe = make_universe(
         profile,
         projection,
@@ -80,10 +91,20 @@ def passed_assessment(*, contract_sample=False, candidate_commit=HEAD):
         contract_sample=contract_sample,
         phase="pre_publish",
         candidate={"commit": candidate_commit},
+        action=action,
+        target=target,
+        refs=[{"target_ref": target_ref, "ref_action": "update"}],
     )
     admission = make_admission(
         projection,
-        coverage_entries=[(entry, historical_coverage(projection, entry))],
+        coverage_entries=[
+            (
+                entry,
+                historical_coverage(
+                    projection, entry, action=action, target_ref=target_ref
+                ),
+            )
+        ],
         contract_sample=contract_sample,
     )
     return assess(universe, projection, admission=admission), entry
@@ -160,6 +181,21 @@ def accept(_context):
     return {"accepted": True, "status": "authorized"}
 
 
+def accept_policy(_context, *, target="candidate"):
+    return {
+        "accepted": True,
+        "status": "authorized",
+        "assessment_scope": {
+            "context": "release",
+            "action": "publish",
+            "target": target,
+            "phase": "pre_publish",
+            "refs": [{"target_ref": "refs/heads/main", "ref_action": "update"}],
+            "candidate": {"commit": HEAD},
+        },
+    }
+
+
 def reject_policy(_context):
     return {"accepted": False, "status": "revoked"}
 
@@ -179,7 +215,7 @@ def reject_provider(_context):
 def reconcile(assessment, manifest=None, **changes):
     kwargs = {
         "publish_context": publish_context(),
-        "policy_snapshot_authority": accept,
+        "policy_snapshot_authority": accept_policy,
         "artifact_obligations": empty_artifact_obligations(),
         "artifact_obligation_authority": accept,
         "manifest_provider_authority": accept_provider,
@@ -240,6 +276,58 @@ def test_publication_same_run_context_can_authorize():
     )
     assert result["status"] == "verified"
     assert result["release_authorized"] is True
+
+
+@pytest.mark.parametrize(
+    "different_scope",
+    [
+        {"action": "validate"},
+        {"target": "other-candidate"},
+        {"target_ref": "refs/heads/another-release-branch"},
+    ],
+)
+def test_same_commit_and_phase_do_not_authorize_a_different_assessment_scope(
+    different_scope,
+):
+    assessment, _ = passed_assessment(**different_scope)
+    assert assessment["status"] == "passed", assessment["blocked_reasons"]
+    assert assessment["candidate"] == {"commit": HEAD}
+    assert assessment["phase"] == "pre_publish"
+    result = authorize(assessment)
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert "release_assessment_scope_mismatch" in result["reasons"]
+
+
+def test_release_policy_authorizes_an_explicit_target_representation():
+    assessment, _ = passed_assessment(target="release-distribution")
+    assert assessment["status"] == "passed"
+    context = publication_handoff_context()
+
+    def policy(request):
+        assert request["publish_context"] == {
+            **context,
+            "validation_identity": {
+                "mode": "validation",
+                **context["validation_identity"],
+            },
+        }
+        outcome = accept_policy(request, target="release-distribution")
+        assert request["snapshot"]["assessment_scope"] == outcome["assessment_scope"]
+        return outcome
+
+    result = authorize(assessment, policy_snapshot_authority=policy)
+    assert result["release_authorized"] is True
+    assert result["policy_scope"] == result["profile_snapshot"]["assessment_scope"]
+    assert rar.validate_release_reconciliation(result) is result
+
+
+def test_release_policy_acceptance_without_scope_is_unverified():
+    assessment, _ = passed_assessment()
+    result = authorize(assessment, policy_snapshot_authority=accept)
+    assert result["status"] == "unverified"
+    assert result["release_authorized"] is False
+    assert "release_policy_scope_missing" in result["reasons"]
 
 
 def test_provider_reuses_verification_evidence_for_artifact_digest_run_binding():
@@ -594,6 +682,21 @@ def _recompute(envelope):
     }
     envelope["reconciliation_ref"] = rar._digest(payload)
     return envelope
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_validate_requires_release_scope_in_authorized_envelopes(missing):
+    assessment, _ = passed_assessment()
+    result = authorize(assessment)
+    if missing:
+        del result["policy_scope"]
+    else:
+        result["profile_snapshot"]["assessment_scope"]["target"] = "different-target"
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError,
+        match="release_verified_requires_assessment_scope_alignment",
+    ):
+        rar.validate_release_reconciliation(_recompute(result))
 
 
 def test_validate_rejects_recomputed_authorized_inconsistent_envelope():

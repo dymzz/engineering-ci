@@ -24,6 +24,7 @@ import re
 from datetime import datetime
 
 from . import required_assessment
+from .github_cli import ApiError
 from .release import manifest as release_manifest
 from .release import publishing as release_publishing
 from .release import registry as release_registry
@@ -36,6 +37,8 @@ RELEASE_PHASES = frozenset({"pre_publish", "publish", "post_publish"})
 PUBLISH_MODES = frozenset({"validation", "publication"})
 MANIFEST_BINDINGS = frozenset({"same_run", "validation_to_publication"})
 AUTHORIZATION_BASES = frozenset({"structural_fixture", "provider_verified"})
+_SCOPE_TEXT_FIELDS = ("context", "action", "target", "phase")
+_SCOPE_FIELDS = (*_SCOPE_TEXT_FIELDS, "refs", "candidate")
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -352,31 +355,70 @@ def _profile_snapshot(assessment):
         },
         "assessment_ref": assessment.get("assessment_ref"),
         "assessment_evaluated_at": assessment.get("evaluated_at"),
+        "assessment_scope": {
+            key: copy.deepcopy(assessment.get(key)) for key in _SCOPE_FIELDS
+        },
         "universe_ref": inputs.get("universe_ref"),
     }
 
 
-def _policy_still_authorized(snapshot, *, evaluated_at, authority):
+def _valid_policy_scope(scope):
+    return (
+        isinstance(scope, dict)
+        and set(scope) == set(_SCOPE_FIELDS)
+        and all(
+            isinstance(scope[key], str) and scope[key].strip()
+            for key in _SCOPE_TEXT_FIELDS
+        )
+        and isinstance(scope["refs"], list)
+        and bool(scope["refs"])
+        and all(
+            isinstance(ref, dict)
+            and set(ref) == {"target_ref", "ref_action"}
+            and all(isinstance(field, str) and field.strip() for field in ref.values())
+            for ref in scope["refs"]
+        )
+        and isinstance(scope["candidate"], dict)
+        and isinstance(scope["candidate"].get("commit"), str)
+        and set(scope["candidate"])
+        <= set(required_assessment.CANDIDATE_IDENTITY_FIELDS)
+        and all(
+            isinstance(field, str) and field.strip()
+            for field in scope["candidate"].values()
+        )
+    )
+
+
+def _policy_still_authorized(snapshot, *, publish_context, authority):
     if authority is None:
-        return False, "policy_snapshot_authority_missing", "unverified"
+        return "policy_snapshot_authority_missing", "unverified", None
     context = {
         "snapshot": copy.deepcopy(snapshot),
-        "evaluated_at": evaluated_at.isoformat(),
+        "publish_context": copy.deepcopy(publish_context),
+        "evaluated_at": publish_context["evaluated_at"],
     }
     result = authority(context)
     if result is True:
-        return True, None, "authorized"
+        return "release_policy_scope_missing", "unverified", None
     if result is False or result is None:
-        return False, "policy_snapshot_authority_rejected", "rejected"
+        return "policy_snapshot_authority_rejected", "rejected", None
     if not isinstance(result, dict):
         raise RequiredAssessmentReleaseError("policy_snapshot_authority_result_invalid")
     status = result.get("status")
     if status == "authorized" and result.get("accepted") is True:
-        return True, None, "authorized"
+        scope = result.get("assessment_scope")
+        if scope is None:
+            return "release_policy_scope_missing", "unverified", None
+        if not _valid_policy_scope(scope):
+            return "release_policy_scope_invalid", "unverified", None
+        scope = copy.deepcopy(scope)
+        if scope != snapshot["assessment_scope"]:
+            return "release_assessment_scope_mismatch", "rejected", scope
+        return None, "authorized", scope
     if status in {"revoked", "expired", "superseded", "rejected"}:
-        return False, f"policy_snapshot_{status}", "rejected"
+        return f"policy_snapshot_{status}", "rejected", None
     if status == "unverified" or result.get("accepted") is not True:
-        return False, "policy_snapshot_unverified", "unverified"
+        return "policy_snapshot_unverified", "unverified", None
     raise RequiredAssessmentReleaseError("policy_snapshot_authority_result_invalid")
 
 
@@ -420,7 +462,7 @@ def manifest_provider_from_verification(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except ValueError:
+        except (ApiError, ValueError):
             return False
         return True
 
@@ -441,7 +483,7 @@ def manifest_provider_from_publication(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except ValueError:
+        except (ApiError, ValueError):
             return False
         return True
 
@@ -618,6 +660,18 @@ def _authorization_consistent(envelope):
         mode = normalized["mode"]
         binding = normalized["manifest_binding"]
         aligned = status == "verified" or authorized is True
+        if aligned:
+            snapshot = envelope.get("profile_snapshot")
+            scope = envelope.get("policy_scope")
+            if (
+                not isinstance(snapshot, dict)
+                or snapshot.get("assessment_ref") != envelope.get("assessment_ref")
+                or not _valid_policy_scope(scope)
+                or scope != snapshot.get("assessment_scope")
+                or scope["phase"] != normalized["phase"]
+                or scope["candidate"]["commit"].lower() != normalized["head_sha"]
+            ):
+                errors.append("release_verified_requires_assessment_scope_alignment")
         if authorized is True:
             if mode != "publication":
                 errors.append("release_authorized_requires_publication_mode")
@@ -685,7 +739,9 @@ def reconcile_release_assessment(
 ):
     """Reconcile an R1 Assessment with Manifest v1 for Release publication.
 
-    Manifest structure is gated by ``release.manifest.validate``. Production
+    Manifest structure is gated by ``release.manifest.validate``. The policy
+    authority supplies the authorized ``assessment_scope`` for the requested
+    Release. Production
     ``release_authorized`` additionally requires provider-verified evidence
     (and handoff proof for validation→publication). Structural fixtures may
     reach ``status=verified`` only as a contract shape — they do not authorize
@@ -870,12 +926,12 @@ def reconcile_release_assessment(
     if local_revoked is not None and evaluated >= local_revoked:
         reasons.append("release_assessment_authority_revoked_locally")
 
-    policy_ok, policy_reason, policy_status = _policy_still_authorized(
+    policy_reason, policy_status, policy_scope = _policy_still_authorized(
         snapshot,
-        evaluated_at=evaluated,
+        publish_context=context,
         authority=policy_snapshot_authority,
     )
-    if not policy_ok:
+    if policy_reason:
         reasons.append(policy_reason)
 
     authorization_basis, provider_reasons = _provider_basis(
@@ -929,6 +985,7 @@ def reconcile_release_assessment(
         },
         "profile_snapshot": snapshot,
         "policy_snapshot_status": policy_status,
+        "policy_scope": policy_scope,
         "artifact_obligation_status": artifact_status,
         "artifact_obligations": artifacts,
         "fixed_manifest_checks": {

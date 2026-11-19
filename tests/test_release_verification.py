@@ -51,7 +51,6 @@ class API(FakeGitHub):
             "workflow_run": {"id": 123, "head_sha": HEAD},
             "url": f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/99",
         }
-        self.manifests = [self.item]
 
     def __call__(self, path, method="GET", data=None):
         if path.startswith("contents/"):
@@ -105,8 +104,8 @@ class API(FakeGitHub):
             }
         elif path in ("actions/runs/123", "actions/runs/123/attempts/2"):
             result = self.run
-        elif path.startswith("actions/runs/123/artifacts?"):
-            result = {"artifacts": self.manifests}
+        elif path.startswith("actions/runs/123/attempts/2/jobs?"):
+            result = {"jobs": self.jobs}
         elif path == "actions/artifacts/99":
             result = self.item
         else:
@@ -284,6 +283,26 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
 
 
 @pytest.mark.parametrize(
+    "verify", [verification.evidence, publishing.published_evidence]
+)
+def test_independent_release_verifier_rejects_old_artifact_id_from_same_run(verify):
+    api = API()
+    value = make_manifest(api, mode="publication")
+    original = api.artifacts[0]
+    stale_id = 999
+    stale_url = (
+        f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{stale_id}"
+    )
+    api.artifacts.append({**original, "id": stale_id, "url": stale_url})
+    for item in value["artifacts"]:
+        if item["id"] == original["id"]:
+            item.update(id=stale_id, url=stale_url)
+    with pytest.raises(ValueError, match="Artifact ID does not match the upload step"):
+        verify(api, value, REPOSITORY, TAG, HEAD)
+    assert not api.writes
+
+
+@pytest.mark.parametrize(
     "args",
     [
         ["validate"],
@@ -306,8 +325,8 @@ def test_selection_must_be_explicit(args):
         "digest",
         "wrong_run",
         "wrong_sha",
-        "duplicate",
-        "missing",
+        "ambiguous_upload",
+        "missing_upload",
         "jobs",
     ],
 )
@@ -323,12 +342,22 @@ def test_verification_rejects_changed_or_ambiguous_evidence(change):
         api.item["workflow_run"]["id"] = 321
     elif change == "wrong_sha":
         api.item["workflow_run"]["head_sha"] = "b" * 40
-    elif change == "duplicate":
-        api.manifests.append({**api.item, "id": 100})
+    elif change in {"ambiguous_upload", "missing_upload"}:
+        original_step_log = api.job_step_log
+
+        def step_log(job_id, step_number):
+            original = original_step_log(job_id, step_number)
+            if api.upload_ids[job_id, step_number][0] != "release-manifest":
+                return original
+            if change == "ambiguous_upload":
+                return original + original.replace(
+                    "Artifact ID is 99", "Artifact ID is 100"
+                )
+            return ""
+
+        api.job_step_log = step_log
     elif change == "jobs":
         api.jobs[0]["conclusion"] = "failure"
-    else:
-        api.manifests = []
     with pytest.raises(ValueError):
         verification.validation(api, REPOSITORY, identity(), 123)
     assert not api.writes
