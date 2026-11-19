@@ -2325,7 +2325,12 @@ def _verified_check_source_ref(
     if source_snapshots.get("kind") == "full":
         files = source_snapshots["files"]
         before = source_snapshots["binding"]
-        if before.get("unverified_paths"):
+        # Workflow source authority separately proves the selected external
+        # targets, while workflow_tree binds the literal repository link entries.
+        authorized_external = (
+            {target["path"] for target in external_targets} if workflow_tree else set()
+        )
+        if set(before.get("unverified_paths") or ()) - authorized_external:
             return None
         if workflow_materialization:
             if execution_context == "host":

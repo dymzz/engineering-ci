@@ -220,7 +220,7 @@ def test_external_source_handoff_reaches_independent_resolution(
         assert resolved["source_ref"]["scope_kind"] == "changed_paths"
         assert (entry["binding_status"], entry["reason"]) == (
             "unknown",
-            "expected_source_scope_insufficient",
+            "expected_source_unproven",
         )
     else:
         assert resolved["source_ref"]["scope_kind"] == "check_input_closure"
@@ -259,6 +259,54 @@ def test_external_source_handoff_reaches_independent_resolution(
         execution.ExecutionError, match="workflow_target_digest_mismatch"
     ):
         resolve()
+
+
+def test_external_target_does_not_close_unrelated_missing_tree_member(tmp_path):
+    outside = tmp_path / "outside.sh"
+    content = b"#!/bin/sh\necho clean\n"
+    outside.write_bytes(content)
+    root, _ = _init_repo(tmp_path / "repo-parent", checks=("shellcheck",), workflows={})
+    alias = "scripts/external.sh"
+    unrelated = "src/missing.py"
+    (root / "scripts").mkdir()
+    _symlink(root / alias, outside)
+    _symlink(root / unrelated, root / "src/absent.py")
+    _git(root, "add", "--", alias, unrelated)
+    _git(root, "commit", "-qm", "record two distinct links")
+    plan, _ = _build_plan_and_expected(root, [alias], snapshot="commit")
+    selected = next(
+        item for item in plan["check_scope"] if item["name"] == "shellcheck"
+    )
+    snapshots = execution._prepare_source_snapshots(
+        plan, [selected], root=root, execution_context="host"
+    )
+    assert set(snapshots["binding"]["unverified_paths"]) == {alias, unrelated}
+    digest = hashlib.sha256(content).hexdigest()
+    grants = {
+        alias: {
+            "path": str(outside.resolve()),
+            "sha256": digest,
+            "policy_scope": "event_external",
+        }
+    }
+    authority = _external_authority(plan, alias, outside, digest, {"shellcheck"})
+
+    def runner(argv, cwd):
+        if "--version" in argv:
+            return subprocess.CompletedProcess(argv, 0, "0.11.0\n", "")
+        return subprocess.CompletedProcess(argv, 0, '{"comments": []}', "")
+
+    report = execution.execute(
+        plan,
+        root=root,
+        runner=runner,
+        admitted_external_targets=grants,
+        workflow_source_authority=authority,
+    )
+    check = next(item for item in report["checks"] if item["name"] == "shellcheck")
+    assert check["status"] == "passed", check
+    assert check["native_result"]["source_ref"]["scope_kind"] == "changed_paths"
+    assert check["native_result"]["source_ref"]["binding_status"] == "identity_only"
 
 
 def test_workflow_and_shell_native_inputs_have_independent_sources(tmp_path):
