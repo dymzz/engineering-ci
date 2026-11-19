@@ -345,6 +345,7 @@ def test_forwarding_execution_compares_committed_blob_bytes(repo):
         {
             "path": relative,
             "base_entry": "blob",
+            "base_mode": "100644",
             "base_object_oid": oid,
             "base_compared_text_sha256": hashlib.sha256(expected.encode()).hexdigest(),
             "worktree_file_sha256": hashlib.sha256(
@@ -357,8 +358,6 @@ def test_forwarding_execution_compares_committed_blob_bytes(repo):
 
 
 def test_forwarding_execution_missing_blob_is_source_failure(repo):
-    from test_reconciliation import make_observation, make_routing
-
     path, base = repo
     relative = "src/pkg/sub.py"
     (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
@@ -414,7 +413,12 @@ def test_forwarding_execution_missing_blob_is_source_failure(repo):
     assert source["base_commit"] == base
     assert source["base_tree"] == tree
     assert source["paths"] == [
-        {"path": relative, "base_entry": "blob", "base_object_oid": oid}
+        {
+            "path": relative,
+            "base_entry": "blob",
+            "base_mode": "100644",
+            "base_object_oid": oid,
+        }
     ]
     assert source["probes"][-1] == {
         "argv": ["git", "cat-file", "-e", oid],
@@ -423,6 +427,15 @@ def test_forwarding_execution_missing_blob_is_source_failure(repo):
     }
     assert native["source_ref"] == resolution["source_ref"]
     assert relative in native["source_ref"]["verified_input_scope"]
+    entry = _forwarding_failure_receipt(expected, resolution, report, native)
+    assert entry["reason"] == "result_not_passed"
+    assert entry["native_satisfaction"]["status"] == "unsatisfied"
+
+
+def _forwarding_failure_receipt(
+    expected, resolution, report, native, *, binding="insufficient"
+):
+    from test_reconciliation import make_observation, make_routing
 
     observation = make_observation(
         "forwarding-host", (), runner_ref=native["runner_ref"], report=report
@@ -442,9 +455,7 @@ def test_forwarding_execution_missing_blob_is_source_failure(repo):
     reconciliation.validate_receipt(receipt)
     entry = next(item for item in receipt["entries"] if item["name"] == "forwarding")
     assert entry["native_status"] == "failed"
-    assert entry["binding_status"] == "insufficient", entry
-    assert entry["native_satisfaction"]["status"] == "unsatisfied", entry
-    assert entry["reason"] == "result_not_passed"
+    assert entry["binding_status"] == binding, entry
     assert entry["observed_result_ids"] == [native["result_id"]]
     assert entry["selected_result_ids"] == []
     evidence = entry["observed_results"][0]
@@ -453,6 +464,148 @@ def test_forwarding_execution_missing_blob_is_source_failure(repo):
     assert evidence["runner_ref"] == native["runner_ref"]
     assert evidence["native_exit_code"] is None
     assert evidence["report_ref"] == observation["report_ref"]
+    return entry
+
+
+def _source_symlink(link, target, *, directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows requires privilege to create symlinks")
+        raise
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "target_status"),
+    [
+        ("external", "outside_source"),
+        ("internal", "inside_source"),
+        ("broken", "missing"),
+    ],
+)
+def test_forwarding_selected_link_fails_with_receipt(repo, target_kind, target_status):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    source = path / relative
+    if target_kind == "external":
+        target = path.parent / "outside.py"
+        target.write_text("from somewhere import VALUE\n", encoding="utf-8")
+    elif target_kind == "internal":
+        target = source.with_name("__init__.py").name
+    else:
+        target = "missing.py"
+    source.unlink()
+    _source_symlink(source, target)
+
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\n', encoding="utf-8"
+    )
+    hyg_path = path / "ci-hygiene.toml"
+    hyg_path.write_text(
+        'schema_version = 1\nchecks = ["forwarding"]\n', encoding="utf-8"
+    )
+    value = selection.plan(
+        selection.Selection(
+            changeset=selection.changeset(path, base=base, mode="worktree"),
+            tests=(),
+            checks=("hygiene",),
+            status="selected",
+            escalated=False,
+        ),
+        config=selection.load_config(config_path),
+        config_path=config_path,
+        root=path,
+    )
+    binding = value["git"]["content_binding"]
+    assert binding["unverified_paths"] == [relative]
+    assert binding["paths"][relative] is None
+    if target_kind == "external":
+        directory_id = selection.directory_content_id(path)
+        target.write_text("VALUE = 2\n", encoding="utf-8")
+        assert selection.worktree_content_binding(path, binding["paths"]) == binding
+        assert selection.directory_content_id(path) == directory_id
+
+    expected = value["expected_checks"]
+    selected = next(item for item in expected["checks"] if item["name"] == "forwarding")
+    assert selected["source_ref"]["binding_status"] == "unknown"
+    resolution = execution.build_source_resolution(value, "forwarding", root=path)
+    report = execution.execute(value, root=path)
+    assert report["status"] == "failed", report
+    check = next(item for item in report["checks"] if item["name"] == "forwarding")
+    assert check["reason"] == "forwarding_worktree_link_unsupported"
+    native = _failed_forwarding_native(check)
+    observed = native["evidence"]["observation"]["paths"][0]
+    assert observed["worktree_path_status"] == "link"
+    assert observed["link_component"] == relative
+    assert observed["link_target_status"] == target_status
+    assert "worktree_file_sha256" not in observed
+    assert native["source_ref"] == resolution["source_ref"]
+    assert native["source_ref"]["scope_kind"] == "changed_paths"
+    entry = _forwarding_failure_receipt(
+        expected, resolution, report, native, binding="unknown"
+    )
+    assert entry["reason"] == "expected_source_unproven"
+    assert entry["native_satisfaction"] is None
+    proof = execution.build_pre_execution_source_proof(value, "forwarding", root=path)
+    assert proof["status"] == "unverified"
+
+
+def test_forwarding_rejects_a_link_in_the_selected_path(repo):
+    path, base = repo
+    outside = path.parent / "outside"
+    outside.mkdir()
+    (outside / "sub.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _source_symlink(path / "src/linked", outside, directory=True)
+    relative = "src/linked/sub.py"
+    report = execution.execute(forwarding_plan(base, relative), root=path)
+    check = report["checks"][0]
+    assert check["reason"] == "forwarding_worktree_link_unsupported"
+    observed = _failed_forwarding_native(check)["evidence"]["observation"]["paths"][0]
+    assert observed["link_component"] == "src/linked"
+    assert observed["link_target_status"] == "outside_source"
+    assert "worktree_file_sha256" not in observed
+
+
+@pytest.mark.parametrize("link_is_base", [False, True])
+@pytest.mark.parametrize("snapshot", ["commit", "worktree"])
+def test_forwarding_keeps_git_link_mode_on_plain_file_checkout(
+    repo, link_is_base, snapshot
+):
+    path, base = repo
+    relative = "src/pkg/sub.py"
+    source = path / relative
+    source.write_text("from .other import VALUE\n", encoding="utf-8", newline="\n")
+    run(path, "config", "core.symlinks", "false")
+    oid = run(path, "hash-object", "-w", relative).strip()
+    run(path, "update-index", "--cacheinfo", f"120000,{oid},{relative}")
+    run(path, "commit", "-qm", "record link mode")
+    head = run(path, "rev-parse", "HEAD").strip()
+    if link_is_base:
+        base = head
+        run(path, "update-index", "--cacheinfo", f"100644,{oid},{relative}")
+        run(path, "commit", "-qm", "restore regular file mode")
+        head = run(path, "rev-parse", "HEAD").strip()
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    value = forwarding_plan(base)
+    if snapshot == "commit":
+        value["git"].update(
+            snapshot=snapshot, head_commit=head, tree=tree, execution_tree=tree
+        )
+    report = execution.execute(value, root=path)
+    assert report["status"] == "failed", report
+    check = report["checks"][0]
+    side = "base" if link_is_base else "current"
+    assert check["reason"] == f"forwarding_{side}_git_mode_unsupported"
+    observed = _failed_forwarding_native(check)["evidence"]["observation"]["paths"][0]
+    assert observed["base_mode"] == ("120000" if link_is_base else "100644")
+    if snapshot == "commit":
+        assert observed["current_git_mode"] == ("100644" if link_is_base else "120000")
+    elif not link_is_base:
+        assert observed["index_mode"] == "120000"
+    assert "base_compared_text_sha256" not in observed
+    assert "worktree_file_sha256" not in observed
 
 
 def _failed_forwarding_native(check):

@@ -28,6 +28,7 @@ from engineering_ci import (
     sources,
     workflow_analysis,
 )
+from engineering_ci._paths import SourcePathError, read_source_file
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
 SCHEMA_VERSION = 1
@@ -933,12 +934,13 @@ def _hidden_worktree_refusal(
         if tag != "S" and not tag.islower():
             continue
         blob = _git_bytes(root, "cat-file", "blob", f"{target_prefix}{path}", env=env)
-        file = Path(root) / path
-        if (
-            blob.returncode != 0
-            or not file.is_file()
-            or file.read_bytes() != blob.stdout
-        ):
+        try:
+            matches = (
+                blob.returncode == 0 and read_source_file(root, path) == blob.stdout
+            )
+        except OSError:
+            matches = False
+        if not matches:
             return skip_reason if tag == "S" else assume_reason
     return None
 
@@ -1055,38 +1057,70 @@ def _tree_of(root, commit):
 
 
 def worktree_content_binding(root, paths):
-    """Digest of selected paths' current worktree bytes; None means missing."""
+    """Bind regular worktree bytes and record unresolved source paths."""
     root = Path(root)
     entries = {}
+    unverified_paths = []
     for path in sorted({str(item).replace("\\", "/") for item in paths}):
-        file = root / path
-        if file.is_file():
-            entries[path] = hashlib.sha256(file.read_bytes()).hexdigest()
-        else:
+        try:
+            entries[path] = hashlib.sha256(read_source_file(root, path)).hexdigest()
+        except (FileNotFoundError, NotADirectoryError):
             entries[path] = None
+        except OSError:
+            entries[path] = None
+            unverified_paths.append(path)
+    payload = (
+        {"paths": entries, "unverified_paths": unverified_paths}
+        if unverified_paths
+        else entries
+    )
     digest = hashlib.sha256(
-        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
+    binding = {"algorithm": "sha256-paths", "digest": digest, "paths": entries}
+    if unverified_paths:
+        binding["unverified_paths"] = unverified_paths
+    return binding
 
 
 def directory_content_id(root):
-    """Stable content id over a directory tree (path + file bytes)."""
+    """Bind file bytes and literal link entries in a materialized Source."""
     root = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(
-        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
-    ):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        if relative == ".git" or relative.startswith(".git/"):
+    links = {}
+    paths = []
+    for directory, subdirs, names in root.walk():
+        if directory == root:
+            subdirs[:] = [name for name in subdirs if name != ".git"]
+            names = [name for name in names if name != ".git"]
+        for name in subdirs[:]:
+            if (directory / name).is_junction():
+                subdirs.remove(name)
+                names.append(name)
+        paths.extend((directory / name).relative_to(root).as_posix() for name in names)
+    for relative in sorted(paths):
+        try:
+            content = read_source_file(root, relative)
+        except SourcePathError as error:
+            if error.kind == "non_regular":
+                continue
+            if error.kind != "link" or error.component != Path(relative):
+                raise
+            link = os.fsencode(os.readlink(root / relative))
+            links[relative] = hashlib.sha256(link).hexdigest()
             continue
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(content)
         digest.update(b"\0")
-    return digest.hexdigest()
+    file_digest = digest.hexdigest()
+    if not links:
+        return file_digest
+    return hashlib.sha256(
+        json.dumps({"files": file_digest, "links": links}, sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 ZERO_OID = "0" * 40

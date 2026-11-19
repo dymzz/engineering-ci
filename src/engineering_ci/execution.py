@@ -32,6 +32,7 @@ from . import (
     sources,
     workflow_analysis,
 )
+from ._paths import source_file_present
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -1629,10 +1630,11 @@ def _source_reference(plan, execution_context):
     scope = []
     content_digest = None
     if isinstance(binding, dict):
-        content_digest = binding.get("digest")
         paths = binding.get("paths")
         if isinstance(paths, dict):
             scope = sorted(str(path) for path in paths)
+        if not binding.get("unverified_paths"):
+            content_digest = binding.get("digest")
     declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
     if content_digest and scope:
         status = "content_digest"
@@ -1859,13 +1861,13 @@ def _closure_paths_for_check(
         return None
     paths: set[str] = set()
     for p in (plan.get("git") or {}).get("changed_paths") or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
     for p in (item or {}).get("inputs") or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
     for p in artifact_paths or ():
-        if isinstance(p, str) and p and (resolved_root / p).is_file():
+        if isinstance(p, str) and p and source_file_present(resolved_root, p):
             paths.add(p.replace("\\", "/"))
 
     def add_rel_file(candidate):
@@ -1941,7 +1943,9 @@ def _tree_files_for_snapshot(plan, root, execution_context):
         listed = selection._git(root, "ls-files", "-z", env=env)
         if listed.returncode == 0:
             return sorted(
-                p for p in listed.stdout.split("\0") if p and (Path(root) / p).is_file()
+                p
+                for p in listed.stdout.split("\0")
+                if p and source_file_present(root, p)
             )
     if (
         execution_context == "host"
@@ -2051,6 +2055,8 @@ def _verified_check_source_ref(
     if source_snapshots.get("kind") == "full":
         files = source_snapshots["files"]
         before = source_snapshots["binding"]
+        if before.get("unverified_paths"):
+            return None
         if snapshot == "index":
             exp_tree = declared
             if selection.index_source_refusal(
@@ -2096,6 +2102,8 @@ def _verified_check_source_ref(
         return None
     before_files = entry["files"]
     before = entry["binding"]
+    if before.get("unverified_paths"):
+        return None
     if name == "docs" and isinstance((item or {}).get("inventory"), dict):
         # Also include any discovered inventory files that did not exist under '.' scan.
         final_files = _closure_paths_for_check(
@@ -3468,14 +3476,16 @@ def build_source_resolution(
     }
     if resolved_profile is not None:
         item["profile_ref"] = resolved_profile
-    changed_digest = (git.get("content_binding") or {}).get("digest")
+    changed_binding = git.get("content_binding") or {}
+    changed_digest = changed_binding.get("digest")
     if isinstance(changed_digest, str) and changed_digest:
         current_changed = selection.worktree_content_binding(
             resolved_root, git.get("changed_paths") or ()
         )
         if current_changed.get("digest") != changed_digest:
             raise ExecutionError("source_resolution_changed_paths_stale")
-        item["changed_paths_content_digest"] = changed_digest
+        if not current_changed.get("unverified_paths"):
+            item["changed_paths_content_digest"] = changed_digest
     if baseline is not None:
         base_commit = str(baseline.get("base_commit") or "")
         odb_tree = selection._git(

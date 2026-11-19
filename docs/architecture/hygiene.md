@@ -148,6 +148,16 @@ whose Blob is unreadable. A substantive module that becomes a pure re-export
 produces an advisory. The Host also uses the existing Plan Source checks for
 Index, Commit and Push snapshots before running the selected checks.
 
+Forwarding compares regular Python files. It retains the historical and
+selected Git modes and checks each current path component before reading.
+Git link entries and linked filesystem components fail with Source evidence.
+Current links carry the observed component and whether its target is inside
+the Source, outside it, missing inside it, or unverified. An internal link
+would need a binding to its resolved target bytes before Forwarding could use
+it. A checkout that represents Git mode `120000` as a plain file still
+preserves the link mode. Worktree bindings record unresolved files as
+`unverified_paths`, and Execution retains a limited Source reference.
+
 The [Host evidence in PR #132](https://github.com/dymzz/engineering-ci/pull/132#pullrequestreview-5969567897)
 includes an actual Plan with a missing historical Blob. The Execution Report
 retains the failed Internal Result. #66-C Reconciliation records the same
@@ -177,19 +187,26 @@ and Source availability, and the cost of execution and caching. Prefer the
 verified result when it satisfies the consumer and an authorized producer can
 deliver it. Run in Dagger when the consumer requires that execution context.
 
-- **Consume an executed Forwarding Result.** The #66 Source/Host producer
-  runs Forwarding in the authorized ODB and delivers the verifiable Native
-  Result, its `source_ref`, Baseline and Rule, and Report/Artifact with the
-  actual Origin, Run and Attempt. #86 consumes it through the applicable Plan
-  Data or PASS dependency and preserves the Host Origin. #66-C reconciles
-  the structural binding. #63 performs any required Trusted Admission.
+- **Consume an executed Forwarding Result.** This route requires a Result
+  handoff contract between #66 and #86. An authorized Source/Host producer
+  would deliver the Native Result, its `source_ref`, Baseline and Rule, and
+  Report/Artifact with the actual Origin, Run and Attempt. Today a Plan Data
+  edge accepts a `prerequisite_action` producer, and a PASS edge from a Check
+  uses a selected Check in the same Plan. The Dagger Check node runs
+  `execution.run_host_check()`. Consuming a prior Result requires a verified
+  input at that boundary, with #66-C structural binding and any required #63
+  Trusted Admission. Preserve the original execution identity when consuming it.
 - **Execute Forwarding in Dagger.** If the consumer requires Dagger
   execution, #66-P0 provides verified historical objects or equivalent
   content bound to the selected paths, Ref, Candidate, Directory and Baseline
   Commit/Tree. #86 verifies and delivers that input through the existing Plan
-  Source/Data handoff and captures the Dagger Native Result and its actual
-  Origin. History that is unavailable or bound to a different Source blocks
-  the dependent Check.
+  Source/Data handoff and captures the Native Result with its actual Origin.
+  History that is unavailable or bound to a different Source blocks the
+  dependent Check.
+
+`dagger_export` records Host origin for Forwarding's Host AST analysis and
+`dagger` as its parent execution context. A native container Check records
+the container execution origin. Preserve both facts when handing off results.
 
 For the selected route, verify the Candidate/Directory/Ref and Baseline,
 the input bytes or the authenticated Native Result, its actual Origin, and the

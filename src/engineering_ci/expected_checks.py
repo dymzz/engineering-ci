@@ -105,6 +105,7 @@ def _source_ref(changeset, content_binding=None):
     if (
         isinstance(content_binding, dict)
         and content_binding.get("digest")
+        and not content_binding.get("unverified_paths")
         and source["verified_input_scope"]
     ):
         source["content_digest"] = content_binding["digest"]
@@ -3135,6 +3136,7 @@ def validate_projection(
     if (
         isinstance(content, dict)
         and content.get("digest")
+        and not content.get("unverified_paths")
         and source.get("content_digest") != content["digest"]
     ):
         raise ExpectedError("expected_content_binding_mismatch")
