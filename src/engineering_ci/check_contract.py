@@ -484,7 +484,8 @@ _LEGACY_PRE_TOOL_V1 = frozenset(
 )
 _CURRENT_DEFINITION_VERSION = {
     "whitespace": 2,
-    "forwarding": 1,
+    # Version 2 restores the original forwarding AST and applicability rules.
+    "forwarding": 2,
     "docs": 2,
     "vulture": 2,
     "tach": 2,

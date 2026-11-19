@@ -254,6 +254,18 @@ def _result(
 
 
 def _pure_reexport(content):
+    def is_export_list(node):
+        if isinstance(node, ast.Assign):
+            return bool(node.targets) and all(
+                isinstance(target, ast.Name) and target.id == "__all__"
+                for target in node.targets
+            )
+        return (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "__all__"
+        )
+
     tree = ast.parse(content)
     body = [
         node
@@ -267,7 +279,10 @@ def _pure_reexport(content):
     return (
         bool(body)
         and any(isinstance(node, ast.ImportFrom) for node in body)
-        and all(isinstance(node, (ast.Import, ast.ImportFrom)) for node in body)
+        and all(
+            isinstance(node, (ast.Import, ast.ImportFrom)) or is_export_list(node)
+            for node in body
+        )
     )
 
 
@@ -568,6 +583,7 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
         for path in paths
         if path.startswith(config.forwarding.source_prefix)
         and path.endswith(".py")
+        and not path.endswith("/__init__.py")
         and path not in deleted
     ]
     scopes = {}
@@ -658,6 +674,7 @@ def _forwarding(paths, changes, root, runner, config):
         for path in paths
         if path.startswith(config.forwarding.source_prefix)
         and path.endswith(".py")
+        and not path.endswith("/__init__.py")
         and (root / path).is_file()
     ]
     if not candidates:
@@ -679,13 +696,14 @@ def _forwarding(paths, changes, root, runner, config):
                 reason="base_content_unavailable",
             )
         try:
+            previous_has_body = bool(ast.parse(previous.stdout).body)
             previous_is_forwarder = _pure_reexport(previous.stdout)
             current_is_forwarder = _pure_reexport(
                 (root / path).read_text(encoding="utf-8")
             )
         except (SyntaxError, UnicodeError):
             return _result("forwarding", "failed", reason="module_unparsable")
-        if current_is_forwarder and not previous_is_forwarder:
+        if current_is_forwarder and previous_has_body and not previous_is_forwarder:
             findings.append(
                 f"{path} became a pure re-export; review the forwarding module"
             )

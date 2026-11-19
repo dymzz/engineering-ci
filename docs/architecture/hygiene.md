@@ -49,7 +49,7 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
 | Check | Runs when | Pass | Failure |
 | --- | --- | --- | --- |
 | `whitespace` | Always | `git diff --check <base>` exits 0 | Nonzero; whitespace diagnostics retained |
-| `forwarding` | A changed file under `forwarding.source_prefix` exists | No module became a pure re-export | Base content unreadable or module unparsable |
+| `forwarding` | A changed Python module under `forwarding.source_prefix` exists, excluding `__init__.py` | No module became a pure re-export | Base content unreadable or module unparsable |
 | `docs` | Documents changed, a path was deleted, or `--full` | Lychee exits 0 for the active affected documents | Lychee missing, broken links, other native failure |
 | `vulture` | Code changed (src/scripts/tests or tach/pyproject) | Exit 0, or exit in `advisory_exit_codes` (status `advisory`) | Other exit or missing tool |
 | `tach` | Code changed | `tach check` exits 0 | Config missing, check fails, tool missing |
@@ -60,7 +60,11 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
   silently checked or reported as covered.
 - `forwarding` reports changed `src` modules that became pure re-exports while
   the base version was substantive. This is an advisory review item, matching
-  the original native diagnostic; it does not fail the run.
+  the original native diagnostic; it does not fail the run. An import-only
+  module may also assign or annotate `__all__`; package `__init__.py` files and
+  modules whose base has no AST statements are excluded. Forwarding definition
+  version 2 restores these original migration semantics; version 1 remains
+  readable but cannot satisfy the version 2 Check.
 - Vulture exit `3` remains `advisory`, not `passed`; the report preserves the
   exit code, bounded output and findings. Other exits are failures.
 - Each check executes at most once; no summary re-runs a scanner.

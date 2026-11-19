@@ -1253,6 +1253,40 @@ def test_definition_version_mismatch_is_insufficient():
     reconciliation.validate_receipt(receipt)
 
 
+def test_forwarding_v1_result_cannot_satisfy_restored_v2_definition():
+    baseline = {"base_commit": "1" * 40}
+    current = check_contract.definition_for("forwarding")
+    legacy = check_contract.definition_for("forwarding", 1)
+    assert current.definition_version == 2
+    assert legacy.definition_version == 1
+    result = check_contract.native_result(
+        legacy,
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="forwarding-v1",
+        native_exit_code=None,
+        evidence={"analysis": "forwarding", "findings": []},
+        rule_ref=RULE_FWD,
+        baseline_ref=baseline,
+        runner_ref=RUNNER_REF,
+    )
+    assert check_contract.validate_result(result) is result
+    entry = make_entry("forwarding", baseline_ref=baseline)
+    receipt = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_FWD, baseline=baseline)],
+        observations=[make_observation("job-1", [result])],
+    )
+    observed = receipt["entries"][0]
+    assert observed["binding_status"] == "insufficient"
+    assert observed["reason"] == "definition_version_mismatch"
+    assert observed["observed_result_ids"] == [result["result_id"]]
+    assert observed["selected_result_ids"] == []
+    reconciliation.validate_receipt(receipt)
+
+
 def test_two_required_tools_missing_one_is_insufficient():
     entry = make_entry("docs")
     projection = make_projection([entry])
