@@ -182,6 +182,7 @@ reason = "shell scripts"
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.invalid")
     _git(repo, "config", "user.name", "ECI Test")
+    _git(repo, "config", "core.autocrlf", "false")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "initial")
     head = _git(repo, "rev-parse", "HEAD").strip()
@@ -193,6 +194,8 @@ def _build_plan_and_expected(
     changed: list[str],
     *,
     effective_profile: dict | None = None,
+    full: bool = False,
+    snapshot: str = "worktree",
 ):
     cfg_path = repo / "ci-selection.toml"
     cfg = selection.load_config(cfg_path)
@@ -210,10 +213,10 @@ def _build_plan_and_expected(
         paths=tuple(changed),
         worktree_dirty=False,
         complete=True,
-        snapshot="worktree",
+        snapshot=snapshot,
     )
     hyg_id = hygiene.config_identity(hyg_path, hyg_cfg, root=repo)
-    sel = selection.select(changeset, cfg, root=repo)
+    sel = selection.select(changeset, cfg, root=repo, full=full)
     plan_doc = selection.plan(
         sel,
         config=cfg,
@@ -1385,14 +1388,18 @@ def test_scoped_execution_scans_and_reports_only_selected_inputs(tmp_path):
     sc_scans = [c for c in calls.calls if "--format=json1" in c]
     zz_scans = [c for c in calls.calls if "--format" in c and "json" in c]
     assert al_scans and all(
-        ".github/workflows/a.yml" in c and ".github/workflows/b.yml" not in c
+        any(arg.endswith("/.github/workflows/a.yml") for arg in c)
+        and not any(arg.endswith("/.github/workflows/b.yml") for arg in c)
         for c in al_scans
     )
     assert sc_scans and all(
-        "scripts/ok.sh" in c and "scripts/bad.sh" not in c for c in sc_scans
+        any(arg.endswith("/scripts/ok.sh") for arg in c)
+        and not any(arg.endswith("/scripts/bad.sh") for arg in c)
+        for c in sc_scans
     )
     assert zz_scans and all(
-        ".github/workflows/a.yml" in c and ".github/workflows/b.yml" not in c
+        any(arg.endswith("/.github/workflows/a.yml") for arg in c)
+        and not any(arg.endswith("/.github/workflows/b.yml") for arg in c)
         for c in zz_scans
     )
 
@@ -1401,7 +1408,6 @@ def test_profile_to_native_result_to_expected_strict_binding(tmp_path):
     from test_reconciliation import (
         ATTEMPT_QUALIFICATION_REF,
         ATTEMPT_REF,
-        BASELINE_SOURCE_REF,
         JOB_ISSUER_REF,
         RULE_SOURCE_REF,
         RUN_REF,
@@ -1432,8 +1438,8 @@ def test_profile_to_native_result_to_expected_strict_binding(tmp_path):
         approval_source="governance-signed",
         effective_at="2026-11-15T00:00:00Z",
         evaluated_at="2026-11-15T00:00:00Z",
-        context="worktree",
-        action="worktree",
+        context="commit",
+        action="commit",
         target="HEAD",
         declared_checks=declared,
         required_obligations=[
@@ -1466,6 +1472,7 @@ declared_checks = {json.dumps(declared)}
         repo,
         [".github/workflows/ci.yml", "scripts/ok.sh"],
         effective_profile=profile,
+        snapshot="commit",
     )
     assert exp_v2["schema_version"] == 2
     assert exp_v2["authority_status"] == "verified"
@@ -1481,7 +1488,7 @@ declared_checks = {json.dumps(declared)}
         nr = by_name[name]["native_result"]
         assert nr["check"]["profile_ref"] == prof_ref_v1
         assert nr["check"]["rule_ref"]["sha256"]
-        assert nr["source_ref"]["binding_status"] == "content_digest"
+        assert nr["source_ref"]["binding_status"] == "byte_tree"
         if name in {"actionlint", "workflow_shellcheck", "zizmor"}:
             assert {"kind": "changed_path", "path": ".github/workflows/ci.yml"} in nr[
                 "input_refs"
@@ -1489,241 +1496,123 @@ declared_checks = {json.dumps(declared)}
         elif name == "shellcheck":
             assert {"kind": "changed_path", "path": "scripts/ok.sh"} in nr["input_refs"]
 
-    # Closure-scoped Expected satisfaction + #104 Reconciliation using actual executed results.
+    # Resolve each Check from Plan and disk independently of its Native Result.
+    exp_v2 = plan_v2["expected_checks"]
     exp_by_name = {entry["name"]: entry for entry in exp_v2["checks"]}
-    al_nr = by_name["actionlint"]["native_result"]
-    closure_source = {
-        **al_nr["source_ref"],
-        "scope_kind": "check_input_closure",
-    }
-    strict_al = {
-        "check_id": al_nr["check"]["check_id"],
-        "definition_version": al_nr["check"]["definition_version"],
-        "rule_ref": al_nr["check"]["rule_ref"],
-        "profile_ref": exp_by_name["actionlint"]["profile_ref"],
-        "source_ref": closure_source,
-        "input_refs": al_nr["input_refs"],
-    }
-    # Actual unmodified host worktree result matches profile/rule/input identities under
-    # #52 result_matches_expected when compared against worktree source_ref, and refuses
-    # a mismatched profile_ref.
-    assert check_contract.result_matches_expected(
-        al_nr,
-        {**strict_al, "source_ref": al_nr["source_ref"]},
-    )
-    assert not check_contract.result_matches_expected(
-        al_nr,
-        {
-            **strict_al,
-            "source_ref": al_nr["source_ref"],
-            "profile_ref": check_contract.profile_ref("eci/default", "2.0.0"),
-        },
-    )
-
-    # Raw unmodified execution.execute() NativeResults already bind profile_ref,
-    # per-check effective rule_ref, and input_refs; passing them unmodified against
-    # a #66-P0 check_input_closure resolution stops ONLY at source_mismatch because
-    # host worktree execution emits scope_kind="changed_paths" until #66-P0 Closure
-    # lands upstream.
-    closure_source = {
-        **by_name["actionlint"]["native_result"]["source_ref"],
-        "scope_kind": "check_input_closure",
-    }
-    raw_results = [by_name[name]["native_result"] for name in declared]
-    raw_report = {
-        "kind": reconciliation.EXECUTION_REPORT_KIND,
-        "schema_version": 1,
-        "checks": [{"name": "raw", "native_results": raw_results}],
-    }
-    raw_report_ref = report_ref_for(raw_report)
-    raw_observations = [
-        {
-            "job_ref": "job-1",
-            "run_ref": RUN_REF,
-            "attempt_ref": ATTEMPT_REF,
-            "runner_ref": RUNNER_REF,
-            "report": raw_report,
-            "report_ref": raw_report_ref,
-            "native_results": raw_results,
-            "job_receipt": {
-                "kind": reconciliation.JOB_RECEIPT_KIND,
-                "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
-                "job_ref": "job-1",
-                "run_ref": RUN_REF,
-                "attempt_ref": ATTEMPT_REF,
-                "runner_ref": RUNNER_REF,
-                "report_ref": raw_report_ref,
-                "issuer_ref": dict(JOB_ISSUER_REF),
-                "verification_status": "upstream_verified",
-            },
-        }
+    resolutions = [
+        execution.build_source_resolution(
+            plan_v2,
+            name,
+            root=repo,
+            expected_check_ref=exp_by_name[name]["expected_check_ref"],
+        )
+        for name in declared
     ]
-    closure_resolutions_for_raw = []
-    closure_routings_for_raw = []
-    for name in declared:
-        orig_nr = by_name[name]["native_result"]
-        entry = exp_by_name[name]
-        res_item = {
+    routings = [
+        {
             "expected_check_ref": entry["expected_check_ref"],
-            "rule_ref": orig_nr["check"]["rule_ref"],
-            "source_ref": closure_source,
-            "baseline_ref": orig_nr.get("baseline_ref"),
-            "input_refs": orig_nr["input_refs"],
-            "rule_source_ref": dict(RULE_SOURCE_REF),
-            "source_receipt_ref": dict(SOURCE_RECEIPT_REF),
+            "job_refs": ["job-1"],
+            "job_instances": [
+                {
+                    "job_ref": "job-1",
+                    "run_ref": RUN_REF,
+                    "attempt_ref": ATTEMPT_REF,
+                    "runner_ref": "execution:host",
+                    "attempt_eligibility": "eligible",
+                    "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
+                }
+            ],
+            "mapping_status": "routed",
+            "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
+            "effective_config_ref": {"name": "hook-job", "version": "1"},
+            "reason": None,
         }
-        if orig_nr.get("baseline_ref") is not None:
-            res_item["baseline_source_ref"] = dict(BASELINE_SOURCE_REF)
-        closure_resolutions_for_raw.append(res_item)
-        closure_routings_for_raw.append(
-            {
-                "expected_check_ref": entry["expected_check_ref"],
-                "job_refs": ["job-1"],
-                "job_instances": [
-                    {
-                        "job_ref": "job-1",
-                        "run_ref": RUN_REF,
-                        "attempt_ref": ATTEMPT_REF,
-                        "runner_ref": RUNNER_REF,
-                        "attempt_eligibility": "eligible",
-                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
-                    }
-                ],
-                "mapping_status": "routed",
-                "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
-                "effective_config_ref": {"name": "hook-job", "version": "1"},
-                "reason": None,
-            }
-        )
-    raw_vs_closure = reconciliation.reconcile_expected_results(
-        exp_v2,
-        routing=closure_routings_for_raw,
-        resolutions=closure_resolutions_for_raw,
-        observations=raw_observations,
-    )
-    raw_by_name = {item["name"]: item for item in raw_vs_closure["entries"]}
-    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
-        assert raw_by_name[wf_check]["binding_status"] == "insufficient"
-        assert raw_by_name[wf_check]["reason"] == "execution_object_mismatch"
-        assert (
-            raw_by_name[wf_check]["rejected_results"][0]["reason"] == "source_mismatch"
-        )
-
-    # Simulated #66-P0 Source Closure handoff: upgrading only source_ref to
-    # scope_kind="check_input_closure" proves full #52 satisfaction + #104 matched.
-    closure_results_by_name = {}
-    resolutions = []
-    routings = []
-    all_closure_results = []
-    for name in declared:
-        orig_nr = by_name[name]["native_result"]
-        entry = exp_by_name[name]
-        defn = check_contract.definition_for(name)
-        closed_nr = check_contract.native_result(
-            defn,
-            source=closure_source,
-            status=orig_nr["status"],
-            result_origin=orig_nr["result_origin"],
-            result_instance=orig_nr["result_instance"],
-            native_exit_code=orig_nr["native_exit_code"],
-            input_refs=orig_nr["input_refs"],
-            coverage=orig_nr.get("coverage"),
-            rule_ref=orig_nr["check"]["rule_ref"],
-            profile_ref=orig_nr["check"]["profile_ref"],
-            evidence=orig_nr["evidence"],
-            runner_ref=RUNNER_REF,
-            baseline_ref=orig_nr.get("baseline_ref"),
-            tool=orig_nr.get("tool"),
-        )
-        closure_results_by_name[name] = closed_nr
-        all_closure_results.append(closed_nr)
-        res_item = {
-            "expected_check_ref": entry["expected_check_ref"],
-            "rule_ref": orig_nr["check"]["rule_ref"],
-            "source_ref": closure_source,
-            "baseline_ref": orig_nr.get("baseline_ref"),
-            "input_refs": orig_nr["input_refs"],
-            "rule_source_ref": dict(RULE_SOURCE_REF),
-            "source_receipt_ref": dict(SOURCE_RECEIPT_REF),
-        }
-        if orig_nr.get("baseline_ref") is not None:
-            res_item["baseline_source_ref"] = dict(BASELINE_SOURCE_REF)
-        resolutions.append(res_item)
-        routings.append(
-            {
-                "expected_check_ref": entry["expected_check_ref"],
-                "job_refs": ["job-1"],
-                "job_instances": [
-                    {
-                        "job_ref": "job-1",
-                        "run_ref": RUN_REF,
-                        "attempt_ref": ATTEMPT_REF,
-                        "runner_ref": RUNNER_REF,
-                        "attempt_eligibility": "eligible",
-                        "qualification_ref": dict(ATTEMPT_QUALIFICATION_REF),
-                    }
-                ],
-                "mapping_status": "routed",
-                "scheduler_ref": {"name": "lefthook", "version": "2.2.2"},
-                "effective_config_ref": {"name": "hook-job", "version": "1"},
-                "reason": None,
-            }
-        )
-
-    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
-        nr_w = closure_results_by_name[wf_check]
-        sat = check_contract.evaluate_expected_satisfaction(
-            [nr_w],
-            {
-                "check_id": nr_w["check"]["check_id"],
-                "definition_version": nr_w["check"]["definition_version"],
-                "rule_ref": nr_w["check"]["rule_ref"],
-                "profile_ref": exp_by_name[wf_check]["profile_ref"],
-                "source_ref": closure_source,
-                "input_refs": nr_w["input_refs"],
-            },
-        )
-        assert sat["status"] == "satisfied", (wf_check, sat)
-
+        for entry in exp_by_name.values()
+    ]
+    native_results = [by_name[name]["native_result"] for name in declared]
     rec_report = {
         "kind": reconciliation.EXECUTION_REPORT_KIND,
         "schema_version": 1,
-        "checks": [{"name": "reconciled", "native_results": all_closure_results}],
+        "checks": [{"name": "reconciled", "native_results": native_results}],
     }
     rec_report_ref = report_ref_for(rec_report)
     rec_observation = {
         "job_ref": "job-1",
         "run_ref": RUN_REF,
         "attempt_ref": ATTEMPT_REF,
-        "runner_ref": RUNNER_REF,
+        "runner_ref": "execution:host",
         "report": rec_report,
         "report_ref": rec_report_ref,
-        "native_results": all_closure_results,
+        "native_results": native_results,
         "job_receipt": {
             "kind": reconciliation.JOB_RECEIPT_KIND,
             "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
             "job_ref": "job-1",
             "run_ref": RUN_REF,
             "attempt_ref": ATTEMPT_REF,
-            "runner_ref": RUNNER_REF,
+            "runner_ref": "execution:host",
             "report_ref": rec_report_ref,
             "issuer_ref": dict(JOB_ISSUER_REF),
             "verification_status": "upstream_verified",
         },
     }
-    matched_receipt = reconciliation.reconcile_expected_results(
-        exp_v2,
-        routing=routings,
-        resolutions=resolutions,
-        observations=[rec_observation],
-    )
-    matched_by_name = {item["name"]: item for item in matched_receipt["entries"]}
-    for wf_check in ("actionlint", "shellcheck", "workflow_shellcheck", "zizmor"):
-        assert matched_by_name[wf_check]["binding_status"] == "matched", (
-            wf_check,
-            matched_by_name[wf_check],
+
+    def reconcile(resolved):
+        return {
+            item["name"]: item
+            for item in reconciliation.reconcile_expected_results(
+                exp_v2,
+                routing=routings,
+                resolutions=resolved,
+                observations=[rec_observation],
+            )["entries"]
+        }
+
+    matched = reconcile(resolutions)
+    for name, resolved in zip(declared, resolutions, strict=True):
+        if name == "whitespace":
+            continue
+        native = by_name[name]["native_result"]
+        assert matched[name]["binding_status"] == "matched", (name, matched[name])
+        assert native["source_ref"] == resolved["source_ref"]
+        assert native["source_ref"]["scope_kind"] == "full_input_closure"
+        scan_inputs = [
+            ref for ref in resolved["input_refs"] if ref["kind"] == "scan_target"
+        ]
+        assert len(scan_inputs) == 1 and scan_inputs[0] in native["input_refs"]
+        assert scan_inputs[0]["path"] == (
+            "scripts/ok.sh" if name == "shellcheck" else ".github/workflows/ci.yml"
         )
-    assert matched_receipt["summary"]["matched"] >= 4
+
+    al_idx = declared.index("actionlint")
+    actual = resolutions[al_idx]
+    for source_update, reason in (
+        (
+            {"verified_input_scope": [".github/workflows/ci.yml"]},
+            "expected_input_scope_uncovered",
+        ),
+        ({"actual_execution_source": "different_view"}, "execution_object_mismatch"),
+    ):
+        incompatible = list(resolutions)
+        incompatible[al_idx] = {
+            **actual,
+            "source_ref": {**actual["source_ref"], **source_update},
+        }
+        assert reconcile(incompatible)["actionlint"]["reason"] == reason
+
+    # A different scan digest does not match the actual observed bytes even
+    # when the Plan Source and all other identity fields are unchanged.
+    incompatible = list(resolutions)
+    incompatible[al_idx] = {
+        **actual,
+        "input_refs": [
+            {**ref, "sha256": "0" * 64} if ref["kind"] == "scan_target" else ref
+            for ref in actual["input_refs"]
+        ],
+    }
+    assert (
+        reconcile(incompatible)["actionlint"]["reason"] == "expected_inputs_uncovered"
+    )
 
     # Negative 1: Profile without [effective_profile] policy proof (authority_status == "unverified") ->
     # Execution Producer MUST keep native profile_ref None and strict satisfaction/reconciliation MUST fail.
@@ -1877,8 +1766,8 @@ declared_checks = {json.dumps(declared)}
         approval_source="governance-signed",
         effective_at="2026-11-15T00:00:00Z",
         evaluated_at="2026-11-15T00:00:00Z",
-        context="worktree",
-        action="worktree",
+        context="commit",
+        action="commit",
         target="HEAD",
         declared_checks=declared,
         required_obligations=[
@@ -1900,7 +1789,7 @@ declared_checks = {json.dumps(declared)}
         paths=(".github/workflows/ci.yml", "scripts/ok.sh"),
         worktree_dirty=False,
         complete=True,
-        snapshot="worktree",
+        snapshot="commit",
     )
     exp_v2_other = expected_checks.derive_expected_checks(
         other_cs,
@@ -1927,7 +1816,7 @@ declared_checks = {json.dumps(declared)}
     ]
     other_resolutions = [
         {
-            **res,
+            **{key: val for key, val in res.items() if key != "profile_ref"},
             "expected_check_ref": other_ref_by_name[
                 orig_name_by_ref[res["expected_check_ref"]]
             ],

@@ -1087,6 +1087,7 @@ def _run_workflow_script_checks(
     check_omitted=True,
     shared_cache=None,
     admitted_external_targets=None,
+    workflow_source_authority=None,
 ):
     wanted = [item for item in selected if item.get("name") in _WORKFLOW_SCRIPT_CHECKS]
     omitted_entries = (
@@ -1151,6 +1152,65 @@ def _run_workflow_script_checks(
         )
         else None
     )
+    binding = plan["git"].get("content_binding")
+
+    def binding_current():
+        return (
+            not isinstance(binding, dict)
+            or not binding.get("digest")
+            or (
+                selection.worktree_content_binding(root, binding.get("paths") or ())
+                == binding
+            )
+        )
+
+    if not binding_current():
+        return [
+            {
+                "name": name,
+                "selected": item.get("status"),
+                "status": "not_executed",
+                "reason": "workflow_target_plan_digest_mismatch",
+                "execution_started": False,
+                "execution_kind": "not_started",
+            }
+            for name, item in selected_by_name.items()
+        ] + omitted_entries, True
+
+    authority = None
+    if callable(workflow_source_authority):
+        plan_ref = _canonical_sha256(plan)
+        event = {
+            key: plan["git"][key]
+            for key in (
+                "snapshot",
+                "execution_tree",
+                "tree",
+                "index_tree",
+                "merge_tree",
+                "head_commit",
+                "base_commit",
+                "remote_ref",
+                "local_ref",
+                "ref_action",
+            )
+            if key in plan["git"]
+        }
+
+        def authority(kind, name, claim):
+            return (
+                workflow_source_authority(
+                    {
+                        "kind": kind,
+                        "plan_ref": plan_ref,
+                        "event": dict(event),
+                        "check": name,
+                        "source": dict(claim),
+                    }
+                )
+                is True
+            )
+
     suite = workflow_analysis.run_workflow_script_suite(
         selected_by_name,
         root=root,
@@ -1175,10 +1235,16 @@ def _run_workflow_script_checks(
         inline_shellcheck_inputs=inline_shellcheck_inputs,
         admitted_external_configs=admitted_ext,
         admitted_external_targets=admitted_external_targets,
+        authorize_external_target=(
+            (lambda name, claim: authority("external_target", name, claim))
+            if authority is not None
+            else None
+        ),
         validate_target_source=_workflow_target_validator(
-            plan, root, generated_input_refs
+            plan, root, generated_input_refs, authority=authority
         ),
     )
+    source_current = binding_current()
     results = []
     any_failed = False
     for item in wanted:
@@ -1193,6 +1259,15 @@ def _run_workflow_script_checks(
         }
         entry = dict(entry)
         entry.setdefault("plan_authorized", True)
+        if rule is not None and rule.get("path") and rule.get("sha256"):
+            entry["config_input_ref"] = {"path": rule["path"], "sha256": rule["sha256"]}
+        if not source_current and entry.get("execution_started"):
+            entry["target_source_problem"] = (
+                "workflow_target_plan_changed_during_execution"
+            )
+            if entry["status"] != "failed":
+                entry.setdefault("native_status", entry["status"])
+                entry.update(status="unknown", reason=entry["target_source_problem"])
         if entry.get("status") == "failed" or (
             entry.get("status") == "not_executed"
             and str(entry.get("reason") or "").startswith(
@@ -1205,21 +1280,43 @@ def _run_workflow_script_checks(
     return results, any_failed
 
 
-def _workflow_target_validator(plan, root, generated_inputs):
-    """Check observed digests against the independently declared source, when present."""
+def _workflow_target_validator(plan, root, generated_inputs, *, authority=None):
+    """Verify the observed target against its original Git or Producer source."""
     git = plan["git"]
     declared = (git.get("content_binding") or {}).get("paths") or {}
-    tree = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
+    tree = (
+        git.get("execution_tree")
+        or git.get("tree")
+        or git.get("index_tree")
+        or git.get("merge_tree")
+    )
     immutable = git.get("snapshot") in {"commit", "push", "pr_merge", "index"}
     git_available = immutable and selection._resolve_git_dir(root) is not None
     generated = {item["path"]: item for item in generated_inputs}
     verified_directories = {}
+    materializations = {}
 
-    def validate(target):
-        if target["policy_scope"] == "event_external":
-            return (
-                None  # The runtime grant, not the repository tree, binds these bytes.
+    def materialization_verified(check_name):
+        if check_name not in materializations:
+            content_id = git.get("source_tree_id")
+            materializations[check_name] = (
+                authority is not None
+                and _is_hex64(content_id)
+                and authority(
+                    "tree_materialization",
+                    check_name,
+                    {"tree": tree, "source_tree_id": content_id},
+                )
+                and selection.directory_content_id(root) == content_id
             )
+        return materializations[check_name]
+
+    def validate(target, *, check_name=None):
+        if immutable and (
+            not _is_git_oid(tree)
+            or (not git_available and not materialization_verified(check_name))
+        ):
+            return "workflow_target_tree_unverified"
         path, resolved, digest = (
             target["path"],
             target["resolved_path"],
@@ -1241,11 +1338,16 @@ def _workflow_target_validator(plan, root, generated_inputs):
                 if not verified_directories[name]:
                     return "workflow_target_generated_input_mismatch"
                 return None
+        if target["policy_scope"] == "event_external":
+            return None  # The runtime authority and exact grant already verified it.
         if path in declared and declared[path] != digest:
             return "workflow_target_plan_digest_mismatch"
-        if git_available and _is_git_oid(tree):
+        if git_available:
             blob = selection._git_bytes(root, "cat-file", "blob", f"{tree}:{resolved}")
             if blob.returncode or hashlib.sha256(blob.stdout).hexdigest() != digest:
+                return "workflow_target_tree_mismatch"
+            # Reuse the Git binding check for every component of an alias.
+            if path != resolved and not _verify_git_execution_binding(plan, root)[0]:
                 return "workflow_target_tree_mismatch"
         return None
 
@@ -1450,12 +1552,33 @@ def producer_artifact_root(artifact_root, producer_ref):
 def build_consumer_view(source_root, artifacts):
     """Copy source into an isolated view and overlay verified producer files."""
     temporary = tempfile.TemporaryDirectory(prefix="eci-consumer-")
+    source_root = Path(source_root).resolve()
     view = Path(temporary.name).resolve() / "source"
 
     def skip_junctions(directory, names):
         return [name for name in names if (Path(directory) / name).is_junction()]
 
-    shutil.copytree(source_root, view, symlinks=True, ignore=skip_junctions)
+    try:
+        shutil.copytree(source_root, view, symlinks=True, ignore=skip_junctions)
+        for directory, dirs, files in os.walk(view, followlinks=False):
+            for name in (*dirs, *files):
+                link = Path(directory) / name
+                if not link.is_symlink():
+                    continue
+                target = link.readlink()
+                if not target.is_absolute():
+                    continue
+                target = Path(os.path.normpath(target))
+                if target.is_relative_to(source_root):
+                    mapped = view / target.relative_to(source_root)
+                    link.unlink()
+                    link.symlink_to(
+                        os.path.relpath(mapped, link.parent),
+                        target_is_directory=name in dirs,
+                    )
+    except OSError as error:
+        temporary.cleanup()
+        raise ExecutionError("data_consumer_view_unavailable") from error
     for item in artifacts:
         if len(item) == 3:
             producer_root, rel, kind = item
@@ -1469,7 +1592,10 @@ def build_consumer_view(source_root, artifacts):
             destinations.extend(
                 target / path.relative_to(source) for path in source.rglob("*")
             )
-        if any(path.resolve() != path for path in destinations):
+        if any(
+            not path.is_relative_to(view) or path.resolve() != path
+            for path in destinations
+        ):
             temporary.cleanup()
             raise ExecutionError("data_artifact_target_symlink")
         if kind == "directory":
@@ -2042,11 +2168,25 @@ def _prepare_source_snapshots(
         tree_files = _tree_files_for_snapshot(plan, root, execution_context)
         if tree_files:
             binding = selection.worktree_content_binding(root, tree_files)
-            return {
+            snapshots = {
                 "kind": "full",
                 "files": tree_files,
                 "binding": binding,
             }
+            if execution_context == "host" and any(
+                item.get("name") in _WORKFLOW_SCRIPT_CHECKS for item in selected or ()
+            ):
+                tree = (
+                    git.get("execution_tree")
+                    or git.get("tree")
+                    or git.get("index_tree")
+                    or git.get("merge_tree")
+                )
+                if _is_git_oid(tree) and selection._resolve_git_dir(root) is not None:
+                    candidate = selection.tree_content_id(root, tree)
+                    if candidate and selection.directory_content_id(root) == candidate:
+                        snapshots["workflow_tree_content_id"] = candidate
+            return snapshots
         return {"kind": "unproven"}
     per_check = {}
     for item in selected or ():
@@ -2094,7 +2234,30 @@ def _verified_check_source_ref(
         if name in _HYGIENE_CHECKS
         else None
     )
-    if not _closure_supported(
+    workflow_tree = (
+        source_snapshots.get("workflow_tree_content_id")
+        if name in _WORKFLOW_SCRIPT_CHECKS
+        else None
+    )
+    if workflow_tree:
+        config_input = (plan.get("inputs") or {}).get("config") or {}
+        workflow_config = (config_input.get("normalized") or {}).get(
+            "workflow_checks"
+        ) or {}
+        if (
+            config_input.get("workflow_external_configs")
+            or config_input.get("policy_scope") == "event_external"
+            or (name == "zizmor" and not workflow_config.get("zizmor_offline", True))
+            or item.get("generated_input_refs")
+            or item.get("target_source_problem")
+            or any(
+                target["policy_scope"] == "event_external"
+                for target in item.get("target_sources", ())
+            )
+            or selection.directory_content_id(root) != workflow_tree
+        ):
+            return None
+    elif not _closure_supported(
         name,
         root=resolved_root,
         execution_context=execution_context,
@@ -2141,7 +2304,7 @@ def _verified_check_source_ref(
         after = selection.worktree_content_binding(root, files)
         if after != before:
             return None
-        mat_digest = (
+        mat_digest = workflow_tree or (
             str(git["source_tree_id"])
             if git.get("source_tree_id")
             else str(before["digest"])
@@ -3413,6 +3576,17 @@ def _independent_rule_for_check(
         path=rel_path,
         digest=raw_sha,
     )
+    if check_name in _WORKFLOW_SCRIPT_CHECKS:
+        config_inputs = (plan.get("inputs") or {}).get("config") or {}
+        rule_ref = workflow_analysis.effective_check_rule_ref(
+            check_name,
+            selection_rule_ref=rule_ref,
+            selection_config=sel_cfg,
+            root=root,
+            admitted_external_configs=config_inputs.get("workflow_external_configs"),
+        )
+        if rule_ref is None:
+            raise ExecutionError("workflow_config_unverified")
     cfg_input = {"kind": "config", "path": rel_path, "sha256": raw_sha}
     return (
         rule_ref,
@@ -3505,15 +3679,32 @@ def build_source_resolution(
         "source_ref": source_ref,
         "rule_source_ref": rule_source_ref,
     }
+    input_refs = [cfg_input]
+    for path in scope_item.get("inputs") or ():
+        if isinstance(path, str) and path:
+            input_refs.append({"kind": "changed_path", "path": path})
+    if check_name in _WORKFLOW_SCRIPT_CHECKS:
+        bound, reason, _ = _verify_execution_binding(
+            plan, resolved_root, execution_context=execution_context
+        )
+        if not bound:
+            raise ExecutionError(reason or "workflow_target_source_unverified")
+        validate_target = _workflow_target_validator(plan, resolved_root, ())
+        for path in sorted(set(scope_item.get("inputs") or ())):
+            target, reason = workflow_analysis._inspect_target(
+                resolved_root.resolve(), path, None
+            )
+            if reason is None:
+                reason = validate_target(target, check_name=check_name)
+            if reason is not None:
+                raise ExecutionError(reason)
+            input_refs.append({"kind": "scan_target", **target})
+        receipt_payload["input_refs"] = input_refs
     receipt_sha = hashlib.sha256(
         json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
-    input_refs = [cfg_input]
-    for path in scope_item.get("inputs") or ():
-        if isinstance(path, str) and path:
-            input_refs.append({"kind": "changed_path", "path": path})
     baseline = _baseline_reference(plan)
     resolved_profile = _profile_reference(
         plan, root=resolved_root, execution_context=execution_context
@@ -3852,6 +4043,9 @@ def _native_results(
         ref = {"kind": "changed_path", "path": path}
         if ref not in inputs and ref not in extra_inputs:
             extra_inputs.append(ref)
+    extra_inputs.extend(
+        {"kind": "scan_target", **target} for target in item.get("target_sources", ())
+    )
     native = check_contract.native_result(
         definition,
         source=source,
@@ -3871,37 +4065,22 @@ def _native_results(
     return [native]
 
 
-def _workflow_target_source(item, fallback):
-    """Use the observed target bytes without claiming a full input closure."""
-    sources = item["target_sources"]
-    metadata = {
-        key: fallback[key]
-        for key in (
-            "declared_target_tree",
-            "actual_execution_source",
-            "head_commit",
-            "index_tree",
-        )
-        if key in fallback
-    }
+def _workflow_result_source(item, source):
+    """Keep the Plan Source and its distinct per-Check scan inputs."""
     if item.get("target_source_problem"):
-        return check_contract.source_ref(fallback["snapshot"], **metadata)
-    if any(source["policy_scope"] == "event_external" for source in sources):
-        metadata["actual_execution_source"] = "worktree_with_event_external"
-    identity = {
-        source["path"]: (
-            source["sha256"] if source["path"] == source["resolved_path"] else source
+        return check_contract.source_ref(
+            source["snapshot"],
+            declared_target_tree=source.get("declared_target_tree"),
+            actual_execution_source=source.get("actual_execution_source"),
+            head_commit=source.get("head_commit"),
+            index_tree=source.get("index_tree"),
         )
-        for source in sources
-    }
-    return check_contract.source_ref(
-        fallback["snapshot"],
-        **metadata,
-        content_digest=hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-        verified_scope=identity,
-    )
+    if any(
+        target["policy_scope"] == "event_external"
+        for target in item.get("target_sources", ())
+    ):
+        return {**source, "actual_execution_source": "worktree_with_event_external"}
+    return source
 
 
 def _decorate_checks(
@@ -3967,8 +4146,8 @@ def _decorate_checks(
             if root is not None
             else None
         ) or fallback_source
-        if name in _WORKFLOW_SCRIPT_CHECKS and item.get("target_sources"):
-            source = _workflow_target_source(item, fallback_source)
+        if name in _WORKFLOW_SCRIPT_CHECKS:
+            source = _workflow_result_source(item, source)
         if item.get("execution_started") is False:
             # ``execution_started`` describes the Check's own verdict process
             # (for docs: the Lychee scan). A prerequisite tool that already ran
@@ -4090,6 +4269,7 @@ def run_host_check(
     shared_cache=None,
     profile_ref=None,
     admitted_external_targets=None,
+    workflow_source_authority=None,
 ):
     """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
@@ -4140,6 +4320,7 @@ def run_host_check(
             check_omitted=False,
             shared_cache=shared_cache,
             admitted_external_targets=admitted_external_targets,
+            workflow_source_authority=workflow_source_authority,
         )
         raw = results or [
             {
@@ -4203,6 +4384,7 @@ def _execute_with_dependencies(
     report,
     profile_ref=None,
     admitted_external_targets=None,
+    workflow_source_authority=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -4412,6 +4594,7 @@ def _execute_with_dependencies(
                         shared_cache=script_cache,
                         profile_ref=profile_ref,
                         admitted_external_targets=admitted_external_targets,
+                        workflow_source_authority=workflow_source_authority,
                     )
                 finally:
                     temporary.cleanup()
@@ -4430,6 +4613,7 @@ def _execute_with_dependencies(
                     shared_cache=script_cache,
                     profile_ref=profile_ref,
                     admitted_external_targets=admitted_external_targets,
+                    workflow_source_authority=workflow_source_authority,
                 )
             check_cache[name] = entry
             return entry
@@ -4818,8 +5002,14 @@ def execute(
     run_instance=None,
     profile_ref=None,
     admitted_external_targets=None,
+    workflow_source_authority=None,
 ):
-    """Execute a Plan. External Workflow/Shell grants come from the runtime caller."""
+    """Execute a Plan with optional independently verified Workflow/Shell Source claims.
+
+    ``workflow_source_authority`` belongs to the runtime that authenticates the
+    claims. A serialized Plan or external path/digest dictionary cannot act as
+    that authority.
+    """
     try:
         validate_plan(plan)
         if (
@@ -4912,6 +5102,7 @@ def execute(
             report=report,
             profile_ref=profile_ref,
             admitted_external_targets=admitted_external_targets,
+            workflow_source_authority=workflow_source_authority,
         )
         if early is not None:
             return early
@@ -5003,6 +5194,7 @@ def execute(
         selection_config=selection_config,
         policy_admission=policy_admission,
         admitted_external_targets=admitted_external_targets,
+        workflow_source_authority=workflow_source_authority,
     )
     native_checks = [*hygiene_results, *workflow_script_results]
     if source_result is not None:

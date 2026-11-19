@@ -762,53 +762,67 @@ class EngineeringCi:
         container = self._uv_tool_container(source)
         return await _exec_capture(container, argv)
 
-    async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned Workflow checker once and classify its result."""
+    async def _run_repository_script(self, source, policy, arguments, tool_key):
+        from engineering_ci import workflow_analysis
+
         container = self._uv_tool_container(source)
-        tool_key = "actionlint+shellcheck" if policy.get("shellcheck") else "actionlint"
+        # Inspect the exact filtered mount in the same immutable container
+        # snapshot used by the native tool.
+        inspected = container.with_new_file(
+            "/tmp/eci_scan_source.py",
+            Path(workflow_analysis.__file__).read_text(encoding="utf-8"),
+        ).with_exec(
+            [
+                "python",
+                "-c",
+                (
+                    "import json, sys; sys.path.insert(0, '/tmp'); "
+                    "from eci_scan_source import repository_scan_targets; "
+                    "print(json.dumps(repository_scan_targets('/workspace', json.loads(sys.argv[1]))))"
+                ),
+                json.dumps(policy),
+            ]
+        )
+        observed = json.loads(await inspected.stdout())
+        refusal = workflow_analysis.repository_scan_refusal(policy, observed)
+        if refusal is not None:
+            return refusal
+        policy = {
+            **policy,
+            "scan_paths": [target["path"] for target in observed["targets"]],
+        }
         result = container.with_exec(
-            script.runner_prefix(tool_key) + script.actionlint_arguments(policy),
+            script.runner_prefix(tool_key) + arguments(policy),
             expect=dagger.ReturnType.ANY,
         )
         stdout = await result.stdout()
-        return script.script_report(
+        report = script.script_report(
             policy,
             await result.exit_code(),
             stdout,
             await result.stderr(),
-            native_raw=stdout if stdout.lstrip().startswith("[") else "",
+            native_raw=stdout
+            if policy["tool"] != "actionlint" or stdout.lstrip().startswith("[")
+            else "",
+        )
+        report["target_sources"] = observed["targets"]
+        report["source_directory_digest"] = await source.digest()
+        return report
+
+    async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
+        tool_key = "actionlint+shellcheck" if policy.get("shellcheck") else "actionlint"
+        return await self._run_repository_script(
+            source, policy, script.actionlint_arguments, tool_key
         )
 
     async def _run_shellcheck(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned ShellCheck checker once and classify its result."""
-        container = self._uv_tool_container(source)
-        result = container.with_exec(
-            script.runner_prefix("shellcheck") + script.shellcheck_arguments(policy),
-            expect=dagger.ReturnType.ANY,
-        )
-        stdout = await result.stdout()
-        return script.script_report(
-            policy,
-            await result.exit_code(),
-            stdout,
-            await result.stderr(),
-            native_raw=stdout,
+        return await self._run_repository_script(
+            source, policy, script.shellcheck_arguments, "shellcheck"
         )
 
     async def _run_zizmor(self, source: dagger.Directory, policy: dict) -> dict:
-        """Execute the pinned zizmor checker once and classify its result."""
-        container = self._uv_tool_container(source)
-        result = container.with_exec(
-            script.runner_prefix("zizmor") + script.zizmor_arguments(policy),
-            expect=dagger.ReturnType.ANY,
-        )
-        stdout = await result.stdout()
-        return script.script_report(
-            policy,
-            await result.exit_code(),
-            stdout,
-            await result.stderr(),
-            native_raw=stdout,
+        return await self._run_repository_script(
+            source, policy, script.zizmor_arguments, "zizmor"
         )
 
     @function
@@ -2287,6 +2301,30 @@ def pytest_sessionfinish(session, exitstatus):
             raise RuntimeError("actionlint reported no usable diagnostic")
         if not broken["stdout"].strip():
             raise RuntimeError("actionlint diagnostics were not preserved")
+        alias = ".github/workflows/alias.yml"
+        alias_report = await self._run_actionlint(
+            source.with_symlink("valid.yml", alias), script.actionlint_policy([alias])
+        )
+        if (
+            alias_report["outcome"] != "clean"
+            or alias_report["target_sources"][0]["resolved_path"]
+            != ".github/workflows/valid.yml"
+            or alias_report["target_sources"][0]["sha256"]
+            != results["clean"]["target_sources"][0]["sha256"]
+        ):
+            raise RuntimeError("actionlint did not observe the internal alias's bytes")
+        invalid = ".github/workflows/invalid.yml"
+        invalid_report = await self._run_actionlint(
+            source.with_symlink("missing.yml", invalid),
+            script.actionlint_policy([invalid]),
+        )
+        if (
+            invalid_report["outcome"] != "not_executed"
+            or invalid_report["exit_code"] is not None
+        ):
+            raise RuntimeError("An unavailable Directory target started actionlint")
+        results["alias"] = alias_report
+        results["missing"] = invalid_report
         version = await (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")

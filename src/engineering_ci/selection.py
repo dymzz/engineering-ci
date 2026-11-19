@@ -2705,13 +2705,19 @@ def workflow_script_check_scopes(
             changed_wf = [
                 p
                 for p in paths
-                if workflow_analysis.is_workflow_file(p, wf_prefixes)
+                if (
+                    workflow_analysis.is_workflow_file(p, wf_prefixes)
+                    or p in workflow_problems
+                )
                 and p not in changes.deleted_paths
             ]
             changed_sh = [
                 p
                 for p in paths
-                if workflow_analysis.is_shell_file(p, sh_prefixes)
+                if (
+                    workflow_analysis.is_shell_file(p, sh_prefixes)
+                    or p in shell_problems
+                )
                 and p not in changes.deleted_paths
             ]
             al_cfg_changed = any(

@@ -43,13 +43,28 @@ surfaces as a red check that prints the observed value, not as a silent pass.
 ## Workflow analysis
 
 `actionlint_workflows` takes a source Directory, `scan_paths` defaulting to
-`.github/workflows`, and an optional `config`. It returns a JSON report and
-does not gate CI; callers raise on `outcome`.
+`.github/workflows`, and an optional `config`. The direct Dagger functions for
+actionlint, ShellCheck and zizmor resolve each target in the mounted Directory
+before invoking the native tool. Their reports include the Directory digest,
+logical targets, resolved paths and SHA-256 digests. Callers gate on `outcome`.
 
-ShellCheck and pyflakes are passed as explicitly empty, so the analysed scope
-never changes with whatever happens to be present in the image. Only Workflow
-structure is checked: inline scripts that were not analysed are never reported
-as passing.
+Selection keeps rejected discovery candidates in the affected Check scope.
+Host execution reports a refusal before the native process starts if a selected
+source is unavailable. It stages the verified target bytes under the current
+project and maps diagnostics back to the logical paths. Native output and exit
+codes retain their original values.
+
+Host runtimes can supply `admitted_external_targets` with a
+`workflow_source_authority` that authenticates each claim. The authority gets
+the Plan digest, Git event, Check name, logical path, resolved path and digest.
+The CLI and Dagger Directory entry points operate within their supplied source
+and lack the external grant authority. Immutable Git inputs require the
+original tree bytes or a materialization approved by the runtime authority.
+A native result carries each check's `scan_target` inputs separately from its
+Source reference. Full closure requires a verified complete Git materialization.
+
+Actionlint's inline ShellCheck integration is opt-in. The actionlint command
+sets the configured ShellCheck behavior explicitly and disables pyflakes.
 
 ## PowerShell analysis on Windows
 
