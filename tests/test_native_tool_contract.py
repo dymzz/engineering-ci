@@ -1301,7 +1301,13 @@ def test_weaver_terminal_enforces_post_completion_phase_semantics():
         result_origin="dagger",
         result_instance="term-live",
         native_exit_code=0,
-        evidence={"findings": 0, "run_id": "run-1"},
+        evidence={
+            "findings": 0,
+            "run_id": "run-1",
+            "terminal_correlation_status": "passed",
+            "gate_status": "passed",
+            "gate_exit_code": 0,
+        },
         rule_ref=rule,
         tool=_weaver_observed("weaver/terminal-live-check"),
         input_refs=[{"kind": "check_result", "result_id": term_local["result_id"]}],
@@ -1438,6 +1444,11 @@ def test_weaver_registry_live_terminal_require_registry_local_check():
         source=checked,
         rule=rule,
         instance="term-from-pkg",
+        evidence={
+            "terminal_correlation_status": "passed",
+            "gate_status": "passed",
+            "gate_exit_code": 0,
+        },
         input_refs=[
             {"kind": "check_result", "result_id": term_no_local[1]["result_id"]}
         ],

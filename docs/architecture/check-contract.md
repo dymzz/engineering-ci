@@ -250,6 +250,11 @@ no requirements is an internal ECI analysis and carries no tool evidence:
 - `after` is a real prerequisite. The satisfying result must reference the
   prerequisite `result_id` in `input_refs` (`kind=check_result`); mere presence
   is not evidence that the tool consumed it.
+- The Terminal Live stage preserves the Weaver process exit and the
+  enclosing Terminal gate evidence. Satisfaction requires an observed
+  `terminal_correlation_status=passed` and a passed gate with exit 0.
+  Earlier Results without this observation remain readable and leave
+  Terminal satisfaction unproven.
 - A `ToolIdentity` records two independent facts: the invocation entry
   (`access_id` + `authority`) and the ToolAsset identity (`tool_id` +
   `tool_id_source`, optionally `version`/`artifact_sha256`).
